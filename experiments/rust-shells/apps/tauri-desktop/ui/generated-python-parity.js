@@ -222,7 +222,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "4b49f21a5fa13384e71765def83a2e09404a1685c430d85c611770898b48f128",
+  "contractHash": "05238a173d786f3902fc30708294757d8ea1d7662e973a80c4b1b96930a39830",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,

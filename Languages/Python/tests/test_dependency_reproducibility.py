@@ -393,6 +393,13 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(".[desktop]", module.EXPECTED_REQUIREMENT_SHIMS["requirements.txt"])
         self.assertEqual(".[service]", module.EXPECTED_REQUIREMENT_SHIMS["requirements.service.txt"])
         self.assertIn("httpx", module.DEV_DEPENDENCY_NAMES)
+        self.assertEqual("pyinstaller==6.21.0", module.PYINSTALLER_REQUIREMENT)
+        self.assertEqual(
+            ["pyinstaller==6.21.0"],
+            module._non_comment_lines(PYTHON_ROOT / "requirements.packaging.txt"),
+        )
+        for path in module.PACKAGING_INSTALL_SURFACES:
+            self.assertIn("requirements.packaging.txt", path.read_text(encoding="utf-8"))
 
     def test_repo_declares_local_runtime_tool_versions(self):
         self.assertEqual("3.14", (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip())

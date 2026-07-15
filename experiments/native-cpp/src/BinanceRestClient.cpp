@@ -5,17 +5,106 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMap>
 #include <QMessageAuthenticationCode>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTimer>
+#include <QThread>
 #include <QUrl>
 #include <QUrlQuery>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
+qint64 intervalMilliseconds(QString interval) {
+    interval = interval.trimmed().toLower();
+    if (interval.isEmpty()) {
+        return 0;
+    }
+
+    qint64 multiplier = 0;
+    QString number = interval;
+    if (interval.endsWith(QStringLiteral("months"))) {
+        number.chop(6);
+        multiplier = 30LL * 24 * 60 * 60 * 1000;
+    } else if (interval.endsWith(QStringLiteral("month"))) {
+        number.chop(5);
+        multiplier = 30LL * 24 * 60 * 60 * 1000;
+    } else if (interval.endsWith(QStringLiteral("mo"))) {
+        number.chop(2);
+        multiplier = 30LL * 24 * 60 * 60 * 1000;
+    } else {
+        const QChar unit = interval.back();
+        number.chop(1);
+        if (unit == QLatin1Char('s')) multiplier = 1000;
+        else if (unit == QLatin1Char('m')) multiplier = 60LL * 1000;
+        else if (unit == QLatin1Char('h')) multiplier = 60LL * 60 * 1000;
+        else if (unit == QLatin1Char('d')) multiplier = 24LL * 60 * 60 * 1000;
+        else if (unit == QLatin1Char('w')) multiplier = 7LL * 24 * 60 * 60 * 1000;
+        else if (unit == QLatin1Char('y')) multiplier = 365LL * 24 * 60 * 60 * 1000;
+        else return 0;
+    }
+
+    bool ok = false;
+    const qint64 count = number.toLongLong(&ok);
+    if (!ok || count <= 0 || multiplier <= 0
+        || count > std::numeric_limits<qint64>::max() / multiplier) {
+        return 0;
+    }
+    return count * multiplier;
+}
+
+bool isNativeBinanceInterval(const QString &interval) {
+    static const QSet<QString> kNativeIntervals = {
+        QStringLiteral("1m"), QStringLiteral("3m"), QStringLiteral("5m"),
+        QStringLiteral("15m"), QStringLiteral("30m"), QStringLiteral("1h"),
+        QStringLiteral("2h"), QStringLiteral("4h"), QStringLiteral("6h"),
+        QStringLiteral("8h"), QStringLiteral("12h"), QStringLiteral("1d"),
+        QStringLiteral("3d"), QStringLiteral("1w"), QStringLiteral("1M"),
+    };
+    return kNativeIntervals.contains(interval);
+}
+
+QString baseIntervalFor(qint64 intervalMs) {
+    if (intervalMs < 60LL * 60 * 1000) return QStringLiteral("1m");
+    if (intervalMs < 24LL * 60 * 60 * 1000) return QStringLiteral("1h");
+    return QStringLiteral("1d");
+}
+
+QVector<BinanceRestClient::KlineCandle> aggregateKlines(
+    const QVector<BinanceRestClient::KlineCandle> &source,
+    qint64 targetIntervalMs,
+    qint64 startTimeMs,
+    qint64 endTimeMs) {
+    QMap<qint64, BinanceRestClient::KlineCandle> buckets;
+    for (const auto &candle : source) {
+        const qint64 bucketTime = (candle.openTimeMs / targetIntervalMs) * targetIntervalMs;
+        auto it = buckets.find(bucketTime);
+        if (it == buckets.end()) {
+            BinanceRestClient::KlineCandle aggregate = candle;
+            aggregate.openTimeMs = bucketTime;
+            buckets.insert(bucketTime, aggregate);
+            continue;
+        }
+        it->high = std::max(it->high, candle.high);
+        it->low = std::min(it->low, candle.low);
+        it->close = candle.close;
+        it->volume += candle.volume;
+    }
+
+    QVector<BinanceRestClient::KlineCandle> result;
+    result.reserve(buckets.size());
+    for (auto it = buckets.cbegin(); it != buckets.cend(); ++it) {
+        if (it.key() >= startTimeMs && it.key() <= endTimeMs) {
+            result.append(it.value());
+        }
+    }
+    return result;
+}
+
 bool parseJsonNumber(const QJsonValue &value, double *out) {
     if (!out) {
         return false;
@@ -496,7 +585,9 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlines(
     bool testnet,
     int limit,
     int timeoutMs,
-    const QString &baseUrlOverride) {
+    const QString &baseUrlOverride,
+    qint64 startTimeMs,
+    qint64 endTimeMs) {
     KlinesResult result;
 
     const QString cleanSymbol = symbol.trimmed().toUpper();
@@ -510,7 +601,7 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlines(
         return result;
     }
 
-    const int safeLimit = std::clamp(limit, 10, 1000);
+    const int safeLimit = std::clamp(limit, 1, futures ? 1500 : 1000);
     const QString defaultBase = futures
         ? (testnet ? QStringLiteral("https://testnet.binancefuture.com")
                    : QStringLiteral("https://fapi.binance.com"))
@@ -519,11 +610,17 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlines(
     const QString overrideBase = baseUrlOverride.trimmed();
     const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
     const QString endpoint = futures ? QStringLiteral("/fapi/v1/klines") : QStringLiteral("/api/v3/klines");
-    const QString url = QStringLiteral("%1%2?symbol=%3&interval=%4&limit=%5")
-        .arg(base, endpoint, cleanSymbol, cleanInterval, QString::number(safeLimit));
+    QUrl url(base + endpoint);
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("symbol"), cleanSymbol);
+    query.addQueryItem(QStringLiteral("interval"), cleanInterval);
+    query.addQueryItem(QStringLiteral("limit"), QString::number(safeLimit));
+    if (startTimeMs > 0) query.addQueryItem(QStringLiteral("startTime"), QString::number(startTimeMs));
+    if (endTimeMs > 0) query.addQueryItem(QStringLiteral("endTime"), QString::number(endTimeMs));
+    url.setQuery(query);
 
     QString requestError;
-    const QJsonDocument document = httpGetJson(url, {}, timeoutMs, &requestError);
+    const QJsonDocument document = httpGetJson(url.toString(), {}, timeoutMs, &requestError);
     if (document.isNull() || !document.isArray()) {
         result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance kline response") : requestError;
         return result;
@@ -629,6 +726,123 @@ BinanceRestClient::TickerPriceResult BinanceRestClient::fetchTickerPrice(
     const QString responseSymbol = obj.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
     if (!responseSymbol.isEmpty()) {
         result.symbol = responseSymbol;
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::KlinesResult BinanceRestClient::fetchKlinesRange(
+    const QString &symbol,
+    const QString &interval,
+    bool futures,
+    bool testnet,
+    qint64 startTimeMs,
+    qint64 endTimeMs,
+    int maxCandles,
+    int timeoutMs,
+    const QString &baseUrlOverride,
+    const std::function<bool()> &shouldStop) {
+    KlinesResult result;
+    if (startTimeMs <= 0 || endTimeMs <= startTimeMs) {
+        result.error = QStringLiteral("Historical kline range requires endTime > startTime > 0");
+        return result;
+    }
+
+    const QString requestedInterval = interval.trimmed();
+    const qint64 requestedIntervalMs = intervalMilliseconds(requestedInterval == QStringLiteral("1M")
+        ? QStringLiteral("1mo")
+        : requestedInterval);
+    if (requestedIntervalMs < 60LL * 1000) {
+        result.error = QStringLiteral("Historical interval '%1' must be at least one minute").arg(requestedInterval);
+        return result;
+    }
+
+    const bool nativeInterval = isNativeBinanceInterval(requestedInterval);
+    const QString fetchInterval = nativeInterval ? requestedInterval : baseIntervalFor(requestedIntervalMs);
+    const qint64 fetchIntervalMs = intervalMilliseconds(fetchInterval);
+    if (fetchIntervalMs <= 0 || requestedIntervalMs % fetchIntervalMs != 0) {
+        result.error = QStringLiteral("Custom interval '%1' is not a multiple of %2")
+                           .arg(requestedInterval, fetchInterval);
+        return result;
+    }
+
+    const int safeMaxCandles = std::max(1, maxCandles);
+    const qint64 fetchEndTimeMs = nativeInterval
+        ? endTimeMs
+        : std::min(
+              std::numeric_limits<qint64>::max() - requestedIntervalMs,
+              endTimeMs) + requestedIntervalMs;
+    const int pageLimit = futures ? 1500 : 1000;
+    QMap<qint64, KlineCandle> candlesByTime;
+    qint64 current = startTimeMs;
+    int pageGuard = 0;
+
+    while (current < fetchEndTimeMs && pageGuard++ < 10000) {
+        if (shouldStop && shouldStop()) {
+            result.error = QStringLiteral("Historical kline fetch cancelled");
+            return result;
+        }
+
+        KlinesResult page;
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            page = fetchKlines(
+                symbol,
+                fetchInterval,
+                futures,
+                testnet,
+                pageLimit,
+                timeoutMs,
+                baseUrlOverride,
+                current,
+                fetchEndTimeMs);
+            if (page.ok || (shouldStop && shouldStop())) break;
+            QThread::msleep(static_cast<unsigned long>(250 * (attempt + 1)));
+        }
+        if (!page.ok) {
+            result.error = page.error.isEmpty()
+                ? QStringLiteral("Historical kline page request failed")
+                : page.error;
+            return result;
+        }
+
+        qint64 lastOpenTime = current;
+        for (const KlineCandle &candle : page.candles) {
+            if (candle.openTimeMs >= startTimeMs && candle.openTimeMs <= fetchEndTimeMs) {
+                candlesByTime.insert(candle.openTimeMs, candle);
+            }
+            lastOpenTime = std::max(lastOpenTime, candle.openTimeMs);
+        }
+        if (candlesByTime.size() > safeMaxCandles) {
+            result.error = QStringLiteral("Historical range exceeded the native candle safety limit (%1)")
+                               .arg(safeMaxCandles);
+            return result;
+        }
+        if (page.candles.size() < pageLimit) break;
+        const qint64 next = lastOpenTime + fetchIntervalMs;
+        if (next <= current) break;
+        current = next;
+    }
+
+    QVector<KlineCandle> fetched;
+    fetched.reserve(candlesByTime.size());
+    for (auto it = candlesByTime.cbegin(); it != candlesByTime.cend(); ++it) {
+        if (it.key() >= startTimeMs && it.key() <= fetchEndTimeMs) {
+            fetched.append(it.value());
+        }
+    }
+    if (fetched.isEmpty()) {
+        result.error = QStringLiteral("No candle data returned for %1 (%2)")
+                           .arg(symbol.trimmed().toUpper(), requestedInterval);
+        return result;
+    }
+
+    result.candles = nativeInterval
+        ? fetched
+        : aggregateKlines(fetched, requestedIntervalMs, startTimeMs, endTimeMs);
+    if (result.candles.isEmpty()) {
+        result.error = QStringLiteral("Custom interval aggregation returned no candles for %1 (%2)")
+                           .arg(symbol.trimmed().toUpper(), requestedInterval);
+        return result;
     }
     result.ok = true;
     return result;

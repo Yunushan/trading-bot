@@ -513,6 +513,21 @@ QStringList pythonSourceDefaultEnabledIndicatorKeys() {
     return keys;
 }
 
+QMap<QString, QJsonObject> pythonSourceBacktestIndicatorConfigs() {
+    QMap<QString, QJsonObject> configs;
+    for (const auto &indicator : PythonParityContract::kPythonIndicatorCatalog) {
+        const QString key = parityString(indicator.key);
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(
+            parityString(indicator.backtestConfigJson).toUtf8(),
+            &parseError);
+        if (!key.isEmpty() && parseError.error == QJsonParseError::NoError && document.isObject()) {
+            configs.insert(key, document.object());
+        }
+    }
+    return configs;
+}
+
 QStringList pythonSourceLlmProviderKeys() {
     return parityStringList(PythonParityContract::kPythonLlmProviderKeys);
 }

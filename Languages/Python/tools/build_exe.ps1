@@ -15,6 +15,10 @@ $pythonRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $pythonRoot "..\\..")).Path
 $desktopEntryScript = Join-Path $repoRoot "apps\\desktop-pyqt\\main.py"
 $releaseInfoPath = ""
+$pythonCommand = $Python
+if (Test-Path -LiteralPath $Python -PathType Leaf) {
+  $pythonCommand = (Resolve-Path -LiteralPath $Python).Path
+}
 Push-Location $pythonRoot
 
 try {
@@ -24,9 +28,9 @@ try {
 
   if (-not $SkipDependencyInstall) {
     if (Test-Path "requirements.txt") {
-      & $Python -m pip install --upgrade pip | Out-Null
-      & $Python -m pip install --upgrade pyinstaller | Out-Null
-      & $Python -m pip install -r requirements.txt | Out-Null
+      & $pythonCommand -m pip install --upgrade pip | Out-Null
+      & $pythonCommand -m pip install -r requirements.packaging.txt | Out-Null
+      & $pythonCommand -m pip install -r requirements.txt | Out-Null
     }
     else {
       throw "requirements.txt not found in $pythonRoot"
@@ -118,7 +122,7 @@ else:
   )
 
   foreach ($moduleName in $optionalSubmodulePackages) {
-    if (Test-PythonModuleAvailable -PythonExe $Python -ModuleName $moduleName) {
+    if (Test-PythonModuleAvailable -PythonExe $pythonCommand -ModuleName $moduleName) {
       $pyInstallerArgs += @("--collect-submodules", $moduleName)
     }
     else {
@@ -127,7 +131,7 @@ else:
   }
 
   foreach ($distributionName in $optionalMetadataDistributions) {
-    if (Test-PythonDistributionAvailable -PythonExe $Python -DistributionName $distributionName) {
+    if (Test-PythonDistributionAvailable -PythonExe $pythonCommand -DistributionName $distributionName) {
       $pyInstallerArgs += @("--copy-metadata", $distributionName)
     }
     else {
@@ -174,7 +178,7 @@ else:
   $env:BOT_DISABLE_PYTHONW_RELAUNCH = "1"
   $env:BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH = "1"
   try {
-    & $Python @pyInstallerArgs
+    & $pythonCommand @pyInstallerArgs
     if ($LASTEXITCODE -ne 0) {
       throw "PyInstaller failed with exit code $LASTEXITCODE."
     }
@@ -194,7 +198,23 @@ else:
     }
   }
 
-  Write-Host "Done. EXE at: dist\$Name.exe"
+  $binaryPath = Join-Path $pythonRoot "dist\$Name.exe"
+  if (!(Test-Path $binaryPath)) {
+    throw "Built executable not found at $binaryPath"
+  }
+  $smokeProcess = Start-Process `
+    -FilePath $binaryPath `
+    -ArgumentList "--smoke" `
+    -WorkingDirectory $pythonRoot `
+    -WindowStyle Hidden `
+    -Wait `
+    -PassThru
+  if ($smokeProcess.ExitCode -ne 0) {
+    throw "Packaged executable smoke failed with exit code $($smokeProcess.ExitCode)."
+  }
+
+  Write-Host "Packaged executable smoke passed."
+  Write-Host "Done. EXE at: $binaryPath"
 }
 finally {
   if ($releaseInfoPath -ne "" -and (Test-Path $releaseInfoPath)) {

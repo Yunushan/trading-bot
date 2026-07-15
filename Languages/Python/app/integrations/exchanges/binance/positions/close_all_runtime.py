@@ -64,8 +64,10 @@ def _quantize_qty(qty_raw: float, step: float, min_qty: float, max_qty: float) -
         qty = _floor_to_step(qty, step)
     if qty <= 0.0 and qty_raw > 0.0:
         qty = qty_raw
+    # A close path must never increase quantity above the live position. In
+    # hedge mode an oversized quantity can create or expose the opposite side.
     if qty < min_qty and min_qty > 0:
-        qty = min_qty
+        return 0.0
     if max_qty > 0 and qty > max_qty:
         qty = max_qty
     return max(qty, 0.0)
@@ -130,6 +132,34 @@ def _derive_close_directive(amt: float, pos_side: str | None, dual: bool) -> tup
     if float(amt or 0.0) < 0.0:
         return "BUY", ("SHORT" if dual else None), qty_raw
     return "SELL", ("LONG" if dual else None), qty_raw
+
+
+def _build_market_close_params(
+    binance,
+    *,
+    symbol: str,
+    amount: float,
+    position_side: str | None,
+    dual: bool,
+) -> tuple[dict[str, Any], str]:
+    """Build an immediate, quantity-based close accepted by Binance USD-M."""
+    side, target_ps, qty_raw = _derive_close_directive(amount, position_side, dual)
+    step, min_qty, max_qty = _get_lot_limits(binance, symbol)
+    qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
+    if qty_float <= 0.0:
+        return {}, "validation"
+
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "side": side,
+        "type": "MARKET",
+        "quantity": f"{qty_float:.8f}",
+    }
+    if dual and target_ps in ("LONG", "SHORT"):
+        params["positionSide"] = target_ps
+        return params, "positionSide"
+    params["reduceOnly"] = True
+    return params, "reduceOnly"
 
 
 def _is_unknown_execution_error(err: object) -> bool:
@@ -420,15 +450,9 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
             dual = False
 
     if fast:
-        use_close_position = not _is_testnet_wrapper(binance)
-        try:
-            try:
-                binance.client.futures_cancel_all_open_orders()
-            except Exception as exc:
-                _record_close_all_exception(binance, "fast_cancel_all_open_orders", exc)
-        except Exception as exc:
-            _record_close_all_exception(binance, "fast_cancel_all_wrapper", exc)
         positions, _ = _gather_positions(binance)
+        for sym in sorted({str(p.get("symbol") or "").upper() for p in positions} - {""}):
+            _cancel_all(binance, sym)
         if positions and max_workers is None:
             max_workers = min(6, max(1, len(positions)))
 
@@ -447,54 +471,30 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     "skipped": True,
                     "reason": "zero-qty",
                 }
-            side, target_ps, qty_raw = _derive_close_directive(amt, pos_side, dual)
-            if use_close_position:
-                close_params = dict(symbol=sym, side=side, type="MARKET", closePosition=True)
-                if dual and target_ps in ("LONG", "SHORT"):
-                    close_params["positionSide"] = target_ps
-                try:
-                    od = _submit_futures_order(binance, close_params)
-                    return {
-                        "ok": True,
-                        "symbol": sym,
-                        "positionSide": pos_side,
-                        "info": od,
-                        "method": "closePosition",
-                    }
-                except Exception as e:
+            try:
+                params, method = _build_market_close_params(
+                    binance,
+                    symbol=sym,
+                    amount=amt,
+                    position_side=pos_side,
+                    dual=dual,
+                )
+                if not params:
                     return {
                         "ok": False,
                         "symbol": sym,
                         "positionSide": pos_side,
-                        "error": str(e),
+                        "error": "position quantity cannot be safely represented by exchange lot-size filters",
                         "positionAmt": amt,
+                        "method": method,
                     }
-            try:
-                step, min_qty, max_qty = _get_lot_limits(binance, sym)
-                qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
-                if qty_float <= 0.0:
-                    return {
-                        "ok": True,
-                        "symbol": sym,
-                        "positionSide": pos_side,
-                        "skipped": True,
-                        "reason": "zero-qty",
-                    }
-                qty_str = f"{qty_float:.8f}"
-                params = dict(symbol=sym, side=side, type="MARKET")
-                if dual and target_ps in ("LONG", "SHORT"):
-                    params["positionSide"] = target_ps
-                    params["quantity"] = str(qty_str)
-                else:
-                    params["reduceOnly"] = True
-                    params["quantity"] = str(qty_str)
                 od = _submit_futures_order(binance, params)
                 return {
                     "ok": True,
                     "symbol": sym,
                     "positionSide": pos_side,
                     "info": od,
-                    "method": "reduceOnly",
+                    "method": method,
                 }
             except Exception as e:
                 return {
@@ -540,55 +540,6 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
             else:
                 results[idx] = res
 
-        failures = [r for r in results if not r.get("ok")]
-        if failures and use_close_position:
-            for r in failures:
-                sym = r.get("symbol") or ""
-                amt = float(r.get("positionAmt") or 0.0)
-                if not sym or abs(amt) <= 0.0:
-                    continue
-                try:
-                    side, target_ps, qty_raw = _derive_close_directive(amt, r.get("positionSide"), dual)
-                    step, min_qty, max_qty = _get_lot_limits(binance, sym)
-                    qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
-                    qty_str = f"{qty_float:.8f}"
-                    params = dict(symbol=sym, side=side, type="MARKET")
-                    if dual and target_ps in ("LONG", "SHORT"):
-                        params["positionSide"] = target_ps
-                        params["quantity"] = str(qty_str)
-                    else:
-                        params["reduceOnly"] = True
-                        params["quantity"] = str(qty_str)
-                    try:
-                        od = _submit_futures_order(binance, params)
-                        _upsert_result(
-                            {
-                                "ok": True,
-                                "symbol": sym,
-                                "positionSide": r.get("positionSide"),
-                                "info": od,
-                                "method": "reduceOnly",
-                            }
-                        )
-                    except Exception as e:
-                        _upsert_result(
-                            {
-                                "ok": False,
-                                "symbol": sym,
-                                "positionSide": r.get("positionSide"),
-                                "error": str(e),
-                                "params": params,
-                            }
-                        )
-                except Exception as e:
-                    _upsert_result(
-                        {
-                            "ok": False,
-                            "symbol": sym,
-                            "positionSide": r.get("positionSide"),
-                            "error": str(e),
-                        }
-                    )
         failures = [r for r in results if not r.get("ok")]
         if results:
             if any(_is_unknown_execution_error(r.get("error")) for r in failures):
@@ -640,7 +591,9 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
         results.extend(_cleanup_zero_qty_negative_margin_positions(binance, dual))
         return results
 
-    # up to 3 passes: handle partial fills / changes
+    # Up to 3 passes: handle partial fills and positions that change while the
+    # close is in flight. Binance requires symbol-scoped cancel-all requests.
+    canceled_symbols: set[str] = set()
     for _ in range(3):
         positions, _ = _gather_positions(binance)
         if not positions:
@@ -652,78 +605,91 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 amt = float(p.get("positionAmt") or 0.0)
                 if abs(amt) <= 0:
                     continue
-                side, target_ps, qty_raw = _derive_close_directive(amt, pos_side, dual)
-                step, min_qty, max_qty = _get_lot_limits(binance, sym)
-                qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
-                qty_str = f"{qty_float:.8f}"
-                # First attempt a closePosition order to bypass filter edge cases.
-                close_params = dict(symbol=sym, side=side, type="MARKET", closePosition=True)
-                if dual and target_ps in ("LONG", "SHORT"):
-                    close_params["positionSide"] = target_ps
+                if sym not in canceled_symbols:
+                    _cancel_all(binance, sym)
+                    canceled_symbols.add(sym)
+                params, method = _build_market_close_params(
+                    binance,
+                    symbol=sym,
+                    amount=amt,
+                    position_side=pos_side,
+                    dual=dual,
+                )
+                if not params:
+                    results.append(
+                        {
+                            "ok": False,
+                            "symbol": sym,
+                            "positionSide": pos_side,
+                            "error": "position quantity cannot be safely represented by exchange lot-size filters",
+                            "positionAmt": amt,
+                            "method": method,
+                        }
+                    )
+                    continue
                 try:
-                    od = _submit_futures_order(binance, close_params)
+                    od = _submit_futures_order(binance, params)
                     results.append(
                         {
                             "ok": True,
                             "symbol": sym,
                             "positionSide": pos_side,
                             "info": od,
-                            "method": "closePosition",
+                            "method": method,
                         }
                     )
                     continue
                 except Exception as e:
-                    err_msg = str(e)
-                _cancel_all(binance, sym)
-                params = dict(symbol=sym, side=side, type="MARKET")
-                if dual and target_ps in ("LONG", "SHORT"):
-                    params["positionSide"] = target_ps
-                    params["quantity"] = str(qty_str)
-                else:
-                    params["reduceOnly"] = True
-                    params["quantity"] = str(qty_str)
-                try:
-                    od = _submit_futures_order(binance, params)
-                    results.append({"ok": True, "symbol": sym, "positionSide": pos_side, "info": od})
-                    continue
-                except Exception as e:
-                    err_msg = str(e)
-                    if (not dual) and ("-2022" in err_msg or "ReduceOnly" in err_msg):
-                        fallback_params = dict(symbol=sym, side=side, type="MARKET", closePosition=True)
-                        try:
-                            od = _submit_futures_order(binance, fallback_params)
-                            results.append(
-                                {
-                                    "ok": True,
-                                    "symbol": sym,
-                                    "positionSide": pos_side,
-                                    "info": od,
-                                    "method": "closePosition",
-                                }
-                            )
-                            continue
-                        except Exception as e2:
-                            err_msg = f"{err_msg} | fallback error: {e2}"
-                            results.append(
-                                {
-                                    "ok": False,
-                                    "symbol": sym,
-                                    "positionSide": pos_side,
-                                    "error": err_msg,
-                                    "params": fallback_params,
-                                }
-                            )
-                    else:
-                        results.append(
-                            {
-                                "ok": False,
-                                "symbol": sym,
-                                "positionSide": pos_side,
-                                "error": err_msg,
-                                "params": params,
-                            }
-                        )
+                    results.append(
+                        {
+                            "ok": False,
+                            "symbol": sym,
+                            "positionSide": pos_side,
+                            "error": str(e),
+                            "params": params,
+                            "method": method,
+                        }
+                    )
             except Exception as e:
                 results.append({"ok": False, "symbol": sym, "positionSide": pos_side, "error": str(e)})
+
+    remaining, remaining_ok = _gather_positions(binance)
+    if remaining_ok:
+        remaining_by_key = {
+            (
+                str(p.get("symbol") or "").upper(),
+                _normalize_position_side(p.get("positionSide")),
+            ): p
+            for p in remaining
+            if str(p.get("symbol") or "").strip()
+        }
+        latest_by_key: dict[tuple[str, str], Dict[str, Any]] = {}
+        result_order: list[tuple[str, str]] = []
+        for result in results:
+            key = (
+                str(result.get("symbol") or "").upper(),
+                _normalize_position_side(result.get("positionSide")),
+            )
+            if not key[0]:
+                continue
+            if key not in latest_by_key:
+                result_order.append(key)
+            latest_by_key[key] = result
+        for key, position in remaining_by_key.items():
+            if key not in latest_by_key:
+                result_order.append(key)
+            latest_by_key[key] = {
+                "ok": False,
+                "symbol": key[0],
+                "positionSide": key[1],
+                "error": "position remained open after close attempts",
+                "positionAmt": position.get("positionAmt"),
+                "method": "verification",
+            }
+        for key, result in latest_by_key.items():
+            if key not in remaining_by_key and not result.get("ok"):
+                result["ok"] = True
+                result["reconciled"] = True
+        results = [latest_by_key[key] for key in result_order]
     results.extend(_cleanup_zero_qty_negative_margin_positions(binance, dual))
     return results

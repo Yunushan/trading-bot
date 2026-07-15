@@ -4,8 +4,8 @@ set -euo pipefail
 mkdir -p release
 arch="$(uname -m)"
 python_bin="Languages/Python/dist/Trading-Bot-Python"
-required_rust_asset="Trading-Bot-Rust:trading-bot-rust"
-optional_rust_assets=(
+required_rust_assets=(
+  "Trading-Bot-Rust:trading-bot-rust"
   "Trading-Bot-Rust-tauri:trading-bot-tauri-desktop"
 )
 release_version="$(python -c 'import os,re; tag=(os.environ.get("TB_RELEASE_TAG") or "").strip(); m=re.search(r"(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)", tag); print((m.group(1).replace("_",".").replace("-",".") if m else "0.0.0"))')"
@@ -15,22 +15,15 @@ if [[ ! -f "${python_bin}" ]]; then
   exit 1
 fi
 
-required_rust_binary_name="${required_rust_asset#*:}"
-required_rust_bin="experiments/rust-shells/target/release/${required_rust_binary_name}"
-if [[ ! -f "${required_rust_bin}" ]]; then
-  echo "Required Rust binary not found at ${required_rust_bin}" >&2
-  exit 1
-fi
-
-rust_assets=("${required_rust_asset}")
-for rust_entry in "${optional_rust_assets[@]}"; do
+rust_assets=()
+for rust_entry in "${required_rust_assets[@]}"; do
   rust_binary_name="${rust_entry#*:}"
   rust_bin="experiments/rust-shells/target/release/${rust_binary_name}"
-  if [[ -f "${rust_bin}" ]]; then
-    rust_assets+=("${rust_entry}")
-  else
-    echo "Warning: optional Rust binary not found at ${rust_bin}; skipping release asset." >&2
+  if [[ ! -f "${rust_bin}" ]]; then
+    echo "Required Rust binary not found at ${rust_bin}" >&2
+    exit 1
   fi
+  rust_assets+=("${rust_entry}")
 done
 
 if [[ "${TB_PLATFORM:-}" == "linux" ]]; then

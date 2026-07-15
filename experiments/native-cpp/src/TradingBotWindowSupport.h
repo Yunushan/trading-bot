@@ -4,6 +4,7 @@
 #include <QStringList>
 #include <QVector>
 #include <QJsonDocument>
+#include <QMap>
 #include <QJsonObject>
 
 class QComboBox;
@@ -75,6 +76,7 @@ QStringList pythonSourceBacktestRunRequestFields();
 QStringList pythonSourceIndicatorKeys();
 QStringList pythonSourceIndicatorDisplayNames();
 QStringList pythonSourceDefaultEnabledIndicatorKeys();
+QMap<QString, QJsonObject> pythonSourceBacktestIndicatorConfigs();
 QStringList pythonSourceLlmProviderKeys();
 QStringList pythonSourceLlmProviderLabels();
 QStringList pythonSourceLlmProviderDefaultModels();

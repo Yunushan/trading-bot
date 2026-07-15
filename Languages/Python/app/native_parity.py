@@ -42,7 +42,11 @@ from .service.api_contract import (
 )
 from .settings.backtest import BacktestSettings
 from .settings.execution import ExecutionSettings
-from .settings.indicators import INDICATOR_CATALOG, build_runtime_indicator_defaults
+from .settings.indicators import (
+    INDICATOR_CATALOG,
+    build_backtest_indicator_defaults,
+    build_runtime_indicator_defaults,
+)
 from .settings.validation import (
     _ACCOUNT_TYPE_CHOICES,
     _BACKTEST_EXECUTION_BACKEND_CHOICES,
@@ -285,6 +289,7 @@ def _domain_payload(domain: NativeParityDomain) -> dict[str, Any]:
 
 def _indicator_payload() -> list[dict[str, object]]:
     runtime_defaults = build_runtime_indicator_defaults()
+    backtest_defaults = build_backtest_indicator_defaults()
     catalog_keys = {definition.key for definition in INDICATOR_CATALOG}
     output_keys = set(INDICATOR_RUNTIME_OUTPUT_KEYS)
     if catalog_keys != output_keys:
@@ -303,6 +308,10 @@ def _indicator_payload() -> list[dict[str, object]]:
             # display catalog. Keep this JSON-shaped so new Python-only parameters do
             # not require a parallel destination schema migration.
             "runtime_config": runtime_defaults.get(definition.key, {}),
+            # Backtest thresholds and signal/filter modes intentionally differ from
+            # live runtime defaults. Native engines must consume these values rather
+            # than silently inventing destination-specific behavior.
+            "backtest_config": backtest_defaults.get(definition.key, {}),
             "runtime_output_keys": list(INDICATOR_RUNTIME_OUTPUT_KEYS[definition.key]),
         }
         for definition in INDICATOR_CATALOG

@@ -457,6 +457,12 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Test Windows C++ bundle helper contracts
+        shell: pwsh
+        run: |
+          ./tools/Copy-MsvcRuntimeToBundle.ps1 -SelfTest
+          ./tools/Test-NativeCppWindowsBundle.ps1 -SelfTest
+
       - name: Install Linux C++/Qt dependencies
         shell: bash
         run: |
@@ -544,6 +550,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p trading-bot-core
+
+      - name: Test and smoke required Tauri desktop
+        shell: bash
+        working-directory: experiments/rust-shells
+        run: |
+          set -euo pipefail
+          cargo test --locked --package trading-bot-tauri-desktop
+          cargo run --locked --release --package trading-bot-tauri-desktop -- --smoke
 
       - name: Validate Rust native live-smoke preflight
         shell: bash

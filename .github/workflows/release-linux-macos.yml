@@ -163,7 +163,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller
+          python -m pip install -r requirements.packaging.txt
           python -m pip install --prefer-binary -r requirements.txt
 
       - name: Build Python binary
@@ -184,20 +184,12 @@ jobs:
           cargo build --manifest-path experiments/rust-shells/Cargo.toml --locked --release \
             --package trading-bot-rust
 
-      - name: Build optional Rust framework binaries
+      - name: Build required Tauri desktop binary
         shell: bash
         run: |
           set -euo pipefail
-          optional_rust_packages=(
-            trading-bot-tauri-desktop
-          )
-          for package in "${optional_rust_packages[@]}"; do
-            if cargo build --manifest-path experiments/rust-shells/Cargo.toml --locked --release --package "${package}"; then
-              echo "Built optional Rust framework: ${package}"
-            else
-              echo "::warning::Optional Rust framework build failed and will be skipped: ${package}"
-            fi
-          done
+          cargo build --manifest-path experiments/rust-shells/Cargo.toml --locked --release \
+            --package trading-bot-tauri-desktop
 
       - name: Configure C++ build
         shell: bash
@@ -222,6 +214,37 @@ jobs:
           install_prefix="${GITHUB_WORKSPACE}/release/Trading-Bot-C++"
           rm -rf "${install_prefix}"
           cmake --install "build/binance_cpp" --config Release --prefix "${install_prefix}"
+
+      - name: Smoke packaged native binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          rust_bin="experiments/rust-shells/target/release/trading-bot-rust"
+          tauri_bin="experiments/rust-shells/target/release/trading-bot-tauri-desktop"
+          if [[ ! -x "${tauri_bin}" ]]; then
+            echo "Packaged Tauri executable not found or not executable at ${tauri_bin}" >&2
+            exit 1
+          fi
+          python tools/write_rust_package_smoke_evidence.py \
+            --rust-cli "${rust_bin}" \
+            --tauri-desktop "${tauri_bin}" \
+            --output "release/rust-package-smoke-${{ matrix.id }}.json" \
+            --source-revision "${GITHUB_SHA}" \
+            --platform "${TB_PLATFORM}" \
+            --architecture "$(uname -m)" \
+            --require-clean-source
+
+          cpp_root="release/Trading-Bot-C++"
+          if [[ "$(uname -s)" == "Darwin" ]]; then
+            cpp_bin="${cpp_root}/Trading-Bot-C++.app/Contents/MacOS/Trading-Bot-C++"
+          else
+            cpp_bin="${cpp_root}/bin/Trading-Bot-C++"
+          fi
+          if [[ ! -x "${cpp_bin}" ]]; then
+            echo "Packaged C++ executable not found or not executable at ${cpp_bin}" >&2
+            exit 1
+          fi
+          QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke
 
       - name: Package release assets
         shell: bash

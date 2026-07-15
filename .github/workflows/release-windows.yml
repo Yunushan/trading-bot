@@ -331,7 +331,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller
+          python -m pip install -r Languages/Python/requirements.packaging.txt
           Push-Location Languages/Python
           $requirementsFile = Split-Path -Leaf "${{ matrix.python_requirements }}"
           if ("${{ matrix.id }}" -eq "windows-arm64") {
@@ -363,23 +363,18 @@ jobs:
             throw "Required Rust package build failed: trading-bot-rust"
           }
 
-      - name: Build optional Rust framework EXEs
+      - name: Build required Tauri desktop EXE
         shell: pwsh
         run: |
-          $baseRustBuildArgs = @(
+          $rustBuildArgs = @(
             "--manifest-path", "experiments/rust-shells/Cargo.toml",
             "--locked",
-            "--release"
+            "--release",
+            "--package", "trading-bot-tauri-desktop"
           )
-          $optionalRustPackages = @(
-            "trading-bot-tauri-desktop"
-          )
-          foreach ($package in $optionalRustPackages) {
-            $rustBuildArgs = $baseRustBuildArgs + @("--package", $package)
-            cargo build @rustBuildArgs
-            if ($LASTEXITCODE -ne 0) {
-              Write-Warning "Optional Rust framework build failed and will be skipped: $package"
-            }
+          cargo build @rustBuildArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required Rust package build failed: trading-bot-tauri-desktop"
           }
 
       - name: Configure C++ build
@@ -430,16 +425,12 @@ jobs:
 
           $rustAssets = @(
             @{ AssetPrefix = "Trading-Bot-Rust"; BinaryName = "trading-bot-rust"; Required = $true },
-            @{ AssetPrefix = "Trading-Bot-Rust-tauri"; BinaryName = "trading-bot-tauri-desktop"; Required = $false }
+            @{ AssetPrefix = "Trading-Bot-Rust-tauri"; BinaryName = "trading-bot-tauri-desktop"; Required = $true }
           )
           foreach ($rustAsset in $rustAssets) {
             $rustExe = "experiments/rust-shells/target/release/$($rustAsset.BinaryName).exe"
             if (!(Test-Path $rustExe)) {
-              if ($rustAsset.Required) {
-                throw "Rust executable not found after build: $rustExe"
-              }
-              Write-Warning "Optional Rust executable not found after build and will be skipped: $rustExe"
-              continue
+              throw "Required Rust executable not found after build: $rustExe"
             }
             $rustExeAsset = "release/$($rustAsset.AssetPrefix)-$assetTag-$releaseVersion.exe"
             Copy-Item $rustExe $rustExeAsset
@@ -477,6 +468,17 @@ jobs:
             throw "windeployqt not found on PATH or expected Qt bin directories."
           }
           & $windeployqtPath --release --compiler-runtime (Join-Path $cppBundleDir "Trading-Bot-C++.exe")
+          if ($LASTEXITCODE -ne 0) {
+            throw "windeployqt failed with exit code $LASTEXITCODE."
+          }
+          $compilerRuntimeArchitecture = if ("${{ matrix.id }}" -eq "windows-arm64") {
+            "arm64"
+          } else {
+            "x64"
+          }
+          & ./tools/Copy-MsvcRuntimeToBundle.ps1 `
+            -BundleDir $cppBundleDir `
+            -Architecture $compilerRuntimeArchitecture
 
           if (-not [string]::IsNullOrWhiteSpace($releaseTag)) {
             $releaseInfoPath = Join-Path $cppBundleDir "release-info.json"
@@ -586,6 +588,52 @@ jobs:
           $cppZipAsset = "release/Trading-Bot-C++-$assetTag-$releaseVersion.zip"
           Compress-Archive -Path "$cppBundleDir/*" -DestinationPath $cppZipAsset -Force
 
+      - name: Smoke packaged native binaries
+        shell: pwsh
+        run: |
+          $rustCliAssets = @(
+            Get-ChildItem -Path release -Filter "Trading-Bot-Rust-${{ matrix.id }}-*.exe" -File
+          )
+          $tauriAssets = @(
+            Get-ChildItem -Path release -Filter "Trading-Bot-Rust-tauri-${{ matrix.id }}-*.exe" -File
+          )
+          if ($rustCliAssets.Count -ne 1) {
+            throw "Expected exactly one packaged Rust CLI asset; found $($rustCliAssets.Count)."
+          }
+          if ($tauriAssets.Count -ne 1) {
+            throw "Expected exactly one packaged Tauri asset; found $($tauriAssets.Count)."
+          }
+          $rustArchitecture = if ("${{ matrix.id }}" -eq "windows-arm64") { "arm64" } else { "x64" }
+          $rustSmokeEvidence = "release/rust-package-smoke-${{ matrix.id }}.json"
+          & python tools/write_rust_package_smoke_evidence.py `
+            --rust-cli $rustCliAssets[0].FullName `
+            --tauri-desktop $tauriAssets[0].FullName `
+            --output $rustSmokeEvidence `
+            --source-revision "${{ github.sha }}" `
+            --platform windows `
+            --architecture $rustArchitecture `
+            --require-clean-source
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged Rust evidence failed with exit code $LASTEXITCODE."
+          }
+
+          $cppExe = "release/Trading-Bot-C++${{ matrix.asset_suffix }}/Trading-Bot-C++.exe"
+          if (!(Test-Path $cppExe)) {
+            throw "Packaged C++ executable not found at $cppExe"
+          }
+          $cppArchitecture = if ("${{ matrix.id }}" -eq "windows-arm64") {
+            "arm64"
+          } else {
+            "x64"
+          }
+          $cppSmokeEvidence = "release/native-cpp-windows-smoke-${{ matrix.id }}.json"
+          & ./tools/Test-NativeCppWindowsBundle.ps1 `
+            -BundleDir (Split-Path $cppExe -Parent) `
+            -RequireCompilerRuntime `
+            -Architecture $cppArchitecture `
+            -EvidencePath $cppSmokeEvidence `
+            -SourceRevision "${{ github.sha }}"
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -594,6 +642,8 @@ jobs:
             release/Trading-Bot-Python*.exe
             release/Trading-Bot-Rust*.exe
             release/Trading-Bot-C++*.zip
+            release/native-cpp-windows-smoke-*.json
+            release/rust-package-smoke-*.json
           if-no-files-found: error
 
   publish-release:

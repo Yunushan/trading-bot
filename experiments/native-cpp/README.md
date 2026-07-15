@@ -2,7 +2,7 @@
 
 This directory contains the native Qt/C++ desktop path for the trading-bot workspace.
 
-Today it is a C++ desktop re-platforming path with source-contract parity against the Python/PyQt app in `Languages/Python`. Python remains the trading execution source of truth unless an explicitly tested native helper is being exercised.
+Today it is a C++ desktop re-platforming path with source-contract parity against the Python/PyQt app in `Languages/Python`. Python remains the shared contract source of truth. The C++ dashboard owns its implemented Binance USD-M Futures order path directly; other venues remain unsupported or evidence-gated.
 
 ## Current role
 
@@ -39,8 +39,8 @@ platform/installer/credential-gated evidence.
 | Strategy runtime | Complete indicator output keys, signal threshold/index semantics, controls normalization, override provenance, and worker lifecycle parity helpers/tests | Complete for this domain |
 | Exchange connectors | Complete connector support metadata, Python backend catalog, non-Binance rejection reasons, rate-limit/backoff, and diagnostic health snapshots | Complete for this domain |
 | Account, portfolio, and positions | Complete portfolio DTOs, history/allocation ledgers, close-all cache reconciliation, and native parity tests | Complete for this domain |
-| Order execution and risk | Complete native order audit, preflight, circuit breaker, submit guards, stop/shutdown guards, and risk behavior | Complete for this domain |
-| Backtest engine | Complete mirrored request shape, delegates run/stop to the Python Service API, scanner polling, dashboard import, and provenance coverage | Complete for this domain |
+| Order execution and risk | Complete native Binance USD-M Futures order audit, preflight, circuit breaker, exchange filters, signed market/limit submission, retry/fallback, close/stop/shutdown guards, and risk behavior | Complete for the implemented Binance Futures scope; other venues remain gated |
+| Backtest engine | Native C++ historical simulator and batch optimizer are the default local backend, with generated Python indicator defaults, paginated Binance candle loading, cancellation, bounded ranking, dashboard import, and a Python Service API compatibility backend | Complete for the implemented Binance backtest domain; live-trading ownership remains separate |
 | Charts and heatmaps | Complete chart state payloads, TradingView interval aliases, lightweight asset fallbacks, safe-mode guards, and liquidation provider catalog tests | Complete for this domain |
 | Logs, terminal, diagnostics | Complete service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests | Complete for this domain |
 | LLM advisory | Complete prompt/config/local-model service route payloads, result redaction, output-policy checks, and local model status tests | Complete for this domain |
@@ -54,6 +54,10 @@ The `src/` folder is still being reorganized, but it already contains distinct s
 - `TradingBotWindow.positions.cpp`
 - `TradingBotWindow.chart.cpp`
 - `TradingBotWindow.backtest.cpp`
+- `NativeBacktestRuntime.*`
+- `NativeBacktestBatchRuntime.*`
+- `NativeIndicatorRuntime.*`
+- `NativeStrategyRuntime.*`
 - `TradingBotWindow.web.cpp`
 - `TradingBotWindow.runtime.cpp`
 - `BinanceRestClient.*`
@@ -100,6 +104,26 @@ The helper scripts target `Qt 6.11.0` where the installer path supports it.
 ```bash
 build/binance_cpp/Trading-Bot-C++
 ```
+
+## Verify a Windows release bundle
+
+After `windeployqt` has populated a staging directory, copy the matching
+app-local MSVC runtime and run the isolated product smoke:
+
+```powershell
+./tools/Copy-MsvcRuntimeToBundle.ps1 `
+  -BundleDir build/cpp-package/bin `
+  -Architecture x64
+./tools/Test-NativeCppWindowsBundle.ps1 `
+  -BundleDir build/cpp-package/bin `
+  -RequireCompilerRuntime
+```
+
+The verifier requires the executable, direct Qt libraries, the Windows platform
+plugin, WebEngine process/resources/locales, and the MSVC runtime. It removes Qt
+development paths from the child process environment and rejects any smoke-test
+stderr diagnostics, so a build machine installation cannot hide an incomplete
+customer bundle.
 
 ## Recommendation
 

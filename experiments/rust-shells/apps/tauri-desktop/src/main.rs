@@ -13,10 +13,13 @@ use tauri::{AppHandle, Manager, State};
 use trading_bot_core::{
     app_banner,
     market_data::BinanceKlineCandle,
+    native_python_app_contract_parity_ready,
     native_runtime::{
-        NativeRuntimeLoop, NativeRuntimeLoopConfig, NativeRuntimeReadOnlyMarketCycleInput,
+        NativeRuntimeCycleInput, NativeRuntimeLoop, NativeRuntimeLoopConfig,
+        NativeRuntimeReadOnlyMarketCycleInput,
     },
-    service_api_route_path,
+    python_source_contract_hash, rust_trading_execution_supported, service_api_route_path,
+    supported_frameworks,
 };
 
 #[cfg(target_os = "windows")]
@@ -38,6 +41,361 @@ struct ServiceApiProxyResponse {
 #[derive(Default)]
 struct ServiceProcessState {
     child: Mutex<Option<Child>>,
+}
+
+#[derive(Default)]
+struct NativeRuntimeManagedState {
+    runtime: Option<NativeRuntimeLoop>,
+    started_at_ms: Option<i64>,
+    running: bool,
+    paused: bool,
+}
+
+#[derive(Default)]
+struct NativeRuntimeState {
+    inner: Mutex<NativeRuntimeManagedState>,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeRuntimeControlResponse {
+    ok: bool,
+    execution_backend: String,
+    status: Value,
+    lifecycle: Value,
+    stream: Value,
+    trading_execution_supported: bool,
+    promotion_required: bool,
+    message: String,
+    error: String,
+}
+
+impl NativeRuntimeControlResponse {
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            execution_backend: "native-rust".to_owned(),
+            status: json!({
+                "runtime_active": false,
+                "active_duration": "--",
+                "lifecycle_phase": "error"
+            }),
+            lifecycle: json!({}),
+            stream: json!({}),
+            trading_execution_supported: rust_trading_execution_supported(),
+            promotion_required: !rust_trading_execution_supported(),
+            message: String::new(),
+            error: error.into(),
+        }
+    }
+}
+
+impl NativeRuntimeState {
+    fn start(&self, config: &Value, now_ms: i64) -> NativeRuntimeControlResponse {
+        let mut managed = match self.inner.lock() {
+            Ok(value) => value,
+            Err(_) => {
+                return NativeRuntimeControlResponse::error(
+                    "Native runtime state lock is poisoned.",
+                );
+            }
+        };
+        if managed.running {
+            return native_runtime_snapshot(
+                &mut managed,
+                now_ms,
+                "Native Rust runtime is already running.",
+            );
+        }
+
+        let mut runtime = NativeRuntimeLoop::new(native_runtime_config(config));
+        runtime.start();
+        managed.runtime = Some(runtime);
+        managed.started_at_ms = Some(now_ms);
+        managed.running = true;
+        managed.paused = false;
+        native_runtime_snapshot(
+            &mut managed,
+            now_ms,
+            if rust_trading_execution_supported() {
+                "Native Rust runtime started."
+            } else {
+                "Native Rust runtime started in fail-closed coordination mode; live order submission remains promotion-gated."
+            },
+        )
+    }
+
+    fn status(&self, now_ms: i64) -> NativeRuntimeControlResponse {
+        let mut managed = match self.inner.lock() {
+            Ok(value) => value,
+            Err(_) => {
+                return NativeRuntimeControlResponse::error(
+                    "Native runtime state lock is poisoned.",
+                );
+            }
+        };
+        native_runtime_snapshot(
+            &mut managed,
+            now_ms,
+            "Native Rust runtime status refreshed.",
+        )
+    }
+
+    fn set_paused(&self, paused: bool, now_ms: i64) -> NativeRuntimeControlResponse {
+        let mut managed = match self.inner.lock() {
+            Ok(value) => value,
+            Err(_) => {
+                return NativeRuntimeControlResponse::error(
+                    "Native runtime state lock is poisoned.",
+                );
+            }
+        };
+        if !managed.running {
+            return NativeRuntimeControlResponse::error("Native Rust runtime is not running.");
+        }
+        let Some(runtime) = managed.runtime.as_mut() else {
+            return NativeRuntimeControlResponse::error(
+                "Native Rust runtime state is unavailable.",
+            );
+        };
+        runtime.set_global_pause(paused);
+        managed.paused = paused;
+        native_runtime_snapshot(
+            &mut managed,
+            now_ms,
+            if paused {
+                "Native Rust runtime paused."
+            } else {
+                "Native Rust runtime resumed."
+            },
+        )
+    }
+
+    fn stop(&self, close_positions: bool, now_ms: i64) -> NativeRuntimeControlResponse {
+        let mut managed = match self.inner.lock() {
+            Ok(value) => value,
+            Err(_) => {
+                return NativeRuntimeControlResponse::error(
+                    "Native runtime state lock is poisoned.",
+                );
+            }
+        };
+        if !managed.running {
+            return native_runtime_snapshot(
+                &mut managed,
+                now_ms,
+                "Native Rust runtime is already idle.",
+            );
+        }
+        let Some(runtime) = managed.runtime.as_mut() else {
+            return NativeRuntimeControlResponse::error(
+                "Native Rust runtime state is unavailable.",
+            );
+        };
+
+        // Tauri does not claim a close-all dispatch until the promoted worker owns
+        // credentialed position reconciliation. Stopping the fail-closed coordinator
+        // is still safe because it cannot have submitted native live orders.
+        let close_dispatched = close_positions && rust_trading_execution_supported();
+        let stop = runtime.request_stop(
+            close_dispatched,
+            "tauri-native-runtime",
+            true,
+            if close_positions && !close_dispatched {
+                "Close positions was not dispatched because native live execution is not promoted."
+            } else {
+                "Native runtime stop accepted."
+            },
+        );
+        runtime.mark_idle_after_stop("tauri-native-runtime", &stop.status_message);
+        managed.running = false;
+        managed.paused = false;
+        managed.started_at_ms = None;
+        native_runtime_snapshot(
+            &mut managed,
+            now_ms,
+            if close_positions && !close_dispatched {
+                "Native Rust runtime stopped; no live close was required or dispatched while execution is promotion-gated."
+            } else {
+                "Native Rust runtime stopped."
+            },
+        )
+    }
+}
+
+fn config_root(config: &Value) -> &Value {
+    config
+        .get("config")
+        .filter(|value| value.is_object())
+        .unwrap_or(config)
+}
+
+fn first_config_string(config: &Value, key: &str, default: &str) -> String {
+    let value = config_root(config).get(key);
+    let text = value
+        .and_then(|value| {
+            value
+                .as_array()
+                .and_then(|items| items.first())
+                .unwrap_or(value)
+                .as_str()
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default);
+    text.to_owned()
+}
+
+fn config_i64(config: &Value, key: &str, default: i64) -> i64 {
+    let Some(value) = config_root(config).get(key) else {
+        return default;
+    };
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|value| value.round() as i64))
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        .unwrap_or(default)
+}
+
+fn native_runtime_config(config: &Value) -> NativeRuntimeLoopConfig {
+    let position_mode = first_config_string(config, "position_mode", "Hedge");
+    let margin_mode = first_config_string(config, "margin_mode", "Isolated");
+    let assets_mode = first_config_string(config, "assets_mode", "Single-Asset Mode");
+    let loop_interval_override = first_config_string(config, "loop_interval_override", "");
+    let loop_interval_override = if matches!(
+        loop_interval_override.trim().to_ascii_lowercase().as_str(),
+        "" | "none" | "default" | "automatic"
+    ) {
+        None
+    } else {
+        Some(loop_interval_override)
+    };
+
+    NativeRuntimeLoopConfig {
+        symbol: first_config_string(config, "symbols", "BTCUSDT").to_ascii_uppercase(),
+        interval: first_config_string(config, "intervals", "1m"),
+        position_mode: if position_mode.to_ascii_lowercase().contains("one") {
+            "One-way".to_owned()
+        } else {
+            "Hedge".to_owned()
+        },
+        margin_mode: if margin_mode.to_ascii_lowercase().contains("cross") {
+            "CROSSED".to_owned()
+        } else {
+            "ISOLATED".to_owned()
+        },
+        leverage: config_i64(config, "leverage", 5).clamp(1, 125),
+        multi_assets_mode: assets_mode.to_ascii_lowercase().contains("multi"),
+        loop_interval_override,
+        ..NativeRuntimeLoopConfig::default()
+    }
+}
+
+fn format_active_duration(started_at_ms: Option<i64>, now_ms: i64, running: bool) -> String {
+    if !running {
+        return "--".to_owned();
+    }
+    let elapsed_seconds = started_at_ms
+        .map(|started_at_ms| now_ms.saturating_sub(started_at_ms).max(0) / 1_000)
+        .unwrap_or(0);
+    let hours = elapsed_seconds / 3_600;
+    let minutes = (elapsed_seconds % 3_600) / 60;
+    let seconds = elapsed_seconds % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+fn native_runtime_snapshot(
+    managed: &mut NativeRuntimeManagedState,
+    now_ms: i64,
+    message: impl Into<String>,
+) -> NativeRuntimeControlResponse {
+    let trading_execution_supported = rust_trading_execution_supported();
+    let active_duration = format_active_duration(managed.started_at_ms, now_ms, managed.running);
+    let Some(runtime) = managed.runtime.as_mut() else {
+        return NativeRuntimeControlResponse {
+            ok: true,
+            execution_backend: "native-rust".to_owned(),
+            status: json!({
+                "runtime_active": false,
+                "active_duration": active_duration,
+                "active_time": active_duration,
+                "lifecycle_phase": "idle",
+                "paused": false,
+                "execution_owner": "native-rust-coordinator"
+            }),
+            lifecycle: json!({
+                "lifecycle_phase": "idle",
+                "is_alive": false,
+                "execution_owner": "native-rust-coordinator",
+                "native_trading_execution_enabled": trading_execution_supported
+            }),
+            stream: json!({}),
+            trading_execution_supported,
+            promotion_required: !trading_execution_supported,
+            message: message.into(),
+            error: String::new(),
+        };
+    };
+
+    let cycle = runtime.run_cycle(NativeRuntimeCycleInput {
+        now_ms,
+        stream_event: None,
+        stream_disconnected: false,
+    });
+    let mut lifecycle = cycle.lifecycle;
+    if let Some(object) = lifecycle.as_object_mut() {
+        object.insert(
+            "execution_owner".to_owned(),
+            Value::String("native-rust-coordinator".to_owned()),
+        );
+        object.insert(
+            "native_trading_execution_enabled".to_owned(),
+            Value::Bool(trading_execution_supported),
+        );
+    }
+    let lifecycle_phase = lifecycle
+        .get("lifecycle_phase")
+        .and_then(Value::as_str)
+        .unwrap_or(if managed.running { "running" } else { "idle" });
+    let stream = &cycle.stream;
+    let stream_payload = json!({
+        "connected": stream.connected,
+        "reconnect_attempts": stream.reconnect_attempts,
+        "last_event_time_ms": stream.last_event_time_ms,
+        "last_disconnect_time_ms": stream.last_disconnect_time_ms,
+        "kline_cache_health": {
+            "stale": stream.kline_cache_health.stale,
+            "reason": stream.kline_cache_health.reason,
+            "candle_count": stream.kline_cache_health.candle_count,
+            "latest_event_time_ms": stream.kline_cache_health.latest_event_time_ms,
+            "latest_closed_open_time_ms": stream.kline_cache_health.latest_closed_open_time_ms
+        },
+        "reconnect_decision": {
+            "should_reconnect": stream.reconnect_decision.should_reconnect,
+            "next_attempt": stream.reconnect_decision.next_attempt,
+            "delay_ms": stream.reconnect_decision.delay_ms,
+            "reason": stream.reconnect_decision.reason
+        }
+    });
+    NativeRuntimeControlResponse {
+        ok: true,
+        execution_backend: "native-rust".to_owned(),
+        status: json!({
+            "runtime_active": managed.running,
+            "active_duration": active_duration,
+            "active_time": active_duration,
+            "lifecycle_phase": lifecycle_phase,
+            "paused": managed.paused,
+            "signal_evaluation_allowed": cycle.signal_evaluation_allowed,
+            "execution_owner": "native-rust-coordinator",
+            "status_message": cycle.status_message
+        }),
+        lifecycle,
+        stream: stream_payload,
+        trading_execution_supported,
+        promotion_required: !trading_execution_supported,
+        message: message.into(),
+        error: String::new(),
+    }
 }
 
 impl Drop for ServiceProcessState {
@@ -702,6 +1060,41 @@ fn evaluate_native_runtime_preview(
 }
 
 #[tauri::command]
+fn start_native_runtime(
+    state: State<'_, NativeRuntimeState>,
+    config: Value,
+    now_ms: i64,
+) -> NativeRuntimeControlResponse {
+    state.start(&config, now_ms)
+}
+
+#[tauri::command]
+fn native_runtime_status(
+    state: State<'_, NativeRuntimeState>,
+    now_ms: i64,
+) -> NativeRuntimeControlResponse {
+    state.status(now_ms)
+}
+
+#[tauri::command]
+fn set_native_runtime_paused(
+    state: State<'_, NativeRuntimeState>,
+    paused: bool,
+    now_ms: i64,
+) -> NativeRuntimeControlResponse {
+    state.set_paused(paused, now_ms)
+}
+
+#[tauri::command]
+fn stop_native_runtime(
+    state: State<'_, NativeRuntimeState>,
+    close_positions: bool,
+    now_ms: i64,
+) -> NativeRuntimeControlResponse {
+    state.stop(close_positions, now_ms)
+}
+
+#[tauri::command]
 fn launch_desktop_language(app: AppHandle, language: String) -> DesktopLanguageLaunchResponse {
     let language = language.trim();
     let Some(repo_root) = find_repo_root(&app) else {
@@ -920,12 +1313,50 @@ fn stop_service_api(
     }
 }
 
+fn run_packaged_smoke() -> Result<String, String> {
+    if supported_frameworks() != ["Tauri"] {
+        return Err("the packaged Rust desktop shell catalog must contain only Tauri".to_owned());
+    }
+    let contract_hash = python_source_contract_hash();
+    if contract_hash.len() != 64 || !contract_hash.chars().all(|value| value.is_ascii_hexdigit()) {
+        return Err("the generated Python source contract hash is invalid".to_owned());
+    }
+    if !native_python_app_contract_parity_ready() {
+        return Err("the generated native source contract is incomplete".to_owned());
+    }
+    if rust_trading_execution_supported() {
+        return Err(
+            "native Rust trading must remain disabled until promotion evidence passes".to_owned(),
+        );
+    }
+
+    Ok(format!(
+        "Trading Bot Tauri packaged smoke passed (contract {contract_hash}, native trading disabled)."
+    ))
+}
+
 fn main() {
+    if env::args().any(|arg| arg == "--smoke") {
+        match run_packaged_smoke() {
+            Ok(message) => println!("{message}"),
+            Err(error) => {
+                eprintln!("Tauri packaged smoke failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     tauri::Builder::default()
         .manage(ServiceProcessState::default())
+        .manage(NativeRuntimeState::default())
         .invoke_handler(tauri::generate_handler![
             launch_desktop_language,
             evaluate_native_runtime_preview,
+            start_native_runtime,
+            native_runtime_status,
+            set_native_runtime_paused,
+            stop_native_runtime,
             service_api_request,
             service_process_status,
             start_service_api,
@@ -1007,5 +1438,65 @@ mod tests {
         assert!(!response.ok);
         assert!(!response.error.is_empty());
         assert!(!response.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_controller_tracks_lifecycle_without_retaining_credentials() {
+        let state = NativeRuntimeState::default();
+        let started = state.start(
+            &json!({
+                "symbols": ["ethusdt"],
+                "intervals": ["5m"],
+                "position_mode": "One-way",
+                "margin_mode": "Cross",
+                "assets_mode": "Multi-Assets Mode",
+                "leverage": 200,
+                "loop_interval_override": "15m",
+                "api_key": "must-not-appear",
+                "api_secret": "also-must-not-appear"
+            }),
+            1_700_000_000_000,
+        );
+
+        assert!(started.ok, "{}", started.error);
+        assert_eq!(started.status["runtime_active"], true);
+        assert_eq!(started.status["lifecycle_phase"], "running");
+        assert_eq!(started.lifecycle["symbol"], "ETHUSDT");
+        assert_eq!(started.lifecycle["interval"], "5m");
+        assert_eq!(
+            started.lifecycle["execution_owner"],
+            "native-rust-coordinator"
+        );
+        assert!(!started.trading_execution_supported);
+        assert!(started.promotion_required);
+
+        let paused = state.set_paused(true, 1_700_000_005_000);
+        assert!(paused.ok, "{}", paused.error);
+        assert_eq!(paused.status["runtime_active"], true);
+        assert_eq!(paused.status["paused"], true);
+        assert_eq!(paused.status["lifecycle_phase"], "paused");
+
+        let resumed = state.set_paused(false, 1_700_000_010_000);
+        assert!(resumed.ok, "{}", resumed.error);
+        assert_eq!(resumed.status["lifecycle_phase"], "running");
+
+        let stopped = state.stop(true, 1_700_000_015_000);
+        assert!(stopped.ok, "{}", stopped.error);
+        assert_eq!(stopped.status["runtime_active"], false);
+        assert_eq!(stopped.status["lifecycle_phase"], "idle");
+        assert!(stopped.message.contains("no live close"));
+
+        let serialized = serde_json::to_string(&started).expect("response should serialize");
+        assert!(!serialized.contains("must-not-appear"));
+        assert!(!serialized.contains("also-must-not-appear"));
+    }
+
+    #[test]
+    fn packaged_smoke_validates_contract_without_opening_a_window() {
+        let message =
+            run_packaged_smoke().expect("packaged smoke should pass while promotion is gated");
+        assert!(message.contains("Trading Bot Tauri packaged smoke passed"));
+        assert!(message.contains(python_source_contract_hash()));
+        assert!(message.contains("native trading disabled"));
     }
 }

@@ -1770,6 +1770,8 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
     setCentralWidget(central);
     auto *rootLayout = new QVBoxLayout(central);
     rootLayout->setContentsMargins(0, 0, 0, 0);
+    const bool boundedSmoke = qApp
+        && qApp->property("tradingBotBoundedSmoke").toBool();
 
     tabs_ = new QTabWidget(central);
     tabs_->setMovable(false);
@@ -1790,24 +1792,26 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
     wireSignals();
 
     // Warm up Chart/WebEngine once after startup to avoid first user click flicker.
-    QTimer::singleShot(0, this, [this, chartTab]() {
-        if (!tabs_ || !chartTab) {
-            return;
-        }
-        const int chartIdx = tabs_->indexOf(chartTab);
-        const int prevIdx = tabs_->currentIndex();
-        if (chartIdx < 0 || prevIdx < 0 || chartIdx == prevIdx) {
-            return;
-        }
-        {
-            QSignalBlocker blocker(tabs_);
-            tabs_->setCurrentIndex(chartIdx);
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-            tabs_->setCurrentIndex(prevIdx);
-        }
-        tabs_->update();
-        update();
-    });
+    if (!boundedSmoke) {
+        QTimer::singleShot(0, this, [this, chartTab]() {
+            if (!tabs_ || !chartTab) {
+                return;
+            }
+            const int chartIdx = tabs_->indexOf(chartTab);
+            const int prevIdx = tabs_->currentIndex();
+            if (chartIdx < 0 || prevIdx < 0 || chartIdx == prevIdx) {
+                return;
+            }
+            {
+                QSignalBlocker blocker(tabs_);
+                tabs_->setCurrentIndex(chartIdx);
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                tabs_->setCurrentIndex(prevIdx);
+            }
+            tabs_->update();
+            update();
+        });
+    }
 
     // Ensure the initial theme applies after all tabs/widgets exist.
     if (dashboardThemeCombo_) {
@@ -1816,9 +1820,11 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
     refreshPositionsSummaryLabels();
 
     // Align backtest symbol ordering/selection with Python logic (volume-sorted fetch at startup).
-    QTimer::singleShot(0, this, [this]() {
-        refreshBacktestSymbols();
-    });
+    if (!boundedSmoke) {
+        QTimer::singleShot(0, this, [this]() {
+            refreshBacktestSymbols();
+        });
+    }
 
     // Force first-frame paint; some Windows/Qt builds can stay white until the first manual resize.
     QTimer::singleShot(0, this, [this]() {

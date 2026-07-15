@@ -1,5 +1,6 @@
 #include "TradingBotWindow.h"
 
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -25,6 +26,8 @@ bool TradingBotWindow::openExternalUrl(const QString &url) {
 }
 
 QWidget *TradingBotWindow::createLiquidationWebPanel(const QString &title, const QString &url, const QString &note) {
+    const bool boundedSmoke = QCoreApplication::instance()
+        && QCoreApplication::instance()->property("tradingBotBoundedSmoke").toBool();
     auto *panel = new QWidget(this);
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(12, 12, 12, 12);
@@ -102,9 +105,11 @@ QWidget *TradingBotWindow::createLiquidationWebPanel(const QString &title, const
     });
     connect(reloadBtn, &QPushButton::clicked, webView, &QWebEngineView::reload);
 
-    QTimer::singleShot(0, this, [applyUrl]() {
-        applyUrl();
-    });
+    if (!boundedSmoke) {
+        QTimer::singleShot(0, this, [applyUrl]() {
+            applyUrl();
+        });
+    }
 #else
     auto *fallback = new QLabel(
         "Qt WebEngine is not available in this C++ build.\n"

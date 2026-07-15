@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --upgrade pip
-          python3 -m pip install pyinstaller
+          python3 -m pip install -r requirements.packaging.txt
           python3 -m pip install -r requirements.txt
 
       - name: Build Python binary
@@ -104,6 +104,17 @@ jobs:
           set -euo pipefail
           rm -rf release/Trading-Bot-C++
           cmake --install build/binance_cpp --config Release --prefix release/Trading-Bot-C++
+
+      - name: Smoke packaged native binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cpp_bin="release/Trading-Bot-C++/bin/Trading-Bot-C++"
+          if [[ ! -x "${cpp_bin}" ]]; then
+            echo "Packaged C++ executable not found or not executable at ${cpp_bin}" >&2
+            exit 1
+          fi
+          QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke
 
       - name: Package release assets
         shell: bash

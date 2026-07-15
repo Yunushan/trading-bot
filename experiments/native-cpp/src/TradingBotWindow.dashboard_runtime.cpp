@@ -1,6 +1,8 @@
 ﻿#include "TradingBotWindow.h"
 #include "TradingBotWindowSupport.h"
 #include "BinanceWsClient.h"
+#include "NativeIndicatorRuntime.h"
+#include "NativeStrategyRuntime.h"
 #include "TradingBotWindow.dashboard_runtime_internal.h"
 #include "TradingBotWindow.dashboard_runtime_shared.h"
 
@@ -12,6 +14,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
@@ -27,11 +30,133 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 
 using namespace TradingBotWindowDashboardRuntime;
 using namespace TradingBotWindowDashboardRuntimeDetail;
 using ConnectorRuntimeConfig = TradingBotWindowSupport::ConnectorRuntimeConfig;
+
+namespace {
+
+QVector<NativeIndicatorRuntime::Candle> toNativeIndicatorCandles(
+    const QVector<BinanceRestClient::KlineCandle> &candles
+) {
+    QVector<NativeIndicatorRuntime::Candle> result;
+    result.reserve(candles.size());
+    for (const BinanceRestClient::KlineCandle &candle : candles) {
+        result.push_back({
+            candle.open,
+            candle.high,
+            candle.low,
+            candle.close,
+            candle.volume,
+        });
+    }
+    return result;
+}
+
+NativeIndicatorRuntime::ConfigMap nativeIndicatorConfigsForKeys(
+    const QSet<QString> &indicatorKeys,
+    const QMap<QString, QVariantMap> &indicatorParams
+) {
+    NativeIndicatorRuntime::ConfigMap configs;
+    for (const QString &key : indicatorKeys) {
+        QJsonObject config = QJsonObject::fromVariantMap(indicatorParams.value(key));
+        config.insert(QStringLiteral("enabled"), true);
+        configs.insert(key, config);
+    }
+    return configs;
+}
+
+std::optional<double> optionalIndicatorThreshold(
+    const QVariantMap &config,
+    const QString &key
+) {
+    if (!config.contains(key) || config.value(key).isNull()) {
+        return std::nullopt;
+    }
+    bool ok = false;
+    const double value = config.value(key).toDouble(&ok);
+    return ok && std::isfinite(value) ? std::optional<double>(value) : std::nullopt;
+}
+
+NativeStrategyRuntime::StrategySignalInput nativeSignalInput(
+    const QVector<NativeIndicatorRuntime::Candle> &candles,
+    const NativeIndicatorRuntime::ConfigMap &configs,
+    const QMap<QString, QVariantMap> &indicatorParams,
+    const QString &side
+) {
+    NativeStrategyRuntime::StrategySignalInput input;
+    input.side = side;
+    // Closed-candle mode removes the incomplete candle before this conversion.
+    input.useLiveValues = true;
+    input.indicators = NativeIndicatorRuntime::computeConfiguredSeries(candles, configs);
+    input.closes.reserve(candles.size());
+    for (const NativeIndicatorRuntime::Candle &candle : candles) {
+        input.closes.push_back(candle.close);
+    }
+    for (auto iterator = configs.cbegin(); iterator != configs.cend(); ++iterator) {
+        const QVariantMap config = indicatorParams.value(iterator.key());
+        input.rules.insert(iterator.key(), NativeStrategyRuntime::IndicatorRule{
+            true,
+            optionalIndicatorThreshold(config, QStringLiteral("buy_value")),
+            optionalIndicatorThreshold(config, QStringLiteral("sell_value")),
+        });
+    }
+    return input;
+}
+
+QString signalSideForAllowedDirections(bool allowLong, bool allowShort) {
+    if (allowLong && allowShort) {
+        return QStringLiteral("BOTH");
+    }
+    return allowLong ? QStringLiteral("BUY") : QStringLiteral("SELL");
+}
+
+QString firstDecisionSource(const QJsonObject &decision) {
+    const QJsonArray sources = decision.value(QStringLiteral("trigger_sources")).toArray();
+    return sources.isEmpty() ? QStringLiteral("generic") : sources.first().toString();
+}
+
+QString primaryOutputKey(const QString &indicatorKey) {
+    static const QMap<QString, QString> outputOverrides = {
+        {QStringLiteral("bb"), QStringLiteral("bb_mid")},
+        {QStringLiteral("keltner"), QStringLiteral("keltner_mid")},
+        {QStringLiteral("stoch_rsi"), QStringLiteral("stoch_rsi_k")},
+        {QStringLiteral("macd"), QStringLiteral("macd_line")},
+        {QStringLiteral("stochastic"), QStringLiteral("stochastic_k")},
+    };
+    return outputOverrides.value(indicatorKey, indicatorKey);
+}
+
+QString formatNativeIndicatorSummary(
+    const NativeIndicatorRuntime::SeriesMap &series,
+    const QSet<QString> &indicatorKeys
+) {
+    QStringList parts;
+    QStringList sortedKeys = indicatorKeys.values();
+    sortedKeys.sort();
+    for (const QString &indicatorKey : sortedKeys) {
+        const NativeIndicatorRuntime::Series values = series.value(primaryOutputKey(indicatorKey));
+        auto iterator = values.crbegin();
+        while (iterator != values.crend() && !std::isfinite(*iterator)) {
+            ++iterator;
+        }
+        if (iterator == values.crend()) {
+            continue;
+        }
+        parts.push_back(
+            QStringLiteral("%1 %2")
+                .arg(indicatorKey.toUpper(), QString::number(*iterator, 'f', 2)));
+        if (parts.size() >= 8) {
+            break;
+        }
+    }
+    return parts.isEmpty() ? QStringLiteral("-") : parts.join(QStringLiteral(" | "));
+}
+
+} // namespace
 
 void TradingBotWindow::refreshDashboardOpenPositionIndicatorValuesForSignalKey(
     const QString &signalKey,
@@ -45,7 +170,6 @@ void TradingBotWindow::refreshDashboardOpenPositionIndicatorValuesForSignalKey(
         return;
     }
 
-    const IndicatorRuntimeSettings indicatorSettings = buildIndicatorRuntimeSettings(dashboardIndicatorParams_);
     bool positionsTableMutated = false;
     for (auto it = dashboardRuntimeOpenPositions_.cbegin(); it != dashboardRuntimeOpenPositions_.cend(); ++it) {
         const QString runtimeKey = it.key();
@@ -65,33 +189,22 @@ void TradingBotWindow::refreshDashboardOpenPositionIndicatorValuesForSignalKey(
         }
 
         const QString sourceKey = normalizedIndicatorKey(openPos.signalSource);
-        IndicatorRuntimeValues displayValues;
-        displayValues.useRsi = (sourceKey == QStringLiteral("rsi"));
-        displayValues.useStochRsi = (sourceKey == QStringLiteral("stoch_rsi"));
-        displayValues.useWillr = (sourceKey == QStringLiteral("willr"));
+        QSet<QString> displayIndicatorKeys;
         if (sourceKey == QStringLiteral("generic")) {
-            displayValues.useRsi = true;
-            displayValues.useStochRsi = true;
-            displayValues.useWillr = true;
+            displayIndicatorKeys = {
+                QStringLiteral("rsi"),
+                QStringLiteral("stoch_rsi"),
+                QStringLiteral("willr"),
+            };
+        } else if (!sourceKey.isEmpty()) {
+            displayIndicatorKeys.insert(sourceKey);
         }
-
-        if (displayValues.useRsi) {
-            displayValues.rsi = latestRsiValue(marketCandles, indicatorSettings.rsiLength, &displayValues.rsiOk);
-        }
-        if (displayValues.useStochRsi) {
-            displayValues.stochRsi = latestStochRsiValue(
-                marketCandles,
-                indicatorSettings.stochLength,
-                indicatorSettings.stochSmoothK,
-                indicatorSettings.stochSmoothD,
-                &displayValues.stochRsiOk);
-        }
-        if (displayValues.useWillr) {
-            displayValues.willr = latestWilliamsRValue(
-                marketCandles,
-                indicatorSettings.willrLength,
-                &displayValues.willrOk);
-        }
+        const NativeIndicatorRuntime::ConfigMap displayConfigs =
+            nativeIndicatorConfigsForKeys(displayIndicatorKeys, dashboardIndicatorParams_);
+        const NativeIndicatorRuntime::SeriesMap displaySeries =
+            NativeIndicatorRuntime::computeConfiguredSeries(
+                toNativeIndicatorCandles(marketCandles),
+                displayConfigs);
 
         const int targetRow = findOpenPositionRow(positionsTable_, symbol, openPos.interval, openPos.connectorKey);
         if (targetRow < 0) {
@@ -102,7 +215,7 @@ void TradingBotWindow::refreshDashboardOpenPositionIndicatorValuesForSignalKey(
             positionsTable_,
             positionsCumulativeView_,
             targetRow,
-            formatIndicatorValueSummaryForSource(displayValues, openPos.signalSource));
+            formatNativeIndicatorSummary(displaySeries, displayIndicatorKeys));
         positionsTableMutated = true;
     }
 
@@ -176,8 +289,6 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         ? dashboardConnectorCombo_->currentText().trimmed()
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
     const ConnectorRuntimeConfig defaultConnectorCfg = TradingBotWindowSupport::resolveConnectorConfig(defaultConnectorText, futures);
-    const IndicatorRuntimeSettings indicatorSettings = buildIndicatorRuntimeSettings(dashboardIndicatorParams_);
-
     double availableUsdt = currentDashboardPaperBalanceUsdt();
     const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
     const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
@@ -660,10 +771,23 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 indicatorKeys.insert(runtimeIndicatorKey);
             }
         }
-        const bool useRsi = indicatorKeys.contains(QStringLiteral("rsi"));
-        const bool useStochRsi = indicatorKeys.contains(QStringLiteral("stoch_rsi"));
-        const bool useWillr = indicatorKeys.contains(QStringLiteral("willr"));
-        if (!useRsi && !useStochRsi && !useWillr) {
+        if (indicatorKeys.isEmpty()) {
+            continue;
+        }
+        const NativeIndicatorRuntime::ConfigMap nativeConfigs =
+            nativeIndicatorConfigsForKeys(indicatorKeys, dashboardIndicatorParams_);
+        const QStringList unsupportedIndicatorKeys =
+            NativeIndicatorRuntime::unsupportedEnabledIndicatorKeys(nativeConfigs);
+        if (!unsupportedIndicatorKeys.isEmpty()) {
+            const QString warningKey = QStringLiteral("unsupported-indicators|%1")
+                                           .arg(unsupportedIndicatorKeys.join(QLatin1Char(',')));
+            if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+                dashboardRuntimeConnectorWarnings_.insert(warningKey);
+                appendDashboardAllLog(
+                    QStringLiteral("Native C++ runtime skipped unsupported indicators: %1")
+                        .arg(unsupportedIndicatorKeys.join(QStringLiteral(", "))));
+            }
+            touchWaitingEntry(key, nowMs);
             continue;
         }
 
@@ -753,50 +877,23 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             continue;
         }
 
-        const auto buildIndicatorRuntimeValues =
-            [useRsi, useStochRsi, useWillr, &indicatorSettings](
-                const QVector<BinanceRestClient::KlineCandle> &candles) -> IndicatorRuntimeValues {
-            bool rsiOk = false;
-            double rsi = 0.0;
-            if (useRsi) {
-                rsi = latestRsiValue(candles, indicatorSettings.rsiLength, &rsiOk);
-            }
-
-            bool stochRsiOk = false;
-            double stochRsi = 0.0;
-            if (useStochRsi) {
-                stochRsi = latestStochRsiValue(
-                    candles,
-                    indicatorSettings.stochLength,
-                    indicatorSettings.stochSmoothK,
-                    indicatorSettings.stochSmoothD,
-                    &stochRsiOk);
-            }
-
-            bool willrOk = false;
-            double willr = 0.0;
-            if (useWillr) {
-                willr = latestWilliamsRValue(candles, indicatorSettings.willrLength, &willrOk);
-            }
-
-            return IndicatorRuntimeValues{
-                useRsi,
-                useStochRsi,
-                useWillr,
-                rsiOk,
-                stochRsiOk,
-                willrOk,
-                rsi,
-                stochRsi,
-                willr,
-            };
-        };
-        const IndicatorRuntimeValues indicatorValues = buildIndicatorRuntimeValues(signalCandles);
-        const IndicatorRuntimeValues displayIndicatorValues =
-            (signalCandles.size() == marketCandles.size())
-            ? indicatorValues
-            : buildIndicatorRuntimeValues(marketCandles);
-        const QString indicatorValueSummary = formatIndicatorValueSummary(indicatorValues);
+        const QVector<NativeIndicatorRuntime::Candle> nativeSignalCandles =
+            toNativeIndicatorCandles(signalCandles);
+        const NativeStrategyRuntime::StrategySignalInput fullSignalInput = nativeSignalInput(
+            nativeSignalCandles,
+            nativeConfigs,
+            dashboardIndicatorParams_,
+            QStringLiteral("BOTH"));
+        const NativeIndicatorRuntime::SeriesMap displayIndicatorSeries =
+            signalCandles.size() == marketCandles.size()
+            ? fullSignalInput.indicators
+            : NativeIndicatorRuntime::computeConfiguredSeries(
+                  toNativeIndicatorCandles(marketCandles),
+                  nativeConfigs);
+        const QString indicatorValueSummary =
+            formatNativeIndicatorSummary(fullSignalInput.indicators, indicatorKeys);
+        const QString displayIndicatorValueSummary =
+            formatNativeIndicatorSummary(displayIndicatorSeries, indicatorKeys);
         if (openIt != dashboardRuntimeOpenPositions_.end() && !evaluationDue) {
             if (positionsTable_) {
                 RuntimePosition &openPos = openIt.value();
@@ -854,7 +951,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                         targetRow,
                         PositionTableActiveRowData{
                             symbol,
-                            formatIndicatorValueSummaryForSource(displayIndicatorValues, openPos.signalSource),
+                            displayIndicatorValueSummary,
                             displaySizeUsdt,
                             displayQty,
                             markPrice,
@@ -888,16 +985,25 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         leverage = std::max(1.0, leverage);
 
         if (openIt == dashboardRuntimeOpenPositions_.end()) {
-            const OpenSignalDecision openSignal = determineOpenSignal(
-                indicatorValues,
-                indicatorSettings,
-                allowLong,
-                allowShort);
+            NativeStrategyRuntime::StrategySignalInput openSignalInput = fullSignalInput;
+            openSignalInput.side = signalSideForAllowedDirections(allowLong, allowShort);
+            const QJsonObject nativeOpenDecision =
+                NativeStrategyRuntime::buildSignalDecision(openSignalInput);
+            OpenSignalDecision openSignal;
+            const QString nativeSignal =
+                nativeOpenDecision.value(QStringLiteral("signal")).toString().toUpper();
+            if (nativeSignal == QStringLiteral("BUY")) {
+                openSignal.side = QStringLiteral("LONG");
+            } else if (nativeSignal == QStringLiteral("SELL")) {
+                openSignal.side = QStringLiteral("SHORT");
+            }
+            openSignal.triggerText =
+                nativeOpenDecision.value(QStringLiteral("description")).toString();
+            openSignal.triggerSource = firstDecisionSource(nativeOpenDecision);
             const QString openSide = openSignal.side;
             const QString triggerText = openSignal.triggerText;
             const QString triggerSource = openSignal.triggerSource;
-            const QString rowIndicatorValueSummary =
-                formatIndicatorValueSummaryForSource(displayIndicatorValues, triggerSource);
+            const QString rowIndicatorValueSummary = displayIndicatorValueSummary;
 
             if (!openSignal.hasSignal()) {
                 // "No trigger yet" is a normal monitoring state, not a pending queue item.
@@ -1158,18 +1264,23 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
 
         RuntimePosition &openPos = openIt.value();
         const QString signalSource = openPos.signalSource.trimmed().toLower();
-        const bool shouldCloseLong = (openPos.side == "LONG")
-            && TradingBotWindowDashboardRuntimeDetail::shouldCloseBySource(
-                signalSource,
-                true,
-                indicatorValues,
-                indicatorSettings);
-        const bool shouldCloseShort = (openPos.side == "SHORT")
-            && TradingBotWindowDashboardRuntimeDetail::shouldCloseBySource(
-                signalSource,
-                false,
-                indicatorValues,
-                indicatorSettings);
+        NativeStrategyRuntime::StrategySignalInput closeSignalInput = fullSignalInput;
+        if (!signalSource.isEmpty() && signalSource != QStringLiteral("generic")) {
+            for (auto iterator = closeSignalInput.rules.begin(); iterator != closeSignalInput.rules.end(); ++iterator) {
+                iterator.value().enabled = iterator.key() == signalSource;
+            }
+        }
+        closeSignalInput.side = openPos.side == QStringLiteral("LONG")
+            ? QStringLiteral("SELL")
+            : QStringLiteral("BUY");
+        const QJsonObject nativeCloseDecision =
+            NativeStrategyRuntime::buildSignalDecision(closeSignalInput);
+        const QString nativeCloseSignal =
+            nativeCloseDecision.value(QStringLiteral("signal")).toString().toUpper();
+        const bool shouldCloseLong = openPos.side == QStringLiteral("LONG")
+            && nativeCloseSignal == QStringLiteral("SELL");
+        const bool shouldCloseShort = openPos.side == QStringLiteral("SHORT")
+            && nativeCloseSignal == QStringLiteral("BUY");
         const auto *liveSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
         const auto *livePos = pickLivePosition(liveSnapshot, symbol, openPos.side);
         if ((!qIsFinite(openPos.quantity) || openPos.quantity <= 1e-10)
@@ -1221,7 +1332,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 targetRow,
                 PositionTableActiveRowData{
                     symbol,
-                    formatIndicatorValueSummaryForSource(displayIndicatorValues, openPos.signalSource),
+                    displayIndicatorValueSummary,
                     displaySizeUsdt,
                     displayQty,
                     markPrice,

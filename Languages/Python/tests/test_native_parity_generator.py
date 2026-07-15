@@ -32,6 +32,11 @@ class NativeParityGeneratorTests(unittest.TestCase):
         payload = payload_line.split(" = ", 1)[1].removesuffix(";")
         self.assertIn("expected", json.loads(json.loads(payload)))
 
+        cpp_fixture = generator.CPP_INDICATOR_REFERENCE_OUTPUT.read_text(encoding="utf-8")
+        self.assertEqual(generator.render_cpp_indicator_reference_header(), cpp_fixture)
+        self.assertIn("kPythonSourceContractHash", cpp_fixture)
+        self.assertIn("kReferenceJson", cpp_fixture)
+
 
 if __name__ == "__main__":
     unittest.main()

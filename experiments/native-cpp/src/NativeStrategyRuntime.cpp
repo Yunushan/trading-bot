@@ -269,23 +269,20 @@ void thresholdExisting(
         cfg.buyValue.has_value() ? cfg.buyValue : defaultBuy;
     const std::optional<double> sell =
         cfg.sellValue.has_value() ? cfg.sellValue : defaultSell;
-    if (!buy.has_value() || !sell.has_value()) {
-        return;
-    }
     const int decimals = decimalsFor(pattern);
     const bool buyGe = compare == Compare::BuyGeSellLe || compare == Compare::BuyGeSellLeDefaults;
     if (buyGe) {
-        if (buyAllowed && value >= *buy) {
+        if (buy.has_value() && buyAllowed && value >= *buy) {
             addAction(key, QStringLiteral("BUY"), QStringLiteral("%1 >= %2 -> BUY").arg(label, fixed(*buy, decimals)),
                       signal, descriptions, sources, actions);
-        } else if (sellAllowed && value <= *sell) {
+        } else if (sell.has_value() && sellAllowed && value <= *sell) {
             addAction(key, QStringLiteral("SELL"), QStringLiteral("%1 <= %2 -> SELL").arg(label, fixed(*sell, decimals)),
                       signal, descriptions, sources, actions);
         }
-    } else if (buyAllowed && value <= *buy) {
+    } else if (buy.has_value() && buyAllowed && value <= *buy) {
         addAction(key, QStringLiteral("BUY"), QStringLiteral("%1 <= %2 -> BUY").arg(label, fixed(*buy, decimals)),
                   signal, descriptions, sources, actions);
-    } else if (sellAllowed && value >= *sell) {
+    } else if (sell.has_value() && sellAllowed && value >= *sell) {
         addAction(key, QStringLiteral("SELL"), QStringLiteral("%1 >= %2 -> SELL").arg(label, fixed(*sell, decimals)),
                   signal, descriptions, sources, actions);
     }
@@ -631,6 +628,63 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
             }
         }
     }
+    if (enabled(input, QStringLiteral("stoch_rsi"))) {
+        if (const auto values = indicatorValues(input, QStringLiteral("stoch_rsi_k"))) {
+            const double previous = std::get<0>(*values);
+            const double live = std::get<1>(*values);
+            const double selected = std::get<2>(*values);
+            descriptions.append(
+                QStringLiteral("StochRSI %K=%1 (prev=%2, live=%3)")
+                    .arg(fixed(selected, 2), fixed(previous, 2), fixed(live, 2)));
+            thresholdExisting(
+                input,
+                QStringLiteral("stoch_rsi"),
+                QStringLiteral("StochRSI %K"),
+                QStringLiteral("{:.2}"),
+                selected,
+                Compare::BuyLeSellGeDefaults,
+                20.0,
+                80.0,
+                buyAllowed,
+                sellAllowed,
+                signal,
+                descriptions,
+                sources,
+                actions);
+        }
+    }
+    if (enabled(input, QStringLiteral("willr"))) {
+        if (const auto values = indicatorValues(input, QStringLiteral("willr"))) {
+            const double previous = std::get<0>(*values);
+            const double live = std::get<1>(*values);
+            const double selected = std::get<2>(*values);
+            descriptions.append(
+                QStringLiteral("Williams %R(prev=%1, live=%2) -> using %3")
+                    .arg(fixed(previous, 2), fixed(live, 2), fixed(selected, 2)));
+            const auto cfg = rule(input, QStringLiteral("willr"));
+            const double buyUpper = std::clamp(cfg.buyValue.value_or(-80.0), -100.0, 0.0);
+            const double sellLower = std::clamp(cfg.sellValue.value_or(-20.0), -100.0, 0.0);
+            if (buyAllowed && selected >= -100.0 && selected <= buyUpper) {
+                addAction(
+                    QStringLiteral("willr"),
+                    QStringLiteral("BUY"),
+                    QStringLiteral("Williams %R in [-100.00, %1] -> BUY").arg(fixed(buyUpper, 2)),
+                    signal,
+                    descriptions,
+                    sources,
+                    actions);
+            } else if (sellAllowed && selected >= sellLower && selected <= 0.0) {
+                addAction(
+                    QStringLiteral("willr"),
+                    QStringLiteral("SELL"),
+                    QStringLiteral("Williams %R in [%1, 0.00] -> SELL").arg(fixed(sellLower, 2)),
+                    signal,
+                    descriptions,
+                    sources,
+                    actions);
+            }
+        }
+    }
     threshold(input, QStringLiteral("natr"), QStringLiteral("NATR"), QStringLiteral("{:.4}"), Compare::BuyGeSellLe, std::nullopt, std::nullopt, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
     threshold(input, QStringLiteral("rvol"), QStringLiteral("RVOL"), QStringLiteral("{:.4}"), Compare::BuyGeSellLe, std::nullopt, std::nullopt, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
     threshold(input, QStringLiteral("cci"), QStringLiteral("CCI"), QStringLiteral("{:.2}"), Compare::BuyLeSellGeDefaults, -100.0, 100.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
@@ -688,6 +742,9 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
             const double value = std::get<2>(*values);
             const QString flow = value > 0.0 ? QStringLiteral("accumulation") : value < 0.0 ? QStringLiteral("distribution") : QStringLiteral("neutral");
             descriptions.append(QStringLiteral("CMF=%1 (prev=%2, live=%3, %4)").arg(fixed(value, 4), fixed(std::get<0>(*values), 4), fixed(std::get<1>(*values), 4), flow));
+            thresholdExisting(input, QStringLiteral("cmf"), QStringLiteral("CMF"), QStringLiteral("{:.4}"), value,
+                              Compare::BuyGeSellLe, std::nullopt, std::nullopt,
+                              buyAllowed, sellAllowed, signal, descriptions, sources, actions);
         }
     }
     if (enabled(input, QStringLiteral("obv"))) {
@@ -696,6 +753,9 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
             const double live = std::get<1>(*values);
             const QString trend = live > prev ? QStringLiteral("rising") : live < prev ? QStringLiteral("falling") : QStringLiteral("flat");
             descriptions.append(QStringLiteral("OBV=%1 (prev=%2, live=%3, %4)").arg(fixed(std::get<2>(*values), 2), fixed(prev, 2), fixed(live, 2), trend));
+            thresholdExisting(input, QStringLiteral("obv"), QStringLiteral("OBV"), QStringLiteral("{:.2}"), std::get<2>(*values),
+                              Compare::BuyGeSellLe, std::nullopt, std::nullopt,
+                              buyAllowed, sellAllowed, signal, descriptions, sources, actions);
         }
     }
     if (enabled(input, QStringLiteral("keltner"))) {
@@ -722,6 +782,9 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
             }
             descriptions.append(QStringLiteral("IC_tenkan=%1,IC_kijun=%2,IC_span_a=%3,IC_span_b=%4,spread=%5,close %6")
                                     .arg(fixed(*tenkan, 8), fixed(*kijun, 8), fixed(spanA, 8), fixed(spanB, 8), fixed(spread, 8), cloud));
+            thresholdExisting(input, QStringLiteral("ichimoku"), QStringLiteral("IC spread"), QStringLiteral("{:.2}"), spread,
+                              Compare::BuyGeSellLe, std::nullopt, std::nullopt,
+                              buyAllowed, sellAllowed, signal, descriptions, sources, actions);
         }
     }
     if (enabled(input, QStringLiteral("ma"))) {
@@ -906,8 +969,9 @@ QJsonObject buildWorkerLifecycleSnapshot(const StrategyWorkerLifecycleInput &inp
         {QStringLiteral("emergency_close_triggered"), input.emergencyCloseTriggered},
         {QStringLiteral("loop_interval_seconds"), seconds},
         {QStringLiteral("phase_span_seconds"), std::max(2.0, std::min(seconds * 0.35, 10.0))},
-        {QStringLiteral("execution_owner"), QStringLiteral("python-service")},
-        {QStringLiteral("native_trading_execution_enabled"), false},
+        {QStringLiteral("execution_owner"), QStringLiteral("native-cpp")},
+        {QStringLiteral("native_trading_execution_enabled"), true},
+        {QStringLiteral("native_trading_execution_scope"), QStringLiteral("binance-usds-futures")},
     };
 }
 

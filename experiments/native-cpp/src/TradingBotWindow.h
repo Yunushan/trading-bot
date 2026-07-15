@@ -3,11 +3,15 @@
 #include "BinanceRestClient.h"
 
 #include <QMainWindow>
+#include <QFutureWatcher>
+#include <QJsonObject>
 #include <QList>
 #include <QMap>
 #include <QSet>
 #include <QVariantMap>
+#include <atomic>
 #include <chrono>
+#include <memory>
 
 class QListWidget;
 class QLabel;
@@ -71,6 +75,8 @@ private:
     void removeSelectedBacktestSymbolIntervalPairs();
     void clearBacktestSymbolIntervalPairs();
     void refreshBacktestSymbolIntervalTable();
+    void startBacktest(bool optimizerRequested);
+    void setBacktestRunningUi(bool running);
     void startDashboardRuntime();
     void stopDashboardRuntime();
     void runDashboardRuntimeCycle();
@@ -153,6 +159,7 @@ private:
     QComboBox *backtestPositionModeCombo_;
     QComboBox *backtestAssetsModeCombo_;
     QComboBox *backtestAccountModeCombo_;
+    QComboBox *backtestExecutionBackendCombo_ = nullptr;
     QComboBox *backtestScanScopeCombo_;
     QSpinBox *backtestScanTopNSpin_;
     QDoubleSpinBox *backtestScanMddSpin_;
@@ -160,6 +167,9 @@ private:
     QComboBox *backtestOptimizerMetricCombo_;
     QSpinBox *backtestOptimizerComboSizeSpin_;
     QSpinBox *backtestOptimizerMinTradesSpin_;
+    QFutureWatcher<QJsonObject> *backtestFutureWatcher_ = nullptr;
+    std::shared_ptr<std::atomic_bool> backtestStopFlag_;
+    bool backtestServiceRunActive_ = false;
     QMap<QString, QCheckBox *> backtestIndicatorChecks_;
     QTableWidget *resultsTable_;
     QTimer *botTimer_;

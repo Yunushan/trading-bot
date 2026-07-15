@@ -38,7 +38,8 @@ def _format_quantity_for_order(value: float, step: float | None = None) -> str:
         quant = Decimal(str(value))
         if step and float(step) > 0:
             step_dec = Decimal(str(step))
-            quant = quant.quantize(step_dec, rounding=ROUND_DOWN)
+            units = (quant / step_dec).to_integral_value(rounding=ROUND_DOWN)
+            quant = units * step_dec
         quant = quant.normalize()
         text_value = format(quant, "f")
         text_value = text_value.rstrip("0").rstrip(".") if "." in text_value else text_value

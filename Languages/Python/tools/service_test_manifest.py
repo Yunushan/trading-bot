@@ -42,6 +42,10 @@ SERVICE_TESTS = (
         "tests.test_service_background_host_integration",
         "embedded background host and background-hosted backtest API flows",
     ),
+    ServiceTestEntry(
+        "tests.test_service_product_main",
+        "canonical service CLI commands, remote requests, validation, and error boundaries",
+    ),
 )
 
 SERVICE_TEST_MODULES = tuple(entry.module for entry in SERVICE_TESTS)

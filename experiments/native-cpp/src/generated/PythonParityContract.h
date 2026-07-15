@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "4b49f21a5fa13384e71765def83a2e09404a1685c430d85c611770898b48f128";
+inline constexpr std::string_view kPythonSourceContractHash = "05238a173d786f3902fc30708294757d8ea1d7662e973a80c4b1b96930a39830";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -267,43 +267,44 @@ struct PythonIndicator {
     std::string_view displayName;
     bool defaultEnabled;
     std::string_view runtimeConfigJson;
+    std::string_view backtestConfigJson;
     std::string_view runtimeOutputKeysCsv;
 };
 
 inline constexpr std::array<PythonIndicator, 33> kPythonIndicatorCatalog = {
-    PythonIndicator{"ma", "Moving Average (MA)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"type\":\"SMA\"}", "ma"},
-    PythonIndicator{"donchian", "Donchian Channels (DC)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "donchian_high,donchian_low,donchian"},
-    PythonIndicator{"psar", "Parabolic SAR (PSAR)", false, "{\"af\":0.02,\"buy_value\":null,\"enabled\":false,\"max_af\":0.2,\"sell_value\":null}", "psar"},
-    PythonIndicator{"bb", "Bollinger Bands (BB)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2}", "bb_upper,bb_mid,bb_lower"},
-    PythonIndicator{"bbw", "Bollinger Band Width (BBW)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2}", "bbw"},
-    PythonIndicator{"keltner", "Keltner Channels (KC)", false, "{\"atr_length\":10,\"buy_value\":null,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":null}", "keltner_upper,keltner_mid,keltner_lower"},
-    PythonIndicator{"ichimoku", "Ichimoku Cloud (IC)", false, "{\"base_length\":26,\"buy_value\":null,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":null,\"span_b_length\":52}", "ichimoku_tenkan,ichimoku_kijun,ichimoku_span_a,ichimoku_span_b,ichimoku_chikou,ichimoku"},
-    PythonIndicator{"rsi", "Relative Strength Index (RSI)", true, "{\"buy_value\":null,\"enabled\":true,\"length\":14,\"sell_value\":null}", "rsi"},
-    PythonIndicator{"volume", "Volume", false, "{\"buy_value\":null,\"enabled\":false,\"sell_value\":null}", "volume"},
-    PythonIndicator{"obv", "On-Balance Volume (OBV)", false, "{\"buy_value\":null,\"enabled\":false,\"sell_value\":null}", "obv"},
-    PythonIndicator{"rvol", "Relative Volume (RVOL)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "rvol"},
-    PythonIndicator{"cmf", "Chaikin Money Flow (CMF)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "cmf"},
-    PythonIndicator{"cci", "Commodity Channel Index (CCI)", false, "{\"buy_value\":null,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":null}", "cci"},
-    PythonIndicator{"roc", "Rate of Change (ROC)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":12,\"sell_value\":null}", "roc"},
-    PythonIndicator{"trix", "Triple Exponential Average (TRIX)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":15,\"sell_value\":null}", "trix"},
-    PythonIndicator{"ppo", "Percentage Price Oscillator (PPO)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26}", "ppo,ppo_signal,ppo_hist"},
-    PythonIndicator{"ao", "Awesome Oscillator (AO)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":5,\"sell_value\":null,\"slow\":34}", "ao"},
-    PythonIndicator{"kst", "Know Sure Thing (KST)", false, "{\"buy_value\":null,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":null,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15}", "kst,kst_signal,kst_hist"},
-    PythonIndicator{"aroon", "Aroon Oscillator (AROON)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":25,\"sell_value\":null}", "aroon_up,aroon_down,aroon"},
-    PythonIndicator{"chop", "Choppiness Index (CHOP)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "chop"},
-    PythonIndicator{"atr", "Average True Range (ATR)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "atr"},
-    PythonIndicator{"natr", "Normalized Average True Range (NATR)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "natr"},
-    PythonIndicator{"vwap", "Volume Weighted Average Price (VWAP)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "vwap"},
-    PythonIndicator{"mfi", "Money Flow Index (MFI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "mfi"},
-    PythonIndicator{"stoch_rsi", "Stochastic RSI (SRSI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3}", "stoch_rsi,stoch_rsi_k,stoch_rsi_d"},
-    PythonIndicator{"willr", "Williams %R", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "willr"},
-    PythonIndicator{"macd", "Moving Average Convergence/Divergence (MACD)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26}", "macd_line,macd_signal"},
-    PythonIndicator{"uo", "Ultimate Oscillator (UO)", false, "{\"buy_value\":null,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":null,\"short\":7}", "uo"},
-    PythonIndicator{"adx", "Average Directional Index (ADX)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "adx"},
-    PythonIndicator{"dmi", "Directional Movement Index (DMI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "dmi_plus,dmi_minus,dmi"},
-    PythonIndicator{"supertrend", "SuperTrend (ST)", false, "{\"atr_period\":10,\"buy_value\":null,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":null}", "supertrend"},
-    PythonIndicator{"ema", "Exponential Moving Average (EMA)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "ema"},
-    PythonIndicator{"stochastic", "Stochastic Oscillator", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3}", "stochastic,stochastic_k,stochastic_d"},
+    PythonIndicator{"ma", "Moving Average (MA)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"type\":\"SMA\"}", "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\",\"type\":\"SMA\"}", "ma"},
+    PythonIndicator{"donchian", "Donchian Channels (DC)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\"}", "donchian_high,donchian_low,donchian"},
+    PythonIndicator{"psar", "Parabolic SAR (PSAR)", false, "{\"af\":0.02,\"buy_value\":null,\"enabled\":false,\"max_af\":0.2,\"sell_value\":null}", "{\"af\":0.02,\"buy_value\":0,\"enabled\":false,\"max_af\":0.2,\"sell_value\":0,\"signal_mode\":\"price_cross\"}", "psar"},
+    PythonIndicator{"bb", "Bollinger Bands (BB)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2}", "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\",\"std\":2}", "bb_upper,bb_mid,bb_lower"},
+    PythonIndicator{"bbw", "Bollinger Band Width (BBW)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2}", "{\"buy_value\":5.0,\"enabled\":false,\"length\":20,\"sell_value\":2.0,\"std\":2}", "bbw"},
+    PythonIndicator{"keltner", "Keltner Channels (KC)", false, "{\"atr_length\":10,\"buy_value\":null,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":null}", "{\"atr_length\":10,\"buy_value\":0,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":100,\"signal_mode\":\"band_position\"}", "keltner_upper,keltner_mid,keltner_lower"},
+    PythonIndicator{"ichimoku", "Ichimoku Cloud (IC)", false, "{\"base_length\":26,\"buy_value\":null,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":null,\"span_b_length\":52}", "{\"base_length\":26,\"buy_value\":0,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":0,\"span_b_length\":52}", "ichimoku_tenkan,ichimoku_kijun,ichimoku_span_a,ichimoku_span_b,ichimoku_chikou,ichimoku"},
+    PythonIndicator{"rsi", "Relative Strength Index (RSI)", true, "{\"buy_value\":null,\"enabled\":true,\"length\":14,\"sell_value\":null}", "{\"buy_value\":30,\"enabled\":true,\"length\":14,\"sell_value\":70}", "rsi"},
+    PythonIndicator{"volume", "Volume", false, "{\"buy_value\":null,\"enabled\":false,\"sell_value\":null}", "{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":20,\"sell_value\":null,\"signal_mode\":\"relative_to_sma\",\"signal_role\":\"filter\"}", "volume"},
+    PythonIndicator{"obv", "On-Balance Volume (OBV)", false, "{\"buy_value\":null,\"enabled\":false,\"sell_value\":null}", "{\"buy_value\":0,\"enabled\":false,\"length\":3,\"sell_value\":0,\"signal_mode\":\"slope\"}", "obv"},
+    PythonIndicator{"rvol", "Relative Volume (RVOL)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "{\"buy_value\":1.5,\"enabled\":false,\"length\":20,\"sell_value\":0.75}", "rvol"},
+    PythonIndicator{"cmf", "Chaikin Money Flow (CMF)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "{\"buy_value\":0.05,\"enabled\":false,\"length\":20,\"sell_value\":-0.05}", "cmf"},
+    PythonIndicator{"cci", "Commodity Channel Index (CCI)", false, "{\"buy_value\":null,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":null}", "{\"buy_value\":-100,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":100}", "cci"},
+    PythonIndicator{"roc", "Rate of Change (ROC)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":12,\"sell_value\":null}", "{\"buy_value\":0,\"enabled\":false,\"length\":12,\"sell_value\":0}", "roc"},
+    PythonIndicator{"trix", "Triple Exponential Average (TRIX)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":15,\"sell_value\":null}", "{\"buy_value\":0,\"enabled\":false,\"length\":15,\"sell_value\":0}", "trix"},
+    PythonIndicator{"ppo", "Percentage Price Oscillator (PPO)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26}", "{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26}", "ppo,ppo_signal,ppo_hist"},
+    PythonIndicator{"ao", "Awesome Oscillator (AO)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":5,\"sell_value\":null,\"slow\":34}", "{\"buy_value\":0,\"enabled\":false,\"fast\":5,\"sell_value\":0,\"slow\":34}", "ao"},
+    PythonIndicator{"kst", "Know Sure Thing (KST)", false, "{\"buy_value\":null,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":null,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15}", "{\"buy_value\":0,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":0,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15}", "kst,kst_signal,kst_hist"},
+    PythonIndicator{"aroon", "Aroon Oscillator (AROON)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":25,\"sell_value\":null}", "{\"buy_value\":50,\"enabled\":false,\"length\":25,\"sell_value\":-50}", "aroon_up,aroon_down,aroon"},
+    PythonIndicator{"chop", "Choppiness Index (CHOP)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "{\"buy_value\":38.2,\"enabled\":false,\"length\":14,\"sell_value\":61.8}", "chop"},
+    PythonIndicator{"atr", "Average True Range (ATR)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_mode\":\"percent_of_close\",\"signal_role\":\"filter\"}", "atr"},
+    PythonIndicator{"natr", "Normalized Average True Range (NATR)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "{\"buy_value\":2.0,\"enabled\":false,\"length\":14,\"sell_value\":1.0}", "natr"},
+    PythonIndicator{"vwap", "Volume Weighted Average Price (VWAP)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"}", "vwap"},
+    PythonIndicator{"mfi", "Money Flow Index (MFI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80}", "mfi"},
+    PythonIndicator{"stoch_rsi", "Stochastic RSI (SRSI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3}", "{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3}", "stoch_rsi,stoch_rsi_k,stoch_rsi_d"},
+    PythonIndicator{"willr", "Williams %R", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "{\"buy_value\":-80,\"enabled\":false,\"length\":14,\"sell_value\":-20}", "willr"},
+    PythonIndicator{"macd", "Moving Average Convergence/Divergence (MACD)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26}", "{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26}", "macd_line,macd_signal"},
+    PythonIndicator{"uo", "Ultimate Oscillator (UO)", false, "{\"buy_value\":null,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":null,\"short\":7}", "{\"buy_value\":30,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":70,\"short\":7}", "uo"},
+    PythonIndicator{"adx", "Average Directional Index (ADX)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "{\"buy_value\":20,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_role\":\"filter\"}", "adx"},
+    PythonIndicator{"dmi", "Directional Movement Index (DMI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "{\"buy_value\":0,\"enabled\":false,\"length\":14,\"sell_value\":0}", "dmi_plus,dmi_minus,dmi"},
+    PythonIndicator{"supertrend", "SuperTrend (ST)", false, "{\"atr_period\":10,\"buy_value\":null,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":null}", "{\"atr_period\":10,\"buy_value\":0,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":0,\"signal_mode\":\"price_cross\"}", "supertrend"},
+    PythonIndicator{"ema", "Exponential Moving Average (EMA)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"}", "ema"},
+    PythonIndicator{"stochastic", "Stochastic Oscillator", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3}", "{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3}", "stochastic,stochastic_k,stochastic_d"},
 };
 
 inline constexpr std::array<std::string_view, 14> kPythonLlmProviderKeys = {

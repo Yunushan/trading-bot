@@ -1,13 +1,17 @@
+#include "../src/NativeBacktestRuntime.h"
+#include "../src/NativeBacktestBatchRuntime.h"
 #include "../src/NativeChartHeatmap.h"
 #include "../src/NativeConfigPersistence.h"
 #include "../src/NativeDesktopShell.h"
 #include "../src/NativeDiagnostics.h"
 #include "../src/NativeExchangeConnectors.h"
+#include "../src/NativeIndicatorRuntime.h"
 #include "../src/NativeLlmAdvisory.h"
 #include "../src/NativeOrderSafety.h"
 #include "../src/NativePortfolio.h"
 #include "../src/NativeStartupPackaging.h"
 #include "../src/NativeStrategyRuntime.h"
+#include "../src/generated/PythonIndicatorReference.h"
 #include "../src/generated/PythonParityContract.h"
 
 #include <QCoreApplication>
@@ -20,6 +24,8 @@
 #include <QTextStream>
 
 #include <iostream>
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace {
@@ -77,6 +83,309 @@ int main(int argc, char **argv) {
     check(pythonOrderGuardBehavior.contains(QStringLiteral("session_order_count_increment")),
           QStringLiteral("generated Python contract should identify live-only session accounting"));
 
+    const QString indicatorReferenceHash = QString::fromUtf8(
+        PythonIndicatorReference::kPythonSourceContractHash.data(),
+        static_cast<qsizetype>(PythonIndicatorReference::kPythonSourceContractHash.size()));
+    const QString parityContractHash = QString::fromUtf8(
+        PythonParityContract::kPythonSourceContractHash.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonSourceContractHash.size()));
+    check(indicatorReferenceHash == parityContractHash,
+          QStringLiteral("generated C++ indicator reference should match the Python source contract hash"));
+
+    const QByteArray indicatorReferenceJson(
+        PythonIndicatorReference::kReferenceJson.data(),
+        static_cast<qsizetype>(PythonIndicatorReference::kReferenceJson.size()));
+    QJsonParseError indicatorReferenceParseError;
+    const QJsonDocument indicatorReferenceDocument = QJsonDocument::fromJson(
+        indicatorReferenceJson,
+        &indicatorReferenceParseError);
+    check(indicatorReferenceParseError.error == QJsonParseError::NoError
+              && indicatorReferenceDocument.isObject(),
+          QStringLiteral("generated C++ indicator reference should contain valid JSON"));
+    const QJsonObject indicatorReference = indicatorReferenceDocument.object();
+    check(indicatorReference.value(QStringLiteral("python_source_contract_hash")).toString()
+              == parityContractHash,
+          QStringLiteral("indicator fixture payload should identify the active Python source contract"));
+
+    QVector<NativeIndicatorRuntime::Candle> indicatorCandles;
+    const QJsonArray indicatorCandleValues = indicatorReference.value(QStringLiteral("candles")).toArray();
+    indicatorCandles.reserve(indicatorCandleValues.size());
+    for (const QJsonValue &value : indicatorCandleValues) {
+        const QJsonObject candle = value.toObject();
+        indicatorCandles.push_back({
+            candle.value(QStringLiteral("open")).toDouble(),
+            candle.value(QStringLiteral("high")).toDouble(),
+            candle.value(QStringLiteral("low")).toDouble(),
+            candle.value(QStringLiteral("close")).toDouble(),
+            candle.value(QStringLiteral("volume")).toDouble(),
+        });
+    }
+    NativeIndicatorRuntime::ConfigMap indicatorConfigs;
+    const QJsonObject indicatorConfigValues = indicatorReference.value(QStringLiteral("configs")).toObject();
+    for (auto iterator = indicatorConfigValues.constBegin(); iterator != indicatorConfigValues.constEnd(); ++iterator) {
+        indicatorConfigs.insert(iterator.key(), iterator.value().toObject());
+    }
+    const NativeIndicatorRuntime::SeriesMap indicatorActual =
+        NativeIndicatorRuntime::computeConfiguredSeries(indicatorCandles, indicatorConfigs);
+    const QJsonObject indicatorExpected = indicatorReference.value(QStringLiteral("expected")).toObject();
+    QStringList actualOutputKeys = indicatorActual.keys();
+    QStringList expectedOutputKeys = indicatorExpected.keys();
+    actualOutputKeys.sort();
+    expectedOutputKeys.sort();
+    check(actualOutputKeys == expectedOutputKeys,
+          QStringLiteral("native C++ indicator outputs should exactly cover Python reference output keys"));
+    for (const QString &key : expectedOutputKeys) {
+        const QJsonArray expectedSeries = indicatorExpected.value(key).toArray();
+        const NativeIndicatorRuntime::Series actualSeries = indicatorActual.value(key);
+        check(actualSeries.size() == expectedSeries.size(),
+              QStringLiteral("native C++ indicator series length should match Python for %1").arg(key));
+        const qsizetype comparableSize = std::min(actualSeries.size(), expectedSeries.size());
+        for (qsizetype index = 0; index < comparableSize; ++index) {
+            const QJsonValue expectedValue = expectedSeries.at(index);
+            const double actualValue = actualSeries.at(index);
+            if (expectedValue.isNull()) {
+                check(!std::isfinite(actualValue),
+                      QStringLiteral("native C++ indicator warm-up should be NaN for %1[%2]")
+                          .arg(key).arg(index));
+                continue;
+            }
+            const double expectedNumber = expectedValue.toDouble();
+            const double tolerance = 1e-9 * std::max(1.0, std::abs(expectedNumber));
+            check(std::isfinite(actualValue)
+                      && std::abs(actualValue - expectedNumber) <= tolerance,
+                  QStringLiteral("native C++ indicator should match Python for %1[%2]: expected %3, got %4")
+                      .arg(key).arg(index).arg(expectedNumber, 0, 'g', 16).arg(actualValue, 0, 'g', 16));
+        }
+    }
+    QStringList nativeComputedIndicatorKeys = NativeIndicatorRuntime::computedIndicatorKeys();
+    QStringList pythonIndicatorKeys;
+    for (const std::string_view key : PythonParityContract::kPythonIndicatorKeys) {
+        pythonIndicatorKeys.push_back(QString::fromUtf8(key.data(), static_cast<qsizetype>(key.size())));
+    }
+    nativeComputedIndicatorKeys.sort();
+    pythonIndicatorKeys.sort();
+    check(nativeComputedIndicatorKeys == pythonIndicatorKeys,
+          QStringLiteral("native C++ calculator should explicitly implement every Python indicator key"));
+    check(NativeIndicatorRuntime::unsupportedEnabledIndicatorKeys(indicatorConfigs).isEmpty(),
+          QStringLiteral("native C++ calculator should support every enabled Python fixture indicator"));
+
+    const QJsonArray backtestCases = indicatorReference.value(QStringLiteral("backtest_cases")).toArray();
+    check(!backtestCases.isEmpty(),
+          QStringLiteral("generated Python fixture should include native backtest parity cases"));
+    for (const QJsonValue &caseValue : backtestCases) {
+        const QJsonObject testCase = caseValue.toObject();
+        const QString caseName = testCase.value(QStringLiteral("name")).toString();
+        NativeBacktestRuntime::Request request;
+        request.symbol = QStringLiteral("FIXTUREUSDT");
+        request.interval = QStringLiteral("1m");
+        request.logic = testCase.value(QStringLiteral("logic")).toString();
+        request.side = testCase.value(QStringLiteral("side")).toString();
+        request.capital = testCase.value(QStringLiteral("capital")).toDouble();
+        request.positionPct = testCase.value(QStringLiteral("position_pct")).toDouble();
+        request.positionPctUnits = testCase.value(QStringLiteral("position_pct_units")).toString();
+        request.leverage = testCase.value(QStringLiteral("leverage")).toDouble();
+        request.marginMode = testCase.value(QStringLiteral("margin_mode")).toString();
+        request.positionMode = QStringLiteral("Hedge");
+        request.assetsMode = QStringLiteral("Single-Asset");
+        request.accountMode = QStringLiteral("Classic Trading");
+        request.mddLogic = testCase.value(QStringLiteral("mdd_logic")).toString();
+        const QJsonObject stopLoss = testCase.value(QStringLiteral("stop_loss")).toObject();
+        request.stopLossEnabled = stopLoss.value(QStringLiteral("enabled")).toBool();
+        request.stopLossMode = stopLoss.value(QStringLiteral("mode")).toString();
+        request.stopLossUsdt = stopLoss.value(QStringLiteral("usdt")).toDouble();
+        request.stopLossPercent = stopLoss.value(QStringLiteral("percent")).toDouble();
+        request.stopLossScope = stopLoss.value(QStringLiteral("scope")).toString();
+        const QJsonObject caseConfigs = testCase.value(QStringLiteral("configs")).toObject();
+        for (auto iterator = caseConfigs.constBegin(); iterator != caseConfigs.constEnd(); ++iterator) {
+            request.indicators.insert(iterator.key(), iterator.value().toObject());
+        }
+
+        const NativeBacktestRuntime::Result actual = NativeBacktestRuntime::run(indicatorCandles, request);
+        const QJsonObject expected = testCase.value(QStringLiteral("expected")).toObject();
+        check(actual.ok,
+              QStringLiteral("native C++ backtest should run Python fixture case %1: %2")
+                  .arg(caseName, actual.error));
+        check(actual.trades == expected.value(QStringLiteral("trades")).toInt(),
+              QStringLiteral("native C++ backtest trade count should match Python for %1").arg(caseName));
+        const QStringList numericKeys = {
+            QStringLiteral("roi_value"),
+            QStringLiteral("roi_percent"),
+            QStringLiteral("final_equity"),
+            QStringLiteral("max_drawdown_value"),
+            QStringLiteral("max_drawdown_percent"),
+            QStringLiteral("max_drawdown_during_value"),
+            QStringLiteral("max_drawdown_during_percent"),
+            QStringLiteral("max_drawdown_result_value"),
+            QStringLiteral("max_drawdown_result_percent"),
+            QStringLiteral("leverage"),
+            QStringLiteral("capital"),
+            QStringLiteral("position_pct"),
+            QStringLiteral("stop_loss_usdt"),
+            QStringLiteral("stop_loss_percent"),
+        };
+        const QJsonObject actualJson = actual.toJson();
+        for (const QString &key : numericKeys) {
+            const double expectedNumber = expected.value(key).toDouble();
+            const double actualNumber = actualJson.value(key).toDouble();
+            const double tolerance = 1e-9 * std::max(1.0, std::abs(expectedNumber));
+            check(std::isfinite(actualNumber) && std::abs(actualNumber - expectedNumber) <= tolerance,
+                  QStringLiteral("native C++ backtest should match Python %1 for %2: expected %3, got %4")
+                      .arg(key, caseName)
+                      .arg(expectedNumber, 0, 'g', 16)
+                      .arg(actualNumber, 0, 'g', 16));
+        }
+        const QStringList textKeys = {
+            QStringLiteral("logic"),
+            QStringLiteral("mdd_logic"),
+            QStringLiteral("side"),
+            QStringLiteral("position_pct_units"),
+            QStringLiteral("stop_loss_mode"),
+            QStringLiteral("stop_loss_scope"),
+            QStringLiteral("margin_mode"),
+            QStringLiteral("position_mode"),
+            QStringLiteral("assets_mode"),
+            QStringLiteral("account_mode"),
+        };
+        for (const QString &key : textKeys) {
+            check(actualJson.value(key).toString() == expected.value(key).toString(),
+                  QStringLiteral("native C++ backtest should match Python %1 for %2")
+                      .arg(key, caseName));
+        }
+        check(actual.stopLossEnabled == expected.value(QStringLiteral("stop_loss_enabled")).toBool(),
+              QStringLiteral("native C++ backtest stop-loss enabled state should match Python for %1")
+                  .arg(caseName));
+    }
+
+    NativeBacktestRuntime::Request cancelledBacktest;
+    cancelledBacktest.capital = 1000.0;
+    cancelledBacktest.indicators.insert(
+        QStringLiteral("rsi"),
+        QJsonObject{
+            {QStringLiteral("enabled"), true},
+            {QStringLiteral("length"), 3},
+            {QStringLiteral("buy_value"), 45.0},
+            {QStringLiteral("sell_value"), 55.0},
+        });
+    const NativeBacktestRuntime::Result cancelledResult = NativeBacktestRuntime::run(
+        indicatorCandles,
+        cancelledBacktest,
+        []() { return true; });
+    check(!cancelledResult.ok && cancelledResult.error == QStringLiteral("backtest_cancelled"),
+          QStringLiteral("native C++ backtest should preserve cooperative cancellation"));
+
+    NativeIndicatorRuntime::ConfigMap optimizerConfigs;
+    optimizerConfigs.insert(
+        QStringLiteral("rsi"),
+        QJsonObject{
+            {QStringLiteral("enabled"), true},
+            {QStringLiteral("length"), 3},
+            {QStringLiteral("buy_value"), 45.0},
+            {QStringLiteral("sell_value"), 55.0},
+        });
+    optimizerConfigs.insert(
+        QStringLiteral("macd"),
+        QJsonObject{
+            {QStringLiteral("enabled"), true},
+            {QStringLiteral("fast"), 3},
+            {QStringLiteral("slow"), 6},
+            {QStringLiteral("signal"), 2},
+            {QStringLiteral("buy_value"), 0.0},
+            {QStringLiteral("sell_value"), 0.0},
+        });
+    optimizerConfigs.insert(
+        QStringLiteral("volume"),
+        QJsonObject{
+            {QStringLiteral("enabled"), true},
+            {QStringLiteral("length"), 3},
+            {QStringLiteral("buy_value"), 0.5},
+            {QStringLiteral("signal_mode"), QStringLiteral("relative_to_sma")},
+            {QStringLiteral("signal_role"), QStringLiteral("filter")},
+            {QStringLiteral("filter_operator"), QStringLiteral("gte")},
+        });
+    const QVector<QStringList> singleGroups =
+        NativeBacktestBatchRuntime::buildIndicatorGroups(
+            optimizerConfigs,
+            QStringLiteral("single"),
+            2,
+            QStringLiteral("AND"));
+    check(singleGroups.size() == 2,
+          QStringLiteral("native optimizer single mode should create one group per signal indicator"));
+    check(singleGroups.at(0).contains(QStringLiteral("volume"))
+              && singleGroups.at(1).contains(QStringLiteral("volume")),
+          QStringLiteral("native optimizer should append enabled filters to every signal group like Python"));
+    const QVector<QStringList> pairGroups =
+        NativeBacktestBatchRuntime::buildIndicatorGroups(
+            optimizerConfigs,
+            QStringLiteral("pairs"),
+            2,
+            QStringLiteral("AND"));
+    check(pairGroups.size() == 1 && pairGroups.constFirst().size() == 3,
+          QStringLiteral("native optimizer pair mode should combine two signals plus shared filters"));
+    const QVector<QStringList> combinationGroups =
+        NativeBacktestBatchRuntime::buildIndicatorGroups(
+            optimizerConfigs,
+            QStringLiteral("combinations"),
+            2,
+            QStringLiteral("AND"));
+    check(combinationGroups.size() == 3,
+          QStringLiteral("native optimizer combinations mode should include sizes one through Max Combo"));
+    const QVector<QStringList> separateGroups =
+        NativeBacktestBatchRuntime::buildIndicatorGroups(
+            optimizerConfigs,
+            QStringLiteral("current"),
+            2,
+            QStringLiteral("SEPARATE"));
+    check(separateGroups.size() == 2,
+          QStringLiteral("native current optimizer should split signal indicators for SEPARATE logic"));
+    check(NativeBacktestBatchRuntime::estimateRunCount(200, 20, 435) == 1'740'000,
+          QStringLiteral("native optimizer run estimate should match the Python Cartesian plan"));
+
+    NativeBacktestRuntime::Result scoreFixture;
+    scoreFixture.trades = 5;
+    scoreFixture.roiPercent = 12.0;
+    scoreFixture.roiValue = 120.0;
+    scoreFixture.maxDrawdownPercent = 4.0;
+    const NativeBacktestBatchRuntime::Score drawdownScore =
+        NativeBacktestBatchRuntime::optimizerScore(
+            scoreFixture,
+            QStringLiteral("roi_drawdown"),
+            20.0,
+            1);
+    check(drawdownScore.eligible && !drawdownScore.values.isEmpty()
+              && std::abs(drawdownScore.values.constFirst() - 3.0) < 1e-12,
+          QStringLiteral("native optimizer ROI/drawdown score should match Python"));
+    const NativeBacktestBatchRuntime::Score mddRejected =
+        NativeBacktestBatchRuntime::optimizerScore(
+            scoreFixture,
+            QStringLiteral("roi_percent"),
+            3.0,
+            1);
+    check(!mddRejected.eligible && mddRejected.rejectionReason.contains(QStringLiteral("MDD")),
+          QStringLiteral("native optimizer should reject runs above the configured MDD for every metric"));
+
+    NativeBacktestBatchRuntime::BatchRequest batchRequest;
+    batchRequest.symbols = {QStringLiteral("BTCUSDT"), QStringLiteral("ETHUSDT")};
+    batchRequest.intervals = {QStringLiteral("1m")};
+    batchRequest.indicatorConfigs.insert(QStringLiteral("rsi"), optimizerConfigs.value(QStringLiteral("rsi")));
+    batchRequest.runTemplate = cancelledBacktest;
+    batchRequest.optimizerMinTrades = 0;
+    batchRequest.startDisplay = QStringLiteral("2026-01-01");
+    batchRequest.endDisplay = QStringLiteral("2026-02-01");
+    const QJsonObject batchSnapshot = NativeBacktestBatchRuntime::runBatch(
+        batchRequest,
+        [&indicatorCandles](const QString &, const QString &, const NativeBacktestBatchRuntime::StopCallback &) {
+            return NativeBacktestBatchRuntime::CandleLoadResult{true, indicatorCandles, {}};
+        });
+    check(batchSnapshot.value(QStringLiteral("state")).toString() == QStringLiteral("completed"),
+          QStringLiteral("native batch backtest should complete with an injected candle loader"));
+    check(batchSnapshot.value(QStringLiteral("processed_count")).toInt() == 2,
+          QStringLiteral("native batch backtest should execute each symbol/interval/group run"));
+    check(batchSnapshot.value(QStringLiteral("top_runs")).toArray().size() == 2,
+          QStringLiteral("native batch backtest should return ranked result rows"));
+    check(batchSnapshot.value(QStringLiteral("top_run")).toObject().value(QStringLiteral("source")).toString()
+              == QStringLiteral("native-cpp-backtest"),
+          QStringLiteral("native batch backtest should identify its native C++ source"));
+
     NativeOrderSafety::LiveOrderGuardInput paperInvalidOrder;
     paperInvalidOrder.mode = QStringLiteral("Demo/Testnet");
     paperInvalidOrder.params = {
@@ -124,8 +433,11 @@ int main(int argc, char **argv) {
           QStringLiteral("native startup contract should expose stable Windows AppUserModelID"));
     check(cppStartupContract.value(QStringLiteral("icon_resource")).toString() == QStringLiteral(":/app_icon.ico"),
           QStringLiteral("native startup contract should expose packaged icon resource"));
-    check(cppStartupContract.value(QStringLiteral("delegates_trading_execution_to_python")).toBool(false),
-          QStringLiteral("native startup contract should keep Python as trading execution owner"));
+    check(!cppStartupContract.value(QStringLiteral("delegates_trading_execution_to_python")).toBool(true),
+          QStringLiteral("native startup contract should not delegate Binance Futures execution to Python"));
+    check(cppStartupContract.value(QStringLiteral("native_trading_execution_scope")).toString()
+              == QStringLiteral("binance-usds-futures"),
+          QStringLiteral("native startup contract should report its exact trading execution scope"));
     check(jsonArrayContains(
               cppStartupContract.value(QStringLiteral("startup_suppression_env")).toArray(),
               QStringLiteral("BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH")),
@@ -280,8 +592,11 @@ int main(int argc, char **argv) {
     const QJsonObject cppShellOwnership = NativeDesktopShell::cppDesktopShellOwnershipContract();
     check(cppShellOwnership.value(QStringLiteral("owns_desktop_tab_lifecycle")).toBool(false),
           QStringLiteral("native desktop shell should own the C++ tab lifecycle"));
-    check(!cppShellOwnership.value(QStringLiteral("owns_trading_execution")).toBool(true),
-          QStringLiteral("native desktop shell should keep Python as trading execution owner"));
+    check(cppShellOwnership.value(QStringLiteral("owns_trading_execution")).toBool(false),
+          QStringLiteral("native desktop shell should own its Binance Futures trading path"));
+    check(cppShellOwnership.value(QStringLiteral("native_trading_execution_scope")).toString()
+              == QStringLiteral("binance-usds-futures"),
+          QStringLiteral("native desktop shell should bound native execution ownership to Binance Futures"));
 
     const QJsonObject supportedExchange = NativeExchangeConnectors::buildExchangeSupportPayload(
         NativeExchangeConnectors::ExchangeSupportInput{
@@ -610,6 +925,43 @@ int main(int argc, char **argv) {
     check(closedCandleDecision.value(QStringLiteral("description")).toString().contains(QStringLiteral("RSI=20.00")),
           QStringLiteral("native strategy signal should use previous indicator value when live values are disabled"));
 
+    signalInput.useLiveValues = true;
+    signalInput.side = QStringLiteral("BOTH");
+    signalInput.closes = {100.0, 101.0, 102.0};
+    signalInput.rules = {
+        {QStringLiteral("stoch_rsi"), mkRule(true, 20.0, 80.0)},
+        {QStringLiteral("willr"), mkRule(true, -80.0, -20.0)},
+        {QStringLiteral("cmf"), mkRule(true, 0.2, std::nullopt)},
+        {QStringLiteral("obv"), mkRule(true, 1500.0, std::nullopt)},
+        {QStringLiteral("ichimoku"), mkRule(true, 1.0, std::nullopt)},
+    };
+    signalInput.indicators = {
+        {QStringLiteral("stoch_rsi_k"), {50.0, 15.0, 10.0}},
+        {QStringLiteral("willr"), {-50.0, -85.0, -90.0}},
+        {QStringLiteral("cmf"), {0.0, 0.1, 0.25}},
+        {QStringLiteral("obv"), {0.0, 1000.0, 2000.0}},
+        {QStringLiteral("ichimoku_tenkan"), {100.0, 101.0, 105.0}},
+        {QStringLiteral("ichimoku_kijun"), {100.0, 100.0, 103.0}},
+        {QStringLiteral("ichimoku_span_a"), {99.0, 100.0, 104.0}},
+        {QStringLiteral("ichimoku_span_b"), {98.0, 99.0, 102.0}},
+    };
+    const QJsonObject expandedSignalDecision = NativeStrategyRuntime::buildSignalDecision(signalInput);
+    const QJsonObject expandedTriggerActions =
+        expandedSignalDecision.value(QStringLiteral("trigger_actions")).toObject();
+    check(expandedSignalDecision.value(QStringLiteral("signal")).toString() == QStringLiteral("BUY"),
+          QStringLiteral("native strategy should preserve Python StochRSI first-trigger behavior"));
+    for (const QString &source : QStringList{
+             QStringLiteral("stoch_rsi"),
+             QStringLiteral("willr"),
+             QStringLiteral("cmf"),
+             QStringLiteral("obv"),
+             QStringLiteral("ichimoku"),
+         }) {
+        check(expandedTriggerActions.value(source).toString() == QStringLiteral("buy"),
+              QStringLiteral("native strategy should emit Python-compatible one-sided BUY action for %1")
+                  .arg(source));
+    }
+
     const QJsonObject normalizedRuntimeControls = NativeStrategyRuntime::normalizeStrategyControls(
         QStringLiteral("runtime"),
         QJsonObject{
@@ -696,10 +1048,13 @@ int main(int argc, char **argv) {
           QStringLiteral("native strategy lifecycle should mirror Python thread naming"));
     check(lifecycleSnapshot.value(QStringLiteral("loop_interval_seconds")).toDouble() == 300.0,
           QStringLiteral("native strategy lifecycle should use loop override seconds"));
-    check(lifecycleSnapshot.value(QStringLiteral("execution_owner")).toString() == QStringLiteral("python-service"),
-          QStringLiteral("native strategy lifecycle should keep Python as execution owner"));
-    check(!lifecycleSnapshot.value(QStringLiteral("native_trading_execution_enabled")).toBool(true),
-          QStringLiteral("native strategy lifecycle should not enable standalone native trading"));
+    check(lifecycleSnapshot.value(QStringLiteral("execution_owner")).toString() == QStringLiteral("native-cpp"),
+          QStringLiteral("native strategy lifecycle should report the C++ execution owner"));
+    check(lifecycleSnapshot.value(QStringLiteral("native_trading_execution_enabled")).toBool(false),
+          QStringLiteral("native strategy lifecycle should enable its native Binance Futures path"));
+    check(lifecycleSnapshot.value(QStringLiteral("native_trading_execution_scope")).toString()
+              == QStringLiteral("binance-usds-futures"),
+          QStringLiteral("native strategy lifecycle should report its exact execution scope"));
 
     const QDateTime diagnosticsAt =
         QDateTime::fromString(QStringLiteral("2026-06-18T12:10:00.000Z"), Qt::ISODateWithMs);

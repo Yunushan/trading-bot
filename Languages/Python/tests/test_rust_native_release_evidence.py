@@ -191,8 +191,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(".github/workflows/ci.yml", workflows["ci_rust_native_gate"]["path"])
         ci_workflow_text = (REPO_ROOT / workflows["ci_rust_native_gate"]["path"]).read_text(encoding="utf-8")
         ci_importer_section = ci_workflow_text[
-            ci_workflow_text.find("Audit Rust native evidence importer") :
-            ci_workflow_text.find("Audit Rust native runtime promotion readiness")
+            ci_workflow_text.find("Audit Rust native evidence importer") : ci_workflow_text.find(
+                "Audit Rust native runtime promotion readiness"
+            )
         ]
         self.assertIn("artifacts/native-source-sync", ci_importer_section)
         self.assertIn("--require-native-source-sync-audit", ci_importer_section)
@@ -972,7 +973,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             patch.object(runtime_readiness, "generated_evidence_write_guard", return_value=guard),
         ):
             output = io.StringIO()
-            plan_path = Path(temp_dir) / "artifacts" / "rust-native-runtime-evidence" / "rust-native-runtime-evidence-plan.md"
+            plan_path = (
+                Path(temp_dir) / "artifacts" / "rust-native-runtime-evidence" / "rust-native-runtime-evidence-plan.md"
+            )
             with contextlib.redirect_stdout(output):
                 exit_code = runtime_readiness.main(
                     [
@@ -1161,13 +1164,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
     def test_required_rust_release_assets_match_tier_one_desktop_targets(self):
         version, assets = release_assets._build_expected_assets("v1.2.3")
         required_rust_assets = {
-            asset.name
-            for asset in assets
-            if asset.required and asset.name.startswith("Trading-Bot-Rust-")
+            asset.name for asset in assets if asset.required and asset.name.startswith("Trading-Bot-Rust-")
         }
-        matrix = release_platform_matrix._load_json(
-            REPO_ROOT / "docs" / "release-platform-test-matrix.json"
-        )
+        matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
         platform_targets, _browser_targets, issues = release_platform_matrix._validate_matrix(matrix)
 
         self.assertEqual("1.2.3", version)
@@ -1189,9 +1188,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         tag = "v1.2.3"
         _, expected_assets = release_evidence._build_expected_assets(tag)
         rust_required_names = {
-            asset.name
-            for asset in expected_assets
-            if asset.required and asset.name.startswith("Trading-Bot-Rust-")
+            asset.name for asset in expected_assets if asset.required and asset.name.startswith("Trading-Bot-Rust-")
         }
         release_payload = {"assets": [{"name": name} for name in sorted(rust_required_names)]}
         platform_targets = [
@@ -1238,7 +1235,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             with (
                 patch.object(release_evidence, "_fetch_release", return_value=release_payload),
                 patch.object(release_evidence, "_load_json", return_value={"schema_version": 1}),
-                patch.object(release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])),
+                patch.object(
+                    release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])
+                ),
                 patch.object(release_evidence, "_evidence_issues", return_value=[]),
                 patch.object(release_evidence, "_read_evidence", side_effect=_read_platform_evidence),
                 patch.object(release_evidence, "_sha256_file", return_value="a" * 64),
@@ -1525,21 +1524,34 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(forged_asset["ok"])
         self.assertTrue(any("must be an expected Rust release asset" in issue for issue in forged_asset["issues"]))
         self.assertFalse(short_suite["ok"])
-        self.assertTrue(any("platform_results[0].suite_count must be at least" in issue for issue in short_suite["issues"]))
+        self.assertTrue(
+            any("platform_results[0].suite_count must be at least" in issue for issue in short_suite["issues"])
+        )
         self.assertFalse(missing_embedded_suites["ok"])
         self.assertTrue(
-            any("platform_results[0].suite_results must be a non-empty list" in issue for issue in missing_embedded_suites["issues"])
+            any(
+                "platform_results[0].suite_results must be a non-empty list" in issue
+                for issue in missing_embedded_suites["issues"]
+            )
         )
         self.assertFalse(failed_embedded_suite["ok"])
         self.assertTrue(
-            any("platform_results[0].suite_results[0].status must be passed" in issue for issue in failed_embedded_suite["issues"])
+            any(
+                "platform_results[0].suite_results[0].status must be passed" in issue
+                for issue in failed_embedded_suite["issues"]
+            )
         )
         self.assertFalse(target_mismatch["ok"])
         self.assertTrue(
-            any("suite_results[platform-probe].target_match.matched must be true" in issue for issue in target_mismatch["issues"])
+            any(
+                "suite_results[platform-probe].target_match.matched must be true" in issue
+                for issue in target_mismatch["issues"]
+            )
         )
         self.assertFalse(missing_hash["ok"])
-        self.assertTrue(any("evidence_sha256 must be a SHA-256 hex digest" in issue for issue in missing_hash["issues"]))
+        self.assertTrue(
+            any("evidence_sha256 must be a SHA-256 hex digest" in issue for issue in missing_hash["issues"])
+        )
         self.assertFalse(wrong_hash["ok"])
         self.assertTrue(any("evidence_sha256 does not match" in issue for issue in wrong_hash["issues"]))
 
@@ -1604,10 +1616,15 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertTrue(valid["ok"], valid["issues"])
         self.assertFalse(missing_binding["ok"])
-        self.assertTrue(any("native_source_sync must be a non-empty object" in issue for issue in missing_binding["issues"]))
+        self.assertTrue(
+            any("native_source_sync must be a non-empty object" in issue for issue in missing_binding["issues"])
+        )
         self.assertFalse(stale_binding["ok"])
         self.assertTrue(
-            any("native_source_sync.contract_hash must match current Python source contract" in issue for issue in stale_binding["issues"])
+            any(
+                "native_source_sync.contract_hash must match current Python source contract" in issue
+                for issue in stale_binding["issues"]
+            )
         )
 
     def test_release_evidence_preflight_reports_local_inputs_without_network(self):
@@ -1637,7 +1654,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             with (
                 patch.object(release_evidence, "_fetch_release", side_effect=AssertionError("network forbidden")),
                 patch.object(release_evidence, "_load_json", return_value={"schema_version": 1}),
-                patch.object(release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])),
+                patch.object(
+                    release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])
+                ),
                 patch.object(release_evidence, "_source_tree_clean", return_value=True),
                 patch.object(
                     release_evidence,
@@ -1682,7 +1701,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(["browser-chrome-windows-11-x64"], result["missing_platform_evidence"])
         self.assertEqual(1, len(result["missing_platform_evidence_plan"]))
         self.assertEqual("browser-chrome-windows-11-x64", result["missing_platform_evidence_plan"][0]["target_id"])
-        self.assertNotIn("browser_test_command", result["missing_platform_evidence_plan"][0]["required_workflow_inputs"])
+        self.assertNotIn(
+            "browser_test_command", result["missing_platform_evidence_plan"][0]["required_workflow_inputs"]
+        )
         self.assertTrue(result["missing_platform_evidence_plan"][0]["browser_contract_command_builtin"])
         self.assertEqual(
             "npm --prefix apps/web-dashboard run test:browser -- --browser=chrome",
@@ -1974,10 +1995,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("browser-chrome-windows-11-x64", result["missing_platform_evidence_plan"][0]["target_id"])
         self.assertIn("--require-clean-source", result["missing_platform_evidence_plan"][0]["probe_command"])
         self.assertIn("--require-native-source-sync", result["missing_platform_evidence_plan"][0]["probe_command"])
-        self.assertIn("--require-current-commit", result["missing_platform_evidence_plan"][0]["target_validation_command"])
-        self.assertIn("--require-clean-source", result["missing_platform_evidence_plan"][0]["target_validation_command"])
+        self.assertIn(
+            "--require-current-commit", result["missing_platform_evidence_plan"][0]["target_validation_command"]
+        )
+        self.assertIn(
+            "--require-clean-source", result["missing_platform_evidence_plan"][0]["target_validation_command"]
+        )
         self.assertEqual(98, result["workflow_dispatch_batch_plan"]["target_count"])
-        self.assertEqual(["browser-chrome-windows-11-x64"], result["workflow_dispatch_batch_plan"]["command_target_ids"])
+        self.assertEqual(
+            ["browser-chrome-windows-11-x64"], result["workflow_dispatch_batch_plan"]["command_target_ids"]
+        )
         self.assertTrue(result["workflow_dispatch_batch_plan"]["commands_truncated"])
         self.assertIn("--require-clean-source", result["workflow_dispatch_batch_plan"]["validation_command"])
         self.assertIn("98 of 99", result["release_platform_preflight_issues"][0])
@@ -2192,7 +2219,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("denied", result["native_source_sync"]["status"])
         self.assertFalse(result["native_source_sync"]["surface_contract_ok"])
         self.assertTrue(
-            any("native source sync surface_contract is missing." in issue for issue in result["native_source_sync"]["issues"])
+            any(
+                "native source sync surface_contract is missing." in issue
+                for issue in result["native_source_sync"]["issues"]
+            )
         )
 
     def test_source_sync_claim_requires_surface_contract(self):
@@ -2354,9 +2384,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         requirements = {row["id"]: row for row in result["promotion_requirements"]}
         self.assertEqual("failed", requirements["evidence_declaration"]["status"])
-        self.assertTrue(
-            any("does not match" in issue for issue in requirements["evidence_declaration"]["issues"])
-        )
+        self.assertTrue(any("does not match" in issue for issue in requirements["evidence_declaration"]["issues"]))
         self.assertEqual(
             "align_manifest_policy_with_runtime_ready_source_guard",
             result["promotion_model"]["phase"],
@@ -2629,9 +2657,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ["rust-native-live-account-read-smoke", "rust-native-release-platform-evidence"],
             claim["remaining_evidence_ids"],
         )
-        self.assertTrue(
-            any("required runtime evidence artifact" in reason for reason in claim["denied_reasons"])
-        )
+        self.assertTrue(any("required runtime evidence artifact" in reason for reason in claim["denied_reasons"]))
         self.assertIn("current git rev-parse HEAD", model["evidence_commit_binding"])
         self.assertEqual(
             [
@@ -2727,9 +2753,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertIn("artifacts/native-source-sync", model["evidence_import_command"])
         self.assertIn("--require-native-source-sync-audit", model["evidence_import_command"])
-        self.assertTrue(
-            any("rust-native-promotion-audit.yml" in action for action in result["next_actions"])
-        )
+        self.assertTrue(any("rust-native-promotion-audit.yml" in action for action in result["next_actions"]))
         action_plan = {row["id"]: row for row in result["promotion_next_action_plan"]}
         self.assertIn("create_clean_candidate_source_revision", action_plan)
         self.assertEqual(
@@ -2845,17 +2869,21 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ["runtime_ready_source_guard"],
             action_plan["promote_runtime_ready_source_guard"]["requirement_ids"],
         )
-        self.assertTrue(
-            any("clean candidate source revision" in action for action in result["next_actions"])
-        )
+        self.assertTrue(any("clean candidate source revision" in action for action in result["next_actions"]))
         self.assertTrue(
             any("Keep rust_native_trading_runtime_ready() false" in action for action in result["next_actions"])
         )
         self.assertTrue(
-            any("--require-runtime-id rust-native-live-account-read-smoke" in action for action in result["next_actions"])
+            any(
+                "--require-runtime-id rust-native-live-account-read-smoke" in action
+                for action in result["next_actions"]
+            )
         )
         self.assertTrue(
-            any("--require-runtime-id rust-native-release-platform-evidence" in action for action in result["next_actions"])
+            any(
+                "--require-runtime-id rust-native-release-platform-evidence" in action
+                for action in result["next_actions"]
+            )
         )
         self.assertIn("--require-current-commit", model["evidence_import_command"])
 
@@ -3200,12 +3228,13 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(parsed_paths, result["current_source_tree_dirty_paths"])
-        self.assertTrue(any("dirty paths: tools/audit_rust_native_runtime_readiness.py" in issue for issue in result["issues"]))
+        self.assertTrue(
+            any("dirty paths: tools/audit_rust_native_runtime_readiness.py" in issue for issue in result["issues"])
+        )
 
     def test_promotion_clean_source_reports_untracked_source_paths(self):
         untracked_output = (
-            "?? tools/import_rust_native_evidence_artifacts.py\n"
-            "?? Languages/Python/app/native_new_surface.py\n"
+            "?? tools/import_rust_native_evidence_artifacts.py\n?? Languages/Python/app/native_new_surface.py\n"
         )
         parsed_paths = runtime_evidence._untracked_paths_from_porcelain(untracked_output)
         self.assertEqual(
@@ -3233,7 +3262,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(parsed_paths, result["current_source_tree_untracked_paths"])
         self.assertTrue(
-            any("untracked paths: tools/import_rust_native_evidence_artifacts.py" in issue for issue in result["issues"])
+            any(
+                "untracked paths: tools/import_rust_native_evidence_artifacts.py" in issue for issue in result["issues"]
+            )
         )
 
     def test_readiness_audit_surfaces_dirty_paths_in_promotion_model(self):
@@ -3301,11 +3332,12 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(
             any("required runtime evidence must pass before current-commit" in issue for issue in clean_source_issues)
         )
+        self.assertTrue(any("current tracked source tree must be clean" in issue for issue in clean_source_issues))
         self.assertTrue(
-            any("current tracked source tree must be clean" in issue for issue in clean_source_issues)
-        )
-        self.assertTrue(
-            any("untracked paths: tools/import_rust_native_evidence_artifacts.py" in issue for issue in clean_source_issues)
+            any(
+                "untracked paths: tools/import_rust_native_evidence_artifacts.py" in issue
+                for issue in clean_source_issues
+            )
         )
         self.assertEqual(
             [
@@ -3387,8 +3419,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "preflight_command": "account preflight",
             "command": "account command",
             "github_workflow": (
-                "gh workflow run rust-native-live-smoke.yml "
-                "-f binance_testnet=false -f symbol=ETHUSDT -f interval=5m"
+                "gh workflow run rust-native-live-smoke.yml -f binance_testnet=false -f symbol=ETHUSDT -f interval=5m"
             ),
             "binance_api_key_present": True,
             "binance_api_secret_present": True,
@@ -3568,7 +3599,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             account_row["details"]["github_workflow_inputs"],
         )
         self.assertEqual("rust-native-live-smoke-evidence", account_row["details"]["github_workflow_artifact"])
-        self.assertEqual("rust-native-live-smoke-evidence-plan", account_row["details"]["github_workflow_plan_artifact"])
+        self.assertEqual(
+            "rust-native-live-smoke-evidence-plan", account_row["details"]["github_workflow_plan_artifact"]
+        )
         self.assertEqual(
             ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
             account_row["details"]["github_workflow_requires_secrets"],
@@ -3808,7 +3841,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("account command", markdown)
         self.assertIn("read_only=true", markdown)
         self.assertIn("requires_credentials=true", markdown)
-        self.assertIn("Expected artifacts: `rust-native-live-market-data-smoke.json`, `rust-native-live-account-read-smoke.json`", markdown)
+        self.assertIn(
+            "Expected artifacts: `rust-native-live-market-data-smoke.json`, `rust-native-live-account-read-smoke.json`",
+            markdown,
+        )
         self.assertIn("GitHub workflow inputs:", markdown)
         self.assertIn("GitHub workflow source-sync gate:", markdown)
         self.assertIn("python tools/audit_native_source_sync.py --json", markdown)
@@ -3903,7 +3939,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ),
             patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
             patch.object(runtime_readiness, "_live_smoke_prerequisites", return_value={}),
-            patch.object(runtime_readiness, "_release_evidence_prerequisites", return_value={"release_platform_preflight_ok": False}),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": False},
+            ),
             patch.object(
                 runtime_readiness,
                 "local_recovery_generation_guard",
@@ -3936,7 +3976,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(tracked_targets, row["details"]["generated_evidence_write_targets"])
             self.assertEqual([], row["details"]["non_generated_in_repo_write_targets"])
             self.assertEqual(tracked_targets, row["details"]["tracked_generated_evidence_targets"])
-            self.assertEqual(tracked_targets, row["details"]["source_control_guard"]["generated_evidence_write_targets"])
+            self.assertEqual(
+                tracked_targets, row["details"]["source_control_guard"]["generated_evidence_write_targets"]
+            )
             self.assertTrue(any("refusing to write generated evidence artifact" in issue for issue in row["issues"]))
 
     def test_readiness_audit_blocks_local_recovery_collection_when_source_is_dirty(self):
@@ -3989,7 +4031,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ),
             patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
             patch.object(runtime_readiness, "_live_smoke_prerequisites", return_value={}),
-            patch.object(runtime_readiness, "_release_evidence_prerequisites", return_value={"release_platform_preflight_ok": False}),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": False},
+            ),
             patch.object(
                 runtime_readiness,
                 "local_recovery_generation_guard",
@@ -4027,10 +4073,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(["clean source tree"], row["details"]["missing_prerequisites"])
             self.assertTrue(any("source tree must be clean" in issue for issue in row["issues"]))
 
-        missing_rows = {
-            row["evidence_id"]: row
-            for row in result["completion_claim"]["missing_inputs"]["evidence"]
-        }
+        missing_rows = {row["evidence_id"]: row for row in result["completion_claim"]["missing_inputs"]["evidence"]}
         self.assertEqual(
             ["clean source tree"],
             missing_rows["rust-native-live-stream-recovery"]["missing_prerequisites"],
@@ -4089,7 +4132,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             patch.object(runtime_readiness, "audit_native_source_sync", return_value=failed_source_sync),
             patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
             patch.object(runtime_readiness, "_live_smoke_prerequisites", return_value={}),
-            patch.object(runtime_readiness, "_release_evidence_prerequisites", return_value={"release_platform_preflight_ok": False}),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": False},
+            ),
             patch.object(
                 runtime_readiness,
                 "local_recovery_generation_guard",
@@ -4124,10 +4171,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(["native source sync audit"], row["details"]["missing_prerequisites"])
             self.assertTrue(any("native source sync audit must pass" in issue for issue in row["issues"]))
 
-        missing_rows = {
-            row["evidence_id"]: row
-            for row in result["completion_claim"]["missing_inputs"]["evidence"]
-        }
+        missing_rows = {row["evidence_id"]: row for row in result["completion_claim"]["missing_inputs"]["evidence"]}
         self.assertEqual(
             ["native source sync audit"],
             missing_rows["rust-native-live-stream-recovery"]["missing_prerequisites"],
@@ -4352,7 +4396,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(stale_contract["ok"])
         self.assertEqual(0, stale_contract["planned_count"])
         self.assertTrue(
-            any("python_source_contract_hash must match current Python source contract" in issue for issue in stale_contract["issues"])
+            any(
+                "python_source_contract_hash must match current Python source contract" in issue
+                for issue in stale_contract["issues"]
+            )
         )
 
     def test_importer_reports_overwrite_actions_and_hashes(self):
@@ -4554,8 +4601,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "missing required current-checkout native source sync audit artifact: "
-                "artifacts/native-source-sync/native-source-sync-audit.json"
-                in issue
+                "artifacts/native-source-sync/native-source-sync-audit.json" in issue
                 for issue in result["issues"]
             )
         )
@@ -4628,8 +4674,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "missing required current-checkout native source sync audit artifact: "
-                "artifacts/native-source-sync/native-source-sync-audit.json"
-                in issue
+                "artifacts/native-source-sync/native-source-sync-audit.json" in issue
                 for issue in result["issues"]
             )
         )
@@ -4722,9 +4767,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(1, result["native_source_sync_audit_count"])
         self.assertEqual([], result["valid_native_source_sync_audit_sources"])
-        self.assertTrue(
-            any("must include native source sync surface_contract" in issue for issue in result["issues"])
-        )
+        self.assertTrue(any("must include native source sync surface_contract" in issue for issue in result["issues"]))
 
     def test_importer_rejects_native_source_sync_audit_surface_contract_drift(self):
         source_sync_payload = _valid_source_sync_audit_payload()
@@ -4803,30 +4846,75 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(1, result["native_source_sync_audit_count"])
         self.assertEqual([], result["valid_native_source_sync_audit_sources"])
-        self.assertTrue(any("missing generated artifact check: tauri_browser_generated_contract" in issue for issue in result["issues"]))
-        self.assertTrue(any("generated artifact check failed: cpp_generated_contract" in issue for issue in result["issues"]))
-        self.assertTrue(any("generated artifact issues must be empty: cpp_generated_contract" in issue for issue in result["issues"]))
         self.assertTrue(
-            any("generated artifact must embed current contract hash: cpp_generated_contract" in issue for issue in result["issues"])
-        )
-        self.assertTrue(any("generated artifact expected_contract_hash is stale: cpp_generated_contract" in issue for issue in result["issues"]))
-        self.assertTrue(any("generated artifact SHA-256 mismatch: cpp_generated_contract" in issue for issue in result["issues"]))
-        self.assertTrue(any("generated artifact byte count mismatch: cpp_generated_contract" in issue for issue in result["issues"]))
-        self.assertTrue(
-            any("missing consumer surface check: rust_core_consumes_generated_contract" in issue for issue in result["issues"])
+            any(
+                "missing generated artifact check: tauri_browser_generated_contract" in issue
+                for issue in result["issues"]
+            )
         )
         self.assertTrue(
-            any("missing consumer surface check: tauri_browser_service_api_uses_python_source_routes" in issue for issue in result["issues"])
-        )
-        self.assertTrue(any("consumer surface check failed: cpp_dashboard_uses_python_source_surface" in issue for issue in result["issues"]))
-        self.assertTrue(
-            any("consumer surface missing_text must be empty: cpp_dashboard_uses_python_source_surface" in issue for issue in result["issues"])
+            any("generated artifact check failed: cpp_generated_contract" in issue for issue in result["issues"])
         )
         self.assertTrue(
-            any("consumer surface unknown_service_routes must be empty: cpp_dashboard_uses_python_source_surface" in issue for issue in result["issues"])
+            any(
+                "generated artifact issues must be empty: cpp_generated_contract" in issue for issue in result["issues"]
+            )
         )
         self.assertTrue(
-            any("consumer surface unknown_route_extractors must be empty: cpp_dashboard_uses_python_source_surface" in issue for issue in result["issues"])
+            any(
+                "generated artifact must embed current contract hash: cpp_generated_contract" in issue
+                for issue in result["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "generated artifact expected_contract_hash is stale: cpp_generated_contract" in issue
+                for issue in result["issues"]
+            )
+        )
+        self.assertTrue(
+            any("generated artifact SHA-256 mismatch: cpp_generated_contract" in issue for issue in result["issues"])
+        )
+        self.assertTrue(
+            any("generated artifact byte count mismatch: cpp_generated_contract" in issue for issue in result["issues"])
+        )
+        self.assertTrue(
+            any(
+                "missing consumer surface check: rust_core_consumes_generated_contract" in issue
+                for issue in result["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "missing consumer surface check: tauri_browser_service_api_uses_python_source_routes" in issue
+                for issue in result["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "consumer surface check failed: cpp_dashboard_uses_python_source_surface" in issue
+                for issue in result["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "consumer surface missing_text must be empty: cpp_dashboard_uses_python_source_surface" in issue
+                for issue in result["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "consumer surface unknown_service_routes must be empty: cpp_dashboard_uses_python_source_surface"
+                in issue
+                for issue in result["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "consumer surface unknown_route_extractors must be empty: cpp_dashboard_uses_python_source_surface"
+                in issue
+                for issue in result["issues"]
+            )
         )
 
     def test_importer_treats_missing_canonical_evidence_dirs_as_empty_audit_inputs(self):
@@ -5041,7 +5129,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(any("commit must match current git commit" in issue for issue in stale_commit))
         self.assertTrue(any("source_tree_clean must be true" in issue for issue in dirty_source))
         self.assertTrue(any("python_source_contract_hash must match" in issue for issue in stale_contract))
-        self.assertTrue(any("native_source_sync must be a non-empty object" in issue for issue in missing_native_source_sync))
+        self.assertTrue(
+            any("native_source_sync must be a non-empty object" in issue for issue in missing_native_source_sync)
+        )
         self.assertTrue(
             any(
                 "native_source_sync.contract_hash must match current Python source contract" in issue
@@ -5332,7 +5422,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
             patch.object(release_platform_probe.shutil, "which", return_value="npm.cmd"),
         ):
-            targets = release_platform_probe._local_browser_targets(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+            targets = release_platform_probe._local_browser_targets(
+                REPO_ROOT / "docs" / "release-platform-test-matrix.json"
+            )
 
         self.assertEqual(
             [
@@ -5525,17 +5617,26 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(900, run_command.call_args.kwargs["timeout"])
 
-    def test_release_platform_probe_runs_workspace_check_and_rust_core_tests(self):
-        target = {"id": "ubuntu-24_04-x64", "kind": "platform", "test_suites": ["native-build-smoke"]}
+    def test_release_platform_probe_builds_and_smokes_both_required_rust_binaries(self):
+        target = {
+            "id": "ubuntu-24_04-x64",
+            "kind": "platform",
+            "family": "ubuntu",
+            "architecture": "x64",
+            "test_suites": ["native-build-smoke"],
+        }
 
         with (
             patch.object(release_platform_probe.shutil, "which", return_value="cargo"),
+            patch.object(release_platform_probe, "_current_git_commit", return_value="a" * 40),
             patch.object(
                 release_platform_probe,
                 "_run_command",
                 side_effect=[
                     {"name": "rust-workspace-check", "status": "passed"},
-                    {"name": "native-build-smoke", "status": "passed"},
+                    {"name": "rust-workspace-tests", "status": "passed"},
+                    {"name": "rust-release-build", "status": "passed"},
+                    {"name": "rust-package-smoke", "status": "passed"},
                 ],
             ) as run_command,
         ):
@@ -5543,7 +5644,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertEqual(["rust-workspace-check", "native-build-smoke"], [row["name"] for row in results])
         self.assertEqual(
-            ["cargo", "check", "--manifest-path", "experiments/rust-shells/Cargo.toml", "--workspace"],
+            [
+                "cargo",
+                "check",
+                "--manifest-path",
+                "experiments/rust-shells/Cargo.toml",
+                "--locked",
+                "--workspace",
+            ],
             run_command.call_args_list[0].args[1],
         )
         self.assertEqual(
@@ -5552,11 +5660,54 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 "test",
                 "--manifest-path",
                 "experiments/rust-shells/Cargo.toml",
-                "-p",
-                "trading-bot-core",
+                "--locked",
+                "--workspace",
             ],
             run_command.call_args_list[1].args[1],
         )
+        self.assertEqual(
+            [
+                "cargo",
+                "build",
+                "--manifest-path",
+                "experiments/rust-shells/Cargo.toml",
+                "--locked",
+                "--release",
+                "--package",
+                "trading-bot-rust",
+                "--package",
+                "trading-bot-tauri-desktop",
+            ],
+            run_command.call_args_list[2].args[1],
+        )
+        package_command = run_command.call_args_list[3].args[1]
+        self.assertIn("tools/write_rust_package_smoke_evidence.py", package_command)
+        self.assertIn("trading-bot-rust", " ".join(package_command))
+        self.assertIn("trading-bot-tauri-desktop", " ".join(package_command))
+        self.assertIn("--require-clean-source", package_command)
+
+    def test_release_platform_probe_stops_native_build_after_workspace_test_failure(self):
+        target = {
+            "id": "macos-15-arm64",
+            "kind": "platform",
+            "family": "macos",
+            "architecture": "arm64",
+            "test_suites": ["native-build-smoke"],
+        }
+        with patch.object(
+            release_platform_probe,
+            "_run_command",
+            return_value={"name": "rust-workspace-tests", "status": "failed"},
+        ) as run_command:
+            result = release_platform_probe._rust_native_build_smoke(
+                "cargo",
+                target,
+                root=REPO_ROOT,
+            )
+
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("rust-workspace-tests failed", result["stderr"])
+        run_command.assert_called_once()
 
     def test_native_cpp_desktop_smoke_uses_offscreen_qt_on_non_windows_hosts(self):
         with patch.dict(native_cpp.os.environ, {}, clear=True), patch.object(native_cpp.sys, "platform", "linux"):
@@ -5633,9 +5784,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         all_stdout = io.StringIO()
         with contextlib.redirect_stdout(all_stdout):
-            all_code = release_platform_matrix.main(
-                ["--matrix", matrix_path, "--emit-github-matrix"]
-            )
+            all_code = release_platform_matrix.main(["--matrix", matrix_path, "--emit-github-matrix"])
         all_matrix = json.loads(all_stdout.getvalue())
 
         focused_stdout = io.StringIO()
@@ -5769,11 +5918,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(1, stale_contract_code)
         self.assertFalse(stale_contract["ok"])
         self.assertTrue(
-            any("python_source_contract_hash must match current Python source contract" in issue for issue in stale_contract["issues"])
+            any(
+                "python_source_contract_hash must match current Python source contract" in issue
+                for issue in stale_contract["issues"]
+            )
         )
         self.assertEqual(1, missing_source_sync_code)
         self.assertFalse(missing_source_sync["ok"])
-        self.assertTrue(any("native_source_sync must be a non-empty object" in issue for issue in missing_source_sync["issues"]))
+        self.assertTrue(
+            any("native_source_sync must be a non-empty object" in issue for issue in missing_source_sync["issues"])
+        )
         self.assertEqual(1, stale_source_sync_code)
         self.assertFalse(stale_source_sync["ok"])
         self.assertTrue(
@@ -5957,12 +6111,13 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(stale["ok"])
         self.assertTrue(any("commit must match current git commit" in issue for issue in stale["issues"]))
         self.assertFalse(dirty_artifact["ok"])
-        self.assertTrue(
-            any("source_tree_clean must be true" in issue for issue in dirty_artifact["issues"])
-        )
+        self.assertTrue(any("source_tree_clean must be true" in issue for issue in dirty_artifact["issues"]))
         self.assertFalse(stale_python_contract["ok"])
         self.assertTrue(
-            any("python_source_contract_hash must match current Python source contract" in issue for issue in stale_python_contract["issues"])
+            any(
+                "python_source_contract_hash must match current Python source contract" in issue
+                for issue in stale_python_contract["issues"]
+            )
         )
 
     def test_runtime_evidence_enforces_manifest_declared_artifact_fields(self):
@@ -6031,9 +6186,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertTrue(valid["ok"], valid["issues"])
         self.assertFalse(missing_field["ok"])
-        self.assertTrue(
-            any("missing required artifact field: command" in issue for issue in missing_field["issues"])
-        )
+        self.assertTrue(any("missing required artifact field: command" in issue for issue in missing_field["issues"]))
         self.assertFalse(wrong_type["ok"])
         self.assertTrue(any("source_tree_clean must be boolean" in issue for issue in wrong_type["issues"]))
         self.assertFalse(wrong_string_type["ok"])
@@ -6096,7 +6249,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(bad_format["ok"])
         self.assertTrue(any("generated_at must use unix:<seconds> format" in issue for issue in bad_format["issues"]))
         self.assertFalse(bad_seconds["ok"])
-        self.assertTrue(any("generated_at must contain positive unix seconds" in issue for issue in bad_seconds["issues"]))
+        self.assertTrue(
+            any("generated_at must contain positive unix seconds" in issue for issue in bad_seconds["issues"])
+        )
 
     def test_runtime_evidence_enforces_live_smoke_endpoint_contracts(self):
         market_id = "rust-native-live-market-data-smoke"
@@ -6280,7 +6435,12 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             any("missing live-smoke endpoints: klines" in issue for issue in missing_market_endpoint["issues"])
         )
         self.assertFalse(wrong_market_scope["ok"])
-        self.assertTrue(any("url must start with https://testnet.binancefuture.com/" in issue for issue in wrong_market_scope["issues"]))
+        self.assertTrue(
+            any(
+                "url must start with https://testnet.binancefuture.com/" in issue
+                for issue in wrong_market_scope["issues"]
+            )
+        )
         self.assertTrue(valid_account["ok"], valid_account["issues"])
         self.assertFalse(missing_account_endpoint["ok"])
         self.assertTrue(
@@ -6296,15 +6456,24 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertFalse(unsupported_native_indicator["ok"])
         self.assertTrue(
-            any("unsupported_indicator_keys must be an empty list" in issue for issue in unsupported_native_indicator["issues"])
+            any(
+                "unsupported_indicator_keys must be an empty list" in issue
+                for issue in unsupported_native_indicator["issues"]
+            )
         )
         self.assertFalse(unredacted_balance["ok"])
         self.assertTrue(
-            any("suite_results[fetch_usdt_balance].balances_redacted must be true" in issue for issue in unredacted_balance["issues"])
+            any(
+                "suite_results[fetch_usdt_balance].balances_redacted must be true" in issue
+                for issue in unredacted_balance["issues"]
+            )
         )
         self.assertFalse(missing_account_suite["ok"])
         self.assertTrue(
-            any("missing live-smoke suite results: fetch_usdt_balance" in issue for issue in missing_account_suite["issues"])
+            any(
+                "missing live-smoke suite results: fetch_usdt_balance" in issue
+                for issue in missing_account_suite["issues"]
+            )
         )
         self.assertFalse(missing_credential_metadata["ok"])
         self.assertTrue(
@@ -6312,7 +6481,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertFalse(secret_artifact_metadata["ok"])
         self.assertTrue(
-            any("environment.secrets_in_artifact must be false" in issue for issue in secret_artifact_metadata["issues"])
+            any(
+                "environment.secrets_in_artifact must be false" in issue for issue in secret_artifact_metadata["issues"]
+            )
         )
 
     def test_runtime_evidence_rejects_secret_leaks_even_when_redaction_flag_is_true(self):

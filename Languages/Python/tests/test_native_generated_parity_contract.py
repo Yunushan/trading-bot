@@ -555,6 +555,9 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             cpp_runtime_config = _cpp_string(
                 json.dumps(indicator["runtime_config"], ensure_ascii=True, sort_keys=True, separators=(",", ":"))
             )
+            cpp_backtest_config = _cpp_string(
+                json.dumps(indicator["backtest_config"], ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            )
             cpp_runtime_output_keys = _cpp_string(
                 ",".join(str(value) for value in indicator["runtime_output_keys"])
             )
@@ -565,7 +568,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertIn(
                 (
                     f"PythonIndicator{{{_cpp_string(key)}, {_cpp_string(display_name)}, {cpp_enabled}, "
-                    f"{cpp_runtime_config}, {cpp_runtime_output_keys}}}"
+                    f"{cpp_runtime_config}, {cpp_backtest_config}, {cpp_runtime_output_keys}}}"
                 ),
                 cpp_generated,
             )

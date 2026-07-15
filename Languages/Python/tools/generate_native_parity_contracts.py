@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import sys
@@ -16,6 +18,8 @@ from app.native_parity import (  # noqa: E402
     native_python_source_contract_summary,
 )
 from app.core import indicators as indicator_math  # noqa: E402
+from app.core.backtest.engine import BacktestEngine  # noqa: E402
+from app.core.backtest.models import BacktestRequest, IndicatorDefinition  # noqa: E402
 
 import pandas as pd  # noqa: E402
 
@@ -45,6 +49,14 @@ CPP_OUTPUT = (
     / "src"
     / "generated"
     / "PythonParityContract.h"
+)
+CPP_INDICATOR_REFERENCE_OUTPUT = (
+    REPO_ROOT
+    / "experiments"
+    / "native-cpp"
+    / "src"
+    / "generated"
+    / "PythonIndicatorReference.h"
 )
 TAURI_BROWSER_OUTPUT = (
     REPO_ROOT
@@ -103,6 +115,16 @@ def _cpp_string(value: object) -> str:
     return '"' + "".join(escaped) + '"'
 
 
+def _cpp_string_chunks(value: object, chunk_size: int = 6000) -> str:
+    text = str(value)
+    if not text:
+        return _cpp_string(text)
+    return "\n    ".join(
+        _cpp_string(text[offset : offset + chunk_size])
+        for offset in range(0, len(text), chunk_size)
+    )
+
+
 def _rust_array(name: str, values: list[str]) -> str:
     lines = [f"pub const {name}: &[&str] = &["]
     lines.extend(f"    {_rust_string(value)}," for value in values)
@@ -136,6 +158,139 @@ def _json_series(series: object) -> list[float | None]:
         rounded = round(float(value), INDICATOR_REFERENCE_DECIMAL_PLACES)
         normalized.append(0.0 if rounded == 0.0 else rounded)
     return normalized
+
+
+def _json_backtest_result(result: object) -> dict[str, object]:
+    payload = asdict(result)
+    normalized: dict[str, object] = {}
+    for key, value in payload.items():
+        if isinstance(value, datetime):
+            normalized[key] = value.isoformat()
+        elif isinstance(value, float):
+            rounded = round(value, INDICATOR_REFERENCE_DECIMAL_PLACES)
+            normalized[key] = 0.0 if rounded == 0.0 else rounded
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def _backtest_reference_cases(frame: pd.DataFrame) -> list[dict[str, object]]:
+    indexed = frame.copy()
+    start = datetime(2024, 1, 1, 0, 0, 0)
+    indexed.index = [start + timedelta(minutes=offset) for offset in range(len(indexed))]
+    end = indexed.index[-1].to_pydatetime()
+    engine = BacktestEngine(wrapper=None)
+    cases: list[dict[str, object]] = [
+        {
+            "name": "rsi-per-trade-both",
+            "logic": "OR",
+            "side": "BOTH",
+            "capital": 1000.0,
+            "position_pct": 25.0,
+            "position_pct_units": "percent",
+            "leverage": 1.0,
+            "margin_mode": "Isolated",
+            "mdd_logic": "per_trade",
+            "stop_loss": {"enabled": False, "mode": "usdt", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
+            "configs": {
+                "rsi": {"enabled": True, "length": 3, "buy_value": 45.0, "sell_value": 55.0},
+            },
+        },
+        {
+            "name": "ma-cross-cumulative-long",
+            "logic": "AND",
+            "side": "BUY",
+            "capital": 750.0,
+            "position_pct": 0.4,
+            "position_pct_units": "fraction",
+            "leverage": 2.0,
+            "margin_mode": "Cross",
+            "mdd_logic": "cumulative",
+            "stop_loss": {"enabled": False, "mode": "percent", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
+            "configs": {
+                "ma": {"enabled": True, "length": 3, "type": "SMA", "signal_mode": "price_cross", "buy_value": 0.0, "sell_value": 0.0},
+            },
+        },
+        {
+            "name": "rsi-entire-account-stop",
+            "logic": "OR",
+            "side": "BOTH",
+            "capital": 1200.0,
+            "position_pct": 50.0,
+            "position_pct_units": "percent",
+            "leverage": 4.0,
+            "margin_mode": "Isolated",
+            "mdd_logic": "entire_account",
+            "stop_loss": {"enabled": True, "mode": "percent", "usdt": 0.0, "percent": 2.0, "scope": "per_trade"},
+            "configs": {
+                "rsi": {"enabled": True, "length": 3, "buy_value": 45.0, "sell_value": 55.0},
+            },
+        },
+        {
+            "name": "rsi-with-rvol-filter-short",
+            "logic": "OR",
+            "side": "SELL",
+            "capital": 900.0,
+            "position_pct": 30.0,
+            "position_pct_units": "percent",
+            "leverage": 3.0,
+            "margin_mode": "Cross",
+            "mdd_logic": "per_trade",
+            "stop_loss": {"enabled": True, "mode": "both", "usdt": 30.0, "percent": 5.0, "scope": "cumulative"},
+            "configs": {
+                "rsi": {"enabled": True, "length": 3, "buy_value": 45.0, "sell_value": 55.0},
+                "rvol": {"enabled": True, "length": 3, "signal_role": "filter", "filter_operator": "gte", "filter_value": 0.8, "buy_value": 0.8},
+            },
+        },
+    ]
+
+    rendered: list[dict[str, object]] = []
+    for case in cases:
+        configs = case["configs"]
+        assert isinstance(configs, dict)
+        indicators = []
+        for key, raw_config in configs.items():
+            config = dict(raw_config)
+            config.pop("enabled", None)
+            indicators.append(IndicatorDefinition(key=key, params=config))
+        stop_loss = case["stop_loss"]
+        assert isinstance(stop_loss, dict)
+        request = BacktestRequest(
+            symbols=["FIXTUREUSDT"],
+            intervals=["1m"],
+            indicators=indicators,
+            logic=str(case["logic"]),
+            symbol_source="Futures",
+            start=start,
+            end=end,
+            capital=float(case["capital"]),
+            side=str(case["side"]),
+            position_pct=float(case["position_pct"]),
+            position_pct_units=str(case["position_pct_units"]),
+            leverage=float(case["leverage"]),
+            margin_mode=str(case["margin_mode"]),
+            position_mode="Hedge",
+            assets_mode="Single-Asset",
+            account_mode="Classic Trading",
+            mdd_logic=str(case["mdd_logic"]),
+            stop_loss_enabled=bool(stop_loss["enabled"]),
+            stop_loss_mode=str(stop_loss["mode"]),
+            stop_loss_usdt=float(stop_loss["usdt"]),
+            stop_loss_percent=float(stop_loss["percent"]),
+            stop_loss_scope=str(stop_loss["scope"]),
+        )
+        result = engine._simulate(
+            "FIXTUREUSDT",
+            "1m",
+            indexed,
+            indicators,
+            request,
+            work_df=indexed,
+        )
+        if result is None:
+            raise RuntimeError(f"Python backtest fixture case produced no result: {case['name']}")
+        rendered.append({**case, "expected": _json_backtest_result(result)})
+    return rendered
 
 
 def _indicator_reference_payload() -> dict[str, object]:
@@ -240,6 +395,7 @@ def _indicator_reference_payload() -> dict[str, object]:
         "candles": frame.to_dict(orient="records"),
         "configs": configs,
         "expected": {key: _json_series(series) for key, series in expected.items()},
+        "backtest_cases": _backtest_reference_cases(frame),
     }
 
 
@@ -252,6 +408,29 @@ def render_rust_indicator_reference_module() -> str:
         f"pub const PYTHON_INDICATOR_REFERENCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
         "#[rustfmt::skip]",
         f"pub const PYTHON_INDICATOR_REFERENCE_JSON: &str = {_rust_string(payload)};",
+        "",
+    ])
+
+
+def render_cpp_indicator_reference_header() -> str:
+    payload = _contract_json(_indicator_reference_payload())
+    return "\n".join([
+        "// This file is generated from Python indicator implementations.",
+        "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+        "#pragma once",
+        "",
+        "#include <string_view>",
+        "",
+        "namespace PythonIndicatorReference {",
+        "",
+        (
+            "inline constexpr std::string_view kPythonSourceContractHash = "
+            f"{_cpp_string(native_python_source_contract_hash())};"
+        ),
+        "inline constexpr std::string_view kReferenceJson =",
+        f"    {_cpp_string_chunks(payload)};",
+        "",
+        "} // namespace PythonIndicatorReference",
         "",
     ])
 
@@ -410,6 +589,7 @@ def _rust_indicator_catalog(indicators: list[dict[str, object]]) -> str:
         "    pub display_name: &'static str,",
         "    pub default_enabled: bool,",
         "    pub runtime_config_json: &'static str,",
+        "    pub backtest_config_json: &'static str,",
         "    pub runtime_output_keys: &'static [&'static str],",
         "}",
         "",
@@ -426,6 +606,7 @@ def _rust_indicator_catalog(indicators: list[dict[str, object]]) -> str:
                 f"        display_name: {_rust_string(indicator['display_name'])},",
                 f"        default_enabled: {_rust_bool(indicator['default_enabled'])},",
                 f"        runtime_config_json: {_rust_string(_contract_json(indicator['runtime_config']))},",
+                f"        backtest_config_json: {_rust_string(_contract_json(indicator['backtest_config']))},",
                 f"        runtime_output_keys: &[{runtime_output_keys}],",
                 "    },",
             ]
@@ -633,6 +814,7 @@ def _cpp_indicator_catalog(indicators: list[dict[str, object]]) -> str:
         "    std::string_view displayName;",
         "    bool defaultEnabled;",
         "    std::string_view runtimeConfigJson;",
+        "    std::string_view backtestConfigJson;",
         "    std::string_view runtimeOutputKeysCsv;",
         "};",
         "",
@@ -648,6 +830,7 @@ def _cpp_indicator_catalog(indicators: list[dict[str, object]]) -> str:
             f"{_cpp_string(indicator['display_name'])}, "
             f"{str(bool(indicator['default_enabled'])).lower()}, "
             f"{_cpp_string(_contract_json(indicator['runtime_config']))}, "
+            f"{_cpp_string(_contract_json(indicator['backtest_config']))}, "
             f"{_cpp_string(runtime_output_keys)}"
             "},"
         )
@@ -1130,6 +1313,7 @@ def main() -> int:
         write_if_changed(RUST_OUTPUT, render_rust_module()),
         write_if_changed(RUST_INDICATOR_REFERENCE_OUTPUT, render_rust_indicator_reference_module()),
         write_if_changed(CPP_OUTPUT, render_cpp_header()),
+        write_if_changed(CPP_INDICATOR_REFERENCE_OUTPUT, render_cpp_indicator_reference_header()),
         write_if_changed(TAURI_BROWSER_OUTPUT, render_tauri_browser_contract()),
     ]
     print(f"Native parity contracts generated. changed={any(changed)}")

@@ -115,7 +115,7 @@ if (WIN32)
     endif()
 endif()
 
-find_package(Qt6 ${TB_QT_VERSION} REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 ${TB_QT_VERSION} REQUIRED COMPONENTS Core Widgets Network Concurrent)
 find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} QUIET)
 find_package(Qt6WebSockets ${TB_QT_VERSION} QUIET)
 
@@ -148,6 +148,10 @@ add_executable(binance_backtest_tab
     src/BinanceRestClient.h
     src/BinanceWsClient.cpp
     src/BinanceWsClient.h
+    src/NativeBacktestRuntime.cpp
+    src/NativeBacktestRuntime.h
+    src/NativeBacktestBatchRuntime.cpp
+    src/NativeBacktestBatchRuntime.h
     src/NativeChartHeatmap.cpp
     src/NativeChartHeatmap.h
     src/NativeConfigPersistence.cpp
@@ -158,6 +162,8 @@ add_executable(binance_backtest_tab
     src/NativeDiagnostics.h
     src/NativeExchangeConnectors.cpp
     src/NativeExchangeConnectors.h
+    src/NativeIndicatorRuntime.cpp
+    src/NativeIndicatorRuntime.h
     src/NativeLlmAdvisory.cpp
     src/NativeLlmAdvisory.h
     src/NativeOrderSafety.cpp
@@ -194,7 +200,7 @@ add_executable(binance_backtest_tab
     ${APP_ICON_RC}
 )
 
-target_link_libraries(binance_backtest_tab PRIVATE Qt6::Widgets Qt6::Network)
+target_link_libraries(binance_backtest_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Concurrent)
 set_target_properties(binance_backtest_tab PROPERTIES OUTPUT_NAME "${TB_EXECUTABLE_NAME}")
 
 if (HAS_WEBENGINE)
@@ -222,6 +228,10 @@ endif()
 if (BUILD_TESTING)
     add_executable(native_order_safety_tests
         tests/NativeOrderSafetyTests.cpp
+        src/NativeBacktestRuntime.cpp
+        src/NativeBacktestRuntime.h
+        src/NativeBacktestBatchRuntime.cpp
+        src/NativeBacktestBatchRuntime.h
         src/NativeChartHeatmap.cpp
         src/NativeChartHeatmap.h
         src/NativeConfigPersistence.cpp
@@ -232,6 +242,8 @@ if (BUILD_TESTING)
         src/NativeDiagnostics.h
         src/NativeExchangeConnectors.cpp
         src/NativeExchangeConnectors.h
+        src/NativeIndicatorRuntime.cpp
+        src/NativeIndicatorRuntime.h
         src/NativeLlmAdvisory.cpp
         src/NativeLlmAdvisory.h
         src/NativeOrderSafety.cpp
@@ -250,6 +262,8 @@ if (BUILD_TESTING)
 
     add_executable(native_service_api_contract_tests
         tests/NativeServiceApiContractTests.cpp
+        src/BinanceRestClient.cpp
+        src/BinanceRestClient.h
         src/TradingBotWindowSupport.cpp
         src/TradingBotWindowSupport.h
         src/generated/PythonParityContract.h

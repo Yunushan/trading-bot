@@ -12,7 +12,7 @@
     "platform-probe": "Collect OS, version, architecture, runtime, and toolchain evidence.",
     "python-service-contract": "Compile and smoke-check the canonical Python service/API surface.",
     "desktop-release-smoke": "Run release binary or desktop launch smoke checks on the declared desktop runtime.",
-    "native-build-smoke": "Build and run native C++/Rust release smoke checks.",
+    "native-build-smoke": "Check and test the Rust workspace, build both required Rust CLI/Tauri release binaries, and run source-bound package smokes; C++ is exercised by desktop-release-smoke.",
     "browser-contract": "Run dashboard/service client browser compatibility checks in the declared browser."
   },
   "target_groups": [

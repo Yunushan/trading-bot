@@ -58,7 +58,7 @@ QStringList desktopShellBoundaries() {
         QStringLiteral("Code tab window-suppression and dependency auto-refresh hooks"),
         QStringLiteral("Chart safe-mode and code-to-chart deferred reload hooks"),
         QStringLiteral("Theme persistence and chart-theme forwarding"),
-        QStringLiteral("C++ Qt shell ownership with Python trading execution boundary"),
+        QStringLiteral("C++ Qt shell ownership with native Binance USD-M Futures execution"),
     };
 }
 
@@ -260,9 +260,10 @@ QJsonObject cppDesktopShellOwnershipContract() {
         {QStringLiteral("status"), QStringLiteral("production-qt-shell-parity-contract")},
         {QStringLiteral("owns_desktop_tab_lifecycle"), true},
         {QStringLiteral("owns_release_entrypoint"), true},
-        {QStringLiteral("owns_trading_execution"), false},
+        {QStringLiteral("owns_trading_execution"), true},
+        {QStringLiteral("native_trading_execution_scope"), QStringLiteral("binance-usds-futures")},
         {QStringLiteral("primary_tabs"), stringArray(primaryTabTitles())},
-        {QStringLiteral("execution_boundary"), QStringLiteral("Python service/desktop runtime remains the trading execution owner.")},
+        {QStringLiteral("execution_boundary"), QStringLiteral("The C++ runtime owns Binance USD-M Futures execution; unimplemented venues remain evidence-gated and unsupported by the native order path.")},
     };
 }
 

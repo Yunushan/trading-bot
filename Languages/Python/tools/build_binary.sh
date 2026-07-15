@@ -90,7 +90,7 @@ if [[ "${SKIP_DEPENDENCY_INSTALL}" -eq 0 ]]; then
     exit 1
   fi
   "${PYTHON_BIN}" -m pip install --upgrade pip
-  "${PYTHON_BIN}" -m pip install --upgrade pyinstaller
+  "${PYTHON_BIN}" -m pip install -r requirements.packaging.txt
   "${PYTHON_BIN}" -m pip install -r requirements.txt
 fi
 
@@ -258,4 +258,11 @@ case "${UNAME_S}" in
     ;;
 esac
 
+if [[ ! -x "${binary_path}" ]]; then
+  echo "Built executable not found or not executable at ${binary_path}" >&2
+  exit 1
+fi
+
+QT_QPA_PLATFORM=offscreen "${binary_path}" --smoke
+echo "Packaged executable smoke passed."
 echo "Done. Binary at: ${binary_path}"

@@ -93,7 +93,42 @@ def _maybe_launch_via_shell_shortcut() -> None:
     raise SystemExit(0)
 
 
-def main() -> int:
+def _run_packaged_smoke() -> int:
+    """Import the packaged desktop/runtime surface without creating a window."""
+    from PyQt6 import QtCore, QtWidgets
+
+    from app.entrypoint_contract import DESKTOP_ENTRYPOINT_CONTRACT
+    from app.gui.window_shell import MainWindow
+    from app.service.runtime import TradingBotService
+
+    if DESKTOP_ENTRYPOINT_CONTRACT.canonical_module != __name__:
+        raise RuntimeError("Desktop entrypoint contract does not target this module.")
+    if not issubclass(MainWindow, QtWidgets.QWidget):
+        raise RuntimeError("Packaged MainWindow is not a Qt widget.")
+
+    service = TradingBotService()
+    descriptor = service.describe_runtime().to_dict()
+    if descriptor.get("desktop_entrypoint") != DESKTOP_ENTRYPOINT_CONTRACT.canonical_repo_path:
+        raise RuntimeError("Service runtime reports a different desktop entrypoint.")
+    if not isinstance(service.get_status().to_dict(), dict):
+        raise RuntimeError("Service runtime status is unavailable.")
+
+    # Windowed PyInstaller builds intentionally have no stdout stream.
+    stdout = getattr(sys, "stdout", None)
+    if stdout is not None:
+        stdout.write(
+            "Trading Bot Python packaged smoke passed "
+            f"(PyQt {QtCore.PYQT_VERSION_STR}, Qt {QtCore.QT_VERSION_STR}).\n"
+        )
+        stdout.flush()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--smoke" in {str(arg).strip().lower() for arg in args}:
+        return _run_packaged_smoke()
+
     _maybe_launch_via_shell_shortcut()
     from app.desktop.bootstrap import _run_entrypoint
 

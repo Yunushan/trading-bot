@@ -17,19 +17,39 @@ from typing import Any
 try:
     from audit_native_source_sync import audit_native_source_sync
     from check_generated_evidence_source_control import generated_evidence_write_guard
-    from check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
+    from check_release_platform_matrix import (
+        DEFAULT_MATRIX_PATH,
+        PROMOTION_SOURCE_TREE_IGNORED_PATHS,
+    )
     from check_release_platform_matrix import _load_json, _validate_matrix
-    from release_browser_contract_commands import browser_contract_command_args, browser_contract_missing_command_message
+    from release_browser_contract_commands import (
+        browser_contract_command_args,
+        browser_contract_missing_command_message,
+    )
     from release_browser_contract_commands import browser_host_from_observed_platform
-    from release_browser_contract_commands import builtin_browser_contract_targets_for_host
+    from release_browser_contract_commands import (
+        builtin_browser_contract_targets_for_host,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
     from tools.audit_native_source_sync import audit_native_source_sync
-    from tools.check_generated_evidence_source_control import generated_evidence_write_guard
-    from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
+    from tools.check_generated_evidence_source_control import (
+        generated_evidence_write_guard,
+    )
+    from tools.check_release_platform_matrix import (
+        DEFAULT_MATRIX_PATH,
+        PROMOTION_SOURCE_TREE_IGNORED_PATHS,
+    )
     from tools.check_release_platform_matrix import _load_json, _validate_matrix
-    from tools.release_browser_contract_commands import browser_contract_command_args, browser_contract_missing_command_message
-    from tools.release_browser_contract_commands import browser_host_from_observed_platform
-    from tools.release_browser_contract_commands import builtin_browser_contract_targets_for_host
+    from tools.release_browser_contract_commands import (
+        browser_contract_command_args,
+        browser_contract_missing_command_message,
+    )
+    from tools.release_browser_contract_commands import (
+        browser_host_from_observed_platform,
+    )
+    from tools.release_browser_contract_commands import (
+        builtin_browser_contract_targets_for_host,
+    )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
@@ -69,7 +89,14 @@ def _current_git_commit() -> str:
 
 
 def _source_tree_status_command(untracked_files: str) -> list[str]:
-    command = ["git", "status", "--porcelain", f"--untracked-files={untracked_files}", "--", "."]
+    command = [
+        "git",
+        "status",
+        "--porcelain",
+        f"--untracked-files={untracked_files}",
+        "--",
+        ".",
+    ]
     command.extend(f":(exclude){path}" for path in PROMOTION_SOURCE_TREE_IGNORED_PATHS)
     return command
 
@@ -107,13 +134,21 @@ def _native_source_sync_binding() -> dict[str, object]:
 def _native_source_sync_guard() -> dict[str, Any]:
     audit = audit_native_source_sync()
     surface_contract = audit.get("surface_contract")
-    surface_contract_ok = isinstance(surface_contract, dict) and surface_contract.get("ok") is True
+    surface_contract_ok = (
+        isinstance(surface_contract, dict) and surface_contract.get("ok") is True
+    )
     surface_contract_issues = (
-        [str(issue) for issue in surface_contract.get("issues", []) if str(issue).strip()]
+        [
+            str(issue)
+            for issue in surface_contract.get("issues", [])
+            if str(issue).strip()
+        ]
         if isinstance(surface_contract, dict)
         else ["native source sync surface_contract is missing"]
     )
-    audit_issues = [str(issue) for issue in audit.get("issues", []) if str(issue).strip()]
+    audit_issues = [
+        str(issue) for issue in audit.get("issues", []) if str(issue).strip()
+    ]
     issues = [*audit_issues]
     if not surface_contract_ok:
         issues.extend(surface_contract_issues)
@@ -141,7 +176,9 @@ def _find_target(target_id: str, matrix_path: Path) -> dict[str, Any]:
     raise RuntimeError(f"unknown target id: {target_id}")
 
 
-def _matrix_targets(matrix_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _matrix_targets(
+    matrix_path: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     matrix = _load_json(matrix_path)
     platform_targets, browser_targets, issues = _validate_matrix(matrix)
     if issues:
@@ -186,6 +223,104 @@ def _run_command(
         "returncode": result.returncode,
         "stdout": "\n".join(result.stdout.strip().splitlines()[-40:]),
         "stderr": "\n".join(result.stderr.strip().splitlines()[-40:]),
+    }
+
+
+def _rust_release_binary(root: Path, name: str) -> Path:
+    suffix = ".exe" if sys.platform == "win32" else ""
+    return (
+        root / "experiments" / "rust-shells" / "target" / "release" / f"{name}{suffix}"
+    )
+
+
+def _rust_native_build_smoke(
+    cargo: str,
+    target: dict[str, Any],
+    *,
+    root: Path,
+) -> dict[str, Any]:
+    started = time.time()
+    steps: list[dict[str, Any]] = []
+    commands = (
+        (
+            "rust-workspace-tests",
+            [
+                cargo,
+                "test",
+                "--manifest-path",
+                "experiments/rust-shells/Cargo.toml",
+                "--locked",
+                "--workspace",
+            ],
+        ),
+        (
+            "rust-release-build",
+            [
+                cargo,
+                "build",
+                "--manifest-path",
+                "experiments/rust-shells/Cargo.toml",
+                "--locked",
+                "--release",
+                "--package",
+                "trading-bot-rust",
+                "--package",
+                "trading-bot-tauri-desktop",
+            ],
+        ),
+    )
+    for name, command in commands:
+        result = _run_command(name, command, cwd=root, timeout=1800)
+        steps.append(result)
+        if result.get("status") != "passed":
+            return {
+                "name": "native-build-smoke",
+                "status": "failed",
+                "duration_seconds": round(time.time() - started, 3),
+                "stderr": f"{name} failed",
+                "steps": steps,
+            }
+
+    target_id = str(target.get("id") or "unknown-target")
+    package_evidence = (
+        root
+        / "build"
+        / "release-platform-evidence"
+        / f"rust-package-smoke-{target_id}.json"
+    )
+    package_command = [
+        sys.executable,
+        "tools/write_rust_package_smoke_evidence.py",
+        "--rust-cli",
+        str(_rust_release_binary(root, "trading-bot-rust")),
+        "--tauri-desktop",
+        str(_rust_release_binary(root, "trading-bot-tauri-desktop")),
+        "--output",
+        str(package_evidence),
+        "--source-revision",
+        _current_git_commit(),
+        "--platform",
+        str(target.get("family") or platform.system()),
+        "--architecture",
+        str(target.get("architecture") or platform.machine()),
+        "--require-clean-source",
+    ]
+    package_result = _run_command(
+        "rust-package-smoke",
+        package_command,
+        cwd=root,
+        timeout=180,
+    )
+    steps.append(package_result)
+    return {
+        "name": "native-build-smoke",
+        "status": "passed" if package_result.get("status") == "passed" else "failed",
+        "duration_seconds": round(time.time() - started, 3),
+        "stderr": ""
+        if package_result.get("status") == "passed"
+        else "rust-package-smoke failed",
+        "package_evidence": str(package_evidence),
+        "steps": steps,
     }
 
 
@@ -275,7 +410,9 @@ def _expected_architecture(value: str) -> str:
     return _normalize_architecture(normalized)
 
 
-def _linux_distribution_matches(family: str, version: str, observed: dict[str, Any]) -> bool:
+def _linux_distribution_matches(
+    family: str, version: str, observed: dict[str, Any]
+) -> bool:
     distro_id = str(observed.get("os_release_id") or "").lower()
     distro_like = str(observed.get("os_release_id_like") or "").lower()
     version_id = str(observed.get("os_release_version_id") or "")
@@ -283,11 +420,16 @@ def _linux_distribution_matches(family: str, version: str, observed: dict[str, A
         return distro_id == "ubuntu" and version_id.startswith(version)
     if family == "rhel":
         distro_tokens = {distro_id, *distro_like.split()}
-        return bool({"rhel", "fedora"} & distro_tokens) and version_id.split(".", 1)[0] == version
+        return (
+            bool({"rhel", "fedora"} & distro_tokens)
+            and version_id.split(".", 1)[0] == version
+        )
     return False
 
 
-def _platform_match_issues(target: dict[str, Any], observed: dict[str, Any]) -> list[str]:
+def _platform_match_issues(
+    target: dict[str, Any], observed: dict[str, Any]
+) -> list[str]:
     family = str(target.get("family") or "").lower()
     version = str(target.get("version") or "")
     expected_arch = _expected_architecture(str(target.get("architecture") or ""))
@@ -296,22 +438,34 @@ def _platform_match_issues(target: dict[str, Any], observed: dict[str, Any]) -> 
     issues: list[str] = []
 
     if expected_arch and observed_arch != expected_arch:
-        issues.append(f"architecture mismatch: expected {expected_arch}, observed {observed_arch or 'unknown'}")
+        issues.append(
+            f"architecture mismatch: expected {expected_arch}, observed {observed_arch or 'unknown'}"
+        )
 
     if family == "windows":
         if system != "Windows":
-            issues.append(f"system mismatch: expected Windows, observed {system or 'unknown'}")
+            issues.append(
+                f"system mismatch: expected Windows, observed {system or 'unknown'}"
+            )
         if str(observed.get("release") or "") != version:
-            issues.append(f"Windows release mismatch: expected {version}, observed {observed.get('release') or 'unknown'}")
+            issues.append(
+                f"Windows release mismatch: expected {version}, observed {observed.get('release') or 'unknown'}"
+            )
     elif family == "macos":
         if system != "Darwin":
-            issues.append(f"system mismatch: expected Darwin/macOS, observed {system or 'unknown'}")
+            issues.append(
+                f"system mismatch: expected Darwin/macOS, observed {system or 'unknown'}"
+            )
         macos_major = str(observed.get("macos_version") or "").split(".", 1)[0]
         if macos_major != version:
-            issues.append(f"macOS major version mismatch: expected {version}, observed {macos_major or 'unknown'}")
+            issues.append(
+                f"macOS major version mismatch: expected {version}, observed {macos_major or 'unknown'}"
+            )
     elif family in {"ubuntu", "rhel"}:
         if system != "Linux":
-            issues.append(f"system mismatch: expected Linux, observed {system or 'unknown'}")
+            issues.append(
+                f"system mismatch: expected Linux, observed {system or 'unknown'}"
+            )
         elif not _linux_distribution_matches(family, version, observed):
             issues.append(
                 "Linux distribution mismatch: expected "
@@ -322,20 +476,37 @@ def _platform_match_issues(target: dict[str, Any], observed: dict[str, Any]) -> 
     elif family in {"freebsd", "openbsd", "netbsd"}:
         expected_system = family.capitalize()
         if system.lower() != family:
-            issues.append(f"system mismatch: expected {expected_system}, observed {system or 'unknown'}")
+            issues.append(
+                f"system mismatch: expected {expected_system}, observed {system or 'unknown'}"
+            )
     elif family == "android":
         if system not in {"Android", "Linux"}:
-            issues.append(f"system mismatch: expected Android runtime, observed {system or 'unknown'}")
-        android_root_present = bool(os.environ.get("ANDROID_ROOT") or os.environ.get("ANDROID_DATA"))
-        if not android_root_present and str(observed.get("os_release_id") or "").lower() != "android":
-            issues.append("Android runtime marker missing: ANDROID_ROOT/ANDROID_DATA or os-release ID android required")
+            issues.append(
+                f"system mismatch: expected Android runtime, observed {system or 'unknown'}"
+            )
+        android_root_present = bool(
+            os.environ.get("ANDROID_ROOT") or os.environ.get("ANDROID_DATA")
+        )
+        if (
+            not android_root_present
+            and str(observed.get("os_release_id") or "").lower() != "android"
+        ):
+            issues.append(
+                "Android runtime marker missing: ANDROID_ROOT/ANDROID_DATA or os-release ID android required"
+            )
     elif family == "ios":
         if system not in {"iOS", "Darwin"}:
-            issues.append(f"system mismatch: expected iOS runtime, observed {system or 'unknown'}")
+            issues.append(
+                f"system mismatch: expected iOS runtime, observed {system or 'unknown'}"
+            )
         if not (os.environ.get("SIMULATOR_UDID") or os.environ.get("IOS_DEVICE_NAME")):
-            issues.append("iOS runtime marker missing: SIMULATOR_UDID or IOS_DEVICE_NAME required")
+            issues.append(
+                "iOS runtime marker missing: SIMULATOR_UDID or IOS_DEVICE_NAME required"
+            )
     else:
-        issues.append(f"unsupported platform family for target matching: {family or 'unknown'}")
+        issues.append(
+            f"unsupported platform family for target matching: {family or 'unknown'}"
+        )
     return issues
 
 
@@ -352,7 +523,9 @@ def _platform_probe_result(target: dict[str, Any]) -> dict[str, Any]:
                 "family": target.get("family"),
                 "version": target.get("version"),
                 "architecture": target.get("architecture"),
-                "normalized_architecture": _expected_architecture(str(target.get("architecture") or "")),
+                "normalized_architecture": _expected_architecture(
+                    str(target.get("architecture") or "")
+                ),
             },
             "issues": issues,
         },
@@ -393,43 +566,65 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
         command = _shell_command_from_env("TB_RELEASE_DESKTOP_SMOKE_COMMAND") or list(
             DEFAULT_DESKTOP_RELEASE_SMOKE_COMMAND
         )
-        results.append(_run_command("desktop-release-smoke", command, cwd=root, timeout=900))
+        results.append(
+            _run_command("desktop-release-smoke", command, cwd=root, timeout=900)
+        )
 
     if "native-build-smoke" in suites:
         cargo = shutil.which("cargo")
         if cargo:
-            results.append(
-                _run_command(
-                    "rust-workspace-check",
-                    [cargo, "check", "--manifest-path", "experiments/rust-shells/Cargo.toml", "--workspace"],
-                    cwd=root,
-                    timeout=900,
-                )
+            workspace_check = _run_command(
+                "rust-workspace-check",
+                [
+                    cargo,
+                    "check",
+                    "--manifest-path",
+                    "experiments/rust-shells/Cargo.toml",
+                    "--locked",
+                    "--workspace",
+                ],
+                cwd=root,
+                timeout=900,
             )
-            results.append(
-                _run_command(
-                    "native-build-smoke",
-                    [
-                        cargo,
-                        "test",
-                        "--manifest-path",
-                        "experiments/rust-shells/Cargo.toml",
-                        "-p",
-                        "trading-bot-core",
-                    ],
-                    cwd=root,
-                    timeout=900,
+            results.append(workspace_check)
+            if workspace_check.get("status") == "passed":
+                results.append(_rust_native_build_smoke(cargo, target, root=root))
+            else:
+                results.append(
+                    {
+                        "name": "native-build-smoke",
+                        "status": "failed",
+                        "stderr": "rust-workspace-check failed",
+                        "steps": [],
+                    }
                 )
-            )
         else:
-            results.append({"name": "native-build-smoke", "status": "failed", "stderr": "cargo is not on PATH"})
+            results.append(
+                {
+                    "name": "native-build-smoke",
+                    "status": "failed",
+                    "stderr": "cargo is not on PATH",
+                }
+            )
 
     if "mobile-client-contract" in suites:
         npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm")
         if npm:
-            results.append(_run_command("mobile-client-contract", [npm, "test"], cwd=root / "apps" / "mobile-client"))
+            results.append(
+                _run_command(
+                    "mobile-client-contract",
+                    [npm, "test"],
+                    cwd=root / "apps" / "mobile-client",
+                )
+            )
         else:
-            results.append({"name": "mobile-client-contract", "status": "failed", "stderr": "npm is not on PATH"})
+            results.append(
+                {
+                    "name": "mobile-client-contract",
+                    "status": "failed",
+                    "stderr": "npm is not on PATH",
+                }
+            )
 
     if "browser-contract" in suites:
         command = _shell_command_from_env("TB_BROWSER_TEST_COMMAND")
@@ -446,7 +641,9 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
                 }
             )
         else:
-            results.append(_run_command("browser-contract", command, cwd=root, timeout=900))
+            results.append(
+                _run_command("browser-contract", command, cwd=root, timeout=900)
+            )
 
     return results
 
@@ -469,7 +666,9 @@ def _run_probe(target: dict[str, Any], *, output: Path, root: Path) -> dict[str,
 
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     suite_results = _suite_results(target, root=root)
-    ok = bool(suite_results) and all(item.get("status") == "passed" for item in suite_results)
+    ok = bool(suite_results) and all(
+        item.get("status") == "passed" for item in suite_results
+    )
     payload = {
         "target_id": str(target.get("id") or ""),
         "status": "passed" if ok else "failed",
@@ -496,9 +695,17 @@ def _run_probe(target: dict[str, Any], *, output: Path, root: Path) -> dict[str,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target-id", help="Target id from tools/check_release_platform_matrix.py.")
-    parser.add_argument("--matrix", default=str(DEFAULT_MATRIX_PATH), help="Path to release platform matrix JSON.")
-    parser.add_argument("--output", help="Evidence JSON path to write for a single --target-id run.")
+    parser.add_argument(
+        "--target-id", help="Target id from tools/check_release_platform_matrix.py."
+    )
+    parser.add_argument(
+        "--matrix",
+        default=str(DEFAULT_MATRIX_PATH),
+        help="Path to release platform matrix JSON.",
+    )
+    parser.add_argument(
+        "--output", help="Evidence JSON path to write for a single --target-id run."
+    )
     parser.add_argument(
         "--output-dir",
         default="release-platform-evidence",
@@ -600,7 +807,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
 
     if not args.target_id or not args.output:
-        parser.error("--target-id and --output are required unless listing or running local browser targets")
+        parser.error(
+            "--target-id and --output are required unless listing or running local browser targets"
+        )
 
     target = _find_target(args.target_id, matrix_path)
     result = _run_probe(target, output=Path(args.output), root=root)

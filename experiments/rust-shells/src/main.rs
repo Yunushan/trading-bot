@@ -38,6 +38,14 @@ const PROMOTION_SOURCE_TREE_IGNORED_PATHS: &[&str] = &[
 ];
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--smoke") {
+        if let Err(error) = run_packaged_smoke() {
+            eprintln!("Rust packaged smoke failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if std::env::args().any(|arg| arg == "--native-live-smoke-preflight") {
         if let Err(error) = run_native_live_smoke_preflight() {
             eprintln!(
@@ -140,6 +148,27 @@ fn main() {
             capability.key, capability.title, capability.rust_status
         );
     }
+}
+
+fn run_packaged_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    if supported_frameworks() != ["Tauri"] {
+        return Err("the packaged Rust shell catalog must contain only Tauri".into());
+    }
+    if python_source_contract_hash().len() != 64 {
+        return Err("the generated Python source contract hash is invalid".into());
+    }
+    if !native_python_app_contract_parity_ready() {
+        return Err("the generated native source contract is incomplete".into());
+    }
+    if rust_native_trading_runtime_ready() {
+        return Err("native trading must remain disabled until promotion evidence passes".into());
+    }
+
+    println!(
+        "Trading Bot Rust packaged smoke passed (contract {}, shell Tauri, native trading disabled).",
+        python_source_contract_hash()
+    );
+    Ok(())
 }
 
 fn format_error_chain(error: &dyn std::error::Error) -> String {
@@ -1641,6 +1670,11 @@ mod tests {
                 ..Default::default()
             }])
         }
+    }
+
+    #[test]
+    fn packaged_smoke_validates_generated_contract_and_safe_runtime_guard() {
+        run_packaged_smoke().expect("packaged smoke should pass");
     }
 
     #[test]

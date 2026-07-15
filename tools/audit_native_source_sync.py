@@ -19,10 +19,12 @@ if str(PYTHON_ROOT) not in sys.path:
 from app.native_parity import native_python_source_contract_hash  # noqa: E402
 from app.service.api_contract import SERVICE_API_ROUTE_PATHS  # noqa: E402
 from tools.generate_native_parity_contracts import (  # noqa: E402
+    CPP_INDICATOR_REFERENCE_OUTPUT,
     CPP_OUTPUT,
     RUST_INDICATOR_REFERENCE_OUTPUT,
     RUST_OUTPUT,
     TAURI_BROWSER_OUTPUT,
+    render_cpp_indicator_reference_header,
     render_cpp_header,
     render_rust_indicator_reference_module,
     render_rust_module,
@@ -82,6 +84,7 @@ REQUIRED_GENERATED_ARTIFACT_NAMES = (
     "rust_core_generated_contract",
     "rust_indicator_reference_fixture",
     "cpp_generated_contract",
+    "cpp_indicator_reference_fixture",
     "tauri_browser_generated_contract",
 )
 REQUIRED_CONSUMER_SURFACE_NAMES = (
@@ -104,11 +107,15 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_account_symbols_use_python_source_fallbacks",
     "cpp_native_exchange_connectors_use_python_source_connectors",
     "cpp_native_strategy_runtime_uses_python_source_options",
+    "cpp_native_indicator_runtime_uses_python_reference_fixture",
+    "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline",
     "cpp_order_guard_uses_python_behavior_contract",
     "tauri_browser_consumes_generated_contract",
     "tauri_browser_service_api_uses_python_source_routes",
     "tauri_native_runtime_preview_backend",
     "tauri_native_runtime_preview_browser_bridge",
+    "tauri_native_runtime_controller_backend",
+    "tauri_native_runtime_controller_browser_bridge",
 )
 
 
@@ -211,6 +218,11 @@ def _generated_artifacts() -> tuple[GeneratedArtifact, ...]:
             render_rust_indicator_reference_module(),
         ),
         GeneratedArtifact("cpp_generated_contract", CPP_OUTPUT, render_cpp_header()),
+        GeneratedArtifact(
+            "cpp_indicator_reference_fixture",
+            CPP_INDICATOR_REFERENCE_OUTPUT,
+            render_cpp_indicator_reference_header(),
+        ),
         GeneratedArtifact("tauri_browser_generated_contract", TAURI_BROWSER_OUTPUT, render_tauri_browser_contract()),
     )
 
@@ -433,8 +445,12 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "pythonSourceBacktestTemplateLabels",
                 "pythonSourceSignalLogicOptionLabels",
                 "pythonSourceMddLogicOptionLabels",
+                "pythonSourceBacktestIndicatorConfigs",
+                "pythonSourceBacktestExecutionBackendOptionKeys",
                 "rebuildConnectorComboForAccount",
                 "resolveConnectorConfig",
+                "NativeBacktestBatchRuntime::runBatch",
+                "BinanceRestClient::fetchKlinesRange",
             ),
             forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
         ),
@@ -565,6 +581,32 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "cpp_native_indicator_runtime_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                '#include "../src/NativeIndicatorRuntime.h"',
+                '#include "../src/generated/PythonIndicatorReference.h"',
+                "PythonIndicatorReference::kPythonSourceContractHash",
+                "PythonIndicatorReference::kReferenceJson",
+                "NativeIndicatorRuntime::computeConfiguredSeries",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_runtime.cpp",
+            (
+                '#include "NativeIndicatorRuntime.h"',
+                '#include "NativeStrategyRuntime.h"',
+                "NativeIndicatorRuntime::computeConfiguredSeries",
+                "NativeStrategyRuntime::buildSignalDecision",
+                "nativeIndicatorConfigsForKeys",
+                "unsupportedEnabledIndicatorKeys",
+            ),
+            forbidden_text=(
+                "if (!useRsi && !useStochRsi && !useWillr)",
+            ),
+        ),
+        ConsumerRequirement(
             "cpp_order_guard_uses_python_behavior_contract",
             REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeOrderSafety.cpp",
             (
@@ -674,6 +716,35 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 'invoke("evaluate_native_runtime_preview"',
                 "window.TradingBotNativeRuntime",
                 "evaluateReadOnly",
+            ),
+        ),
+        ConsumerRequirement(
+            "tauri_native_runtime_controller_backend",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "main.rs",
+            (
+                "fn start_native_runtime",
+                "fn native_runtime_status",
+                "fn set_native_runtime_paused",
+                "fn stop_native_runtime",
+                ".manage(NativeRuntimeState::default())",
+                "start_native_runtime,",
+                "native_runtime_status,",
+                "set_native_runtime_paused,",
+                "stop_native_runtime,",
+            ),
+        ),
+        ConsumerRequirement(
+            "tauri_native_runtime_controller_browser_bridge",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html",
+            (
+                'id="runtime-execution-backend"',
+                'invoke("start_native_runtime"',
+                'invoke("native_runtime_status"',
+                'invoke("set_native_runtime_paused"',
+                'invoke("stop_native_runtime"',
+                "buildNativeRuntimeConfig",
+                "delete config.api_key",
+                "delete config.api_secret",
             ),
         ),
     )

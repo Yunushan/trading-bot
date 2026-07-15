@@ -103,6 +103,8 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
         live_qty_preferred, known_preferred = _live_closeable_qty(ps_norm)
         live_qty_fallback, known_fallback = _live_closeable_qty(None)
         live_qty = live_qty_preferred if live_qty_preferred > qty_tol else live_qty_fallback
+        if live_qty <= qty_tol and (known_preferred or known_fallback):
+            return {"ok": True, "skipped": True, "symbol": sym, "reason": "position already flat"}
         if live_qty > qty_tol:
             q = min(q, live_qty)
         if q <= qty_tol:
@@ -116,7 +118,8 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             if ps_norm in ("LONG", "SHORT"):
                 ps_attempts.append(ps_norm)
             ps_attempts.append(derived_ps)
-        ps_attempts.append(None)
+        else:
+            ps_attempts.append(None)
         dedup_attempts: list[str | None] = []
         for candidate in ps_attempts:
             if candidate not in dedup_attempts:
@@ -215,6 +218,40 @@ def close_futures_position(self, symbol: str):
         failed = 0
         errors = []
 
+        def _fresh_symbol_rows() -> tuple[list, bool, str | None]:
+            snapshot_error: str | None = None
+            fresh_rows = []
+            known = False
+            try:
+                fresh_rows = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+                known = True
+            except Exception as exc:
+                snapshot_error = str(exc)
+            if not fresh_rows:
+                try:
+                    raw_rows = self.client.futures_position_information(symbol=sym) or []
+                    known = True
+                    fresh_rows = []
+                    for raw in raw_rows:
+                        try:
+                            if str(raw.get("symbol") or "").upper() != sym:
+                                continue
+                            fresh_rows.append(
+                                {
+                                    "symbol": sym,
+                                    "positionAmt": float(raw.get("positionAmt") or 0.0),
+                                    "positionSide": str(
+                                        raw.get("positionSide") or raw.get("positionside") or "BOTH"
+                                    ).upper(),
+                                }
+                            )
+                        except Exception:
+                            continue
+                except Exception as exc:
+                    if not known:
+                        snapshot_error = str(exc)
+            return fresh_rows, known, snapshot_error
+
         def _resolve_close(amt_val: float, raw_pos_side: object) -> tuple[str | None, str | None]:
             pos_side = str(raw_pos_side or "").upper().strip()
             if dual and pos_side in ("LONG", "SHORT"):
@@ -246,6 +283,34 @@ def close_futures_position(self, symbol: str):
             except Exception as exc:
                 failed += 1
                 errors.append(str(exc))
+
+        remaining = []
+        verification_known = False
+        verification_error: str | None = None
+        if closed > 0 or failed > 0:
+            for attempt in range(3):
+                fresh_rows, verification_known, verification_error = _fresh_symbol_rows()
+                remaining = []
+                for fresh in fresh_rows:
+                    try:
+                        if str(fresh.get("symbol") or "").upper() != sym:
+                            continue
+                        if abs(float(fresh.get("positionAmt") or 0.0)) > 1e-12:
+                            remaining.append(fresh)
+                    except Exception:
+                        continue
+                if verification_known and not remaining:
+                    break
+                if attempt < 2:
+                    time.sleep(0.1)
+            if not verification_known:
+                errors.append(f"close verification unavailable: {verification_error or 'unknown error'}")
+            elif remaining:
+                remaining_labels = [
+                    f"{str(row.get('positionSide') or 'BOTH').upper()}={row.get('positionAmt')}"
+                    for row in remaining
+                ]
+                errors.append(f"position remained open after close: {', '.join(remaining_labels)}")
         if closed <= 0 and failed <= 0:
             return {
                 "ok": False,
@@ -254,7 +319,13 @@ def close_futures_position(self, symbol: str):
                 "errors": ["no open positions found from close snapshot"],
                 "symbol": sym,
             }
-        return {"ok": failed == 0, "closed": closed, "failed": failed, "errors": errors}
+        return {
+            "ok": failed == 0 and verification_known and not remaining,
+            "closed": closed,
+            "failed": failed,
+            "errors": errors,
+            "remaining": len(remaining),
+        }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -262,16 +333,12 @@ def close_futures_position(self, symbol: str):
 def cancel_all_open_futures_orders(self) -> dict:
     results: dict = {"ok": True, "canceled_symbols": 0, "errors": []}
     try:
-        try:
-            self.client.futures_cancel_all_open_orders()
-            return results
-        except Exception:
-            pass
         orders = []
         try:
             orders = self.client.futures_get_open_orders() or []
-        except Exception:
-            orders = []
+        except Exception as exc:
+            results["ok"] = False
+            results["errors"].append(f"open order snapshot: {exc}")
         symbols = set()
         for order in orders:
             try:
@@ -287,8 +354,8 @@ def cancel_all_open_futures_orders(self) -> dict:
                     sym = str(pos.get("symbol") or "").upper()
                     if sym:
                         symbols.add(sym)
-            except Exception:
-                symbols = set()
+            except Exception as exc:
+                results["errors"].append(f"position snapshot: {exc}")
         for sym in sorted(symbols):
             try:
                 self.client.futures_cancel_all_open_orders(symbol=sym)
@@ -296,71 +363,27 @@ def cancel_all_open_futures_orders(self) -> dict:
             except Exception as exc:
                 results["ok"] = False
                 results["errors"].append(f"{sym}: {exc}")
+        if results["ok"]:
+            results["errors"] = []
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
     return results
 
 
 def close_all_futures_positions(self):
+    """Delegate to the single canonical, reconciled close-all implementation."""
     try:
         from .close_all_runtime import close_all_futures_positions as _close_all_futures_positions
 
         delegated = _close_all_futures_positions(self)
-        return delegated if isinstance(delegated, list) else []
-    except Exception:
-        pass
-    results = []
-    try:
-        dual = False
-        try:
-            mode_info = self.client.futures_get_position_mode()
-            dual = bool(mode_info.get("dualSidePosition"))
-        except Exception:
-            pass
-        positions = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
-        if not positions:
-            return results
-        try:
-            for symbol in sorted({p["symbol"] for p in positions}):
-                try:
-                    self.client.futures_cancel_all_open_orders(symbol=symbol)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        for pos in positions:
-            try:
-                sym = pos["symbol"]
-                amt = float(pos.get("positionAmt") or 0.0)
-                if abs(amt) <= 0.0:
-                    continue
-                raw_ps = str(pos.get("positionSide") or pos.get("positionside") or "").upper().strip()
-                if dual and raw_ps in ("LONG", "SHORT"):
-                    side = "SELL" if raw_ps == "LONG" else "BUY"
-                    target_ps = raw_ps
-                else:
-                    side = "SELL" if amt > 0 else "BUY"
-                    target_ps = ("LONG" if amt > 0 else "SHORT") if dual else None
-                qty = abs(amt)
-                try:
-                    filters = self.get_futures_symbol_filters(sym) or {}
-                    step = float(filters.get("stepSize") or 0.0)
-                except Exception:
-                    step = 0.0
-                qty_str = self._format_quantity_for_order(qty, step)
-                params = dict(symbol=sym, side=side, type="MARKET", quantity=qty_str)
-                if dual and target_ps in ("LONG", "SHORT"):
-                    params["positionSide"] = target_ps
-                else:
-                    params["reduceOnly"] = True
-                info, via = self._futures_create_order_with_fallback(params)
-                self._invalidate_futures_positions_cache()
-                row = {"symbol": sym, "ok": True, "info": info}
-                if via and via != "primary":
-                    row["via"] = via
-                results.append(row)
-            except Exception as exc:
-                results.append({"symbol": pos.get("symbol"), "ok": False, "error": str(exc)})
+        if isinstance(delegated, list):
+            return delegated
+        return [{"ok": False, "error": "canonical close-all runtime returned an invalid response"}]
     except Exception as exc:
-        results.append({"ok": False, "error": str(exc)})
-    return results
+        try:
+            logger = getattr(self, "_log", None)
+            if callable(logger):
+                logger(f"Canonical close-all runtime failed: {exc}", lvl="error")
+        except Exception:
+            return [{"ok": False, "error": f"canonical close-all runtime failed: {exc}"}]
+        return [{"ok": False, "error": f"canonical close-all runtime failed: {exc}"}]

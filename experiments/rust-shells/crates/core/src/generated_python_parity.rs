@@ -5,7 +5,7 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "4b49f21a5fa13384e71765def83a2e09404a1685c430d85c611770898b48f128";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "05238a173d786f3902fc30708294757d8ea1d7662e973a80c4b1b96930a39830";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -668,6 +668,7 @@ pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[
     pub display_name: &'static str,
     pub default_enabled: bool,
     pub runtime_config_json: &'static str,
+    pub backtest_config_json: &'static str,
     pub runtime_output_keys: &'static [&'static str],
 }
 
@@ -677,6 +678,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Moving Average (MA)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"type\":\"SMA\"}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\",\"type\":\"SMA\"}",
         runtime_output_keys: &["ma"],
     },
     PythonIndicator {
@@ -684,6 +686,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Donchian Channels (DC)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\"}",
         runtime_output_keys: &["donchian_high", "donchian_low", "donchian"],
     },
     PythonIndicator {
@@ -691,6 +694,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Parabolic SAR (PSAR)",
         default_enabled: false,
         runtime_config_json: "{\"af\":0.02,\"buy_value\":null,\"enabled\":false,\"max_af\":0.2,\"sell_value\":null}",
+        backtest_config_json: "{\"af\":0.02,\"buy_value\":0,\"enabled\":false,\"max_af\":0.2,\"sell_value\":0,\"signal_mode\":\"price_cross\"}",
         runtime_output_keys: &["psar"],
     },
     PythonIndicator {
@@ -698,6 +702,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Bollinger Bands (BB)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\",\"std\":2}",
         runtime_output_keys: &["bb_upper", "bb_mid", "bb_lower"],
     },
     PythonIndicator {
@@ -705,6 +710,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Bollinger Band Width (BBW)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2}",
+        backtest_config_json: "{\"buy_value\":5.0,\"enabled\":false,\"length\":20,\"sell_value\":2.0,\"std\":2}",
         runtime_output_keys: &["bbw"],
     },
     PythonIndicator {
@@ -712,6 +718,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Keltner Channels (KC)",
         default_enabled: false,
         runtime_config_json: "{\"atr_length\":10,\"buy_value\":null,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":null}",
+        backtest_config_json: "{\"atr_length\":10,\"buy_value\":0,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":100,\"signal_mode\":\"band_position\"}",
         runtime_output_keys: &["keltner_upper", "keltner_mid", "keltner_lower"],
     },
     PythonIndicator {
@@ -719,6 +726,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Ichimoku Cloud (IC)",
         default_enabled: false,
         runtime_config_json: "{\"base_length\":26,\"buy_value\":null,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":null,\"span_b_length\":52}",
+        backtest_config_json: "{\"base_length\":26,\"buy_value\":0,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":0,\"span_b_length\":52}",
         runtime_output_keys: &["ichimoku_tenkan", "ichimoku_kijun", "ichimoku_span_a", "ichimoku_span_b", "ichimoku_chikou", "ichimoku"],
     },
     PythonIndicator {
@@ -726,6 +734,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Relative Strength Index (RSI)",
         default_enabled: true,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":true,\"length\":14,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":30,\"enabled\":true,\"length\":14,\"sell_value\":70}",
         runtime_output_keys: &["rsi"],
     },
     PythonIndicator {
@@ -733,6 +742,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Volume",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":20,\"sell_value\":null,\"signal_mode\":\"relative_to_sma\",\"signal_role\":\"filter\"}",
         runtime_output_keys: &["volume"],
     },
     PythonIndicator {
@@ -740,6 +750,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "On-Balance Volume (OBV)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":3,\"sell_value\":0,\"signal_mode\":\"slope\"}",
         runtime_output_keys: &["obv"],
     },
     PythonIndicator {
@@ -747,6 +758,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Relative Volume (RVOL)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":1.5,\"enabled\":false,\"length\":20,\"sell_value\":0.75}",
         runtime_output_keys: &["rvol"],
     },
     PythonIndicator {
@@ -754,6 +766,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Chaikin Money Flow (CMF)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":0.05,\"enabled\":false,\"length\":20,\"sell_value\":-0.05}",
         runtime_output_keys: &["cmf"],
     },
     PythonIndicator {
@@ -761,6 +774,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Commodity Channel Index (CCI)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":-100,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":100}",
         runtime_output_keys: &["cci"],
     },
     PythonIndicator {
@@ -768,6 +782,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Rate of Change (ROC)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":12,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":12,\"sell_value\":0}",
         runtime_output_keys: &["roc"],
     },
     PythonIndicator {
@@ -775,6 +790,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Triple Exponential Average (TRIX)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":15,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":15,\"sell_value\":0}",
         runtime_output_keys: &["trix"],
     },
     PythonIndicator {
@@ -782,6 +798,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Percentage Price Oscillator (PPO)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26}",
         runtime_output_keys: &["ppo", "ppo_signal", "ppo_hist"],
     },
     PythonIndicator {
@@ -789,6 +806,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Awesome Oscillator (AO)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"fast\":5,\"sell_value\":null,\"slow\":34}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"fast\":5,\"sell_value\":0,\"slow\":34}",
         runtime_output_keys: &["ao"],
     },
     PythonIndicator {
@@ -796,6 +814,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Know Sure Thing (KST)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":null,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":0,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15}",
         runtime_output_keys: &["kst", "kst_signal", "kst_hist"],
     },
     PythonIndicator {
@@ -803,6 +822,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Aroon Oscillator (AROON)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":25,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":50,\"enabled\":false,\"length\":25,\"sell_value\":-50}",
         runtime_output_keys: &["aroon_up", "aroon_down", "aroon"],
     },
     PythonIndicator {
@@ -810,6 +830,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Choppiness Index (CHOP)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":38.2,\"enabled\":false,\"length\":14,\"sell_value\":61.8}",
         runtime_output_keys: &["chop"],
     },
     PythonIndicator {
@@ -817,6 +838,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Average True Range (ATR)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_mode\":\"percent_of_close\",\"signal_role\":\"filter\"}",
         runtime_output_keys: &["atr"],
     },
     PythonIndicator {
@@ -824,6 +846,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Normalized Average True Range (NATR)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":2.0,\"enabled\":false,\"length\":14,\"sell_value\":1.0}",
         runtime_output_keys: &["natr"],
     },
     PythonIndicator {
@@ -831,6 +854,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Volume Weighted Average Price (VWAP)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"}",
         runtime_output_keys: &["vwap"],
     },
     PythonIndicator {
@@ -838,6 +862,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Money Flow Index (MFI)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80}",
         runtime_output_keys: &["mfi"],
     },
     PythonIndicator {
@@ -845,6 +870,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Stochastic RSI (SRSI)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3}",
+        backtest_config_json: "{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3}",
         runtime_output_keys: &["stoch_rsi", "stoch_rsi_k", "stoch_rsi_d"],
     },
     PythonIndicator {
@@ -852,6 +878,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Williams %R",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":-80,\"enabled\":false,\"length\":14,\"sell_value\":-20}",
         runtime_output_keys: &["willr"],
     },
     PythonIndicator {
@@ -859,6 +886,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Moving Average Convergence/Divergence (MACD)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26}",
         runtime_output_keys: &["macd_line", "macd_signal"],
     },
     PythonIndicator {
@@ -866,6 +894,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Ultimate Oscillator (UO)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":null,\"short\":7}",
+        backtest_config_json: "{\"buy_value\":30,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":70,\"short\":7}",
         runtime_output_keys: &["uo"],
     },
     PythonIndicator {
@@ -873,6 +902,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Average Directional Index (ADX)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":20,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_role\":\"filter\"}",
         runtime_output_keys: &["adx"],
     },
     PythonIndicator {
@@ -880,6 +910,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Directional Movement Index (DMI)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":14,\"sell_value\":0}",
         runtime_output_keys: &["dmi_plus", "dmi_minus", "dmi"],
     },
     PythonIndicator {
@@ -887,6 +918,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "SuperTrend (ST)",
         default_enabled: false,
         runtime_config_json: "{\"atr_period\":10,\"buy_value\":null,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":null}",
+        backtest_config_json: "{\"atr_period\":10,\"buy_value\":0,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":0,\"signal_mode\":\"price_cross\"}",
         runtime_output_keys: &["supertrend"],
     },
     PythonIndicator {
@@ -894,6 +926,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Exponential Moving Average (EMA)",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}",
+        backtest_config_json: "{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"}",
         runtime_output_keys: &["ema"],
     },
     PythonIndicator {
@@ -901,6 +934,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
         display_name: "Stochastic Oscillator",
         default_enabled: false,
         runtime_config_json: "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3}",
+        backtest_config_json: "{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3}",
         runtime_output_keys: &["stochastic", "stochastic_k", "stochastic_d"],
     },
 ];

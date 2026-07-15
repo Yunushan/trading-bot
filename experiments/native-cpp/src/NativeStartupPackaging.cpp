@@ -76,7 +76,8 @@ QJsonObject cppStartupPackagingContract() {
         {QStringLiteral("icon_resource"), QStringLiteral(":/app_icon.ico")},
         {QStringLiteral("startup_suppression_env"), requiredStartupSuppressionEnv()},
         {QStringLiteral("release_smoke_commands"), releaseSmokeCommands()},
-        {QStringLiteral("delegates_trading_execution_to_python"), true},
+        {QStringLiteral("delegates_trading_execution_to_python"), false},
+        {QStringLiteral("native_trading_execution_scope"), QStringLiteral("binance-usds-futures")},
     };
 }
 

@@ -212,7 +212,7 @@ class NativeOptionParityTests(unittest.TestCase):
             for requirement in audit_native_source_sync._consumer_requirements()
             if requirement.forbidden_text
         }
-        expected_guarded_consumers = {
+        expected_python_owned_literal_consumers = {
             "rust_core_consumes_generated_contract",
             "cpp_support_consumes_generated_contract",
             "cpp_config_persistence_uses_python_source_options",
@@ -220,14 +220,27 @@ class NativeOptionParityTests(unittest.TestCase):
             "cpp_backtest_uses_python_source_surface",
             "tauri_browser_consumes_generated_contract",
         }
+        expected_pipeline_guard_consumers = {
+            "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline": (
+                "if (!useRsi && !useStochRsi && !useWillr)",
+            ),
+        }
+        expected_guarded_consumers = (
+            expected_python_owned_literal_consumers | set(expected_pipeline_guard_consumers)
+        )
         report = audit_native_source_sync.audit_native_source_sync()
         consumers_by_name = {item["name"]: item for item in report["consumers"]}
 
         self.assertEqual(expected_guarded_consumers, set(guarded_consumers))
         for consumer_name in expected_guarded_consumers:
             with self.subTest(consumer=consumer_name):
+                expected_forbidden_text = (
+                    audit_native_source_sync.PYTHON_OWNED_OPTION_VALUE_FRAGMENTS
+                    if consumer_name in expected_python_owned_literal_consumers
+                    else expected_pipeline_guard_consumers[consumer_name]
+                )
                 self.assertEqual(
-                    audit_native_source_sync.PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
+                    expected_forbidden_text,
                     guarded_consumers[consumer_name].forbidden_text,
                 )
                 self.assertTrue(consumers_by_name[consumer_name]["ok"], consumers_by_name[consumer_name])

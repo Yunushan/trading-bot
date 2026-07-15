@@ -3,12 +3,16 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
+#include <QEvent>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QStringList>
 #include <QTextStream>
+#include <QTimer>
+
+#include <memory>
 
 #ifdef Q_OS_WIN
 #ifndef _WIN32_WINNT
@@ -63,6 +67,35 @@ bool hasBoundedSmokeArg() {
         || args.contains(QStringLiteral("--healthcheck"));
 }
 
+int runBoundedSmoke(QApplication &app, const QIcon &icon) {
+    app.setProperty("tradingBotBoundedSmoke", true);
+
+    auto window = std::make_unique<TradingBotWindow>();
+    if (!icon.isNull()) {
+        window->setWindowIcon(icon);
+    }
+
+    TradingBotWindow *windowPtr = window.get();
+    QTimer::singleShot(0, windowPtr, [windowPtr]() {
+        windowPtr->show();
+    });
+    QTimer::singleShot(150, &app, &QCoreApplication::quit);
+
+    const int exitCode = app.exec();
+    window->close();
+    window.reset();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+    if (exitCode != 0) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed with Qt exit code "
+                            << exitCode << '\n';
+        return exitCode;
+    }
+    QTextStream(stdout) << "Trading Bot C++ smoke ok\n";
+    return 0;
+}
+
 #ifdef Q_OS_WIN
 void applyAppUserModelID() {
     // Ensures taskbar pinning/grouping and jump-list identity stay consistent.
@@ -89,15 +122,13 @@ int main(int argc, char *argv[]) {
         QGuiApplication::setWindowIcon(icon);
     }
 
+    if (hasBoundedSmokeArg()) {
+        return runBoundedSmoke(app, icon);
+    }
+
     TradingBotWindow window;
     if (!icon.isNull()) {
         window.setWindowIcon(icon);
-    }
-
-    if (hasBoundedSmokeArg()) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
-        QTextStream(stdout) << "Trading Bot C++ smoke ok\n";
-        return 0;
     }
 
     window.showMaximized();

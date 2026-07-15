@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +124,72 @@ class _DelayedCloseWrapper(_GhostWrapper):
         super().__init__(mode="Live", client=_DelayedCloseClient(close_after_orders=close_after_orders))
 
 
+class _HedgeCloseClient(_DelayedCloseClient):
+    def __init__(self):
+        super().__init__(close_after_orders=2)
+
+    def futures_get_position_mode(self):
+        return {"dualSidePosition": True}
+
+    def futures_position_information(self):
+        if len(self.orders) >= self.close_after_orders:
+            return []
+        return [
+            {"symbol": "BTCUSDT", "positionAmt": "0.2", "positionSide": "LONG"},
+            {"symbol": "ETHUSDT", "positionAmt": "-0.3", "positionSide": "SHORT"},
+        ]
+
+
+class _HedgeCloseWrapper(_GhostWrapper):
+    def __init__(self):
+        super().__init__(mode="Live", client=_HedgeCloseClient())
+
+
+class _BelowMinimumWrapper(_DelayedCloseWrapper):
+    def __init__(self):
+        super().__init__(close_after_orders=99)
+        self.client.close_after_orders = 99
+        self.client.futures_position_information = lambda: [
+            {"symbol": "ETHUSDT", "positionAmt": "0.05", "positionSide": "BOTH"}
+        ]
+
+    def get_futures_symbol_filters(self, _symbol):
+        return {"stepSize": "0.01", "minQty": "0.10", "maxQty": "100"}
+
+
+class _UnknownExecutionError(RuntimeError):
+    code = -1007
+
+
+class _UnknownExecutionClient(_DelayedCloseClient):
+    def __init__(self):
+        super().__init__(close_after_orders=1)
+
+    def futures_create_order(self, **params):
+        self.orders.append(dict(params))
+        raise _UnknownExecutionError("execution status unknown")
+
+
+class _UnknownExecutionWrapper(_GhostWrapper):
+    def __init__(self):
+        super().__init__(mode="Live", client=_UnknownExecutionClient())
+
+
+class _CancelFallbackClient(_GhostClient):
+    def __init__(self):
+        super().__init__()
+        self.individual_cancel_calls = []
+
+    def futures_cancel_all_open_orders(self, **params):
+        raise RuntimeError(f"bulk cancel unavailable for {params.get('symbol')}")
+
+    def futures_get_open_orders(self, **_params):
+        return [{"orderId": 11}, {"orderId": 12}]
+
+    def futures_cancel_order(self, **params):
+        self.individual_cancel_calls.append(dict(params))
+
+
 class BinanceGhostPositionCloseAllTests(unittest.TestCase):
     def test_demo_stop_clears_zero_qty_negative_isolated_margin(self):
         wrapper = _GhostWrapper()
@@ -175,8 +242,18 @@ class BinanceGhostPositionCloseAllTests(unittest.TestCase):
         self.assertEqual(2, len(wrapper.client.orders))
         self.assertEqual(1, len(results))
         self.assertTrue(results[0]["ok"])
-        self.assertEqual("closePosition", results[0]["method"])
-        self.assertEqual({"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "closePosition": True}, wrapper.client.orders[-1])
+        self.assertEqual("reduceOnly", results[0]["method"])
+        self.assertEqual(
+            {
+                "symbol": "ETHUSDT",
+                "side": "SELL",
+                "type": "MARKET",
+                "quantity": "0.20000000",
+                "reduceOnly": True,
+            },
+            wrapper.client.orders[-1],
+        )
+        self.assertEqual([{"symbol": "ETHUSDT"}], wrapper.client.cancel_calls)
 
     def test_fast_close_reports_position_that_remains_open_after_retries(self):
         wrapper = _DelayedCloseWrapper(close_after_orders=99)
@@ -188,6 +265,81 @@ class BinanceGhostPositionCloseAllTests(unittest.TestCase):
         self.assertFalse(results[0]["ok"])
         self.assertEqual("verification", results[0]["method"])
         self.assertIn("position remained open", results[0]["error"])
+
+    def test_default_close_uses_immediate_quantity_order_not_conditional_close_position(self):
+        wrapper = _DelayedCloseWrapper(close_after_orders=1)
+
+        results = close_all_futures_positions(wrapper)
+
+        self.assertEqual(1, len(results))
+        self.assertTrue(results[0]["ok"])
+        self.assertEqual("reduceOnly", results[0]["method"])
+        self.assertNotIn("closePosition", wrapper.client.orders[0])
+        self.assertEqual("0.20000000", wrapper.client.orders[0]["quantity"])
+        self.assertEqual([{"symbol": "ETHUSDT"}], wrapper.client.cancel_calls)
+
+    def test_hedge_close_uses_position_side_without_reduce_only(self):
+        wrapper = _HedgeCloseWrapper()
+
+        results = close_all_futures_positions(wrapper, fast=True, max_workers=1)
+
+        self.assertEqual(2, len(results))
+        self.assertTrue(all(result["ok"] for result in results))
+        self.assertEqual(
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "SELL",
+                    "type": "MARKET",
+                    "quantity": "0.20000000",
+                    "positionSide": "LONG",
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "side": "BUY",
+                    "type": "MARKET",
+                    "quantity": "0.30000000",
+                    "positionSide": "SHORT",
+                },
+            ],
+            wrapper.client.orders,
+        )
+        self.assertTrue(all("reduceOnly" not in order for order in wrapper.client.orders))
+
+    def test_below_minimum_position_is_not_increased_into_an_oversized_close(self):
+        wrapper = _BelowMinimumWrapper()
+
+        results = close_all_futures_positions(wrapper, fast=True, max_workers=1)
+
+        self.assertEqual([], wrapper.client.orders)
+        self.assertEqual(1, len(results))
+        self.assertFalse(results[0]["ok"])
+        self.assertEqual("validation", results[0]["method"])
+        self.assertIn("cannot be safely represented", results[0]["error"])
+
+    def test_unknown_execution_is_reconciled_from_authoritative_position_snapshot(self):
+        wrapper = _UnknownExecutionWrapper()
+
+        with mock.patch.object(close_all_runtime.time, "sleep"):
+            results = close_all_futures_positions(wrapper, fast=True, max_workers=1)
+
+        self.assertEqual(1, len(wrapper.client.orders))
+        self.assertEqual(1, len(results))
+        self.assertTrue(results[0]["ok"])
+        self.assertTrue(results[0]["reconciled"])
+
+    def test_symbol_cancel_falls_back_to_individual_orders(self):
+        wrapper = _GhostWrapper(client=_CancelFallbackClient())
+
+        close_all_runtime._cancel_all(wrapper, "BTCUSDT")
+
+        self.assertEqual(
+            [
+                {"symbol": "BTCUSDT", "orderId": 11},
+                {"symbol": "BTCUSDT", "orderId": 12},
+            ],
+            wrapper.client.individual_cancel_calls,
+        )
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parents[1]
 PYPROJECT_PATH = PYTHON_ROOT / "pyproject.toml"
+PYINSTALLER_REQUIREMENT = "pyinstaller==6.21.0"
 
 EXPECTED_REQUIREMENT_SHIMS = {
     "requirements.backend.txt": ".",
@@ -54,6 +55,14 @@ PYTHON_VERSION_RUNTIME_PINS = {
         "pandas==3.0.2; python_version >= '3.11'",
     },
 }
+
+PACKAGING_INSTALL_SURFACES = (
+    PYTHON_ROOT / "tools" / "build_exe.ps1",
+    PYTHON_ROOT / "tools" / "build_binary.sh",
+    REPO_ROOT / ".github" / "workflows" / "release-windows.yml",
+    REPO_ROOT / ".github" / "workflows" / "release-linux-macos.yml",
+    REPO_ROOT / ".github" / "workflows" / "release-freebsd.yml",
+)
 
 
 def _load_pyproject() -> dict[str, Any]:
@@ -191,6 +200,34 @@ def _check_ci_install_surface() -> list[str]:
     return []
 
 
+def _check_packaging_toolchain() -> list[str]:
+    errors: list[str] = []
+    requirements_path = PYTHON_ROOT / "requirements.packaging.txt"
+    if not requirements_path.is_file():
+        errors.append("requirements.packaging.txt is missing")
+    else:
+        requirements = _non_comment_lines(requirements_path)
+        if requirements != [PYINSTALLER_REQUIREMENT]:
+            errors.append(
+                "requirements.packaging.txt must contain only "
+                f"{PYINSTALLER_REQUIREMENT!r}; found {requirements!r}"
+            )
+
+    for path in PACKAGING_INSTALL_SURFACES:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"packaging install surface {path.relative_to(REPO_ROOT)} is unreadable: {exc}")
+            continue
+        if "requirements.packaging.txt" not in text:
+            errors.append(
+                f"packaging install surface {path.relative_to(REPO_ROOT)} must install requirements.packaging.txt"
+            )
+        if re.search(r"pip\s+install(?:\s+--upgrade)?\s+pyinstaller(?:\s|$)", text, flags=re.IGNORECASE):
+            errors.append(f"packaging install surface {path.relative_to(REPO_ROOT)} installs unpinned PyInstaller")
+    return errors
+
+
 def run_checks() -> list[str]:
     pyproject = _load_pyproject()
     project = pyproject.get("project") or {}
@@ -199,6 +236,7 @@ def run_checks() -> list[str]:
     errors.extend(_check_requirement_shims())
     errors.extend(_check_dependency_groups(pyproject))
     errors.extend(_check_ci_install_surface())
+    errors.extend(_check_packaging_toolchain())
     return errors
 
 
@@ -214,6 +252,7 @@ def main() -> int:
         print(f"[PASS] {filename} -> {expected}")
     print("[PASS] runtime, desktop, service, and Windows ARM64 dependencies are release-pinned")
     print("[PASS] dev dependencies use reviewed bounded ranges")
+    print(f"[PASS] packaging toolchain uses {PYINSTALLER_REQUIREMENT}")
     print("[PASS] CI installs the canonical editable dependency surface")
     return 0
 

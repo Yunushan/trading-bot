@@ -8,6 +8,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
+
 class BinanceRestClient final {
 public:
     struct KlineCandle {
@@ -121,7 +123,21 @@ public:
         bool testnet,
         int limit = 300,
         int timeoutMs = 10000,
-        const QString &baseUrlOverride = {});
+        const QString &baseUrlOverride = {},
+        qint64 startTimeMs = 0,
+        qint64 endTimeMs = 0);
+
+    static KlinesResult fetchKlinesRange(
+        const QString &symbol,
+        const QString &interval,
+        bool futures,
+        bool testnet,
+        qint64 startTimeMs,
+        qint64 endTimeMs,
+        int maxCandles = 2'000'000,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {},
+        const std::function<bool()> &shouldStop = {});
 
     static TickerPriceResult fetchTickerPrice(
         const QString &symbol,

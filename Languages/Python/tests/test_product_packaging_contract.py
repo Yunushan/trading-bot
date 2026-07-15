@@ -92,6 +92,10 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('$env:BOT_DISABLE_PYTHONW_RELAUNCH = "1"', script)
         self.assertIn('$env:BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH = "1"', script)
         self.assertIn("PyInstaller failed with exit code", script)
+        self.assertIn("Resolve-Path -LiteralPath $Python", script)
+        self.assertIn("& $pythonCommand @pyInstallerArgs", script)
+        self.assertIn('-ArgumentList "--smoke"', script)
+        self.assertIn("Packaged executable smoke failed with exit code", script)
 
     def test_windows_cpp_dependency_installer_passes_bootstrap_args_separately(self):
         script = (REPO_ROOT / "experiments" / "native-cpp" / "tools" / "install_cpp_dependencies.ps1").read_text(
@@ -642,6 +646,8 @@ class ProductPackagingContractTests(unittest.TestCase):
             'BOT_DISABLE_PYTHONW_RELAUNCH=1 BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH=1 "${PYTHON_BIN}" "${pyinstaller_args[@]}"',
             script,
         )
+        self.assertIn('QT_QPA_PLATFORM=offscreen "${binary_path}" --smoke', script)
+        self.assertIn("Packaged executable smoke passed.", script)
 
     def test_docker_backend_uses_canonical_service_wrapper_and_dashboard_assets(self):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
@@ -1282,6 +1288,85 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("node --check modules/render.js", workflow)
         self.assertIn("npm test", workflow)
 
+    def test_native_cpp_product_smoke_is_bounded_offline_and_drains_qt_deletes(self):
+        cpp_root = REPO_ROOT / "experiments" / "native-cpp" / "src"
+        main_source = (cpp_root / "main.cpp").read_text(encoding="utf-8")
+        window_source = (cpp_root / "TradingBotWindow.cpp").read_text(encoding="utf-8")
+        chart_source = (cpp_root / "TradingBotWindow.chart.cpp").read_text(encoding="utf-8")
+        web_source = (cpp_root / "TradingBotWindow.web.cpp").read_text(encoding="utf-8")
+
+        self.assertIn('app.setProperty("tradingBotBoundedSmoke", true)', main_source)
+        self.assertIn("const int exitCode = app.exec();", main_source)
+        self.assertIn("window.reset();", main_source)
+        self.assertIn("QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete)", main_source)
+        self.assertIn('property("tradingBotBoundedSmoke")', window_source)
+        self.assertIn("if (!boundedSmoke)", window_source)
+        self.assertIn(
+            "Smoke mode: generated chart symbols loaded without network access.",
+            chart_source,
+        )
+        self.assertIn('property("tradingBotBoundedSmoke")', chart_source)
+        self.assertIn('property("tradingBotBoundedSmoke")', web_source)
+        self.assertIn("if (!boundedSmoke)", web_source)
+
+    def test_windows_native_cpp_bundle_smoke_is_isolated_and_complete(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "release-windows.yml").read_text(
+            encoding="utf-8"
+        )
+        ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        verifier = (REPO_ROOT / "tools" / "Test-NativeCppWindowsBundle.ps1").read_text(
+            encoding="utf-8"
+        )
+        runtime_copier = (REPO_ROOT / "tools" / "Copy-MsvcRuntimeToBundle.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("windeployqt failed with exit code", workflow)
+        self.assertIn("Copy-MsvcRuntimeToBundle.ps1", workflow)
+        self.assertIn("$compilerRuntimeArchitecture", workflow)
+        self.assertIn("Test-NativeCppWindowsBundle.ps1", workflow)
+        self.assertIn("-RequireCompilerRuntime", workflow)
+        self.assertIn("-EvidencePath $cppSmokeEvidence", workflow)
+        self.assertIn('-SourceRevision "${{ github.sha }}"', workflow)
+        self.assertIn("release/native-cpp-windows-smoke-*.json", workflow)
+        self.assertIn("./tools/Copy-MsvcRuntimeToBundle.ps1 -SelfTest", ci_workflow)
+        self.assertIn("./tools/Test-NativeCppWindowsBundle.ps1 -SelfTest", ci_workflow)
+        for required_path in (
+            '"Qt6Core.dll"',
+            '"Qt6WebEngineCore.dll"',
+            '"QtWebEngineProcess.exe"',
+            '"platforms\\qwindows.dll"',
+            '"resources\\qtwebengine_resources.pak"',
+            '"translations\\qtwebengine_locales\\en-US.pak"',
+            '"msvcp140.dll"',
+            '"vcruntime140.dll"',
+        ):
+            self.assertIn(required_path, verifier)
+        self.assertIn('"QT_PLUGIN_PATH"', verifier)
+        self.assertIn('"QTWEBENGINEPROCESS_PATH"', verifier)
+        self.assertIn("-RedirectStandardError", verifier)
+        self.assertIn("Packaged C++ smoke emitted diagnostics", verifier)
+        self.assertIn('ParameterSetName = "SelfTest"', verifier)
+        self.assertIn("Assert-NativeCppBundleComplete", verifier)
+        self.assertIn("Assert-NativeCppSmokeResult", verifier)
+        self.assertIn("Invoke-WithIsolatedQtEnvironment", verifier)
+        self.assertIn("Write-NativeCppBundleEvidence", verifier)
+        self.assertIn('kind = "native-cpp-windows-bundle-smoke"', verifier)
+        self.assertIn("Get-FileHash -LiteralPath $executablePath -Algorithm SHA256", verifier)
+        self.assertIn("source_revision = $SourceRevision", verifier)
+        self.assertIn("Test-NativeCppWindowsBundle self-test passed", verifier)
+        self.assertIn('ValidateSet("x64", "arm64")', runtime_copier)
+        self.assertIn("VCToolsRedistDir", runtime_copier)
+        self.assertIn("Microsoft.VC143.CRT", runtime_copier)
+        self.assertIn("Microsoft.VC145.CRT", runtime_copier)
+        self.assertIn("Copy-Item -LiteralPath", runtime_copier)
+        self.assertIn('ParameterSetName = "SelfTest"', runtime_copier)
+        self.assertIn("Find-RuntimeDirectory", runtime_copier)
+        self.assertIn("Copy-MsvcRuntimeFiles", runtime_copier)
+        self.assertIn("Copy-MsvcRuntimeToBundle self-test passed", runtime_copier)
+
     def test_python_package_metadata_includes_public_trading_core_surface(self):
         pyproject = (REPO_ROOT / "Languages" / "Python" / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('include = ["app*", "trading_core*"]', pyproject)
@@ -1405,6 +1490,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("python tools/check_release_platform_matrix.py --schema-only", ci_workflow)
         self.assertIn("python tools/run_release_platform_probe.py --list-local-browser-targets", ci_workflow)
         self.assertIn("tools/run_release_platform_probe.py", real_test_workflow)
+        self.assertIn("Set up Rust for native release probes", real_test_workflow)
+        self.assertIn("Cache Rust dependencies for native release probes", real_test_workflow)
+        self.assertIn("Install Linux Rust desktop dependencies", real_test_workflow)
+        self.assertIn("libwebkit2gtk-4.1-dev", real_test_workflow)
+        self.assertIn("--require-native-source-sync", real_test_workflow)
         self.assertIn("--require-evidence", real_test_workflow)
         self.assertGreaterEqual(real_test_workflow.count("--require-current-commit"), 2)
         self.assertGreaterEqual(real_test_workflow.count("--require-clean-source"), 2)
@@ -1462,3 +1552,65 @@ class ProductPackagingContractTests(unittest.TestCase):
         for workflow in workflows.values():
             self.assertIn("actions/upload-artifact@v7", workflow)
             self.assertIn("softprops/action-gh-release@v3", workflow)
+
+    def test_release_workflows_execute_packaged_native_smokes(self):
+        workflows = {
+            name: (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            for name in (
+                "release-windows.yml",
+                "release-linux-macos.yml",
+                "release-freebsd.yml",
+            )
+        }
+        ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        packaging_script = (
+            REPO_ROOT / ".github" / "scripts" / "package_linux_macos_release.sh"
+        ).read_text(encoding="utf-8")
+        tauri_main = (
+            REPO_ROOT
+            / "experiments"
+            / "rust-shells"
+            / "apps"
+            / "tauri-desktop"
+            / "src"
+            / "main.rs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('BinaryName = "trading-bot-rust"', workflows["release-windows.yml"])
+        self.assertIn(
+            'BinaryName = "trading-bot-tauri-desktop"',
+            workflows["release-windows.yml"],
+        )
+        self.assertIn("Build required Tauri desktop EXE", workflows["release-windows.yml"])
+        self.assertIn('Required = $true', workflows["release-windows.yml"])
+        self.assertNotIn("Build optional Rust framework EXEs", workflows["release-windows.yml"])
+        self.assertIn("tools/write_rust_package_smoke_evidence.py", workflows["release-windows.yml"])
+        self.assertIn("release/rust-package-smoke-*.json", workflows["release-windows.yml"])
+        self.assertIn("--require-clean-source", workflows["release-windows.yml"])
+        self.assertIn("Test-NativeCppWindowsBundle.ps1", workflows["release-windows.yml"])
+        self.assertIn("Build required Tauri desktop binary", workflows["release-linux-macos.yml"])
+        self.assertIn(
+            "tools/write_rust_package_smoke_evidence.py",
+            workflows["release-linux-macos.yml"],
+        )
+        self.assertIn(
+            'release/rust-package-smoke-${{ matrix.id }}.json',
+            workflows["release-linux-macos.yml"],
+        )
+        self.assertIn("--require-clean-source", workflows["release-linux-macos.yml"])
+        self.assertNotIn("Build optional Rust framework binaries", workflows["release-linux-macos.yml"])
+        self.assertIn('"Trading-Bot-Rust-tauri:trading-bot-tauri-desktop"', packaging_script)
+        self.assertIn('for rust_entry in "${required_rust_assets[@]}"', packaging_script)
+        self.assertNotIn("optional_rust_assets", packaging_script)
+        self.assertIn("cargo test --locked --package trading-bot-tauri-desktop", ci_workflow)
+        self.assertIn(
+            "cargo run --locked --release --package trading-bot-tauri-desktop -- --smoke",
+            ci_workflow,
+        )
+        self.assertIn('arg == "--smoke"', tauri_main)
+        self.assertIn("run_packaged_smoke", tauri_main)
+        self.assertIn("Trading Bot Tauri packaged smoke passed", tauri_main)
+        self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-linux-macos.yml"])
+        self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-freebsd.yml"])

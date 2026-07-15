@@ -124,18 +124,12 @@ class NativeFullParityContractTests(unittest.TestCase):
         rust_main = _read(rust_root / "src" / "main.rs")
         rust_runtime_evidence_manifest = _read(REPO_ROOT / "docs" / "rust-native-runtime-evidence.json")
         rust_runtime_evidence_checker = _read(REPO_ROOT / "tools" / "check_rust_native_runtime_evidence.py")
-        rust_evidence_workflow_checker = _read(
-            REPO_ROOT / "tools" / "check_rust_native_evidence_workflows.py"
-        )
-        rust_live_smoke_preflight_checker = _read(
-            REPO_ROOT / "tools" / "check_rust_native_live_smoke_preflight.py"
-        )
+        rust_evidence_workflow_checker = _read(REPO_ROOT / "tools" / "check_rust_native_evidence_workflows.py")
+        rust_live_smoke_preflight_checker = _read(REPO_ROOT / "tools" / "check_rust_native_live_smoke_preflight.py")
         rust_local_recovery_checker = _read(REPO_ROOT / "tools" / "check_rust_native_local_recovery_evidence.py")
         rust_release_evidence_writer = _read(REPO_ROOT / "tools" / "write_rust_native_release_evidence.py")
         rust_evidence_importer = _read(REPO_ROOT / "tools" / "import_rust_native_evidence_artifacts.py")
-        generated_evidence_source_guard = _read(
-            REPO_ROOT / "tools" / "check_generated_evidence_source_control.py"
-        )
+        generated_evidence_source_guard = _read(REPO_ROOT / "tools" / "check_generated_evidence_source_control.py")
         release_platform_matrix_checker = _read(REPO_ROOT / "tools" / "check_release_platform_matrix.py")
         release_platform_probe = _read(REPO_ROOT / "tools" / "run_release_platform_probe.py")
         rust_readiness_audit = _read(REPO_ROOT / "tools" / "audit_rust_native_runtime_readiness.py")
@@ -144,19 +138,13 @@ class NativeFullParityContractTests(unittest.TestCase):
         evidence_gates = _read(REPO_ROOT / "docs" / "QUALITY_AND_EVIDENCE_GATES.md")
         ci_workflow = _read(REPO_ROOT / ".github" / "workflows" / "ci.yml")
         rust_live_smoke_workflow = _read(REPO_ROOT / ".github" / "workflows" / "rust-native-live-smoke.yml")
-        rust_release_evidence_workflow = _read(
-            REPO_ROOT / ".github" / "workflows" / "rust-native-release-evidence.yml"
-        )
-        rust_promotion_audit_workflow = _read(
-            REPO_ROOT / ".github" / "workflows" / "rust-native-promotion-audit.yml"
-        )
+        rust_release_evidence_workflow = _read(REPO_ROOT / ".github" / "workflows" / "rust-native-release-evidence.yml")
+        rust_promotion_audit_workflow = _read(REPO_ROOT / ".github" / "workflows" / "rust-native-promotion-audit.yml")
         release_platform_real_tests_workflow = _read(
             REPO_ROOT / ".github" / "workflows" / "release-platform-real-tests.yml"
         )
         generated = _read(rust_root / "crates" / "core" / "src" / "generated_python_parity.rs")
-        indicator_reference = _read(
-            rust_root / "crates" / "core" / "src" / "generated_python_indicator_reference.rs"
-        )
+        indicator_reference = _read(rust_root / "crates" / "core" / "src" / "generated_python_indicator_reference.rs")
         core_cargo = _read(rust_root / "crates" / "core" / "Cargo.toml")
         market_data = _read(rust_root / "crates" / "core" / "src" / "market_data.rs")
         native_indicators = _read(rust_root / "crates" / "core" / "src" / "native_indicators.rs")
@@ -433,7 +421,10 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("pub fn build_connector_health_snapshot", exchange_connectors)
         self.assertIn("PYTHON_CONNECTOR_OPTIONS", exchange_connectors)
         self.assertIn("order-routing-evidence-required", exchange_connectors)
-        self.assertIn("Order routing for exchange '{selected_exchange}' requires a provider connector backend.", exchange_connectors)
+        self.assertIn(
+            "Order routing for exchange '{selected_exchange}' requires a provider connector backend.",
+            exchange_connectors,
+        )
         self.assertIn("support_payload_matches_python_exchange_support", exchange_connectors)
         self.assertIn("rate_limit_weights_and_limiter_settings_follow_python_runtime", exchange_connectors)
         self.assertIn("http_backoff_parses_bans_retry_after_and_default_pause", exchange_connectors)
@@ -535,8 +526,12 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("order_blocked", runtime_order_engine)
         self.assertIn("order_close_accepted", runtime_order_engine)
         self.assertIn("runtime_order_engine_persists_guarded_order_audit_and_circuit_like_python", runtime_order_engine)
-        self.assertIn("runtime_order_engine_dry_run_audits_without_executing_or_counting_live_submit", runtime_order_engine)
-        self.assertIn("stop_loss_close_execution_uses_python_position_side_fallback_and_reconciles", runtime_order_engine)
+        self.assertIn(
+            "runtime_order_engine_dry_run_audits_without_executing_or_counting_live_submit", runtime_order_engine
+        )
+        self.assertIn(
+            "stop_loss_close_execution_uses_python_position_side_fallback_and_reconciles", runtime_order_engine
+        )
         self.assertIn("close_opposite_execution_blocks_open_until_residual_is_flat", runtime_order_engine)
         self.assertIn("runtime-owned order engine with deterministic dry-run", core)
         self.assertIn("runtime-owned risk/close execution path", core)
@@ -634,6 +629,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("pub struct NativeRuntimeReadOnlyMarketCycleSnapshot", native_runtime)
         self.assertIn("pub mod native_indicators", core)
         self.assertIn("runtime_config_json", generated)
+        self.assertIn("backtest_config_json", generated)
         self.assertIn("PYTHON_INDICATOR_REFERENCE_JSON", indicator_reference)
         self.assertIn("PYTHON_INDICATOR_REFERENCE_CONTRACT_HASH", indicator_reference)
         self.assertIn("NATIVE_RUNTIME_COMPUTED_INDICATOR_KEYS", native_indicators)
@@ -700,7 +696,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("native_runtime_read_only_account_bootstrap", rust_main)
         self.assertIn("native_runtime_read_only_account_bootstrap", rust_runtime_evidence_checker)
         self.assertIn("native_runtime_read_only_account_bootstrap", rust_readme)
-        self.assertIn("native_runtime_read_only_market_cycle_uses_completed_rest_candles_without_orders", native_runtime)
+        self.assertIn(
+            "native_runtime_read_only_market_cycle_uses_completed_rest_candles_without_orders", native_runtime
+        )
         self.assertIn("native_runtime_read_only_market_cycle", rust_main)
         self.assertIn("native_runtime_read_only_market_cycle", rust_runtime_evidence_checker)
         self.assertIn("computed_indicator_keys", rust_main)
@@ -711,7 +709,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("unsupported_indicator_keys must be an empty list", rust_runtime_evidence_checker)
         self.assertIn("from_python_service_config", native_runtime)
         self.assertIn("evaluate_native_runtime_preview", rust_readme)
-        self.assertIn("evaluate_native_runtime_preview", _read(rust_root / "apps" / "tauri-desktop" / "src" / "main.rs"))
+        self.assertIn(
+            "evaluate_native_runtime_preview", _read(rust_root / "apps" / "tauri-desktop" / "src" / "main.rs")
+        )
         tauri_html = _read(rust_root / "apps" / "tauri-desktop" / "ui" / "index.html")
         self.assertIn("TradingBotNativeRuntime", tauri_html)
         self.assertIn("evaluateReadOnly", tauri_html)
@@ -727,7 +727,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("native_runtime_operational_preflight_warns_in_demo_mode_like_python", native_runtime)
         self.assertIn("native_runtime_operational_preflight_warns_when_live_gates_are_disabled", native_runtime)
         self.assertIn("native_runtime_operational_preflight_passes_with_fresh_critical_snapshots", native_runtime)
-        self.assertIn("Live preflight blocked. Review the reasons before starting or submitting orders.", native_runtime)
+        self.assertIn(
+            "Live preflight blocked. Review the reasons before starting or submitting orders.", native_runtime
+        )
         self.assertIn("Preflight has warnings. Live gate behavior depends on the enabled safety gates.", native_runtime)
         self.assertIn("Preflight passed. Start and order gates have fresh critical snapshots.", native_runtime)
         self.assertIn("native_runtime_plans_hedge_mode_close_with_position_side", native_runtime)
@@ -846,7 +848,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("must be a string", rust_runtime_evidence_checker)
         self.assertIn("source_tree_clean must be boolean", rust_runtime_evidence_checker)
         self.assertIn("source_tree_clean must be true for promotion evidence", rust_runtime_evidence_checker)
-        self.assertIn("python_source_contract_hash must match current Python source contract", rust_runtime_evidence_checker)
+        self.assertIn(
+            "python_source_contract_hash must match current Python source contract", rust_runtime_evidence_checker
+        )
         self.assertIn("_required_artifact_fields_present", rust_runtime_evidence_checker)
         self.assertIn("missing required artifact field", rust_runtime_evidence_checker)
         self.assertIn("_validate_generated_at", rust_runtime_evidence_checker)
@@ -923,7 +927,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("uses: actions/setup-python@v6", rust_release_evidence_workflow)
         self.assertIn('python-version: "3.14"', rust_release_evidence_workflow)
         self.assertIn("Validate release evidence inputs", rust_release_evidence_workflow)
-        self.assertIn("platform_evidence_run_id must be a numeric GitHub Actions run id.", rust_release_evidence_workflow)
+        self.assertIn(
+            "platform_evidence_run_id must be a numeric GitHub Actions run id.", rust_release_evidence_workflow
+        )
         self.assertIn("platform_evidence_run_id", rust_release_evidence_workflow)
         self.assertIn("gh run download", rust_release_evidence_workflow)
         self.assertIn("tools/write_rust_native_release_evidence.py", rust_release_evidence_workflow)
@@ -984,7 +990,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("evidence_sha256 does not match", rust_runtime_evidence_checker)
         self.assertIn("artifact_status", rust_runtime_evidence_checker)
         self.assertIn("validated_evidence_ids", rust_runtime_evidence_checker)
-        self.assertIn("EVIDENCE_ID = \"rust-native-release-platform-evidence\"", rust_release_evidence_writer)
+        self.assertIn('EVIDENCE_ID = "rust-native-release-platform-evidence"', rust_release_evidence_writer)
         self.assertIn("_build_expected_assets", rust_release_evidence_writer)
         self.assertIn("_fetch_release", rust_release_evidence_writer)
         self.assertIn("_evidence_issues", rust_release_evidence_writer)
@@ -993,7 +999,10 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("artifact_write_attempted", rust_release_evidence_writer)
         self.assertIn("release_asset_presence_requires_network", rust_release_evidence_writer)
         self.assertIn("DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE", rust_release_evidence_writer)
-        self.assertIn("source tree must be clean before writing Rust native release-platform evidence", rust_release_evidence_writer)
+        self.assertIn(
+            "source tree must be clean before writing Rust native release-platform evidence",
+            rust_release_evidence_writer,
+        )
         self.assertIn("Trading-Bot-Rust-", rust_release_evidence_writer)
         self.assertIn("--preflight", rust_release_evidence_writer)
         self.assertIn("--platform-evidence-dir", rust_release_evidence_writer)
@@ -1002,12 +1011,16 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("_source_tree_clean", rust_release_evidence_writer)
         self.assertIn("PROMOTION_SOURCE_TREE_IGNORED_PATHS", rust_release_evidence_writer)
         self.assertIn("_source_tree_status_command", rust_release_evidence_writer)
-        self.assertIn("f\"--untracked-files={untracked_files}\"", rust_release_evidence_writer)
+        self.assertIn('f"--untracked-files={untracked_files}"', rust_release_evidence_writer)
         self.assertIn('_source_tree_status_clean("all")', rust_release_evidence_writer)
         self.assertIn('"source_tree_clean": _source_tree_clean()', rust_release_evidence_writer)
-        self.assertIn('"python_source_contract_hash": native_python_source_contract_hash()', rust_release_evidence_writer)
+        self.assertIn(
+            '"python_source_contract_hash": native_python_source_contract_hash()', rust_release_evidence_writer
+        )
         self.assertIn('"expected_suite_count": len(target.get("test_suites", []))', rust_release_evidence_writer)
-        self.assertIn('"test_suites": [str(item) for item in target.get("test_suites", [])]', rust_release_evidence_writer)
+        self.assertIn(
+            '"test_suites": [str(item) for item in target.get("test_suites", [])]', rust_release_evidence_writer
+        )
         self.assertIn('"suite_results": suite_results', rust_release_evidence_writer)
         self.assertIn('"evidence_sha256": _sha256_file(evidence_path)', rust_release_evidence_writer)
         self.assertIn("REQUIRED_SUITE_RESULT_NAMES", rust_release_evidence_writer)
@@ -1035,23 +1048,25 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("prepare-targets:", release_platform_real_tests_workflow)
         self.assertIn("--emit-github-matrix", release_platform_real_tests_workflow)
         self.assertIn("fromJson(needs.prepare-targets.outputs.targets).include", release_platform_real_tests_workflow)
-        self.assertIn("--target-filter \"${{ matrix.target.target_id }}\"", release_platform_real_tests_workflow)
+        self.assertIn('--target-filter "${{ matrix.target.target_id }}"', release_platform_real_tests_workflow)
         self.assertGreaterEqual(release_platform_real_tests_workflow.count("--require-current-commit"), 2)
         self.assertGreaterEqual(release_platform_real_tests_workflow.count("--require-clean-source"), 2)
         self.assertIn('"native-build-smoke"', release_platform_probe)
         self.assertIn('"rust-workspace-check"', release_platform_probe)
         self.assertIn('"test",', release_platform_probe)
         self.assertIn('"experiments/rust-shells/Cargo.toml"', release_platform_probe)
-        self.assertIn('"trading-bot-core"', release_platform_probe)
-        self.assertIn("_run_command(\n                    \"native-build-smoke\"", release_platform_probe)
+        self.assertIn('"trading-bot-rust"', release_platform_probe)
+        self.assertIn('"trading-bot-tauri-desktop"', release_platform_probe)
+        self.assertIn("write_rust_package_smoke_evidence.py", release_platform_probe)
+        self.assertIn("_rust_native_build_smoke", release_platform_probe)
         self.assertIn("PROMOTION_SOURCE_TREE_IGNORED_PATHS", release_platform_probe)
         self.assertIn("_source_tree_status_command", release_platform_probe)
-        self.assertIn("f\"--untracked-files={untracked_files}\"", release_platform_probe)
+        self.assertIn('f"--untracked-files={untracked_files}"', release_platform_probe)
         self.assertIn('_source_tree_status_clean("all")', release_platform_probe)
         self.assertIn("generated_evidence_write_guard", release_platform_probe)
         self.assertIn("require_generated_destinations=True", release_platform_probe)
         self.assertIn("source_control_write_guard", release_platform_probe)
-        self.assertIn("RUNTIME_READY_FUNCTION = \"rust_native_trading_runtime_ready\"", rust_readiness_audit)
+        self.assertIn('RUNTIME_READY_FUNCTION = "rust_native_trading_runtime_ready"', rust_readiness_audit)
         self.assertIn("live_smoke_prerequisites", rust_readiness_audit)
         self.assertIn("_missing_named_prerequisites", rust_readiness_audit)
         self.assertIn("market_preflight_command", rust_readiness_audit)
@@ -1080,7 +1095,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("next_actions", evidence_gates)
         self.assertIn("promotion_next_action_plan", evidence_gates)
         self.assertIn("failed promotion requirements", evidence_gates)
-        self.assertIn("\"source_control_guard\": dict(local_recovery_prerequisites)", rust_readiness_audit)
+        self.assertIn('"source_control_guard": dict(local_recovery_prerequisites)', rust_readiness_audit)
         self.assertIn("non_generated_in_repo_write_targets", rust_readiness_audit)
         self.assertIn("rust-native-release-evidence.yml", rust_readiness_audit)
         self.assertIn("rust-native-promotion-audit.yml", rust_readiness_audit)
@@ -1093,7 +1108,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("_render_evidence_collection_markdown", rust_readiness_audit)
         self.assertIn("Rust Native Runtime Evidence Collection Plan", rust_readiness_audit)
         self.assertIn("Missing prerequisites", rust_readiness_audit)
-        self.assertIn("\"missing_prerequisites\"", rust_readiness_audit)
+        self.assertIn('"missing_prerequisites"', rust_readiness_audit)
         self.assertIn("--write-evidence-plan", rust_readiness_audit)
         self.assertIn("live_signed_account_read_smoke", rust_readiness_audit)
         self.assertIn("release_platform_evidence", rust_readiness_audit)
@@ -1127,12 +1142,12 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("promotion_model", rust_readiness_audit)
         self.assertIn("_failed_requirement_ids", rust_readiness_audit)
         self.assertIn("_next_action_plan", rust_readiness_audit)
-        self.assertIn("\"promotion_next_action_plan\": _next_action_plan", rust_readiness_audit)
+        self.assertIn('"promotion_next_action_plan": _next_action_plan', rust_readiness_audit)
         self.assertIn("collect_rust_native_live_account_smoke", rust_readiness_audit)
         self.assertIn("collect_rust_native_release_platform_evidence", rust_readiness_audit)
         self.assertIn("promote_runtime_ready_source_guard", rust_readiness_audit)
         self.assertIn("_source_sync_claim", rust_readiness_audit)
-        self.assertIn("\"source_sync_claim\": source_sync_claim", rust_readiness_audit)
+        self.assertIn('"source_sync_claim": source_sync_claim', rust_readiness_audit)
         self.assertIn("Source sync claim", rust_readiness_audit)
         self.assertIn("Source sync surface contract", rust_readiness_audit)
         self.assertIn("surface_contract_ok", rust_readiness_audit)
@@ -1144,7 +1159,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("consumer_surface_count", rust_readiness_audit)
         self.assertIn("consumer_surface_names", rust_readiness_audit)
         self.assertIn("_completion_claim", rust_readiness_audit)
-        self.assertIn("\"completion_claim\": completion_claim", rust_readiness_audit)
+        self.assertIn('"completion_claim": completion_claim', rust_readiness_audit)
         self.assertIn("Runtime completion claim", rust_readiness_audit)
         self.assertIn("can_claim", rust_readiness_audit)
         self.assertIn("denied_reasons", rust_readiness_audit)
@@ -1382,9 +1397,7 @@ class NativeFullParityContractTests(unittest.TestCase):
             self.assertIn("native_full_python_app_parity_ready", source, renderer)
 
     def test_tauri_backtest_request_includes_canonical_python_fields(self):
-        tauri_html = _read(
-            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html"
-        )
+        tauri_html = _read(REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html")
         for control_id in (
             "backtest-scan-scope",
             "backtest-optimizer-mode",
@@ -1395,7 +1408,9 @@ class NativeFullParityContractTests(unittest.TestCase):
             self.assertIn(f'id="{control_id}"', tauri_html)
         self.assertIn("const scanScopeOptions = optionArray(pythonParityContract.scanScopeOptions)", tauri_html)
         self.assertIn("const optimizerModeOptions = optionArray(pythonParityContract.optimizerModeOptions)", tauri_html)
-        self.assertIn("const optimizerMetricOptions = optionArray(pythonParityContract.optimizerMetricOptions)", tauri_html)
+        self.assertIn(
+            "const optimizerMetricOptions = optionArray(pythonParityContract.optimizerMetricOptions)", tauri_html
+        )
         match = re.search(
             r"const buildBacktestRequest = \(\) => \{(?P<body>.*?)\n    \};\n    const addCustomIntervals",
             tauri_html,
@@ -1495,7 +1510,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("Service API contract", readme)
         self.assertIn("Order execution and risk", readme)
         self.assertIn("Backtest engine", readme)
-        self.assertIn("delegates run/stop to the Python Service API", readme)
+        self.assertIn("Native C++ historical simulator and batch optimizer", readme)
+        self.assertIn("Python Service API compatibility backend", readme)
         self.assertIn("pythonSourceServiceRouteQueryFields", support_header)
         self.assertIn("pythonSourceServiceRouteRequestFields", support_header)
         self.assertIn("pythonSourceServiceRouteResponseFields", support_header)
@@ -1510,9 +1526,16 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("backtestOptimizerModeCombo_", backtest_source)
         self.assertIn("backtestOptimizerMetricCombo_", backtest_source)
         self.assertIn("backtestOptimizerComboSizeSpin_", backtest_source)
-        self.assertIn('request.insert(QStringLiteral("scan_scope"), comboValue(backtestScanScopeCombo_', backtest_source)
-        self.assertIn('request.insert(QStringLiteral("optimizer_mode"), comboValue(backtestOptimizerModeCombo_', backtest_source)
-        self.assertIn('request.insert(QStringLiteral("optimizer_metric"), comboValue(backtestOptimizerMetricCombo_', backtest_source)
+        self.assertIn('request.insert(QStringLiteral("scan_scope"), scanScope)', backtest_source)
+        self.assertIn('request.insert(QStringLiteral("optimizer_mode"), optimizerMode)', backtest_source)
+        self.assertIn(
+            'request.insert(QStringLiteral("optimizer_metric"), comboValue(backtestOptimizerMetricCombo_',
+            backtest_source,
+        )
+        self.assertIn("NativeBacktestBatchRuntime::BatchRequest", backtest_source)
+        self.assertIn("NativeBacktestBatchRuntime::runBatch", backtest_source)
+        self.assertIn("BinanceRestClient::fetchKlinesRange", backtest_source)
+        self.assertIn('backend == QStringLiteral("local")', backtest_source)
         self.assertIn("backtestSnapshotCancelled", backtest_source)
         self.assertIn('jsonNumber(snapshot, QStringLiteral("progress_percent")', backtest_source)
         self.assertIn("Python Service API backtest cancelled", backtest_source)
@@ -1643,8 +1666,11 @@ class NativeFullParityContractTests(unittest.TestCase):
         )
         self.assertNotIn('lower.contains(QStringLiteral("portfolio"))', native_strategy_runtime_source)
         self.assertNotIn('lower.contains(QStringLiteral("multi"))', native_strategy_runtime_source)
-        self.assertNotIn("QStringList{QStringLiteral(\"AND\"), QStringLiteral(\"OR\"), QStringLiteral(\"SEPARATE\")}", native_strategy_runtime_source)
-        self.assertNotIn("QStringLiteral(\"directional\")", native_strategy_runtime_source)
+        self.assertNotIn(
+            'QStringList{QStringLiteral("AND"), QStringLiteral("OR"), QStringLiteral("SEPARATE")}',
+            native_strategy_runtime_source,
+        )
+        self.assertNotIn('QStringLiteral("directional")', native_strategy_runtime_source)
         self.assertIn("PythonParityContract::kPythonDefaultChartSymbols", native_chart_heatmap_source)
         self.assertIn("BOT_SAFE_CHART_TAB=0", native_chart_heatmap_source)
         self.assertIn("https://coinank.com/chart/derivatives/liq-heat-map", native_chart_heatmap_source)
@@ -1707,7 +1733,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("Code language tools load the first time you open this tab.", native_desktop_shell_source)
         self.assertIn("start_code_tab_window_suppression", native_desktop_shell_source)
         self.assertIn("dependency_versions_auto_refresh", native_desktop_shell_source)
-        self.assertIn("Python service/desktop runtime remains the trading execution owner.", native_desktop_shell_source)
+        self.assertIn("The C++ runtime owns Binance USD-M Futures execution", native_desktop_shell_source)
+        self.assertIn("unimplemented venues remain evidence-gated", native_desktop_shell_source)
         self.assertIn("buildServiceLogEvent", native_diagnostics_header)
         self.assertIn("buildServiceTerminalCommandResult", native_diagnostics_header)
         self.assertIn("formatServiceLogLine", native_diagnostics_header)
@@ -1737,7 +1764,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("buildWorkerLifecycleSnapshot", native_strategy_runtime_header)
         self.assertIn("indicator output key expansion", native_strategy_runtime_source)
         self.assertIn("live-vs-closed candle signal indexing", native_strategy_runtime_source)
-        self.assertIn("python-service", native_strategy_runtime_source)
+        self.assertIn('QStringLiteral("native-cpp")', native_strategy_runtime_source)
+        self.assertIn('QStringLiteral("binance-usds-futures")', native_strategy_runtime_source)
         self.assertIn("buildPromptRoutePayload", native_llm_advisory_header)
         self.assertIn("buildLocalModelRoutePayload", native_llm_advisory_header)
         self.assertIn("describeLocalModelStatus", native_llm_advisory_header)
@@ -1781,9 +1809,17 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("kDefaultOrderAuditMaxBytes", native_order_safety_source)
         self.assertIn("kMaxLiveSessionOrders", native_order_safety_source)
         self.assertIn("LiveTradingAcknowledgement", native_order_safety_source)
-        self.assertIn("Live preflight blocked. Review the reasons before starting or submitting orders.", native_order_safety_source)
-        self.assertIn("Preflight has warnings. Live gate behavior depends on the enabled safety gates.", native_order_safety_source)
-        self.assertIn("Preflight passed. Start and order gates have fresh critical snapshots.", native_order_safety_source)
+        self.assertIn(
+            "Live preflight blocked. Review the reasons before starting or submitting orders.",
+            native_order_safety_source,
+        )
+        self.assertIn(
+            "Preflight has warnings. Live gate behavior depends on the enabled safety gates.",
+            native_order_safety_source,
+        )
+        self.assertIn(
+            "Preflight passed. Start and order gates have fresh critical snapshots.", native_order_safety_source
+        )
         self.assertIn("operational health is error", native_order_safety_source)
         self.assertIn("critical snapshots are stale: %1", native_order_safety_source)
         self.assertIn("Operational live start safety gate is disabled.", native_order_safety_source)
@@ -1832,13 +1868,18 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("order_rejected", runtime_shared_source)
         self.assertIn("NativeConfigPersistence::serviceConfigSecretMetadata", native_order_safety_tests)
         self.assertIn("NativeConfigPersistence::validateServiceRuntimeConfig", native_order_safety_tests)
-        self.assertIn("native service config validation should reject values Python validate_runtime_config rejects", native_order_safety_tests)
+        self.assertIn(
+            "native service config validation should reject values Python validate_runtime_config rejects",
+            native_order_safety_tests,
+        )
         self.assertIn("service config secret fields should include api_key", native_order_safety_tests)
         self.assertIn("buildServiceConfigPersistencePayload", native_order_safety_tests)
         self.assertIn("coerceServiceConfigPersistencePayload", native_order_safety_tests)
         self.assertIn("writeServiceConfigFile", native_order_safety_tests)
         self.assertIn("service config file should not persist inline api_key by default", native_order_safety_tests)
-        self.assertIn("explicit service config paths outside safe root should require trusted override", native_order_safety_tests)
+        self.assertIn(
+            "explicit service config paths outside safe root should require trusted override", native_order_safety_tests
+        )
         self.assertIn("NativeDiagnostics::buildServiceLogEvent", native_order_safety_tests)
         self.assertIn("NativeDiagnostics::buildServiceTerminalCommandResult", native_order_safety_tests)
         self.assertIn("service log event should redact secret-bearing messages", native_order_safety_tests)
@@ -1869,7 +1910,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("NativeDesktopShell::buildTabActivationEffect", native_order_safety_tests)
         self.assertIn("NativeDesktopShell::cppDesktopShellOwnershipContract", native_order_safety_tests)
         self.assertIn("native desktop shell should mirror Python primary tab order", native_order_safety_tests)
-        self.assertIn("native desktop shell chart tab should mirror Python safe-mode redirect", native_order_safety_tests)
+        self.assertIn(
+            "native desktop shell chart tab should mirror Python safe-mode redirect", native_order_safety_tests
+        )
         self.assertIn("NativeStrategyRuntime::indicatorOutputKeysFromConfig", native_order_safety_tests)
         self.assertIn("NativeStrategyRuntime::buildSignalDecision", native_order_safety_tests)
         self.assertIn("NativeStrategyRuntime::normalizeStrategyControls", native_order_safety_tests)
@@ -1877,7 +1920,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("NativeStrategyRuntime::buildWorkerLifecycleSnapshot", native_order_safety_tests)
         self.assertIn("native strategy signal should choose first BUY trigger like Python", native_order_safety_tests)
         self.assertIn("native override cleanup should preserve backtest provenance", native_order_safety_tests)
-        self.assertIn("native strategy lifecycle should keep Python as execution owner", native_order_safety_tests)
+        self.assertIn("native strategy lifecycle should report the C++ execution owner", native_order_safety_tests)
+        self.assertIn("native strategy lifecycle should report its exact execution scope", native_order_safety_tests)
         self.assertIn("NativePortfolio::buildPortfolioSnapshot", native_order_safety_tests)
         self.assertIn("NativePortfolio::buildAllocationPersistencePayload", native_order_safety_tests)
         self.assertIn("NativePortfolio::reducePositionAllocationState", native_order_safety_tests)

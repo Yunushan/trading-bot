@@ -289,7 +289,7 @@
     <header class="topbar">
       <div>
         <h1>Trading Bot Tauri Shell</h1>
-        <p class="subtitle">Rust Service API client shell mirroring the Python and C++ tab surface; Python remains the trading execution owner.</p>
+        <p class="subtitle">Rust desktop shell with a Python Service API backend and a promotion-gated native Rust coordinator.</p>
       </div>
       <div class="status-strip">
         <span class="pill"><span class="dot" id="bot-status-dot"></span> Bot Status: <span id="bot-status-text">OFF</span></span>
@@ -317,6 +317,7 @@
           </div>
           <div class="actions">
             <button class="action primary" id="start-bot-btn" type="button">Start</button>
+            <button class="action" id="pause-native-bot-btn" type="button" disabled>Pause</button>
             <button class="action danger" id="stop-bot-btn" type="button">Stop</button>
             <button class="action" id="save-config-btn" type="button">Save Config</button>
             <button class="action" id="load-config-btn" type="button">Load Config</button>
@@ -328,6 +329,7 @@
             <div class="grid-3">
               <label>API Key:<input id="api-key-input" autocomplete="off"></label>
               <label>API Secret Key:<input id="api-secret-input" type="password" autocomplete="off"></label>
+              <label>Runtime Backend:<select id="runtime-execution-backend"><option value="service">Python Service API</option><option value="native">Native Rust (promotion-gated)</option></select></label>
               <label>Mode:<select id="config-mode"></select></label>
               <label>Theme:<select id="config-theme"></select></label>
               <label>Design:<select id="config-design"></select></label>
@@ -615,14 +617,14 @@
           <div class="cards" id="code-language-cards">
             <button class="metric card-button code-language-card" data-code-language="Python" type="button" aria-pressed="false"><span class="pill">Recommended</span><strong>Python</strong><span>Fast to build - Huge ecosystem</span></button>
             <button class="metric card-button code-language-card" data-code-language="C++" type="button" aria-pressed="false"><span class="pill">Experiment</span><strong>C++</strong><span>Qt native desktop experiment</span></button>
-            <button class="metric card-button code-language-card selected" data-code-language="Rust" type="button" aria-pressed="true"><span class="pill">Experiment</span><strong>Rust</strong><span>Service API client and UI scaffold</span></button>
+            <button class="metric card-button code-language-card selected" data-code-language="Rust" type="button" aria-pressed="true"><span class="pill">Experiment</span><strong>Rust</strong><span>Service API client and fail-closed native coordinator</span></button>
           </div>
           <p class="muted" id="code-language-status-text">Selected language: Rust (Tauri shell).</p>
         </section>
         <section class="panel" id="rust-framework-panel">
           <h3>Rust desktop framework</h3>
           <p class="muted">Tauri is the only user-selectable Rust desktop shell for this project.</p>
-          <div class="cards"><button class="metric card-button selected" data-rust-framework="Tauri" type="button" aria-pressed="true"><span class="pill">Operational</span><strong>Tauri</strong><span>Interactive managed Python Service API client shell</span></button></div>
+          <div class="cards"><button class="metric card-button selected" data-rust-framework="Tauri" type="button" aria-pressed="true"><span class="pill">Operational</span><strong>Tauri</strong><span>Managed Service API client and native runtime controller</span></button></div>
         </section>
         <section class="panel" id="rust-native-runtime-gap">
           <h3>Native Rust Runtime Gap</h3>
@@ -635,7 +637,7 @@
                 <tr><td>WebSocket market stream</td><td>BinanceWsClient connectBookTicker/connectKline</td><td>Native BinanceWebSocketClient foundation for bookTicker/kline URLs, tungstenite connection entry points, stream message parsing, reconnect/backoff decisions, kline cache staleness guards, deterministic stream supervisor state, and live stream ingestion bridge owned by the runtime-loop coordinator</td><td>Collect live-network WebSocket smoke evidence before standalone native trading</td></tr>
                 <tr><td>Account, balance, and positions</td><td>fetchUsdtBalance and fetchOpenFuturesPositions</td><td>Native BinanceSignedRestClient foundation for signed USDT balance snapshots, normalized balance rows, open futures position parsing with account-position overlays, futures position-mode get/change request foundations, futures margin-type/leverage/multi-assets request and parser foundations, portfolio/history/allocation ledger helpers, close-position planning foundations, native runtime hedge/one-way close planning, account-mode reconciliation, futures-settings reconciliation snapshots, a native account preflight gate, native operational preflight gate, and portfolio/history/allocation/reconciliation tests</td><td>Import signed credential-gated live-smoke evidence and broader native execution integration before enablement</td></tr>
                 <tr><td>Order submission</td><td>placeFuturesMarketOrder/placeFuturesLimitOrder and open/close fallback helpers</td><td>Native futures symbol filters plus signed market/limit order request/result foundation, order submit guard, order audit/circuit-breaker, risk/stop-loss planning, close-position planning, and runtime-owned order engine for guarded submit/dry-run/audit/circuit persistence</td><td>Import credential-gated smoke evidence, supervised runtime lifecycle, and runtime-owned recovery gates</td></tr>
-                <tr><td>Runtime lifecycle loop</td><td>startDashboardRuntime/runDashboardRuntimeCycle/stopDashboardRuntime</td><td>Desktop shell/tab lifecycle contracts, strategy runtime signal/control/provenance helpers, and native runtime loop coordinator for stream supervision, live ingestion event/close/error handling, pause, stop, shutdown, idle transitions, hedge/one-way close planning, account-mode reconciliation, futures-settings reconciliation, a native account preflight gate, native operational preflight gate, and portfolio-aware exposure guard checks; Tauri can start/stop Python Service API, not a standalone Rust trading loop</td><td>Imported live-smoke artifacts, live recovery evidence, and release evidence before enabling standalone native trading</td></tr>
+                <tr><td>Runtime lifecycle loop</td><td>startDashboardRuntime/runDashboardRuntimeCycle/stopDashboardRuntime</td><td>Desktop shell/tab lifecycle contracts, strategy runtime signal/control/provenance helpers, and a stateful Tauri native runtime loop coordinator for start, status, pause/resume, stop, stream supervision, a live stream ingestion bridge, hedge/one-way close planning, account-mode reconciliation, futures-settings reconciliation, a native account preflight gate, a native operational preflight gate, and portfolio-aware exposure guard checks. Native order submission remains fail-closed until promotion.</td><td>Imported live-smoke artifacts, live recovery evidence, and release evidence before enabling standalone native trading</td></tr>
                 <tr><td>Risk and shutdown guards</td><td>Stop-loss settings, quantity caps, retry windows, close-on-stop behavior</td><td>Stop-loss and close-opposite planning foundations plus runtime-owned risk/close execution path for stop-loss fallback, close-opposite reconciliation, native runtime stop/idle wiring, and portfolio-aware exposure guard checks for target margin, available balance, side cap, filter headroom, and one-way add-only reduce-only behavior</td><td>Credential-gated regression tests, live recovery evidence, and release evidence</td></tr>
               </tbody>
             </table>
@@ -1106,6 +1108,8 @@
       serviceControls.disabled = !serviceEnabled.checked;
     });
     const $ = (id) => document.getElementById(id);
+    const runtimeBackend = () => String($("runtime-execution-backend")?.value || "service");
+    const nativeRuntimeSelected = () => runtimeBackend() === "native";
     const syncBacktestOptimizerMode = () => {
       const mode = String($("backtest-optimizer-mode")?.value || "").trim();
       const comboSize = $("backtest-optimizer-combo-size");
@@ -2054,6 +2058,12 @@
     const updateStartButtonFromPreflight = (preflight) => {
       const button = $("start-bot-btn");
       if (!button) return;
+      if (nativeRuntimeSelected()) {
+        button.disabled = false;
+        button.textContent = "Start Native";
+        button.title = "Starts the fail-closed native Rust coordinator. Live order submission remains promotion-gated.";
+        return;
+      }
       const blocked = preflightStartBlocked(preflight);
       button.disabled = blocked;
       button.textContent = blocked ? "Start Blocked" : "Start Bot";
@@ -2211,8 +2221,55 @@
         };
       }
     };
+    const nativeRuntimeInvokeError = (error) => ({
+      ok: false,
+      execution_backend: "native-rust",
+      status: { runtime_active: false, active_duration: "--", lifecycle_phase: "error" },
+      lifecycle: {},
+      stream: {},
+      trading_execution_supported: false,
+      promotion_required: true,
+      message: "",
+      error: String(error)
+    });
+    const startNativeRuntime = async ({ config = {}, nowMs = Date.now() } = {}) => {
+      if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
+      try {
+        return await invoke("start_native_runtime", { config, nowMs });
+      } catch (error) {
+        return nativeRuntimeInvokeError(error);
+      }
+    };
+    const nativeRuntimeStatus = async ({ nowMs = Date.now() } = {}) => {
+      if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
+      try {
+        return await invoke("native_runtime_status", { nowMs });
+      } catch (error) {
+        return nativeRuntimeInvokeError(error);
+      }
+    };
+    const setNativeRuntimePaused = async ({ paused = true, nowMs = Date.now() } = {}) => {
+      if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
+      try {
+        return await invoke("set_native_runtime_paused", { paused: Boolean(paused), nowMs });
+      } catch (error) {
+        return nativeRuntimeInvokeError(error);
+      }
+    };
+    const stopNativeRuntime = async ({ closePositions = false, nowMs = Date.now() } = {}) => {
+      if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
+      try {
+        return await invoke("stop_native_runtime", { closePositions: Boolean(closePositions), nowMs });
+      } catch (error) {
+        return nativeRuntimeInvokeError(error);
+      }
+    };
     window.TradingBotNativeRuntime = Object.freeze({
-      evaluateReadOnly: evaluateNativeRuntimePreview
+      evaluateReadOnly: evaluateNativeRuntimePreview,
+      start: startNativeRuntime,
+      status: nativeRuntimeStatus,
+      pause: setNativeRuntimePaused,
+      stop: stopNativeRuntime
     });
     const servicePort = () => Math.max(1, Math.min(65535, Number($("service-port")?.value || 8000)));
     const startServiceApi = async () => {
@@ -2358,6 +2415,13 @@
       if (payload?.portfolio) renderPortfolioSnapshot(portfolio);
       setText("positions-bot-status", active ? "ON" : "OFF");
       setText("positions-active-time", status.active_duration || status.active_time || "--");
+      if (nativeRuntimeSelected()) {
+        const pauseButton = $("pause-native-bot-btn");
+        if (pauseButton) {
+          pauseButton.disabled = !active;
+          pauseButton.textContent = status.paused || status.lifecycle_phase === "paused" ? "Resume" : "Pause";
+        }
+      }
     };
     const hydrateLlmControls = (llm) => {
       if (!llm || typeof llm !== "object") return;
@@ -2593,6 +2657,19 @@
       if (apiKey) patch.api_key = apiKey;
       if (apiSecret) patch.api_secret = apiSecret;
       return patch;
+    };
+    const buildNativeRuntimeConfig = () => {
+      const config = buildRuntimeConfigPatch();
+      delete config.api_key;
+      delete config.api_secret;
+      return config;
+    };
+    const reportNativeRuntimeResponse = (label, result) => {
+      setStatusSnapshot(result);
+      const detail = result?.message || result?.error || "No native runtime response.";
+      setServiceStatus(`Native runtime: ${detail}`, Boolean(result?.ok));
+      appendLog(`[native] ${label}: ${result?.ok ? "ok" : "failed"} - ${detail}`);
+      return result;
     };
     const buildLlmConfigPatch = () => ({
       llm_enabled: Boolean(llmEnabled.checked),
@@ -2835,6 +2912,20 @@
       const started = await ensureServiceApi();
       if (started) await refreshDashboard();
     });
+    $("runtime-execution-backend")?.addEventListener("change", async () => {
+      const pauseButton = $("pause-native-bot-btn");
+      if (nativeRuntimeSelected()) {
+        const result = await nativeRuntimeStatus();
+        reportNativeRuntimeResponse("Status", result);
+      } else {
+        if (pauseButton) {
+          pauseButton.disabled = true;
+          pauseButton.textContent = "Pause";
+        }
+        appendLog("[runtime] Python Service API backend selected.");
+      }
+      updateStartButtonFromPreflight(latestOperationalPreflight);
+    });
     $("service-stop-btn")?.addEventListener("click", stopServiceApi);
     $("service-preflight-btn")?.addEventListener("click", async () => {
       await refreshOperationalPreflight();
@@ -2905,6 +2996,11 @@
       await removeLocalModel();
     });
     $("start-bot-btn")?.addEventListener("click", async () => {
+      if (nativeRuntimeSelected()) {
+        const result = await startNativeRuntime({ config: buildNativeRuntimeConfig() });
+        reportNativeRuntimeResponse("Start", result);
+        return;
+      }
       if (!(await ensureServiceApi())) return;
       const configResult = await requestAndReport("Apply runtime config", "config", "PATCH", { config: buildRuntimeConfigPatch() });
       if (!configResult.ok) return;
@@ -2927,7 +3023,20 @@
       }
       if (result.ok) await refreshDashboard();
     });
+    $("pause-native-bot-btn")?.addEventListener("click", async () => {
+      if (!nativeRuntimeSelected()) return;
+      const shouldPause = $("pause-native-bot-btn")?.textContent !== "Resume";
+      const result = await setNativeRuntimePaused({ paused: shouldPause });
+      reportNativeRuntimeResponse(shouldPause ? "Pause" : "Resume", result);
+    });
     $("stop-bot-btn")?.addEventListener("click", async () => {
+      if (nativeRuntimeSelected()) {
+        const result = await stopNativeRuntime({
+          closePositions: !Boolean($("stop-without-closing-positions")?.checked)
+        });
+        reportNativeRuntimeResponse("Stop", result);
+        return;
+      }
       if (!(await ensureServiceApi())) return;
       const result = await requestAndReport("Stop bot", "control_stop", "POST", { close_positions: !Boolean($("stop-without-closing-positions")?.checked), source: "tauri-desktop" });
       if (result.ok && result.payload?.accepted === false) {

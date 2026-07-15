@@ -5,6 +5,7 @@
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QFontMetrics>
 #include <QHBoxLayout>
@@ -268,6 +269,8 @@ QString buildBinanceWebUrl(const QString &symbol, const QString &interval, const
 } // namespace
 
 QWidget *TradingBotWindow::createChartTab() {
+    const bool boundedSmoke = QCoreApplication::instance()
+        && QCoreApplication::instance()->property("tradingBotBoundedSmoke").toBool();
     auto *page = new QWidget(this);
     page->setObjectName("chartPage");
     auto *layout = new QVBoxLayout(page);
@@ -473,7 +476,7 @@ QWidget *TradingBotWindow::createChartTab() {
 
     std::function<void(bool)> refreshCurrent;
 
-    auto loadSymbols = [this, marketCombo, symbolCombo, status, currentRawSymbol]() {
+    auto loadSymbols = [this, marketCombo, symbolCombo, status, currentRawSymbol, boundedSmoke]() {
         QString preferredRaw = currentRawSymbol();
         if (chartAutoFollowCheck_ && chartAutoFollowCheck_->isChecked() && dashboardSymbolList_) {
             const auto selected = dashboardSymbolList_->selectedItems();
@@ -485,25 +488,40 @@ QWidget *TradingBotWindow::createChartTab() {
             }
         }
         const bool futures = marketCombo->currentData().toString() == "futures";
-        const bool isTestnet = dashboardModeCombo_ ? TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText()) : false;
-        const QString connectorText = dashboardConnectorCombo_ ? dashboardConnectorCombo_->currentText() : QString();
-        const ConnectorRuntimeConfig connectorCfg = TradingBotWindowSupport::resolveConnectorConfig(connectorText, futures);
-
-        const auto result = connectorCfg.ok()
-            ? BinanceRestClient::fetchUsdtSymbols(futures, isTestnet, 12000, false, 0, connectorCfg.baseUrl)
-            : BinanceRestClient::SymbolsResult{false, {}, connectorCfg.error};
         QStringList symbols;
-        if (result.ok && !result.symbols.isEmpty()) {
-            symbols = result.symbols;
-            status->setText(QString("Loaded %1 symbols.").arg(symbols.size()));
-        } else {
+        if (boundedSmoke) {
             symbols = TradingBotWindowSupport::pythonSourceDefaultChartSymbols();
-            if (symbols.isEmpty()) {
-                symbols = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"};
+            status->setText("Smoke mode: generated chart symbols loaded without network access.");
+        } else {
+            const bool isTestnet = dashboardModeCombo_
+                ? TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText())
+                : false;
+            const QString connectorText = dashboardConnectorCombo_
+                ? dashboardConnectorCombo_->currentText()
+                : QString();
+            const ConnectorRuntimeConfig connectorCfg =
+                TradingBotWindowSupport::resolveConnectorConfig(connectorText, futures);
+            const auto result = connectorCfg.ok()
+                ? BinanceRestClient::fetchUsdtSymbols(
+                      futures,
+                      isTestnet,
+                      12000,
+                      false,
+                      0,
+                      connectorCfg.baseUrl)
+                : BinanceRestClient::SymbolsResult{false, {}, connectorCfg.error};
+            if (result.ok && !result.symbols.isEmpty()) {
+                symbols = result.symbols;
+                status->setText(QString("Loaded %1 symbols.").arg(symbols.size()));
+            } else {
+                symbols = TradingBotWindowSupport::pythonSourceDefaultChartSymbols();
+                status->setText(result.error.isEmpty()
+                                    ? "Using fallback symbol list."
+                                    : QString("Using fallback symbols: %1").arg(result.error));
             }
-            status->setText(result.error.isEmpty()
-                                ? "Using fallback symbol list."
-                                : QString("Using fallback symbols: %1").arg(result.error));
+        }
+        if (symbols.isEmpty()) {
+            symbols = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"};
         }
 
         QSignalBlocker blocker(symbolCombo);
@@ -884,11 +902,13 @@ QWidget *TradingBotWindow::createChartTab() {
 
     loadSymbols();
     syncFromDashboard();
-    QTimer::singleShot(0, page, [this, page, refreshCurrent]() {
-        if (tabs_ && tabs_->currentWidget() == page) {
-            refreshCurrent(false);
-        }
-    });
+    if (!boundedSmoke) {
+        QTimer::singleShot(0, page, [this, page, refreshCurrent]() {
+            if (tabs_ && tabs_->currentWidget() == page) {
+                refreshCurrent(false);
+            }
+        });
+    }
     if (tabs_) {
         connect(tabs_, &QTabWidget::currentChanged, page, [this, page, refreshCurrent](int) {
             if (tabs_ && tabs_->currentWidget() == page) {
