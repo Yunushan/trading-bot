@@ -7,9 +7,9 @@ use crate::market_data::BinanceKlineCandle;
 
 /// Runtime indicators currently computed natively from the Python-owned config.
 ///
-/// Unsupported catalog items remain visible in the generated contract but are not
-/// silently approximated here. The native runtime only evaluates a selected item
-/// when this module has an explicit, tested implementation for it.
+/// Future unknown catalog items remain visible in the generated contract but are
+/// not silently approximated here. The native runtime only evaluates a selected
+/// item when this module has an explicit, tested implementation for it.
 pub const NATIVE_RUNTIME_COMPUTED_INDICATOR_KEYS: &[&str] = &[
     "ma",
     "donchian",

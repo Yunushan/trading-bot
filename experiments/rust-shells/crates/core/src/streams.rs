@@ -1,14 +1,19 @@
-use std::net::TcpStream;
+use std::{
+    net::{TcpStream, ToSocketAddrs},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket, connect};
+use tungstenite::{HandshakeError, Message, WebSocket, client_tls};
 
 use crate::market_data::BinanceMarket;
 
 pub type BinanceWebSocket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinanceBookTicker {
@@ -143,7 +148,15 @@ impl StreamSupervisor {
             }
             BinanceStreamEvent::Kline(candle) => {
                 self.last_event_time_ms = Some(candle.event_time_ms);
-                self.kline_cache.push(candle);
+                if let Some(existing) = self.kline_cache.iter_mut().find(|existing| {
+                    existing.symbol == candle.symbol
+                        && existing.interval == candle.interval
+                        && existing.open_time_ms == candle.open_time_ms
+                }) {
+                    *existing = candle;
+                } else {
+                    self.kline_cache.push(candle);
+                }
                 let max_cached = self.max_cached_klines.max(1);
                 if self.kline_cache.len() > max_cached {
                     let overflow = self.kline_cache.len() - max_cached;
@@ -251,9 +264,24 @@ impl BinanceWebSocketClient {
         &self,
         subscription: &BinanceStreamSubscription,
     ) -> Result<BinanceWebSocket> {
+        self.connect_subscription_with_timeout(subscription, DEFAULT_WEBSOCKET_CONNECT_TIMEOUT)
+    }
+
+    pub fn connect_subscription_with_timeout(
+        &self,
+        subscription: &BinanceStreamSubscription,
+        timeout: Duration,
+    ) -> Result<BinanceWebSocket> {
         let url = subscription.url();
-        let (socket, _) = connect(url.as_str()).with_context(|| format!("connect {url}"))?;
-        Ok(socket)
+        connect_websocket_url_with_timeout(url.as_str(), timeout)
+            .with_context(|| format!("connect {url}"))
+    }
+
+    pub fn set_read_timeout(
+        socket: &mut BinanceWebSocket,
+        timeout: Option<Duration>,
+    ) -> Result<()> {
+        configure_websocket_read_timeout(socket.get_mut(), timeout)
     }
 
     pub fn read_next_event(socket: &mut BinanceWebSocket) -> Result<Option<BinanceStreamEvent>> {
@@ -270,6 +298,74 @@ impl BinanceWebSocketClient {
             }
         }
     }
+}
+
+fn configure_websocket_read_timeout(
+    stream: &mut MaybeTlsStream<TcpStream>,
+    timeout: Option<Duration>,
+) -> Result<()> {
+    let result = match stream {
+        MaybeTlsStream::Plain(socket) => socket.set_read_timeout(timeout),
+        MaybeTlsStream::NativeTls(socket) => socket.get_mut().set_read_timeout(timeout),
+        _ => bail!("configured Binance WebSocket transport does not expose a TCP read timeout"),
+    };
+    result.context("set Binance WebSocket read timeout")
+}
+
+fn connect_websocket_url_with_timeout(url: &str, timeout: Duration) -> Result<BinanceWebSocket> {
+    if timeout.is_zero() {
+        bail!("Binance WebSocket connection timeout must be greater than zero");
+    }
+    let uri = url
+        .parse::<tungstenite::http::Uri>()
+        .with_context(|| format!("parse Binance WebSocket URL {url}"))?;
+    let host = uri
+        .host()
+        .ok_or_else(|| anyhow!("Binance WebSocket URL has no host: {url}"))?;
+    let host = if host.starts_with('[') {
+        &host[1..host.len().saturating_sub(1)]
+    } else {
+        host
+    };
+    let port = uri.port_u16().unwrap_or_else(|| match uri.scheme_str() {
+        Some("wss") => 443,
+        _ => 80,
+    });
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .with_context(|| format!("resolve Binance WebSocket host {host}:{port}"))?;
+    let mut last_error = None;
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(stream) => {
+                stream
+                    .set_nodelay(true)
+                    .context("enable TCP_NODELAY for Binance WebSocket")?;
+                stream
+                    .set_read_timeout(Some(timeout))
+                    .context("set Binance WebSocket handshake read timeout")?;
+                stream
+                    .set_write_timeout(Some(timeout))
+                    .context("set Binance WebSocket handshake write timeout")?;
+                return client_tls(url, stream)
+                    .map(|(socket, _)| socket)
+                    .map_err(|error| match error {
+                        HandshakeError::Failure(error) => anyhow!(error),
+                        HandshakeError::Interrupted(_) => {
+                            anyhow!("Binance WebSocket handshake did not complete within the configured timeout")
+                        }
+                    })
+                    .with_context(|| format!("complete Binance WebSocket TLS handshake for {url}"));
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(anyhow!(
+        "connect to Binance WebSocket {host}:{port} within {timeout:?}: {}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "no resolved addresses".to_owned())
+    ))
 }
 
 impl BinanceStreamSubscription {
@@ -296,6 +392,8 @@ pub fn websocket_base_url(market: BinanceMarket, testnet: bool) -> &'static str 
     match (market, testnet) {
         (BinanceMarket::Futures, true) => "wss://stream.binancefuture.com/ws",
         (BinanceMarket::Futures, false) => "wss://fstream.binance.com/ws",
+        (BinanceMarket::CoinFutures, true) => "wss://dstream.binancefuture.com/ws",
+        (BinanceMarket::CoinFutures, false) => "wss://dstream.binance.com/ws",
         (BinanceMarket::Spot, true) => "wss://testnet.binance.vision/ws",
         (BinanceMarket::Spot, false) => "wss://stream.binance.com:9443/ws",
     }
@@ -506,6 +604,8 @@ fn parse_json_i64(value: Option<&Value>) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    use std::{net::TcpListener, time::Duration};
+
     use serde_json::json;
 
     use super::*;
@@ -521,6 +621,15 @@ mod tests {
             BinanceWebSocketClient::book_ticker_url(BinanceMarket::Futures, "BTCUSDT", true)
                 .expect("futures testnet url"),
             "wss://stream.binancefuture.com/ws/btcusdt@bookTicker"
+        );
+        assert_eq!(
+            BinanceWebSocketClient::book_ticker_url(
+                BinanceMarket::CoinFutures,
+                "BTCUSD_PERP",
+                false,
+            )
+            .expect("Coin-M url"),
+            "wss://dstream.binance.com/ws/btcusd_perp@bookTicker"
         );
         assert_eq!(
             BinanceWebSocketClient::book_ticker_url(BinanceMarket::Spot, "ETH USDT", false)
@@ -627,6 +736,63 @@ mod tests {
         );
         assert!(parse_stream_event(r#"{"s":"BTCUSDT","b":"1"}"#).is_err());
         assert!(parse_stream_event(r#"{"k":{"s":"BTCUSDT","i":"1m","t":1,"o":"1"}}"#).is_err());
+    }
+
+    #[test]
+    fn websocket_read_timeout_is_applied_to_plain_tcp_transport() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local listener");
+        let address = listener.local_addr().expect("listener address");
+        let accept_thread = std::thread::spawn(move || {
+            listener
+                .accept()
+                .expect("accept local client")
+                .0
+        });
+        let client = TcpStream::connect(address).expect("connect local client");
+        let _server = accept_thread.join().expect("local accept thread");
+        let mut stream = MaybeTlsStream::Plain(client);
+        let expected_timeout = Duration::from_millis(250);
+
+        configure_websocket_read_timeout(&mut stream, Some(expected_timeout))
+            .expect("configure stream timeout");
+
+        let observed_timeout = match stream {
+            MaybeTlsStream::Plain(socket) => socket.read_timeout().expect("read timeout"),
+            _ => panic!("expected plain TCP stream"),
+        };
+        assert_eq!(Some(expected_timeout), observed_timeout);
+    }
+
+    #[test]
+    fn websocket_connection_uses_bounded_tcp_handshake_timeouts() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local listener");
+        let address = listener.local_addr().expect("listener address");
+        let accept_thread = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept WebSocket client");
+            tungstenite::accept(stream).expect("accept local WebSocket handshake")
+        });
+        let expected_timeout = Duration::from_millis(250);
+        let socket = connect_websocket_url_with_timeout(
+            format!("ws://{address}/ws").as_str(),
+            expected_timeout,
+        )
+        .expect("connect local WebSocket client");
+
+        let observed_timeout = match socket.get_ref() {
+            MaybeTlsStream::Plain(stream) => stream.read_timeout().expect("read timeout"),
+            _ => panic!("expected plain TCP stream"),
+        };
+        assert_eq!(Some(expected_timeout), observed_timeout);
+        drop(socket);
+        drop(accept_thread.join().expect("local accept thread"));
+    }
+
+    #[test]
+    fn websocket_connection_rejects_zero_timeout() {
+        let error = connect_websocket_url_with_timeout("ws://127.0.0.1:1/ws", Duration::ZERO)
+            .expect_err("zero timeout must be rejected");
+
+        assert!(error.to_string().contains("must be greater than zero"));
     }
 
     #[test]

@@ -27,7 +27,7 @@ use crate::streams::{
     StreamReconnectPolicy, StreamSupervisor, StreamSupervisorSnapshot,
 };
 use crate::{
-    market_data::BinanceKlineCandle,
+    market_data::{BinanceKlineCandle, interval_seconds},
     runtime_control::{
         RuntimeStopGuardInput, RuntimeStopGuardResult, build_runtime_idle_after_stop_result,
         build_runtime_stop_guard_result,
@@ -628,6 +628,40 @@ impl NativeRuntimeLoop {
         self.run_stream_ingestion_cycle(now_ms, || BinanceWebSocketClient::read_next_event(socket))
     }
 
+    /// Hydrate the stream coordinator from a REST kline poll while a websocket
+    /// is reconnecting. The latest REST candle may still be open, so only the
+    /// preceding candle is eligible for read-only strategy evaluation.
+    pub fn run_rest_kline_ingestion_cycle<F>(
+        &mut self,
+        now_ms: i64,
+        mut poll_klines: F,
+    ) -> NativeRuntimeIngestionSnapshot
+    where
+        F: FnMut() -> Result<Vec<BinanceKlineCandle>>,
+    {
+        let event = poll_klines()
+            .and_then(|candles| latest_closed_rest_kline_event(&self.config, now_ms, &candles));
+        let mut snapshot = match event {
+            Ok(event) => self.run_stream_ingestion_cycle(now_ms, || Ok(Some(event.clone()))),
+            Err(error) => {
+                let message = error.to_string();
+                self.run_stream_ingestion_cycle(now_ms, || Err(anyhow::anyhow!(message.clone())))
+            }
+        };
+        if snapshot.poll_status == "event" {
+            self.status_message = "REST closed kline ingested.".to_owned();
+            snapshot.poll_status = "rest_closed_kline".to_owned();
+        } else {
+            self.status_message = format!(
+                "REST kline ingestion error: {}",
+                snapshot.poll_error.as_deref().unwrap_or("unknown error")
+            );
+            snapshot.poll_status = "rest_error".to_owned();
+        }
+        snapshot.cycle.status_message = self.status_message.clone();
+        snapshot
+    }
+
     pub fn position_mode(&self) -> String {
         normalize_native_position_mode(&self.config.position_mode)
     }
@@ -1041,6 +1075,45 @@ impl NativeRuntimeLoop {
     ) -> NativeRuntimeExposureGuardSnapshot {
         evaluate_native_exposure_guard(input)
     }
+}
+
+fn latest_closed_rest_kline_event(
+    config: &NativeRuntimeLoopConfig,
+    observed_at_ms: i64,
+    candles: &[BinanceKlineCandle],
+) -> Result<BinanceStreamEvent> {
+    if candles.len() < 2 {
+        bail!("REST kline ingestion requires at least two candles to select a closed candle");
+    }
+    let candle = &candles[candles.len() - 2];
+    let symbol = config.symbol.trim().to_ascii_uppercase();
+    let interval = config.interval.trim().to_ascii_lowercase();
+    if symbol.is_empty() || interval.is_empty() {
+        bail!("REST kline ingestion requires a configured symbol and interval");
+    }
+    if candle.open_time_ms < 0
+        || !candle.open.is_finite()
+        || !candle.high.is_finite()
+        || !candle.low.is_finite()
+        || !candle.close.is_finite()
+        || !candle.volume.is_finite()
+    {
+        bail!("REST kline ingestion received invalid candle data");
+    }
+    let interval_ms = (interval_seconds(&interval)? * 1_000.0).round() as i64;
+    let close_time_ms = candle.open_time_ms.saturating_add(interval_ms.max(1));
+    Ok(BinanceStreamEvent::Kline(BinanceKlineStreamCandle {
+        symbol,
+        interval,
+        open_time_ms: candle.open_time_ms,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+        is_closed: true,
+        event_time_ms: close_time_ms.min(observed_at_ms.max(candle.open_time_ms)),
+    }))
 }
 
 pub fn reconcile_native_position_mode(
@@ -2447,6 +2520,95 @@ mod tests {
         assert!(!recovered.cycle.stream.reconnect_decision.should_reconnect);
         assert!(recovered.cycle.signal_evaluation_allowed);
         assert!(!recovered.cycle.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_rest_ingestion_uses_latest_closed_candle_without_cache_duplicates() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let candles = vec![
+            market_candle(1_700_000_000_000, 101.0),
+            market_candle(1_700_000_060_000, 102.0),
+        ];
+
+        let first =
+            runtime.run_rest_kline_ingestion_cycle(1_700_000_061_000, || Ok(candles.clone()));
+        assert_eq!(first.poll_status, "rest_closed_kline");
+        assert!(first.poll_error.is_none());
+        assert!(first.cycle.stream.connected);
+        assert_eq!(
+            first
+                .cycle
+                .stream
+                .kline_cache_health
+                .latest_closed_open_time_ms,
+            Some(1_700_000_000_000)
+        );
+        assert!(first.cycle.signal_evaluation_allowed);
+        assert_eq!(first.cycle.status_message, "REST closed kline ingested.");
+
+        let second =
+            runtime.run_rest_kline_ingestion_cycle(1_700_000_062_000, || Ok(candles.clone()));
+        assert_eq!(second.poll_status, "rest_closed_kline");
+        assert_eq!(second.cycle.stream.kline_cache_health.candle_count, 1);
+        assert!(second.cycle.signal_evaluation_allowed);
+        assert!(!second.cycle.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_rest_ingestion_redacts_failures_and_blocks_signal_evaluation() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+
+        let snapshot = runtime.run_rest_kline_ingestion_cycle(1_700_000_010_000, || {
+            Err(anyhow!("REST request failed apiSecret=super-secret-value"))
+        });
+        assert_eq!(snapshot.poll_status, "rest_error");
+        assert!(
+            snapshot
+                .poll_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("<redacted>")
+        );
+        assert!(
+            !snapshot
+                .poll_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("super-secret-value")
+        );
+        assert!(!snapshot.cycle.signal_evaluation_allowed);
+        assert!(snapshot.cycle.stream.reconnect_decision.should_reconnect);
+    }
+
+    #[test]
+    fn native_runtime_rest_ingestion_rejects_insufficient_or_stale_candles() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+
+        let insufficient = runtime.run_rest_kline_ingestion_cycle(1_700_000_010_000, || {
+            Ok(vec![market_candle(1_700_000_000_000, 101.0)])
+        });
+        assert_eq!(insufficient.poll_status, "rest_error");
+        assert!(
+            insufficient
+                .poll_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("requires at least two candles")
+        );
+        assert!(!insufficient.cycle.signal_evaluation_allowed);
+
+        let stale = runtime.run_rest_kline_ingestion_cycle(1_700_000_091_000, || {
+            Ok(vec![
+                market_candle(1_700_000_000_000, 101.0),
+                market_candle(1_700_000_060_000, 102.0),
+            ])
+        });
+        assert_eq!(stale.poll_status, "rest_closed_kline");
+        assert!(stale.cycle.stream.kline_cache_health.stale);
+        assert!(!stale.cycle.signal_evaluation_allowed);
     }
 
     #[test]

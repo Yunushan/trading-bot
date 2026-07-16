@@ -293,7 +293,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("cpp_chart_uses_python_source_surface", consumer_names)
         self.assertIn("cpp_native_chart_heatmap_uses_python_source_surface", consumer_names)
         self.assertIn("cpp_positions_uses_python_source_surface", consumer_names)
-        self.assertIn("cpp_account_symbols_use_python_source_fallbacks", consumer_names)
+        self.assertIn("cpp_account_uses_python_service_api", consumer_names)
         self.assertIn("cpp_native_exchange_connectors_use_python_source_connectors", consumer_names)
         self.assertIn("cpp_native_strategy_runtime_uses_python_source_options", consumer_names)
         self.assertIn("tauri_browser_consumes_generated_contract", consumer_names)
@@ -303,7 +303,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertEqual([], consumer["unknown_service_routes"], consumer)
             self.assertEqual([], consumer["unknown_route_extractors"], consumer)
         self.assertEqual(
-            ["backtest_run", "backtest", "backtest_stop"],
+            ["config", "backtest_run", "backtest", "backtest_stop"],
             consumers["cpp_backtest_service_api_uses_python_source_routes"]["extracted_service_route_names"],
         )
         self.assertEqual(

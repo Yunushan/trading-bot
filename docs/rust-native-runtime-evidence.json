@@ -16,7 +16,7 @@
       "id": "rust-native-live-market-data-smoke",
       "category": "live_smoke",
       "title": "Rust native live market-data smoke",
-      "description": "Fetch real Binance futures symbols, klines, and ticker data through the Rust native market-data client on an explicitly selected testnet or production endpoint.",
+      "description": "Fetch real Binance futures symbols, klines, and ticker data through the Rust native market-data client on an explicitly selected testnet or production endpoint, then observe and ingest a real Binance wss:// kline event through the native runtime with a positive recorded WebSocket timeout.",
       "evidence_required_before_runtime_ready": true,
       "command": "TRADING_BOT_RUST_MARKET_SMOKE=1 BINANCE_TESTNET=true cargo run -p trading-bot-rust -- --native-live-market-smoke",
       "required_artifact_fields": [

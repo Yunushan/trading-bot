@@ -162,6 +162,7 @@ QString recommendedConnectorKey(bool futures);
 QString connectorLabelForKey(const QString &connectorKey);
 void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceDefault = false);
 ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool futures);
+bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText);
 double firstNumberInText(const QString &text, bool *okOut = nullptr);
 double tableCellRawNumeric(const QTableWidgetItem *item, double fallback = 0.0);
 

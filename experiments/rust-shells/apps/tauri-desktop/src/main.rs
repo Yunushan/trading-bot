@@ -12,14 +12,17 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 use trading_bot_core::{
     app_banner,
-    market_data::BinanceKlineCandle,
+    account::{BinanceApiCredentials, BinanceSignedRestClient},
+    exchange_connectors::DEFAULT_CONNECTOR_BACKEND,
+    market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
     native_runtime::{
         NativeRuntimeCycleInput, NativeRuntimeLoop, NativeRuntimeLoopConfig,
         NativeRuntimeReadOnlyMarketCycleInput,
     },
     python_source_contract_hash, rust_trading_execution_supported, service_api_route_path,
-    supported_frameworks,
+    service_api_route_supports_method, service_api_route_supports_query_field,
+    service_api_route_supports_request_field, supported_frameworks,
 };
 
 #[cfg(target_os = "windows")]
@@ -46,6 +49,8 @@ struct ServiceProcessState {
 #[derive(Default)]
 struct NativeRuntimeManagedState {
     runtime: Option<NativeRuntimeLoop>,
+    market_poll_spec: Option<NativeRuntimeMarketPollSpec>,
+    account_bootstrap: Option<NativeRuntimeAccountBootstrapState>,
     started_at_ms: Option<i64>,
     running: bool,
     paused: bool,
@@ -67,6 +72,99 @@ struct NativeRuntimeControlResponse {
     promotion_required: bool,
     message: String,
     error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeRuntimeMarketPollSpec {
+    market: BinanceMarket,
+    symbol: String,
+    interval: String,
+    testnet: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeRuntimeMarketPollResponse {
+    ok: bool,
+    market: String,
+    symbol: String,
+    interval: String,
+    testnet: bool,
+    candle_count: usize,
+    poll_status: String,
+    signal_evaluation_allowed: bool,
+    strategy_evaluated: bool,
+    signal: Option<String>,
+    trading_execution_supported: bool,
+    status_message: String,
+    error: String,
+}
+
+#[derive(Debug, Clone)]
+struct NativeRuntimeAccountBootstrapState {
+    refreshed_at_ms: i64,
+    signal_evaluation_allowed: bool,
+    status_message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeRuntimeAccountPollResponse {
+    ok: bool,
+    market: String,
+    symbol: String,
+    testnet: bool,
+    balance_asset: String,
+    total_balance: f64,
+    available_balance: f64,
+    open_positions_count: usize,
+    configured_symbol_position_found: bool,
+    configured_symbol_open_position_amt: f64,
+    position_mode: String,
+    multi_assets_mode: bool,
+    signal_evaluation_allowed: bool,
+    status_message: String,
+    error: String,
+}
+
+impl NativeRuntimeMarketPollResponse {
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            market: String::new(),
+            symbol: String::new(),
+            interval: String::new(),
+            testnet: false,
+            candle_count: 0,
+            poll_status: String::new(),
+            signal_evaluation_allowed: false,
+            strategy_evaluated: false,
+            signal: None,
+            trading_execution_supported: rust_trading_execution_supported(),
+            status_message: String::new(),
+            error: error.into(),
+        }
+    }
+}
+
+impl NativeRuntimeAccountPollResponse {
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            market: String::new(),
+            symbol: String::new(),
+            testnet: false,
+            balance_asset: String::new(),
+            total_balance: 0.0,
+            available_balance: 0.0,
+            open_positions_count: 0,
+            configured_symbol_position_found: false,
+            configured_symbol_open_position_amt: 0.0,
+            position_mode: String::new(),
+            multi_assets_mode: false,
+            signal_evaluation_allowed: false,
+            status_message: String::new(),
+            error: error.into(),
+        }
+    }
 }
 
 impl NativeRuntimeControlResponse {
@@ -91,6 +189,10 @@ impl NativeRuntimeControlResponse {
 
 impl NativeRuntimeState {
     fn start(&self, config: &Value, now_ms: i64) -> NativeRuntimeControlResponse {
+        let market_poll_spec = match native_runtime_market_poll_spec(config) {
+            Ok(spec) => spec,
+            Err(error) => return NativeRuntimeControlResponse::error(error),
+        };
         let mut managed = match self.inner.lock() {
             Ok(value) => value,
             Err(_) => {
@@ -110,6 +212,8 @@ impl NativeRuntimeState {
         let mut runtime = NativeRuntimeLoop::new(native_runtime_config(config));
         runtime.start();
         managed.runtime = Some(runtime);
+        managed.market_poll_spec = Some(market_poll_spec);
+        managed.account_bootstrap = None;
         managed.started_at_ms = Some(now_ms);
         managed.running = true;
         managed.paused = false;
@@ -207,6 +311,8 @@ impl NativeRuntimeState {
             },
         );
         runtime.mark_idle_after_stop("tauri-native-runtime", &stop.status_message);
+        managed.market_poll_spec = None;
+        managed.account_bootstrap = None;
         managed.running = false;
         managed.paused = false;
         managed.started_at_ms = None;
@@ -219,6 +325,275 @@ impl NativeRuntimeState {
                 "Native Rust runtime stopped."
             },
         )
+    }
+
+    fn poll_market(&self, config: &Value, now_ms: i64) -> NativeRuntimeMarketPollResponse {
+        let spec = match native_runtime_market_poll_spec(config) {
+            Ok(spec) => spec,
+            Err(error) => return NativeRuntimeMarketPollResponse::error(error),
+        };
+        {
+            let managed = match self.inner.lock() {
+                Ok(value) => value,
+                Err(_) => {
+                    return NativeRuntimeMarketPollResponse::error(
+                        "Native runtime state lock is poisoned.",
+                    );
+                }
+            };
+            if !managed.running {
+                return NativeRuntimeMarketPollResponse::error(
+                    "Native Rust runtime is not running.",
+                );
+            }
+            if managed.market_poll_spec.as_ref() != Some(&spec) {
+                return NativeRuntimeMarketPollResponse::error(
+                    "Native runtime market configuration changed; stop and restart the runtime before polling.",
+                );
+            }
+        }
+        let mut input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
+            now_ms,
+            Vec::new(),
+            config,
+            false,
+        ) {
+            Ok(input) => input,
+            Err(error) => return NativeRuntimeMarketPollResponse::error(error.to_string()),
+        };
+        let client = match BinanceRestMarketDataClient::new(spec.market, spec.testnet) {
+            Ok(client) => client,
+            Err(error) => return NativeRuntimeMarketPollResponse::error(error.to_string()),
+        };
+        let candles = match client.fetch_klines(&spec.symbol, &spec.interval, 500) {
+            Ok(candles) => candles,
+            Err(error) => return NativeRuntimeMarketPollResponse::error(error.to_string()),
+        };
+        input.candles = candles.clone();
+
+        let mut managed = match self.inner.lock() {
+            Ok(value) => value,
+            Err(_) => {
+                return NativeRuntimeMarketPollResponse::error(
+                    "Native runtime state lock is poisoned.",
+                );
+            }
+        };
+        if !managed.running {
+            return NativeRuntimeMarketPollResponse::error("Native Rust runtime is not running.");
+        }
+        if managed.market_poll_spec.as_ref() != Some(&spec) {
+            return NativeRuntimeMarketPollResponse::error(
+                "Native runtime market configuration changed; stop and restart the runtime before polling.",
+            );
+        }
+        let account_bootstrap = managed.account_bootstrap.clone();
+        let account_ready = account_bootstrap
+            .as_ref()
+            .filter(|snapshot| native_runtime_account_bootstrap_is_fresh(snapshot, now_ms))
+            .filter(|snapshot| snapshot.signal_evaluation_allowed);
+        let Some(runtime) = managed.runtime.as_mut() else {
+            return NativeRuntimeMarketPollResponse::error(
+                "Native Rust runtime state is unavailable.",
+            );
+        };
+
+        let ingestion = runtime.run_rest_kline_ingestion_cycle(now_ms, || Ok(candles.clone()));
+        if ingestion.poll_status != "rest_closed_kline" {
+            return NativeRuntimeMarketPollResponse {
+                ok: false,
+                market: native_runtime_market_label(spec.market).to_owned(),
+                symbol: spec.symbol,
+                interval: spec.interval,
+                testnet: spec.testnet,
+                candle_count: candles.len(),
+                poll_status: ingestion.poll_status,
+                signal_evaluation_allowed: ingestion.cycle.signal_evaluation_allowed,
+                strategy_evaluated: false,
+                signal: None,
+                trading_execution_supported: ingestion.cycle.trading_execution_supported,
+                status_message: ingestion.cycle.status_message,
+                error: ingestion
+                    .poll_error
+                    .unwrap_or_else(|| "REST market poll failed.".to_owned()),
+            };
+        }
+        let Some(account_bootstrap) = account_ready else {
+            let account_status = account_bootstrap
+                .as_ref()
+                .map(|snapshot| snapshot.status_message.as_str())
+                .unwrap_or("Read-only native account bootstrap is required before signal evaluation.");
+            return NativeRuntimeMarketPollResponse {
+                ok: true,
+                market: native_runtime_market_label(spec.market).to_owned(),
+                symbol: spec.symbol,
+                interval: spec.interval,
+                testnet: spec.testnet,
+                candle_count: candles.len(),
+                poll_status: ingestion.poll_status,
+                signal_evaluation_allowed: false,
+                strategy_evaluated: false,
+                signal: None,
+                trading_execution_supported: rust_trading_execution_supported(),
+                status_message: format!(
+                    "Read-only native market data refreshed; signal evaluation is withheld until a fresh account bootstrap passes: {account_status}"
+                ),
+                error: String::new(),
+            };
+        };
+        match runtime.run_read_only_market_cycle(input) {
+            Ok(snapshot) => NativeRuntimeMarketPollResponse {
+                ok: true,
+                market: native_runtime_market_label(spec.market).to_owned(),
+                symbol: spec.symbol,
+                interval: spec.interval,
+                testnet: spec.testnet,
+                candle_count: candles.len(),
+                poll_status: ingestion.poll_status,
+                signal_evaluation_allowed: snapshot.cycle.signal_evaluation_allowed
+                    && account_bootstrap.signal_evaluation_allowed,
+                strategy_evaluated: snapshot.strategy_evaluated,
+                signal: snapshot
+                    .strategy_decision
+                    .and_then(|decision| decision.signal),
+                trading_execution_supported: snapshot.trading_execution_supported,
+                status_message: snapshot.status_message,
+                error: String::new(),
+            },
+            Err(error) => NativeRuntimeMarketPollResponse::error(error.to_string()),
+        }
+    }
+
+    fn poll_account(
+        &self,
+        config: &Value,
+        api_key: String,
+        api_secret: String,
+        now_ms: i64,
+    ) -> NativeRuntimeAccountPollResponse {
+        let spec = match native_runtime_market_poll_spec(config) {
+            Ok(spec) => spec,
+            Err(error) => return NativeRuntimeAccountPollResponse::error(error),
+        };
+        {
+            let managed = match self.inner.lock() {
+                Ok(value) => value,
+                Err(_) => {
+                    return NativeRuntimeAccountPollResponse::error(
+                        "Native runtime state lock is poisoned.",
+                    );
+                }
+            };
+            if !managed.running {
+                return NativeRuntimeAccountPollResponse::error("Native Rust runtime is not running.");
+            }
+            if managed.market_poll_spec.as_ref() != Some(&spec) {
+                return NativeRuntimeAccountPollResponse::error(
+                    "Native runtime market configuration changed; stop and restart the runtime before polling.",
+                );
+            }
+        }
+        if api_key.trim().is_empty() || api_secret.trim().is_empty() {
+            self.clear_account_bootstrap(&spec);
+            return NativeRuntimeAccountPollResponse::error(
+                "API key and API secret are required for the read-only native account bootstrap.",
+            );
+        }
+        let credentials = BinanceApiCredentials::new(api_key, api_secret);
+        let client = match BinanceSignedRestClient::new(spec.market, spec.testnet) {
+            Ok(client) => client,
+            Err(error) => {
+                self.clear_account_bootstrap(&spec);
+                return NativeRuntimeAccountPollResponse::error(error.to_string());
+            }
+        };
+        let position_mode = match client.fetch_futures_position_mode(&credentials) {
+            Ok(value) => value,
+            Err(error) => {
+                self.clear_account_bootstrap(&spec);
+                return NativeRuntimeAccountPollResponse::error(error.to_string());
+            }
+        };
+        let multi_assets_mode = match client.fetch_futures_multi_assets_mode(&credentials) {
+            Ok(value) => value,
+            Err(error) => {
+                self.clear_account_bootstrap(&spec);
+                return NativeRuntimeAccountPollResponse::error(error.to_string());
+            }
+        };
+        let balance = match client.fetch_usdt_balance(&credentials) {
+            Ok(value) => value,
+            Err(error) => {
+                self.clear_account_bootstrap(&spec);
+                return NativeRuntimeAccountPollResponse::error(error.to_string());
+            }
+        };
+        let positions = match client.fetch_open_futures_positions(&credentials) {
+            Ok(value) => value,
+            Err(error) => {
+                self.clear_account_bootstrap(&spec);
+                return NativeRuntimeAccountPollResponse::error(error.to_string());
+            }
+        };
+
+        let mut managed = match self.inner.lock() {
+            Ok(value) => value,
+            Err(_) => {
+                return NativeRuntimeAccountPollResponse::error(
+                    "Native runtime state lock is poisoned.",
+                );
+            }
+        };
+        if !managed.running {
+            return NativeRuntimeAccountPollResponse::error("Native Rust runtime is not running.");
+        }
+        if managed.market_poll_spec.as_ref() != Some(&spec) {
+            return NativeRuntimeAccountPollResponse::error(
+                "Native runtime market configuration changed; stop and restart the runtime before polling.",
+            );
+        }
+        let Some(runtime) = managed.runtime.as_ref() else {
+            return NativeRuntimeAccountPollResponse::error(
+                "Native Rust runtime state is unavailable.",
+            );
+        };
+        let snapshot = runtime.bootstrap_read_only_account(
+            &balance,
+            &positions,
+            Some(&position_mode),
+            Some(&multi_assets_mode),
+        );
+        managed.account_bootstrap = Some(NativeRuntimeAccountBootstrapState {
+            refreshed_at_ms: now_ms.max(0),
+            signal_evaluation_allowed: snapshot.signal_evaluation_allowed,
+            status_message: snapshot.status_message.clone(),
+        });
+        NativeRuntimeAccountPollResponse {
+            ok: true,
+            market: native_runtime_market_label(spec.market).to_owned(),
+            symbol: spec.symbol,
+            testnet: spec.testnet,
+            balance_asset: snapshot.balance_asset,
+            total_balance: balance.total_usdt_balance,
+            available_balance: balance.available_usdt_balance,
+            open_positions_count: snapshot.open_positions_count,
+            configured_symbol_position_found: snapshot.configured_symbol_position_found,
+            configured_symbol_open_position_amt: snapshot.configured_symbol_open_position_amt,
+            position_mode: position_mode.position_mode,
+            multi_assets_mode: multi_assets_mode.multi_assets_margin,
+            signal_evaluation_allowed: snapshot.signal_evaluation_allowed,
+            status_message: snapshot.status_message,
+            error: String::new(),
+        }
+    }
+
+    fn clear_account_bootstrap(&self, spec: &NativeRuntimeMarketPollSpec) {
+        if let Ok(mut managed) = self.inner.lock()
+            && managed.running
+            && managed.market_poll_spec.as_ref() == Some(spec)
+        {
+            managed.account_bootstrap = None;
+        }
     }
 }
 
@@ -243,6 +618,80 @@ fn first_config_string(config: &Value, key: &str, default: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or(default);
     text.to_owned()
+}
+
+fn native_runtime_ownership_error(config: &Value) -> Option<String> {
+    let selected_exchange = first_config_string(config, "selected_exchange", "Binance");
+    if !selected_exchange.eq_ignore_ascii_case("Binance") {
+        return Some(format!(
+            "Native Rust runtime coordinates Binance futures only. {selected_exchange} remains Python Service API/provider connector-owned."
+        ));
+    }
+
+    let connector_backend =
+        first_config_string(config, "connector_backend", DEFAULT_CONNECTOR_BACKEND)
+            .to_ascii_lowercase();
+    if matches!(
+        connector_backend.as_str(),
+        "binance-sdk-derivatives-trading-usds-futures"
+            | "binance-sdk-derivatives-trading-coin-futures"
+    ) {
+        return None;
+    }
+
+    Some(format!(
+        "Native Rust runtime coordinates only Python's explicit Binance futures connector keys; '{connector_backend}' remains Python Service API/provider connector-owned."
+    ))
+}
+
+fn native_runtime_market_poll_spec(config: &Value) -> Result<NativeRuntimeMarketPollSpec, String> {
+    if let Some(error) = native_runtime_ownership_error(config) {
+        return Err(error);
+    }
+    let connector_backend =
+        first_config_string(config, "connector_backend", DEFAULT_CONNECTOR_BACKEND)
+            .to_ascii_lowercase();
+    let market = match connector_backend.as_str() {
+        "binance-sdk-derivatives-trading-usds-futures" => BinanceMarket::Futures,
+        "binance-sdk-derivatives-trading-coin-futures" => BinanceMarket::CoinFutures,
+        _ => return Err("Native Rust runtime requires a Binance futures connector.".to_owned()),
+    };
+    let default_symbol = match market {
+        BinanceMarket::CoinFutures => "BTCUSD_PERP",
+        BinanceMarket::Futures | BinanceMarket::Spot => "BTCUSDT",
+    };
+    let mode = first_config_string(config, "mode", "Demo/Testnet");
+    Ok(NativeRuntimeMarketPollSpec {
+        market,
+        symbol: first_config_string(config, "symbols", default_symbol).to_ascii_uppercase(),
+        interval: first_config_string(config, "intervals", "1m"),
+        testnet: python_mode_uses_testnet(&mode),
+    })
+}
+
+fn python_mode_uses_testnet(mode: &str) -> bool {
+    let normalized = mode.to_ascii_lowercase();
+    ["demo", "test", "sandbox"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+fn native_runtime_market_label(market: BinanceMarket) -> &'static str {
+    match market {
+        BinanceMarket::Futures => "USD-M futures",
+        BinanceMarket::CoinFutures => "Coin-M futures",
+        BinanceMarket::Spot => "spot",
+    }
+}
+
+fn native_runtime_account_bootstrap_is_fresh(
+    bootstrap: &NativeRuntimeAccountBootstrapState,
+    now_ms: i64,
+) -> bool {
+    now_ms
+        .saturating_sub(bootstrap.refreshed_at_ms)
+        .max(0)
+        <= 5 * 60 * 1_000
 }
 
 fn config_i64(config: &Value, key: &str, default: i64) -> i64 {
@@ -309,6 +758,7 @@ fn native_runtime_snapshot(
     message: impl Into<String>,
 ) -> NativeRuntimeControlResponse {
     let trading_execution_supported = rust_trading_execution_supported();
+    let account_bootstrap = managed.account_bootstrap.as_ref();
     let active_duration = format_active_duration(managed.started_at_ms, now_ms, managed.running);
     let Some(runtime) = managed.runtime.as_mut() else {
         return NativeRuntimeControlResponse {
@@ -320,6 +770,7 @@ fn native_runtime_snapshot(
                 "active_time": active_duration,
                 "lifecycle_phase": "idle",
                 "paused": false,
+                "account_bootstrap_fresh": false,
                 "execution_owner": "native-rust-coordinator"
             }),
             lifecycle: json!({
@@ -385,6 +836,12 @@ fn native_runtime_snapshot(
             "active_time": active_duration,
             "lifecycle_phase": lifecycle_phase,
             "paused": managed.paused,
+            "account_bootstrap_fresh": account_bootstrap
+                .map(|snapshot| native_runtime_account_bootstrap_is_fresh(snapshot, now_ms))
+                .unwrap_or(false),
+            "account_signal_evaluation_allowed": account_bootstrap
+                .map(|snapshot| snapshot.signal_evaluation_allowed)
+                .unwrap_or(false),
             "signal_evaluation_allowed": cycle.signal_evaluation_allowed,
             "execution_owner": "native-rust-coordinator",
             "status_message": cycle.status_message
@@ -616,10 +1073,25 @@ fn normalize_service_base_url(
     Ok(parsed)
 }
 
+fn validate_service_api_endpoint_access(
+    base_url: &str,
+    api_token: &str,
+    allow_public_network_endpoint: bool,
+) -> Result<(), String> {
+    let parsed = normalize_service_base_url(base_url, allow_public_network_endpoint)?;
+    if !is_loopback_host(parsed.host_str().unwrap_or_default()) && api_token.trim().is_empty() {
+        return Err(
+            "BOT_SERVICE_API_TOKEN is required for a non-loopback service API endpoint."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn build_service_url(
     base_url: &str,
     route_name: &str,
-    query: Option<BTreeMap<String, String>>,
+    query: Option<&BTreeMap<String, String>>,
     allow_public_network_endpoint: bool,
 ) -> Result<(String, String), String> {
     let route_path = service_api_route_path(route_name)
@@ -636,6 +1108,62 @@ fn build_service_url(
         }
     }
     Ok((url.to_string(), route_path.to_string()))
+}
+
+fn validate_service_api_method(route_name: &str, method: &str) -> Result<String, String> {
+    let normalized = method.trim().to_uppercase();
+    if normalized.is_empty() {
+        return Err(format!(
+            "Missing service API method for route: {route_name}"
+        ));
+    }
+    if !service_api_route_supports_method(route_name, &normalized) {
+        return Err(format!(
+            "Service API method {normalized} is not declared by the Python contract for route: {route_name}"
+        ));
+    }
+    Ok(normalized)
+}
+
+fn validate_service_api_fields(
+    route_name: &str,
+    method: &str,
+    payload: Option<&Value>,
+    query: Option<&BTreeMap<String, String>>,
+) -> Result<(), String> {
+    let is_get = method == "GET";
+    if let Some(query) = query {
+        for field in query.keys() {
+            if !is_get || !service_api_route_supports_query_field(route_name, field) {
+                return Err(format!(
+                    "Service API query field {field} is not declared by the Python contract for route: {route_name}"
+                ));
+            }
+        }
+    }
+    let Some(payload) = payload else {
+        return Ok(());
+    };
+    if payload.is_null() {
+        return Ok(());
+    }
+    let object = payload
+        .as_object()
+        .ok_or_else(|| format!("Service API payload must be an object for route: {route_name}"))?;
+    for field in object.keys() {
+        let supported = if is_get {
+            service_api_route_supports_query_field(route_name, field)
+        } else {
+            service_api_route_supports_request_field(route_name, field)
+        };
+        if !supported {
+            let field_kind = if is_get { "query" } else { "request" };
+            return Err(format!(
+                "Service API {field_kind} field {field} is not declared by the Python contract for route: {route_name}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn service_health_url(base_url: &str) -> Result<String, String> {
@@ -921,12 +1449,29 @@ async fn service_api_request(
     query: Option<BTreeMap<String, String>>,
     allow_public_network_endpoint: bool,
 ) -> ServiceApiProxyResponse {
-    let (url, route_path) =
-        match build_service_url(&base_url, &route_name, query, allow_public_network_endpoint) {
-            Ok(value) => value,
-            Err(exc) => return response_error(&route_name, "", 0, exc),
-        };
-    let method = method.trim().to_uppercase();
+    if let Err(exc) =
+        validate_service_api_endpoint_access(&base_url, &api_token, allow_public_network_endpoint)
+    {
+        return response_error(&route_name, "", 0, exc);
+    }
+    let (url, route_path) = match build_service_url(
+        &base_url,
+        &route_name,
+        query.as_ref(),
+        allow_public_network_endpoint,
+    ) {
+        Ok(value) => value,
+        Err(exc) => return response_error(&route_name, "", 0, exc),
+    };
+    let method = match validate_service_api_method(&route_name, &method) {
+        Ok(value) => value,
+        Err(exc) => return response_error(&route_name, &route_path, 0, exc),
+    };
+    if let Err(exc) =
+        validate_service_api_fields(&route_name, &method, payload.as_ref(), query.as_ref())
+    {
+        return response_error(&route_name, &route_path, 0, exc);
+    }
     let timeout_secs = match route_name.as_str() {
         "llm_local_model_pull" => 3_600,
         "llm_local_model_delete" | "llm_local_model_start" => 120,
@@ -1066,6 +1611,26 @@ fn start_native_runtime(
     now_ms: i64,
 ) -> NativeRuntimeControlResponse {
     state.start(&config, now_ms)
+}
+
+#[tauri::command]
+fn poll_native_runtime_market(
+    state: State<'_, NativeRuntimeState>,
+    config: Value,
+    now_ms: i64,
+) -> NativeRuntimeMarketPollResponse {
+    state.poll_market(&config, now_ms)
+}
+
+#[tauri::command]
+fn poll_native_runtime_account(
+    state: State<'_, NativeRuntimeState>,
+    config: Value,
+    api_key: String,
+    api_secret: String,
+    now_ms: i64,
+) -> NativeRuntimeAccountPollResponse {
+    state.poll_account(&config, api_key, api_secret, now_ms)
 }
 
 #[tauri::command]
@@ -1354,6 +1919,8 @@ fn main() {
             launch_desktop_language,
             evaluate_native_runtime_preview,
             start_native_runtime,
+            poll_native_runtime_market,
+            poll_native_runtime_account,
             native_runtime_status,
             set_native_runtime_paused,
             stop_native_runtime,
@@ -1441,6 +2008,117 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_controller_delegates_non_binance_or_non_futures_connectors() {
+        let state = NativeRuntimeState::default();
+        let non_binance = state.start(
+            &json!({
+                "selected_exchange": "Bybit",
+                "connector_backend": "ccxt"
+            }),
+            1_700_000_000_000,
+        );
+        assert!(!non_binance.ok);
+        assert!(
+            non_binance
+                .error
+                .contains("Python Service API/provider connector-owned")
+        );
+
+        let spot = state.start(
+            &json!({
+                "selected_exchange": "Binance",
+                "connector_backend": "binance-sdk-spot"
+            }),
+            1_700_000_000_000,
+        );
+        assert!(!spot.ok);
+        assert!(
+            spot.error
+                .contains("only Python's explicit Binance futures connector keys")
+        );
+    }
+
+    #[test]
+    fn native_runtime_market_poll_spec_matches_python_connector_and_mode_rules() {
+        let usds = native_runtime_market_poll_spec(&json!({
+            "mode": "Live",
+            "symbols": ["ethusdt"],
+            "intervals": ["5m"]
+        }))
+        .expect("USD-M poll spec");
+        assert_eq!(usds.market, BinanceMarket::Futures);
+        assert_eq!(usds.symbol, "ETHUSDT");
+        assert_eq!(usds.interval, "5m");
+        assert!(!usds.testnet);
+
+        let coin = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "binance-sdk-derivatives-trading-coin-futures",
+            "mode": "Sandbox"
+        }))
+        .expect("Coin-M poll spec");
+        assert_eq!(coin.market, BinanceMarket::CoinFutures);
+        assert_eq!(coin.symbol, "BTCUSD_PERP");
+        assert_eq!(coin.interval, "1m");
+        assert!(coin.testnet);
+    }
+
+    #[test]
+    fn native_runtime_market_poll_rejects_idle_runtime_before_network_access() {
+        let state = NativeRuntimeState::default();
+        let response = state.poll_market(&json!({}), 1_700_000_000_000);
+        assert!(!response.ok);
+        assert_eq!(response.error, "Native Rust runtime is not running.");
+    }
+
+    #[test]
+    fn native_runtime_account_bootstrap_requires_a_recent_read() {
+        let bootstrap = NativeRuntimeAccountBootstrapState {
+            refreshed_at_ms: 1_700_000_000_000,
+            signal_evaluation_allowed: true,
+            status_message: "account ready".to_owned(),
+        };
+        assert!(native_runtime_account_bootstrap_is_fresh(
+            &bootstrap,
+            1_700_000_300_000
+        ));
+        assert!(!native_runtime_account_bootstrap_is_fresh(
+            &bootstrap,
+            1_700_000_300_001
+        ));
+    }
+
+    #[test]
+    fn native_runtime_failed_account_poll_clears_signal_gate() {
+        let state = NativeRuntimeState::default();
+        let config = json!({
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1m"],
+            "indicators": {"rsi": {"enabled": true}}
+        });
+        let started = state.start(&config, 1_700_000_000_000);
+        assert!(started.ok, "{}", started.error);
+        {
+            let mut managed = state.inner.lock().expect("runtime state lock");
+            managed.account_bootstrap = Some(NativeRuntimeAccountBootstrapState {
+                refreshed_at_ms: 1_700_000_000_000,
+                signal_evaluation_allowed: true,
+                status_message: "account ready".to_owned(),
+            });
+        }
+
+        let response = state.poll_account(
+            &config,
+            String::new(),
+            String::new(),
+            1_700_000_001_000,
+        );
+        assert!(!response.ok);
+        assert!(response.error.contains("API key and API secret"));
+        let managed = state.inner.lock().expect("runtime state lock");
+        assert!(managed.account_bootstrap.is_none());
+    }
+
+    #[test]
     fn native_runtime_controller_tracks_lifecycle_without_retaining_credentials() {
         let state = NativeRuntimeState::default();
         let started = state.start(
@@ -1498,5 +2176,70 @@ mod tests {
         assert!(message.contains("Trading Bot Tauri packaged smoke passed"));
         assert!(message.contains(python_source_contract_hash()));
         assert!(message.contains("native trading disabled"));
+    }
+
+    #[test]
+    fn remote_service_api_endpoint_requires_an_explicit_token() {
+        assert!(validate_service_api_endpoint_access("http://127.0.0.1:8000", "", false).is_ok());
+        assert!(
+            validate_service_api_endpoint_access("http://192.168.1.10:8000", "", false)
+                .unwrap_err()
+                .contains("Public service API endpoints are disabled")
+        );
+        assert!(
+            validate_service_api_endpoint_access("http://192.168.1.10:8000", "", true)
+                .unwrap_err()
+                .contains("BOT_SERVICE_API_TOKEN")
+        );
+        assert!(
+            validate_service_api_endpoint_access(
+                "https://service.example.test",
+                "session-token",
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn service_api_proxy_validation_matches_the_generated_python_schema() {
+        assert_eq!(
+            validate_service_api_method("config", "patch"),
+            Ok("PATCH".to_owned())
+        );
+        assert!(
+            validate_service_api_method("config", "post")
+                .unwrap_err()
+                .contains("not declared by the Python contract")
+        );
+        assert!(
+            validate_service_api_fields(
+                "dashboard",
+                "GET",
+                None,
+                Some(&BTreeMap::from([("log_limit".to_owned(), "25".to_owned())])),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_service_api_fields(
+                "dashboard",
+                "GET",
+                None,
+                Some(&BTreeMap::from([("unexpected".to_owned(), "1".to_owned())])),
+            )
+            .unwrap_err()
+            .contains("query field unexpected")
+        );
+        assert!(
+            validate_service_api_fields(
+                "terminal_run",
+                "POST",
+                Some(&json!({"unexpected": true})),
+                None,
+            )
+            .unwrap_err()
+            .contains("request field unexpected")
+        );
     }
 }

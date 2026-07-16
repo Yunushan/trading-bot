@@ -9,6 +9,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinanceMarket {
     Futures,
+    CoinFutures,
     Spot,
 }
 
@@ -44,14 +45,32 @@ impl BinanceMarket {
         match (self, testnet) {
             (Self::Futures, true) => "https://testnet.binancefuture.com",
             (Self::Futures, false) => "https://fapi.binance.com",
+            (Self::CoinFutures, true) => "https://testnet.binancefuture.com",
+            (Self::CoinFutures, false) => "https://dapi.binance.com",
             (Self::Spot, true) => "https://testnet.binance.vision",
             (Self::Spot, false) => "https://api.binance.com",
         }
     }
 
+    pub fn is_futures(self) -> bool {
+        matches!(self, Self::Futures | Self::CoinFutures)
+    }
+
+    pub(crate) fn futures_api_prefix(self) -> &'static str {
+        match self {
+            Self::Futures => "/fapi",
+            Self::CoinFutures => "/dapi",
+            Self::Spot => "",
+        }
+    }
+
     fn exchange_info_path(self) -> &'static str {
         match self {
-            Self::Futures => "/fapi/v1/exchangeInfo",
+            Self::Futures | Self::CoinFutures => match self {
+                Self::Futures => "/fapi/v1/exchangeInfo",
+                Self::CoinFutures => "/dapi/v1/exchangeInfo",
+                Self::Spot => unreachable!(),
+            },
             Self::Spot => "/api/v3/exchangeInfo",
         }
     }
@@ -59,6 +78,7 @@ impl BinanceMarket {
     fn ticker_24h_path(self) -> &'static str {
         match self {
             Self::Futures => "/fapi/v1/ticker/24hr",
+            Self::CoinFutures => "/dapi/v1/ticker/24hr",
             Self::Spot => "/api/v3/ticker/24hr",
         }
     }
@@ -66,6 +86,7 @@ impl BinanceMarket {
     fn klines_path(self) -> &'static str {
         match self {
             Self::Futures => "/fapi/v1/klines",
+            Self::CoinFutures => "/dapi/v1/klines",
             Self::Spot => "/api/v3/klines",
         }
     }
@@ -73,6 +94,7 @@ impl BinanceMarket {
     fn ticker_price_path(self) -> &'static str {
         match self {
             Self::Futures => "/fapi/v1/ticker/price",
+            Self::CoinFutures => "/dapi/v1/ticker/price",
             Self::Spot => "/api/v3/ticker/price",
         }
     }
@@ -245,7 +267,7 @@ pub fn parse_usdt_symbols(exchange_info: &Value, market: BinanceMarket) -> Resul
         {
             continue;
         }
-        if market == BinanceMarket::Futures
+        if market.is_futures()
             && row
                 .get("contractType")
                 .and_then(Value::as_str)
@@ -580,6 +602,14 @@ mod tests {
             "https://testnet.binancefuture.com"
         );
         assert_eq!(
+            BinanceMarket::CoinFutures.default_base_url(false),
+            "https://dapi.binance.com"
+        );
+        assert_eq!(
+            BinanceMarket::CoinFutures.default_base_url(true),
+            "https://testnet.binancefuture.com"
+        );
+        assert_eq!(
             BinanceMarket::Spot.default_base_url(false),
             "https://api.binance.com"
         );
@@ -599,12 +629,26 @@ mod tests {
         let spot =
             BinanceRestMarketDataClient::with_base_url(BinanceMarket::Spot, "https://spot.test")
                 .expect("spot client");
+        let coin = BinanceRestMarketDataClient::with_base_url(
+            BinanceMarket::CoinFutures,
+            "https://coin.test",
+        )
+        .expect("Coin-M client");
 
         assert_eq!(
             futures.exchange_info_url(),
             "https://example.test/fapi/v1/exchangeInfo"
         );
         assert_eq!(futures.klines_url(), "https://example.test/fapi/v1/klines");
+        assert_eq!(
+            coin.exchange_info_url(),
+            "https://coin.test/dapi/v1/exchangeInfo"
+        );
+        assert_eq!(coin.klines_url(), "https://coin.test/dapi/v1/klines");
+        assert_eq!(
+            coin.ticker_price_url(),
+            "https://coin.test/dapi/v1/ticker/price"
+        );
         assert_eq!(
             futures.ticker_price_url(),
             "https://example.test/fapi/v1/ticker/price"

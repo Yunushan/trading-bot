@@ -70,6 +70,12 @@ def _market_smoke_suite_results(symbol: str = "BTCUSDT") -> list[dict[str, objec
             "name": "native_runtime_read_only_market_cycle",
             "status": "passed",
             "stream_connected": True,
+            "rest_stream_connected": True,
+            "websocket_connected": True,
+            "websocket_url": "wss://stream.binancefuture.com/ws/btcusdt@kline_1m",
+            "websocket_timeout_ms": 20000,
+            "websocket_poll_status": "event",
+            "websocket_event_kind": "kline",
             "strategy_evaluated": True,
             "trading_execution_supported": False,
             "computed_indicator_keys": ["rsi"],
@@ -5738,6 +5744,26 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         configure_command = run_step.call_args_list[0].args[1]
         self.assertIn("-DCMAKE_BUILD_TYPE=Release", configure_command)
 
+    def test_native_cpp_serializes_windows_builds_to_avoid_pdb_contention(self):
+        with (
+            patch.object(native_cpp.sys, "platform", "win32"),
+            patch.object(native_cpp.shutil, "which", side_effect=["cmake", "ctest"]),
+            patch.object(native_cpp, "_run_step", return_value={"ok": True}) as run_step,
+        ):
+            report = native_cpp.check_native_cpp(
+                build_dir=REPO_ROOT / "build" / "test-native-windows",
+                config="Debug",
+                require_webengine=True,
+                enable_qt_deploy_script=None,
+                smoke_targets_only=True,
+                qt_version=None,
+                timeout=30,
+            )
+
+        self.assertTrue(report["ok"])
+        for call in run_step.call_args_list[1:3]:
+            self.assertEqual(["--parallel", "1"], call.args[1][-2:])
+
     def test_release_platform_cli_target_filter_limits_evidence_validation(self):
         payload = {
             "target_id": "windows-11-x64",
@@ -6387,6 +6413,20 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 requirement_ids={market_id},
             )
 
+            market_payload["suite_results"] = _market_smoke_suite_results()
+            market_payload["suite_results"][-1]["websocket_connected"] = False
+            market_payload["suite_results"][-1]["websocket_url"] = ""
+            market_payload["suite_results"][-1]["websocket_timeout_ms"] = 0
+            market_payload["suite_results"][-1]["websocket_poll_status"] = "rest"
+            market_payload["suite_results"][-1]["websocket_event_kind"] = ""
+            market_path.write_text(json.dumps(market_payload), encoding="utf-8")
+            missing_websocket_observation = runtime_evidence.validate(
+                runtime_evidence.DEFAULT_MANIFEST_PATH,
+                require_evidence=True,
+                evidence_dir_override=evidence_dir,
+                requirement_ids={market_id},
+            )
+
             account_payload["endpoints"] = _account_smoke_endpoints()
             account_payload["suite_results"] = _account_smoke_suite_results()
             account_payload["suite_results"][2]["balances_redacted"] = False
@@ -6459,6 +6499,31 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             any(
                 "unsupported_indicator_keys must be an empty list" in issue
                 for issue in unsupported_native_indicator["issues"]
+            )
+        )
+        self.assertFalse(missing_websocket_observation["ok"])
+        self.assertTrue(
+            any("websocket_connected must be true" in issue for issue in missing_websocket_observation["issues"])
+        )
+        self.assertTrue(
+            any("websocket_url must be a wss URL" in issue for issue in missing_websocket_observation["issues"])
+        )
+        self.assertTrue(
+            any(
+                "websocket_timeout_ms must be a positive integer" in issue
+                for issue in missing_websocket_observation["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "websocket_poll_status must be event" in issue
+                for issue in missing_websocket_observation["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "websocket_event_kind must be kline" in issue
+                for issue in missing_websocket_observation["issues"]
             )
         )
         self.assertFalse(unredacted_balance["ok"])

@@ -206,8 +206,8 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         });
     connectorCombo->setToolTip(
         "Matches Python connector options.\n"
-        "C++ currently runs native Binance REST under the hood.\n"
-        "Unsupported connector backends are auto-mapped to native equivalents.");
+        "The C++ native runtime owns Binance USD-M and Coin-M Futures only.\n"
+        "Other connector selections remain Python Service API/provider-owned.");
     connectorCombo->setMinimumWidth(340);
     dashboardConnectorCombo_ = connectorCombo;
     registerDashboardRuntimeLockWidget(connectorCombo);

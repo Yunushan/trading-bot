@@ -104,7 +104,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_chart_uses_python_source_surface",
     "cpp_native_chart_heatmap_uses_python_source_surface",
     "cpp_positions_uses_python_source_surface",
-    "cpp_account_symbols_use_python_source_fallbacks",
+    "cpp_account_uses_python_service_api",
     "cpp_native_exchange_connectors_use_python_source_connectors",
     "cpp_native_strategy_runtime_uses_python_source_options",
     "cpp_native_indicator_runtime_uses_python_reference_fixture",
@@ -459,11 +459,12 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.backtest.cpp",
             (
                 "TradingBotWindowSupport::serviceApiRequestJson",
+                'QStringLiteral("config")',
                 'QStringLiteral("backtest_run")',
                 'QStringLiteral("backtest")',
                 'QStringLiteral("backtest_stop")',
             ),
-            ("backtest_run", "backtest", "backtest_stop"),
+            ("config", "backtest_run", "backtest", "backtest_stop"),
             (CPP_SERVICE_API_EXTRACTOR,),
         ),
         ConsumerRequirement(
@@ -535,13 +536,18 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
-            "cpp_account_symbols_use_python_source_fallbacks",
+            "cpp_account_uses_python_service_api",
             REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.account.cpp",
             (
-                "placeholderSymbolsForExchange",
+                "serviceApiRequestJson",
+                'QStringLiteral("account")',
+                'QStringLiteral("config")',
+                "exchangeUsesBinanceApi",
                 "resolveConnectorConfig",
                 "fetchUsdtSymbols",
             ),
+            ("account", "config"),
+            (CPP_SERVICE_API_EXTRACTOR,),
         ),
         ConsumerRequirement(
             "cpp_native_exchange_connectors_use_python_source_connectors",

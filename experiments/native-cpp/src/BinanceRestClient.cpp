@@ -10,6 +10,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QThread>
 #include <QUrl>
@@ -242,6 +243,52 @@ double normalizeMarginRatioPercent(double value) {
     }
     return value <= 1.0 ? (value * 100.0) : value;
 }
+
+bool isCoinMarginedFuturesBase(const QString &baseUrlOverride) {
+    const QUrl parsed(baseUrlOverride.trimmed());
+    const QString host = parsed.host().trimmed().toLower();
+    if (host == QStringLiteral("dapi.binance.com")) {
+        return true;
+    }
+    const QStringList pathParts = parsed.path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    return pathParts.contains(QStringLiteral("dapi"), Qt::CaseInsensitive);
+}
+
+bool isDefaultCoinMarginedBase(const QString &baseUrlOverride) {
+    const QUrl parsed(baseUrlOverride.trimmed());
+    return parsed.host().compare(QStringLiteral("dapi.binance.com"), Qt::CaseInsensitive) == 0
+        && parsed.path().trimmed().isEmpty();
+}
+
+QString futuresBaseUrl(bool testnet, const QString &baseUrlOverride) {
+    const QString overrideBase = baseUrlOverride.trimmed();
+    const bool coinMargined = isCoinMarginedFuturesBase(overrideBase);
+    if (testnet && (overrideBase.isEmpty() || isDefaultCoinMarginedBase(overrideBase))) {
+        return QStringLiteral("https://testnet.binancefuture.com");
+    }
+    if (!overrideBase.isEmpty()) {
+        QUrl parsed(overrideBase);
+        QStringList pathParts = parsed.path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        if (pathParts.contains(QStringLiteral("dapi"), Qt::CaseInsensitive)) {
+            pathParts.erase(
+                std::remove_if(pathParts.begin(), pathParts.end(), [](const QString &part) {
+                    return part.compare(QStringLiteral("dapi"), Qt::CaseInsensitive) == 0;
+                }),
+                pathParts.end());
+            parsed.setPath(pathParts.isEmpty() ? QString() : QStringLiteral("/") + pathParts.join(QLatin1Char('/')));
+        }
+        return parsed.toString(QUrl::RemoveQuery | QUrl::RemoveFragment).remove(QRegularExpression(QStringLiteral("/$")));
+    }
+    return coinMargined ? QStringLiteral("https://dapi.binance.com")
+                        : QStringLiteral("https://fapi.binance.com");
+}
+
+QString futuresApiPath(const QString &baseUrlOverride, const QString &suffix) {
+    const QString prefix = isCoinMarginedFuturesBase(baseUrlOverride)
+        ? QStringLiteral("/dapi")
+        : QStringLiteral("/fapi");
+    return prefix + suffix;
+}
 } // namespace
 
 QString BinanceRestClient::hmacSha256Hex(const QString &secret, const QString &message) {
@@ -272,12 +319,11 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
     }
 
     const QString defaultBase = futures
-        ? (testnet ? QStringLiteral("https://testnet.binancefuture.com")
-                   : QStringLiteral("https://fapi.binance.com"))
+        ? futuresBaseUrl(testnet, baseUrlOverride)
         : (testnet ? QStringLiteral("https://testnet.binance.vision")
                    : QStringLiteral("https://api.binance.com"));
     const QString overrideBase = baseUrlOverride.trimmed();
-    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
+    const QString base = futures ? defaultBase : (overrideBase.isEmpty() ? defaultBase : overrideBase);
     auto signedGet = [&](const QString &endpoint, QString *requestError) -> QJsonDocument {
         const QString query = QStringLiteral("timestamp=%1").arg(QDateTime::currentMSecsSinceEpoch());
         const QString signature = hmacSha256Hex(apiSecret, query);
@@ -351,7 +397,7 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
 
     if (futures) {
         QString balanceError;
-        const QJsonDocument balanceDoc = signedGet(QStringLiteral("/fapi/v2/balance"), &balanceError);
+        const QJsonDocument balanceDoc = signedGet(futuresApiPath(overrideBase, QStringLiteral("/v1/balance")), &balanceError);
         bool hasBalanceSnapshot = false;
         double balanceSnapshotAvailable = 0.0;
         double balanceSnapshotWallet = 0.0;
@@ -381,7 +427,10 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
         }
 
         QString accountError;
-        const QJsonDocument accountDoc = signedGet(QStringLiteral("/fapi/v2/account"), &accountError);
+        const QJsonDocument accountDoc = signedGet(
+            futuresApiPath(overrideBase, isCoinMarginedFuturesBase(overrideBase)
+                ? QStringLiteral("/v1/account") : QStringLiteral("/v2/account")),
+            &accountError);
         if (accountDoc.isNull() || !accountDoc.isObject()) {
             if (hasBalanceSnapshot) {
                 applySnapshot(balanceSnapshotAvailable, balanceSnapshotWallet, balanceSnapshotAsset);
@@ -486,13 +535,13 @@ BinanceRestClient::SymbolsResult BinanceRestClient::fetchUsdtSymbols(
     const QString &baseUrlOverride) {
     SymbolsResult result;
     const QString defaultBase = futures
-        ? (testnet ? QStringLiteral("https://testnet.binancefuture.com")
-                   : QStringLiteral("https://fapi.binance.com"))
+        ? futuresBaseUrl(testnet, baseUrlOverride)
         : (testnet ? QStringLiteral("https://testnet.binance.vision")
                    : QStringLiteral("https://api.binance.com"));
     const QString overrideBase = baseUrlOverride.trimmed();
-    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
-    const QString endpoint = futures ? QStringLiteral("/fapi/v1/exchangeInfo") : QStringLiteral("/api/v3/exchangeInfo");
+    const QString base = futures ? defaultBase : (overrideBase.isEmpty() ? defaultBase : overrideBase);
+    const QString endpoint = futures ? futuresApiPath(overrideBase, QStringLiteral("/v1/exchangeInfo"))
+                                     : QStringLiteral("/api/v3/exchangeInfo");
     const QString url = QStringLiteral("%1%2").arg(base, endpoint);
 
     QString requestError;
@@ -537,7 +586,7 @@ BinanceRestClient::SymbolsResult BinanceRestClient::fetchUsdtSymbols(
     });
 
     if (sortByVolume && !collected.isEmpty()) {
-        const QString tickerEndpoint = futures ? QStringLiteral("/fapi/v1/ticker/24hr")
+        const QString tickerEndpoint = futures ? futuresApiPath(overrideBase, QStringLiteral("/v1/ticker/24hr"))
                                                : QStringLiteral("/api/v3/ticker/24hr");
         const QString tickerUrl = QStringLiteral("%1%2").arg(base, tickerEndpoint);
         QString tickerError;
@@ -603,13 +652,13 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlines(
 
     const int safeLimit = std::clamp(limit, 1, futures ? 1500 : 1000);
     const QString defaultBase = futures
-        ? (testnet ? QStringLiteral("https://testnet.binancefuture.com")
-                   : QStringLiteral("https://fapi.binance.com"))
+        ? futuresBaseUrl(testnet, baseUrlOverride)
         : (testnet ? QStringLiteral("https://testnet.binance.vision")
                    : QStringLiteral("https://api.binance.com"));
     const QString overrideBase = baseUrlOverride.trimmed();
-    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
-    const QString endpoint = futures ? QStringLiteral("/fapi/v1/klines") : QStringLiteral("/api/v3/klines");
+    const QString base = futures ? defaultBase : (overrideBase.isEmpty() ? defaultBase : overrideBase);
+    const QString endpoint = futures ? futuresApiPath(overrideBase, QStringLiteral("/v1/klines"))
+                                     : QStringLiteral("/api/v3/klines");
     QUrl url(base + endpoint);
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("symbol"), cleanSymbol);
@@ -688,13 +737,12 @@ BinanceRestClient::TickerPriceResult BinanceRestClient::fetchTickerPrice(
     }
 
     const QString defaultBase = futures
-        ? (testnet ? QStringLiteral("https://testnet.binancefuture.com")
-                   : QStringLiteral("https://fapi.binance.com"))
+        ? futuresBaseUrl(testnet, baseUrlOverride)
         : (testnet ? QStringLiteral("https://testnet.binance.vision")
                    : QStringLiteral("https://api.binance.com"));
     const QString overrideBase = baseUrlOverride.trimmed();
-    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
-    const QString endpoint = futures ? QStringLiteral("/fapi/v1/ticker/price")
+    const QString base = futures ? defaultBase : (overrideBase.isEmpty() ? defaultBase : overrideBase);
+    const QString endpoint = futures ? futuresApiPath(overrideBase, QStringLiteral("/v1/ticker/price"))
                                      : QStringLiteral("/api/v3/ticker/price");
     const QString url = QStringLiteral("%1%2?symbol=%3").arg(base, endpoint, result.symbol);
 
@@ -860,16 +908,16 @@ BinanceRestClient::FuturesPositionsResult BinanceRestClient::fetchOpenFuturesPos
         return result;
     }
 
-    const QString defaultBase = testnet
-        ? QStringLiteral("https://testnet.binancefuture.com")
-        : QStringLiteral("https://fapi.binance.com");
     const QString overrideBase = baseUrlOverride.trimmed();
-    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
+    const QString base = futuresBaseUrl(testnet, overrideBase);
 
     const QString query = QStringLiteral("timestamp=%1").arg(QDateTime::currentMSecsSinceEpoch());
     const QString signature = hmacSha256Hex(apiSecret, query);
-    const QString url = QStringLiteral("%1/fapi/v2/positionRisk?%2&signature=%3")
-                            .arg(base, query, signature);
+    const QString url = QStringLiteral("%1%2?%3&signature=%4")
+                            .arg(base, futuresApiPath(overrideBase,
+                                isCoinMarginedFuturesBase(overrideBase)
+                                    ? QStringLiteral("/v1/positionRisk") : QStringLiteral("/v2/positionRisk")),
+                                query, signature);
 
     QString requestError;
     const QJsonDocument document = httpGetJson(
@@ -886,8 +934,11 @@ BinanceRestClient::FuturesPositionsResult BinanceRestClient::fetchOpenFuturesPos
     {
         const QString accountQuery = QStringLiteral("timestamp=%1").arg(QDateTime::currentMSecsSinceEpoch());
         const QString accountSignature = hmacSha256Hex(apiSecret, accountQuery);
-        const QString accountUrl = QStringLiteral("%1/fapi/v2/account?%2&signature=%3")
-                                       .arg(base, accountQuery, accountSignature);
+        const QString accountUrl = QStringLiteral("%1%2?%3&signature=%4")
+                                       .arg(base, futuresApiPath(overrideBase,
+                                           isCoinMarginedFuturesBase(overrideBase)
+                                               ? QStringLiteral("/v1/account") : QStringLiteral("/v2/account")),
+                                           accountQuery, accountSignature);
         QString accountError;
         const QJsonDocument accountDoc = httpGetJson(
             accountUrl,
@@ -1121,12 +1172,9 @@ BinanceRestClient::FuturesSymbolFilters BinanceRestClient::fetchFuturesSymbolFil
         return result;
     }
 
-    const QString defaultBase = testnet
-        ? QStringLiteral("https://testnet.binancefuture.com")
-        : QStringLiteral("https://fapi.binance.com");
     const QString overrideBase = baseUrlOverride.trimmed();
-    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
-    const QString url = QStringLiteral("%1/fapi/v1/exchangeInfo").arg(base);
+    const QString base = futuresBaseUrl(testnet, overrideBase);
+    const QString url = QStringLiteral("%1%2").arg(base, futuresApiPath(overrideBase, QStringLiteral("/v1/exchangeInfo")));
 
     QString requestError;
     const QJsonDocument document = httpGetJson(url, {}, timeoutMs, &requestError);
@@ -1227,11 +1275,8 @@ BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesMarketOrder
         return result;
     }
 
-    const QString defaultBase = testnet
-        ? QStringLiteral("https://testnet.binancefuture.com")
-        : QStringLiteral("https://fapi.binance.com");
     const QString overrideBase = baseUrlOverride.trimmed();
-    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
+    const QString base = futuresBaseUrl(testnet, overrideBase);
 
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("symbol"), result.symbol);
@@ -1253,7 +1298,8 @@ BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesMarketOrder
 
     const QString queryString = query.toString(QUrl::FullyEncoded);
     const QString signature = hmacSha256Hex(apiSecret, queryString);
-    const QString url = QStringLiteral("%1/fapi/v1/order?%2&signature=%3").arg(base, queryString, signature);
+    const QString url = QStringLiteral("%1%2?%3&signature=%4")
+                            .arg(base, futuresApiPath(overrideBase, QStringLiteral("/v1/order")), queryString, signature);
 
     QString requestError;
     const QJsonDocument doc = httpRequestJson(
@@ -1326,11 +1372,8 @@ BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesLimitOrder(
         return result;
     }
 
-    const QString defaultBase = testnet
-        ? QStringLiteral("https://testnet.binancefuture.com")
-        : QStringLiteral("https://fapi.binance.com");
     const QString overrideBase = baseUrlOverride.trimmed();
-    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
+    const QString base = futuresBaseUrl(testnet, overrideBase);
 
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("symbol"), result.symbol);
@@ -1354,7 +1397,8 @@ BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesLimitOrder(
 
     const QString queryString = query.toString(QUrl::FullyEncoded);
     const QString signature = hmacSha256Hex(apiSecret, queryString);
-    const QString url = QStringLiteral("%1/fapi/v1/order?%2&signature=%3").arg(base, queryString, signature);
+    const QString url = QStringLiteral("%1%2?%3&signature=%4")
+                            .arg(base, futuresApiPath(overrideBase, QStringLiteral("/v1/order")), queryString, signature);
 
     QString requestError;
     const QJsonDocument doc = httpRequestJson(
