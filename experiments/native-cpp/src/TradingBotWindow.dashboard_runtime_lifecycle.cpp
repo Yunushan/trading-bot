@@ -42,10 +42,55 @@ void TradingBotWindow::startDashboardRuntime() {
     if (!dashboardOverridesTable_) {
         return;
     }
+    const QString selectedExchange = TradingBotWindowSupport::selectedDashboardExchange(dashboardExchangeCombo_);
+    if (!TradingBotWindowSupport::exchangeUsesBinanceApi(selectedExchange)) {
+        const QString message = QStringLiteral(
+            "C++ native runtime executes Binance only. %1 routing remains Python Service API/provider connector-owned "
+            "and will not be submitted by the C++ runtime.")
+                                    .arg(selectedExchange);
+        appendDashboardAllLog(QStringLiteral("Start blocked: %1").arg(message));
+        updateStatusMessage(message);
+        QMessageBox::information(this, tr("Start blocked"), message);
+        return;
+    }
+    const bool futures = dashboardAccountTypeCombo_
+        ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+        : true;
+    const QString defaultConnectorText = dashboardConnectorCombo_
+        ? dashboardConnectorCombo_->currentText().trimmed()
+        : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
+    if (!futures || !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText)) {
+        const QString message = QStringLiteral(
+            "C++ native runtime owns only Binance USD-M and Coin-M Futures connectors. '%1' remains Python Service API/provider connector-owned "
+            "and will not be submitted by the C++ runtime.")
+                                    .arg(defaultConnectorText);
+        appendDashboardAllLog(QStringLiteral("Start blocked: %1").arg(message));
+        updateStatusMessage(message);
+        QMessageBox::information(this, tr("Start blocked"), message);
+        return;
+    }
     if (dashboardOverridesTable_->rowCount() <= 0) {
         appendDashboardAllLog("Start blocked: no symbol/interval override rows found.");
         appendDashboardWaitingLog("No overrides queued. Add at least one pair first.");
         QMessageBox::information(this, tr("Start blocked"), tr("Add at least one Symbol / Interval override row first."));
+        return;
+    }
+    for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
+        const QTableWidgetItem *connectorItem = dashboardOverridesTable_->item(row, 5);
+        const QString connectorText = connectorItem && !connectorItem->text().trimmed().isEmpty()
+            ? connectorItem->text().trimmed()
+            : defaultConnectorText;
+        if (TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(connectorText)) {
+            continue;
+        }
+        const QString message = QStringLiteral(
+            "C++ native runtime owns only Binance USD-M and Coin-M Futures connectors. Override row %1 uses '%2', which remains "
+            "Python Service API/provider connector-owned and will not be submitted by the C++ runtime.")
+                                    .arg(row + 1)
+                                    .arg(connectorText);
+        appendDashboardAllLog(QStringLiteral("Start blocked: %1").arg(message));
+        updateStatusMessage(message);
+        QMessageBox::information(this, tr("Start blocked"), message);
         return;
     }
 
@@ -76,12 +121,6 @@ void TradingBotWindow::startDashboardRuntime() {
     const bool useWebSocketFeed = dashboardSignalFeedCombo_
         && normalizedSignalFeedKey(dashboardSignalFeedCombo_->currentText()) == QStringLiteral("websocket")
         && qtWebSocketsRuntimeAvailable();
-    const bool futures = dashboardAccountTypeCombo_
-        ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
-        : true;
-    const QString defaultConnectorText = dashboardConnectorCombo_
-        ? dashboardConnectorCombo_->currentText().trimmed()
-        : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
     const ConnectorRuntimeConfig defaultConnectorCfg = TradingBotWindowSupport::resolveConnectorConfig(defaultConnectorText, futures);
     dashboardRuntimeTimer_->setInterval(dashboardRuntimePollIntervalMs(dashboardOverridesTable_, useWebSocketFeed));
     dashboardRuntimeLastEvalMs_.clear();

@@ -971,7 +971,7 @@ QJsonObject buildWorkerLifecycleSnapshot(const StrategyWorkerLifecycleInput &inp
         {QStringLiteral("phase_span_seconds"), std::max(2.0, std::min(seconds * 0.35, 10.0))},
         {QStringLiteral("execution_owner"), QStringLiteral("native-cpp")},
         {QStringLiteral("native_trading_execution_enabled"), true},
-        {QStringLiteral("native_trading_execution_scope"), QStringLiteral("binance-usds-futures")},
+        {QStringLiteral("native_trading_execution_scope"), QStringLiteral("binance-usds-and-coin-futures")},
     };
 }
 

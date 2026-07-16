@@ -610,6 +610,27 @@ def _validate_live_smoke_suite_evidence(
                 issues.append(
                     f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].stream_connected must be true"
                 )
+            if market_cycle_row.get("websocket_connected") is not True:
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].websocket_connected must be true"
+                )
+            if not str(market_cycle_row.get("websocket_url") or "").strip().startswith("wss://"):
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].websocket_url must be a wss URL"
+                )
+            websocket_timeout_ms = market_cycle_row.get("websocket_timeout_ms")
+            if not isinstance(websocket_timeout_ms, int) or websocket_timeout_ms <= 0:
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].websocket_timeout_ms must be a positive integer"
+                )
+            if market_cycle_row.get("websocket_poll_status") != "event":
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].websocket_poll_status must be event"
+                )
+            if market_cycle_row.get("websocket_event_kind") != "kline":
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].websocket_event_kind must be kline"
+                )
             if market_cycle_row.get("strategy_evaluated") is not True:
                 issues.append(
                     f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].strategy_evaluated must be true"

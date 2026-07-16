@@ -40,6 +40,25 @@ int main(int argc, char **argv) {
           QStringLiteral("generated route names should include config"));
     check(contains(routes, QStringLiteral("control_start")),
           QStringLiteral("generated route names should include control_start"));
+    check(TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Binance")),
+          QStringLiteral("native exchange guard should accept Binance"));
+    check(!TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Bybit")),
+          QStringLiteral("native exchange guard should reject non-Binance selections"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
+            QStringLiteral("binance-sdk-derivatives-trading-usds-futures")),
+        QStringLiteral("C++ native runtime should own Python's USD-M futures connector"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
+            QStringLiteral("Binance SDK Derivatives Trading COIN-M Futures")),
+        QStringLiteral("C++ native runtime should own Python's Coin-M futures connector label"));
+    check(
+        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("ccxt")),
+        QStringLiteral("C++ native runtime should leave CCXT provider routing Python-owned"));
+    check(
+        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
+            QStringLiteral("binance-sdk-spot")),
+        QStringLiteral("C++ native runtime should leave Binance Spot Python-owned"));
 
     const QMap<QString, QJsonObject> backtestConfigs =
         TradingBotWindowSupport::pythonSourceBacktestIndicatorConfigs();
@@ -62,6 +81,50 @@ int main(int argc, char **argv) {
           QStringLiteral("config route should declare PUT"));
     check(contains(configMethods, QStringLiteral("PATCH")),
           QStringLiteral("config route should declare PATCH"));
+    const TradingBotWindowSupport::ServiceApiJsonResult rejectedMethod =
+        TradingBotWindowSupport::serviceApiRequestJson(QStringLiteral("POST"), QStringLiteral("config"), {}, 5000);
+    check(!rejectedMethod.ok,
+          QStringLiteral("C++ Service API helper should reject a method absent from the Python contract"));
+    check(rejectedMethod.error.contains(QStringLiteral("not declared by the Python contract")),
+          QStringLiteral("C++ Service API helper should identify Python contract method violations"));
+    const TradingBotWindowSupport::ServiceApiJsonResult rejectedQueryField =
+        TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("GET"),
+            QStringLiteral("dashboard"),
+            QJsonObject{{QStringLiteral("unexpected"), true}},
+            5000);
+    check(!rejectedQueryField.ok,
+          QStringLiteral("C++ Service API helper should reject query fields absent from the Python contract"));
+    check(rejectedQueryField.error.contains(QStringLiteral("query field unexpected")),
+          QStringLiteral("C++ Service API helper should identify Python contract query violations"));
+    const TradingBotWindowSupport::ServiceApiJsonResult rejectedRequestField =
+        TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("POST"),
+            QStringLiteral("terminal_run"),
+            QJsonObject{{QStringLiteral("unexpected"), true}},
+            5000);
+    check(!rejectedRequestField.ok,
+          QStringLiteral("C++ Service API helper should reject request fields absent from the Python contract"));
+    check(rejectedRequestField.error.contains(QStringLiteral("request field unexpected")),
+          QStringLiteral("C++ Service API helper should identify Python contract request violations"));
+
+    qputenv("BOT_DESKTOP_SERVICE_API_BASE_URL", QByteArray("http://192.168.1.10:8000"));
+    qunsetenv("BOT_DESKTOP_SERVICE_API_ALLOW_PUBLIC_NETWORK");
+    qunsetenv("BOT_SERVICE_API_TOKEN");
+    const TradingBotWindowSupport::ServiceApiJsonResult rejectedPublicEndpoint =
+        TradingBotWindowSupport::serviceApiRequestJson(QStringLiteral("GET"), QStringLiteral("dashboard"), {}, 5000);
+    check(!rejectedPublicEndpoint.ok,
+          QStringLiteral("C++ Service API helper should reject public endpoints without explicit opt-in"));
+    check(rejectedPublicEndpoint.error.contains(QStringLiteral("Public service API endpoints are disabled")),
+          QStringLiteral("C++ Service API helper should explain public endpoint opt-in"));
+    qputenv("BOT_DESKTOP_SERVICE_API_ALLOW_PUBLIC_NETWORK", QByteArray("1"));
+    const TradingBotWindowSupport::ServiceApiJsonResult rejectedPublicEndpointWithoutToken =
+        TradingBotWindowSupport::serviceApiRequestJson(QStringLiteral("GET"), QStringLiteral("dashboard"), {}, 5000);
+    check(!rejectedPublicEndpointWithoutToken.ok,
+          QStringLiteral("C++ Service API helper should require a token for a public endpoint"));
+    check(rejectedPublicEndpointWithoutToken.error.contains(QStringLiteral("BOT_SERVICE_API_TOKEN")),
+          QStringLiteral("C++ Service API helper should identify the missing public endpoint token"));
+    qunsetenv("BOT_DESKTOP_SERVICE_API_ALLOW_PUBLIC_NETWORK");
 
     const QStringList dashboardQueryFields =
         TradingBotWindowSupport::pythonSourceServiceRouteQueryFields(QStringLiteral("dashboard"));
@@ -80,6 +143,55 @@ int main(int argc, char **argv) {
     check(contains(controlStartRequestFields, QStringLiteral("requested_job_count")),
           QStringLiteral("control_start route should expose requested_job_count request field"));
 
+    const TradingBotWindowSupport::ConnectorRuntimeConfig coinFutures =
+        TradingBotWindowSupport::resolveConnectorConfig(
+            QStringLiteral("binance-sdk-derivatives-trading-coin-futures"), true);
+    check(coinFutures.ok(), QStringLiteral("C++ should accept Python's Coin-M futures connector"));
+    check(coinFutures.key == QStringLiteral("binance-sdk-derivatives-trading-coin-futures"),
+          QStringLiteral("C++ should retain Python's Coin-M futures connector selection"));
+    check(coinFutures.baseUrl == QStringLiteral("https://dapi.binance.com"),
+          QStringLiteral("C++ Coin-M connector should select Binance's DAPI host"));
+    check(!coinFutures.warning.contains(QStringLiteral("not implemented"), Qt::CaseInsensitive),
+          QStringLiteral("C++ Coin-M connector should not downgrade to USD-M"));
+
+    QTcpServer coinMarketServer;
+    check(coinMarketServer.listen(QHostAddress::LocalHost, 0),
+          QStringLiteral("local Coin-M HTTP test server should listen"));
+    QByteArray observedCoinMarketRequest;
+    QObject::connect(&coinMarketServer, &QTcpServer::newConnection, [&coinMarketServer, &observedCoinMarketRequest]() {
+        QTcpSocket *socket = coinMarketServer.nextPendingConnection();
+        QObject::connect(socket, &QTcpSocket::readyRead, [socket, &observedCoinMarketRequest]() {
+            observedCoinMarketRequest += socket->readAll();
+            if (!observedCoinMarketRequest.contains("\r\n\r\n")) {
+                return;
+            }
+            const QByteArray body = R"([[1700000000000,"1","2","0.5","1.5","42"]])";
+            QByteArray response =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/json\r\n"
+                "Connection: close\r\n"
+                "Content-Length: ";
+            response += QByteArray::number(body.size());
+            response += "\r\n\r\n";
+            response += body;
+            socket->write(response);
+            socket->flush();
+            socket->disconnectFromHost();
+        });
+    });
+    const auto coinKlines = BinanceRestClient::fetchKlines(
+        QStringLiteral("BTCUSD_PERP"),
+        QStringLiteral("1m"),
+        true,
+        false,
+        2,
+        5000,
+        QStringLiteral("http://127.0.0.1:%1/dapi").arg(coinMarketServer.serverPort()));
+    check(coinKlines.ok && coinKlines.candles.size() == 1,
+          QStringLiteral("C++ Coin-M route should parse DAPI kline data"));
+    check(observedCoinMarketRequest.startsWith("GET /dapi/v1/klines?"),
+          QStringLiteral("C++ Coin-M route should request the DAPI kline endpoint"));
+
     const QStringList dashboardResponseFields =
         TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("dashboard"));
     check(contains(dashboardResponseFields, QStringLiteral("runtime")),
@@ -93,6 +205,18 @@ int main(int argc, char **argv) {
           QStringLiteral("config route should expose llm response field"));
     check(contains(configResponseFields, QStringLiteral("exchange_support")),
           QStringLiteral("config route should expose exchange_support response field"));
+
+    const QStringList accountResponseFields =
+        TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("account"));
+    for (const QString &field : {
+             QStringLiteral("balance_currency"),
+             QStringLiteral("total_balance"),
+             QStringLiteral("available_balance"),
+             QStringLiteral("source"),
+         }) {
+        check(contains(accountResponseFields, field),
+              QStringLiteral("account route should expose C++ delegated field %1").arg(field));
+    }
 
     QTcpServer server;
     check(server.listen(QHostAddress::LocalHost, 0),

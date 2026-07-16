@@ -2240,6 +2240,26 @@
         return nativeRuntimeInvokeError(error);
       }
     };
+    const pollNativeRuntimeMarket = async ({ config = {}, nowMs = Date.now() } = {}) => {
+      if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
+      try {
+        return await invoke("poll_native_runtime_market", { config, nowMs });
+      } catch (error) {
+        return nativeRuntimeInvokeError(error);
+      }
+    };
+    const nativeRuntimeCredentials = () => ({
+      apiKey: String($("api-key-input")?.value || "").trim(),
+      apiSecret: String($("api-secret-input")?.value || "").trim()
+    });
+    const pollNativeRuntimeAccount = async ({ config = {}, apiKey = "", apiSecret = "", nowMs = Date.now() } = {}) => {
+      if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
+      try {
+        return await invoke("poll_native_runtime_account", { config, apiKey, apiSecret, nowMs });
+      } catch (error) {
+        return nativeRuntimeInvokeError(error);
+      }
+    };
     const nativeRuntimeStatus = async ({ nowMs = Date.now() } = {}) => {
       if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
       try {
@@ -2267,6 +2287,8 @@
     window.TradingBotNativeRuntime = Object.freeze({
       evaluateReadOnly: evaluateNativeRuntimePreview,
       start: startNativeRuntime,
+      pollMarket: pollNativeRuntimeMarket,
+      pollAccount: pollNativeRuntimeAccount,
       status: nativeRuntimeStatus,
       pause: setNativeRuntimePaused,
       stop: stopNativeRuntime
@@ -2671,6 +2693,44 @@
       appendLog(`[native] ${label}: ${result?.ok ? "ok" : "failed"} - ${detail}`);
       return result;
     };
+    const reportNativeMarketPollResponse = (result) => {
+      const detail = result?.status_message || result?.error || "No native market poll response.";
+      setServiceStatus(`Native market poll: ${detail}`, Boolean(result?.ok));
+      appendLog(`[native] Market poll: ${result?.ok ? "ok" : "failed"} - ${detail}`);
+      return result;
+    };
+    const reportNativeAccountPollResponse = (result) => {
+      const detail = result?.ok
+        ? `${result.market || "account"} ${result.balance_asset || ""} signal-ready=${Boolean(result.signal_evaluation_allowed)}`.trim()
+        : (result?.error || "unknown error");
+      appendLog(`[native] Account bootstrap: ${result?.ok ? "ok" : "failed"} - ${detail}`);
+      return result;
+    };
+    let activeNativeRuntimePollConfig = null;
+    let nativeRuntimeMarketPollTimer = null;
+    const clearNativeRuntimeMarketPolling = () => {
+      if (nativeRuntimeMarketPollTimer !== null) window.clearInterval(nativeRuntimeMarketPollTimer);
+      nativeRuntimeMarketPollTimer = null;
+    };
+    const nativeRuntimeMarketPollIntervalMs = (config = {}) => {
+      const configured = String(config.loop_interval_override || config.intervals?.[0] || "1m").trim().toLowerCase();
+      const match = configured.match(/^(\d+)(s|m|h|d|w)$/);
+      if (!match) return 60_000;
+      const amount = Math.max(1, Number(match[1]));
+      const unitMs = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[match[2]];
+      return Math.max(5_000, amount * unitMs);
+    };
+    const startNativeRuntimeMarketPolling = (config) => {
+      clearNativeRuntimeMarketPolling();
+      activeNativeRuntimePollConfig = config;
+      nativeRuntimeMarketPollTimer = window.setInterval(async () => {
+        const account = await pollNativeRuntimeAccount({ config: activeNativeRuntimePollConfig || {}, ...nativeRuntimeCredentials() });
+        reportNativeAccountPollResponse(account);
+        const result = await pollNativeRuntimeMarket({ config: activeNativeRuntimePollConfig || {} });
+        reportNativeMarketPollResponse(result);
+        if (!result?.ok) clearNativeRuntimeMarketPolling();
+      }, nativeRuntimeMarketPollIntervalMs(config));
+    };
     const buildLlmConfigPatch = () => ({
       llm_enabled: Boolean(llmEnabled.checked),
       llm_provider: provider.value,
@@ -2918,6 +2978,8 @@
         const result = await nativeRuntimeStatus();
         reportNativeRuntimeResponse("Status", result);
       } else {
+        clearNativeRuntimeMarketPolling();
+        activeNativeRuntimePollConfig = null;
         if (pauseButton) {
           pauseButton.disabled = true;
           pauseButton.textContent = "Pause";
@@ -2997,8 +3059,16 @@
     });
     $("start-bot-btn")?.addEventListener("click", async () => {
       if (nativeRuntimeSelected()) {
-        const result = await startNativeRuntime({ config: buildNativeRuntimeConfig() });
+        const config = buildNativeRuntimeConfig();
+        const result = await startNativeRuntime({ config });
         reportNativeRuntimeResponse("Start", result);
+        if (result?.ok) {
+          const account = await pollNativeRuntimeAccount({ config, ...nativeRuntimeCredentials() });
+          reportNativeAccountPollResponse(account);
+          const poll = await pollNativeRuntimeMarket({ config });
+          reportNativeMarketPollResponse(poll);
+          if (poll?.ok) startNativeRuntimeMarketPolling(config);
+        }
         return;
       }
       if (!(await ensureServiceApi())) return;
@@ -3028,6 +3098,17 @@
       const shouldPause = $("pause-native-bot-btn")?.textContent !== "Resume";
       const result = await setNativeRuntimePaused({ paused: shouldPause });
       reportNativeRuntimeResponse(shouldPause ? "Pause" : "Resume", result);
+      if (!result?.ok) return;
+      if (shouldPause) {
+        clearNativeRuntimeMarketPolling();
+        return;
+      }
+      const config = activeNativeRuntimePollConfig || buildNativeRuntimeConfig();
+      const account = await pollNativeRuntimeAccount({ config, ...nativeRuntimeCredentials() });
+      reportNativeAccountPollResponse(account);
+      const poll = await pollNativeRuntimeMarket({ config });
+      reportNativeMarketPollResponse(poll);
+      if (poll?.ok) startNativeRuntimeMarketPolling(config);
     });
     $("stop-bot-btn")?.addEventListener("click", async () => {
       if (nativeRuntimeSelected()) {
@@ -3035,6 +3116,10 @@
           closePositions: !Boolean($("stop-without-closing-positions")?.checked)
         });
         reportNativeRuntimeResponse("Stop", result);
+        if (result?.ok) {
+          clearNativeRuntimeMarketPolling();
+          activeNativeRuntimePollConfig = null;
+        }
         return;
       }
       if (!(await ensureServiceApi())) return;

@@ -263,8 +263,10 @@ diff whitespace.
   uploads a post-smoke `rust-native-live-smoke-evidence-plan` runbook artifact
   on both successful and failed smoke attempts once the plan step can run.
   Live-smoke artifacts must include both endpoint rows and operation-level
-  suite rows: market data evidence must prove symbols, klines, and ticker price
-  fetches; signed account evidence must prove position mode, multi-assets mode,
+  suite rows: market data evidence must prove symbols, klines, ticker price
+  fetches, an observed `wss://` Binance kline event, and a positive recorded
+  WebSocket timeout before the native read-only market cycle is accepted;
+  signed account evidence must prove position mode, multi-assets mode,
   USDT balance with `balances_redacted: true`, open positions were read, and
   redacted environment metadata shows `api_key_present: true`,
   `api_secret_present: true`, `signed_account_read: true`, and

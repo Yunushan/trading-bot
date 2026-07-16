@@ -190,8 +190,10 @@ cargo run -p trading-bot-rust -- --native-live-market-smoke
 ```
 
 That public/read-only command writes only
-`rust-native-live-market-data-smoke.json`. It never submits orders and never
-reads signed account state. Signed account evidence still requires the guarded
+`rust-native-live-market-data-smoke.json`. It proves the REST reads plus an
+observed native `wss://` kline event and records the positive WebSocket timeout
+used for that observation. It never submits orders and never reads signed
+account state. Signed account evidence still requires the guarded
 `--native-live-smoke` command above.
 
 Local/CI verification also exercises the preflight contract with missing-env

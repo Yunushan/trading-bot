@@ -22,11 +22,16 @@ use trading_bot_core::{
     },
     python_source_contract_hash, rust_entire_python_app_contract_parity_ready,
     rust_entire_python_app_parity_ready, rust_native_runtime_capabilities,
-    rust_native_trading_runtime_ready, supported_frameworks,
+    rust_native_trading_runtime_ready,
+    streams::{BinanceStreamEvent, BinanceWebSocketClient},
+    supported_frameworks,
 };
 
 const MARKET_SMOKE_MAX_ATTEMPTS: usize = 3;
 const MARKET_SMOKE_RETRY_DELAY: Duration = Duration::from_millis(750);
+const MARKET_SMOKE_WEBSOCKET_TIMEOUT_MS: u64 = 20_000;
+const MARKET_SMOKE_WEBSOCKET_READ_TIMEOUT: Duration =
+    Duration::from_millis(MARKET_SMOKE_WEBSOCKET_TIMEOUT_MS);
 // The Python-owned default RSI needs a meaningful completed-candle history.
 const NATIVE_RUNTIME_MARKET_CYCLE_CANDLE_LIMIT: usize = 64;
 const ACCOUNT_SMOKE_MAX_ATTEMPTS: usize = 3;
@@ -313,18 +318,20 @@ fn run_native_live_market_smoke() -> Result<(), Box<dyn std::error::Error>> {
     require_market_smoke_confirmation()?;
     require_clean_source_tree_for_promotion()?;
     let testnet = env_truthy("BINANCE_TESTNET").unwrap_or(true);
-    let symbol =
-        std::env::var("BINANCE_LIVE_SMOKE_SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_owned());
+    let market = selected_binance_market()?;
+    let symbol = std::env::var("BINANCE_LIVE_SMOKE_SYMBOL")
+        .unwrap_or_else(|_| default_live_smoke_symbol(market).to_owned());
     let interval = std::env::var("BINANCE_LIVE_SMOKE_INTERVAL").unwrap_or_else(|_| "1m".to_owned());
     let evidence_dir = rust_native_runtime_evidence_dir()?;
     require_generated_evidence_write_allowed(&evidence_artifact_paths(
         &evidence_dir,
         &["rust-native-live-market-data-smoke.json"],
     ))?;
-    let market_client = BinanceRestMarketDataClient::new(BinanceMarket::Futures, testnet)?;
+    let market_client = BinanceRestMarketDataClient::new(market, testnet)?;
 
     println!(
-        "Rust native live market-data smoke: futures {} endpoint, symbol={}, interval={}",
+        "Rust native live market-data smoke: {} {} endpoint, symbol={}, interval={}",
+        binance_market_label(market),
         if testnet { "testnet" } else { "production" },
         symbol,
         interval
@@ -333,7 +340,7 @@ fn run_native_live_market_smoke() -> Result<(), Box<dyn std::error::Error>> {
         "This smoke is public/read-only; it does not use account credentials or submit orders."
     );
 
-    let evidence = collect_market_smoke_evidence_with_retry(
+    let mut evidence = collect_market_smoke_evidence_with_retry(
         &market_client,
         testnet,
         &symbol,
@@ -341,6 +348,7 @@ fn run_native_live_market_smoke() -> Result<(), Box<dyn std::error::Error>> {
         MARKET_SMOKE_MAX_ATTEMPTS,
         MARKET_SMOKE_RETRY_DELAY,
     )?;
+    observe_market_websocket_evidence(&mut evidence, market, &symbol, &interval)?;
     write_market_smoke_evidence(evidence)?;
     println!(
         "Rust native live market-data smoke completed; signed account and standalone trading evidence remain gated."
@@ -355,8 +363,9 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let api_secret = env_required("BINANCE_API_SECRET")?;
     let credentials = BinanceApiCredentials::new(api_key, api_secret);
     let testnet = env_truthy("BINANCE_TESTNET").unwrap_or(true);
-    let symbol =
-        std::env::var("BINANCE_LIVE_SMOKE_SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_owned());
+    let market = selected_binance_market()?;
+    let symbol = std::env::var("BINANCE_LIVE_SMOKE_SYMBOL")
+        .unwrap_or_else(|_| default_live_smoke_symbol(market).to_owned());
     let interval = std::env::var("BINANCE_LIVE_SMOKE_INTERVAL").unwrap_or_else(|_| "1m".to_owned());
     let evidence_dir = rust_native_runtime_evidence_dir()?;
     require_generated_evidence_write_allowed(&evidence_artifact_paths(
@@ -367,18 +376,19 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
         ],
     ))?;
 
-    let market_client = BinanceRestMarketDataClient::new(BinanceMarket::Futures, testnet)?;
-    let account_client = BinanceSignedRestClient::new(BinanceMarket::Futures, testnet)?;
+    let market_client = BinanceRestMarketDataClient::new(market, testnet)?;
+    let account_client = BinanceSignedRestClient::new(market, testnet)?;
 
     println!(
-        "Rust native live smoke: futures {} endpoint, symbol={}, interval={}",
+        "Rust native live smoke: {} {} endpoint, symbol={}, interval={}",
+        binance_market_label(market),
         if testnet { "testnet" } else { "production" },
         symbol,
         interval
     );
     println!("This smoke is read-only; it does not submit, modify, or cancel orders.");
 
-    let market_evidence = collect_market_smoke_evidence_with_retry(
+    let mut market_evidence = collect_market_smoke_evidence_with_retry(
         &market_client,
         testnet,
         &symbol,
@@ -386,6 +396,7 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
         MARKET_SMOKE_MAX_ATTEMPTS,
         MARKET_SMOKE_RETRY_DELAY,
     )?;
+    observe_market_websocket_evidence(&mut market_evidence, market, &symbol, &interval)?;
 
     let account_evidence = collect_account_smoke_evidence_with_retry(
         &account_client,
@@ -427,7 +438,13 @@ struct MarketSmokeEvidence {
     symbols_count: usize,
     candles_count: usize,
     ticker_symbol: String,
-    native_runtime_stream_connected: bool,
+    native_runtime_rest_ingestion_status: String,
+    native_runtime_rest_stream_connected: bool,
+    native_runtime_websocket_connected: bool,
+    websocket_url: String,
+    websocket_timeout_ms: u64,
+    websocket_poll_status: String,
+    websocket_event_kind: String,
     native_runtime_strategy_evaluated: bool,
     native_runtime_trading_execution_supported: bool,
     native_runtime_computed_indicator_keys: Vec<String>,
@@ -584,9 +601,21 @@ fn collect_market_smoke_evidence<C: MarketSmokeClient + ?Sized>(
         ..NativeRuntimeLoopConfig::default()
     });
     native_runtime.start();
+    let now_ms = current_unix_timestamp_ms();
+    let rest_ingestion =
+        native_runtime.run_rest_kline_ingestion_cycle(now_ms, || Ok(candles.clone()));
+    if rest_ingestion.poll_status != "rest_closed_kline" {
+        return Err(format!(
+            "native runtime REST kline ingestion failed: {}",
+            rest_ingestion
+                .poll_error
+                .unwrap_or_else(|| rest_ingestion.poll_status)
+        )
+        .into());
+    }
     let native_cycle =
         native_runtime.run_read_only_market_cycle(NativeRuntimeReadOnlyMarketCycleInput {
-            now_ms: current_unix_timestamp_ms(),
+            now_ms,
             candles: candles.clone(),
             indicator_configs: BTreeMap::new(),
             indicators: BTreeMap::new(),
@@ -611,13 +640,68 @@ fn collect_market_smoke_evidence<C: MarketSmokeClient + ?Sized>(
         symbols_count: symbols.len(),
         candles_count: candles.len(),
         ticker_symbol: ticker.symbol,
-        native_runtime_stream_connected: native_cycle.cycle.stream.connected,
+        native_runtime_rest_ingestion_status: rest_ingestion.poll_status,
+        native_runtime_rest_stream_connected: native_cycle.cycle.stream.connected,
+        native_runtime_websocket_connected: false,
+        websocket_url: String::new(),
+        websocket_timeout_ms: 0,
+        websocket_poll_status: String::new(),
+        websocket_event_kind: String::new(),
         native_runtime_strategy_evaluated: native_cycle.strategy_evaluated,
         native_runtime_trading_execution_supported: native_cycle.trading_execution_supported,
         native_runtime_computed_indicator_keys: native_cycle.computed_indicator_keys,
         native_runtime_unsupported_indicator_keys: native_cycle.unsupported_indicator_keys,
         native_runtime_status_message: native_cycle.status_message,
     })
+}
+
+fn observe_market_websocket_evidence(
+    evidence: &mut MarketSmokeEvidence,
+    market: BinanceMarket,
+    symbol: &str,
+    interval: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let websocket_client = BinanceWebSocketClient::new();
+    let subscription =
+        BinanceWebSocketClient::kline_subscription(market, symbol, interval, evidence.testnet)?;
+    let websocket_url = subscription.url();
+    let mut socket = websocket_client
+        .connect_subscription_with_timeout(&subscription, MARKET_SMOKE_WEBSOCKET_READ_TIMEOUT)?;
+    BinanceWebSocketClient::set_read_timeout(
+        &mut socket,
+        Some(MARKET_SMOKE_WEBSOCKET_READ_TIMEOUT),
+    )?;
+    let event = BinanceWebSocketClient::read_next_event(&mut socket)?
+        .ok_or("Binance kline WebSocket closed before emitting an event")?;
+    if !matches!(event, BinanceStreamEvent::Kline(_)) {
+        return Err("Binance kline WebSocket emitted a non-kline event".into());
+    }
+
+    let mut runtime = NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
+        symbol: symbol.trim().to_ascii_uppercase(),
+        interval: interval.trim().to_owned(),
+        ..NativeRuntimeLoopConfig::default()
+    });
+    runtime.start();
+    let ingestion =
+        runtime.run_stream_ingestion_cycle(current_unix_timestamp_ms(), || Ok(Some(event.clone())));
+    if ingestion.poll_status != "event" || !ingestion.cycle.stream.connected {
+        return Err(format!(
+            "native runtime WebSocket ingestion failed: {}",
+            ingestion
+                .poll_error
+                .unwrap_or_else(|| ingestion.poll_status.clone())
+        )
+        .into());
+    }
+
+    evidence.native_runtime_websocket_connected = true;
+    evidence.websocket_url = websocket_url;
+    evidence.websocket_timeout_ms = MARKET_SMOKE_WEBSOCKET_TIMEOUT_MS;
+    evidence.websocket_poll_status = ingestion.poll_status;
+    evidence.websocket_event_kind = "kline".to_owned();
+    println!("native runtime WebSocket kline event ingested.");
+    Ok(())
 }
 
 trait AccountSmokeClient {
@@ -832,6 +916,8 @@ fn build_market_smoke_payload(
         "symbol": evidence.symbol.as_str(),
         "interval": evidence.interval.as_str(),
         "market_base_url": evidence.market_base_url.as_str(),
+        "websocket_url": evidence.websocket_url.as_str(),
+        "websocket_timeout_ms": evidence.websocket_timeout_ms,
         "rust_package": "trading-bot-rust"
     });
     json!({
@@ -867,9 +953,20 @@ fn build_market_smoke_payload(
                 "symbol": evidence.ticker_symbol.as_str()
             },
             {
+                "name": "native_runtime_rest_kline_ingestion",
+                "status": "passed",
+                "poll_status": evidence.native_runtime_rest_ingestion_status.as_str()
+            },
+            {
                 "name": "native_runtime_read_only_market_cycle",
                 "status": "passed",
-                "stream_connected": evidence.native_runtime_stream_connected,
+                "stream_connected": evidence.native_runtime_websocket_connected,
+                "rest_stream_connected": evidence.native_runtime_rest_stream_connected,
+                "websocket_connected": evidence.native_runtime_websocket_connected,
+                "websocket_url": evidence.websocket_url.as_str(),
+                "websocket_timeout_ms": evidence.websocket_timeout_ms,
+                "websocket_poll_status": evidence.websocket_poll_status.as_str(),
+                "websocket_event_kind": evidence.websocket_event_kind.as_str(),
                 "strategy_evaluated": evidence.native_runtime_strategy_evaluated,
                 "trading_execution_supported": evidence.native_runtime_trading_execution_supported,
                 "computed_indicator_keys": evidence.native_runtime_computed_indicator_keys,
@@ -997,6 +1094,17 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
             "--nocapture",
         ],
     )?;
+    let rest_kline_recovery = run_cargo_test(
+        "native_runtime_rest_ingestion",
+        &[
+            "test",
+            "-p",
+            "trading-bot-core",
+            "native_runtime_rest_ingestion",
+            "--",
+            "--nocapture",
+        ],
+    )?;
     let order_engine = run_cargo_test(
         "runtime_order_engine",
         &[
@@ -1055,6 +1163,7 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
 
     let all_results = [
         &stream_recovery,
+        &rest_kline_recovery,
         &order_engine,
         &guarded_execution_cycle,
         &order_guard,
@@ -1098,9 +1207,14 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
                 "name": "websocket_error_redaction_and_reconnect_recovery",
                 "status": "passed",
                 "source": stream_recovery.name.as_str()
+            },
+            {
+                "name": "rest_closed_candle_deduplication_and_stale_replay_guard",
+                "status": "passed",
+                "source": rest_kline_recovery.name.as_str()
             }
         ],
-        "suite_results": [stream_recovery.as_json()]
+        "suite_results": [stream_recovery.as_json(), rest_kline_recovery.as_json()]
     });
     let order_payload = json!({
         "evidence_id": "rust-native-order-guard-recovery",
@@ -1506,6 +1620,42 @@ fn env_truthy(name: &str) -> Option<bool> {
     Some(matches!(value.as_str(), "1" | "true" | "yes" | "on"))
 }
 
+fn selected_binance_market() -> Result<BinanceMarket, std::io::Error> {
+    binance_market_for_connector_backend(
+        &std::env::var("TRADING_BOT_RUST_CONNECTOR_BACKEND").unwrap_or_default(),
+    )
+}
+
+fn binance_market_for_connector_backend(connector: &str) -> Result<BinanceMarket, std::io::Error> {
+    let normalized = connector.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "binance-sdk-derivatives-trading-usds-futures" => Ok(BinanceMarket::Futures),
+        "binance-sdk-derivatives-trading-coin-futures" => Ok(BinanceMarket::CoinFutures),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Rust native live smoke supports only Python's explicit Binance futures connector keys; '{}' requires Python Service API/provider evidence.",
+                connector.trim()
+            ),
+        )),
+    }
+}
+
+fn default_live_smoke_symbol(market: BinanceMarket) -> &'static str {
+    match market {
+        BinanceMarket::CoinFutures => "BTCUSD_PERP",
+        BinanceMarket::Futures | BinanceMarket::Spot => "BTCUSDT",
+    }
+}
+
+fn binance_market_label(market: BinanceMarket) -> &'static str {
+    match market {
+        BinanceMarket::Futures => "USD-M futures",
+        BinanceMarket::CoinFutures => "Coin-M futures",
+        BinanceMarket::Spot => "spot",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1695,10 +1845,73 @@ mod tests {
         assert_eq!(2, evidence.symbols_count);
         assert_eq!(4, evidence.candles_count);
         assert_eq!("BTCUSDT", evidence.ticker_symbol);
-        assert!(evidence.native_runtime_stream_connected);
+        assert_eq!(
+            "rest_closed_kline",
+            evidence.native_runtime_rest_ingestion_status
+        );
+        assert!(evidence.native_runtime_rest_stream_connected);
+        assert!(!evidence.native_runtime_websocket_connected);
         assert!(evidence.native_runtime_strategy_evaluated);
         assert!(!evidence.native_runtime_trading_execution_supported);
         assert_eq!(evidence.native_runtime_computed_indicator_keys, vec!["rsi"]);
+    }
+
+    #[test]
+    fn market_smoke_payload_reports_only_observed_websocket_connectivity() {
+        let client = FakeMarketSmokeClient::new(0);
+        let mut evidence = collect_market_smoke_evidence_with_retry(
+            &client,
+            true,
+            "BTCUSDT",
+            "1m",
+            1,
+            Duration::ZERO,
+        )
+        .expect("market smoke fixture should collect");
+        evidence.native_runtime_websocket_connected = true;
+        evidence.websocket_url = "wss://stream.binancefuture.com/ws/btcusdt@kline_1m".to_owned();
+        evidence.websocket_timeout_ms = MARKET_SMOKE_WEBSOCKET_TIMEOUT_MS;
+        evidence.websocket_poll_status = "event".to_owned();
+        evidence.websocket_event_kind = "kline".to_owned();
+
+        let payload = build_market_smoke_payload(
+            &evidence,
+            "unix:1".to_owned(),
+            "abc123".to_owned(),
+            true,
+            "cargo run -- --native-live-market-smoke".to_owned(),
+        );
+        let cycle = &payload["suite_results"][4];
+
+        assert_eq!(Some(true), cycle["stream_connected"].as_bool());
+        assert_eq!(Some(true), cycle["websocket_connected"].as_bool());
+        assert_eq!(
+            Some("wss://stream.binancefuture.com/ws/btcusdt@kline_1m"),
+            cycle["websocket_url"].as_str()
+        );
+        assert_eq!(
+            Some(MARKET_SMOKE_WEBSOCKET_TIMEOUT_MS),
+            cycle["websocket_timeout_ms"].as_u64()
+        );
+        assert_eq!(Some("event"), cycle["websocket_poll_status"].as_str());
+        assert_eq!(Some("kline"), cycle["websocket_event_kind"].as_str());
+
+        evidence.native_runtime_websocket_connected = false;
+        let without_websocket = build_market_smoke_payload(
+            &evidence,
+            "unix:1".to_owned(),
+            "abc123".to_owned(),
+            true,
+            "cargo run -- --native-live-market-smoke".to_owned(),
+        );
+        assert_eq!(
+            Some(false),
+            without_websocket["suite_results"][4]["stream_connected"].as_bool()
+        );
+        assert_eq!(
+            Some(true),
+            without_websocket["suite_results"][4]["rest_stream_connected"].as_bool()
+        );
     }
 
     #[test]
@@ -1849,6 +2062,29 @@ mod tests {
             guard.issues.iter().any(|issue| issue
                 .contains("outside generated evidence directories inside the repository")),
             "guard should explain noncanonical in-repo destinations"
+        );
+    }
+
+    #[test]
+    fn coin_futures_connector_selects_coin_market_and_contract_symbol() {
+        let market =
+            binance_market_for_connector_backend("binance-sdk-derivatives-trading-coin-futures")
+                .expect("Coin-M connector should select a native market");
+
+        assert_eq!(BinanceMarket::CoinFutures, market);
+        assert_eq!("BTCUSD_PERP", default_live_smoke_symbol(market));
+        assert_eq!("Coin-M futures", binance_market_label(market));
+        assert_eq!(
+            BinanceMarket::Futures,
+            binance_market_for_connector_backend("binance-sdk-derivatives-trading-usds-futures")
+                .expect("USD-M connector should select a native market")
+        );
+        let error = binance_market_for_connector_backend("ccxt")
+            .expect_err("provider connector must not default to Binance");
+        assert!(
+            error
+                .to_string()
+                .contains("requires Python Service API/provider evidence")
         );
     }
 }

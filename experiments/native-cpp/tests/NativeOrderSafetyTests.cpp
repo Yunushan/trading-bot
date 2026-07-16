@@ -436,7 +436,7 @@ int main(int argc, char **argv) {
     check(!cppStartupContract.value(QStringLiteral("delegates_trading_execution_to_python")).toBool(true),
           QStringLiteral("native startup contract should not delegate Binance Futures execution to Python"));
     check(cppStartupContract.value(QStringLiteral("native_trading_execution_scope")).toString()
-              == QStringLiteral("binance-usds-futures"),
+              == QStringLiteral("binance-usds-and-coin-futures"),
           QStringLiteral("native startup contract should report its exact trading execution scope"));
     check(jsonArrayContains(
               cppStartupContract.value(QStringLiteral("startup_suppression_env")).toArray(),
@@ -595,7 +595,7 @@ int main(int argc, char **argv) {
     check(cppShellOwnership.value(QStringLiteral("owns_trading_execution")).toBool(false),
           QStringLiteral("native desktop shell should own its Binance Futures trading path"));
     check(cppShellOwnership.value(QStringLiteral("native_trading_execution_scope")).toString()
-              == QStringLiteral("binance-usds-futures"),
+              == QStringLiteral("binance-usds-and-coin-futures"),
           QStringLiteral("native desktop shell should bound native execution ownership to Binance Futures"));
 
     const QJsonObject supportedExchange = NativeExchangeConnectors::buildExchangeSupportPayload(
@@ -1053,7 +1053,7 @@ int main(int argc, char **argv) {
     check(lifecycleSnapshot.value(QStringLiteral("native_trading_execution_enabled")).toBool(false),
           QStringLiteral("native strategy lifecycle should enable its native Binance Futures path"));
     check(lifecycleSnapshot.value(QStringLiteral("native_trading_execution_scope")).toString()
-              == QStringLiteral("binance-usds-futures"),
+              == QStringLiteral("binance-usds-and-coin-futures"),
           QStringLiteral("native strategy lifecycle should report its exact execution scope"));
 
     const QDateTime diagnosticsAt =

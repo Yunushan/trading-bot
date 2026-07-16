@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QByteArray>
 #include <QEventLoop>
+#include <QHostAddress>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -153,6 +154,43 @@ QString firstEnvValue(const QStringList &keys) {
 QString environmentValue(const char *name, const QString &fallback = {}) {
     const QString value = qEnvironmentVariable(name).trimmed();
     return value.isEmpty() ? fallback : value;
+}
+
+bool environmentFlag(const char *name) {
+    const QString value = environmentValue(name).toLower();
+    return value == QStringLiteral("1") || value == QStringLiteral("true")
+        || value == QStringLiteral("yes") || value == QStringLiteral("on");
+}
+
+bool isLoopbackServiceApiHost(const QString &host) {
+    if (host.compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    QHostAddress address;
+    return address.setAddress(host) && address.isLoopback();
+}
+
+QString validateServiceApiEndpoint(const QString &baseUrl, const QString &token) {
+    const QUrl parsed(baseUrl);
+    if (!parsed.isValid() || parsed.host().trimmed().isEmpty()) {
+        return QStringLiteral("Invalid Service API base URL: %1").arg(baseUrl);
+    }
+    const QString scheme = parsed.scheme().toLower();
+    if (scheme != QStringLiteral("http") && scheme != QStringLiteral("https")) {
+        return QStringLiteral("Unsupported Service API URL scheme: %1").arg(parsed.scheme());
+    }
+    if (isLoopbackServiceApiHost(parsed.host())) {
+        return QString();
+    }
+    if (!environmentFlag("BOT_DESKTOP_SERVICE_API_ALLOW_PUBLIC_NETWORK")) {
+        return QStringLiteral(
+            "Public service API endpoints are disabled. Use localhost/127.0.0.1 or set "
+            "BOT_DESKTOP_SERVICE_API_ALLOW_PUBLIC_NETWORK=1.");
+    }
+    if (token.trimmed().isEmpty()) {
+        return QStringLiteral("BOT_SERVICE_API_TOKEN is required for a non-loopback service API endpoint.");
+    }
+    return QString();
 }
 
 QString parityString(std::string_view value) {
@@ -368,7 +406,10 @@ QString serviceApiBaseUrl() {
     if (base.isEmpty()) {
         const QString host = environmentValue("BOT_DESKTOP_SERVICE_API_HOST", QStringLiteral("127.0.0.1"));
         const QString port = environmentValue("BOT_DESKTOP_SERVICE_API_PORT", QStringLiteral("8000"));
-        base = QStringLiteral("http://%1:%2").arg(host, port);
+        const QString displayHost = host.contains(u':') && !host.startsWith(u'[')
+            ? QStringLiteral("[%1]").arg(host)
+            : host;
+        base = QStringLiteral("http://%1:%2").arg(displayHost, port);
     }
     return normalizeBaseUrl(base);
 }
@@ -399,6 +440,32 @@ ServiceApiJsonResult serviceApiRequestJson(
         result.error = QStringLiteral("Missing Service API method for route '%1'.").arg(routeName);
         return result;
     }
+    const QStringList declaredMethods = pythonSourceServiceRouteMethods(routeName);
+    if (!declaredMethods.contains(normalizedMethod)) {
+        result.error = QStringLiteral("Service API method %1 is not declared by the Python contract for route '%2'.")
+                           .arg(normalizedMethod, routeName);
+        return result;
+    }
+    const QStringList declaredFields = normalizedMethod == QStringLiteral("GET")
+        ? pythonSourceServiceRouteQueryFields(routeName)
+        : pythonSourceServiceRouteRequestFields(routeName);
+    for (auto it = body.constBegin(); it != body.constEnd(); ++it) {
+        if (declaredFields.contains(it.key())) {
+            continue;
+        }
+        const QString fieldKind = normalizedMethod == QStringLiteral("GET")
+            ? QStringLiteral("query")
+            : QStringLiteral("request");
+        result.error = QStringLiteral("Service API %1 field %2 is not declared by the Python contract for route '%3'.")
+                           .arg(fieldKind, it.key(), routeName);
+        return result;
+    }
+
+    const QString token = environmentValue("BOT_SERVICE_API_TOKEN");
+    if (const QString endpointError = validateServiceApiEndpoint(serviceApiBaseUrl(), token); !endpointError.isEmpty()) {
+        result.error = endpointError;
+        return result;
+    }
 
     QUrl requestUrl(url);
     if (normalizedMethod == QStringLiteral("GET") && !body.isEmpty()) {
@@ -420,7 +487,6 @@ ServiceApiJsonResult serviceApiRequestJson(
     QNetworkRequest request{requestUrl};
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("trading-bot-cpp/1.0"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    const QString token = environmentValue("BOT_SERVICE_API_TOKEN");
     if (!token.isEmpty()) {
         request.setRawHeader(QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token.toUtf8());
     }
@@ -1047,11 +1113,8 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
     }
 
     if (effectiveKey == kConnectorCoinFutures) {
-        setWarning(
-            QStringLiteral("Connector '%1' is not implemented in C++ yet. Using '%2'.")
-                .arg(cfg.label.isEmpty() ? connectorLabelForKey(kConnectorCoinFutures) : cfg.label,
-                     connectorLabelForKey(kConnectorUsdsFutures)));
-        effectiveKey = kConnectorUsdsFutures;
+        // BinanceRestClient recognizes the DAPI host and routes all futures operations to Coin-M endpoints.
+        cfg.baseUrl = QStringLiteral("https://dapi.binance.com");
     } else if (effectiveKey == kConnectorBinanceConnector
                || effectiveKey == kConnectorCcxt
                || effectiveKey == kConnectorPyBinance) {
@@ -1065,8 +1128,29 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
     if (cfg.label.isEmpty()) {
         cfg.label = connectorLabelForKey(effectiveKey);
     }
-    cfg.baseUrl.clear();
+    if (effectiveKey != kConnectorCoinFutures) {
+        cfg.baseUrl.clear();
+    }
     return cfg;
+}
+
+bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText) {
+    const QString selected = connectorText.trimmed();
+    const QString key = normalizeConnectorBackend(selected);
+    if (key != kConnectorUsdsFutures && key != kConnectorCoinFutures) {
+        return false;
+    }
+
+    // Only accept the key or label emitted by the generated Python connector catalog.
+    // This keeps provider aliases from silently becoming native Binance execution.
+    for (const ConnectorOption &option : pythonConnectorOptions()) {
+        if (option.key != key) {
+            continue;
+        }
+        return selected.compare(option.key, Qt::CaseInsensitive) == 0
+            || selected.compare(option.label, Qt::CaseInsensitive) == 0;
+    }
+    return false;
 }
 
 double firstNumberInText(const QString &text, bool *okOut) {

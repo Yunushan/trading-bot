@@ -42,7 +42,8 @@ impl BinanceSignedRestClient {
         symbol: impl AsRef<str>,
     ) -> Result<BinanceFuturesSymbolFilters> {
         self.require_futures_market()?;
-        let payload = self.public_get_json("/fapi/v1/exchangeInfo", &[])?;
+        let exchange_info_path = self.futures_v1_path("/exchangeInfo");
+        let payload = self.public_get_json(&exchange_info_path, &[])?;
         parse_futures_symbol_filters(&payload, symbol.as_ref())
     }
 
@@ -59,7 +60,7 @@ impl BinanceSignedRestClient {
         let order_params =
             build_futures_market_order_params(symbol, side, quantity, reduce_only, position_side)?;
         let payload = self.signed_post_json(
-            "/fapi/v1/order",
+            &self.futures_v1_path("/order"),
             credentials,
             &order_params.params,
             current_timestamp_ms()?,
@@ -95,7 +96,7 @@ impl BinanceSignedRestClient {
             time_in_force,
         )?;
         let payload = self.signed_post_json(
-            "/fapi/v1/order",
+            &self.futures_v1_path("/order"),
             credentials,
             &order_params.params,
             current_timestamp_ms()?,

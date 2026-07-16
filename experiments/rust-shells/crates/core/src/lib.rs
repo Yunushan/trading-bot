@@ -484,10 +484,43 @@ pub fn service_api_route_path(name: &str) -> Option<&'static str> {
         .map(|route| route.path)
 }
 
+pub fn service_api_route_methods(name: &str) -> Option<&'static [&'static str]> {
+    service_api_routes()
+        .iter()
+        .find(|route| route.name == name)
+        .map(|route| route.methods)
+}
+
+pub fn service_api_route_supports_method(name: &str, method: &str) -> bool {
+    let normalized = method.trim();
+    !normalized.is_empty()
+        && service_api_route_methods(name).is_some_and(|methods| {
+            methods
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(normalized))
+        })
+}
+
 pub fn service_api_route_schema(name: &str) -> Option<&'static ServiceApiRouteSchema> {
     python_source_service_route_schemas()
         .iter()
         .find(|schema| schema.name == name)
+}
+
+pub fn service_api_route_query_fields(name: &str) -> Option<&'static [&'static str]> {
+    service_api_route_schema(name).map(|schema| schema.query_fields)
+}
+
+pub fn service_api_route_request_fields(name: &str) -> Option<&'static [&'static str]> {
+    service_api_route_schema(name).map(|schema| schema.request_fields)
+}
+
+pub fn service_api_route_supports_query_field(name: &str, field: &str) -> bool {
+    service_api_route_query_fields(name).is_some_and(|fields| fields.contains(&field))
+}
+
+pub fn service_api_route_supports_request_field(name: &str, field: &str) -> bool {
+    service_api_route_request_fields(name).is_some_and(|fields| fields.contains(&field))
 }
 
 pub fn trading_app_tabs() -> &'static [TradingAppTab] {
@@ -1268,5 +1301,25 @@ mod tests {
         assert!(control_start.response_fields.contains(&"accepted"));
 
         assert!(service_api_route_schema("unknown").is_none());
+    }
+
+    #[test]
+    fn service_api_route_helpers_follow_the_generated_python_contract() {
+        assert_eq!(
+            service_api_route_methods("config"),
+            Some(&["GET", "PUT", "PATCH"][..])
+        );
+        assert!(service_api_route_supports_method("config", "patch"));
+        assert!(!service_api_route_supports_method("config", "POST"));
+        assert!(service_api_route_supports_query_field(
+            "dashboard",
+            "log_limit"
+        ));
+        assert!(!service_api_route_supports_query_field(
+            "dashboard",
+            "unexpected"
+        ));
+        assert!(service_api_route_supports_request_field("config", "config"));
+        assert!(!service_api_route_supports_request_field("config", "mode"));
     }
 }

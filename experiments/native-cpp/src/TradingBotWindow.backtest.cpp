@@ -807,6 +807,54 @@ void TradingBotWindow::refreshBacktestSymbols() {
     const bool isTestnet = dashboardModeCombo_
         ? TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText())
         : false;
+    const QString selectedExchange = TradingBotWindowSupport::selectedDashboardExchange(dashboardExchangeCombo_);
+    if (!TradingBotWindowSupport::exchangeUsesBinanceApi(selectedExchange)) {
+        const auto serviceResult = TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("GET"), QStringLiteral("config"), {}, 10000);
+        if (!serviceResult.ok) {
+            updateStatusMessage(
+                QStringLiteral("Python Service API symbol request failed for %1: %2")
+                    .arg(selectedExchange, serviceResult.error));
+            resetButton();
+            return;
+        }
+        QJsonObject payload = serviceResult.document.object();
+        if (payload.value(QStringLiteral("config")).isObject()) {
+            payload = payload.value(QStringLiteral("config")).toObject();
+        }
+        QStringList configuredSymbols;
+        for (const QJsonValue &value : payload.value(QStringLiteral("symbols")).toArray()) {
+            const QString symbol = value.toString().trimmed().toUpper();
+            if (!symbol.isEmpty() && !configuredSymbols.contains(symbol)) {
+                configuredSymbols.push_back(symbol);
+            }
+        }
+        if (configuredSymbols.isEmpty()) {
+            updateStatusMessage(
+                QStringLiteral("Python Service API has no configured backtest symbols for %1.").arg(selectedExchange));
+            resetButton();
+            return;
+        }
+        symbolList_->clear();
+        symbolList_->addItems(configuredSymbols);
+        bool anySelected = false;
+        for (int i = 0; i < symbolList_->count(); ++i) {
+            auto *item = symbolList_->item(i);
+            if (item && previousSelections.contains(item->text().trimmed().toUpper())) {
+                item->setSelected(true);
+                anySelected = true;
+            }
+        }
+        if (!anySelected && symbolList_->count() > 0) {
+            symbolList_->item(0)->setSelected(true);
+        }
+        updateStatusMessage(
+            QStringLiteral("Loaded %1 %2 symbols from the canonical Python Service API configuration for backtest.")
+                .arg(configuredSymbols.size())
+                .arg(selectedExchange));
+        resetButton();
+        return;
+    }
     const QString connectorText = backtestConnectorCombo_
         ? backtestConnectorCombo_->currentText().trimmed()
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
@@ -999,6 +1047,8 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     }
 
     const QString backend = comboValue(backtestExecutionBackendCombo_, QStringLiteral("local")).toLower();
+    const QString selectedExchange = TradingBotWindowSupport::selectedDashboardExchange(dashboardExchangeCombo_);
+    const bool nativeBinanceBacktest = TradingBotWindowSupport::exchangeUsesBinanceApi(selectedExchange);
     const QString optimizerMode = optimizerRequested
         ? comboValue(backtestOptimizerModeCombo_, QStringLiteral("current"))
         : QStringLiteral("current");
@@ -1084,6 +1134,7 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     request.insert(QStringLiteral("assets_mode"), comboValue(backtestAssetsModeCombo_, QStringLiteral("Single-Asset")));
     request.insert(QStringLiteral("account_mode"), comboValue(backtestAccountModeCombo_, QStringLiteral("Classic Trading")));
     request.insert(QStringLiteral("connector_backend"), comboValue(backtestConnectorCombo_));
+    request.insert(QStringLiteral("selected_exchange"), selectedExchange);
     request.insert(QStringLiteral("leverage"), spinValue(backtestLeverageSpin_, 1));
     request.insert(QStringLiteral("mdd_logic"), comboValue(backtestMddLogicCombo_, QStringLiteral("per_trade")));
     request.insert(QStringLiteral("scan_scope"), scanScope);
@@ -1095,7 +1146,7 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     request.insert(QStringLiteral("optimizer_min_trades"), spinValue(backtestOptimizerMinTradesSpin_, 1));
     request.insert(QStringLiteral("stop_loss"), stopLoss);
 
-    if (backend == QStringLiteral("local")) {
+    if (backend == QStringLiteral("local") && nativeBinanceBacktest) {
         NativeBacktestRuntime::Request runTemplate;
         runTemplate.logic = jsonText(request, QStringLiteral("logic"), QStringLiteral("AND"));
         runTemplate.side = jsonText(request, QStringLiteral("side"), QStringLiteral("BOTH"));
@@ -1236,6 +1287,11 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
         return;
     }
 
+    if (backend == QStringLiteral("local") && !nativeBinanceBacktest) {
+        updateStatusMessage(
+            QStringLiteral("%1 backtest is delegated to the Python Service API; the local C++ backtest loader is Binance-only.")
+                .arg(selectedExchange));
+    }
     setBacktestRunningUi(true);
     backtestServiceRunActive_ = true;
     updateStatusMessage(QStringLiteral("Submitting C++ backtest to Python Service API..."));

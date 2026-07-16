@@ -71,6 +71,11 @@ def _cmake_generator_args() -> list[str]:
     return []
 
 
+def _cmake_build_parallel_args() -> list[str]:
+    # MSVC can contend on a target PDB during cold Qt smoke builds.
+    return ["--parallel", "1"] if sys.platform == "win32" else ["--parallel"]
+
+
 def _desktop_executable_path(build_dir: Path, config: str) -> Path:
     if sys.platform == "win32":
         return build_dir / config / "Trading-Bot-C++.exe"
@@ -175,7 +180,7 @@ def check_native_cpp(
             steps.append(
                 _run_step(
                     f"build {target}",
-                    [cmake, "--build", str(build_dir), "--config", config, "--target", target, "--parallel"],
+                    [cmake, "--build", str(build_dir), "--config", config, "--target", target, *_cmake_build_parallel_args()],
                     cwd=root,
                     timeout=timeout,
                 )
@@ -184,7 +189,7 @@ def check_native_cpp(
         steps.append(
             _run_step(
                 "build",
-                [cmake, "--build", str(build_dir), "--config", config, "--parallel"],
+                [cmake, "--build", str(build_dir), "--config", config, *_cmake_build_parallel_args()],
                 cwd=root,
                 timeout=timeout,
             )
