@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt6 import QtGui
 
+from app.gui.runtime.ui import design_layout_runtime
+
 from app.gui.runtime.ui.theme_styles import (
     CHECKBOX_CHECK_IMAGE,
     DESIGN_CLASSIC,
@@ -341,11 +343,15 @@ def _gui_apply_theme(self, name: str):
     design_styles = _design_styles(design)
 
     self.setStyleSheet(base_stylesheet + accent_styles + design_styles)
+    design_layout_runtime.apply_design_layout(self, design)
     _store_theme_config(self, name, theme_raw)
     try:
         self.config["design"] = design
     except Exception:
         pass
+    persist = getattr(self, "_persist_ui_preferences", None)
+    if callable(persist):
+        persist()
 
 
 def _gui_apply_design(self, name: str):

@@ -40,6 +40,7 @@ def _update_bot_status(self, active=None):
             getattr(self, "bot_status_label_tab3", None),
             getattr(self, "bot_status_label_chart", None),
             getattr(self, "bot_status_label_code_tab", None),
+            getattr(self, "bot_status_label_workspace", None),
         ):
             if label is None:
                 continue
@@ -94,6 +95,7 @@ def _update_bot_time_labels(self):
             getattr(self, "bot_time_label_tab3", None),
             getattr(self, "bot_time_label_chart", None),
             getattr(self, "bot_time_label_code_tab", None),
+            getattr(self, "bot_time_label_workspace", None),
         ]
         if not labels:
             return
@@ -137,17 +139,23 @@ def _apply_pnl_snapshot_to_labels(
     active_snapshot = snapshot.get("active", {})
     closed_snapshot = snapshot.get("closed", {})
     if active_label is not None:
+        property_getter = getattr(active_label, "property", None)
+        custom_prefix = property_getter("pnlPrefix") if callable(property_getter) else None
+        active_prefix = str(custom_prefix or "Total PNL Active Positions")
         active_label.setText(
             self._format_total_pnl_text(
-                "Total PNL Active Positions",
+                active_prefix,
                 active_snapshot.get("pnl"),
                 total_balance_ref,
             )
         )
     if closed_label is not None:
+        property_getter = getattr(closed_label, "property", None)
+        custom_prefix = property_getter("pnlPrefix") if callable(property_getter) else None
+        closed_prefix = str(custom_prefix or "Total PNL Closed Positions")
         closed_label.setText(
             self._format_total_pnl_text(
-                "Total PNL Closed Positions",
+                closed_prefix,
                 closed_snapshot.get("pnl"),
                 total_balance_ref,
             )

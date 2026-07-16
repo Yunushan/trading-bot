@@ -68,6 +68,7 @@ def _create_dashboard_header_section(self, scroll_layout):
     grid.addWidget(self.design_combo, 0, 7)
 
     status_widget = QtWidgets.QWidget()
+    self.dashboard_status_widget = status_widget
     status_layout = QtWidgets.QHBoxLayout(status_widget)
     status_layout.setContentsMargins(0, 0, 0, 0)
     status_layout.setSpacing(10)
@@ -137,8 +138,6 @@ def _create_dashboard_header_section(self, scroll_layout):
     grid.addWidget(QtWidgets.QLabel("Total USDT balance:"), 2, 0)
     self.balance_label = QtWidgets.QLabel("N/A")
     grid.addWidget(self.balance_label, 2, 1)
-    self.pos_mode_label = QtWidgets.QLabel("Position Mode: N/A")
-    grid.addWidget(self.pos_mode_label, 2, 6, 1, 2)
     self.refresh_balance_btn = QtWidgets.QPushButton("Refresh Balance")
     self.refresh_balance_btn.clicked.connect(lambda: self.update_balance_label())
     grid.addWidget(self.refresh_balance_btn, 2, 2)

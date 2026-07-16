@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 from PyQt6 import QtWidgets
 
@@ -36,6 +36,22 @@ def bind_main_window_session_runtime(
     main_window_cls._mark_session_inactive = _mark_session_inactive
     main_window_cls._handle_post_init_state = _handle_post_init_state
     main_window_cls._set_runtime_controls_enabled = _set_runtime_controls_enabled
+    main_window_cls._persist_ui_preferences = _persist_ui_preferences
+
+
+def _persist_ui_preferences(self) -> None:
+    try:
+        data = dict(getattr(self, "_app_state", {}) or {})
+    except Exception:
+        data = {}
+    data["design"] = str(self.config.get("design") or "Classic")
+    data["theme"] = str(self.config.get("theme") or "Dark")
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _SAVE_APP_STATE_FILE(self._state_path, data)
+        self._app_state = data
+    except Exception:
+        pass
 
 
 def _on_close_on_exit_changed(self, state):
@@ -50,7 +66,7 @@ def _on_close_on_exit_changed(self, state):
         data["session_active"] = True
     else:
         data["session_active"] = bool(data.get("session_active", False))
-    data["updated_at"] = datetime.utcnow().isoformat()
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
     try:
         _SAVE_APP_STATE_FILE(self._state_path, data)
         self._app_state = data
@@ -78,7 +94,7 @@ def _mark_session_active(self):
         data = {}
     data["session_active"] = True
     data["close_on_exit"] = bool(self.config.get("close_on_exit", False))
-    data["activated_at"] = datetime.utcnow().isoformat()
+    data["activated_at"] = datetime.now(timezone.utc).isoformat()
     try:
         _SAVE_APP_STATE_FILE(self._state_path, data)
         self._app_state = data
@@ -96,7 +112,7 @@ def _mark_session_inactive(self):
         data = {}
     data["session_active"] = False
     data["close_on_exit"] = bool(self.config.get("close_on_exit", False))
-    data["deactivated_at"] = datetime.utcnow().isoformat()
+    data["deactivated_at"] = datetime.now(timezone.utc).isoformat()
     try:
         _SAVE_APP_STATE_FILE(self._state_path, data)
         self._app_state = data
@@ -200,7 +216,7 @@ def _handle_post_init_state(self):
                     data = dict(getattr(self, "_app_state", {}) or {})
                     data["session_active"] = True
                     data["close_on_exit"] = bool(self.config.get("close_on_exit", False))
-                    data["last_recovery_at"] = datetime.utcnow().isoformat()
+                    data["last_recovery_at"] = datetime.now(timezone.utc).isoformat()
                     data["last_recovery_reason"] = "restart_recovery"
                     _SAVE_APP_STATE_FILE(self._state_path, data)
                     self._app_state = data
