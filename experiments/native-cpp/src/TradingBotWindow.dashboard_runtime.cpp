@@ -2,6 +2,7 @@
 #include "TradingBotWindowSupport.h"
 #include "BinanceWsClient.h"
 #include "NativeIndicatorRuntime.h"
+#include "NativeOrderSafety.h"
 #include "NativeStrategyRuntime.h"
 #include "TradingBotWindow.dashboard_runtime_internal.h"
 #include "TradingBotWindow.dashboard_runtime_shared.h"
@@ -1079,6 +1080,10 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             if (qIsFinite(storedQtyCap) && storedQtyCap > 0.0) {
                 cappedRequestedQty = std::min(cappedRequestedQty, storedQtyCap);
             }
+            const double requestedLegalQty = floorToOrderStep(
+                cappedRequestedQty,
+                symbolFilters.stepSize,
+                symbolFilters.quantityPrecision);
             const double orderQty = normalizeFuturesOrderQuantity(cappedRequestedQty, orderSizingPrice, symbolFilters);
             if (!qIsFinite(orderQty) || orderQty <= 0.0) {
                 appendDashboardPositionLog(
@@ -1088,6 +1093,49 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                              interval,
                              QString::number(cappedRequestedQty, 'f', 8),
                              QString::number(orderSizingPrice, 'f', 8)));
+                touchWaitingEntry(key, nowMs);
+                continue;
+            }
+
+            NativeOrderSafety::LiveTradingSafetyConfig liveSafetyConfig;
+            liveSafetyConfig.liveTradingEnabled = dashboardLiveTradingEnabledCheck_
+                && dashboardLiveTradingEnabledCheck_->isChecked();
+            liveSafetyConfig.liveTradingAcknowledgement = dashboardLiveTradingAcknowledgementEdit_
+                ? dashboardLiveTradingAcknowledgementEdit_->text().trimmed()
+                : QString();
+            liveSafetyConfig.liveTradingMaxLeverage = dashboardLiveTradingMaxLeverageSpin_
+                ? dashboardLiveTradingMaxLeverageSpin_->value()
+                : 20;
+            liveSafetyConfig.liveTradingMaxPositionPct = dashboardLiveTradingMaxPositionPctSpin_
+                ? dashboardLiveTradingMaxPositionPctSpin_->value()
+                : 10.0;
+            liveSafetyConfig.liveTradingMaxSessionOrders = dashboardLiveTradingMaxSessionOrdersSpin_
+                ? dashboardLiveTradingMaxSessionOrdersSpin_->value()
+                : 100;
+            liveSafetyConfig.liveAllowAutoBumpToMinOrder = dashboardLiveAllowAutoBumpCheck_
+                && dashboardLiveAllowAutoBumpCheck_->isChecked();
+            liveSafetyConfig.maxAutoBumpPercent = dashboardMaxAutoBumpPercentSpin_
+                ? dashboardMaxAutoBumpPercentSpin_->value()
+                : 5.0;
+            liveSafetyConfig.autoBumpPercentMultiplier = dashboardAutoBumpPercentMultiplierSpin_
+                ? dashboardAutoBumpPercentMultiplierSpin_->value()
+                : 10.0;
+            const NativeOrderSafety::MinimumOrderAutoBumpGuardResult minimumOrderGuard =
+                NativeOrderSafety::guardFuturesMinimumOrderAutoBump({
+                    modeText,
+                    requestedLegalQty,
+                    orderQty,
+                    orderSizingPrice,
+                    availableUsdt,
+                    static_cast<int>(leverage),
+                    positionPct,
+                    false,
+                    liveSafetyConfig,
+                });
+            if (!minimumOrderGuard.allowed) {
+                appendDashboardPositionLog(
+                    QString("%1 %2@%3 blocked by minimum-order safety: %4")
+                        .arg(openSide, symbol, interval, minimumOrderGuard.errors.join(QStringLiteral(" | "))));
                 touchWaitingEntry(key, nowMs);
                 continue;
             }
@@ -1102,6 +1150,66 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             if (paperTrading) {
                 openOrderId = QStringLiteral("paper-open-%1").arg(QDateTime::currentMSecsSinceEpoch());
             } else {
+                if (dashboardRuntimeConnectorOrderCircuit_ && dashboardRuntimeConnectorOrderCircuit_->isOpen()) {
+                    const QJsonObject snapshot = dashboardRuntimeConnectorOrderCircuit_->snapshot(
+                        QDateTime::currentDateTimeUtc());
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked by connector order circuit: %4")
+                            .arg(openSide,
+                                 symbol,
+                                 interval,
+                                 snapshot.value(QStringLiteral("message")).toString(
+                                     QStringLiteral("connector health circuit breaker paused trading"))));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
+                const NativeOrderSafety::OrderAuditLogConfig orderAuditConfig = nativeRuntimeOrderAuditLogConfig();
+                const QJsonObject orderAuditStatus = NativeOrderSafety::currentOrderAuditStatus(orderAuditConfig);
+                NativeOrderSafety::LiveOrderGuardInput orderGuardInput;
+                orderGuardInput.mode = modeText;
+                orderGuardInput.market = QStringLiteral("futures");
+                orderGuardInput.params = {
+                    {QStringLiteral("symbol"), symbol},
+                    {QStringLiteral("side"), openOrderSide},
+                    {QStringLiteral("type"), QStringLiteral("MARKET")},
+                    {QStringLiteral("quantity"), QString::number(orderQty, 'f', 12)},
+                };
+                if (!openPositionSide.isEmpty()) {
+                    orderGuardInput.params.append({QStringLiteral("positionSide"), openPositionSide});
+                }
+                orderGuardInput.apiKey = apiKey;
+                orderGuardInput.apiSecret = apiSecret;
+                orderGuardInput.accountType = QStringLiteral("FUTURES");
+                orderGuardInput.leverage = static_cast<int>(leverage);
+                orderGuardInput.marginMode = dashboardMarginModeCombo_
+                    ? dashboardMarginModeCombo_->currentText()
+                    : QStringLiteral("Isolated");
+                orderGuardInput.positionPct = positionPct;
+                orderGuardInput.config = liveSafetyConfig;
+                orderGuardInput.hasFilters = true;
+                orderGuardInput.filters = {
+                    symbolFilters.stepSize,
+                    symbolFilters.tickSize,
+                    symbolFilters.minQty,
+                    symbolFilters.minNotional,
+                };
+                orderGuardInput.hasLastPrice = true;
+                orderGuardInput.lastPrice = orderSizingPrice;
+                orderGuardInput.orderAuditEnabled = orderAuditStatus.value(QStringLiteral("enabled")).toBool(true);
+                orderGuardInput.orderAuditWritable = orderAuditStatus.value(QStringLiteral("write_ok")).toBool(true);
+                orderGuardInput.connectorState = rowConnectorCfg.ok() ? QStringLiteral("ready") : QStringLiteral("error");
+                orderGuardInput.connectorHealth = rowConnectorCfg.ok() ? QStringLiteral("ok") : QStringLiteral("error");
+                orderGuardInput.liveSubmitAttemptCount = dashboardRuntimeLiveSubmitAttemptCount_;
+                const NativeOrderSafety::LiveOrderGuardResult orderGuard =
+                    NativeOrderSafety::guardLiveOrderSubmit(orderGuardInput);
+                if (!orderGuard.allowed) {
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked by order safety: %4")
+                            .arg(openSide, symbol, interval, orderGuard.errors.join(QStringLiteral(" | "))));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
+                dashboardRuntimeLiveSubmitAttemptCount_ = orderGuard.nextSubmitAttemptCount;
                 const auto openOrder = placeFuturesOpenOrderWithFallback(
                     apiKey,
                     apiSecret,
@@ -1113,6 +1221,46 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     10000,
                     rowConnectorCfg.baseUrl);
                 if (!openOrder.ok) {
+                    if (dashboardRuntimeConnectorOrderCircuit_) {
+                        const NativeOrderSafety::ConnectorOrderBlockEvent circuitEvent{
+                            static_cast<double>(QDateTime::currentMSecsSinceEpoch()) / 1000.0,
+                            symbol,
+                            interval,
+                            openSide,
+                            QStringLiteral("FUTURES"),
+                            QStringLiteral("error"),
+                            QStringLiteral("error"),
+                            openOrder.error,
+                            key,
+                            QStringLiteral("cpp-futures-open"),
+                        };
+                        const QJsonObject circuitSnapshot = dashboardRuntimeConnectorOrderCircuit_->recordConnectorOrderBlock(
+                            circuitEvent,
+                            QDateTime::currentDateTimeUtc());
+                        if (!circuitSnapshot.isEmpty()) {
+                            NativeOrderSafety::OrderAuditLogConfig incidentLogConfig;
+                            incidentLogConfig.enabled = true;
+                            incidentLogConfig.path = dashboardConnectorOrderIncidentLogPathEdit_
+                                ? dashboardConnectorOrderIncidentLogPathEdit_->text().trimmed()
+                                : QString();
+                            incidentLogConfig.maxBytes = static_cast<quint64>(dashboardConnectorOrderIncidentMaxBytesSpin_
+                                ? dashboardConnectorOrderIncidentMaxBytesSpin_->value()
+                                : 2 * 1024 * 1024);
+                            incidentLogConfig.backupCount = dashboardConnectorOrderIncidentBackupCountSpin_
+                                ? dashboardConnectorOrderIncidentBackupCountSpin_->value()
+                                : 1;
+                            const QJsonObject incident = NativeOrderSafety::buildConnectorOrderCircuitIncident(
+                                QStringLiteral("opened"),
+                                circuitSnapshot,
+                                QStringLiteral("cpp-dashboard"),
+                                openOrder.error,
+                                QDateTime::currentDateTimeUtc());
+                            NativeOrderSafety::appendOrderAuditEvent(incident, incidentLogConfig);
+                            appendDashboardAllLog(
+                                QStringLiteral("Connector order circuit opened: %1")
+                                    .arg(circuitSnapshot.value(QStringLiteral("message")).toString()));
+                        }
+                    }
                     if (isPercentPriceFilterError(openOrder.error)) {
                         double reducedQtyCap = orderQty * 0.5;
                         if (qIsFinite(symbolFilters.stepSize) && symbolFilters.stepSize > 0.0) {

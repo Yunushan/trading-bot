@@ -83,7 +83,7 @@ STARTER_LANGUAGE_OPTIONS = [
     {
         "config_key": RUST_CODE_LANGUAGE_KEY,
         "title": "Rust",
-        "subtitle": "Service API client and UI scaffold",
+        "subtitle": "Service API client + guarded runtime (promotion-gated)",
         "accent": "#fb923c",
         "badge": "Experiment",
     },

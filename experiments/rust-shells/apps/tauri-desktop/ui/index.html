@@ -352,6 +352,38 @@
               <label>GTD minutes:<input id="config-gtd-minutes" type="number" min="1" max="1440" value="30"></label>
               <label>Indicator Source:<select id="config-indicator-source"></select></label>
             </div>
+            <fieldset id="live-trading-safety-controls">
+              <legend>Live Trading Safety</legend>
+              <div class="checks">
+                <label><input id="live-trading-enabled" type="checkbox"> Enable live trading safeguards</label>
+                <label><input id="live-allow-auto-bump-to-min-order" type="checkbox"> Allow auto-bump to exchange minimum</label>
+              </div>
+              <div class="grid-3">
+                <label>Acknowledgement:<input id="live-trading-acknowledgement" autocomplete="off" placeholder="I_UNDERSTAND_LIVE_TRADING_RISK"></label>
+                <label>Max Leverage:<input id="live-trading-max-leverage" type="number" min="1" max="125" step="1" value="20"></label>
+                <label>Max Position %:<input id="live-trading-max-position-pct" type="number" min="0.01" max="100" step="0.01" value="10.00"></label>
+                <label>Max Session Orders:<input id="live-trading-max-session-orders" type="number" min="1" max="100000" step="1" value="100"></label>
+                <label>Auto-bump Max %:<input id="max-auto-bump-percent" type="number" min="0" max="100" step="0.01" value="5.00"></label>
+                <label>Auto-bump Multiplier:<input id="auto-bump-percent-multiplier" type="number" min="0" max="1000" step="0.01" value="10.00"></label>
+              </div>
+            </fieldset>
+            <fieldset id="order-safety-observability-controls">
+              <legend>Order Audit & Circuit Safety</legend>
+              <div class="checks">
+                <label><input id="order-audit-enabled" type="checkbox"> Record guarded order decisions</label>
+                <label><input id="connector-order-circuit-enabled" type="checkbox"> Pause after repeated connector blocks</label>
+              </div>
+              <div class="grid-3">
+                <label>Order Audit Log Path:<input id="order-audit-log-path" autocomplete="off" placeholder="Default local audit log"></label>
+                <label>Audit Max Bytes:<input id="order-audit-max-bytes" type="number" min="1" max="1000000000" step="1" value="10485760"></label>
+                <label>Audit Backups:<input id="order-audit-backup-count" type="number" min="0" max="100" step="1" value="1"></label>
+                <label>Block Threshold:<input id="connector-order-circuit-threshold" type="number" min="1" max="100000" step="1" value="2"></label>
+                <label>Block Window Seconds:<input id="connector-order-circuit-window-seconds" type="number" min="1" max="86400" step="1" value="60"></label>
+                <label>Incident Log Path:<input id="connector-order-incident-log-path" autocomplete="off" placeholder="Default local incident log"></label>
+                <label>Incident Max Bytes:<input id="connector-order-incident-max-bytes" type="number" min="1" max="1000000000" step="1" value="2097152"></label>
+                <label>Incident Backups:<input id="connector-order-incident-backup-count" type="number" min="0" max="100" step="1" value="1"></label>
+              </div>
+            </fieldset>
             <div class="grid-2">
               <label>Config Persistence:<output id="config-persistence-state">Runtime only</output></label>
               <label>Config File Path:<output id="config-persistence-path">-</output></label>
@@ -514,7 +546,7 @@
       <article class="tab-panel" id="positions" aria-label="Positions">
         <div class="section-head">
           <div><h2>Positions</h2><p class="muted">Position controls and table columns mirrored from Python and C++.</p></div>
-          <div class="actions"><button class="action" id="refresh-positions-btn" type="button">Refresh Positions</button><button class="action danger" id="market-close-all-positions-btn" type="button">Market Close ALL Positions</button></div>
+          <div class="actions"><button class="action" id="refresh-positions-btn" type="button">Refresh Positions</button><button class="action danger" id="market-close-all-positions-btn" type="button" disabled title="A trading-capable Python runtime is required before market close-all is available.">Market Close ALL Positions</button></div>
         </div>
         <section class="panel">
           <div class="grid-3">
@@ -1848,6 +1880,26 @@
       }
     };
     let lastPositionRows = [];
+    let positionCloseAllSupported = false;
+    const POSITION_CLOSE_ALL_UNAVAILABLE = "A trading-capable Python runtime is required before market close-all is available.";
+    const POSITION_SINGLE_CLOSE_UNAVAILABLE = "Per-position market close is unavailable until the Python Service API provides a dedicated guarded close route.";
+    const syncPositionCloseAvailability = (runtime) => {
+      const controlPlane = runtime?.control_plane && typeof runtime.control_plane === "object"
+        ? runtime.control_plane
+        : {};
+      positionCloseAllSupported = Boolean(controlPlane.trading_execution_supported && controlPlane.stop_supported);
+      const closeAll = $("market-close-all-positions-btn");
+      if (closeAll) {
+        closeAll.disabled = !positionCloseAllSupported;
+        closeAll.title = positionCloseAllSupported
+          ? "Market close all active positions through the active Python trading runtime."
+          : POSITION_CLOSE_ALL_UNAVAILABLE;
+      }
+      for (const button of document.querySelectorAll(".position-close-row-btn")) {
+        button.disabled = true;
+        button.title = POSITION_SINGLE_CLOSE_UNAVAILABLE;
+      }
+    };
     const positionsViewMode = () => selectedValue("positions-view-select") || "cumulative";
     const syncPositionsTableOptions = () => {
       const wrap = $("positions-table");
@@ -1944,7 +1996,7 @@
           row.close_time || "--",
           row.stop_loss || "--",
           row.status || "--",
-          `<button class="action danger position-close-row-btn" data-symbol="${escapeHtml(row.symbol)}" type="button">Close</button>`
+          `<button class="action danger position-close-row-btn" data-symbol="${escapeHtml(row.symbol)}" type="button" disabled title="${POSITION_SINGLE_CLOSE_UNAVAILABLE}">Close</button>`
         ];
         return `<tr data-position-index="${index}">${values.map((value, col) => `<td>${col === 17 ? value : escapeHtml(value)}</td>`).join("")}</tr>`;
       }).join("");
@@ -2260,6 +2312,14 @@
         return nativeRuntimeInvokeError(error);
       }
     };
+    const executeNativeRuntimeCycle = async ({ config = {}, apiKey = "", apiSecret = "", nowMs = Date.now() } = {}) => {
+      if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
+      try {
+        return await invoke("execute_native_runtime_cycle", { config, apiKey, apiSecret, nowMs });
+      } catch (error) {
+        return nativeRuntimeInvokeError(error);
+      }
+    };
     const nativeRuntimeStatus = async ({ nowMs = Date.now() } = {}) => {
       if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
       try {
@@ -2276,10 +2336,22 @@
         return nativeRuntimeInvokeError(error);
       }
     };
-    const stopNativeRuntime = async ({ closePositions = false, nowMs = Date.now() } = {}) => {
+    const stopNativeRuntime = async ({
+      closePositions = false,
+      config = {},
+      apiKey = "",
+      apiSecret = "",
+      nowMs = Date.now()
+    } = {}) => {
       if (!invoke) return nativeRuntimeInvokeError("Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
       try {
-        return await invoke("stop_native_runtime", { closePositions: Boolean(closePositions), nowMs });
+        return await invoke("stop_native_runtime", {
+          closePositions: Boolean(closePositions),
+          config,
+          apiKey,
+          apiSecret,
+          nowMs
+        });
       } catch (error) {
         return nativeRuntimeInvokeError(error);
       }
@@ -2289,6 +2361,7 @@
       start: startNativeRuntime,
       pollMarket: pollNativeRuntimeMarket,
       pollAccount: pollNativeRuntimeAccount,
+      execute: executeNativeRuntimeCycle,
       status: nativeRuntimeStatus,
       pause: setNativeRuntimePaused,
       stop: stopNativeRuntime
@@ -2496,6 +2569,24 @@
       setSelect("config-time-in-force", config.tif);
       setValue("config-gtd-minutes", config.gtd_minutes);
       setSelect("config-indicator-source", config.indicator_source);
+      setChecked("live-trading-enabled", config.live_trading_enabled);
+      setValue("live-trading-acknowledgement", config.live_trading_acknowledgement);
+      setValue("live-trading-max-leverage", config.live_trading_max_leverage);
+      setValue("live-trading-max-position-pct", config.live_trading_max_position_pct);
+      setValue("live-trading-max-session-orders", config.live_trading_max_session_orders);
+      setChecked("live-allow-auto-bump-to-min-order", config.live_allow_auto_bump_to_min_order);
+      setValue("max-auto-bump-percent", config.max_auto_bump_percent ?? 5);
+      setValue("auto-bump-percent-multiplier", config.auto_bump_percent_multiplier ?? 10);
+      setChecked("order-audit-enabled", config.order_audit_enabled ?? true);
+      setValue("order-audit-log-path", config.order_audit_log_path);
+      setValue("order-audit-max-bytes", config.order_audit_max_bytes ?? 10485760);
+      setValue("order-audit-backup-count", config.order_audit_backup_count ?? 1);
+      setChecked("connector-order-circuit-enabled", config.connector_order_block_circuit_breaker_enabled ?? true);
+      setValue("connector-order-circuit-threshold", config.connector_order_block_pause_threshold ?? 2);
+      setValue("connector-order-circuit-window-seconds", config.connector_order_block_window_seconds ?? 60);
+      setValue("connector-order-incident-log-path", config.connector_order_circuit_incident_log_path);
+      setValue("connector-order-incident-max-bytes", config.connector_order_circuit_incident_log_max_bytes ?? 2097152);
+      setValue("connector-order-incident-backup-count", config.connector_order_circuit_incident_log_backup_count ?? 1);
       setValue("symbols-input", Array.isArray(config.symbols) ? config.symbols.join("\n") : "");
       setValue("intervals-input", Array.isArray(config.intervals) ? config.intervals.join("\n") : "");
       setValue("position-pct-input", config.position_pct);
@@ -2506,6 +2597,7 @@
       setChecked("indicator-live-values", config.indicator_use_live_values);
       setChecked("add-only-net-direction", config.add_only);
       setChecked("allow-opposite-positions", config.allow_opposite_positions);
+      setChecked("stop-without-closing-positions", config.stop_without_close);
       setChecked("close-on-window-close", config.close_on_exit);
       setChecked("positions-auto-row-height", config.positions_auto_resize_rows ?? true);
       setChecked("positions-auto-column-width", config.positions_auto_resize_columns ?? true);
@@ -2527,7 +2619,16 @@
         setValue("stop-loss-usdt", config.stop_loss.usdt);
         setValue("stop-loss-percent", config.stop_loss.percent);
       }
-      hydrateLlmControls(config.llm);
+      hydrateLlmControls(config.llm || {
+        enabled: config.llm_enabled,
+        allow_public_network: config.llm_allow_public_network,
+        provider: config.llm_provider,
+        model: config.llm_model,
+        base_url: config.llm_base_url,
+        api_key_env: config.llm_api_key_env,
+        use_for: config.llm_use_for,
+        reasoning_effort: config.llm_reasoning_effort
+      });
       hydrateChartControls(config);
     };
     const hydrateBacktestControls = (backtest) => {
@@ -2575,6 +2676,7 @@
     const hydrateFromDashboard = (payload) => {
       hydrateConfigControls(payload?.config);
       hydrateBacktestControls(payload?.backtest);
+      syncPositionCloseAvailability(payload?.runtime);
       if (payload?.config_persistence) renderConfigPersistence(payload.config_persistence);
       if (payload?.account) renderAccountSnapshot(payload.account);
       if (payload?.portfolio) renderPortfolioSnapshot(payload.portfolio);
@@ -2649,6 +2751,24 @@
         tif: selectedValue("config-time-in-force"),
         gtd_minutes: numberFrom("config-gtd-minutes", 30),
         indicator_source: selectedText("config-indicator-source"),
+        live_trading_enabled: Boolean($("live-trading-enabled")?.checked),
+        live_trading_acknowledgement: $("live-trading-acknowledgement")?.value?.trim() || "",
+        live_trading_max_leverage: numberFrom("live-trading-max-leverage", 20),
+        live_trading_max_position_pct: numberFrom("live-trading-max-position-pct", 10),
+        live_trading_max_session_orders: numberFrom("live-trading-max-session-orders", 100),
+        live_allow_auto_bump_to_min_order: Boolean($("live-allow-auto-bump-to-min-order")?.checked),
+        max_auto_bump_percent: numberFrom("max-auto-bump-percent", 5),
+        auto_bump_percent_multiplier: numberFrom("auto-bump-percent-multiplier", 10),
+        order_audit_enabled: Boolean($("order-audit-enabled")?.checked),
+        order_audit_log_path: $("order-audit-log-path")?.value?.trim() || "",
+        order_audit_max_bytes: numberFrom("order-audit-max-bytes", 10485760),
+        order_audit_backup_count: numberFrom("order-audit-backup-count", 1),
+        connector_order_block_circuit_breaker_enabled: Boolean($("connector-order-circuit-enabled")?.checked),
+        connector_order_block_pause_threshold: numberFrom("connector-order-circuit-threshold", 2),
+        connector_order_block_window_seconds: numberFrom("connector-order-circuit-window-seconds", 60),
+        connector_order_circuit_incident_log_path: $("connector-order-incident-log-path")?.value?.trim() || "",
+        connector_order_circuit_incident_log_max_bytes: numberFrom("connector-order-incident-max-bytes", 2097152),
+        connector_order_circuit_incident_log_backup_count: numberFrom("connector-order-incident-backup-count", 1),
         indicators: selectedIndicatorsConfigForKind("runtime"),
         chart: buildChartConfigPatch(),
         positions_auto_resize_rows: Boolean($("positions-auto-row-height")?.checked),
@@ -2663,6 +2783,7 @@
         indicator_use_live_values: Boolean($("indicator-live-values")?.checked),
         add_only: Boolean($("add-only-net-direction")?.checked),
         allow_opposite_positions: Boolean($("allow-opposite-positions")?.checked),
+        stop_without_close: Boolean($("stop-without-closing-positions")?.checked),
         close_on_exit: Boolean($("close-on-window-close")?.checked),
         symbols: linesFrom($("symbols-input")?.value),
         intervals: linesFrom($("intervals-input")?.value),
@@ -2706,6 +2827,11 @@
       appendLog(`[native] Account bootstrap: ${result?.ok ? "ok" : "failed"} - ${detail}`);
       return result;
     };
+    const reportNativeExecutionResponse = (result) => {
+      const detail = result?.message || result?.error || "No native execution response.";
+      appendLog(`[native] Guarded execution: ${result?.ok ? "ok" : "blocked"} - ${detail}`);
+      return result;
+    };
     let activeNativeRuntimePollConfig = null;
     let nativeRuntimeMarketPollTimer = null;
     const clearNativeRuntimeMarketPolling = () => {
@@ -2728,6 +2854,13 @@
         reportNativeAccountPollResponse(account);
         const result = await pollNativeRuntimeMarket({ config: activeNativeRuntimePollConfig || {} });
         reportNativeMarketPollResponse(result);
+        if (account?.ok && result?.ok) {
+          const execution = await executeNativeRuntimeCycle({
+            config: activeNativeRuntimePollConfig || {},
+            ...nativeRuntimeCredentials()
+          });
+          reportNativeExecutionResponse(execution);
+        }
         if (!result?.ok) clearNativeRuntimeMarketPolling();
       }, nativeRuntimeMarketPollIntervalMs(config));
     };
@@ -2741,6 +2874,10 @@
       llm_use_for: $("llm-use-for")?.value || llmUseForOptions[0]?.key || "advisory",
       llm_allow_public_network: Boolean(llmPublic.checked),
       llm_reasoning_effort: reasoning.value || "default"
+    });
+    const buildNativePersistedConfig = () => ({
+      ...buildRuntimeConfigPatch(),
+      ...buildLlmConfigPatch()
     });
     const buildLlmPromptPayload = (dryRun = true) => ({
       prompt: String($("llm-prompt-input")?.value || "").trim(),
@@ -3067,6 +3204,10 @@
           reportNativeAccountPollResponse(account);
           const poll = await pollNativeRuntimeMarket({ config });
           reportNativeMarketPollResponse(poll);
+          if (account?.ok && poll?.ok) {
+            const execution = await executeNativeRuntimeCycle({ config, ...nativeRuntimeCredentials() });
+            reportNativeExecutionResponse(execution);
+          }
           if (poll?.ok) startNativeRuntimeMarketPolling(config);
         }
         return;
@@ -3108,12 +3249,18 @@
       reportNativeAccountPollResponse(account);
       const poll = await pollNativeRuntimeMarket({ config });
       reportNativeMarketPollResponse(poll);
+      if (account?.ok && poll?.ok) {
+        const execution = await executeNativeRuntimeCycle({ config, ...nativeRuntimeCredentials() });
+        reportNativeExecutionResponse(execution);
+      }
       if (poll?.ok) startNativeRuntimeMarketPolling(config);
     });
     $("stop-bot-btn")?.addEventListener("click", async () => {
       if (nativeRuntimeSelected()) {
         const result = await stopNativeRuntime({
-          closePositions: !Boolean($("stop-without-closing-positions")?.checked)
+          closePositions: !Boolean($("stop-without-closing-positions")?.checked),
+          config: buildNativeRuntimeConfig(),
+          ...nativeRuntimeCredentials()
         });
         reportNativeRuntimeResponse("Stop", result);
         if (result?.ok) {
@@ -3134,6 +3281,28 @@
       if (result.ok) await refreshDashboard();
     });
     $("save-config-btn")?.addEventListener("click", async () => {
+      if (nativeRuntimeSelected()) {
+        if (typeof invoke !== "function") {
+          window.alert("Native config persistence is unavailable because the Tauri backend is not running.");
+          return;
+        }
+        try {
+          const result = await invoke("save_native_runtime_config", { config: buildNativePersistedConfig() });
+          if (!result?.ok) {
+            window.alert(result?.error || "Native config save failed.");
+            appendLog(`[native] Config save failed: ${result?.error || "unknown error"}`);
+            return;
+          }
+          renderConfigPersistence(result.persistence);
+          appendLog(`[native] Complete local config saved: ${result.persistence?.path || "default native path"}. Inline secrets were excluded.`);
+          return;
+        } catch (error) {
+          const message = error?.message || String(error);
+          window.alert(`Native config save failed:\n\n${message}`);
+          appendLog(`[native] Config save failed: ${message}`);
+          return;
+        }
+      }
       if (!(await ensureServiceApi())) return;
       const configResult = await requestAndReport("Apply runtime config", "config", "PATCH", { config: buildRuntimeConfigPatch() });
       if (configResult.ok) await refreshConfigPersistence();
@@ -3142,6 +3311,29 @@
       if (saveResult.ok) renderConfigPersistence(saveResult.payload);
     });
     $("load-config-btn")?.addEventListener("click", async () => {
+      if (nativeRuntimeSelected()) {
+        if (typeof invoke !== "function") {
+          window.alert("Native config persistence is unavailable because the Tauri backend is not running.");
+          return;
+        }
+        try {
+          const result = await invoke("load_native_runtime_config");
+          if (!result?.ok) {
+            window.alert(result?.error || "Native config load failed.");
+            appendLog(`[native] Config load failed: ${result?.error || "unknown error"}`);
+            return;
+          }
+          hydrateConfigControls(result.config);
+          renderConfigPersistence(result.persistence);
+          appendLog(`[native] Complete local config loaded: ${result.persistence?.path || "default native path"}.`);
+          return;
+        } catch (error) {
+          const message = error?.message || String(error);
+          window.alert(`Native config load failed:\n\n${message}`);
+          appendLog(`[native] Config load failed: ${message}`);
+          return;
+        }
+      }
       if (!(await ensureServiceApi())) return;
       const result = await requestAndReport("Load config", "config_load", "POST", { source: "tauri-desktop" });
       if (result.ok) {
@@ -3166,6 +3358,10 @@
       await refreshPositions();
     });
     $("market-close-all-positions-btn")?.addEventListener("click", async () => {
+      if (!positionCloseAllSupported) {
+        appendLog(`[positions] Market close-all is unavailable: ${POSITION_CLOSE_ALL_UNAVAILABLE}`);
+        return;
+      }
       if (!window.confirm("Market close all active positions?")) return;
       if (!(await ensureServiceApi())) return;
       const result = await requestAndReport("Market close all positions", "control_stop", "POST", { close_positions: true, source: "tauri-desktop-positions" });
@@ -3182,7 +3378,7 @@
       const closeButton = event.target.closest(".position-close-row-btn");
       if (closeButton) {
         event.stopPropagation();
-        appendLog(`[positions] Per-row close for ${closeButton.dataset.symbol || "position"} needs a dedicated Service API route; use Market Close ALL Positions in this shell.`);
+        appendLog(`[positions] Per-row close for ${closeButton.dataset.symbol || "position"} is unavailable: ${POSITION_SINGLE_CLOSE_UNAVAILABLE}`);
         return;
       }
       const row = event.target.closest("tbody tr[data-position-index]");

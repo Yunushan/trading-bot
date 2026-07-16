@@ -5,7 +5,7 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "05238a173d786f3902fc30708294757d8ea1d7662e973a80c4b1b96930a39830";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "39a1f7cf9944a1f107bb7bc6b18cca3834dfb55e897e8d5aad4bb2b46c133eab";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -947,6 +947,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
     "mistral",
     "grok",
     "qwen",
+    "moonshot",
     "local",
     "ollama",
     "vllm",
@@ -978,8 +979,8 @@ pub const PYTHON_LLM_PROVIDERS: &[PythonLlmProvider] = &[
         default_base_url: "https://api.openai.com/v1",
         default_model: "gpt-5.5",
         api_key_env: "OPENAI_API_KEY",
-        model_suggestions: &["gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.5-pro", "gpt-5.5-pro-2026-04-23", "gpt-5.4", "gpt-5.4-2026-03-05", "gpt-5.4-pro", "gpt-5.4-pro-2026-03-05", "gpt-5.4-mini", "gpt-5.4-mini-2026-03-17", "gpt-5.4-nano", "gpt-5.4-nano-2026-03-17", "gpt-5.3-chat-latest", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5.1", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"],
-        reasoning_efforts: &["default", "none", "minimal", "low", "medium", "high", "xhigh"],
+        model_suggestions: &["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.5-pro", "gpt-5.5-pro-2026-04-23", "gpt-5.4", "gpt-5.4-2026-03-05", "gpt-5.4-pro", "gpt-5.4-pro-2026-03-05", "gpt-5.4-mini", "gpt-5.4-mini-2026-03-17", "gpt-5.4-nano", "gpt-5.4-nano-2026-03-17", "gpt-5.3-chat-latest", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5.1", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"],
+        reasoning_efforts: &["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"],
         default_reasoning_effort: "default",
     },
     PythonLlmProvider {
@@ -1050,8 +1051,20 @@ pub const PYTHON_LLM_PROVIDERS: &[PythonLlmProvider] = &[
         default_base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         default_model: "qwen3.6-plus",
         api_key_env: "DASHSCOPE_API_KEY",
-        model_suggestions: &["qwen3.6-max-preview", "qwen3.6-plus", "qwen3.6-plus-2026-04-02", "qwen3.6-flash", "qwen3.6-flash-2026-04-16", "qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-2025-09-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-plus-2026-02-15", "qwen3.5-flash", "qwen3.5-flash-2026-02-23", "qwen3-coder-plus", "qwen3-coder-flash", "qwen-plus-us", "qwen-flash-us"],
-        reasoning_efforts: &["default", "low", "medium", "high"],
+        model_suggestions: &["qwen3.7-max", "qwen3.7-max-2026-06-08", "qwen3.7-max-2026-05-20", "qwen3.6-max-preview", "qwen3.6-plus", "qwen3.6-plus-2026-04-02", "qwen3.6-flash", "qwen3.6-flash-2026-04-16", "qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-2025-09-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-plus-2026-02-15", "qwen3.5-flash", "qwen3.5-flash-2026-02-23", "qwen3-coder-plus", "qwen3-coder-flash", "qwen-plus-us", "qwen-flash-us"],
+        reasoning_efforts: &["default", "disabled", "enabled", "low", "medium", "high", "max"],
+        default_reasoning_effort: "default",
+    },
+    PythonLlmProvider {
+        key: "moonshot",
+        label: "Moonshot AI / Kimi",
+        mode: "cloud",
+        protocol: "openai-chat-completions",
+        default_base_url: "https://api.moonshot.ai/v1",
+        default_model: "kimi-k3",
+        api_key_env: "MOONSHOT_API_KEY",
+        model_suggestions: &["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"],
+        reasoning_efforts: &["default", "disabled", "enabled", "max"],
         default_reasoning_effort: "default",
     },
     PythonLlmProvider {

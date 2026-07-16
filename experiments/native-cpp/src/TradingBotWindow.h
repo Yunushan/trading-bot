@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BinanceRestClient.h"
+#include "NativeOrderSafety.h"
 
 #include <QMainWindow>
 #include <QFutureWatcher>
@@ -220,6 +221,25 @@ private:
     QComboBox *dashboardLoopOverrideCombo_ = nullptr;
     QDoubleSpinBox *dashboardPositionPctSpin_;
     QSpinBox *dashboardLeverageSpin_;
+    QCheckBox *dashboardLiveTradingEnabledCheck_ = nullptr;
+    QLineEdit *dashboardLiveTradingAcknowledgementEdit_ = nullptr;
+    QCheckBox *dashboardLiveAllowAutoBumpCheck_ = nullptr;
+    QSpinBox *dashboardLiveTradingMaxLeverageSpin_ = nullptr;
+    QDoubleSpinBox *dashboardLiveTradingMaxPositionPctSpin_ = nullptr;
+    QSpinBox *dashboardLiveTradingMaxSessionOrdersSpin_ = nullptr;
+    QDoubleSpinBox *dashboardMaxAutoBumpPercentSpin_ = nullptr;
+    QDoubleSpinBox *dashboardAutoBumpPercentMultiplierSpin_ = nullptr;
+    QCheckBox *dashboardOrderAuditEnabledCheck_ = nullptr;
+    QLineEdit *dashboardOrderAuditLogPathEdit_ = nullptr;
+    QSpinBox *dashboardOrderAuditMaxBytesSpin_ = nullptr;
+    QSpinBox *dashboardOrderAuditBackupCountSpin_ = nullptr;
+    QCheckBox *dashboardConnectorOrderCircuitEnabledCheck_ = nullptr;
+    QSpinBox *dashboardConnectorOrderCircuitThresholdSpin_ = nullptr;
+    QDoubleSpinBox *dashboardConnectorOrderCircuitWindowSecondsSpin_ = nullptr;
+    QLineEdit *dashboardConnectorOrderIncidentLogPathEdit_ = nullptr;
+    QSpinBox *dashboardConnectorOrderIncidentMaxBytesSpin_ = nullptr;
+    QSpinBox *dashboardConnectorOrderIncidentBackupCountSpin_ = nullptr;
+    QPushButton *dashboardConnectorOrderCircuitResetBtn_ = nullptr;
     QListWidget *dashboardSymbolList_;
     QListWidget *dashboardIntervalList_;
     QPushButton *dashboardRefreshSymbolsBtn_;
@@ -264,6 +284,8 @@ private:
     bool dashboardRuntimeActive_ = false;
     bool dashboardRuntimeStopping_ = false;
     bool dashboardRuntimeCycleInProgress_ = false;
+    int dashboardRuntimeLiveSubmitAttemptCount_ = 0;
+    std::unique_ptr<NativeOrderSafety::ConnectorOrderCircuitBreaker> dashboardRuntimeConnectorOrderCircuit_;
     QMap<QString, QVariantMap> dashboardWaitingActiveEntries_;
     QList<QVariantMap> dashboardWaitingHistoryEntries_;
     int dashboardWaitingHistoryMax_ = 500;

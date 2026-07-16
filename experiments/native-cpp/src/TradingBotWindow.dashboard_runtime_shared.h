@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BinanceRestClient.h"
+#include "NativeOrderSafety.h"
 
 #include <QMap>
 #include <QSet>
@@ -18,6 +19,8 @@ bool qtWebSocketsRuntimeAvailable();
 bool loopTextRequestsInstant(const QString &text);
 int dashboardRuntimePollIntervalMs(const QTableWidget *table, bool useWebSocketFeed);
 void clearRuntimeSignalSockets(QMap<QString, BinanceWsClient *> &sockets);
+void setNativeRuntimeOrderAuditLogConfig(const NativeOrderSafety::OrderAuditLogConfig &config);
+NativeOrderSafety::OrderAuditLogConfig nativeRuntimeOrderAuditLogConfig();
 
 void setTableCellNumeric(QTableWidget *table, int row, int col, double value);
 void setTableCellRoiBasis(QTableWidgetItem *item, double value);

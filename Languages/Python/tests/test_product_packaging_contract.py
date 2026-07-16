@@ -516,6 +516,14 @@ class ProductPackagingContractTests(unittest.TestCase):
             'invoke("service_api_request"',
         ):
             self.assertIn(tauri_command, tauri_html)
+        self.assertIn(
+            'setChecked("stop-without-closing-positions", config.stop_without_close)',
+            tauri_html,
+        )
+        self.assertIn(
+            'stop_without_close: Boolean($("stop-without-closing-positions")?.checked)',
+            tauri_html,
+        )
         for hydration_hook in (
             "hydrateConfigControls",
             "hydrateLlmControls",
@@ -549,6 +557,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "indicator_use_live_values",
             "add_only",
             "allow_opposite_positions",
+            "stop_without_close",
             "close_on_exit",
             "close_positions: !Boolean",
             "start_date",
@@ -1292,6 +1301,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         cpp_root = REPO_ROOT / "experiments" / "native-cpp" / "src"
         main_source = (cpp_root / "main.cpp").read_text(encoding="utf-8")
         window_source = (cpp_root / "TradingBotWindow.cpp").read_text(encoding="utf-8")
+        dashboard_config_source = (
+            cpp_root / "TradingBotWindow.dashboard_overrides.cpp"
+        ).read_text(encoding="utf-8")
         chart_source = (cpp_root / "TradingBotWindow.chart.cpp").read_text(encoding="utf-8")
         web_source = (cpp_root / "TradingBotWindow.web.cpp").read_text(encoding="utf-8")
 
@@ -1308,6 +1320,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('property("tradingBotBoundedSmoke")', chart_source)
         self.assertIn('property("tradingBotBoundedSmoke")', web_source)
         self.assertIn("if (!boundedSmoke)", web_source)
+        self.assertIn('QStringLiteral("stop_without_close")', dashboard_config_source)
+        self.assertIn("dashboardStopWithoutCloseCheck_->setChecked", dashboard_config_source)
 
     def test_windows_native_cpp_bundle_smoke_is_isolated_and_complete(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "release-windows.yml").read_text(

@@ -91,6 +91,20 @@ void clearRuntimeSignalSockets(QMap<QString, BinanceWsClient *> &sockets) {
     sockets.clear();
 }
 
+NativeOrderSafety::OrderAuditLogConfig gNativeRuntimeOrderAuditConfig;
+bool gNativeRuntimeOrderAuditConfigSet = false;
+
+void setNativeRuntimeOrderAuditLogConfig(const NativeOrderSafety::OrderAuditLogConfig &config) {
+    gNativeRuntimeOrderAuditConfig = config;
+    gNativeRuntimeOrderAuditConfigSet = true;
+}
+
+NativeOrderSafety::OrderAuditLogConfig nativeRuntimeOrderAuditLogConfig() {
+    return gNativeRuntimeOrderAuditConfigSet
+        ? gNativeRuntimeOrderAuditConfig
+        : NativeOrderSafety::orderAuditLogConfigFromEnvironment();
+}
+
 using ConnectorRuntimeConfig = TradingBotWindowSupport::ConnectorRuntimeConfig;
 
 constexpr int kTableCellNumericRole = Qt::UserRole + 2;
@@ -171,7 +185,7 @@ void appendNativeFuturesOrderAudit(
     }
     NativeOrderSafety::appendOrderAuditEvent(
         payload,
-        NativeOrderSafety::orderAuditLogConfigFromEnvironment());
+        nativeRuntimeOrderAuditLogConfig());
 }
 
 void setTableCellNumeric(QTableWidget *table, int row, int col, double value) {

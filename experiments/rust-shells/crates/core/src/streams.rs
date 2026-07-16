@@ -742,12 +742,8 @@ mod tests {
     fn websocket_read_timeout_is_applied_to_plain_tcp_transport() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local listener");
         let address = listener.local_addr().expect("listener address");
-        let accept_thread = std::thread::spawn(move || {
-            listener
-                .accept()
-                .expect("accept local client")
-                .0
-        });
+        let accept_thread =
+            std::thread::spawn(move || listener.accept().expect("accept local client").0);
         let client = TcpStream::connect(address).expect("connect local client");
         let _server = accept_thread.join().expect("local accept thread");
         let mut stream = MaybeTlsStream::Plain(client);

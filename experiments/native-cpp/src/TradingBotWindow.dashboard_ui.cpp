@@ -350,6 +350,158 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     });
     addPair(3, col, "GTD minutes:", gtdMinutesSpin);
 
+    col = 0;
+    auto *liveTradingEnabledCheck = new QCheckBox("Enable live trading", accountBox);
+    liveTradingEnabledCheck->setToolTip(
+        "Live orders require this setting, the acknowledgement phrase, and all configured safety caps.");
+    dashboardLiveTradingEnabledCheck_ = liveTradingEnabledCheck;
+    registerDashboardRuntimeLockWidget(liveTradingEnabledCheck);
+    accountGrid->addWidget(liveTradingEnabledCheck, 4, col++, 1, 2);
+
+    auto *liveAcknowledgementEdit = new QLineEdit(accountBox);
+    liveAcknowledgementEdit->setPlaceholderText("I_UNDERSTAND_LIVE_TRADING_RISK");
+    liveAcknowledgementEdit->setToolTip("Required exact acknowledgement before live orders can be submitted.");
+    dashboardLiveTradingAcknowledgementEdit_ = liveAcknowledgementEdit;
+    registerDashboardRuntimeLockWidget(liveAcknowledgementEdit);
+    addPair(4, col, "Live acknowledgement:", liveAcknowledgementEdit, 3);
+
+    auto *liveMaxLeverageSpin = new QSpinBox(accountBox);
+    liveMaxLeverageSpin->setRange(1, 125);
+    liveMaxLeverageSpin->setValue(20);
+    dashboardLiveTradingMaxLeverageSpin_ = liveMaxLeverageSpin;
+    registerDashboardRuntimeLockWidget(liveMaxLeverageSpin);
+    addPair(4, col, "Live max leverage:", liveMaxLeverageSpin);
+
+    auto *liveMaxPositionPctSpin = new QDoubleSpinBox(accountBox);
+    liveMaxPositionPctSpin->setRange(0.01, 100.0);
+    liveMaxPositionPctSpin->setDecimals(2);
+    liveMaxPositionPctSpin->setValue(10.0);
+    liveMaxPositionPctSpin->setSuffix(" %");
+    dashboardLiveTradingMaxPositionPctSpin_ = liveMaxPositionPctSpin;
+    registerDashboardRuntimeLockWidget(liveMaxPositionPctSpin);
+    addPair(4, col, "Live max position:", liveMaxPositionPctSpin);
+
+    col = 0;
+    auto *liveMaxSessionOrdersSpin = new QSpinBox(accountBox);
+    liveMaxSessionOrdersSpin->setRange(1, 100000);
+    liveMaxSessionOrdersSpin->setValue(100);
+    dashboardLiveTradingMaxSessionOrdersSpin_ = liveMaxSessionOrdersSpin;
+    registerDashboardRuntimeLockWidget(liveMaxSessionOrdersSpin);
+    addPair(5, col, "Live session order cap:", liveMaxSessionOrdersSpin);
+
+    auto *liveAllowAutoBumpCheck = new QCheckBox("Allow live minimum-order auto-bump", accountBox);
+    liveAllowAutoBumpCheck->setToolTip(
+        "Off by default. Live position sizing is blocked when the exchange minimum would increase the requested size.");
+    dashboardLiveAllowAutoBumpCheck_ = liveAllowAutoBumpCheck;
+    registerDashboardRuntimeLockWidget(liveAllowAutoBumpCheck);
+    accountGrid->addWidget(liveAllowAutoBumpCheck, 5, col++, 1, 2);
+
+    auto *maxAutoBumpPercentSpin = new QDoubleSpinBox(accountBox);
+    maxAutoBumpPercentSpin->setRange(0.0, 100.0);
+    maxAutoBumpPercentSpin->setDecimals(2);
+    maxAutoBumpPercentSpin->setValue(5.0);
+    maxAutoBumpPercentSpin->setSuffix(" %");
+    maxAutoBumpPercentSpin->setToolTip("0 disables the percentage cap; funding checks still apply.");
+    dashboardMaxAutoBumpPercentSpin_ = maxAutoBumpPercentSpin;
+    registerDashboardRuntimeLockWidget(maxAutoBumpPercentSpin);
+    addPair(5, col, "Auto-bump max:", maxAutoBumpPercentSpin);
+
+    auto *autoBumpPercentMultiplierSpin = new QDoubleSpinBox(accountBox);
+    autoBumpPercentMultiplierSpin->setRange(0.0, 1000.0);
+    autoBumpPercentMultiplierSpin->setDecimals(2);
+    autoBumpPercentMultiplierSpin->setValue(10.0);
+    autoBumpPercentMultiplierSpin->setSuffix(" x");
+    dashboardAutoBumpPercentMultiplierSpin_ = autoBumpPercentMultiplierSpin;
+    registerDashboardRuntimeLockWidget(autoBumpPercentMultiplierSpin);
+    addPair(5, col, "Auto-bump multiplier:", autoBumpPercentMultiplierSpin);
+
+    col = 0;
+    auto *orderAuditEnabledCheck = new QCheckBox("Enable order audit", accountBox);
+    orderAuditEnabledCheck->setChecked(true);
+    dashboardOrderAuditEnabledCheck_ = orderAuditEnabledCheck;
+    registerDashboardRuntimeLockWidget(orderAuditEnabledCheck);
+    accountGrid->addWidget(orderAuditEnabledCheck, 6, col++, 1, 2);
+
+    auto *orderAuditPathEdit = new QLineEdit(accountBox);
+    orderAuditPathEdit->setPlaceholderText("Default: ~/.trading-bot/order_audit.jsonl");
+    dashboardOrderAuditLogPathEdit_ = orderAuditPathEdit;
+    registerDashboardRuntimeLockWidget(orderAuditPathEdit);
+    addPair(6, col, "Order audit log:", orderAuditPathEdit, 3);
+
+    auto *orderAuditMaxBytesSpin = new QSpinBox(accountBox);
+    orderAuditMaxBytesSpin->setRange(1, 1000000000);
+    orderAuditMaxBytesSpin->setValue(10 * 1024 * 1024);
+    orderAuditMaxBytesSpin->setSuffix(" bytes");
+    dashboardOrderAuditMaxBytesSpin_ = orderAuditMaxBytesSpin;
+    registerDashboardRuntimeLockWidget(orderAuditMaxBytesSpin);
+    addPair(6, col, "Audit max size:", orderAuditMaxBytesSpin);
+
+    auto *orderAuditBackupCountSpin = new QSpinBox(accountBox);
+    orderAuditBackupCountSpin->setRange(0, 100);
+    orderAuditBackupCountSpin->setValue(1);
+    dashboardOrderAuditBackupCountSpin_ = orderAuditBackupCountSpin;
+    registerDashboardRuntimeLockWidget(orderAuditBackupCountSpin);
+    addPair(6, col, "Audit backups:", orderAuditBackupCountSpin);
+
+    col = 0;
+    auto *connectorCircuitEnabledCheck = new QCheckBox("Enable connector order circuit", accountBox);
+    connectorCircuitEnabledCheck->setChecked(true);
+    connectorCircuitEnabledCheck->setToolTip("Pauses new entries after repeated connector order failures inside the configured window.");
+    dashboardConnectorOrderCircuitEnabledCheck_ = connectorCircuitEnabledCheck;
+    registerDashboardRuntimeLockWidget(connectorCircuitEnabledCheck);
+    accountGrid->addWidget(connectorCircuitEnabledCheck, 7, col++, 1, 2);
+
+    auto *connectorCircuitThresholdSpin = new QSpinBox(accountBox);
+    connectorCircuitThresholdSpin->setRange(1, 1000000);
+    connectorCircuitThresholdSpin->setValue(2);
+    dashboardConnectorOrderCircuitThresholdSpin_ = connectorCircuitThresholdSpin;
+    registerDashboardRuntimeLockWidget(connectorCircuitThresholdSpin);
+    addPair(7, col, "Circuit threshold:", connectorCircuitThresholdSpin);
+
+    auto *connectorCircuitWindowSecondsSpin = new QDoubleSpinBox(accountBox);
+    connectorCircuitWindowSecondsSpin->setRange(1.0, 24.0 * 60.0 * 60.0);
+    connectorCircuitWindowSecondsSpin->setDecimals(1);
+    connectorCircuitWindowSecondsSpin->setValue(60.0);
+    connectorCircuitWindowSecondsSpin->setSuffix(" s");
+    dashboardConnectorOrderCircuitWindowSecondsSpin_ = connectorCircuitWindowSecondsSpin;
+    registerDashboardRuntimeLockWidget(connectorCircuitWindowSecondsSpin);
+    addPair(7, col, "Circuit window:", connectorCircuitWindowSecondsSpin);
+
+    dashboardConnectorOrderCircuitResetBtn_ = new QPushButton("Reset circuit", accountBox);
+    accountGrid->addWidget(dashboardConnectorOrderCircuitResetBtn_, 7, col++);
+    connect(dashboardConnectorOrderCircuitResetBtn_, &QPushButton::clicked, this, [this]() {
+        if (!dashboardRuntimeConnectorOrderCircuit_) {
+            updateStatusMessage(QStringLiteral("Connector order circuit has not been initialized. Start the runtime first."));
+            return;
+        }
+        const QJsonObject snapshot = dashboardRuntimeConnectorOrderCircuit_->resetConnectorOrderCircuitBreaker(
+            QStringLiteral("cpp-dashboard"), true, QString(), QDateTime::currentDateTimeUtc());
+        appendDashboardAllLog(snapshot.value(QStringLiteral("message")).toString());
+        appendDashboardPositionLog(QStringLiteral("Connector order circuit reset."));
+    });
+
+    col = 0;
+    auto *incidentLogPathEdit = new QLineEdit(accountBox);
+    incidentLogPathEdit->setPlaceholderText("Default: ~/.trading-bot/connector_order_circuit_incidents.jsonl");
+    dashboardConnectorOrderIncidentLogPathEdit_ = incidentLogPathEdit;
+    registerDashboardRuntimeLockWidget(incidentLogPathEdit);
+    addPair(8, col, "Circuit incident log:", incidentLogPathEdit, 3);
+
+    auto *incidentMaxBytesSpin = new QSpinBox(accountBox);
+    incidentMaxBytesSpin->setRange(1, 1000000000);
+    incidentMaxBytesSpin->setValue(2 * 1024 * 1024);
+    incidentMaxBytesSpin->setSuffix(" bytes");
+    dashboardConnectorOrderIncidentMaxBytesSpin_ = incidentMaxBytesSpin;
+    registerDashboardRuntimeLockWidget(incidentMaxBytesSpin);
+    addPair(8, col, "Incident max size:", incidentMaxBytesSpin);
+
+    auto *incidentBackupCountSpin = new QSpinBox(accountBox);
+    incidentBackupCountSpin->setRange(0, 100);
+    incidentBackupCountSpin->setValue(1);
+    dashboardConnectorOrderIncidentBackupCountSpin_ = incidentBackupCountSpin;
+    registerDashboardRuntimeLockWidget(incidentBackupCountSpin);
+    addPair(8, col, "Incident backups:", incidentBackupCountSpin);
+
     for (int stretchCol : {1, 2, 4, 6, 8, 10, 12}) {
         accountGrid->setColumnStretch(stretchCol, 1);
     }
@@ -1481,6 +1633,25 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardPaperBalanceTitleLabel_ = nullptr;
     dashboardPositionPctSpin_ = nullptr;
     dashboardLeverageSpin_ = nullptr;
+    dashboardLiveTradingEnabledCheck_ = nullptr;
+    dashboardLiveTradingAcknowledgementEdit_ = nullptr;
+    dashboardLiveAllowAutoBumpCheck_ = nullptr;
+    dashboardLiveTradingMaxLeverageSpin_ = nullptr;
+    dashboardLiveTradingMaxPositionPctSpin_ = nullptr;
+    dashboardLiveTradingMaxSessionOrdersSpin_ = nullptr;
+    dashboardMaxAutoBumpPercentSpin_ = nullptr;
+    dashboardAutoBumpPercentMultiplierSpin_ = nullptr;
+    dashboardOrderAuditEnabledCheck_ = nullptr;
+    dashboardOrderAuditLogPathEdit_ = nullptr;
+    dashboardOrderAuditMaxBytesSpin_ = nullptr;
+    dashboardOrderAuditBackupCountSpin_ = nullptr;
+    dashboardConnectorOrderCircuitEnabledCheck_ = nullptr;
+    dashboardConnectorOrderCircuitThresholdSpin_ = nullptr;
+    dashboardConnectorOrderCircuitWindowSecondsSpin_ = nullptr;
+    dashboardConnectorOrderIncidentLogPathEdit_ = nullptr;
+    dashboardConnectorOrderIncidentMaxBytesSpin_ = nullptr;
+    dashboardConnectorOrderIncidentBackupCountSpin_ = nullptr;
+    dashboardConnectorOrderCircuitResetBtn_ = nullptr;
     dashboardSymbolList_ = nullptr;
     dashboardIntervalList_ = nullptr;
     dashboardRefreshSymbolsBtn_ = nullptr;
@@ -1519,6 +1690,8 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardStopLossUsdtSpin_ = nullptr;
     dashboardStopLossPercentSpin_ = nullptr;
     dashboardRuntimeActive_ = false;
+    dashboardRuntimeLiveSubmitAttemptCount_ = 0;
+    dashboardRuntimeConnectorOrderCircuit_.reset();
     dashboardWaitingActiveEntries_.clear();
     dashboardWaitingHistoryEntries_.clear();
     dashboardWaitingHistoryMax_ = 500;

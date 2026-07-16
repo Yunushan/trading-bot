@@ -8,21 +8,35 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 use trading_bot_core::{
+    account::{
+        BinanceAccountSnapshot, BinanceApiCredentials, BinanceFuturesMultiAssetsMode,
+        BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceSignedRestClient,
+    },
     app_banner,
-    account::{BinanceApiCredentials, BinanceSignedRestClient},
+    config_persistence::{
+        load_service_config_file, service_config_file_status, write_service_config_file,
+    },
     exchange_connectors::DEFAULT_CONNECTOR_BACKEND,
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
     native_runtime::{
-        NativeRuntimeCycleInput, NativeRuntimeLoop, NativeRuntimeLoopConfig,
+        NativeRuntimeAccountPreflightSnapshot, NativeRuntimeClosePlanningInput,
+        NativeRuntimeCycleInput, NativeRuntimeExposureGuardInput, NativeRuntimeFreshnessInput,
+        NativeRuntimeGuardedExecutionCycleInput, NativeRuntimeGuardedExecutionCycleSnapshot,
+        NativeRuntimeLoop, NativeRuntimeLoopConfig, NativeRuntimeOperationalPreflightInput,
         NativeRuntimeReadOnlyMarketCycleInput,
     },
-    python_source_contract_hash, rust_trading_execution_supported, service_api_route_path,
-    service_api_route_supports_method, service_api_route_supports_query_field,
-    service_api_route_supports_request_field, supported_frameworks,
+    order_audit::{ConnectorOrderCircuitBreakerConfig, OrderAuditConfig},
+    order_guard::{LiveTradingSafetyConfig, OrderSymbolFilters},
+    orders::BinanceFuturesSymbolFilters,
+    python_source_contract_hash,
+    runtime_order_engine::RuntimeOrderEngine,
+    rust_trading_execution_supported, service_api_route_path, service_api_route_supports_method,
+    service_api_route_supports_query_field, service_api_route_supports_request_field,
+    supported_frameworks,
 };
 
 #[cfg(target_os = "windows")]
@@ -41,6 +55,25 @@ struct ServiceApiProxyResponse {
     error: String,
 }
 
+#[derive(Debug, Serialize)]
+struct NativeConfigPersistenceResponse {
+    ok: bool,
+    config: Value,
+    persistence: Value,
+    error: String,
+}
+
+impl NativeConfigPersistenceResponse {
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            config: Value::Null,
+            persistence: service_config_file_status(None),
+            error: error.into(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct ServiceProcessState {
     child: Mutex<Option<Child>>,
@@ -49,6 +82,7 @@ struct ServiceProcessState {
 #[derive(Default)]
 struct NativeRuntimeManagedState {
     runtime: Option<NativeRuntimeLoop>,
+    order_engine: Option<RuntimeOrderEngine>,
     market_poll_spec: Option<NativeRuntimeMarketPollSpec>,
     account_bootstrap: Option<NativeRuntimeAccountBootstrapState>,
     started_at_ms: Option<i64>,
@@ -104,6 +138,10 @@ struct NativeRuntimeAccountBootstrapState {
     refreshed_at_ms: i64,
     signal_evaluation_allowed: bool,
     status_message: String,
+    balance: BinanceAccountSnapshot,
+    positions: Vec<BinanceFuturesPosition>,
+    position_mode: BinanceFuturesPositionMode,
+    multi_assets_mode: BinanceFuturesMultiAssetsMode,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +160,21 @@ struct NativeRuntimeAccountPollResponse {
     multi_assets_mode: bool,
     signal_evaluation_allowed: bool,
     status_message: String,
+    error: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeRuntimeExecutionResponse {
+    ok: bool,
+    state: String,
+    signal: Option<String>,
+    order_id: String,
+    order_status: String,
+    executed_qty: f64,
+    dry_run: bool,
+    trading_execution_supported: bool,
+    promotion_required: bool,
+    message: String,
     error: String,
 }
 
@@ -163,6 +216,57 @@ impl NativeRuntimeAccountPollResponse {
             signal_evaluation_allowed: false,
             status_message: String::new(),
             error: error.into(),
+        }
+    }
+}
+
+impl NativeRuntimeExecutionResponse {
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            state: "blocked".to_owned(),
+            signal: None,
+            order_id: String::new(),
+            order_status: String::new(),
+            executed_qty: 0.0,
+            dry_run: !rust_trading_execution_supported(),
+            trading_execution_supported: rust_trading_execution_supported(),
+            promotion_required: !rust_trading_execution_supported(),
+            message: String::new(),
+            error: error.into(),
+        }
+    }
+
+    fn from_snapshot(snapshot: NativeRuntimeGuardedExecutionCycleSnapshot) -> Self {
+        let signal = snapshot
+            .market_cycle
+            .strategy_decision
+            .as_ref()
+            .and_then(|decision| decision.signal.clone());
+        let order = snapshot
+            .order
+            .as_ref()
+            .and_then(|result| result.order_result.as_ref());
+        let order_id = order
+            .map(|result| result.order_id.clone())
+            .unwrap_or_default();
+        let order_status = order
+            .map(|result| result.status.clone())
+            .unwrap_or_default();
+        let executed_qty = order.map(|result| result.executed_qty).unwrap_or_default();
+        let dry_run = order_status.eq_ignore_ascii_case("DRY_RUN");
+        Self {
+            ok: snapshot.state != "blocked",
+            state: snapshot.state,
+            signal,
+            order_id,
+            order_status,
+            executed_qty,
+            dry_run,
+            trading_execution_supported: snapshot.trading_execution_supported,
+            promotion_required: !snapshot.trading_execution_supported,
+            message: snapshot.status_message,
+            error: String::new(),
         }
     }
 }
@@ -212,6 +316,7 @@ impl NativeRuntimeState {
         let mut runtime = NativeRuntimeLoop::new(native_runtime_config(config));
         runtime.start();
         managed.runtime = Some(runtime);
+        managed.order_engine = Some(native_runtime_order_engine(config, now_ms));
         managed.market_poll_spec = Some(market_poll_spec);
         managed.account_bootstrap = None;
         managed.started_at_ms = Some(now_ms);
@@ -274,7 +379,14 @@ impl NativeRuntimeState {
         )
     }
 
-    fn stop(&self, close_positions: bool, now_ms: i64) -> NativeRuntimeControlResponse {
+    fn stop_with_close_request(
+        &self,
+        close_positions: bool,
+        config: Value,
+        api_key: String,
+        api_secret: String,
+        now_ms: i64,
+    ) -> NativeRuntimeControlResponse {
         let mut managed = match self.inner.lock() {
             Ok(value) => value,
             Err(_) => {
@@ -290,22 +402,53 @@ impl NativeRuntimeState {
                 "Native Rust runtime is already idle.",
             );
         }
+        if managed.runtime.is_none() {
+            return NativeRuntimeControlResponse::error(
+                "Native Rust runtime state is unavailable.",
+            );
+        }
+
+        // The promoted runtime closes against a freshly reconciled account snapshot.
+        // Before promotion this must remain side-effect free: the coordinator has not
+        // submitted native live orders and must not issue an unverified close request.
+        let mut close_status_message = String::new();
+        let close_dispatched = if !close_positions {
+            false
+        } else if !rust_trading_execution_supported() {
+            close_status_message =
+                "Close positions was not dispatched because native live execution is not promoted."
+                    .to_owned();
+            false
+        } else {
+            match dispatch_native_runtime_position_closes(
+                &mut managed,
+                &config,
+                api_key,
+                api_secret,
+                now_ms,
+            ) {
+                Ok(message) => {
+                    close_status_message = message;
+                    true
+                }
+                Err(error) => {
+                    close_status_message =
+                        format!("Native close-all was not completed before shutdown: {error}");
+                    false
+                }
+            }
+        };
         let Some(runtime) = managed.runtime.as_mut() else {
             return NativeRuntimeControlResponse::error(
                 "Native Rust runtime state is unavailable.",
             );
         };
-
-        // Tauri does not claim a close-all dispatch until the promoted worker owns
-        // credentialed position reconciliation. Stopping the fail-closed coordinator
-        // is still safe because it cannot have submitted native live orders.
-        let close_dispatched = close_positions && rust_trading_execution_supported();
         let stop = runtime.request_stop(
             close_dispatched,
             "tauri-native-runtime",
             true,
-            if close_positions && !close_dispatched {
-                "Close positions was not dispatched because native live execution is not promoted."
+            if !close_status_message.is_empty() {
+                &close_status_message
             } else {
                 "Native runtime stop accepted."
             },
@@ -313,16 +456,17 @@ impl NativeRuntimeState {
         runtime.mark_idle_after_stop("tauri-native-runtime", &stop.status_message);
         managed.market_poll_spec = None;
         managed.account_bootstrap = None;
+        managed.order_engine = None;
         managed.running = false;
         managed.paused = false;
         managed.started_at_ms = None;
         native_runtime_snapshot(
             &mut managed,
             now_ms,
-            if close_positions && !close_dispatched {
-                "Native Rust runtime stopped; no live close was required or dispatched while execution is promotion-gated."
+            if !close_status_message.is_empty() {
+                format!("Native Rust runtime stopped. {close_status_message}")
             } else {
-                "Native Rust runtime stopped."
+                "Native Rust runtime stopped.".to_owned()
             },
         )
     }
@@ -422,7 +566,9 @@ impl NativeRuntimeState {
             let account_status = account_bootstrap
                 .as_ref()
                 .map(|snapshot| snapshot.status_message.as_str())
-                .unwrap_or("Read-only native account bootstrap is required before signal evaluation.");
+                .unwrap_or(
+                    "Read-only native account bootstrap is required before signal evaluation.",
+                );
             return NativeRuntimeMarketPollResponse {
                 ok: true,
                 market: native_runtime_market_label(spec.market).to_owned(),
@@ -485,7 +631,9 @@ impl NativeRuntimeState {
                 }
             };
             if !managed.running {
-                return NativeRuntimeAccountPollResponse::error("Native Rust runtime is not running.");
+                return NativeRuntimeAccountPollResponse::error(
+                    "Native Rust runtime is not running.",
+                );
             }
             if managed.market_poll_spec.as_ref() != Some(&spec) {
                 return NativeRuntimeAccountPollResponse::error(
@@ -563,10 +711,18 @@ impl NativeRuntimeState {
             Some(&position_mode),
             Some(&multi_assets_mode),
         );
+        let total_balance = balance.total_usdt_balance;
+        let available_balance = balance.available_usdt_balance;
+        let position_mode_label = position_mode.position_mode.clone();
+        let multi_assets_enabled = multi_assets_mode.multi_assets_margin;
         managed.account_bootstrap = Some(NativeRuntimeAccountBootstrapState {
             refreshed_at_ms: now_ms.max(0),
             signal_evaluation_allowed: snapshot.signal_evaluation_allowed,
             status_message: snapshot.status_message.clone(),
+            balance,
+            positions,
+            position_mode,
+            multi_assets_mode,
         });
         NativeRuntimeAccountPollResponse {
             ok: true,
@@ -574,16 +730,205 @@ impl NativeRuntimeState {
             symbol: spec.symbol,
             testnet: spec.testnet,
             balance_asset: snapshot.balance_asset,
-            total_balance: balance.total_usdt_balance,
-            available_balance: balance.available_usdt_balance,
+            total_balance,
+            available_balance,
             open_positions_count: snapshot.open_positions_count,
             configured_symbol_position_found: snapshot.configured_symbol_position_found,
             configured_symbol_open_position_amt: snapshot.configured_symbol_open_position_amt,
-            position_mode: position_mode.position_mode,
-            multi_assets_mode: multi_assets_mode.multi_assets_margin,
+            position_mode: position_mode_label,
+            multi_assets_mode: multi_assets_enabled,
             signal_evaluation_allowed: snapshot.signal_evaluation_allowed,
             status_message: snapshot.status_message,
             error: String::new(),
+        }
+    }
+
+    fn execute_guarded_cycle(
+        &self,
+        config: &Value,
+        api_key: String,
+        api_secret: String,
+        now_ms: i64,
+    ) -> NativeRuntimeExecutionResponse {
+        let spec = match native_runtime_market_poll_spec(config) {
+            Ok(spec) => spec,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error),
+        };
+        if spec.market != BinanceMarket::Futures {
+            return NativeRuntimeExecutionResponse::error(
+                "Native guarded execution currently supports Binance USD-M Futures only.",
+            );
+        }
+        {
+            let managed = match self.inner.lock() {
+                Ok(value) => value,
+                Err(_) => {
+                    return NativeRuntimeExecutionResponse::error(
+                        "Native runtime state lock is poisoned.",
+                    );
+                }
+            };
+            if !managed.running {
+                return NativeRuntimeExecutionResponse::error(
+                    "Native Rust runtime is not running.",
+                );
+            }
+            if managed.market_poll_spec.as_ref() != Some(&spec) {
+                return NativeRuntimeExecutionResponse::error(
+                    "Native runtime market configuration changed; stop and restart the runtime before executing.",
+                );
+            }
+        }
+        if api_key.trim().is_empty() || api_secret.trim().is_empty() {
+            return NativeRuntimeExecutionResponse::error(
+                "API key and API secret are required for native guarded execution.",
+            );
+        }
+
+        let credentials = BinanceApiCredentials::new(api_key.clone(), api_secret.clone());
+        let account_client = match BinanceSignedRestClient::new(spec.market, spec.testnet) {
+            Ok(client) => client,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+        };
+        let market_client = match BinanceRestMarketDataClient::new(spec.market, spec.testnet) {
+            Ok(client) => client,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+        };
+        let candles = match market_client.fetch_klines(&spec.symbol, &spec.interval, 500) {
+            Ok(candles) => candles,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+        };
+        let ticker = match market_client.fetch_ticker_price(&spec.symbol) {
+            Ok(ticker) if ticker.price.is_finite() && ticker.price > 0.0 => ticker,
+            Ok(_) => {
+                return NativeRuntimeExecutionResponse::error(
+                    "Native guarded execution received an invalid Binance ticker price.",
+                );
+            }
+            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+        };
+        let filters = match account_client.fetch_futures_symbol_filters(&spec.symbol) {
+            Ok(filters) => filters,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+        };
+        let market_input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
+            now_ms,
+            candles.clone(),
+            config,
+            false,
+        ) {
+            Ok(input) => input,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+        };
+
+        let mut managed = match self.inner.lock() {
+            Ok(value) => value,
+            Err(_) => {
+                return NativeRuntimeExecutionResponse::error(
+                    "Native runtime state lock is poisoned.",
+                );
+            }
+        };
+        if !managed.running {
+            return NativeRuntimeExecutionResponse::error("Native Rust runtime is not running.");
+        }
+        if managed.market_poll_spec.as_ref() != Some(&spec) {
+            return NativeRuntimeExecutionResponse::error(
+                "Native runtime market configuration changed; stop and restart the runtime before executing.",
+            );
+        }
+        let Some(account_bootstrap) = managed.account_bootstrap.clone() else {
+            return NativeRuntimeExecutionResponse::error(
+                "A fresh native account bootstrap is required before guarded execution.",
+            );
+        };
+        if !native_runtime_account_bootstrap_is_fresh(&account_bootstrap, now_ms)
+            || !account_bootstrap.signal_evaluation_allowed
+        {
+            return NativeRuntimeExecutionResponse::error(format!(
+                "Native account bootstrap is not execution-ready: {}",
+                account_bootstrap.status_message
+            ));
+        }
+
+        let NativeRuntimeManagedState {
+            runtime,
+            order_engine,
+            ..
+        } = &mut *managed;
+        let (Some(runtime), Some(engine)) = (runtime.as_mut(), order_engine.as_mut()) else {
+            return NativeRuntimeExecutionResponse::error(
+                "Native runtime execution state is unavailable.",
+            );
+        };
+        let ingestion = runtime.run_rest_kline_ingestion_cycle(now_ms, || Ok(candles.clone()));
+        if ingestion.poll_status != "rest_closed_kline" {
+            return NativeRuntimeExecutionResponse::error(ingestion.poll_error.unwrap_or_else(
+                || "Native guarded execution market ingestion failed.".to_owned(),
+            ));
+        }
+
+        configure_native_runtime_order_engine(engine, config, now_ms);
+        engine.api_key = api_key;
+        engine.api_secret = api_secret;
+        let account_snapshot = runtime.bootstrap_read_only_account(
+            &account_bootstrap.balance,
+            &account_bootstrap.positions,
+            Some(&account_bootstrap.position_mode),
+            Some(&account_bootstrap.multi_assets_mode),
+        );
+        let execution_input = NativeRuntimeGuardedExecutionCycleInput {
+            market_cycle: market_input,
+            exposure: native_runtime_exposure_input(
+                config,
+                &spec,
+                &account_bootstrap,
+                ticker.price,
+                &filters,
+            ),
+            filters: Some(OrderSymbolFilters::from(&filters)),
+            market: "futures".to_owned(),
+            connector_state: "active".to_owned(),
+            connector_health: "ok".to_owned(),
+            operational_preflight: runtime.build_operational_preflight(
+                native_runtime_operational_preflight_input(
+                    config,
+                    now_ms,
+                    account_bootstrap.refreshed_at_ms,
+                    account_snapshot.account_preflight,
+                    engine.circuit.is_open(),
+                ),
+            ),
+            now_iso: native_runtime_now_iso(now_ms),
+            now_epoch_seconds: now_ms.max(0) as f64 / 1_000.0,
+            source: "tauri-native-runtime".to_owned(),
+        };
+        let result = runtime.run_guarded_execution_cycle(engine, execution_input, |params| {
+            let quantity = params
+                .params
+                .iter()
+                .find(|(key, _)| *key == "quantity")
+                .and_then(|(_, value)| value.parse::<f64>().ok())
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or(0.0);
+            let reduce_only = params
+                .params
+                .iter()
+                .any(|(key, value)| *key == "reduceOnly" && value.eq_ignore_ascii_case("true"));
+            account_client.place_futures_market_order(
+                &credentials,
+                &params.symbol,
+                &params.side,
+                quantity,
+                reduce_only,
+                &params.position_side,
+            )
+        });
+        engine.api_key.clear();
+        engine.api_secret.clear();
+        match result {
+            Ok(snapshot) => NativeRuntimeExecutionResponse::from_snapshot(snapshot),
+            Err(error) => NativeRuntimeExecutionResponse::error(error.to_string()),
         }
     }
 
@@ -595,6 +940,109 @@ impl NativeRuntimeState {
             managed.account_bootstrap = None;
         }
     }
+}
+
+fn dispatch_native_runtime_position_closes(
+    managed: &mut NativeRuntimeManagedState,
+    config: &Value,
+    api_key: String,
+    api_secret: String,
+    now_ms: i64,
+) -> Result<String, String> {
+    let spec = native_runtime_market_poll_spec(config)?;
+    if spec.market != BinanceMarket::Futures {
+        return Err(
+            "Native guarded close-all currently supports Binance USD-M Futures only.".to_owned(),
+        );
+    }
+    if managed.market_poll_spec.as_ref() != Some(&spec) {
+        return Err(
+            "Native runtime market configuration changed; stop and restart the runtime before closing positions."
+                .to_owned(),
+        );
+    }
+    if api_key.trim().is_empty() || api_secret.trim().is_empty() {
+        return Err(
+            "API key and API secret are required for native guarded position close.".to_owned(),
+        );
+    }
+
+    let credentials = BinanceApiCredentials::new(api_key.clone(), api_secret.clone());
+    let account_client = BinanceSignedRestClient::new(spec.market, spec.testnet)
+        .map_err(|error| error.to_string())?;
+    let exchange_position_mode = account_client
+        .fetch_futures_position_mode(&credentials)
+        .map_err(|error| error.to_string())?;
+    let positions = account_client
+        .fetch_open_futures_positions(&credentials)
+        .map_err(|error| error.to_string())?;
+    let mut step_size_by_symbol = BTreeMap::new();
+    for position in &positions {
+        let filters = account_client
+            .fetch_futures_symbol_filters(&position.symbol)
+            .map_err(|error| error.to_string())?;
+        step_size_by_symbol.insert(position.symbol.clone(), filters.step_size);
+    }
+
+    let Some(runtime) = managed.runtime.as_mut() else {
+        return Err("Native Rust runtime state is unavailable.".to_owned());
+    };
+    let mode = runtime.reconcile_position_mode(Some(&exchange_position_mode));
+    if !mode.matches_config {
+        return Err(format!(
+            "Native close-all refused because configured position mode {} does not match exchange mode {}.",
+            mode.configured_position_mode,
+            mode.exchange_position_mode
+                .unwrap_or_else(|| "unknown".to_owned()),
+        ));
+    }
+    let plan = runtime
+        .plan_close_positions(NativeRuntimeClosePlanningInput {
+            positions,
+            step_size_by_symbol: step_size_by_symbol.into_iter().collect(),
+            // Binance MARKET close-all uses quantity-specific reduce-only orders.
+            prefer_close_position: false,
+        })
+        .map_err(|error| error.to_string())?;
+    let Some(engine) = managed.order_engine.as_mut() else {
+        return Err("Native runtime order engine is unavailable.".to_owned());
+    };
+    configure_native_runtime_order_engine(engine, config, now_ms);
+    engine.api_key = api_key;
+    engine.api_secret = api_secret;
+    // This is an explicit de-risking action after promotion, not an entry order.
+    // It remains restricted to freshly reconciled, reduce-only directives.
+    engine.dry_run = false;
+    let batch = engine.execute_planned_position_closes(
+        &plan.directives,
+        native_runtime_now_iso(now_ms),
+        "tauri-native-runtime-stop",
+        |directive| {
+            account_client.place_futures_market_order(
+                &credentials,
+                &directive.symbol,
+                &directive.side,
+                directive.quantity,
+                directive.reduce_only,
+                &directive.position_side,
+            )
+        },
+    );
+    engine.api_key.clear();
+    engine.api_secret.clear();
+    if !batch.ok {
+        return Err(format!(
+            "{} of {} requested contracts remain after {} close attempt(s).",
+            batch.remaining_qty,
+            batch.requested_qty,
+            batch.attempts.len(),
+        ));
+    }
+    Ok(format!(
+        "Native close-all reconciled {} requested contracts across {} close attempt(s).",
+        batch.closed_qty,
+        batch.attempts.len(),
+    ))
 }
 
 fn config_root(config: &Value) -> &Value {
@@ -688,10 +1136,7 @@ fn native_runtime_account_bootstrap_is_fresh(
     bootstrap: &NativeRuntimeAccountBootstrapState,
     now_ms: i64,
 ) -> bool {
-    now_ms
-        .saturating_sub(bootstrap.refreshed_at_ms)
-        .max(0)
-        <= 5 * 60 * 1_000
+    now_ms.saturating_sub(bootstrap.refreshed_at_ms).max(0) <= 5 * 60 * 1_000
 }
 
 fn config_i64(config: &Value, key: &str, default: i64) -> i64 {
@@ -703,6 +1148,253 @@ fn config_i64(config: &Value, key: &str, default: i64) -> i64 {
         .or_else(|| value.as_f64().map(|value| value.round() as i64))
         .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
         .unwrap_or(default)
+}
+
+fn config_f64(config: &Value, key: &str, default: f64) -> f64 {
+    let Some(value) = config_root(config).get(key) else {
+        return default;
+    };
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        .filter(|value| value.is_finite())
+        .unwrap_or(default)
+}
+
+fn config_bool(config: &Value, key: &str, default: bool) -> bool {
+    let Some(value) = config_root(config).get(key) else {
+        return default;
+    };
+    match value {
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        },
+        _ => default,
+    }
+}
+
+fn native_runtime_now_iso(now_ms: i64) -> String {
+    format!("native-runtime-{}", now_ms.max(0))
+}
+
+fn native_runtime_order_engine(config: &Value, now_ms: i64) -> RuntimeOrderEngine {
+    let mut engine = RuntimeOrderEngine::new(
+        first_config_string(config, "mode", "Demo/Testnet"),
+        native_runtime_order_audit_config(config),
+        native_runtime_circuit_breaker_config(config),
+        native_runtime_now_iso(now_ms),
+    );
+    configure_native_runtime_order_engine(&mut engine, config, now_ms);
+    engine
+}
+
+fn configure_native_runtime_order_engine(
+    engine: &mut RuntimeOrderEngine,
+    config: &Value,
+    now_ms: i64,
+) {
+    engine.mode = first_config_string(config, "mode", "Demo/Testnet");
+    engine.account_type = first_config_string(config, "account_type", "FUTURES");
+    engine.leverage = config_i64(config, "leverage", 5).clamp(1, 125);
+    engine.margin_mode = native_runtime_config(config).margin_mode;
+    engine.position_pct = config_f64(config, "position_pct", 2.0).clamp(0.01, 100.0);
+    engine.configure_audit_and_circuit(
+        native_runtime_order_audit_config(config),
+        native_runtime_circuit_breaker_config(config),
+        native_runtime_incident_log_path(config),
+        config_i64(
+            config,
+            "connector_order_circuit_incident_log_max_bytes",
+            2 * 1024 * 1024,
+        )
+        .clamp(1, 1_000_000_000) as u64,
+        config_i64(
+            config,
+            "connector_order_circuit_incident_log_backup_count",
+            1,
+        )
+        .clamp(0, 100) as usize,
+        native_runtime_now_iso(now_ms),
+    );
+    let mut safety = LiveTradingSafetyConfig::default();
+    safety.live_trading_enabled = config_bool(config, "live_trading_enabled", false);
+    safety.live_trading_acknowledgement =
+        first_config_string(config, "live_trading_acknowledgement", "");
+    safety.live_trading_max_leverage = config_i64(
+        config,
+        "live_trading_max_leverage",
+        safety.live_trading_max_leverage,
+    )
+    .clamp(1, 125);
+    safety.live_trading_max_position_pct = config_f64(
+        config,
+        "live_trading_max_position_pct",
+        safety.live_trading_max_position_pct,
+    )
+    .clamp(0.01, 100.0);
+    safety.live_trading_max_session_orders = config_i64(
+        config,
+        "live_trading_max_session_orders",
+        safety.live_trading_max_session_orders,
+    )
+    .clamp(1, 100_000);
+    engine.dry_run = !rust_trading_execution_supported() || !safety.live_trading_enabled;
+    engine.safety = safety;
+}
+
+fn native_runtime_order_audit_config(config: &Value) -> OrderAuditConfig {
+    let mut audit = OrderAuditConfig::default();
+    audit.enabled = config_bool(config, "order_audit_enabled", true);
+    let configured_path = first_config_string(config, "order_audit_log_path", "");
+    if !configured_path.trim().is_empty() {
+        audit.path = configured_path;
+    }
+    audit.max_bytes = config_i64(config, "order_audit_max_bytes", 10 * 1024 * 1024)
+        .clamp(1, 1_000_000_000) as u64;
+    audit.backup_count = config_i64(config, "order_audit_backup_count", 1).clamp(0, 100) as usize;
+    audit
+}
+
+fn native_runtime_circuit_breaker_config(config: &Value) -> ConnectorOrderCircuitBreakerConfig {
+    ConnectorOrderCircuitBreakerConfig {
+        enabled: config_bool(
+            config,
+            "connector_order_block_circuit_breaker_enabled",
+            true,
+        ),
+        block_threshold: config_i64(config, "connector_order_block_pause_threshold", 2)
+            .clamp(1, 100_000) as usize,
+        block_window_seconds: config_f64(config, "connector_order_block_window_seconds", 60.0)
+            .clamp(1.0, 86_400.0),
+    }
+}
+
+fn native_runtime_incident_log_path(config: &Value) -> PathBuf {
+    let configured_path =
+        first_config_string(config, "connector_order_circuit_incident_log_path", "");
+    if configured_path.trim().is_empty() {
+        PathBuf::from("~/.trading-bot/connector_order_circuit_incidents.jsonl")
+    } else {
+        PathBuf::from(configured_path)
+    }
+}
+
+fn native_runtime_operational_preflight_input(
+    config: &Value,
+    now_ms: i64,
+    account_refreshed_at_ms: i64,
+    account_preflight: NativeRuntimeAccountPreflightSnapshot,
+    connector_order_circuit_active: bool,
+) -> NativeRuntimeOperationalPreflightInput {
+    let fresh =
+        |timestamp_ms: i64, timestamp_field: &str, source: &str| NativeRuntimeFreshnessInput {
+            timestamp_ms: Some(timestamp_ms.max(0)),
+            timestamp_field: timestamp_field.to_owned(),
+            max_age_ms: 5 * 60 * 1_000,
+            should_warn: true,
+            state: "ok".to_owned(),
+            source: source.to_owned(),
+        };
+    NativeRuntimeOperationalPreflightInput {
+        mode: first_config_string(config, "mode", "Demo/Testnet"),
+        health: "ok".to_owned(),
+        generated_at_ms: now_ms.max(0),
+        start_gate_enabled: true,
+        order_gate_enabled: true,
+        connector_order_circuit_active,
+        exchange_connector: fresh(now_ms, "native_market_refreshed_at_ms", "binance-rest"),
+        execution: fresh(
+            now_ms,
+            "native_execution_refreshed_at_ms",
+            "tauri-native-runtime",
+        ),
+        account: fresh(
+            account_refreshed_at_ms,
+            "native_account_refreshed_at_ms",
+            "binance-signed-rest",
+        ),
+        portfolio: fresh(
+            account_refreshed_at_ms,
+            "native_portfolio_refreshed_at_ms",
+            "native-account-bootstrap",
+        ),
+        account_preflight: Some(account_preflight),
+    }
+}
+
+fn native_runtime_exposure_input(
+    config: &Value,
+    spec: &NativeRuntimeMarketPollSpec,
+    account: &NativeRuntimeAccountBootstrapState,
+    price: f64,
+    filters: &BinanceFuturesSymbolFilters,
+) -> NativeRuntimeExposureGuardInput {
+    let matching_positions: Vec<&BinanceFuturesPosition> = account
+        .positions
+        .iter()
+        .filter(|position| position.symbol.eq_ignore_ascii_case(&spec.symbol))
+        .collect();
+    let total_margin = account
+        .positions
+        .iter()
+        .map(|position| position.initial_margin + position.open_order_margin)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .sum();
+    let existing_side_margin = matching_positions
+        .iter()
+        .map(|position| position.initial_margin + position.open_order_margin)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .sum();
+    let net_position_amt = matching_positions
+        .iter()
+        .map(|position| position.position_amt)
+        .filter(|value| value.is_finite())
+        .sum();
+    NativeRuntimeExposureGuardInput {
+        symbol: spec.symbol.clone(),
+        interval: spec.interval.clone(),
+        side: "BOTH".to_owned(),
+        position_pct_fraction: (config_f64(config, "position_pct", 2.0) / 100.0).clamp(0.0001, 1.0),
+        available_usdt: account.balance.available_usdt_balance.max(0.0),
+        wallet_usdt: account.balance.total_usdt_balance.max(0.0),
+        ledger_margin_total: total_margin,
+        existing_indicator_margin: 0.0,
+        existing_side_margin,
+        active_slot_count: account
+            .positions
+            .iter()
+            .filter(|position| {
+                position.position_amt.is_finite() && position.position_amt.abs() > 1e-10
+            })
+            .count(),
+        slot_already_active: matching_positions.iter().any(|position| {
+            position.position_amt.is_finite() && position.position_amt.abs() > 1e-10
+        }),
+        price,
+        leverage: config_i64(config, "leverage", 5).clamp(1, 125),
+        filter_min_qty: filters.min_qty,
+        filter_min_notional: filters.min_notional,
+        filter_step_size: filters.step_size,
+        flip_close_qty: None,
+        live_mode: first_config_string(config, "mode", "").eq_ignore_ascii_case("live"),
+        live_allow_auto_bump_to_min_order: config_bool(
+            config,
+            "live_allow_auto_bump_to_min_order",
+            false,
+        ),
+        max_auto_bump_percent: config_f64(config, "max_auto_bump_percent", 5.0).clamp(0.0, 100.0),
+        auto_bump_percent_multiplier: config_f64(config, "auto_bump_percent_multiplier", 10.0)
+            .clamp(0.0, 1_000.0),
+        margin_over_target_tolerance: 0.0,
+        margin_filter_slippage: 0.0,
+        add_only: config_bool(config, "add_only", false),
+        dual_side: account.position_mode.dual_side_position,
+        net_position_amt,
+    }
 }
 
 fn native_runtime_config(config: &Value) -> NativeRuntimeLoopConfig {
@@ -1439,6 +2131,39 @@ fn wait_for_service_health(
     Err(last_error)
 }
 
+fn native_config_saved_at() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs().to_string())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn save_native_runtime_config(config: Value) -> NativeConfigPersistenceResponse {
+    match write_service_config_file(&config, None, false, false, native_config_saved_at()) {
+        Ok(persistence) => NativeConfigPersistenceResponse {
+            ok: true,
+            config: Value::Null,
+            persistence,
+            error: String::new(),
+        },
+        Err(error) => NativeConfigPersistenceResponse::error(error),
+    }
+}
+
+#[tauri::command]
+fn load_native_runtime_config() -> NativeConfigPersistenceResponse {
+    match load_service_config_file(None) {
+        Ok(result) => NativeConfigPersistenceResponse {
+            ok: true,
+            config: result.config,
+            persistence: service_config_file_status(None),
+            error: String::new(),
+        },
+        Err(error) => NativeConfigPersistenceResponse::error(error),
+    }
+}
+
 #[tauri::command]
 async fn service_api_request(
     base_url: String,
@@ -1634,6 +2359,17 @@ fn poll_native_runtime_account(
 }
 
 #[tauri::command]
+fn execute_native_runtime_cycle(
+    state: State<'_, NativeRuntimeState>,
+    config: Value,
+    api_key: String,
+    api_secret: String,
+    now_ms: i64,
+) -> NativeRuntimeExecutionResponse {
+    state.execute_guarded_cycle(&config, api_key, api_secret, now_ms)
+}
+
+#[tauri::command]
 fn native_runtime_status(
     state: State<'_, NativeRuntimeState>,
     now_ms: i64,
@@ -1654,9 +2390,12 @@ fn set_native_runtime_paused(
 fn stop_native_runtime(
     state: State<'_, NativeRuntimeState>,
     close_positions: bool,
+    config: Value,
+    api_key: String,
+    api_secret: String,
     now_ms: i64,
 ) -> NativeRuntimeControlResponse {
-    state.stop(close_positions, now_ms)
+    state.stop_with_close_request(close_positions, config, api_key, api_secret, now_ms)
 }
 
 #[tauri::command]
@@ -1921,9 +2660,12 @@ fn main() {
             start_native_runtime,
             poll_native_runtime_market,
             poll_native_runtime_account,
+            execute_native_runtime_cycle,
             native_runtime_status,
             set_native_runtime_paused,
             stop_native_runtime,
+            save_native_runtime_config,
+            load_native_runtime_config,
             service_api_request,
             service_process_status,
             start_service_api,
@@ -1942,6 +2684,32 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn account_bootstrap(
+        refreshed_at_ms: i64,
+        signal_evaluation_allowed: bool,
+        status_message: &str,
+    ) -> NativeRuntimeAccountBootstrapState {
+        NativeRuntimeAccountBootstrapState {
+            refreshed_at_ms,
+            signal_evaluation_allowed,
+            status_message: status_message.to_owned(),
+            balance: BinanceAccountSnapshot {
+                asset: "USDT".to_owned(),
+                usdt_balance: 100.0,
+                total_usdt_balance: 100.0,
+                available_usdt_balance: 100.0,
+            },
+            positions: Vec::new(),
+            position_mode: BinanceFuturesPositionMode {
+                dual_side_position: true,
+                position_mode: "Hedge".to_owned(),
+            },
+            multi_assets_mode: BinanceFuturesMultiAssetsMode {
+                multi_assets_margin: false,
+            },
+        }
+    }
 
     fn candles(count: i64) -> Vec<NativeRuntimeCandleInput> {
         (0..count)
@@ -2071,12 +2839,73 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_guarded_execution_rejects_idle_runtime_before_network_access() {
+        let state = NativeRuntimeState::default();
+        let response = state.execute_guarded_cycle(
+            &json!({}),
+            "test-key".to_owned(),
+            "test-secret".to_owned(),
+            1_700_000_000_000,
+        );
+        assert!(!response.ok);
+        assert_eq!(response.state, "blocked");
+        assert_eq!(response.error, "Native Rust runtime is not running.");
+    }
+
+    #[test]
+    fn native_runtime_order_engine_stays_dry_run_until_promotion() {
+        let engine = native_runtime_order_engine(
+            &json!({
+                "mode": "Live",
+                "live_trading_enabled": true,
+                "live_trading_acknowledgement": "I_UNDERSTAND_LIVE_TRADING_RISK",
+            }),
+            1_700_000_000_000,
+        );
+        assert!(engine.safety.live_trading_enabled);
+        assert_eq!(
+            engine.safety.live_trading_acknowledgement,
+            "I_UNDERSTAND_LIVE_TRADING_RISK"
+        );
+        assert!(engine.dry_run);
+    }
+
+    #[test]
+    fn native_runtime_order_engine_uses_python_audit_and_circuit_config() {
+        let engine = native_runtime_order_engine(
+            &json!({
+                "order_audit_enabled": false,
+                "order_audit_log_path": "C:/audit/runtime-orders.jsonl",
+                "order_audit_max_bytes": 4096,
+                "order_audit_backup_count": 3,
+                "connector_order_block_circuit_breaker_enabled": false,
+                "connector_order_block_pause_threshold": 7,
+                "connector_order_block_window_seconds": 45.0,
+                "connector_order_circuit_incident_log_path": "C:/audit/circuit.jsonl",
+                "connector_order_circuit_incident_log_max_bytes": 2048,
+                "connector_order_circuit_incident_log_backup_count": 2,
+            }),
+            1_700_000_000_000,
+        );
+        assert!(!engine.audit_config.enabled);
+        assert_eq!(engine.audit_config.path, "C:/audit/runtime-orders.jsonl");
+        assert_eq!(engine.audit_config.max_bytes, 4096);
+        assert_eq!(engine.audit_config.backup_count, 3);
+        assert_eq!(
+            engine.connector_incident_path,
+            PathBuf::from("C:/audit/circuit.jsonl")
+        );
+        assert_eq!(engine.connector_incident_max_bytes, 2048);
+        assert_eq!(engine.connector_incident_backup_count, 2);
+        let circuit_config = engine.circuit.config();
+        assert!(!circuit_config.enabled);
+        assert_eq!(circuit_config.block_threshold, 7);
+        assert_eq!(circuit_config.block_window_seconds, 45.0);
+    }
+
+    #[test]
     fn native_runtime_account_bootstrap_requires_a_recent_read() {
-        let bootstrap = NativeRuntimeAccountBootstrapState {
-            refreshed_at_ms: 1_700_000_000_000,
-            signal_evaluation_allowed: true,
-            status_message: "account ready".to_owned(),
-        };
+        let bootstrap = account_bootstrap(1_700_000_000_000, true, "account ready");
         assert!(native_runtime_account_bootstrap_is_fresh(
             &bootstrap,
             1_700_000_300_000
@@ -2099,19 +2928,11 @@ mod tests {
         assert!(started.ok, "{}", started.error);
         {
             let mut managed = state.inner.lock().expect("runtime state lock");
-            managed.account_bootstrap = Some(NativeRuntimeAccountBootstrapState {
-                refreshed_at_ms: 1_700_000_000_000,
-                signal_evaluation_allowed: true,
-                status_message: "account ready".to_owned(),
-            });
+            managed.account_bootstrap =
+                Some(account_bootstrap(1_700_000_000_000, true, "account ready"));
         }
 
-        let response = state.poll_account(
-            &config,
-            String::new(),
-            String::new(),
-            1_700_000_001_000,
-        );
+        let response = state.poll_account(&config, String::new(), String::new(), 1_700_000_001_000);
         assert!(!response.ok);
         assert!(response.error.contains("API key and API secret"));
         let managed = state.inner.lock().expect("runtime state lock");
@@ -2158,15 +2979,29 @@ mod tests {
         assert!(resumed.ok, "{}", resumed.error);
         assert_eq!(resumed.status["lifecycle_phase"], "running");
 
-        let stopped = state.stop(true, 1_700_000_015_000);
+        let stopped = state.stop_with_close_request(
+            true,
+            json!({
+                "symbols": ["ETHUSDT"],
+                "intervals": ["5m"],
+                "position_mode": "One-way",
+            }),
+            "must-not-appear".to_owned(),
+            "also-must-not-appear".to_owned(),
+            1_700_000_015_000,
+        );
         assert!(stopped.ok, "{}", stopped.error);
         assert_eq!(stopped.status["runtime_active"], false);
         assert_eq!(stopped.status["lifecycle_phase"], "idle");
-        assert!(stopped.message.contains("no live close"));
+        assert!(stopped.message.contains("not dispatched"));
 
         let serialized = serde_json::to_string(&started).expect("response should serialize");
         assert!(!serialized.contains("must-not-appear"));
         assert!(!serialized.contains("also-must-not-appear"));
+        let stopped_serialized =
+            serde_json::to_string(&stopped).expect("response should serialize");
+        assert!(!stopped_serialized.contains("must-not-appear"));
+        assert!(!stopped_serialized.contains("also-must-not-appear"));
     }
 
     #[test]

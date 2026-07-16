@@ -380,6 +380,10 @@ pub struct NativeRuntimeExposureGuardInput {
     pub filter_min_notional: f64,
     pub filter_step_size: f64,
     pub flip_close_qty: Option<f64>,
+    pub live_mode: bool,
+    pub live_allow_auto_bump_to_min_order: bool,
+    pub max_auto_bump_percent: f64,
+    pub auto_bump_percent_multiplier: f64,
     pub margin_over_target_tolerance: f64,
     pub margin_filter_slippage: f64,
     pub add_only: bool,
@@ -1574,13 +1578,13 @@ pub fn evaluate_native_exposure_guard(
         );
     }
 
-    let mut quantity_estimate = if let Some(qty) = flip_qty {
+    let quantity_before_filter_adjustment = if let Some(qty) = flip_qty {
         qty
     } else {
         target_margin * leverage / input.price
     };
-    quantity_estimate = adjust_quantity_to_min_filters(
-        quantity_estimate,
+    let mut quantity_estimate = adjust_quantity_to_min_filters(
+        quantity_before_filter_adjustment,
         input.price,
         input.filter_min_qty,
         input.filter_min_notional,
@@ -1588,6 +1592,59 @@ pub fn evaluate_native_exposure_guard(
     );
     if quantity_estimate <= 0.0 {
         return exposure_block("capital guard: quantity <= 0 after filter adjustment");
+    }
+
+    // Python only permits a live order to be enlarged to satisfy exchange filters
+    // after an explicit opt-in.  The same cap also prevents a small requested
+    // position percentage from becoming an unexpectedly large minimum order.
+    let auto_bump_required =
+        flip_qty.is_none() && quantity_estimate > quantity_before_filter_adjustment + 1e-12;
+    if auto_bump_required {
+        let requested_percent = pct_fraction * 100.0;
+        let required_notional = quantity_estimate * input.price;
+        let required_margin = required_notional / leverage;
+        let required_percent = required_notional / (available_usdt * leverage) * 100.0;
+        let multiplier = if input.auto_bump_percent_multiplier.is_finite()
+            && input.auto_bump_percent_multiplier > 0.0
+        {
+            input.auto_bump_percent_multiplier
+        } else {
+            1.0
+        };
+        let allowed_percent =
+            if input.max_auto_bump_percent.is_finite() && input.max_auto_bump_percent > 0.0 {
+                input
+                    .max_auto_bump_percent
+                    .max(requested_percent * multiplier)
+            } else {
+                f64::INFINITY
+            };
+        if input.live_mode && !input.live_allow_auto_bump_to_min_order {
+            return exposure_block_with_values(
+                "live auto-bump to exchange minimum is disabled; increase position percent or enable live_allow_auto_bump_to_min_order explicitly",
+                equity_usdt,
+                target_margin_usdt,
+                max_indicator_margin_usdt,
+                required_margin,
+                finite_non_negative(input.existing_side_margin),
+                quantity_estimate,
+                false,
+                None,
+            );
+        }
+        if required_margin > available_usdt * 1.01 || required_percent > allowed_percent + 1e-9 {
+            return exposure_block_with_values(
+                "capital guard: insufficient funds for exchange minimum order",
+                equity_usdt,
+                target_margin_usdt,
+                max_indicator_margin_usdt,
+                required_margin,
+                finite_non_negative(input.existing_side_margin),
+                quantity_estimate,
+                false,
+                None,
+            );
+        }
     }
 
     let margin_estimate_usdt = quantity_estimate * input.price / leverage;
@@ -1983,6 +2040,10 @@ mod tests {
             filter_min_notional: 5.0,
             filter_step_size: 0.001,
             flip_close_qty: None,
+            live_mode: false,
+            live_allow_auto_bump_to_min_order: false,
+            max_auto_bump_percent: 5.0,
+            auto_bump_percent_multiplier: 10.0,
             margin_over_target_tolerance: 0.05,
             margin_filter_slippage: 0.1,
             add_only: false,
@@ -3214,6 +3275,37 @@ mod tests {
         );
         assert_eq!(snapshot.target_margin_usdt, 20.0);
         assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_exposure_guard_requires_live_auto_bump_opt_in() {
+        let runtime = loop_under_test();
+        let mut input = exposure_input();
+        input.position_pct_fraction = 0.0001;
+        input.live_mode = true;
+        input.filter_min_qty = 0.05;
+        input.filter_min_notional = 5.0;
+
+        let snapshot = runtime.evaluate_exposure_guard(input);
+
+        assert!(!snapshot.allowed);
+        assert!(snapshot.reason.contains("live auto-bump"));
+    }
+
+    #[test]
+    fn native_runtime_exposure_guard_allows_live_auto_bump_when_explicitly_enabled() {
+        let runtime = loop_under_test();
+        let mut input = exposure_input();
+        input.position_pct_fraction = 0.0001;
+        input.live_mode = true;
+        input.live_allow_auto_bump_to_min_order = true;
+        input.filter_min_qty = 0.05;
+        input.filter_min_notional = 5.0;
+
+        let snapshot = runtime.evaluate_exposure_guard(input);
+
+        assert!(snapshot.allowed);
+        assert_eq!(snapshot.quantity_estimate, 0.05);
     }
 
     #[test]

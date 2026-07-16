@@ -612,6 +612,56 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     config.insert(QStringLiteral("intervals"), intervals);
     config.insert(QStringLiteral("runtime_symbol_interval_pairs"), dashboardOverrideRows(dashboardOverridesTable_));
     config.insert(QStringLiteral("position_pct"), dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : 2.0);
+    config.insert(QStringLiteral("live_trading_enabled"), dashboardLiveTradingEnabledCheck_ && dashboardLiveTradingEnabledCheck_->isChecked());
+    config.insert(
+        QStringLiteral("live_trading_acknowledgement"),
+        dashboardLiveTradingAcknowledgementEdit_ ? dashboardLiveTradingAcknowledgementEdit_->text().trimmed() : QString());
+    config.insert(
+        QStringLiteral("live_allow_auto_bump_to_min_order"),
+        dashboardLiveAllowAutoBumpCheck_ && dashboardLiveAllowAutoBumpCheck_->isChecked());
+    config.insert(
+        QStringLiteral("live_trading_max_leverage"),
+        dashboardLiveTradingMaxLeverageSpin_ ? dashboardLiveTradingMaxLeverageSpin_->value() : 20);
+    config.insert(
+        QStringLiteral("live_trading_max_position_pct"),
+        dashboardLiveTradingMaxPositionPctSpin_ ? dashboardLiveTradingMaxPositionPctSpin_->value() : 10.0);
+    config.insert(
+        QStringLiteral("live_trading_max_session_orders"),
+        dashboardLiveTradingMaxSessionOrdersSpin_ ? dashboardLiveTradingMaxSessionOrdersSpin_->value() : 100);
+    config.insert(
+        QStringLiteral("max_auto_bump_percent"),
+        dashboardMaxAutoBumpPercentSpin_ ? dashboardMaxAutoBumpPercentSpin_->value() : 5.0);
+    config.insert(
+        QStringLiteral("auto_bump_percent_multiplier"),
+        dashboardAutoBumpPercentMultiplierSpin_ ? dashboardAutoBumpPercentMultiplierSpin_->value() : 10.0);
+    config.insert(QStringLiteral("order_audit_enabled"), dashboardOrderAuditEnabledCheck_ && dashboardOrderAuditEnabledCheck_->isChecked());
+    config.insert(
+        QStringLiteral("order_audit_log_path"),
+        dashboardOrderAuditLogPathEdit_ ? dashboardOrderAuditLogPathEdit_->text().trimmed() : QString());
+    config.insert(
+        QStringLiteral("order_audit_max_bytes"),
+        dashboardOrderAuditMaxBytesSpin_ ? dashboardOrderAuditMaxBytesSpin_->value() : 10 * 1024 * 1024);
+    config.insert(
+        QStringLiteral("order_audit_backup_count"),
+        dashboardOrderAuditBackupCountSpin_ ? dashboardOrderAuditBackupCountSpin_->value() : 1);
+    config.insert(
+        QStringLiteral("connector_order_block_circuit_breaker_enabled"),
+        dashboardConnectorOrderCircuitEnabledCheck_ && dashboardConnectorOrderCircuitEnabledCheck_->isChecked());
+    config.insert(
+        QStringLiteral("connector_order_block_pause_threshold"),
+        dashboardConnectorOrderCircuitThresholdSpin_ ? dashboardConnectorOrderCircuitThresholdSpin_->value() : 2);
+    config.insert(
+        QStringLiteral("connector_order_block_window_seconds"),
+        dashboardConnectorOrderCircuitWindowSecondsSpin_ ? dashboardConnectorOrderCircuitWindowSecondsSpin_->value() : 60.0);
+    config.insert(
+        QStringLiteral("connector_order_circuit_incident_log_path"),
+        dashboardConnectorOrderIncidentLogPathEdit_ ? dashboardConnectorOrderIncidentLogPathEdit_->text().trimmed() : QString());
+    config.insert(
+        QStringLiteral("connector_order_circuit_incident_log_max_bytes"),
+        dashboardConnectorOrderIncidentMaxBytesSpin_ ? dashboardConnectorOrderIncidentMaxBytesSpin_->value() : 2 * 1024 * 1024);
+    config.insert(
+        QStringLiteral("connector_order_circuit_incident_log_backup_count"),
+        dashboardConnectorOrderIncidentBackupCountSpin_ ? dashboardConnectorOrderIncidentBackupCountSpin_->value() : 1);
     config.insert(QStringLiteral("side"), comboDataOrText(dashboardSideCombo_, QStringLiteral("BOTH")));
     config.insert(QStringLiteral("loop_interval_override"), comboDataOrText(dashboardLoopOverrideCombo_, QStringLiteral("1m")));
     config.insert(QStringLiteral("lead_trader_enabled"), dashboardLeadTraderEnableCheck_ && dashboardLeadTraderEnableCheck_->isChecked());
@@ -619,6 +669,9 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     config.insert(QStringLiteral("indicator_use_live_values"), dashboardLiveIndicatorValuesCheck_ && dashboardLiveIndicatorValuesCheck_->isChecked());
     config.insert(QStringLiteral("add_only"), dashboardOneWayCheck_ && dashboardOneWayCheck_->isChecked());
     config.insert(QStringLiteral("allow_opposite_positions"), dashboardHedgeStackCheck_ && dashboardHedgeStackCheck_->isChecked());
+    config.insert(
+        QStringLiteral("stop_without_close"),
+        dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked());
 
     const QJsonArray chartSymbols = config.value(QStringLiteral("symbols")).toArray();
     const QJsonArray chartIntervals = config.value(QStringLiteral("intervals")).toArray();
@@ -698,6 +751,88 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
     if (dashboardPositionPctSpin_ && config.contains(QStringLiteral("position_pct"))) {
         dashboardPositionPctSpin_->setValue(config.value(QStringLiteral("position_pct")).toDouble(dashboardPositionPctSpin_->value()));
     }
+    if (dashboardLiveTradingEnabledCheck_ && config.contains(QStringLiteral("live_trading_enabled"))) {
+        dashboardLiveTradingEnabledCheck_->setChecked(config.value(QStringLiteral("live_trading_enabled")).toBool(false));
+    }
+    if (dashboardLiveTradingAcknowledgementEdit_ && config.contains(QStringLiteral("live_trading_acknowledgement"))) {
+        dashboardLiveTradingAcknowledgementEdit_->setText(
+            config.value(QStringLiteral("live_trading_acknowledgement")).toString().trimmed());
+    }
+    if (dashboardLiveAllowAutoBumpCheck_ && config.contains(QStringLiteral("live_allow_auto_bump_to_min_order"))) {
+        dashboardLiveAllowAutoBumpCheck_->setChecked(
+            config.value(QStringLiteral("live_allow_auto_bump_to_min_order")).toBool(false));
+    }
+    if (dashboardLiveTradingMaxLeverageSpin_ && config.contains(QStringLiteral("live_trading_max_leverage"))) {
+        dashboardLiveTradingMaxLeverageSpin_->setValue(
+            config.value(QStringLiteral("live_trading_max_leverage")).toInt(dashboardLiveTradingMaxLeverageSpin_->value()));
+    }
+    if (dashboardLiveTradingMaxPositionPctSpin_ && config.contains(QStringLiteral("live_trading_max_position_pct"))) {
+        dashboardLiveTradingMaxPositionPctSpin_->setValue(
+            config.value(QStringLiteral("live_trading_max_position_pct")).toDouble(
+                dashboardLiveTradingMaxPositionPctSpin_->value()));
+    }
+    if (dashboardLiveTradingMaxSessionOrdersSpin_ && config.contains(QStringLiteral("live_trading_max_session_orders"))) {
+        dashboardLiveTradingMaxSessionOrdersSpin_->setValue(
+            config.value(QStringLiteral("live_trading_max_session_orders")).toInt(
+                dashboardLiveTradingMaxSessionOrdersSpin_->value()));
+    }
+    if (dashboardMaxAutoBumpPercentSpin_ && config.contains(QStringLiteral("max_auto_bump_percent"))) {
+        dashboardMaxAutoBumpPercentSpin_->setValue(
+            config.value(QStringLiteral("max_auto_bump_percent")).toDouble(dashboardMaxAutoBumpPercentSpin_->value()));
+    }
+    if (dashboardAutoBumpPercentMultiplierSpin_ && config.contains(QStringLiteral("auto_bump_percent_multiplier"))) {
+        dashboardAutoBumpPercentMultiplierSpin_->setValue(
+            config.value(QStringLiteral("auto_bump_percent_multiplier")).toDouble(
+                dashboardAutoBumpPercentMultiplierSpin_->value()));
+    }
+    if (dashboardOrderAuditEnabledCheck_ && config.contains(QStringLiteral("order_audit_enabled"))) {
+        dashboardOrderAuditEnabledCheck_->setChecked(config.value(QStringLiteral("order_audit_enabled")).toBool(true));
+    }
+    if (dashboardOrderAuditLogPathEdit_ && config.contains(QStringLiteral("order_audit_log_path"))) {
+        dashboardOrderAuditLogPathEdit_->setText(config.value(QStringLiteral("order_audit_log_path")).toString().trimmed());
+    }
+    if (dashboardOrderAuditMaxBytesSpin_ && config.contains(QStringLiteral("order_audit_max_bytes"))) {
+        dashboardOrderAuditMaxBytesSpin_->setValue(
+            config.value(QStringLiteral("order_audit_max_bytes")).toInt(dashboardOrderAuditMaxBytesSpin_->value()));
+    }
+    if (dashboardOrderAuditBackupCountSpin_ && config.contains(QStringLiteral("order_audit_backup_count"))) {
+        dashboardOrderAuditBackupCountSpin_->setValue(
+            config.value(QStringLiteral("order_audit_backup_count")).toInt(dashboardOrderAuditBackupCountSpin_->value()));
+    }
+    if (dashboardConnectorOrderCircuitEnabledCheck_
+        && config.contains(QStringLiteral("connector_order_block_circuit_breaker_enabled"))) {
+        dashboardConnectorOrderCircuitEnabledCheck_->setChecked(
+            config.value(QStringLiteral("connector_order_block_circuit_breaker_enabled")).toBool(true));
+    }
+    if (dashboardConnectorOrderCircuitThresholdSpin_
+        && config.contains(QStringLiteral("connector_order_block_pause_threshold"))) {
+        dashboardConnectorOrderCircuitThresholdSpin_->setValue(
+            config.value(QStringLiteral("connector_order_block_pause_threshold")).toInt(
+                dashboardConnectorOrderCircuitThresholdSpin_->value()));
+    }
+    if (dashboardConnectorOrderCircuitWindowSecondsSpin_
+        && config.contains(QStringLiteral("connector_order_block_window_seconds"))) {
+        dashboardConnectorOrderCircuitWindowSecondsSpin_->setValue(
+            config.value(QStringLiteral("connector_order_block_window_seconds")).toDouble(
+                dashboardConnectorOrderCircuitWindowSecondsSpin_->value()));
+    }
+    if (dashboardConnectorOrderIncidentLogPathEdit_
+        && config.contains(QStringLiteral("connector_order_circuit_incident_log_path"))) {
+        dashboardConnectorOrderIncidentLogPathEdit_->setText(
+            config.value(QStringLiteral("connector_order_circuit_incident_log_path")).toString().trimmed());
+    }
+    if (dashboardConnectorOrderIncidentMaxBytesSpin_
+        && config.contains(QStringLiteral("connector_order_circuit_incident_log_max_bytes"))) {
+        dashboardConnectorOrderIncidentMaxBytesSpin_->setValue(
+            config.value(QStringLiteral("connector_order_circuit_incident_log_max_bytes")).toInt(
+                dashboardConnectorOrderIncidentMaxBytesSpin_->value()));
+    }
+    if (dashboardConnectorOrderIncidentBackupCountSpin_
+        && config.contains(QStringLiteral("connector_order_circuit_incident_log_backup_count"))) {
+        dashboardConnectorOrderIncidentBackupCountSpin_->setValue(
+            config.value(QStringLiteral("connector_order_circuit_incident_log_backup_count")).toInt(
+                dashboardConnectorOrderIncidentBackupCountSpin_->value()));
+    }
     if (dashboardLeadTraderEnableCheck_ && config.contains(QStringLiteral("lead_trader_enabled"))) {
         dashboardLeadTraderEnableCheck_->setChecked(config.value(QStringLiteral("lead_trader_enabled")).toBool(false));
     }
@@ -715,6 +850,10 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
     }
     if (dashboardHedgeStackCheck_ && config.contains(QStringLiteral("allow_opposite_positions"))) {
         dashboardHedgeStackCheck_->setChecked(config.value(QStringLiteral("allow_opposite_positions")).toBool(true));
+    }
+    if (dashboardStopWithoutCloseCheck_ && config.contains(QStringLiteral("stop_without_close"))) {
+        dashboardStopWithoutCloseCheck_->setChecked(
+            config.value(QStringLiteral("stop_without_close")).toBool(false));
     }
 
     selectListValues(dashboardSymbolList_, config.value(QStringLiteral("symbols")).toArray(), true);
@@ -981,7 +1120,20 @@ void TradingBotWindow::saveDashboardLocalOverrideConfig() {
         llmJson.insert(QStringLiteral("allow_public_network"), dashboardLlmAllowPublicNetworkCheck_->isChecked());
     }
     payload.insert(QStringLiteral("llm"), llmJson);
+
+    // The native fallback must restore the same complete surface as the
+    // service-backed configuration, but never persist inline credentials.
+    QJsonObject nativeConfig = buildDashboardServiceConfigPatch();
+    nativeConfig.remove(QStringLiteral("api_key"));
+    nativeConfig.remove(QStringLiteral("api_secret"));
+    nativeConfig.remove(QStringLiteral("llm_api_key"));
+
+    payload = QJsonObject{};
+    payload.insert(QStringLiteral("kind"), QStringLiteral("cpp-dashboard-local-config"));
+    payload.insert(QStringLiteral("format_version"), 2);
     payload.insert(QStringLiteral("saved_at"), QDateTime::currentDateTime().toString(Qt::ISODate));
+    payload.insert(QStringLiteral("config"), nativeConfig);
+    payload.insert(QStringLiteral("inline_secrets_persisted"), false);
 
     QFile out(filePath);
     if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
@@ -1037,8 +1189,22 @@ void TradingBotWindow::loadDashboardLocalOverrideConfig() {
         return;
     }
 
-    const QJsonArray rowsJson = document.object().value(QStringLiteral("overrides")).toArray();
-    const QJsonObject llmJson = document.object().value(QStringLiteral("llm")).toObject();
+    const QJsonObject documentObject = document.object();
+    const QJsonObject nativeConfig = documentObject.value(QStringLiteral("config")).toObject();
+    if (!nativeConfig.isEmpty()) {
+        if (!hydrateDashboardServiceConfig(nativeConfig)) {
+            QMessageBox::warning(this, tr("Load failed"), tr("Invalid native dashboard config."));
+            return;
+        }
+        updateStatusMessage(QStringLiteral("Native dashboard config loaded."));
+        appendDashboardAllLog(QStringLiteral("Complete native dashboard config loaded from %1.").arg(filePath));
+        appendDashboardWaitingLog(QStringLiteral("Queue restored with %1 row(s).")
+            .arg(dashboardOverridesTable_ ? dashboardOverridesTable_->rowCount() : 0));
+        return;
+    }
+
+    const QJsonArray rowsJson = documentObject.value(QStringLiteral("overrides")).toArray();
+    const QJsonObject llmJson = documentObject.value(QStringLiteral("llm")).toObject();
     if (!llmJson.isEmpty()) {
         const QString providerKey = llmJson.value(QStringLiteral("provider")).toString().trimmed();
         if (dashboardLlmProviderCombo_ && !providerKey.isEmpty()) {

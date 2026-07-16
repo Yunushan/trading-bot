@@ -416,6 +416,57 @@ int main(int argc, char **argv) {
     check(paperValidResult.nextSubmitAttemptCount == 3,
           QStringLiteral("paper order guard should preserve the live session order count"));
 
+    NativeOrderSafety::MinimumOrderAutoBumpGuardInput liveAutoBump;
+    liveAutoBump.mode = QStringLiteral("Live");
+    liveAutoBump.requestedQuantity = 0.001;
+    liveAutoBump.normalizedQuantity = 0.01;
+    liveAutoBump.price = 100.0;
+    liveAutoBump.availableUsdt = 100.0;
+    liveAutoBump.leverage = 2;
+    liveAutoBump.requestedPositionPct = 0.1;
+    const NativeOrderSafety::MinimumOrderAutoBumpGuardResult liveAutoBumpBlocked =
+        NativeOrderSafety::guardFuturesMinimumOrderAutoBump(liveAutoBump);
+    check(!liveAutoBumpBlocked.allowed && liveAutoBumpBlocked.autoBumpRequired,
+          QStringLiteral("live minimum-order auto-bump should be denied unless explicitly enabled"));
+    check(liveAutoBumpBlocked.errors.join(QStringLiteral(" ")).contains(
+              QStringLiteral("live_allow_auto_bump_to_min_order")),
+          QStringLiteral("live minimum-order auto-bump denial should explain the explicit opt-in"));
+
+    liveAutoBump.config.liveAllowAutoBumpToMinOrder = true;
+    const NativeOrderSafety::MinimumOrderAutoBumpGuardResult liveAutoBumpAllowed =
+        NativeOrderSafety::guardFuturesMinimumOrderAutoBump(liveAutoBump);
+    check(liveAutoBumpAllowed.allowed && liveAutoBumpAllowed.autoBumpRequired,
+          QStringLiteral("explicit live minimum-order auto-bump opt-in should allow a funded order"));
+
+    liveAutoBump.config.maxAutoBumpPercent = 0.25;
+    liveAutoBump.config.autoBumpPercentMultiplier = 1.0;
+    const NativeOrderSafety::MinimumOrderAutoBumpGuardResult autoBumpCapBlocked =
+        NativeOrderSafety::guardFuturesMinimumOrderAutoBump(liveAutoBump);
+    check(!autoBumpCapBlocked.allowed
+              && autoBumpCapBlocked.errors.join(QStringLiteral(" ")).contains(QStringLiteral("insufficient funds")),
+          QStringLiteral("minimum-order auto-bump should enforce the configured percentage cap"));
+
+    NativeOrderSafety::ConnectorOrderCircuitBreaker connectorCircuit(
+        NativeOrderSafety::ConnectorOrderCircuitConfig{true, 2, 60.0});
+    const QDateTime circuitNow = QDateTime::fromString(QStringLiteral("2026-06-18T12:00:00.000Z"), Qt::ISODateWithMs);
+    NativeOrderSafety::ConnectorOrderBlockEvent circuitEvent;
+    circuitEvent.timestamp = circuitNow.toSecsSinceEpoch();
+    circuitEvent.symbol = QStringLiteral("BTCUSDT");
+    circuitEvent.interval = QStringLiteral("1m");
+    circuitEvent.side = QStringLiteral("LONG");
+    circuitEvent.connectorHealth = QStringLiteral("error");
+    circuitEvent.connectorState = QStringLiteral("error");
+    circuitEvent.connectorMessage = QStringLiteral("exchange timeout");
+    check(connectorCircuit.recordConnectorOrderBlock(circuitEvent, circuitNow).isEmpty(),
+          QStringLiteral("connector order circuit should remain closed below its threshold"));
+    const QJsonObject circuitOpened = connectorCircuit.recordConnectorOrderBlock(circuitEvent, circuitNow.addSecs(1));
+    check(circuitOpened.value(QStringLiteral("active")).toBool(false) && connectorCircuit.isOpen(),
+          QStringLiteral("connector order circuit should open after repeated failed submissions"));
+    const QJsonObject circuitReset = connectorCircuit.resetConnectorOrderCircuitBreaker(
+        QStringLiteral("native-test"), true, QString(), circuitNow.addSecs(2));
+    check(!circuitReset.value(QStringLiteral("active")).toBool(true) && !connectorCircuit.isOpen(),
+          QStringLiteral("forced connector order circuit reset should restore entry eligibility"));
+
     const QJsonObject desktopEntrypoint = NativeStartupPackaging::desktopEntrypointContract();
     check(desktopEntrypoint.value(QStringLiteral("canonical_repo_path")).toString() == QStringLiteral("apps/desktop-pyqt/main.py"),
           QStringLiteral("native startup contract should mirror Python desktop canonical wrapper"));
