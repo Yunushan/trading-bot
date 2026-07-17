@@ -91,7 +91,7 @@ if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
     -v "${release_version}" \
     --iteration 1 \
     --architecture "${deb_arch}" \
-    --license MIT \
+    --license 0BSD \
     --maintainer "Trading Bot Contributors" \
     --description "Binance Trading Bot desktop application" \
     --url "https://github.com/${GITHUB_REPOSITORY}" \
@@ -104,7 +104,7 @@ if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
     -v "${release_version}" \
     --iteration 1 \
     --architecture "${rpm_arch}" \
-    --license MIT \
+    --license 0BSD \
     --maintainer "Trading Bot Contributors" \
     --description "Binance Trading Bot desktop application" \
     --url "https://github.com/${GITHUB_REPOSITORY}" \

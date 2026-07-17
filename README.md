@@ -6,7 +6,7 @@
     <a href="https://github.com/Yunushan/trading-bot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Yunushan/trading-bot/ci.yml?branch=main&amp;label=build" alt="Main branch build" /></a>
     <a href="https://github.com/Yunushan/trading-bot/releases"><img src="https://img.shields.io/github/v/release/Yunushan/trading-bot?display_name=tag&amp;label=release" alt="Latest release" /></a>
     <a href="https://github.com/Yunushan/trading-bot/releases"><img src="https://img.shields.io/github/downloads/Yunushan/trading-bot/total?label=downloads" alt="Total downloads" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-0BSD-blue.svg" alt="0BSD License" /></a>
   </p>
   <p>
     <img src="https://img.shields.io/badge/python-3.10--3.14-3776AB?logo=python&amp;logoColor=white" alt="Python 3.10 to 3.14" />
@@ -401,6 +401,6 @@ The dedicated release guide is the primary home going forward.
 
 ## License
 
-This project is released under the MIT License. See [LICENSE](LICENSE) for the full terms. Use the software at your own risk and comply with all exchange and broker terms of service.
+This project is released under the 0BSD License. See [LICENSE](LICENSE) for the full terms. Use the software at your own risk and comply with all exchange and broker terms of service.
 
 Happy trading and safe experimenting! If you discover issues or have feature ideas, open a GitHub issue or start a discussion so we can continue improving the workspace together.
