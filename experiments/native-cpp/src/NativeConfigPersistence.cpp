@@ -1405,19 +1405,17 @@ ServiceConfigValidationResult validateServiceRuntimeConfig(const QJsonObject &co
 QJsonObject buildServiceConfigPersistencePayload(
     const QJsonObject &config,
     const QDateTime &savedAt,
-    bool allowInlineSecrets) {
+    bool legacyAllowInlineSecrets) {
+    Q_UNUSED(legacyAllowInlineSecrets);
     const QJsonObject secretMetadata = serviceConfigSecretMetadata(config);
-    const bool containsSecrets = secretMetadata.value(QStringLiteral("contains_secrets")).toBool(false);
-    const QJsonValue persistedConfig = (containsSecrets && !allowInlineSecrets)
-        ? withoutInlineServiceConfigSecretValues(config)
-        : QJsonValue(config);
+    const QJsonValue persistedConfig = withoutInlineServiceConfigSecretValues(config);
 
     QJsonObject payload{
         {QStringLiteral("kind"), QString::fromLatin1(ServiceConfigFileKind)},
         {QStringLiteral("format_version"), ServiceConfigFormatVersion},
         {QStringLiteral("saved_at"), currentIso(savedAt)},
         {QStringLiteral("config"), persistedConfig},
-        {QStringLiteral("inline_secrets_persisted"), containsSecrets && allowInlineSecrets},
+        {QStringLiteral("inline_secrets_persisted"), false},
     };
     for (auto it = secretMetadata.constBegin(); it != secretMetadata.constEnd(); ++it) {
         payload.insert(it.key(), it.value());
@@ -1475,7 +1473,8 @@ ServiceConfigLoadResult coerceServiceConfigPersistencePayload(
         return result;
     }
 
-    const ServiceConfigValidationResult validation = validateServiceRuntimeConfig(configPayload.toObject());
+    const ServiceConfigValidationResult validation = validateServiceRuntimeConfig(
+        withoutInlineServiceConfigSecretValues(configPayload).toObject());
     if (!validation.ok) {
         result.error = validation.error;
         result.metadata.insert(QStringLiteral("validation_issues"), validation.issues);
@@ -1523,14 +1522,14 @@ QJsonObject writeServiceConfigFile(
     const QJsonObject &config,
     const QString &path,
     bool allowUnsafePath,
-    bool allowInlineSecrets,
+    bool legacyAllowInlineSecrets,
     const QDateTime &savedAt) {
     const QString resolvedPath = ensureServiceConfigPathAllowed(path, allowUnsafePath);
     const ServiceConfigValidationResult validation = validateServiceRuntimeConfig(config);
     if (!validation.ok) {
         throw std::runtime_error(validation.error.toStdString());
     }
-    const QJsonObject payload = buildServiceConfigPersistencePayload(validation.config, savedAt, allowInlineSecrets);
+    const QJsonObject payload = buildServiceConfigPersistencePayload(validation.config, savedAt, legacyAllowInlineSecrets);
 
     const QFileInfo info(resolvedPath);
     QDir().mkpath(info.absolutePath());

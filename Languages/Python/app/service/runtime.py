@@ -23,6 +23,7 @@ if __package__ in (None, ""):
         load_service_config_file,
         merge_service_config,
         resolve_service_config_path,
+        restore_service_config_credentials,
         service_config_file_status,
         write_service_config_file,
     )
@@ -49,6 +50,7 @@ else:
         load_service_config_file,
         merge_service_config,
         resolve_service_config_path,
+        restore_service_config_credentials,
         service_config_file_status,
         write_service_config_file,
     )
@@ -102,6 +104,11 @@ class TradingBotService:
             if not self._config_persistence_trusted_path:
                 ensure_service_config_path_allowed(self._config_persistence_path, allow_unsafe_path=False)
             loaded_config, metadata = load_service_config_file(self._config_persistence_path)
+            loaded_config = restore_service_config_credentials(
+                loaded_config,
+                path=self._config_persistence_path,
+                metadata=metadata,
+            )
             self._config_persistence_loaded_at = str(metadata.get("loaded_at") or "")
             self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
             self._config_persistence_migrated_from_format_version = metadata.get("migrated_from_format_version")
@@ -119,12 +126,48 @@ class TradingBotService:
     def config(self) -> dict:
         return self._runtime.config
 
+    @property
+    def backtest_snapshot_path(self) -> Path:
+        if __package__ in (None, ""):
+            from app.service.runners.backtest_snapshot_store import resolve_backtest_snapshot_path
+        else:
+            from .runners.backtest_snapshot_store import resolve_backtest_snapshot_path
+
+        return resolve_backtest_snapshot_path(self._config_persistence_path)
+
     def replace_config(self, config: dict | None) -> None:
         self._runtime.replace_config(config)
         self._config_persistence_dirty = True
 
     def get_config_summary(self) -> ServiceConfigSummary:
         return self._runtime.get_config_summary()
+
+    def get_operational_metrics(self) -> dict[str, object]:
+        operational = self._runtime.get_operational_snapshot()
+        logs = operational.get("logs") if isinstance(operational.get("logs"), dict) else {}
+        connector = operational.get("exchange_connector") if isinstance(operational.get("exchange_connector"), dict) else {}
+        circuit = (
+            operational.get("connector_order_circuit_breaker")
+            if isinstance(operational.get("connector_order_circuit_breaker"), dict)
+            else {}
+        )
+        order_intents = connector.get("order_intents") if isinstance(connector.get("order_intents"), dict) else {}
+        return {
+            "generated_at": operational.get("generated_at"),
+            "operational_health": str(operational.get("health") or "unknown"),
+            "connector_health": str(connector.get("health") or "unknown"),
+            "connector_state": str(connector.get("state") or "unknown"),
+            "runtime_active": bool(operational.get("runtime", {}).get("runtime_active", False))
+            if isinstance(operational.get("runtime"), dict)
+            else False,
+            "active_engine_count": int(operational.get("runtime", {}).get("active_engine_count", 0) or 0)
+            if isinstance(operational.get("runtime"), dict)
+            else 0,
+            "log_warning_count": int(logs.get("warning_count", 0) or 0),
+            "log_error_count": int(logs.get("error_count", 0) or 0),
+            "connector_order_circuit_open": bool(circuit.get("active", False)),
+            "unresolved_order_intent_count": int(order_intents.get("unresolved_count", 0) or 0),
+        }
 
     def get_config_payload(self) -> ServiceEditableConfig:
         return self._runtime.get_config_payload()
@@ -185,6 +228,11 @@ class TradingBotService:
         if path not in (None, "") and not allow_unsafe_path:
             ensure_service_config_path_allowed(path, allow_unsafe_path=False)
         config, metadata = load_service_config_file(path or self._config_persistence_path)
+        config = restore_service_config_credentials(
+            config,
+            path=metadata["path"],
+            metadata=metadata,
+        )
         self._runtime.replace_config(config)
         self._config_persistence_path = resolve_service_config_path(metadata["path"])
         self._config_persistence_trusted_path = True
@@ -414,7 +462,11 @@ class TradingBotService:
             from .runners.backtest_executor import ServiceBacktestExecutionAdapter
         adapter = self._backtest_execution_adapter
         if adapter is None or wrapper_factory is not None:
-            adapter = ServiceBacktestExecutionAdapter(self._runtime, wrapper_factory=wrapper_factory)
+            adapter = ServiceBacktestExecutionAdapter(
+                self._runtime,
+                wrapper_factory=wrapper_factory,
+                snapshot_path=self.backtest_snapshot_path,
+            )
             self._backtest_execution_adapter = adapter
         return adapter
 

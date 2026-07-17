@@ -62,6 +62,7 @@ def build_exchange_connector_snapshot(
     network_raw = _mapping_or_empty(raw.get("network"))
     last_error_raw = _mapping_or_empty(raw.get("last_error"))
     order_audit_raw = _mapping_or_empty(raw.get("order_audit"))
+    order_intents_raw = _mapping_or_empty(raw.get("order_intents"))
     support = build_exchange_support_payload(config=cfg, snapshot=raw)
 
     seconds_until_unban = _safe_float(
@@ -136,6 +137,10 @@ def build_exchange_connector_snapshot(
         health = "warning"
         if state in {"ready", "missing_credentials", "unknown"}:
             state = "order_audit_write_failed"
+    unresolved_order_intents = max(0, _safe_int(order_intents_raw.get("unresolved_count")) or 0)
+    if unresolved_order_intents:
+        health = "error"
+        state = "order_intent_reconciliation_required"
 
     attention = []
     if health in {"warning", "error"}:
@@ -148,6 +153,10 @@ def build_exchange_connector_snapshot(
     if order_audit_error:
         message = str(order_audit_error.get("message") or "unknown write error").strip()
         attention.append(f"Order audit write failed: {message}")
+    if unresolved_order_intents:
+        attention.append(
+            f"{unresolved_order_intents} unresolved exchange order intent(s) require reconciliation."
+        )
     attention.extend(str(reason) for reason in support["unsupported_reasons"])
     attention.extend(str(reason) for reason in support.get("capability_gaps", []))
 
@@ -177,6 +186,8 @@ def build_exchange_connector_snapshot(
     }
     if order_audit_raw:
         payload["order_audit"] = redact_value(order_audit_raw)
+    if order_intents_raw:
+        payload["order_intents"] = redact_value(order_intents_raw)
     return redact_value(payload)
 
 

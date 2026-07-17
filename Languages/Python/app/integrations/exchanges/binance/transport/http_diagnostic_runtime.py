@@ -84,6 +84,14 @@ def get_connector_health_snapshot(self) -> dict[str, object]:
             order_audit_status = status if isinstance(status, dict) else None
         except Exception:
             order_audit_status = None
+    order_intent_status = None
+    order_intent_getter = getattr(self, "get_order_intent_status", None)
+    if callable(order_intent_getter):
+        try:
+            status = order_intent_getter()
+            order_intent_status = status if isinstance(status, dict) else None
+        except Exception:
+            order_intent_status = None
     try:
         seconds_until_unban = max(0.0, float(self._seconds_until_unban()))
     except Exception:
@@ -133,6 +141,9 @@ def get_connector_health_snapshot(self) -> dict[str, object]:
         health = "warning"
         if state in {"ready", "missing_credentials", "unknown"}:
             state = "order_audit_write_failed"
+    if isinstance(order_intent_status, dict) and int(order_intent_status.get("unresolved_count") or 0) > 0:
+        health = "error"
+        state = "order_intent_reconciliation_required"
 
     payload = {
         "health": health,
@@ -157,6 +168,8 @@ def get_connector_health_snapshot(self) -> dict[str, object]:
     }
     if isinstance(order_audit_status, dict):
         payload["order_audit"] = order_audit_status
+    if isinstance(order_intent_status, dict):
+        payload["order_intents"] = order_intent_status
     return redact_value(payload)
 
 

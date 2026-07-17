@@ -605,6 +605,8 @@
               <label>Optimize For:<select id="backtest-optimizer-metric"></select></label>
               <label>Max Combo:<input id="backtest-optimizer-combo-size" type="number" min="1" max="5" value="2"></label>
               <label>Min Trades:<input id="backtest-optimizer-min-trades" type="number" min="0" value="1"></label>
+              <label>Max Time:<input id="backtest-optimizer-max-duration" type="number" min="60" max="604800" step="60" value="14400"></label>
+              <label class="checks"><input id="backtest-queue-if-busy" type="checkbox"> Queue if another backtest is running</label>
               <label>Max MDD Scanner:<span class="grid-2"><input id="backtest-scan-top-n" type="number" value="200"><input id="backtest-scan-mdd-limit" type="number" value="10.00"></span></label>
             </div>
             <button class="action" id="backtest-scan-symbols-btn" type="button">Scan Symbols</button>
@@ -2663,6 +2665,7 @@
       setSelect("backtest-optimizer-metric", backtest.optimizer_metric);
       setValue("backtest-optimizer-combo-size", backtest.optimizer_combo_size);
       setValue("backtest-optimizer-min-trades", backtest.optimizer_min_trades);
+      setValue("backtest-optimizer-max-duration", backtest.optimizer_max_duration_seconds);
       syncBacktestOptimizerMode();
       if (backtest.template && typeof backtest.template === "object") {
         setChecked("backtest-template-enabled", backtest.template.enabled);
@@ -3074,7 +3077,9 @@
         optimizer_combo_size: numberFrom("backtest-optimizer-combo-size", 2),
         optimizer_metric: selectedValue("backtest-optimizer-metric") || "roi_percent",
         optimizer_min_trades: numberFrom("backtest-optimizer-min-trades", 1),
+        optimizer_max_duration_seconds: numberFrom("backtest-optimizer-max-duration", 14400),
         optimizer_mode: selectedValue("backtest-optimizer-mode") || "current",
+        queue_if_busy: Boolean($("backtest-queue-if-busy")?.checked),
         pair_overrides: overrideRowsForRequest("backtest"),
         stop_loss: {
           enabled: Boolean($("backtest-stop-loss-enabled")?.checked),

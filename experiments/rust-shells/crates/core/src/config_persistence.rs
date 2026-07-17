@@ -22,11 +22,13 @@ use crate::generated_python_parity::{
 pub const SERVICE_CONFIG_FILE_KIND: &str = "trading-bot-service-config";
 pub const SERVICE_CONFIG_FORMAT_VERSION: i64 = 1;
 pub const SERVICE_CONFIG_ENV_PATH: &str = "BOT_SERVICE_CONFIG_PATH";
+// Retained solely to identify a deprecated operator setting. It cannot enable
+// plaintext credential persistence.
 pub const SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV: &str = "BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS";
 pub const SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV: &str = "BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH";
 pub const DEFAULT_SERVICE_CONFIG_PATH: &str = "~/.trading-bot/service-config.json";
-pub const SERVICE_CONFIG_SECRET_STORAGE: &str = "plain-json-on-disk";
-pub const SERVICE_CONFIG_SECRET_STORAGE_WARNING: &str = "This service config is plain JSON and contains secret-bearing fields; prefer environment variables or OS credential storage for API keys.";
+pub const SERVICE_CONFIG_SECRET_STORAGE: &str = "redacted-json-config";
+pub const SERVICE_CONFIG_SECRET_STORAGE_WARNING: &str = "Secret values are redacted from this JSON config. Supply credentials through environment variables or OS credential storage.";
 
 const SECRET_KEY_TOKENS: &[&str] = &[
     "api_key",
@@ -549,20 +551,16 @@ pub fn without_inline_service_config_secret_values(payload: &Value) -> Value {
 pub fn build_service_config_persistence_payload(
     config: &Value,
     saved_at: impl AsRef<str>,
-    allow_inline_secrets: bool,
+    _legacy_allow_inline_secrets: bool,
 ) -> Value {
     let metadata = service_config_secret_metadata(config);
-    let persisted_config = if metadata.contains_secrets && !allow_inline_secrets {
-        without_inline_service_config_secret_values(config)
-    } else {
-        config.clone()
-    };
+    let persisted_config = without_inline_service_config_secret_values(config);
     json!({
         "kind": SERVICE_CONFIG_FILE_KIND,
         "format_version": SERVICE_CONFIG_FORMAT_VERSION,
         "saved_at": saved_at.as_ref(),
         "config": persisted_config,
-        "inline_secrets_persisted": metadata.contains_secrets && allow_inline_secrets,
+        "inline_secrets_persisted": false,
         "contains_secrets": metadata.contains_secrets,
         "secret_fields": metadata.secret_fields,
         "secret_storage": metadata.secret_storage,
@@ -605,7 +603,7 @@ pub fn coerce_service_config_persistence_payload(
                 path.as_ref()
             ));
         }
-        let config = validate_service_runtime_config(&config)?;
+        let config = validate_service_runtime_config(&without_inline_service_config_secret_values(&config))?;
         return Ok(ServiceConfigLoadResult {
             config,
             metadata: ServiceConfigLoadMetadata {
@@ -632,7 +630,7 @@ pub fn coerce_service_config_persistence_payload(
             path.as_ref()
         ));
     }
-    let config = validate_service_runtime_config(raw_payload)?;
+    let config = validate_service_runtime_config(&without_inline_service_config_secret_values(raw_payload))?;
     Ok(ServiceConfigLoadResult {
         config,
         metadata: ServiceConfigLoadMetadata {
@@ -686,7 +684,7 @@ pub fn write_service_config_file(
     config: &Value,
     path: Option<&Path>,
     allow_unsafe_path: bool,
-    allow_inline_secrets: bool,
+    legacy_allow_inline_secrets: bool,
     saved_at: impl AsRef<str>,
 ) -> Result<Value, String> {
     let resolved = ensure_service_config_path_allowed(path, allow_unsafe_path)?;
@@ -694,7 +692,7 @@ pub fn write_service_config_file(
     let payload = build_service_config_persistence_payload(
         &validated_config,
         saved_at.as_ref(),
-        allow_inline_secrets,
+        legacy_allow_inline_secrets,
     );
     if let Some(parent) = resolved.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -1063,6 +1061,7 @@ const BACKTEST_ALLOWED_KEYS: &[&str] = &[
     "connector_backend",
     "end_date",
     "execution_backend",
+    "fee_bps",
     "indicators",
     "intervals",
     "leverage",
@@ -1080,6 +1079,7 @@ const BACKTEST_ALLOWED_KEYS: &[&str] = &[
     "scan_scope",
     "scan_top_n",
     "side",
+    "slippage_bps",
     "start_date",
     "stop_loss",
     "symbol_source",
@@ -2098,6 +2098,24 @@ fn validate_backtest_config(
         "backtest",
     );
     validate_int_range(&mut backtest, "leverage", issues, "backtest", 1, 125);
+    validate_float_range(
+        &mut backtest,
+        "fee_bps",
+        issues,
+        "backtest",
+        0.0,
+        1_000.0,
+        false,
+    );
+    validate_float_range(
+        &mut backtest,
+        "slippage_bps",
+        issues,
+        "backtest",
+        0.0,
+        1_000.0,
+        false,
+    );
     validate_choice(
         &mut backtest,
         "mdd_logic",
@@ -2309,8 +2327,8 @@ mod tests {
                 "providers[0].authorization".to_owned(),
             ]
         );
-        assert_eq!(metadata.secret_storage, "plain-json-on-disk");
-        assert!(metadata.secret_storage_warning.contains("plain JSON"));
+        assert_eq!(metadata.secret_storage, "redacted-json-config");
+        assert!(metadata.secret_storage_warning.contains("redacted"));
 
         let payload =
             build_service_config_persistence_payload(&config, "2026-06-18T12:00:00+00:00", false);
@@ -2325,18 +2343,37 @@ mod tests {
     }
 
     #[test]
-    fn config_persistence_payload_can_explicitly_allow_inline_secrets() {
+    fn config_persistence_payload_ignores_legacy_inline_secret_override() {
         let config = json!({"api_key": "exchange-key", "api_secret": "exchange-secret"});
         let payload =
             build_service_config_persistence_payload(&config, "2026-06-18T12:00:00+00:00", true);
 
-        assert_eq!(payload["inline_secrets_persisted"], true);
-        assert_eq!(payload["config"]["api_key"], "exchange-key");
-        assert_eq!(payload["config"]["api_secret"], "exchange-secret");
+        assert_eq!(payload["inline_secrets_persisted"], false);
+        assert_eq!(payload["config"]["api_key"], "");
+        assert_eq!(payload["config"]["api_secret"], "");
         assert_eq!(
             payload["secret_storage_warning"],
             SERVICE_CONFIG_SECRET_STORAGE_WARNING
         );
+    }
+
+    #[test]
+    fn config_persistence_load_redacts_legacy_inline_secrets() {
+        let raw = json!({
+            "kind": SERVICE_CONFIG_FILE_KIND,
+            "format_version": SERVICE_CONFIG_FORMAT_VERSION,
+            "config": {
+                "symbols": ["ETHUSDT"],
+                "api_key": "legacy-exchange-key",
+                "api_secret": "legacy-exchange-secret",
+            },
+        });
+
+        let loaded = coerce_service_config_persistence_payload(&raw, "service-config.json")
+            .expect("legacy config should load after secret redaction");
+
+        assert_eq!(loaded.config["api_key"], "");
+        assert_eq!(loaded.config["api_secret"], "");
     }
 
     #[test]

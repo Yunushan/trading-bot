@@ -62,7 +62,10 @@ class BacktestRequest:
     stop_loss_usdt: float = 0.0
     stop_loss_percent: float = 0.0
     stop_loss_scope: str = "per_trade"
+    fee_bps: float = 5.0
+    slippage_bps: float = 2.0
     pair_overrides: Optional[Iterable[PairOverride]] = None
+    optimizer_max_duration_seconds: int = 0
 
 
 @dataclass
@@ -98,6 +101,9 @@ class BacktestRunResult:
     position_mode: str | None = None
     assets_mode: str | None = None
     account_mode: str | None = None
+    fee_bps: float | None = None
+    slippage_bps: float | None = None
+    fees_paid: float | None = None
     strategy_controls: Dict[str, object] | None = None
     optimizer_rank: int | None = None
     optimizer_metric: str | None = None

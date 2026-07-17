@@ -87,6 +87,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             "dashboard",
             "runtime",
             "status",
+            "metrics",
             "config",
             "config_summary",
             "config_persistence",
@@ -179,6 +180,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             "runtime",
             "dashboard",
             "status",
+            "metrics",
             "execution",
             "backtest",
             "config_summary",
@@ -429,7 +431,8 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertTrue(service_api["unsafe_flags_active"])
         self.assertFalse(service_api["write_auth_required"])
         self.assertTrue(security["unauthenticated_writes_allowed"])
-        self.assertTrue(security["inline_config_secrets_allowed"])
+        self.assertFalse(security["inline_config_secrets_allowed"])
+        self.assertTrue(security["legacy_inline_config_secrets_requested"])
         self.assertTrue(security["unsafe_config_paths_allowed"])
         self.assertIn("BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES", " ".join(security["warnings"]))
         self.assertEqual("BOT_SERVICE_API_MAX_REQUEST_BYTES", service_api["limits"]["env_vars"]["max_request_bytes"])

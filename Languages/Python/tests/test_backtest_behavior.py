@@ -4,6 +4,7 @@ import sys
 import unittest
 import warnings
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import pandas as pd
@@ -27,6 +28,8 @@ from app.core.backtest import (  # noqa: E402
     validate_backtest_frame,
 )
 from app.core.backtest.models import PairOverride  # noqa: E402
+from app.core.backtest.models import BacktestRunResult  # noqa: E402
+from app.core.backtest import engine_run_runtime  # noqa: E402
 from app.core.backtest.indicator_runtime import (  # noqa: E402
     compute_indicator_series,
     indicators_missing_signal_rules,
@@ -47,6 +50,23 @@ class _SyntheticBacktestEngine(BacktestEngine):
         if self._frame is None:
             return super()._load_klines(*_args, **_kwargs)
         return self._frame.copy()
+
+
+class _BudgetBacktestEngine(_SyntheticBacktestEngine):
+    def _simulate(self, symbol, interval, *_args, leverage_override=1, **_kwargs):  # noqa: ANN001
+        return BacktestRunResult(
+            symbol=symbol,
+            interval=interval,
+            indicator_keys=["rsi"],
+            trades=1,
+            roi_value=10.0,
+            roi_percent=1.0,
+            final_equity=1010.0,
+            max_drawdown_value=5.0,
+            max_drawdown_percent=0.5,
+            logic="AND",
+            leverage=float(leverage_override),
+        )
 
 
 def _build_frame(
@@ -89,6 +109,10 @@ def _build_request(
         "position_pct": 1.0,
         "position_pct_units": "ratio",
         "leverage": 1.0,
+        # Individual behavioral tests opt into a frictionless model unless the
+        # case is specifically validating execution costs.
+        "fee_bps": 0.0,
+        "slippage_bps": 0.0,
     }
     payload.update(overrides)
     return BacktestRequest(**payload)
@@ -115,6 +139,29 @@ def _run_without_pandas4_warning(callback):
 
 @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for backtest behavior tests")
 class BacktestBehaviorTests(unittest.TestCase):
+    def test_optimizer_budget_returns_completed_partial_results(self):
+        df = _build_frame([100.0, 101.0, 102.0, 103.0, 104.0])
+        engine = _BudgetBacktestEngine({"rsi": [50.0] * len(df)}, frame=df)
+        request = _build_request(
+            df,
+            [IndicatorDefinition(key="rsi", params={"length": 14})],
+            symbols=["BTCUSDT", "ETHUSDT"],
+            optimizer_max_duration_seconds=1,
+        )
+        request.optimizer_result_limit = 1
+        request.optimizer_run_count = 2
+
+        with patch.object(engine_run_runtime.time, "monotonic", side_effect=[0.0, 0.0, 2.0]):
+            result = engine.run(request)
+
+        self.assertTrue(result["budget_exhausted"])
+        self.assertEqual(1, len(result["runs"]))
+        self.assertEqual("BTCUSDT", result["runs"][0].symbol)
+        self.assertEqual(
+            "backtest_optimizer_time_budget_exhausted",
+            result["errors"][0]["error"],
+        )
+
     def test_compute_atr_indicator_series(self):
         df = _build_frame(
             [10.0, 12.0, 13.0, 12.0],
@@ -670,3 +717,30 @@ class BacktestBehaviorTests(unittest.TestCase):
         self.assertAlmostEqual(60.0, result.max_drawdown_during_value)
         self.assertAlmostEqual(60.0, result.max_drawdown_result_value)
         self.assertAlmostEqual(6.0, result.max_drawdown_result_percent)
+
+    def test_simulate_applies_fee_and_slippage_on_entry_and_exit(self):
+        df = _build_frame([100.0, 110.0, 120.0])
+        indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]
+        engine = _SyntheticBacktestEngine({"synthetic": [20.0, 50.0, 80.0]})
+
+        frictionless = _run_without_pandas4_warning(
+            lambda: engine._simulate("BTCUSDT", "1h", df, indicators, _build_request(df, indicators))
+        )
+        costed = _run_without_pandas4_warning(
+            lambda: engine._simulate(
+                "BTCUSDT",
+                "1h",
+                df,
+                indicators,
+                _build_request(df, indicators, fee_bps=10.0, slippage_bps=10.0),
+            )
+        )
+
+        self.assertIsNotNone(frictionless)
+        self.assertIsNotNone(costed)
+        assert frictionless is not None
+        assert costed is not None
+        self.assertGreater(costed.fees_paid or 0.0, 0.0)
+        self.assertEqual(10.0, costed.fee_bps)
+        self.assertEqual(10.0, costed.slippage_bps)
+        self.assertLess(costed.final_equity, frictionless.final_equity)

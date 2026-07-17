@@ -1567,6 +1567,19 @@ class ProductPackagingContractTests(unittest.TestCase):
             self.assertIn("actions/upload-artifact@v7", workflow)
             self.assertIn("softprops/action-gh-release@v3", workflow)
 
+    def test_release_workflows_generate_attested_sboms(self):
+        workflows = (
+            REPO_ROOT / ".github" / "workflows" / "release-windows.yml",
+            REPO_ROOT / ".github" / "workflows" / "release-linux-macos.yml",
+        )
+        for workflow_path in workflows:
+            workflow = workflow_path.read_text(encoding="utf-8")
+            self.assertIn("anchore/sbom-action@v0", workflow)
+            self.assertIn("actions/attest@v4", workflow)
+            self.assertIn("attestations: write", workflow)
+            self.assertIn("id-token: write", workflow)
+            self.assertIn("release-sbom-${{ matrix.id }}.spdx.json", workflow)
+
     def test_release_workflows_execute_packaged_native_smokes(self):
         workflows = {
             name: (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")

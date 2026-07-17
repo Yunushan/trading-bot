@@ -30,6 +30,8 @@ struct Request {
     double stopLossUsdt = 0.0;
     double stopLossPercent = 0.0;
     QString stopLossScope = QStringLiteral("per_trade");
+    double feeBps = 5.0;
+    double slippageBps = 2.0;
 };
 
 struct Result {
@@ -64,6 +66,9 @@ struct Result {
     QString positionMode;
     QString assetsMode;
     QString accountMode;
+    double feeBps = 0.0;
+    double slippageBps = 0.0;
+    double feesPaid = 0.0;
 
     QJsonObject toJson() const;
 };

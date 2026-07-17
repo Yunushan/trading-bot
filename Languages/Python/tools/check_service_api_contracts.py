@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,10 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
 CONTRACTS_DIR = REPO_ROOT / "apps" / "service-api" / "contracts"
+CLIENT_ROUTE_CONTRACT_PATHS = (
+    REPO_ROOT / "apps" / "mobile-client" / "service-contract.js",
+    REPO_ROOT / "apps" / "web-dashboard" / "modules" / "service-contract.js",
+)
 
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
@@ -94,6 +99,41 @@ def _check_route_contract(*, write: bool) -> None:
     _assert_equal(str(path.relative_to(REPO_ROOT)), expected, actual)
 
 
+def _client_route_object_text() -> str:
+    return "".join(
+        f'  {route_name}: "{suffix}",\n'
+        for route_name, suffix in service_api_contract_payload()["route_suffixes"].items()
+    )
+
+
+def _check_client_route_contracts(*, write: bool) -> None:
+    expected = _client_route_object_text()
+    pattern = re.compile(
+        r"(?P<prefix>SERVICE_API_ROUTE_SUFFIXES\s*=\s*Object\.freeze\(\{\n)"
+        r"(?P<routes>.*?)"
+        r"(?P<suffix>\}\);)",
+        re.DOTALL,
+    )
+    for path in CLIENT_ROUTE_CONTRACT_PATHS:
+        source = path.read_text(encoding="utf-8")
+        match = pattern.search(source)
+        if match is None:
+            raise AssertionError(f"{path.relative_to(REPO_ROOT)} has no service route registry")
+        if write:
+            source, replacements = pattern.subn(
+                f"\\g<prefix>{expected}\\g<suffix>",
+                source,
+                count=1,
+            )
+            if replacements != 1:
+                raise AssertionError(f"could not update {path.relative_to(REPO_ROOT)}")
+            path.write_text(source, encoding="utf-8")
+            match = pattern.search(source)
+            if match is None:
+                raise AssertionError(f"could not reread {path.relative_to(REPO_ROOT)}")
+        _assert_equal(str(path.relative_to(REPO_ROOT)), expected, match.group("routes"))
+
+
 def _check_runtime_sample() -> None:
     path = CONTRACTS_DIR / "runtime.sample.json"
     sample = _load_json(path)
@@ -131,6 +171,7 @@ def _check_operational_preflight_sample() -> None:
 
 def check_contracts(*, write: bool = False) -> None:
     _check_route_contract(write=write)
+    _check_client_route_contracts(write=write)
     _check_runtime_sample()
     _check_operational_preflight_sample()
 
@@ -140,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--write",
         action="store_true",
-        help="refresh generated service-api-contract.json before checking samples",
+        help="refresh generated API contract artifacts before checking samples",
     )
     args = parser.parse_args(argv)
 

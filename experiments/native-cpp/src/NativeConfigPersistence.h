@@ -12,12 +12,13 @@ namespace NativeConfigPersistence {
 inline constexpr const char *ServiceConfigFileKind = "trading-bot-service-config";
 inline constexpr int ServiceConfigFormatVersion = 1;
 inline constexpr const char *ServiceConfigEnvPath = "BOT_SERVICE_CONFIG_PATH";
+// Deprecated legacy setting. It is intentionally ignored by persistence code.
 inline constexpr const char *ServiceConfigAllowInlineSecretsEnv = "BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS";
 inline constexpr const char *ServiceConfigAllowUnsafePathEnv = "BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH";
-inline constexpr const char *ServiceConfigSecretStorage = "plain-json-on-disk";
+inline constexpr const char *ServiceConfigSecretStorage = "redacted-json-config";
 inline constexpr const char *ServiceConfigSecretStorageWarning =
-    "This service config is plain JSON and contains secret-bearing fields; "
-    "prefer environment variables or OS credential storage for API keys.";
+    "Secret values are redacted from this JSON config. Supply credentials through "
+    "environment variables or OS credential storage.";
 
 struct ServiceConfigLoadResult {
     bool ok = false;

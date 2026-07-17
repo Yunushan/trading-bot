@@ -96,7 +96,15 @@ def refresh_backtest_optimizer_estimate(self) -> None:
             combo_size=combo_size,
             logic=logic,
         )
-        label.setText(backtest_optimizer_runtime.format_scan_plan_estimate(plan))
+        try:
+            budget_seconds = int(self.backtest_optimizer_max_duration_spin.value()) * 60
+        except Exception:
+            budget_seconds = int(self.backtest_config.get("optimizer_max_duration_seconds", 14_400) or 14_400)
+        label.setText(
+            f"{backtest_optimizer_runtime.format_scan_plan_estimate(plan)} "
+            f"Execution budget: {backtest_optimizer_runtime.format_optimizer_duration(budget_seconds)}; "
+            "completed results are retained when reached."
+        )
         if plan.get("over_limit"):
             label.setStyleSheet("color: #ff6b6b; font-weight: 600;")
         elif plan.get("large_warning") or plan.get("interactive_warning"):
@@ -172,6 +180,32 @@ def build_backtest_params_group(self):
         lambda v: self._update_backtest_config("position_pct", float(v))
     )
     param_form.addRow("Position % of Balance:", self.backtest_pospct_spin)
+
+    self.backtest_fee_bps_spin = QtWidgets.QDoubleSpinBox()
+    self.backtest_fee_bps_spin.setDecimals(2)
+    self.backtest_fee_bps_spin.setRange(0.0, 1_000.0)
+    self.backtest_fee_bps_spin.setSingleStep(0.5)
+    self.backtest_fee_bps_spin.setSuffix(" bps / side")
+    self.backtest_fee_bps_spin.setToolTip(
+        "Estimated trading fee charged at both entry and exit. 100 bps equals 1%."
+    )
+    self.backtest_fee_bps_spin.valueChanged.connect(
+        lambda v: self._update_backtest_config("fee_bps", float(v))
+    )
+    param_form.addRow("Trading Fee:", self.backtest_fee_bps_spin)
+
+    self.backtest_slippage_bps_spin = QtWidgets.QDoubleSpinBox()
+    self.backtest_slippage_bps_spin.setDecimals(2)
+    self.backtest_slippage_bps_spin.setRange(0.0, 1_000.0)
+    self.backtest_slippage_bps_spin.setSingleStep(0.5)
+    self.backtest_slippage_bps_spin.setSuffix(" bps / side")
+    self.backtest_slippage_bps_spin.setToolTip(
+        "Estimated adverse price movement applied at both entry and exit. 100 bps equals 1%."
+    )
+    self.backtest_slippage_bps_spin.valueChanged.connect(
+        lambda v: self._update_backtest_config("slippage_bps", float(v))
+    )
+    param_form.addRow("Slippage:", self.backtest_slippage_bps_spin)
 
     self.backtest_loop_combo = QtWidgets.QComboBox()
     for label, value in tab_context_runtime._DASHBOARD_LOOP_CHOICES:
@@ -463,6 +497,19 @@ def build_backtest_params_group(self):
         lambda v: self._update_backtest_config("optimizer_min_trades", int(v))
     )
     optimizer_metric_layout.addWidget(self.backtest_optimizer_min_trades_spin)
+    optimizer_metric_layout.addWidget(QtWidgets.QLabel("Max Time:"))
+    self.backtest_optimizer_max_duration_spin = QtWidgets.QSpinBox()
+    self.backtest_optimizer_max_duration_spin.setRange(1, 10_080)
+    self.backtest_optimizer_max_duration_spin.setSuffix(" min")
+    duration_seconds = int(self.backtest_config.get("optimizer_max_duration_seconds", 14_400) or 14_400)
+    self.backtest_optimizer_max_duration_spin.setValue(max(1, min(10_080, round(duration_seconds / 60))))
+    self.backtest_optimizer_max_duration_spin.setToolTip(
+        "Applies to optimizer runs. When the budget is reached, completed ranked results remain available."
+    )
+    self.backtest_optimizer_max_duration_spin.valueChanged.connect(
+        lambda v: self._update_backtest_config("optimizer_max_duration_seconds", int(v) * 60)
+    )
+    optimizer_metric_layout.addWidget(self.backtest_optimizer_max_duration_spin)
     optimizer_metric_layout.addStretch()
     param_form.addRow("Leaderboard:", optimizer_metric_row)
 

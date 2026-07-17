@@ -18,6 +18,7 @@ from ...core.backtest.optimizer_limits_runtime import (
     MAX_BACKTEST_EXPECTED_RUN_TRACKING,
     MAX_BACKTEST_OPTIMIZER_RUNS,
     MAX_BACKTEST_OPTIMIZER_TABLE_ROWS,
+    normalize_optimizer_duration_seconds,
 )
 from ...core.backtest.optimizer_pair_plan_runtime import (
     build_optimizer_pair_override_collection,
@@ -510,6 +511,12 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
             10.0,
         ),
     )
+    optimizer_max_duration_seconds = normalize_optimizer_duration_seconds(
+        patch.get(
+            "optimizer_max_duration_seconds",
+            backtest_cfg.get("optimizer_max_duration_seconds"),
+        )
+    )
     scan_scope = normalize_scan_scope(
         patch.get("scan_scope", backtest_cfg.get("scan_scope", "selected"))
     )
@@ -608,6 +615,8 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         "percent",
     )
     mdd_logic = clean_text(patch.get("mdd_logic", backtest_cfg.get("mdd_logic", "per_trade")), "per_trade")
+    fee_bps = max(0.0, coerce_number(patch.get("fee_bps", backtest_cfg.get("fee_bps", 5.0)), 5.0))
+    slippage_bps = max(0.0, coerce_number(patch.get("slippage_bps", backtest_cfg.get("slippage_bps", 2.0)), 2.0))
 
     request = BacktestRequest(
         symbols=symbols,
@@ -632,7 +641,12 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         stop_loss_usdt=coerce_number(stop_loss_cfg.get("usdt"), 0.0),
         stop_loss_percent=coerce_number(stop_loss_cfg.get("percent"), 0.0),
         stop_loss_scope=clean_text(stop_loss_cfg.get("scope"), "per_trade"),
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
         pair_overrides=pair_overrides,
+        optimizer_max_duration_seconds=(
+            optimizer_max_duration_seconds if optimizer_generated_overrides else 0
+        ),
     )
     if optimizer_generated_overrides:
         request.optimizer_result_limit = MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
@@ -677,6 +691,7 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         "optimizer_combo_size": optimizer_combo_size,
         "optimizer_min_trades": optimizer_min_trades,
         "optimizer_mdd_limit": optimizer_mdd_limit,
+        "optimizer_max_duration_seconds": optimizer_max_duration_seconds,
         "optimizer_scope": scan_scope,
         "optimizer_scan_top_n": scan_top_n,
         "optimizer_signal_indicator_count": optimizer_signal_indicator_count,

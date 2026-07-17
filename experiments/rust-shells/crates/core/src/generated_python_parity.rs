@@ -5,7 +5,7 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "39a1f7cf9944a1f107bb7bc6b18cca3834dfb55e897e8d5aad4bb2b46c133eab";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "a9e15f87add34bf94b77675f06ed7a879eeb0768a5287c0e0c00a3625d390c83";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -178,6 +178,7 @@ pub const PYTHON_PARITY_DOMAINS: &[PythonParityDomain] = &[
     "runtime",
     "dashboard",
     "status",
+    "metrics",
     "execution",
     "backtest",
     "config_summary",
@@ -230,6 +231,11 @@ pub const PYTHON_SERVICE_ROUTES: &[PythonServiceRoute] = &[
     PythonServiceRoute {
         name: "status",
         path: "/api/v1/status",
+        methods: &["GET"],
+    },
+    PythonServiceRoute {
+        name: "metrics",
+        path: "/api/v1/metrics",
         methods: &["GET"],
     },
     PythonServiceRoute {
@@ -409,6 +415,12 @@ pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[
         query_fields: &[],
         request_fields: &[],
         response_fields: &["state", "lifecycle_phase", "requested_action", "close_positions_requested", "status_message", "last_transition_at", "service_mode", "generated_at", "api_enabled", "docker_required", "runtime_source", "active_engine_count", "account_type", "mode", "selected_exchange", "connector_backend", "connector_health", "exchange_connector", "operational_health", "operational", "notes"],
+    },
+    PythonServiceRouteSchema {
+        name: "metrics",
+        query_fields: &[],
+        request_fields: &[],
+        response_fields: &["generated_at", "operational_health", "connector_health", "connector_state", "runtime_active", "active_engine_count", "log_warning_count", "log_error_count", "connector_order_circuit_open", "unresolved_order_intent_count"],
     },
     PythonServiceRouteSchema {
         name: "execution",
@@ -610,6 +622,7 @@ pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[
     "mdd_logic",
     "mode",
     "optimizer_combo_size",
+    "optimizer_max_duration_seconds",
     "optimizer_metric",
     "optimizer_min_trades",
     "optimizer_mode",
@@ -617,6 +630,7 @@ pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[
     "position_mode",
     "position_pct",
     "position_pct_units",
+    "queue_if_busy",
     "scan_mdd_limit",
     "scan_scope",
     "scan_top_n",

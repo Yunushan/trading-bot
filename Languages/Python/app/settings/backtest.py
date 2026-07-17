@@ -54,6 +54,9 @@ class BacktestSettings:
     optimizer_metric: str = "roi_percent"
     optimizer_combo_size: int = 2
     optimizer_min_trades: int = 1
+    optimizer_max_duration_seconds: int = 14_400
+    fee_bps: float = 5.0
+    slippage_bps: float = 2.0
     template: BacktestTemplateSettings = field(default_factory=BacktestTemplateSettings)
     indicators: dict[str, dict[str, object]] = field(default_factory=build_backtest_indicator_defaults)
     stop_loss: StopLossSettings = field(default_factory=StopLossSettings)
@@ -85,6 +88,9 @@ class BacktestSettings:
             "optimizer_metric": self.optimizer_metric,
             "optimizer_combo_size": self.optimizer_combo_size,
             "optimizer_min_trades": self.optimizer_min_trades,
+            "optimizer_max_duration_seconds": self.optimizer_max_duration_seconds,
+            "fee_bps": self.fee_bps,
+            "slippage_bps": self.slippage_bps,
             "template": self.template.to_config_dict(),
             "indicators": copy.deepcopy(self.indicators),
             "stop_loss": self.stop_loss.to_config_dict(),

@@ -23,6 +23,7 @@ SERVICE_API_ROUTE_SUFFIXES: dict[str, str] = {
     "runtime": "/runtime",
     "dashboard": "/dashboard",
     "status": "/status",
+    "metrics": "/metrics",
     "execution": "/execution",
     "backtest": "/backtest",
     "config_summary": "/config-summary",
@@ -59,6 +60,7 @@ SERVICE_API_ROUTE_METHODS: dict[str, tuple[str, ...]] = {
     "runtime": ("GET",),
     "dashboard": ("GET",),
     "status": ("GET",),
+    "metrics": ("GET",),
     "execution": ("GET",),
     "backtest": ("GET",),
     "config_summary": ("GET",),
@@ -141,6 +143,19 @@ SERVICE_STATUS_RESPONSE_FIELDS: tuple[str, ...] = (
     "operational_health",
     "operational",
     "notes",
+)
+
+SERVICE_METRICS_RESPONSE_FIELDS: tuple[str, ...] = (
+    "generated_at",
+    "operational_health",
+    "connector_health",
+    "connector_state",
+    "runtime_active",
+    "active_engine_count",
+    "log_warning_count",
+    "log_error_count",
+    "connector_order_circuit_open",
+    "unresolved_order_intent_count",
 )
 
 SERVICE_EXECUTION_RESPONSE_FIELDS: tuple[str, ...] = (
@@ -331,6 +346,7 @@ SERVICE_API_ROUTE_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
         "response_fields": SERVICE_DASHBOARD_RESPONSE_FIELDS,
     },
     "status": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_STATUS_RESPONSE_FIELDS},
+    "metrics": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_METRICS_RESPONSE_FIELDS},
     "execution": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_EXECUTION_RESPONSE_FIELDS},
     "backtest": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_BACKTEST_RESPONSE_FIELDS},
     "config_summary": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_CONFIG_SUMMARY_RESPONSE_FIELDS},
@@ -492,6 +508,7 @@ SERVICE_BACKTEST_RUN_REQUEST_FIELDS: tuple[str, ...] = (
     "mdd_logic",
     "mode",
     "optimizer_combo_size",
+    "optimizer_max_duration_seconds",
     "optimizer_metric",
     "optimizer_min_trades",
     "optimizer_mode",
@@ -499,6 +516,7 @@ SERVICE_BACKTEST_RUN_REQUEST_FIELDS: tuple[str, ...] = (
     "position_mode",
     "position_pct",
     "position_pct_units",
+    "queue_if_busy",
     "scan_mdd_limit",
     "scan_scope",
     "scan_top_n",

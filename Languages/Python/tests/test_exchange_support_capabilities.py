@@ -161,6 +161,22 @@ class ExchangeSupportCapabilitiesTests(unittest.TestCase):
         self.assertTrue(snapshot["support"]["order_execution_supported"])
         self.assertIn("requires a passed connector evidence artifact", snapshot["support"]["capability_gaps"][0])
 
+    def test_service_snapshot_blocks_unresolved_exchange_order_intents(self):
+        snapshot = build_exchange_connector_snapshot(
+            config={"selected_exchange": "Binance", "connector_backend": "sdk"},
+            snapshot={
+                "health": "ok",
+                "state": "ready",
+                "order_intents": {"unresolved_count": 1, "unresolved_client_order_ids": ["tb-safe-id"]},
+            },
+            source="unit-test",
+        )
+
+        self.assertEqual("error", snapshot["health"])
+        self.assertEqual("order_intent_reconciliation_required", snapshot["state"])
+        self.assertIn("1 unresolved exchange order intent(s) require reconciliation.", snapshot["attention"])
+        self.assertEqual(1, snapshot["order_intents"]["unresolved_count"])
+
     def test_ccxt_diagnostics_connector_uses_injected_exchange_without_leaking_secrets(self):
         created: list[tuple[str, dict[str, object], _FakeCcxtExchange]] = []
 

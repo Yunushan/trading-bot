@@ -53,6 +53,12 @@ def initialize_backtest_ui_defaults(self):
             self._update_backtest_config("position_pct", pct_disp)
         else:
             self.backtest_pospct_spin.setValue(pct_cfg)
+        fee_bps = max(0.0, float(self.backtest_config.get("fee_bps", 5.0) or 0.0))
+        slippage_bps = max(0.0, float(self.backtest_config.get("slippage_bps", 2.0) or 0.0))
+        self.backtest_fee_bps_spin.setValue(fee_bps)
+        self.backtest_slippage_bps_spin.setValue(slippage_bps)
+        self._update_backtest_config("fee_bps", fee_bps)
+        self._update_backtest_config("slippage_bps", slippage_bps)
         side_cfg = (self.backtest_config.get("side") or "BOTH").upper()
         side_labels = get_side_labels()
         side_label = side_labels.get(side_cfg, side_labels["BOTH"])
@@ -114,4 +120,3 @@ def initialize_backtest_ui_defaults(self):
     self._update_backtest_futures_controls()
     if not fetch_triggered:
         self._refresh_backtest_symbols()
-

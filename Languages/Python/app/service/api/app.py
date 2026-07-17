@@ -450,16 +450,12 @@ def create_service_api_app(
 
     def _unsafe_runtime_flags() -> dict[str, object]:
         unauthenticated_writes = _env_flag(SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV, False)
-        inline_config_secrets = _env_flag(SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV, False)
+        legacy_inline_config_secrets_requested = _env_flag(SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV, False)
         unsafe_config_paths = _env_flag(SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV, False)
         warnings = []
         if unauthenticated_writes:
             warnings.append(
                 f"{SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV}=1 allows mutation routes without a bearer token."
-            )
-        if inline_config_secrets:
-            warnings.append(
-                f"{SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV}=1 allows plain-JSON secret persistence."
             )
         if unsafe_config_paths:
             warnings.append(
@@ -468,7 +464,8 @@ def create_service_api_app(
         return {
             "unsafe_flags_active": bool(warnings),
             "unauthenticated_writes_allowed": unauthenticated_writes,
-            "inline_config_secrets_allowed": inline_config_secrets,
+            "inline_config_secrets_allowed": False,
+            "legacy_inline_config_secrets_requested": legacy_inline_config_secrets_requested,
             "unsafe_config_paths_allowed": unsafe_config_paths,
             "env_vars": {
                 "allow_unauthenticated_writes": SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV,
@@ -540,6 +537,10 @@ def create_service_api_app(
     @api_router.get("/status")
     def get_status():
         return _service().get_status().to_dict()
+
+    @api_router.get("/metrics")
+    def get_operational_metrics():
+        return _service().get_operational_metrics()
 
     @api_router.get("/execution")
     def get_execution_snapshot():

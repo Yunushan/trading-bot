@@ -201,12 +201,17 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
                 }
             )
 
-            saved = service.save_config(source="unit-test")
+            stored: dict[str, str] = {}
+            with mock.patch("app.service.config_store.credential_store_backend", return_value="windows-credential-manager"), mock.patch(
+                "app.service.config_store.put_secret", side_effect=lambda *, scope, account, value: stored.__setitem__(account, value)
+            ), mock.patch("app.service.config_store.get_secret", side_effect=lambda *, scope, account: stored.get(account, "")):
+                saved = service.save_config(source="unit-test")
+                reloaded = TradingBotService(config_path=path, load_persisted_config=True)
             saved_file = json.loads(path.read_text(encoding="utf-8"))
 
             self.assertTrue(saved["contains_secrets"])
             self.assertTrue(saved_file["contains_secrets"])
-            self.assertEqual("plain-json-on-disk", saved_file["secret_storage"])
+            self.assertEqual("redacted-json-config", saved_file["secret_storage"])
             self.assertIn("api_key", saved_file["secret_fields"])
             self.assertIn("api_secret", saved_file["secret_fields"])
             self.assertIn("llm_api_key", saved_file["secret_fields"])
@@ -215,22 +220,78 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
             self.assertEqual("", saved_file["config"]["api_key"])
             self.assertEqual("", saved_file["config"]["api_secret"])
             self.assertEqual("", saved_file["config"]["llm_api_key"])
-            self.assertIn("plain JSON", saved_file["secret_storage_warning"])
+            self.assertIn("redacted", saved_file["secret_storage_warning"])
+            self.assertEqual("windows-credential-manager", saved["credential_store"])
+            self.assertEqual("exchange-key", reloaded.config["api_key"])
+            self.assertEqual("exchange-secret", reloaded.config["api_secret"])
+            self.assertEqual("llm-secret", reloaded.config["llm_api_key"])
 
-    def test_service_config_persistence_can_explicitly_allow_inline_secrets(self):
+    def test_service_config_persistence_deletes_cleared_os_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            service = TradingBotService(config_path=path)
+            service.update_config({"api_key": "exchange-key", "api_secret": "exchange-secret"})
+            stored: dict[str, str] = {}
+
+            def put(*, scope, account, value):
+                stored[account] = value
+
+            def delete(*, scope, account):
+                stored.pop(account, None)
+
+            with mock.patch("app.service.config_store.credential_store_backend", return_value="windows-credential-manager"), mock.patch(
+                "app.service.config_store.put_secret", side_effect=put
+            ), mock.patch("app.service.config_store.delete_secret", side_effect=delete):
+                service.save_config(source="unit-test")
+                service.update_config({"api_secret": ""})
+                service.save_config(source="unit-test")
+
+            saved_file = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual({"api_key": "exchange-key"}, stored)
+            self.assertEqual(["api_key"], saved_file["credential_store_fields"])
+
+    def test_service_config_persistence_ignores_legacy_inline_secret_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "service-config.json"
             service = TradingBotService(config_path=path)
             service.update_config({"api_key": "exchange-key", "api_secret": "exchange-secret"})
 
-            with mock.patch.dict("os.environ", {"BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS": "1"}, clear=False):
+            with mock.patch.dict("os.environ", {"BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS": "1"}, clear=False), mock.patch(
+                "app.service.config_store.put_secret"
+            ):
                 saved = service.save_config(source="unit-test")
             saved_file = json.loads(path.read_text(encoding="utf-8"))
 
-            self.assertTrue(saved["inline_secrets_persisted"])
-            self.assertTrue(saved_file["inline_secrets_persisted"])
-            self.assertEqual("exchange-key", saved_file["config"]["api_key"])
-            self.assertEqual("exchange-secret", saved_file["config"]["api_secret"])
+            self.assertFalse(saved["inline_secrets_persisted"])
+            self.assertFalse(saved_file["inline_secrets_persisted"])
+            self.assertEqual("", saved_file["config"]["api_key"])
+            self.assertEqual("", saved_file["config"]["api_secret"])
+            self.assertNotIn("exchange-key", path.read_text(encoding="utf-8"))
+            self.assertNotIn("exchange-secret", path.read_text(encoding="utf-8"))
+
+    def test_service_config_load_redacts_legacy_inline_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "kind": "trading-bot-service-config",
+                        "format_version": 1,
+                        "config": {
+                            "symbols": ["ETHUSDT"],
+                            "api_key": "legacy-exchange-key",
+                            "api_secret": "legacy-exchange-secret",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = TradingBotService(config_path=path, load_persisted_config=True).config
+
+            self.assertEqual(["ETHUSDT"], loaded["symbols"])
+            self.assertEqual("", loaded["api_key"])
+            self.assertEqual("", loaded["api_secret"])
 
     def test_explicit_service_config_paths_require_trusted_override(self):
         with tempfile.TemporaryDirectory() as tmp:

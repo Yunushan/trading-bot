@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .order_audit_runtime import audit_order_method
+from .order_fallback_runtime import _ensure_binance_client_order_id
 
 
 def required_percent_for_symbol(self, symbol: str, leverage: int | float | None = None) -> float:
@@ -56,6 +57,8 @@ def place_spot_market_order(
         if qamt <= 0:
             return {"ok": False, "error": "quote_amount<=0"}
         qty = qamt / px
+    intent_started = False
+    mark_unknown = None
     try:
         filters = self.get_spot_symbol_filters(sym) or {}
     except Exception as exc:
@@ -92,12 +95,25 @@ def place_spot_market_order(
         if step > 0:
             needed = self._ceil_to_step(needed, step)
         qty = max(needed, min_qty)
-    params = dict(symbol=sym, side=side.upper(), type="MARKET", quantity=str(qty))
+    params = _ensure_binance_client_order_id(
+        dict(symbol=sym, side=side.upper(), type="MARKET", quantity=str(qty))
+    )
     try:
         guard = getattr(self, "_guard_live_order_submit", None)
         if callable(guard):
             guard(market="spot", params=params, source="place_spot_market_order")
+        begin_intent = getattr(self, "_begin_order_intent", None)
+        mark_submitted = getattr(self, "_mark_order_intent_submitted", None)
+        mark_accepted = getattr(self, "_mark_order_intent_accepted", None)
+        mark_unknown = getattr(self, "_mark_order_intent_unknown", None)
+        if callable(begin_intent):
+            begin_intent(params, market="spot", source="place_spot_market_order")
+            intent_started = True
+        if callable(mark_submitted):
+            mark_submitted(params, via="primary")
         res = self.client.create_order(**params)
+        if callable(mark_accepted) and intent_started:
+            mark_accepted(params, via="primary", result=res)
         return {
             "ok": True,
             "info": res,
@@ -108,6 +124,8 @@ def place_spot_market_order(
             },
         }
     except Exception as exc:
+        if intent_started and callable(mark_unknown):
+            mark_unknown(params, error=exc)
         return {
             "ok": False,
             "error": str(exc),

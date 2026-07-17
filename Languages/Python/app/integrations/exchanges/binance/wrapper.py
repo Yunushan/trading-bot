@@ -18,6 +18,7 @@ from .orders import (
     bind_binance_order_audit_runtime,
     bind_binance_futures_orders,
     bind_binance_order_fallback_runtime,
+    bind_binance_order_intent_runtime,
     bind_binance_order_sizing_runtime,
     bind_binance_order_submit_guard_runtime,
 )
@@ -302,6 +303,7 @@ class BinanceWrapper:
 bind_binance_order_audit_runtime(BinanceWrapper)
 bind_binance_http_runtime(BinanceWrapper)
 bind_binance_order_submit_guard_runtime(BinanceWrapper)
+bind_binance_order_intent_runtime(BinanceWrapper)
 bind_binance_order_fallback_runtime(BinanceWrapper)
 bind_binance_order_sizing_runtime(BinanceWrapper)
 bind_binance_operational_runtime(BinanceWrapper)

@@ -81,6 +81,10 @@ class PythonTestRunnerTests(unittest.TestCase):
         self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
         run_pytest_suite.assert_called_once_with()
 
+    def test_python_test_runner_unittest_discovery_is_not_package_bound(self):
+        suite = run_python_tests.build_unittest_suite()
+        self.assertGreater(suite.countTestCases(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

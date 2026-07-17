@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# This is an admission ceiling for an explicitly confirmed research job. The UI
+# must surface the conservative duration estimate before dispatch; it is not an
+# interactive-workload target. Long-running research is handled with progress,
+# cancellation, and result-table bounds rather than a misleading small cap.
 MAX_BACKTEST_OPTIMIZER_RUNS = 100_000_000_000
 BACKTEST_OPTIMIZER_LARGE_RUN_WARNING = 50_000
 BACKTEST_OPTIMIZER_INTERACTIVE_RUN_WARNING = 5_000
@@ -7,6 +11,20 @@ MAX_BACKTEST_OPTIMIZER_TABLE_ROWS = 5_000
 MAX_BACKTEST_EXPECTED_RUN_TRACKING = 50_000
 BACKTEST_OPTIMIZER_PROGRESS_EVERY = 1_000
 BACKTEST_OPTIMIZER_ESTIMATED_SECONDS_PER_RUN = 0.05
+BACKTEST_OPTIMIZER_MIN_DURATION_SECONDS = 60
+BACKTEST_OPTIMIZER_DEFAULT_DURATION_SECONDS = 4 * 60 * 60
+BACKTEST_OPTIMIZER_MAX_DURATION_SECONDS = 7 * 24 * 60 * 60
+
+
+def normalize_optimizer_duration_seconds(value: object) -> int:
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        seconds = BACKTEST_OPTIMIZER_DEFAULT_DURATION_SECONDS
+    return max(
+        BACKTEST_OPTIMIZER_MIN_DURATION_SECONDS,
+        min(BACKTEST_OPTIMIZER_MAX_DURATION_SECONDS, seconds),
+    )
 
 
 def estimate_optimizer_duration_seconds(

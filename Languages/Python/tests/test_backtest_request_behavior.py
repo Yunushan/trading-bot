@@ -373,9 +373,31 @@ class BacktestRequestBehaviorTests(unittest.TestCase):
         self.assertEqual("roi_drawdown", summary["optimizer_metric"])
         self.assertEqual(2, summary["optimizer_min_trades"])
         self.assertEqual(5.5, summary["optimizer_mdd_limit"])
+        self.assertEqual(14_400, summary["optimizer_max_duration_seconds"])
+        self.assertEqual(14_400, request.optimizer_max_duration_seconds)
         self.assertEqual(2, summary["estimated_run_count"])
         self.assertEqual(2, summary["optimizer_signal_indicator_count"])
         self.assertEqual(1, summary["optimizer_indicator_group_count"])
+
+    def test_build_request_clamps_optimizer_duration_budget(self):
+        runtime = _build_runtime()
+
+        request, _wrapper_kwargs, summary = build_request(
+            runtime,
+            {
+                "symbols": ["BTCUSDT"],
+                "intervals": ["1h"],
+                "capital": 1000.0,
+                "start": "2025-01-01T00:00:00",
+                "end": "2025-01-02T00:00:00",
+                "optimizer_mode": "single",
+                "optimizer_max_duration_seconds": 9_999_999,
+                "indicators": {"rsi": {"enabled": True, "length": 14}},
+            },
+        )
+
+        self.assertEqual(604_800, summary["optimizer_max_duration_seconds"])
+        self.assertEqual(604_800, request.optimizer_max_duration_seconds)
 
     def test_build_request_rejects_service_optimizer_runs_over_limit(self):
         runtime = _build_runtime()

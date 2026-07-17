@@ -100,6 +100,7 @@
     "mdd_logic",
     "mode",
     "optimizer_combo_size",
+    "optimizer_max_duration_seconds",
     "optimizer_metric",
     "optimizer_min_trades",
     "optimizer_mode",
@@ -107,6 +108,7 @@
     "position_mode",
     "position_pct",
     "position_pct_units",
+    "queue_if_busy",
     "scan_mdd_limit",
     "scan_scope",
     "scan_top_n",
@@ -222,7 +224,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "39a1f7cf9944a1f107bb7bc6b18cca3834dfb55e897e8d5aad4bb2b46c133eab",
+  "contractHash": "a9e15f87add34bf94b77675f06ed7a879eeb0768a5287c0e0c00a3625d390c83",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -303,6 +305,7 @@
     "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
     "end_date": null,
     "execution_backend": "local",
+    "fee_bps": 5.0,
     "indicators": {
       "adx": {
         "buy_value": 20,
@@ -558,6 +561,7 @@
     "margin_mode": "Isolated",
     "mdd_logic": "per_trade",
     "optimizer_combo_size": 2,
+    "optimizer_max_duration_seconds": 14400,
     "optimizer_metric": "roi_percent",
     "optimizer_min_trades": 1,
     "optimizer_mode": "current",
@@ -568,6 +572,7 @@
     "scan_scope": "selected",
     "scan_top_n": 200,
     "side": "BOTH",
+    "slippage_bps": 2.0,
     "start_date": null,
     "stop_loss": {
       "enabled": false,
@@ -3655,6 +3660,9 @@
       "GET",
       "POST"
     ],
+    "metrics": [
+      "GET"
+    ],
     "operational_preflight": [
       "GET"
     ],
@@ -3682,6 +3690,7 @@
     "runtime",
     "dashboard",
     "status",
+    "metrics",
     "execution",
     "backtest",
     "config_summary",
@@ -3740,6 +3749,7 @@
     "llm_prompt": "/api/v1/llm/prompt",
     "llm_providers": "/api/v1/llm/providers",
     "logs": "/api/v1/logs",
+    "metrics": "/api/v1/metrics",
     "operational_preflight": "/api/v1/runtime/operational-preflight",
     "portfolio": "/api/v1/portfolio",
     "runtime": "/api/v1/runtime",
@@ -3785,6 +3795,7 @@
     "logs": [
       "limit"
     ],
+    "metrics": [],
     "operational_preflight": [],
     "portfolio": [],
     "runtime": [],
@@ -3887,6 +3898,7 @@
       "source",
       "level"
     ],
+    "metrics": [],
     "operational_preflight": [],
     "portfolio": [
       "open_position_records",
@@ -4219,6 +4231,18 @@
       "source",
       "generated_at"
     ],
+    "metrics": [
+      "generated_at",
+      "operational_health",
+      "connector_health",
+      "connector_state",
+      "runtime_active",
+      "active_engine_count",
+      "log_warning_count",
+      "log_error_count",
+      "connector_order_circuit_open",
+      "unresolved_order_intent_count"
+    ],
     "operational_preflight": [
       "state",
       "message",
@@ -4381,6 +4405,23 @@
         "operational_health",
         "operational",
         "notes"
+      ]
+    },
+    {
+      "name": "metrics",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "generated_at",
+        "operational_health",
+        "connector_health",
+        "connector_state",
+        "runtime_active",
+        "active_engine_count",
+        "log_warning_count",
+        "log_error_count",
+        "connector_order_circuit_open",
+        "unresolved_order_intent_count"
       ]
     },
     {
@@ -4998,6 +5039,13 @@
       ],
       "name": "status",
       "path": "/api/v1/status"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "metrics",
+      "path": "/api/v1/metrics"
     },
     {
       "methods": [

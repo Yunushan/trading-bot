@@ -28,6 +28,8 @@ name: Release Windows Binaries
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: release-windows-${{ github.ref }}
@@ -634,6 +636,43 @@ jobs:
             -EvidencePath $cppSmokeEvidence `
             -SourceRevision "${{ github.sha }}"
 
+      - name: Write and verify artifact digest manifest
+        shell: pwsh
+        run: |
+          $manifest = "release/release-manifest-${{ matrix.id }}.json"
+          $artifacts = @(Get-ChildItem -Path release -File | Where-Object { $_.Name -notlike "release-manifest-*.json" })
+          if ($artifacts.Count -eq 0) {
+            throw "No release artifacts were found to include in the digest manifest."
+          }
+          & python tools/write_release_manifest.py @($artifacts.FullName) --output $manifest --repo-root $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release manifest generation failed with exit code $LASTEXITCODE."
+          }
+          & python tools/write_release_manifest.py --verify $manifest --repo-root $env:GITHUB_WORKSPACE --require-current-revision
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release manifest verification failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Generate SPDX SBOM for release assets
+        uses: anchore/sbom-action@v0
+        with:
+          path: release
+          format: spdx-json
+          output-file: release/release-sbom-${{ matrix.id }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest release asset provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+
+      - name: Attest release asset SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+          sbom-path: release/release-sbom-${{ matrix.id }}.spdx.json
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -644,6 +683,8 @@ jobs:
             release/Trading-Bot-C++*.zip
             release/native-cpp-windows-smoke-*.json
             release/rust-package-smoke-*.json
+            release/release-manifest-*.json
+            release/release-sbom-*.spdx.json
           if-no-files-found: error
 
   publish-release:

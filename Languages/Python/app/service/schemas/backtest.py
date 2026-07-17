@@ -139,6 +139,9 @@ class ServiceBacktestRunRecord:
     stop_loss_usdt: float | None = None
     stop_loss_percent: float | None = None
     stop_loss_scope: str = ""
+    fee_bps: float | None = None
+    slippage_bps: float | None = None
+    fees_paid: float | None = None
     strategy_controls: dict[str, object] = field(default_factory=dict)
     optimizer_rank: int | None = None
     optimizer_metric: str = ""
@@ -183,6 +186,9 @@ class ServiceBacktestRunRecord:
             "stop_loss_usdt": self.stop_loss_usdt,
             "stop_loss_percent": self.stop_loss_percent,
             "stop_loss_scope": self.stop_loss_scope,
+            "fee_bps": self.fee_bps,
+            "slippage_bps": self.slippage_bps,
+            "fees_paid": self.fees_paid,
             "strategy_controls": deepcopy(self.strategy_controls),
             "optimizer_rank": self.optimizer_rank,
             "optimizer_metric": self.optimizer_metric,
@@ -314,6 +320,9 @@ def build_backtest_run_record(run) -> ServiceBacktestRunRecord:  # noqa: ANN001
         stop_loss_usdt=_coerce_optional_float(_read_field(run, "stop_loss_usdt")),
         stop_loss_percent=_coerce_optional_float(_read_field(run, "stop_loss_percent")),
         stop_loss_scope=_clean_text(_read_field(run, "stop_loss_scope", "")),
+        fee_bps=_coerce_optional_float(_read_field(run, "fee_bps")),
+        slippage_bps=_coerce_optional_float(_read_field(run, "slippage_bps")),
+        fees_paid=_coerce_optional_float(_read_field(run, "fees_paid")),
         strategy_controls=_normalize_mapping_payload(_read_field(run, "strategy_controls")),
         optimizer_rank=_coerce_optional_int(_read_field(run, "optimizer_rank")),
         optimizer_metric=_clean_text(_read_field(run, "optimizer_metric", "")),

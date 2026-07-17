@@ -677,6 +677,8 @@ pub fn normalize_strategy_controls(kind: &str, controls: &Value) -> Value {
         }
         insert_float(input, &mut out, "capital");
         insert_float(input, &mut out, "position_pct");
+        insert_float(input, &mut out, "fee_bps");
+        insert_float(input, &mut out, "slippage_bps");
         if let Some(units) = normalize_position_pct_units(
             input
                 .get("position_pct_units")
@@ -1775,6 +1777,8 @@ mod tests {
                 "assets_mode": "multi assets",
                 "account_mode": "classic",
                 "leverage": "10",
+                "fee_bps": "5",
+                "slippage_bps": "2",
                 "margin_mode": "Isolated",
                 "position_mode": "Hedge"
             }),
@@ -1785,6 +1789,8 @@ mod tests {
         assert_eq!(backtest["assets_mode"], "Multi-Assets");
         assert_eq!(backtest["account_mode"], "Classic Trading");
         assert_eq!(backtest["leverage"], 10);
+        assert_eq!(backtest["fee_bps"], 5.0);
+        assert_eq!(backtest["slippage_bps"], 2.0);
     }
 
     #[test]

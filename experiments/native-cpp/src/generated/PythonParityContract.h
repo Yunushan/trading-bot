@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "39a1f7cf9944a1f107bb7bc6b18cca3834dfb55e897e8d5aad4bb2b46c133eab";
+inline constexpr std::string_view kPythonSourceContractHash = "a9e15f87add34bf94b77675f06ed7a879eeb0768a5287c0e0c00a3625d390c83";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -70,10 +70,11 @@ inline constexpr std::array<std::string_view, 12> kPythonParityDomainKeys = {
     "startup_packaging_platform",
 };
 
-inline constexpr std::array<std::string_view, 33> kPythonServiceRouteNames = {
+inline constexpr std::array<std::string_view, 34> kPythonServiceRouteNames = {
     "runtime",
     "dashboard",
     "status",
+    "metrics",
     "execution",
     "backtest",
     "config_summary",
@@ -112,10 +113,11 @@ struct PythonServiceRoute {
     std::string_view methods;
 };
 
-inline constexpr std::array<PythonServiceRoute, 33> kPythonServiceRoutes = {
+inline constexpr std::array<PythonServiceRoute, 34> kPythonServiceRoutes = {
     PythonServiceRoute{"runtime", "/api/v1/runtime", "GET"},
     PythonServiceRoute{"dashboard", "/api/v1/dashboard", "GET"},
     PythonServiceRoute{"status", "/api/v1/status", "GET"},
+    PythonServiceRoute{"metrics", "/api/v1/metrics", "GET"},
     PythonServiceRoute{"execution", "/api/v1/execution", "GET"},
     PythonServiceRoute{"backtest", "/api/v1/backtest", "GET"},
     PythonServiceRoute{"config_summary", "/api/v1/config-summary", "GET"},
@@ -155,10 +157,11 @@ struct PythonServiceRouteSchema {
     std::string_view responseFields;
 };
 
-inline constexpr std::array<PythonServiceRouteSchema, 33> kPythonServiceRouteSchemas = {
+inline constexpr std::array<PythonServiceRouteSchema, 34> kPythonServiceRouteSchemas = {
     PythonServiceRouteSchema{"runtime", "", "", "service_name,phase,python_entrypoint,desktop_entrypoint,repo_root,platform,python_version,capabilities,control_plane,notes"},
     PythonServiceRouteSchema{"dashboard", "log_limit,incident_limit", "", "runtime,status,operational,config,config_summary,execution,backtest,account,portfolio,logs,service_api,connector_order_circuit_incidents"},
     PythonServiceRouteSchema{"status", "", "", "state,lifecycle_phase,requested_action,close_positions_requested,status_message,last_transition_at,service_mode,generated_at,api_enabled,docker_required,runtime_source,active_engine_count,account_type,mode,selected_exchange,connector_backend,connector_health,exchange_connector,operational_health,operational,notes"},
+    PythonServiceRouteSchema{"metrics", "", "", "generated_at,operational_health,connector_health,connector_state,runtime_active,active_engine_count,log_warning_count,log_error_count,connector_order_circuit_open,unresolved_order_intent_count"},
     PythonServiceRouteSchema{"execution", "", "", "executor_kind,owner,state,workload_kind,session_id,requested_job_count,active_engine_count,progress_label,progress_percent,heartbeat_at,tick_count,last_action,last_message,started_at,updated_at,source,notes"},
     PythonServiceRouteSchema{"backtest", "", "", "session_id,state,workload_kind,status_message,symbols,intervals,indicator_keys,logic,symbol_source,capital,run_count,error_count,cancelled,started_at,completed_at,updated_at,source,top_run,runs,top_runs,errors"},
     PythonServiceRouteSchema{"config_summary", "", "", "mode,account_type,connector_backend,selected_exchange,code_language,theme,design,api_credentials_present,symbol_count,interval_count,enabled_indicator_count,runtime_pair_count,backtest_pair_count,llm_enabled,llm_provider,llm_mode,llm_api_key_present"},
@@ -191,7 +194,7 @@ inline constexpr std::array<PythonServiceRouteSchema, 33> kPythonServiceRouteSch
     PythonServiceRouteSchema{"stream_dashboard", "log_limit,incident_limit,interval_ms,max_events", "", "event,data"},
 };
 
-inline constexpr std::array<std::string_view, 32> kPythonBacktestRunRequestFields = {
+inline constexpr std::array<std::string_view, 34> kPythonBacktestRunRequestFields = {
     "account_mode",
     "account_type",
     "api_key",
@@ -209,6 +212,7 @@ inline constexpr std::array<std::string_view, 32> kPythonBacktestRunRequestField
     "mdd_logic",
     "mode",
     "optimizer_combo_size",
+    "optimizer_max_duration_seconds",
     "optimizer_metric",
     "optimizer_min_trades",
     "optimizer_mode",
@@ -216,6 +220,7 @@ inline constexpr std::array<std::string_view, 32> kPythonBacktestRunRequestField
     "position_mode",
     "position_pct",
     "position_pct_units",
+    "queue_if_busy",
     "scan_mdd_limit",
     "scan_scope",
     "scan_top_n",

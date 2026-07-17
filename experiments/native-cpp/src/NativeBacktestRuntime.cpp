@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <utility>
 
 namespace {
 
@@ -39,6 +40,7 @@ struct TradeState {
     double maxPct = 0.0;
     double notional = 0.0;
     double units = 0.0;
+    double entryFee = 0.0;
 };
 
 bool configBool(const QJsonObject &config, const QString &key, bool fallback = false) {
@@ -334,6 +336,9 @@ QJsonObject Result::toJson() const {
         {QStringLiteral("position_mode"), positionMode},
         {QStringLiteral("assets_mode"), assetsMode},
         {QStringLiteral("account_mode"), accountMode},
+        {QStringLiteral("fee_bps"), feeBps},
+        {QStringLiteral("slippage_bps"), slippageBps},
+        {QStringLiteral("fees_paid"), feesPaid},
         {QStringLiteral("source"), QStringLiteral("native-cpp-backtest")},
     };
 }
@@ -364,6 +369,10 @@ Result run(
     result.stopLossPercent = std::max(0.0, request.stopLossPercent);
     result.stopLossScope = request.stopLossScope.trimmed().toLower();
     if (!QStringList{QStringLiteral("per_trade"), QStringLiteral("cumulative"), QStringLiteral("entire_account")}.contains(result.stopLossScope)) result.stopLossScope = QStringLiteral("per_trade");
+    result.feeBps = std::max(0.0, request.feeBps);
+    result.slippageBps = std::max(0.0, request.slippageBps);
+    const double feeRate = result.feeBps / 10000.0;
+    const double slippageRate = result.slippageBps / 10000.0;
 
     const QString pctUnits = request.positionPctUnits.trimmed().toLower();
     double pctFraction = request.positionPct;
@@ -459,6 +468,7 @@ Result run(
     double entryPrice = 0.0;
     double units = 0.0;
     double positionMargin = 0.0;
+    double feesPaid = 0.0;
     QString direction;
     DrawdownState cumulative{equity, 0.0, 0.0};
     DrawdownState account{equity, 0.0, 0.0};
@@ -472,7 +482,7 @@ Result run(
         if (result.mddLogic == QStringLiteral("entire_account")) updateDrawdown(account, value);
     };
     const auto resetTrade = [&trade]() { trade = TradeState{}; };
-    const auto startTrade = [&trade, &entryPrice](const QString &tradeDirection, double tradeUnits) {
+    const auto startTrade = [&trade, &entryPrice](const QString &tradeDirection, double tradeUnits, double entryFee) {
         const double absoluteUnits = std::abs(tradeUnits);
         if (absoluteUnits <= 0.0 || entryPrice <= 0.0) return;
         trade.active = true;
@@ -482,6 +492,7 @@ Result run(
         trade.troughPrice = entryPrice;
         trade.notional = std::abs(entryPrice * absoluteUnits);
         trade.units = absoluteUnits;
+        trade.entryFee = std::max(0.0, entryFee);
     };
     const auto updateTrade = [&trade, &tradeDuring](double price, double high, double low) {
         if (!trade.active || trade.units <= 0.0) return;
@@ -500,7 +511,9 @@ Result run(
         tradeDuring.maxValue = std::max(tradeDuring.maxValue, value);
         tradeDuring.maxPct = std::max(tradeDuring.maxPct, pct);
     };
-    const auto finalizeTrade = [&trade, &tradeDuring, &tradeResult, &perTrade, &result, &resetTrade](std::optional<double> exitPrice) {
+    const auto finalizeTrade = [&trade, &tradeDuring, &tradeResult, &perTrade, &result, &resetTrade](
+                                  std::optional<double> exitPrice,
+                                  std::optional<double> realizedPnl = std::nullopt) {
         if (!trade.active) return;
         tradeDuring.maxValue = std::max(tradeDuring.maxValue, trade.maxValue);
         tradeDuring.maxPct = std::max(tradeDuring.maxPct, trade.maxPct);
@@ -512,9 +525,10 @@ Result run(
         double lossPct = 0.0;
         if (trade.units > 0.0 && trade.entryPrice > 0.0) {
             const double exit = exitPrice.value_or(trade.entryPrice);
-            const double pnl = trade.direction == QStringLiteral("LONG")
-                ? (exit - trade.entryPrice) * trade.units
-                : (trade.entryPrice - exit) * trade.units;
+            const double pnl = realizedPnl.value_or(
+                trade.direction == QStringLiteral("LONG")
+                    ? (exit - trade.entryPrice) * trade.units
+                    : (trade.entryPrice - exit) * trade.units) - trade.entryFee;
             if (pnl < 0.0) {
                 lossValue = std::abs(pnl);
                 if (trade.notional > 0.0) lossPct = lossValue / trade.notional * 100.0;
@@ -523,6 +537,21 @@ Result run(
         tradeResult.maxValue = std::max(tradeResult.maxValue, lossValue);
         tradeResult.maxPct = std::max(tradeResult.maxPct, lossPct);
         resetTrade();
+    };
+    const auto entryExecutionPrice = [slippageRate](double marketPrice, const QString &tradeDirection) {
+        return marketPrice * (tradeDirection == QStringLiteral("LONG") ? 1.0 + slippageRate : 1.0 - slippageRate);
+    };
+    const auto exitExecutionPrice = [slippageRate](double marketPrice, const QString &tradeDirection) {
+        return marketPrice * (tradeDirection == QStringLiteral("LONG") ? 1.0 - slippageRate : 1.0 + slippageRate);
+    };
+    const auto realizeClose = [&direction, &entryPrice, &units, &feesPaid, feeRate, &exitExecutionPrice](double marketPrice) {
+        const double exitPrice = exitExecutionPrice(marketPrice, direction);
+        const double grossPnl = direction == QStringLiteral("LONG")
+            ? (exitPrice - entryPrice) * units
+            : (entryPrice - exitPrice) * units;
+        const double exitFee = std::abs(exitPrice * units) * feeRate;
+        feesPaid += exitFee;
+        return std::make_pair(exitPrice, grossPnl - exitFee);
     };
 
     resetTrade();
@@ -560,9 +589,10 @@ Result run(
             if (direction == QStringLiteral("LONG") && effectiveLeverage > 1.0) {
                 const double liquidation = std::max(0.0, entryPrice * (1.0 - 1.0 / effectiveLeverage));
                 if (low <= liquidation) {
-                    equity = std::max(0.0, equity - std::min(equity, positionMargin));
+                    const double loss = std::min(equity, positionMargin);
+                    equity = std::max(0.0, equity - loss);
                     recordEquity(equity);
-                    finalizeTrade(liquidation);
+                    finalizeTrade(liquidation, -loss);
                     positionOpen = false; units = 0.0; positionMargin = 0.0; direction.clear();
                     continue;
                 }
@@ -570,9 +600,10 @@ Result run(
             if (direction == QStringLiteral("SHORT") && effectiveLeverage > 1.0) {
                 const double liquidation = entryPrice * (1.0 + 1.0 / effectiveLeverage);
                 if (high >= liquidation) {
-                    equity = std::max(0.0, equity - std::min(equity, positionMargin));
+                    const double loss = std::min(equity, positionMargin);
+                    equity = std::max(0.0, equity - loss);
                     recordEquity(equity);
-                    finalizeTrade(liquidation);
+                    finalizeTrade(liquidation, -loss);
                     positionOpen = false; units = 0.0; positionMargin = 0.0; direction.clear();
                     continue;
                 }
@@ -580,9 +611,10 @@ Result run(
 
             if (result.stopLossEnabled && units > 0.0 && entryPrice > 0.0) {
                 const double worst = direction == QStringLiteral("LONG") ? std::min(price, low) : std::max(price, high);
+                const double worstExit = exitExecutionPrice(worst, direction);
                 const double loss = direction == QStringLiteral("LONG")
-                    ? std::max(0.0, (entryPrice - worst) * units)
-                    : std::max(0.0, (worst - entryPrice) * units);
+                    ? std::max(0.0, (entryPrice - worstExit) * units)
+                    : std::max(0.0, (worstExit - entryPrice) * units);
                 const double denominator = result.stopLossScope == QStringLiteral("per_trade") && positionMargin > 0.0
                     ? positionMargin : entryPrice * units;
                 const double lossPct = denominator > 0.0 ? loss / denominator * 100.0 : 0.0;
@@ -591,10 +623,10 @@ Result run(
                 if (!triggered && (result.stopLossMode == QStringLiteral("percent") || result.stopLossMode == QStringLiteral("both"))
                     && result.stopLossPercent > 0.0 && lossPct >= result.stopLossPercent) triggered = true;
                 if (triggered) {
-                    const double pnl = direction == QStringLiteral("LONG") ? (worst - entryPrice) * units : (entryPrice - worst) * units;
+                    const auto [exitPrice, pnl] = realizeClose(worst);
                     equity = std::max(0.0, equity + pnl);
                     recordEquity(equity);
-                    finalizeTrade(worst);
+                    finalizeTrade(exitPrice, pnl);
                     positionOpen = false; units = 0.0; positionMargin = 0.0; direction.clear();
                     ++result.trades;
                     continue;
@@ -602,15 +634,17 @@ Result run(
             }
 
             if (direction == QStringLiteral("LONG") && rawSell[index]) {
-                equity = std::max(0.0, equity + (price - entryPrice) * units);
+                const auto [exitPrice, pnl] = realizeClose(price);
+                equity = std::max(0.0, equity + pnl);
                 recordEquity(equity);
-                finalizeTrade(price);
+                finalizeTrade(exitPrice, pnl);
                 positionOpen = false; units = 0.0; positionMargin = 0.0; direction.clear();
                 entrySell = canShort && entrySell && equity > 0.0;
             } else if (direction == QStringLiteral("SHORT") && rawBuy[index]) {
-                equity = std::max(0.0, equity + (entryPrice - price) * units);
+                const auto [exitPrice, pnl] = realizeClose(price);
+                equity = std::max(0.0, equity + pnl);
                 recordEquity(equity);
-                finalizeTrade(price);
+                finalizeTrade(exitPrice, pnl);
                 positionOpen = false; units = 0.0; positionMargin = 0.0; direction.clear();
                 entryBuy = canLong && entryBuy && equity > 0.0;
             }
@@ -618,18 +652,24 @@ Result run(
 
         if (!positionOpen && equity > 0.0) {
             if (entryBuy && canLong) {
-                entryPrice = price;
+                entryPrice = entryExecutionPrice(price, QStringLiteral("LONG"));
                 positionMargin = equity * pctFraction;
                 units = positionMargin * result.leverage / entryPrice;
                 if (units > 0.0) {
-                    positionOpen = true; direction = QStringLiteral("LONG"); startTrade(direction, units); ++result.trades;
+                    const double entryFee = std::abs(entryPrice * units) * feeRate;
+                    feesPaid += entryFee;
+                    equity = std::max(0.0, equity - entryFee);
+                    positionOpen = true; direction = QStringLiteral("LONG"); startTrade(direction, units, entryFee); ++result.trades;
                 } else positionMargin = 0.0;
             } else if (entrySell && canShort) {
-                entryPrice = price;
+                entryPrice = entryExecutionPrice(price, QStringLiteral("SHORT"));
                 positionMargin = equity * pctFraction;
                 units = positionMargin * result.leverage / entryPrice;
                 if (units > 0.0) {
-                    positionOpen = true; direction = QStringLiteral("SHORT"); startTrade(direction, units); ++result.trades;
+                    const double entryFee = std::abs(entryPrice * units) * feeRate;
+                    feesPaid += entryFee;
+                    equity = std::max(0.0, equity - entryFee);
+                    positionOpen = true; direction = QStringLiteral("SHORT"); startTrade(direction, units, entryFee); ++result.trades;
                 } else positionMargin = 0.0;
             }
         }
@@ -637,14 +677,16 @@ Result run(
 
     if (positionOpen && units > 0.0) {
         const double last = candles.constLast().close;
-        equity = std::max(0.0, equity + (direction == QStringLiteral("LONG") ? (last - entryPrice) * units : (entryPrice - last) * units));
+        const auto [exitPrice, pnl] = realizeClose(last);
+        equity = std::max(0.0, equity + pnl);
         recordEquity(equity);
-        finalizeTrade(last);
+        finalizeTrade(exitPrice, pnl);
     }
 
     result.finalEquity = equity;
     result.roiValue = equity - result.capital;
     result.roiPercent = result.capital != 0.0 ? result.roiValue / result.capital * 100.0 : 0.0;
+    result.feesPaid = feesPaid;
     result.maxDrawdownDuringValue = tradeDuring.maxValue;
     result.maxDrawdownDuringPercent = tradeDuring.maxPct;
     result.maxDrawdownResultValue = tradeResult.maxValue;

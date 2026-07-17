@@ -78,9 +78,11 @@ def check_dependencies(runner: str = "pytest") -> int:
 
 
 def build_unittest_suite() -> unittest.TestSuite:
+    # The tests directory deliberately has no ``__init__.py``.  Supplying a
+    # top-level package therefore fails discovery on Python 3.14; let unittest
+    # use the start directory as its import root instead.
     return unittest.defaultTestLoader.discover(
         start_dir=str(PYTHON_ROOT / "tests"),
-        top_level_dir=str(PYTHON_ROOT),
     )
 
 

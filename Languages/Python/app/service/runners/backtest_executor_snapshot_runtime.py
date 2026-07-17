@@ -56,6 +56,7 @@ def set_running_snapshots(
             source="service-backtest-executor",
         )
     )
+    adapter._persist_backtest_snapshot()
 
 
 def finish_snapshots(
@@ -99,6 +100,7 @@ def finish_snapshots(
             errors=error_payload,
         )
     )
+    adapter._persist_backtest_snapshot()
     adapter._runtime.set_execution_snapshot(
         executor_kind="service-backtest-executor",
         owner="service-process",

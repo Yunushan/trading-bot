@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import sys
@@ -15,19 +16,35 @@ if __package__ in (None, ""):
     if str(_PYTHON_ROOT) not in sys.path:
         sys.path.insert(0, str(_PYTHON_ROOT))
     from app.config import build_default_config, validate_runtime_config
+    from app.security.credential_store import (
+        CredentialStoreUnavailable,
+        credential_store_backend,
+        delete_secret,
+        get_secret,
+        put_secret,
+    )
 else:
     from ..config import build_default_config, validate_runtime_config
+    from ..security.credential_store import (
+        CredentialStoreUnavailable,
+        credential_store_backend,
+        delete_secret,
+        get_secret,
+        put_secret,
+    )
 
 
 SERVICE_CONFIG_FILE_KIND = "trading-bot-service-config"
 SERVICE_CONFIG_FORMAT_VERSION = 1
 SERVICE_CONFIG_ENV_PATH = "BOT_SERVICE_CONFIG_PATH"
+# Retained only so operators can identify and remove a legacy environment setting.
+# It no longer permits writing credentials into JSON configuration files.
 SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV = "BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS"
 SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV = "BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH"
 DEFAULT_SERVICE_CONFIG_PATH = Path("~/.trading-bot/service-config.json")
 SECRET_STORAGE_WARNING = (
-    "This service config is plain JSON and contains secret-bearing fields; "
-    "prefer environment variables or OS credential storage for API keys."
+    "Secret values are redacted from this JSON config. Supply credentials through "
+    "environment variables or OS credential storage."
 )
 _SECRET_KEY_TOKENS = (
     "api_key",
@@ -142,9 +159,74 @@ def service_config_secret_metadata(config: Mapping[str, object] | None) -> dict[
     return {
         "contains_secrets": bool(fields),
         "secret_fields": list(fields),
-        "secret_storage": "plain-json-on-disk",
+        "secret_storage": "redacted-json-config",
         "secret_storage_warning": SECRET_STORAGE_WARNING if fields else "",
     }
+
+
+def _credential_scope(path: Path) -> str:
+    return hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:32]
+
+
+def _previous_credential_metadata(path: Path) -> tuple[str, set[str]]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return "", set()
+    if not isinstance(payload, Mapping):
+        return "", set()
+    backend = str(payload.get("credential_store") or "")
+    fields = payload.get("credential_store_fields")
+    if not isinstance(fields, list):
+        return backend, set()
+    return backend, {str(field) for field in fields if _is_secret_key(field)}
+
+
+def _persist_credentials(config: Mapping[str, object], *, path: Path) -> dict[str, object]:
+    fields = [field for field in _secret_field_paths(config) if "." not in field and "[" not in field]
+    values = {field: str(config.get(field) or "") for field in fields}
+    values = {field: value for field, value in values.items() if value}
+    backend = credential_store_backend()
+    previous_backend, previous_fields = _previous_credential_metadata(path)
+    if not values:
+        if previous_backend == backend and backend != "unavailable":
+            scope = _credential_scope(path)
+            for field in previous_fields:
+                delete_secret(scope=scope, account=field)
+        return {"credential_store": "not-required", "credential_store_available": backend != "unavailable"}
+    if backend == "unavailable":
+        return {"credential_store": "unavailable", "credential_store_available": False}
+    scope = _credential_scope(path)
+    for field, value in values.items():
+        put_secret(scope=scope, account=field, value=value)
+    if previous_backend == backend:
+        for field in previous_fields.difference(values):
+            delete_secret(scope=scope, account=field)
+    return {"credential_store": backend, "credential_store_available": True, "credential_store_fields": sorted(values)}
+
+
+def restore_service_config_credentials(
+    config: Mapping[str, object], *, path: str | Path, metadata: Mapping[str, object] | None = None
+) -> dict[str, object]:
+    restored = copy.deepcopy(dict(config))
+    info = metadata if isinstance(metadata, Mapping) else {}
+    if str(info.get("credential_store") or "") != credential_store_backend():
+        return restored
+    fields = info.get("credential_store_fields")
+    if not isinstance(fields, list):
+        return restored
+    scope = _credential_scope(resolve_service_config_path(path))
+    for field in fields:
+        field_name = str(field or "")
+        if field_name and _is_secret_key(field_name):
+            try:
+                value = get_secret(scope=scope, account=field_name)
+            except (CredentialStoreUnavailable, OSError, ValueError):
+                value = ""
+            if value:
+                restored[field_name] = value
+    return restored
 
 
 def _without_inline_secret_values(payload: object) -> object:
@@ -191,12 +273,19 @@ def _coerce_loaded_config(raw_payload: object, *, path: Path) -> tuple[dict[str,
             "format_version": SERVICE_CONFIG_FORMAT_VERSION,
             "migrated_from_format_version": version_number if version_number < SERVICE_CONFIG_FORMAT_VERSION else None,
             "saved_at": str(raw_payload.get("saved_at") or ""),
+            "credential_store": str(raw_payload.get("credential_store") or ""),
+            "credential_store_fields": list(raw_payload.get("credential_store_fields") or []),
         }
 
     if not isinstance(config_payload, dict):
         raise ValueError(f"Service config file {path} must contain a config object.")
 
-    merged_config = merge_service_config(build_default_config(), config_payload)
+    # Do not restore credentials from legacy plaintext files. Loading a file must
+    # be no less safe than saving one, even if an earlier version created it.
+    merged_config = merge_service_config(
+        build_default_config(),
+        _without_inline_secret_values(config_payload),
+    )
     return validate_runtime_config(merged_config), metadata
 
 
@@ -217,6 +306,8 @@ def load_service_config_file(path: str | Path | None = None) -> tuple[dict[str, 
         "kind": str(metadata.get("kind") or SERVICE_CONFIG_FILE_KIND),
         "format_version": metadata.get("format_version") or SERVICE_CONFIG_FORMAT_VERSION,
         "migrated_from_format_version": metadata.get("migrated_from_format_version"),
+        "credential_store": str(metadata.get("credential_store") or ""),
+        "credential_store_fields": list(metadata.get("credential_store_fields") or []),
     }
 
 
@@ -231,22 +322,18 @@ def write_service_config_file(
         merge_service_config(build_default_config(), config if isinstance(config, Mapping) else {})
     )
     secret_metadata = service_config_secret_metadata(validated_config)
-    contains_secrets = bool(secret_metadata.get("contains_secrets"))
-    inline_secrets_allowed = _env_flag(SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV, False)
-    persisted_config = (
-        validated_config
-        if not contains_secrets or inline_secrets_allowed
-        else _without_inline_secret_values(validated_config)
-    )
+    credential_metadata = _persist_credentials(validated_config, path=resolved_path)
+    persisted_config = _without_inline_secret_values(validated_config)
     saved_at = _now_iso()
     payload = {
         "kind": SERVICE_CONFIG_FILE_KIND,
         "format_version": SERVICE_CONFIG_FORMAT_VERSION,
         "saved_at": saved_at,
         "config": persisted_config,
-        "inline_secrets_persisted": bool(contains_secrets and inline_secrets_allowed),
+        "inline_secrets_persisted": False,
     }
     payload.update(secret_metadata)
+    payload.update(credential_metadata)
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = resolved_path.with_name(f".{resolved_path.name}.tmp")
     with tmp_path.open("w", encoding="utf-8") as handle:
@@ -265,7 +352,8 @@ def write_service_config_file(
         "format_version": SERVICE_CONFIG_FORMAT_VERSION,
     }
     metadata.update(secret_metadata)
-    metadata["inline_secrets_persisted"] = bool(contains_secrets and inline_secrets_allowed)
+    metadata.update(credential_metadata)
+    metadata["inline_secrets_persisted"] = False
     return metadata
 
 
@@ -316,6 +404,7 @@ __all__ = [
     "load_service_config_file",
     "merge_service_config",
     "resolve_service_config_path",
+    "restore_service_config_credentials",
     "service_config_safe_root",
     "service_config_file_status",
     "service_config_secret_metadata",

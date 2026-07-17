@@ -17,6 +17,8 @@ name: Release Linux and macOS Binaries
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: release-linux-macos-${{ github.ref }}
@@ -252,6 +254,39 @@ jobs:
           set -euo pipefail
           chmod +x .github/scripts/package_linux_macos_release.sh
           .github/scripts/package_linux_macos_release.sh
+
+      - name: Write and verify artifact digest manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="release/release-manifest-${{ matrix.id }}.json"
+          mapfile -t artifacts < <(find release -maxdepth 1 -type f ! -name 'release-manifest-*.json' -print)
+          if [[ "${#artifacts[@]}" -eq 0 ]]; then
+            echo "No release artifacts were found to include in the digest manifest." >&2
+            exit 1
+          fi
+          python tools/write_release_manifest.py "${artifacts[@]}" --output "${manifest}" --repo-root "${GITHUB_WORKSPACE}"
+          python tools/write_release_manifest.py --verify "${manifest}" --repo-root "${GITHUB_WORKSPACE}" --require-current-revision
+
+      - name: Generate SPDX SBOM for release assets
+        uses: anchore/sbom-action@v0
+        with:
+          path: release
+          format: spdx-json
+          output-file: release/release-sbom-${{ matrix.id }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest release asset provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+
+      - name: Attest release asset SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+          sbom-path: release/release-sbom-${{ matrix.id }}.spdx.json
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7

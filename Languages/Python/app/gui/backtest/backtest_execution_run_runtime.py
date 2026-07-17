@@ -200,6 +200,8 @@ def run_backtest(self):
             or self.backtest_account_mode_combo.currentText()
         )
         leverage_value = int(self.backtest_leverage_spin.value() or 1)
+        fee_bps = float(self.backtest_fee_bps_spin.value())
+        slippage_bps = float(self.backtest_slippage_bps_spin.value())
 
         logic = (self.backtest_logic_combo.currentText() or "AND").upper()
         self._update_backtest_config("logic", logic)
@@ -212,6 +214,8 @@ def run_backtest(self):
         self._update_backtest_config("assets_mode", assets_mode)
         self._update_backtest_config("account_mode", account_mode)
         self._update_backtest_config("leverage", leverage_value)
+        self._update_backtest_config("fee_bps", fee_bps)
+        self._update_backtest_config("slippage_bps", slippage_bps)
         dbg(
             f"Logic={logic}, capital={capital}, pos%={position_pct}, "
             f"side={side_value}, loop={self.backtest_config.get('loop_interval_override')}"
@@ -274,6 +278,8 @@ def run_backtest(self):
             stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
             stop_loss_percent=float(stop_cfg.get("percent", 0.0) or 0.0),
             stop_loss_scope=str(stop_cfg.get("scope") or "per_trade"),
+            fee_bps=max(0.0, fee_bps),
+            slippage_bps=max(0.0, slippage_bps),
             pair_overrides=pairs_override_for_request,
         )
         dbg(

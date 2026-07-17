@@ -195,13 +195,15 @@ int main(int argc, char **argv) {
         request.stopLossUsdt = stopLoss.value(QStringLiteral("usdt")).toDouble();
         request.stopLossPercent = stopLoss.value(QStringLiteral("percent")).toDouble();
         request.stopLossScope = stopLoss.value(QStringLiteral("scope")).toString();
+        const QJsonObject expected = testCase.value(QStringLiteral("expected")).toObject();
+        request.feeBps = expected.value(QStringLiteral("fee_bps")).toDouble(5.0);
+        request.slippageBps = expected.value(QStringLiteral("slippage_bps")).toDouble(2.0);
         const QJsonObject caseConfigs = testCase.value(QStringLiteral("configs")).toObject();
         for (auto iterator = caseConfigs.constBegin(); iterator != caseConfigs.constEnd(); ++iterator) {
             request.indicators.insert(iterator.key(), iterator.value().toObject());
         }
 
         const NativeBacktestRuntime::Result actual = NativeBacktestRuntime::run(indicatorCandles, request);
-        const QJsonObject expected = testCase.value(QStringLiteral("expected")).toObject();
         check(actual.ok,
               QStringLiteral("native C++ backtest should run Python fixture case %1: %2")
                   .arg(caseName, actual.error));
@@ -1376,10 +1378,10 @@ int main(int argc, char **argv) {
           QStringLiteral("service config secret fields should include array authorization path"));
     check(!jsonArrayContains(secretFields, QStringLiteral("api_key_env")),
           QStringLiteral("service config secret fields should exclude env indirection keys"));
-    check(secretMetadata.value(QStringLiteral("secret_storage")).toString() == QStringLiteral("plain-json-on-disk"),
-          QStringLiteral("service config secret storage should mirror Python plain-json marker"));
-    check(secretMetadata.value(QStringLiteral("secret_storage_warning")).toString().contains(QStringLiteral("plain JSON")),
-          QStringLiteral("service config secret warning should mirror Python plain JSON warning"));
+    check(secretMetadata.value(QStringLiteral("secret_storage")).toString() == QStringLiteral("redacted-json-config"),
+          QStringLiteral("service config secret storage should mirror Python redaction marker"));
+    check(secretMetadata.value(QStringLiteral("secret_storage_warning")).toString().contains(QStringLiteral("redacted")),
+          QStringLiteral("service config secret warning should mirror Python redaction warning"));
 
     const QDateTime savedAt = QDateTime::fromString(QStringLiteral("2026-06-18T12:00:00.000Z"), Qt::ISODateWithMs);
     const QJsonObject redactedPayload = NativeConfigPersistence::buildServiceConfigPersistencePayload(
@@ -1408,11 +1410,30 @@ int main(int argc, char **argv) {
         serviceConfig,
         savedAt,
         true);
-    check(inlinePayload.value(QStringLiteral("inline_secrets_persisted")).toBool(false),
-          QStringLiteral("service config payload should allow explicit inline secret persistence"));
+    check(!inlinePayload.value(QStringLiteral("inline_secrets_persisted")).toBool(true),
+          QStringLiteral("service config payload should ignore legacy inline secret persistence requests"));
     check(inlinePayload.value(QStringLiteral("config")).toObject().value(QStringLiteral("api_key")).toString()
-              == QStringLiteral("exchange-key"),
-          QStringLiteral("service config payload should keep api_key when inline persistence is explicit"));
+              == QString(),
+          QStringLiteral("service config payload should redact api_key despite a legacy override"));
+
+    const NativeConfigPersistence::ServiceConfigLoadResult legacySecretConfig =
+        NativeConfigPersistence::coerceServiceConfigPersistencePayload(
+            QJsonObject{
+                {QStringLiteral("kind"), QStringLiteral("trading-bot-service-config")},
+                {QStringLiteral("format_version"), 1},
+                {QStringLiteral("config"), QJsonObject{
+                    {QStringLiteral("symbols"), QJsonArray{QStringLiteral("ETHUSDT")}},
+                    {QStringLiteral("api_key"), QStringLiteral("legacy-exchange-key")},
+                    {QStringLiteral("api_secret"), QStringLiteral("legacy-exchange-secret")},
+                }},
+            },
+            QStringLiteral("service-config.json"));
+    check(legacySecretConfig.ok,
+          QStringLiteral("legacy service config with inline secrets should load after redaction"));
+    check(legacySecretConfig.config.value(QStringLiteral("api_key")).toString().isEmpty(),
+          QStringLiteral("legacy service config loading should redact api_key"));
+    check(legacySecretConfig.config.value(QStringLiteral("api_secret")).toString().isEmpty(),
+          QStringLiteral("legacy service config loading should redact api_secret"));
 
     const QJsonObject legacyEnvelope{
         {QStringLiteral("kind"), QStringLiteral("trading-bot-service-config")},

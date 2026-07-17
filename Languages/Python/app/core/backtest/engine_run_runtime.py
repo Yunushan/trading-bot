@@ -44,6 +44,10 @@ _STOP_LOSS_KEYS = (
 )
 
 
+class _OptimizerTimeBudgetExhausted(RuntimeError):
+    pass
+
+
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
 
@@ -324,6 +328,13 @@ def run_backtest(
     result_collector = OptimizerTopResultCollector.from_request(request)
     processed_count = 0
     optimizer_started_at = time.monotonic()
+    optimizer_budget_seconds = max(0, int(getattr(request, "optimizer_max_duration_seconds", 0) or 0))
+    optimizer_deadline = (
+        optimizer_started_at + optimizer_budget_seconds
+        if result_collector is not None and optimizer_budget_seconds > 0
+        else None
+    )
+    budget_exhausted = False
 
     def _record_run(run: BacktestRunResult) -> None:
         if result_collector is not None:
@@ -331,12 +342,17 @@ def run_backtest(
         else:
             runs.append(run)
 
+    def _check_execution_boundary() -> None:
+        if should_stop and should_stop():
+            raise RuntimeError("backtest_cancelled")
+        if optimizer_deadline is not None and time.monotonic() >= optimizer_deadline:
+            raise _OptimizerTimeBudgetExhausted("backtest_optimizer_time_budget_exhausted")
+
     engine._should_stop_cb = should_stop
     try:
         source_label_lower = str(request.symbol_source or "").strip().lower()
         for symbol, interval, override_keys, override_leverage, override_controls in iter_request_combos(request):
-            if should_stop and should_stop():
-                raise RuntimeError("backtest_cancelled")
+            _check_execution_boundary()
             try:
                 effective_leverage = resolve_effective_leverage(
                     wrapper=engine.wrapper,
@@ -375,8 +391,7 @@ def run_backtest(
                     if not separate_signal_indicators:
                         raise RuntimeError("No signal indicator available for this backtest run.")
                     for indicator in separate_signal_indicators:
-                        if should_stop and should_stop():
-                            raise RuntimeError("backtest_cancelled")
+                        _check_execution_boundary()
                         run = engine._simulate(
                             symbol,
                             interval,
@@ -445,12 +460,26 @@ def run_backtest(
                                 )
                             )
             except Exception as exc:
-                if str(exc).lower().startswith("backtest_cancelled"):
+                if isinstance(exc, _OptimizerTimeBudgetExhausted) or str(exc).lower().startswith(
+                    "backtest_cancelled"
+                ):
                     raise
                 errors.append({"symbol": symbol, "interval": interval, "error": str(exc)})
+    except _OptimizerTimeBudgetExhausted:
+        budget_exhausted = True
+        errors.append(
+            {
+                "error": "backtest_optimizer_time_budget_exhausted",
+                "processed_runs": processed_count,
+                "max_duration_seconds": optimizer_budget_seconds,
+            }
+        )
+        progress(
+            "Optimizer time budget reached; preserving completed results for review."
+        )
     finally:
         engine._should_stop_cb = None
 
     if result_collector is not None:
         runs = result_collector.finish()
-    return {"runs": runs, "errors": errors}
+    return {"runs": runs, "errors": errors, "budget_exhausted": budget_exhausted}

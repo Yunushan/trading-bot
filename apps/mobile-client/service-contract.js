@@ -6,6 +6,7 @@ const SERVICE_API_ROUTE_SUFFIXES = Object.freeze({
   runtime: "/runtime",
   dashboard: "/dashboard",
   status: "/status",
+  metrics: "/metrics",
   execution: "/execution",
   backtest: "/backtest",
   config_summary: "/config-summary",

@@ -170,6 +170,8 @@ def run_backtest_scan(self):
             or self.backtest_account_mode_combo.currentText()
         )
         leverage_value = int(self.backtest_leverage_spin.value() or 1)
+        fee_bps = float(self.backtest_fee_bps_spin.value())
+        slippage_bps = float(self.backtest_slippage_bps_spin.value())
 
         logic = (self.backtest_logic_combo.currentText() or "AND").upper()
         self._update_backtest_config("logic", logic)
@@ -182,6 +184,8 @@ def run_backtest_scan(self):
         self._update_backtest_config("assets_mode", assets_mode)
         self._update_backtest_config("account_mode", account_mode)
         self._update_backtest_config("leverage", leverage_value)
+        self._update_backtest_config("fee_bps", fee_bps)
+        self._update_backtest_config("slippage_bps", slippage_bps)
 
         optimizer_mode_combo = getattr(self, "backtest_optimizer_mode_combo", None)
         optimizer_metric_combo = getattr(self, "backtest_optimizer_metric_combo", None)
@@ -325,6 +329,8 @@ def run_backtest_scan(self):
             stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
             stop_loss_percent=float(stop_cfg.get("percent", 0.0) or 0.0),
             stop_loss_scope=str(stop_cfg.get("scope") or "per_trade"),
+            fee_bps=max(0.0, fee_bps),
+            slippage_bps=max(0.0, slippage_bps),
             pair_overrides=pair_overrides,
         )
 
@@ -341,6 +347,9 @@ def run_backtest_scan(self):
         request.optimizer_mode = optimizer_mode
         request.optimizer_scope = scan_scope
         request.optimizer_run_count = run_count
+        request.optimizer_max_duration_seconds = int(
+            self.backtest_optimizer_max_duration_spin.value()
+        ) * 60
         self._backtest_scan_optimizer_metric = optimizer_metric
         self._backtest_scan_optimizer_min_trades = optimizer_min_trades
         self._backtest_scan_optimizer_mode = optimizer_mode
@@ -367,6 +376,7 @@ def run_backtest_scan(self):
             optimizer_metric=optimizer_metric,
             optimizer_combo_size=optimizer_combo_size,
             optimizer_min_trades=optimizer_min_trades,
+            optimizer_max_duration_seconds=request.optimizer_max_duration_seconds,
             scan_scope=scan_scope,
             scan_top_n=top_n,
             scan_mdd_limit=float(self._backtest_scan_mdd_limit),
@@ -433,7 +443,8 @@ def run_backtest_scan(self):
         )
         status_message = (
             f"Running optimizer: {run_count} run(s), {scope_label}, {mode_label}; "
-            f"rough estimate {plan.get('estimated_duration', 'unknown')}..."
+            f"rough estimate {plan.get('estimated_duration', 'unknown')}; "
+            f"time budget {backtest_optimizer_runtime.format_optimizer_duration(request.optimizer_max_duration_seconds)}..."
         )
         if large_optimizer_run:
             status_message += (

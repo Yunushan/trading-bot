@@ -45,6 +45,7 @@ def run_backtest_thread(
             should_stop=lambda: bool(adapter._cancel_event and adapter._cancel_event.is_set()),
         )
         run_records = list(result.get("runs", []) or []) if isinstance(result, dict) else []
+        budget_exhausted = bool(result.get("budget_exhausted")) if isinstance(result, dict) else False
         if bool(summary.get("optimizer_enabled")):
             first_record = run_to_mapping(run_records[0]) if run_records else {}
             if first_record.get("optimizer_rank") is not None or first_record.get("optimizer_candidate_count") is not None:
@@ -79,6 +80,23 @@ def run_backtest_thread(
             )
             adapter._runtime.record_log_event(message, source="service-backtest-executor", level="warn")
             return
+        if budget_exhausted:
+            message = f"Backtest optimizer time budget reached after {len(run_records)} completed run(s)."
+            finish_snapshots(
+                adapter,
+                session_id=session_id,
+                started_at=started_at,
+                summary=summary,
+                state="budget_exhausted",
+                message=message,
+                cancelled=False,
+                run_records=run_records,
+                error_records=error_records,
+                progress_percent=None,
+                action="budget_exhausted",
+            )
+            adapter._runtime.record_log_event(message, source="service-backtest-executor", level="warn")
+            return
         message = (
             f"Backtest session completed with {len(run_records)} run(s)"
             f" and {len(error_records)} error(s)."
@@ -98,6 +116,23 @@ def run_backtest_thread(
         )
         adapter._runtime.record_log_event(message, source="service-backtest-executor", level="info")
     except Exception as exc:
+        if str(exc).lower().startswith("backtest_cancelled"):
+            message = "Backtest session cancelled."
+            finish_snapshots(
+                adapter,
+                session_id=session_id,
+                started_at=started_at,
+                summary=summary,
+                state="cancelled",
+                message=message,
+                cancelled=True,
+                run_records=[],
+                error_records=[],
+                progress_percent=None,
+                action="cancel",
+            )
+            adapter._runtime.record_log_event(message, source="service-backtest-executor", level="warn")
+            return
         message = f"Backtest session failed: {exc}"
         finish_snapshots(
             adapter,
@@ -114,6 +149,10 @@ def run_backtest_thread(
         )
         adapter._runtime.record_log_event(message, source="service-backtest-executor", level="error")
     finally:
-        with adapter._lock:
-            adapter._worker_thread = None
-            adapter._cancel_event = None
+        next_session_id = adapter._start_next_queued_backtest()
+        if next_session_id:
+            adapter._runtime.record_log_event(
+                f"Queued backtest session {next_session_id} started.",
+                source="service-backtest-executor",
+                level="info",
+            )

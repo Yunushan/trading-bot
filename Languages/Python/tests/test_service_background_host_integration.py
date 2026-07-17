@@ -72,6 +72,15 @@ class _FakeBacktestWrapper:
         )
 
 
+class _BlockingBacktestWrapper(_FakeBacktestWrapper):
+    release = None
+
+    def get_klines_range(self, *args, **kwargs):
+        if self.release is not None:
+            self.release.wait(timeout=5.0)
+        return super().get_klines_range(*args, **kwargs)
+
+
 class ServiceBackgroundHostIntegrationTests(unittest.TestCase):
     @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is not installed in this interpreter")
     def test_service_backtest_executor_runs_with_fake_wrapper(self):
@@ -125,6 +134,77 @@ class ServiceBackgroundHostIntegrationTests(unittest.TestCase):
         self.assertEqual(execution["executor_kind"], "service-backtest-executor")
         self.assertEqual(execution["workload_kind"], "backtest-run")
         self.assertEqual(execution["last_action"], "complete")
+
+    @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is not installed in this interpreter")
+    def test_service_backtest_executor_accepts_bounded_queued_job(self):
+        import threading
+
+        release = threading.Event()
+        _BlockingBacktestWrapper.release = release
+        service = TradingBotService()
+        service.enable_backtest_executor(wrapper_factory=_BlockingBacktestWrapper)
+        request = {
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1h"],
+            "logic": "AND",
+            "symbol_source": "Futures",
+            "capital": 1000.0,
+            "start": "2025-01-01T00:00:00",
+            "end": "2025-01-10T00:00:00",
+            "indicators": [{"key": "rsi", "params": {"length": 14, "buy_value": 30, "sell_value": 70}}],
+        }
+        first = service.submit_backtest(request, source="queue-test").to_dict()
+        second = service.submit_backtest({**request, "queue_if_busy": True}, source="queue-test").to_dict()
+        self.assertTrue(first["accepted"])
+        self.assertTrue(second["accepted"])
+        self.assertEqual("queued", second["state"])
+
+        release.set()
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            snapshot = service.get_backtest_snapshot().to_dict()
+            if snapshot["state"] == "completed" and snapshot["session_id"] == second["session_id"]:
+                break
+            time.sleep(0.05)
+        self.assertEqual("completed", snapshot["state"])
+        self.assertEqual(second["session_id"], snapshot["session_id"])
+
+    @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is not installed in this interpreter")
+    def test_service_backtest_stop_clears_pending_queue(self):
+        import threading
+
+        release = threading.Event()
+        _BlockingBacktestWrapper.release = release
+        service = TradingBotService()
+        service.enable_backtest_executor(wrapper_factory=_BlockingBacktestWrapper)
+        request = {
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1h"],
+            "logic": "AND",
+            "symbol_source": "Futures",
+            "capital": 1000.0,
+            "start": "2025-01-01T00:00:00",
+            "end": "2025-01-10T00:00:00",
+            "indicators": [{"key": "rsi", "params": {"length": 14, "buy_value": 30, "sell_value": 70}}],
+        }
+        first = service.submit_backtest(request, source="queue-stop-test").to_dict()
+        queued = service.submit_backtest({**request, "queue_if_busy": True}, source="queue-stop-test").to_dict()
+        self.assertEqual("queued", queued["state"])
+
+        stopped = service.stop_backtest(source="queue-stop-test").to_dict()
+        self.assertTrue(stopped["accepted"])
+        self.assertEqual("stop", stopped["action"])
+        self.assertIn("Cancelled 1 pending", stopped["status_message"])
+        release.set()
+
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            snapshot = service.get_backtest_snapshot().to_dict()
+            if snapshot["state"] == "cancelled":
+                break
+            time.sleep(0.05)
+        self.assertEqual("cancelled", snapshot["state"])
+        self.assertEqual(first["session_id"], snapshot["session_id"])
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_background_service_api_host_serves_embedded_service_state(self):

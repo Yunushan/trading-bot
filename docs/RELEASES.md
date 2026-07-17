@@ -75,6 +75,8 @@ git push origin v1.0.0
    - `Trading-Bot-Rust-*`
    - Tauri Rust desktop assets
    - Linux, macOS, and FreeBSD artifacts from their respective workflows
+   - Per-platform `release-manifest-*.json` SHA-256 manifests and
+     `release-sbom-*.spdx.json` software bills of materials
 5. Verify the published release automatically:
 
 ```bash
@@ -82,3 +84,24 @@ python tools/check_release_assets.py v1.0.30
 ```
 
 Add `--list-expected` if you only want to preview the expected asset matrix.
+
+## Integrity and provenance
+
+Each Windows, Linux, and macOS release matrix job writes a SHA-256 digest
+manifest, generates an SPDX SBOM, and creates GitHub Artifact Attestations for
+both the built files and their SBOM. The provenance and SBOM attestations use
+the GitHub Actions OIDC identity and are signed by Sigstore through
+`actions/attest`.
+
+After downloading a release asset, verify its provenance with GitHub CLI:
+
+```bash
+gh attestation verify PATH/TO/ASSET -R Yunushan/trading-bot
+```
+
+Verify the asset's SPDX SBOM attestation with:
+
+```bash
+gh attestation verify PATH/TO/ASSET -R Yunushan/trading-bot \
+  --predicate-type https://spdx.dev/Document/v2.3
+```

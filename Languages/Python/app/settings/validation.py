@@ -249,6 +249,7 @@ _ALLOWED_BACKTEST_CONFIG_KEYS = frozenset(
         "connector_backend",
         "end_date",
         "execution_backend",
+        "fee_bps",
         "indicators",
         "intervals",
         "leverage",
@@ -260,12 +261,14 @@ _ALLOWED_BACKTEST_CONFIG_KEYS = frozenset(
         "optimizer_combo_size",
         "optimizer_metric",
         "optimizer_min_trades",
+        "optimizer_max_duration_seconds",
         "optimizer_mode",
         "scan_auto_apply",
         "scan_mdd_limit",
         "scan_scope",
         "scan_top_n",
         "side",
+        "slippage_bps",
         "start_date",
         "stop_loss",
         "symbol_source",
@@ -790,6 +793,8 @@ def _validate_backtest_config(cfg: dict[str, object], issues: list[ConfigValidat
         max_value=BINANCE_MAX_FUTURES_LEVERAGE,
         prefix="backtest",
     )
+    _validate_float_range(backtest_cfg, "fee_bps", issues, min_value=0.0, max_value=1_000.0, prefix="backtest")
+    _validate_float_range(backtest_cfg, "slippage_bps", issues, min_value=0.0, max_value=1_000.0, prefix="backtest")
     if "mdd_logic" in backtest_cfg:
         mdd_choices = {item: item for item in MDD_LOGIC_OPTIONS}
         _validate_choice(backtest_cfg, "mdd_logic", mdd_choices, issues, prefix="backtest")
@@ -800,6 +805,14 @@ def _validate_backtest_config(cfg: dict[str, object], issues: list[ConfigValidat
     _validate_choice(backtest_cfg, "optimizer_mode", _OPTIMIZER_MODE_CHOICES, issues, prefix="backtest")
     _validate_choice(backtest_cfg, "optimizer_metric", _OPTIMIZER_METRIC_CHOICES, issues, prefix="backtest")
     _validate_int_range(backtest_cfg, "optimizer_combo_size", issues, min_value=1, max_value=5, prefix="backtest")
+    _validate_int_range(
+        backtest_cfg,
+        "optimizer_max_duration_seconds",
+        issues,
+        min_value=60,
+        max_value=604800,
+        prefix="backtest",
+    )
     _validate_int_range(
         backtest_cfg,
         "optimizer_min_trades",

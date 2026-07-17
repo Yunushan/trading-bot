@@ -47,6 +47,8 @@ def simulate_backtest(
     leverage = max(1.0, float(leverage_override if leverage_override is not None else (request.leverage or 1.0)))
     margin_mode = (request.margin_mode or "Isolated").strip().upper()
     side_pref = (request.side or "BOTH").strip().upper()
+    fee_rate = max(0.0, float(getattr(request, "fee_bps", 0.0) or 0.0)) / 10_000.0
+    slippage_rate = max(0.0, float(getattr(request, "slippage_bps", 0.0) or 0.0)) / 10_000.0
 
     indicator_signals, indicator_keys = collect_indicator_signals(
         symbol=symbol,
@@ -71,6 +73,7 @@ def simulate_backtest(
     direction = ""
     equity = float(capital)
     trades = 0
+    fees_paid = 0.0
 
     mdd_logic_raw = getattr(request, "mdd_logic", MDD_LOGIC_DEFAULT)
     mdd_logic = str(mdd_logic_raw or MDD_LOGIC_DEFAULT).lower()
@@ -92,6 +95,7 @@ def simulate_backtest(
         "max_pct": 0.0,
         "notional": 0.0,
         "units": 0.0,
+        "entry_fee": 0.0,
     }
 
     def _update_drawdown(state: dict, current_equity: float) -> None:
@@ -129,8 +133,9 @@ def simulate_backtest(
         trade_state["max_pct"] = 0.0
         trade_state["notional"] = 0.0
         trade_state["units"] = 0.0
+        trade_state["entry_fee"] = 0.0
 
-    def _start_trade(dir_text: str, units_val: float) -> None:
+    def _start_trade(dir_text: str, units_val: float, entry_fee_value: float = 0.0) -> None:
         units_abs = abs(units_val)
         if units_abs <= 0.0 or entry_price <= 0.0:
             return
@@ -143,6 +148,7 @@ def simulate_backtest(
         trade_state["max_pct"] = 0.0
         trade_state["notional"] = abs(entry_price * units_abs)
         trade_state["units"] = units_abs
+        trade_state["entry_fee"] = max(0.0, float(entry_fee_value))
 
     def _update_trade_drawdown(price_val: float, high_val: float, low_val: float) -> None:
         if not trade_state["active"]:
@@ -173,7 +179,25 @@ def simulate_backtest(
         if drawdown_pct > trade_drawdown_totals["max_pct"]:
             trade_drawdown_totals["max_pct"] = drawdown_pct
 
-    def _finalize_trade(exit_price: float | None = None) -> None:
+    def _entry_execution_price(market_price: float, direction_value: str) -> float:
+        return market_price * (1.0 + slippage_rate if direction_value == "LONG" else 1.0 - slippage_rate)
+
+    def _exit_execution_price(market_price: float, direction_value: str) -> float:
+        return market_price * (1.0 - slippage_rate if direction_value == "LONG" else 1.0 + slippage_rate)
+
+    def _realize_close(market_price: float) -> tuple[float, float]:
+        """Return slippage-adjusted exit price and net PnL after the exit fee."""
+        nonlocal fees_paid
+        exit_px = _exit_execution_price(float(market_price), direction)
+        if direction == "LONG":
+            gross_pnl = (exit_px - entry_price) * units
+        else:
+            gross_pnl = (entry_price - exit_px) * units
+        exit_fee = abs(exit_px * units) * fee_rate
+        fees_paid += exit_fee
+        return exit_px, gross_pnl - exit_fee
+
+    def _finalize_trade(exit_price: float | None = None, realized_pnl: float | None = None) -> None:
         if not trade_state["active"]:
             return
         value = trade_state["max_value"]
@@ -188,6 +212,7 @@ def simulate_backtest(
                 per_trade_state["max_pct"] = pct
         units_in_position = float(trade_state.get("units") or 0.0)
         entry_price_local = float(trade_state.get("entry_price") or 0.0)
+        entry_fee_local = float(trade_state.get("entry_fee") or 0.0)
         notional = float(trade_state.get("notional") or 0.0)
         if notional <= 0.0 and entry_price_local > 0.0 and units_in_position > 0.0:
             notional = abs(entry_price_local * units_in_position)
@@ -195,7 +220,9 @@ def simulate_backtest(
         loss_pct = 0.0
         if units_in_position > 0.0 and entry_price_local > 0.0:
             exit_px = entry_price_local if exit_price is None else float(exit_price)
-            if trade_state.get("direction") == "LONG":
+            if realized_pnl is not None:
+                pnl_val = float(realized_pnl) - entry_fee_local
+            elif trade_state.get("direction") == "LONG":
                 pnl_val = (exit_px - entry_price_local) * units_in_position
             else:
                 pnl_val = (entry_price_local - exit_px) * units_in_position
@@ -318,7 +345,7 @@ def simulate_backtest(
                     loss = min(equity, position_margin)
                     equity = max(0.0, equity - loss)
                     _record_realized_equity(equity)
-                    _finalize_trade(float(liq_price))
+                    _finalize_trade(float(liq_price), realized_pnl=-loss)
                     position_open = False
                     units = 0.0
                     position_margin = 0.0
@@ -330,7 +357,7 @@ def simulate_backtest(
                     loss = min(equity, position_margin)
                     equity = max(0.0, equity - loss)
                     _record_realized_equity(equity)
-                    _finalize_trade(float(liq_price))
+                    _finalize_trade(float(liq_price), realized_pnl=-loss)
                     position_open = False
                     units = 0.0
                     position_margin = 0.0
@@ -340,10 +367,16 @@ def simulate_backtest(
             if stop_enabled and units > 0.0 and entry_price > 0.0:
                 if direction == "LONG":
                     worst_price = min(price, low_price_val)
-                    loss_usdt = max(0.0, (entry_price - worst_price) * units)
+                    loss_usdt = max(
+                        0.0,
+                        (entry_price - _exit_execution_price(worst_price, direction)) * units,
+                    )
                 else:
                     worst_price = max(price, high_price_val)
-                    loss_usdt = max(0.0, (worst_price - entry_price) * units)
+                    loss_usdt = max(
+                        0.0,
+                        (_exit_execution_price(worst_price, direction) - entry_price) * units,
+                    )
                 if scope == "per_trade" and position_margin > 0.0:
                     denom = position_margin
                 else:
@@ -355,11 +388,10 @@ def simulate_backtest(
                 if not triggered and stop_mode in ("percent", "both") and stop_percent > 0.0 and loss_pct >= stop_percent:
                     triggered = True
                 if triggered:
-                    exit_price = worst_price
-                    pnl = (exit_price - entry_price) * units if direction == "LONG" else (entry_price - exit_price) * units
+                    exit_price, pnl = _realize_close(worst_price)
                     equity = max(0.0, equity + pnl)
                     _record_realized_equity(equity)
-                    _finalize_trade(exit_price)
+                    _finalize_trade(exit_price, realized_pnl=pnl)
                     position_open = False
                     units = 0.0
                     position_margin = 0.0
@@ -368,10 +400,10 @@ def simulate_backtest(
                     continue
 
             if direction == "LONG" and raw_sell:
-                pnl = (price - entry_price) * units
+                exit_price, pnl = _realize_close(price)
                 equity = max(0.0, equity + pnl)
                 _record_realized_equity(equity)
-                _finalize_trade(price)
+                _finalize_trade(exit_price, realized_pnl=pnl)
                 position_open = False
                 units = 0.0
                 position_margin = 0.0
@@ -381,10 +413,10 @@ def simulate_backtest(
                 else:
                     entry_sell = False
             elif direction == "SHORT" and raw_buy:
-                pnl = (entry_price - price) * units
+                exit_price, pnl = _realize_close(price)
                 equity = max(0.0, equity + pnl)
                 _record_realized_equity(equity)
-                _finalize_trade(price)
+                _finalize_trade(exit_price, realized_pnl=pnl)
                 position_open = False
                 units = 0.0
                 position_margin = 0.0
@@ -396,37 +428,40 @@ def simulate_backtest(
 
         if not position_open and equity > 0.0:
             if entry_buy and can_long:
-                entry_price = price
+                entry_price = _entry_execution_price(price, "LONG")
                 position_margin = equity * pct_fraction
                 units = (position_margin * leverage) / entry_price if entry_price > 0.0 else 0.0
                 if units <= 0.0:
                     position_margin = 0.0
                     continue
+                entry_fee = abs(entry_price * units) * fee_rate
+                fees_paid += entry_fee
+                equity = max(0.0, equity - entry_fee)
                 position_open = True
                 direction = "LONG"
-                _start_trade(direction, units)
+                _start_trade(direction, units, entry_fee)
                 trades += 1
             elif entry_sell and can_short:
-                entry_price = price
+                entry_price = _entry_execution_price(price, "SHORT")
                 position_margin = equity * pct_fraction
                 units = (position_margin * leverage) / entry_price if entry_price > 0.0 else 0.0
                 if units <= 0.0:
                     position_margin = 0.0
                     continue
+                entry_fee = abs(entry_price * units) * fee_rate
+                fees_paid += entry_fee
+                equity = max(0.0, equity - entry_fee)
                 position_open = True
                 direction = "SHORT"
-                _start_trade(direction, units)
+                _start_trade(direction, units, entry_fee)
                 trades += 1
 
     if position_open and units > 0.0:
         last_price = float(work_df["close"].iloc[-1] or 0.0)
-        if direction == "LONG":
-            pnl = (last_price - entry_price) * units
-        else:
-            pnl = (entry_price - last_price) * units
+        exit_price, pnl = _realize_close(last_price)
         equity = max(0.0, equity + pnl)
         _record_realized_equity(equity)
-        _finalize_trade(last_price)
+        _finalize_trade(exit_price, realized_pnl=pnl)
         position_open = False
         units = 0.0
         position_margin = 0.0
@@ -488,4 +523,7 @@ def simulate_backtest(
         position_mode=position_mode_val,
         assets_mode=assets_mode_val,
         account_mode=account_mode_val,
+        fee_bps=float(fee_rate * 10_000.0),
+        slippage_bps=float(slippage_rate * 10_000.0),
+        fees_paid=float(fees_paid),
     )

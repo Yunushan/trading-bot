@@ -51,6 +51,9 @@ from app.integrations.exchanges.binance.orders import order_audit_runtime as ord
 from app.integrations.exchanges.binance.orders.order_fallback_runtime import (
     bind_binance_order_fallback_runtime as new_bind_order_fallback,
 )
+from app.integrations.exchanges.binance.orders.order_intent_runtime import (
+    bind_binance_order_intent_runtime as new_bind_order_intent,
+)
 from app.integrations.exchanges.binance.orders.order_sizing_runtime import (
     bind_binance_order_sizing_runtime as new_bind_order_sizing,
 )
@@ -334,6 +337,7 @@ def _live_ack_config(**overrides):
 new_bind_order_audit(_SpotSizingWrapper)
 new_bind_order_sizing(_SpotSizingWrapper)
 new_bind_order_audit(_FuturesAuditWrapper)
+new_bind_order_intent(_FuturesAuditWrapper)
 new_bind_order_fallback(_FuturesAuditWrapper)
 new_bind_order_submit_guard(_GuardedSpotSizingWrapper)
 new_bind_order_submit_guard(_GuardedFuturesAuditWrapper)
@@ -470,6 +474,9 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             self.assertEqual(["exchange_order_request", "exchange_order_response"], [row["event"] for row in rows])
             self.assertEqual("ETHUSDT", rows[1]["symbol"])
             self.assertEqual(99, rows[1]["order_id"])
+            request_id = rows[0]["params"]["newClientOrderId"]
+            self.assertRegex(request_id, r"^tb-[0-9a-f]{32}$")
+            self.assertEqual(request_id, wrapper.client.orders[0]["newClientOrderId"])
 
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "futures-error.jsonl"
@@ -484,6 +491,60 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(["exchange_order_request", "exchange_order_error"], [row["event"] for row in rows])
             self.assertIn("exchange rejected", rows[1]["error"])
+
+    def test_futures_order_intents_block_ambiguous_recovery_and_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "futures.jsonl"
+            wrapper = _FuturesAuditWrapper()
+            wrapper._configure_order_audit(path=audit_path)
+            params = {
+                "symbol": "ETHUSDT",
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": "0.1",
+                "newClientOrderId": "tb-idempotency-test",
+            }
+
+            wrapper._futures_create_order_with_fallback(params)
+            status = wrapper.get_order_intent_status()
+            self.assertEqual(1, status["intent_count"])
+            self.assertEqual(0, status["unresolved_count"])
+            with self.assertRaisesRegex(LiveTradingSafetyError, "already has state accepted"):
+                wrapper._futures_create_order_with_fallback(params)
+            self.assertEqual(1, len(wrapper.client.orders))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "futures-ambiguous.jsonl"
+            wrapper = _FuturesAuditWrapper(fail=True)
+            wrapper._configure_order_audit(path=audit_path)
+            with self.assertRaisesRegex(RuntimeError, "exchange rejected"):
+                wrapper._futures_create_order_with_fallback(
+                    {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
+                )
+
+            status = wrapper.get_order_intent_status()
+            self.assertEqual(1, status["unresolved_count"])
+            self.assertRegex(status["unresolved_client_order_ids"][0], r"^tb-[0-9a-f]{32}$")
+            wrapper.client.fail = False
+            with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved exchange order intent"):
+                wrapper._futures_create_order_with_fallback(
+                    {"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
+                )
+            self.assertEqual(1, len(wrapper.client.orders))
+            client_order_id = status["unresolved_client_order_ids"][0]
+            wrapper._query_order_intent_exchange = lambda _record: {
+                "orderId": 100,
+                "status": "FILLED",
+                "clientOrderId": client_order_id,
+            }
+            reconciled = wrapper.reconcile_order_intent(client_order_id)
+            self.assertTrue(reconciled["reconciled"])
+            self.assertEqual("accepted", reconciled["state"])
+            self.assertEqual(0, wrapper.get_order_intent_status()["unresolved_count"])
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
+            )
+            self.assertEqual(2, len(wrapper.client.orders))
 
     def test_live_futures_submit_guard_blocks_unconfirmed_submit_before_client_call(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -548,7 +609,11 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
 
             self.assertEqual("primary", via)
             self.assertEqual(99, order["orderId"])
-            self.assertEqual([{"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}], wrapper.client.orders)
+            self.assertEqual(1, len(wrapper.client.orders))
+            self.assertEqual("ETHUSDT", wrapper.client.orders[0]["symbol"])
+            self.assertEqual("BUY", wrapper.client.orders[0]["side"])
+            self.assertEqual("0.1", wrapper.client.orders[0]["quantity"])
+            self.assertRegex(wrapper.client.orders[0]["newClientOrderId"], r"^tb-[0-9a-f]{32}$")
 
     def test_demo_futures_submit_guard_validates_order_without_live_credentials_or_session_count(self):
         self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_intent_all_modes"])
@@ -591,7 +656,11 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
 
             self.assertEqual("primary", via)
             self.assertEqual(99, first["orderId"])
-            self.assertEqual([{"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}], wrapper.client.orders)
+            self.assertEqual(1, len(wrapper.client.orders))
+            self.assertEqual("ETHUSDT", wrapper.client.orders[0]["symbol"])
+            self.assertEqual("BUY", wrapper.client.orders[0]["side"])
+            self.assertEqual("0.1", wrapper.client.orders[0]["quantity"])
+            self.assertRegex(wrapper.client.orders[0]["newClientOrderId"], r"^tb-[0-9a-f]{32}$")
             rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(
                 [
@@ -709,10 +778,12 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
 
         self.assertEqual("primary", via)
         self.assertEqual(99, order["orderId"])
-        self.assertEqual(
-            [{"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.10", "reduceOnly": True}],
-            wrapper.client.orders,
-        )
+        self.assertEqual(1, len(wrapper.client.orders))
+        self.assertEqual("ETHUSDT", wrapper.client.orders[0]["symbol"])
+        self.assertEqual("SELL", wrapper.client.orders[0]["side"])
+        self.assertEqual("0.10", wrapper.client.orders[0]["quantity"])
+        self.assertTrue(wrapper.client.orders[0]["reduceOnly"])
+        self.assertRegex(wrapper.client.orders[0]["newClientOrderId"], r"^tb-[0-9a-f]{32}$")
 
     def test_live_spot_submit_guard_blocks_disabled_audit_before_client_call(self):
         wrapper = _GuardedSpotSizingWrapper(live_safety_config=_live_ack_config())

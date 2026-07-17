@@ -13,6 +13,7 @@
     "runtime": "/runtime",
     "dashboard": "/dashboard",
     "status": "/status",
+    "metrics": "/metrics",
     "execution": "/execution",
     "backtest": "/backtest",
     "config_summary": "/config-summary",
@@ -48,6 +49,7 @@
     "runtime": "/api/v1/runtime",
     "dashboard": "/api/v1/dashboard",
     "status": "/api/v1/status",
+    "metrics": "/api/v1/metrics",
     "execution": "/api/v1/execution",
     "backtest": "/api/v1/backtest",
     "config_summary": "/api/v1/config-summary",
@@ -83,6 +85,7 @@
     "runtime": "/api/runtime",
     "dashboard": "/api/dashboard",
     "status": "/api/status",
+    "metrics": "/api/metrics",
     "execution": "/api/execution",
     "backtest": "/api/backtest",
     "config_summary": "/api/config-summary",
@@ -122,6 +125,9 @@
       "GET"
     ],
     "status": [
+      "GET"
+    ],
+    "metrics": [
       "GET"
     ],
     "execution": [
@@ -286,6 +292,22 @@
         "operational_health",
         "operational",
         "notes"
+      ]
+    },
+    "metrics": {
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "generated_at",
+        "operational_health",
+        "connector_health",
+        "connector_state",
+        "runtime_active",
+        "active_engine_count",
+        "log_warning_count",
+        "log_error_count",
+        "connector_order_circuit_open",
+        "unresolved_order_intent_count"
       ]
     },
     "execution": {
