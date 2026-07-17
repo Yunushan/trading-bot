@@ -10,6 +10,7 @@ use crate::market_data::BinanceMarket;
 
 const DEFAULT_RECV_WINDOW_MS: u64 = 10_000;
 const POSITION_EPSILON: f64 = 1e-10;
+const PREFERRED_FUTURES_COLLATERAL_ASSETS: [&str; 3] = ["USDT", "BUSD", "USD"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinanceApiCredentials {
@@ -178,31 +179,31 @@ impl BinanceSignedRestClient {
     }
 
     pub fn futures_balance_url(&self) -> String {
-        self.url_for_path(self.futures_balance_path())
+        self.url_for_path("/fapi/v2/balance")
     }
 
     pub fn futures_account_url(&self) -> String {
-        self.url_for_path(self.futures_account_path())
+        self.url_for_path("/fapi/v2/account")
     }
 
     pub fn futures_position_risk_url(&self) -> String {
-        self.url_for_path(self.futures_position_risk_path())
+        self.url_for_path("/fapi/v2/positionRisk")
     }
 
     pub fn futures_position_mode_url(&self) -> String {
-        self.url_for_path(self.futures_v1_path("/positionSide/dual"))
+        self.url_for_path("/fapi/v1/positionSide/dual")
     }
 
     pub fn futures_margin_type_url(&self) -> String {
-        self.url_for_path(self.futures_v1_path("/marginType"))
+        self.url_for_path("/fapi/v1/marginType")
     }
 
     pub fn futures_leverage_url(&self) -> String {
-        self.url_for_path(self.futures_v1_path("/leverage"))
+        self.url_for_path("/fapi/v1/leverage")
     }
 
     pub fn futures_multi_assets_margin_url(&self) -> String {
-        self.url_for_path(self.futures_v1_path("/multiAssetsMargin"))
+        self.url_for_path("/fapi/v1/multiAssetsMargin")
     }
 
     pub fn spot_account_url(&self) -> String {
@@ -214,9 +215,10 @@ impl BinanceSignedRestClient {
         credentials: &BinanceApiCredentials,
     ) -> Result<BinanceAccountSnapshot> {
         match self.market {
-            BinanceMarket::Futures | BinanceMarket::CoinFutures => {
-                self.fetch_futures_usdt_balance(credentials)
-            }
+            BinanceMarket::Futures => self.fetch_futures_usdt_balance(credentials),
+            BinanceMarket::CoinFutures => bail!(
+                "COIN-M futures account snapshots are not supported by the USDT account runtime"
+            ),
             BinanceMarket::Spot => self.fetch_spot_usdt_balance(credentials),
         }
     }
@@ -225,15 +227,15 @@ impl BinanceSignedRestClient {
         &self,
         credentials: &BinanceApiCredentials,
     ) -> Result<BinanceAccountSnapshot> {
-        self.require_futures_market()?;
+        self.require_market(BinanceMarket::Futures)?;
         let balance_payload = self.signed_get_json(
-            self.futures_balance_path(),
+            "/fapi/v2/balance",
             credentials,
             &[],
             current_timestamp_ms()?,
         )?;
         let account_payload = self.signed_get_json(
-            self.futures_account_path(),
+            "/fapi/v2/account",
             credentials,
             &[],
             current_timestamp_ms()?,
@@ -255,15 +257,15 @@ impl BinanceSignedRestClient {
         &self,
         credentials: &BinanceApiCredentials,
     ) -> Result<Vec<BinanceFuturesPosition>> {
-        self.require_futures_market()?;
+        self.require_market(BinanceMarket::Futures)?;
         let risk_payload = self.signed_get_json(
-            self.futures_position_risk_path(),
+            "/fapi/v2/positionRisk",
             credentials,
             &[],
             current_timestamp_ms()?,
         )?;
         let account_payload = self.signed_get_json(
-            self.futures_account_path(),
+            "/fapi/v2/account",
             credentials,
             &[],
             current_timestamp_ms()?,
@@ -277,7 +279,7 @@ impl BinanceSignedRestClient {
     ) -> Result<BinanceFuturesPositionMode> {
         self.require_futures_market()?;
         let payload = self.signed_get_json(
-            self.futures_v1_path("/positionSide/dual"),
+            "/fapi/v1/positionSide/dual",
             credentials,
             &[],
             current_timestamp_ms()?,
@@ -293,7 +295,7 @@ impl BinanceSignedRestClient {
         self.require_futures_market()?;
         let params = build_futures_position_mode_params(hedge_mode);
         let payload = self.signed_post_json(
-            self.futures_v1_path("/positionSide/dual"),
+            "/fapi/v1/positionSide/dual",
             credentials,
             &params,
             current_timestamp_ms()?,
@@ -319,7 +321,7 @@ impl BinanceSignedRestClient {
         self.require_futures_market()?;
         let params = build_futures_margin_type_params(symbol, margin_type)?;
         let payload = self.signed_post_json(
-            self.futures_v1_path("/marginType"),
+            "/fapi/v1/marginType",
             credentials,
             &params,
             current_timestamp_ms()?,
@@ -343,7 +345,7 @@ impl BinanceSignedRestClient {
         self.require_futures_market()?;
         let params = build_futures_leverage_params(symbol, leverage)?;
         let payload = self.signed_post_json(
-            self.futures_v1_path("/leverage"),
+            "/fapi/v1/leverage",
             credentials,
             &params,
             current_timestamp_ms()?,
@@ -365,7 +367,7 @@ impl BinanceSignedRestClient {
     ) -> Result<BinanceFuturesMultiAssetsMode> {
         self.require_futures_market()?;
         let payload = self.signed_get_json(
-            self.futures_v1_path("/multiAssetsMargin"),
+            "/fapi/v1/multiAssetsMargin",
             credentials,
             &[],
             current_timestamp_ms()?,
@@ -381,7 +383,7 @@ impl BinanceSignedRestClient {
         self.require_futures_market()?;
         let params = build_futures_multi_assets_mode_params(enabled);
         let payload = self.signed_post_json(
-            self.futures_v1_path("/multiAssetsMargin"),
+            "/fapi/v1/multiAssetsMargin",
             credentials,
             &params,
             current_timestamp_ms()?,
@@ -407,46 +409,19 @@ impl BinanceSignedRestClient {
     }
 
     pub(crate) fn require_futures_market(&self) -> Result<()> {
-        if self.market.is_futures() {
-            Ok(())
-        } else {
-            bail!(
-                "client was built for {:?}, expected a futures market",
-                self.market
-            );
-        }
+        self.require_market(BinanceMarket::Futures)
     }
 
     pub(crate) fn futures_v1_path(&self, suffix: &str) -> String {
-        format!("{}/v1{}", self.market.futures_api_prefix(), suffix)
+        self.url_for_path(&format!(
+            "{}/v1/{}",
+            self.market.futures_api_prefix(),
+            suffix.trim_start_matches('/')
+        ))
     }
 
-    pub(crate) fn futures_balance_path(&self) -> String {
-        if self.market == BinanceMarket::CoinFutures {
-            self.futures_v1_path("/balance")
-        } else {
-            "/fapi/v2/balance".to_owned()
-        }
-    }
-
-    pub(crate) fn futures_account_path(&self) -> String {
-        if self.market == BinanceMarket::CoinFutures {
-            self.futures_v1_path("/account")
-        } else {
-            "/fapi/v2/account".to_owned()
-        }
-    }
-
-    pub(crate) fn futures_position_risk_path(&self) -> String {
-        if self.market == BinanceMarket::CoinFutures {
-            self.futures_v1_path("/positionRisk")
-        } else {
-            "/fapi/v2/positionRisk".to_owned()
-        }
-    }
-
-    pub(crate) fn url_for_path(&self, path: impl AsRef<str>) -> String {
-        format!("{}{}", self.base_url, path.as_ref())
+    pub(crate) fn url_for_path(&self, path: &str) -> String {
+        format!("{}{}", self.base_url, path)
     }
 
     pub(crate) fn public_get_json(&self, path: &str, query: &[(&str, &str)]) -> Result<Value> {
@@ -472,14 +447,14 @@ impl BinanceSignedRestClient {
 
     pub(crate) fn signed_get_json(
         &self,
-        path: impl AsRef<str>,
+        path: &str,
         credentials: &BinanceApiCredentials,
         params: &[(&str, String)],
         timestamp_ms: i64,
     ) -> Result<Value> {
         self.signed_request_json(
             "GET",
-            path.as_ref(),
+            path,
             credentials,
             params,
             timestamp_ms,
@@ -489,7 +464,7 @@ impl BinanceSignedRestClient {
 
     pub(crate) fn signed_post_json(
         &self,
-        path: impl AsRef<str>,
+        path: &str,
         credentials: &BinanceApiCredentials,
         params: &[(&str, String)],
         timestamp_ms: i64,
@@ -497,7 +472,7 @@ impl BinanceSignedRestClient {
     ) -> Result<Value> {
         self.signed_request_json(
             "POST",
-            path.as_ref(),
+            path,
             credentials,
             params,
             timestamp_ms,
@@ -720,34 +695,53 @@ pub fn parse_futures_usdt_balance(
     if let Some(account) = account_payload {
         ensure_not_binance_error(account)?;
     }
-    let snapshot = preferred_futures_asset_row(Some(balance_payload)).map(|(asset, row)| {
-        let total =
-            first_f64(row, &["balance", "walletBalance", "crossWalletBalance"]).unwrap_or(0.0);
-        let available = first_f64(
-            row,
-            &[
-                "availableBalance",
-                "maxWithdrawAmount",
-                "crossWalletBalance",
-            ],
-        )
-        .unwrap_or(total);
-        BinanceAccountSnapshot {
-            asset,
-            usdt_balance: total,
-            total_usdt_balance: total,
-            available_usdt_balance: available,
-        }
-    });
 
-    let mut snapshot = snapshot.unwrap_or(BinanceAccountSnapshot {
+    let mut snapshot = None;
+    if let Some(rows) = balance_payload.as_array() {
+        'preferred_asset: for preferred_asset in PREFERRED_FUTURES_COLLATERAL_ASSETS {
+            for row_value in rows {
+                let Some(row) = row_value.as_object() else {
+                    continue;
+                };
+                let asset = row
+                    .get("asset")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_uppercase();
+                if asset != preferred_asset {
+                    continue;
+                }
+                let total = first_f64(row, &["balance", "walletBalance", "crossWalletBalance"]);
+                let available = first_f64(row, &["availableBalance", "maxWithdrawAmount"]);
+                let Some(total) = total.or(available) else {
+                    continue;
+                };
+                snapshot = Some(BinanceAccountSnapshot {
+                    asset,
+                    usdt_balance: total,
+                    total_usdt_balance: total,
+                    available_usdt_balance: available.unwrap_or(total),
+                });
+                break 'preferred_asset;
+            }
+        }
+    }
+
+    if let Some(snapshot) = snapshot {
+        return Ok(snapshot);
+    }
+
+    let mut snapshot = BinanceAccountSnapshot {
         asset: "USDT".to_owned(),
         usdt_balance: 0.0,
         total_usdt_balance: 0.0,
         available_usdt_balance: 0.0,
-    });
+    };
 
     if let Some(account) = account_payload.and_then(Value::as_object) {
+        let mut has_total = false;
+        let mut has_available = false;
         if let Some(total) = first_f64(
             account,
             &[
@@ -761,43 +755,60 @@ pub fn parse_futures_usdt_balance(
         .filter(|value| value.is_finite() && *value > 0.0)
         {
             snapshot.total_usdt_balance = total;
-            if snapshot.usdt_balance <= 0.0 {
-                snapshot.usdt_balance = total;
-            }
+            snapshot.usdt_balance = total;
+            has_total = true;
         }
         if let Some(available) =
             first_f64(account, &["availableBalance", "maxWithdrawAmount", "free"])
                 .filter(|value| value.is_finite() && *value >= 0.0)
         {
             snapshot.available_usdt_balance = available;
+            has_available = true;
         }
-        if let Some((asset, asset_row)) = preferred_futures_asset_row(account.get("assets")) {
-            snapshot.asset = asset;
-            if let Some(total) = first_f64(
-                asset_row,
-                &[
-                    "walletBalance",
-                    "marginBalance",
-                    "balance",
-                    "crossWalletBalance",
-                ],
-            )
-            .filter(|value| value.is_finite() && *value > 0.0)
-            {
-                snapshot.usdt_balance = total;
-                snapshot.total_usdt_balance = total;
-            }
-            if let Some(available) = first_f64(
-                asset_row,
-                &[
-                    "availableBalance",
-                    "maxWithdrawAmount",
-                    "crossWalletBalance",
-                ],
-            )
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            {
-                snapshot.available_usdt_balance = available;
+        if !has_total || !has_available {
+            for preferred_asset in PREFERRED_FUTURES_COLLATERAL_ASSETS {
+                let Some(asset_row) = find_asset_row(account.get("assets"), preferred_asset) else {
+                    continue;
+                };
+                let total = first_f64(
+                    asset_row,
+                    &[
+                        "walletBalance",
+                        "marginBalance",
+                        "crossWalletBalance",
+                        "availableBalance",
+                    ],
+                )
+                .filter(|value| *value > 0.0);
+                let available = first_f64(
+                    asset_row,
+                    &[
+                        "availableBalance",
+                        "maxWithdrawAmount",
+                        "crossWalletBalance",
+                    ],
+                )
+                .filter(|value| *value >= 0.0);
+                if total.is_none() && available.is_none() {
+                    continue;
+                }
+                snapshot.asset = preferred_asset.to_owned();
+                if !has_total {
+                    if let Some(total) = total {
+                        snapshot.usdt_balance = total;
+                        snapshot.total_usdt_balance = total;
+                        has_total = true;
+                    }
+                }
+                if !has_available {
+                    if let Some(available) = available {
+                        snapshot.available_usdt_balance = available;
+                        has_available = true;
+                    }
+                }
+                if has_total && has_available {
+                    break;
+                }
             }
         }
     }
@@ -1239,7 +1250,9 @@ fn find_asset_row<'a>(
 ) -> Option<&'a Map<String, Value>> {
     let rows = rows_value.and_then(Value::as_array)?;
     for value in rows {
-        let row = value.as_object()?;
+        let Some(row) = value.as_object() else {
+            continue;
+        };
         if row
             .get("asset")
             .and_then(Value::as_str)
@@ -1247,17 +1260,6 @@ fn find_asset_row<'a>(
             .unwrap_or(false)
         {
             return Some(row);
-        }
-    }
-    None
-}
-
-fn preferred_futures_asset_row<'a>(
-    rows_value: Option<&'a Value>,
-) -> Option<(String, &'a Map<String, Value>)> {
-    for asset in ["USDT", "BUSD", "USD"] {
-        if let Some(row) = find_asset_row(rows_value, asset) {
-            return Some((asset.to_owned(), row));
         }
     }
     None
@@ -1336,11 +1338,12 @@ fn coerce_bool_flag(value: &Value) -> bool {
 }
 
 fn parse_json_f64(value: Option<&Value>) -> Option<f64> {
-    match value? {
+    let parsed = match value? {
         Value::Number(number) => number.as_f64(),
         Value::String(text) => text.trim().parse::<f64>().ok(),
         _ => None,
-    }
+    }?;
+    parsed.is_finite().then_some(parsed)
 }
 
 fn parse_json_i64(value: Option<&Value>) -> Option<i64> {
@@ -1433,9 +1436,6 @@ mod tests {
                 .expect("futures client");
         let spot = BinanceSignedRestClient::with_base_url(BinanceMarket::Spot, "https://spot.test")
             .expect("spot client");
-        let coin =
-            BinanceSignedRestClient::with_base_url(BinanceMarket::CoinFutures, "https://coin.test")
-                .expect("Coin-M client");
 
         assert_eq!(
             futures.futures_balance_url(),
@@ -1466,23 +1466,28 @@ mod tests {
             "https://example.test/fapi/v1/multiAssetsMargin"
         );
         assert_eq!(
-            coin.futures_balance_url(),
-            "https://coin.test/dapi/v1/balance"
+            futures.futures_v1_path("/order"),
+            "https://example.test/fapi/v1/order"
         );
-        assert_eq!(
-            coin.futures_account_url(),
-            "https://coin.test/dapi/v1/account"
-        );
-        assert_eq!(
-            coin.futures_position_risk_url(),
-            "https://coin.test/dapi/v1/positionRisk"
-        );
-        assert_eq!(
-            coin.futures_position_mode_url(),
-            "https://coin.test/dapi/v1/positionSide/dual"
-        );
-        assert_eq!(coin.futures_v1_path("/order"), "/dapi/v1/order");
         assert_eq!(spot.spot_account_url(), "https://spot.test/api/v3/account");
+    }
+
+    #[test]
+    fn coin_futures_usdt_balance_request_is_rejected_before_network_access() {
+        let client = BinanceSignedRestClient::with_base_url(
+            BinanceMarket::CoinFutures,
+            "https://example.test",
+        )
+        .expect("client");
+        let error = client
+            .fetch_usdt_balance(&BinanceApiCredentials::new("key", "secret"))
+            .expect_err("COIN-M must not use USDT balance parsing");
+
+        assert!(
+            error
+                .to_string()
+                .contains("COIN-M futures account snapshots")
+        );
     }
 
     #[test]
@@ -1598,9 +1603,9 @@ mod tests {
         let snapshot =
             parse_futures_usdt_balance(&balance_payload, Some(&account_payload)).expect("balance");
         assert_eq!(snapshot.asset, "USDT");
-        assert_eq!(snapshot.usdt_balance, 128.0);
-        assert_eq!(snapshot.total_usdt_balance, 128.0);
-        assert_eq!(snapshot.available_usdt_balance, 98.0);
+        assert_eq!(snapshot.usdt_balance, 125.5);
+        assert_eq!(snapshot.total_usdt_balance, 125.5);
+        assert_eq!(snapshot.available_usdt_balance, 100.25);
 
         let rows = parse_futures_balance_rows(&balance_payload).expect("rows");
         assert_eq!(
@@ -1615,40 +1620,69 @@ mod tests {
     }
 
     #[test]
-    fn parses_futures_balance_using_python_preferred_collateral_order() {
-        let balance_payload = json!([
-            {"asset": "USD", "balance": "45", "availableBalance": "40"},
-            {"asset": "BUSD", "balance": "20", "crossWalletBalance": "15"}
+    fn rejects_non_finite_exchange_numeric_strings() {
+        let balances = json!([
+            {"asset": "USDT", "balance": "NaN", "availableBalance": "inf"},
+            {"asset": "BUSD", "balance": "12.5", "availableBalance": "10.0"}
         ]);
+        let fallback = parse_futures_usdt_balance(&balances, None).expect("BUSD fallback");
+        assert_eq!(fallback.asset, "BUSD");
+        assert_eq!(fallback.usdt_balance, 12.5);
+        assert_eq!(fallback.available_usdt_balance, 10.0);
+        assert!(
+            parse_futures_balance_rows(&balances)
+                .expect("balance rows")
+                .iter()
+                .all(|row| row.total.is_finite() && row.free.is_finite() && row.locked.is_finite())
+        );
+
+        let positions = json!([
+            {"symbol": "BTCUSDT", "positionAmt": "NaN", "markPrice": "65000"},
+            {"symbol": "ETHUSDT", "positionAmt": "0.5", "markPrice": "inf", "leverage": "10"}
+        ]);
+        let parsed = parse_open_futures_positions(&positions, None).expect("positions");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].symbol, "ETHUSDT");
+        assert!(parsed[0].position_amt.is_finite());
+        assert!(parsed[0].mark_price.is_finite());
+        assert!(parsed[0].notional.is_finite());
+    }
+
+    #[test]
+    fn futures_balance_fallback_skips_malformed_asset_rows() {
+        let balance_payload = json!([]);
         let account_payload = json!({
             "assets": [
-                {"asset": "USD", "walletBalance": "48", "availableBalance": "42"},
-                {"asset": "BUSD", "walletBalance": "25", "availableBalance": "18"}
+                null,
+                {"asset": "USDT", "walletBalance": "NaN"},
+                {"asset": "BUSD", "walletBalance": "8.5", "availableBalance": "7.0"}
             ]
         });
 
         let snapshot = parse_futures_usdt_balance(&balance_payload, Some(&account_payload))
-            .expect("preferred futures collateral");
+            .expect("BUSD account-asset fallback");
         assert_eq!(snapshot.asset, "BUSD");
-        assert_eq!(snapshot.usdt_balance, 25.0);
-        assert_eq!(snapshot.total_usdt_balance, 25.0);
-        assert_eq!(snapshot.available_usdt_balance, 18.0);
+        assert_eq!(snapshot.usdt_balance, 8.5);
+        assert_eq!(snapshot.available_usdt_balance, 7.0);
     }
 
     #[test]
-    fn parses_futures_cross_margin_totals_like_python_snapshot_fallback() {
-        let snapshot = parse_futures_usdt_balance(
-            &json!([]),
-            Some(&json!({
-                "totalCrossWalletBalance": "31.5",
-                "availableBalance": "19.25"
-            })),
-        )
-        .expect("cross-margin totals");
+    fn futures_account_fallback_supports_cross_margin_totals() {
+        let balance_payload = json!([]);
+        let account_payload = json!({
+            "totalCrossWalletBalance": "21.5",
+            "totalCrossBalance": "22.0",
+            "assets": [
+                {"asset": "USDT", "crossWalletBalance": "21.5"}
+            ]
+        });
+
+        let snapshot = parse_futures_usdt_balance(&balance_payload, Some(&account_payload))
+            .expect("cross-margin account fallback");
         assert_eq!(snapshot.asset, "USDT");
-        assert_eq!(snapshot.usdt_balance, 31.5);
-        assert_eq!(snapshot.total_usdt_balance, 31.5);
-        assert_eq!(snapshot.available_usdt_balance, 19.25);
+        assert_eq!(snapshot.usdt_balance, 21.5);
+        assert_eq!(snapshot.total_usdt_balance, 21.5);
+        assert_eq!(snapshot.available_usdt_balance, 21.5);
     }
 
     #[test]

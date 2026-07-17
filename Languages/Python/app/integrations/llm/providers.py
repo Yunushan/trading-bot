@@ -32,7 +32,7 @@ class LLMProviderSpec:
 OPENAI_COMPATIBLE_PROTOCOL = "openai-chat-completions"
 ANTHROPIC_MESSAGES_PROTOCOL = "anthropic-messages"
 GEMINI_GENERATE_CONTENT_PROTOCOL = "gemini-generate-content"
-LLM_PROVIDER_CATALOG_REVISION = "2026-06-19"
+LLM_PROVIDER_CATALOG_REVISION = "2026-07-16"
 LLM_MODEL_CATALOG_PATH_ENV = "BOT_LLM_MODEL_CATALOG_PATH"
 
 _OPEN_SOURCE_REASONING_EFFORTS = (
@@ -44,6 +44,17 @@ _OPEN_SOURCE_REASONING_EFFORTS = (
     "medium",
     "high",
     "xhigh",
+)
+
+_OPENAI_REASONING_EFFORTS = (
+    "default",
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
 )
 
 _OLLAMA_OPEN_SOURCE_MODELS = (
@@ -431,6 +442,10 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="gpt-5.5",
         api_key_env="OPENAI_API_KEY",
         model_suggestions=(
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "gpt-5.5",
             "gpt-5.5-2026-04-23",
             "gpt-5.5-pro",
@@ -457,8 +472,11 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
             "gpt-4.1-mini",
             "gpt-4.1-nano",
         ),
-        reasoning_efforts=("default", "none", "minimal", "low", "medium", "high", "xhigh"),
-        notes=("Uses the OpenAI-compatible chat completions endpoint.",),
+        reasoning_efforts=_OPENAI_REASONING_EFFORTS,
+        notes=(
+            "Uses the OpenAI-compatible chat completions endpoint.",
+            "GPT-5.6 Sol, Terra, and Luna support reasoning levels through max; availability depends on the API account.",
+        ),
     ),
     LLMProviderSpec(
         key="anthropic",
@@ -566,6 +584,9 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="qwen3.6-plus",
         api_key_env="DASHSCOPE_API_KEY",
         model_suggestions=(
+            "qwen3.7-max",
+            "qwen3.7-max-2026-06-08",
+            "qwen3.7-max-2026-05-20",
             "qwen3.6-max-preview",
             "qwen3.6-plus",
             "qwen3.6-plus-2026-04-02",
@@ -584,8 +605,33 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
             "qwen-plus-us",
             "qwen-flash-us",
         ),
-        reasoning_efforts=("default", "low", "medium", "high"),
-        notes=("DashScope provides OpenAI-compatible endpoints for Qwen models.",),
+        reasoning_efforts=("default", "disabled", "enabled", "low", "medium", "high", "max"),
+        notes=(
+            "DashScope provides OpenAI-compatible endpoints for Qwen models.",
+            "The request uses enable_thinking for compatible Qwen chat models; Qwen 3.5/3.6 multimodal and Responses-only features require DashScope's corresponding API surface.",
+        ),
+    ),
+    LLMProviderSpec(
+        key="moonshot",
+        label="Moonshot AI / Kimi",
+        mode="cloud",
+        protocol=OPENAI_COMPATIBLE_PROTOCOL,
+        default_base_url="https://api.moonshot.ai/v1",
+        default_model="kimi-k3",
+        api_key_env="MOONSHOT_API_KEY",
+        model_suggestions=(
+            "kimi-k3",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+            "kimi-k2.6",
+            "kimi-k2.5",
+        ),
+        reasoning_efforts=("default", "disabled", "enabled", "max"),
+        notes=(
+            "Uses Moonshot's OpenAI-compatible /v1/chat/completions endpoint.",
+            "Kimi K3 supports reasoning_effort=max. Kimi K2.5 and K2.6 use thinking enabled or disabled; K2.7 Code always reasons.",
+            "Use the provider model discovery endpoint or the editable model field for account-specific releases.",
+        ),
     ),
     LLMProviderSpec(
         key="local",
@@ -756,8 +802,8 @@ _PROVIDER_ALIASES = {
     "glm5": "open-source",
     "chatglm": "open-source",
     "zai": "open-source",
-    "kimi": "open-source",
-    "moonshot": "open-source",
+    "kimi": "moonshot",
+    "moonshot-ai": "moonshot",
     "minimax": "open-source",
     "step": "open-source",
     "stepfun": "open-source",

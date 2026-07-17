@@ -116,7 +116,7 @@ def _base_url_uses_public_network(base_url: str) -> bool:
     return not (address.is_loopback or address.is_private or address.is_link_local)
 
 
-def _openai_compatible_reasoning_body(provider: str, effort: str) -> dict[str, object]:
+def _openai_compatible_reasoning_body(provider: str, model: str, effort: str) -> dict[str, object]:
     if effort in {"", "default"}:
         return {}
     if provider == "deepseek":
@@ -126,6 +126,20 @@ def _openai_compatible_reasoning_body(provider: str, effort: str) -> dict[str, o
         if effort in {"high", "max", "xhigh", "low", "medium"}:
             body["reasoning_effort"] = "max" if effort in {"max", "xhigh"} else effort
         return body
+    if provider == "qwen":
+        return {"enable_thinking": effort not in {"none", "disabled", "off"}}
+    if provider == "moonshot":
+        normalized_model = str(model or "").strip().lower()
+        if normalized_model.startswith("kimi-k3"):
+            return {"reasoning_effort": "max"} if effort == "max" else {}
+        if normalized_model.startswith(("kimi-k2.5", "kimi-k2.6")):
+            if effort in {"none", "disabled", "off"}:
+                return {"thinking": {"type": "disabled"}}
+            if effort in {"enabled", "low", "medium", "high", "max", "xhigh"}:
+                return {"thinking": {"type": "enabled"}}
+            return {}
+        # Kimi K2.7 Code always reasons and rejects a thinking override.
+        return {}
     return {"reasoning_effort": effort}
 
 
@@ -207,7 +221,7 @@ def build_llm_chat_request(
                 {"role": "system", "content": f"Trading context JSON: {context_for_request}"},
             )
         body = {"model": model, "messages": messages}
-        body.update(_openai_compatible_reasoning_body(provider, reasoning_effort))
+        body.update(_openai_compatible_reasoning_body(provider, model, reasoning_effort))
     elif protocol == ANTHROPIC_MESSAGES_PROTOCOL:
         if not api_key:
             raise ValueError("Anthropic Claude requires an API key.")

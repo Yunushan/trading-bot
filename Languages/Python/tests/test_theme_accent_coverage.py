@@ -68,6 +68,9 @@ class ThemeAccentCoverageTests(unittest.TestCase):
             "QTableWidget, QTableView, QTreeWidget",
             "QProgressBar::chunk {",
             "QStatusBar {",
+            "QFrame#workspaceHeader {",
+            "QFrame#workspaceNavigationRail {",
+            "QListWidget#workspaceNavigation::item:selected {",
         ):
             with self.subTest(selector=selector):
                 self.assertIn(selector, WORKSTATION_DESIGN_STYLES)

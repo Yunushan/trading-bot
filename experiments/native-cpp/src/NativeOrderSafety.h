@@ -39,6 +39,9 @@ struct LiveTradingSafetyConfig {
     int liveTradingMaxLeverage = 20;
     double liveTradingMaxPositionPct = 10.0;
     int liveTradingMaxSessionOrders = 100;
+    bool liveAllowAutoBumpToMinOrder = false;
+    double maxAutoBumpPercent = 5.0;
+    double autoBumpPercentMultiplier = 10.0;
 };
 
 struct LiveOrderGuardInput {
@@ -67,6 +70,24 @@ struct LiveOrderGuardResult {
     bool allowed = false;
     QStringList errors;
     int nextSubmitAttemptCount = 0;
+};
+
+struct MinimumOrderAutoBumpGuardInput {
+    QString mode;
+    double requestedQuantity = 0.0;
+    double normalizedQuantity = 0.0;
+    double price = 0.0;
+    double availableUsdt = 0.0;
+    int leverage = 1;
+    double requestedPositionPct = 0.0;
+    bool reduceOnly = false;
+    LiveTradingSafetyConfig config;
+};
+
+struct MinimumOrderAutoBumpGuardResult {
+    bool allowed = false;
+    bool autoBumpRequired = false;
+    QStringList errors;
 };
 
 struct OrderAuditLogConfig {
@@ -166,6 +187,8 @@ QStringList validateOrderFilterConstraints(
 bool isLiveTradingMode(const QString &mode);
 QStringList validateLiveTradingSafety(const LiveOrderGuardInput &input);
 LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input);
+MinimumOrderAutoBumpGuardResult guardFuturesMinimumOrderAutoBump(
+    const MinimumOrderAutoBumpGuardInput &input);
 
 QJsonObject buildOrderAuditEvent(
     const QString &event,

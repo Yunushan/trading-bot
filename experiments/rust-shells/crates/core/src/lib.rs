@@ -34,7 +34,7 @@ pub use generated_python_parity::{
 };
 
 pub fn app_banner(shell: &str) -> String {
-    format!("Trading Bot Rust UI scaffold -> {shell}")
+    format!("Trading Bot Rust runtime -> {shell}")
 }
 
 pub fn default_identity(shell: &str) -> AppIdentity {
@@ -361,7 +361,7 @@ pub fn rust_execution_modes() -> &'static [RustExecutionMode] {
         RustExecutionMode {
             key: "native_engine_future",
             title: "Native Rust trading engine",
-            detail: "Reserved until a Rust engine reaches feature parity with Python strategy controls, order audit, risk gates, and connector safeguards.",
+            detail: "Runs the native guarded strategy, account, market-data, exposure, audit, and circuit-breaker path in forced dry-run mode until credentialed and release promotion evidence is complete.",
             trading_execution_supported: false,
         },
     ]
@@ -1022,7 +1022,7 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     items: &[
                         "Python - Recommended - Fast to build - Huge ecosystem",
                         "C++ - Experiment - Qt native desktop experiment",
-                        "Rust - Experiment - Service API client and UI scaffold",
+                        "Rust - Experiment - Service API client + guarded runtime (promotion-gated)",
                     ],
                 },
                 TradingAppSection {

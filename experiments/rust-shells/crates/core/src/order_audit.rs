@@ -2,6 +2,7 @@ use crate::order_guard::{OrderSubmitIntent, order_submit_intent_from_param_pairs
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
+use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -359,6 +360,10 @@ impl ConnectorOrderCircuitBreaker {
         }
     }
 
+    pub fn config(&self) -> &ConnectorOrderCircuitBreakerConfig {
+        &self.config
+    }
+
     pub fn record_connector_order_block(
         &mut self,
         incident: ConnectorOrderBlockIncident,
@@ -662,7 +667,12 @@ pub fn append_order_audit_event(
 ) -> io::Result<()> {
     let line = order_audit_event_json_line(event)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    append_jsonl_line(path.as_ref(), &line, max_bytes, backup_count)
+    append_jsonl_line(
+        &expand_user_path(path.as_ref()),
+        &line,
+        max_bytes,
+        backup_count,
+    )
 }
 
 pub fn build_connector_order_circuit_breaker_snapshot(
@@ -760,7 +770,32 @@ pub fn append_connector_order_circuit_incident(
 ) -> io::Result<()> {
     let line = connector_order_circuit_incident_json_line(incident)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    append_jsonl_line(path.as_ref(), &line, max_bytes, backup_count)
+    append_jsonl_line(
+        &expand_user_path(path.as_ref()),
+        &line,
+        max_bytes,
+        backup_count,
+    )
+}
+
+fn expand_user_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if text == "~" {
+        return home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    }
+    if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
+        if let Some(home) = home_dir() {
+            return home.join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .or_else(|| env::var_os("USERPROFILE").filter(|value| !value.is_empty()))
+        .map(PathBuf::from)
 }
 
 pub fn parse_connector_order_circuit_incident_lines<'a>(
@@ -1084,6 +1119,18 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn default_audit_path_expands_home_when_available() {
+        let default_path = PathBuf::from(OrderAuditConfig::default().path);
+        let expanded = expand_user_path(&default_path);
+        if let Some(home) = home_dir() {
+            assert!(expanded.starts_with(home));
+            assert_ne!(expanded, default_path);
+        } else {
+            assert_eq!(expanded, default_path);
+        }
+    }
 
     #[test]
     fn redacts_sensitive_params_like_python_audit() {

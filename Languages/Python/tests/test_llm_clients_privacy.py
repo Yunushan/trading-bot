@@ -108,6 +108,51 @@ class LLMClientPrivacyTests(unittest.TestCase):
         self.assertNotIn("exchange-secret", body_text)
         self.assertNotIn("should-not-leave-private-runtime", body_text)
 
+    def test_current_cloud_reasoning_options_use_provider_specific_request_fields(self):
+        openai_request = build_llm_chat_request(
+            {
+                "llm_provider": "openai",
+                "llm_model": "gpt-5.6-terra",
+                "llm_api_key": "cloud-secret-token",
+                "llm_reasoning_effort": "max",
+            },
+            prompt="Explain risk.",
+        )
+        self.assertEqual("max", openai_request["json"]["reasoning_effort"])
+
+        qwen_request = build_llm_chat_request(
+            {
+                "llm_provider": "qwen",
+                "llm_model": "qwen3.7-max",
+                "llm_api_key": "cloud-secret-token",
+                "llm_reasoning_effort": "enabled",
+            },
+            prompt="Explain risk.",
+        )
+        self.assertTrue(qwen_request["json"]["enable_thinking"])
+
+        kimi_k3_request = build_llm_chat_request(
+            {
+                "llm_provider": "moonshot",
+                "llm_model": "kimi-k3",
+                "llm_api_key": "cloud-secret-token",
+                "llm_reasoning_effort": "max",
+            },
+            prompt="Explain risk.",
+        )
+        self.assertEqual("max", kimi_k3_request["json"]["reasoning_effort"])
+
+        kimi_k2_request = build_llm_chat_request(
+            {
+                "llm_provider": "moonshot",
+                "llm_model": "kimi-k2.6",
+                "llm_api_key": "cloud-secret-token",
+                "llm_reasoning_effort": "disabled",
+            },
+            prompt="Explain risk.",
+        )
+        self.assertEqual({"type": "disabled"}, kimi_k2_request["json"]["thinking"])
+
     def test_llm_output_policy_detects_execution_boundary_violations(self):
         self.assertIn(
             "direct_order_action",

@@ -282,6 +282,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertEqual(64, len(artifact["actual_sha256"]))
         consumer_names = {str(consumer["name"]) for consumer in report["consumers"]}
         consumers = {str(consumer["name"]): consumer for consumer in report["consumers"]}
+        self.assertIn("rust_native_account_runtime_is_present", consumer_names)
         self.assertIn("rust_strategy_runtime_uses_python_source_options", consumer_names)
         self.assertIn("rust_config_persistence_uses_python_source_options", consumer_names)
         self.assertIn("cpp_config_persistence_uses_python_source_options", consumer_names)
@@ -296,6 +297,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("cpp_account_uses_python_service_api", consumer_names)
         self.assertIn("cpp_native_exchange_connectors_use_python_source_connectors", consumer_names)
         self.assertIn("cpp_native_strategy_runtime_uses_python_source_options", consumer_names)
+        self.assertIn("cpp_dashboard_runtime_enforces_live_order_safety", consumer_names)
         self.assertIn("tauri_browser_consumes_generated_contract", consumer_names)
         self.assertIn("tauri_browser_service_api_uses_python_source_routes", consumer_names)
         self.assertTrue(all(consumer["ok"] for consumer in report["consumers"]), report["consumers"])

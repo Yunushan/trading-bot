@@ -1,5 +1,6 @@
 #include "TradingBotWindow.h"
 #include "NativeOrderSafety.h"
+#include "TradingBotWindow.dashboard_runtime_shared.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -92,7 +93,7 @@ void TradingBotWindow::refreshDashboardOrderAuditStatus() {
         return;
     }
     const QJsonObject status = NativeOrderSafety::currentOrderAuditStatus(
-        NativeOrderSafety::orderAuditLogConfigFromEnvironment());
+        TradingBotWindowDashboardRuntime::nativeRuntimeOrderAuditLogConfig());
     const QString state = status.value(QStringLiteral("state")).toString(QStringLiteral("unknown")).trimmed();
     const QString path = status.value(QStringLiteral("path")).toString(NativeOrderSafety::defaultOrderAuditPath()).trimmed();
     const QString lastOk = status.value(QStringLiteral("last_write_ok_at")).toString().trimmed();

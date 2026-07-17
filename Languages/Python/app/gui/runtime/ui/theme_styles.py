@@ -331,4 +331,68 @@ QStatusBar {
     border-top: 1px solid #26364F;
     color: #B8C7DD;
 }
+QFrame#workspaceHeader {
+    background-color: #080E18;
+    border: none;
+    border-bottom: 1px solid #26364F;
+}
+QLabel#workspaceHeaderTitle {
+    color: #F4F8FF;
+    font-size: 16px;
+    font-weight: 700;
+}
+QLabel#workspacePageTitle {
+    color: #8DA4C2;
+    font-size: 11px;
+}
+QLabel#workspaceKpi {
+    background-color: #0F1726;
+    border: 1px solid #26364F;
+    border-radius: 4px;
+    color: #C8D7EB;
+    padding: 6px 9px;
+}
+QFrame#workspaceNavigationRail {
+    background-color: #080E18;
+    border: none;
+    border-right: 1px solid #26364F;
+}
+QLabel#workspaceNavigationLabel {
+    color: #6F86A5;
+    font-size: 10px;
+    font-weight: 700;
+}
+QListWidget#workspaceNavigation {
+    background-color: transparent;
+    border: none;
+    outline: none;
+    padding: 0;
+}
+QListWidget#workspaceNavigation::item {
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #AFC0D8;
+    min-height: 34px;
+    padding: 2px 10px;
+}
+QListWidget#workspaceNavigation::item:hover {
+    background-color: #101D31;
+    border-color: #223A5A;
+    color: #FFFFFF;
+}
+QListWidget#workspaceNavigation::item:selected {
+    background-color: #123760;
+    border-color: #2F6FB3;
+    color: #FFFFFF;
+}
+QPushButton#workspaceClassicButton {
+    background-color: transparent;
+    border-color: #36537D;
+    color: #B8C7DD;
+}
+QPushButton#workspaceClassicButton:hover {
+    background-color: #132238;
+    border-color: #58A6FF;
+    color: #FFFFFF;
+}
 """.replace("{checkbox_check_image}", CHECKBOX_CHECK_IMAGE)

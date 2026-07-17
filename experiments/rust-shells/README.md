@@ -2,19 +2,21 @@
 
 This directory is a Rust workspace for shared contracts/core logic plus the Tauri desktop shell.
 
-It is not a single finished application. The Rust side is currently a Service API client and UI parity scaffold, not a native trading runtime. Python remains the primary end-user implementation and the only active strategy, risk, and exchange execution owner.
+It is not a single finished application. The Rust side provides a Service API client, UI parity implementation, and a promotion-gated native guarded-runtime path. Python remains the primary end-user implementation and the only production trading, risk, and exchange-execution owner until Rust promotion evidence is complete.
 
 ## Workspace layout
 
 - `crates/contracts`: shared DTOs and contracts
-- `crates/core`: shared Rust core scaffold
+- `crates/core`: shared Rust runtime core
 - `apps/tauri-desktop`: Tauri desktop shell
 
 The shared Rust core exposes the same LLM provider catalog used by the Python
 service API. The Tauri shell may mirror Python/C++ tabs, controls, route names,
-and model options, but mirrored UI does not mean native trading execution. All
-live strategy, risk, account, order, and exchange behavior must continue through
-the Python Service API until the native Rust runtime gaps below are closed.
+and model options, but mirrored UI does not by itself establish native trading
+readiness. The Tauri guarded-runtime path may evaluate native signals, reconcile
+read-only account state, and produce audited dry-run order decisions, but live
+order submission remains blocked until the native Rust promotion requirements
+below are satisfied.
 
 ## Status overview
 
@@ -22,15 +24,18 @@ the Python Service API until the native Rust runtime gaps below are closed.
 | --- | --- | --- |
 | Shared contracts crate | Active foundation | Common types and workspace contracts |
 | Shared core crate | Active foundation | Intended home for reusable Rust-side business logic |
-| Tauri desktop shell | Operational Service API client | The only user-selectable Rust desktop shell; can manage/connect to the Python Service API, but does not own trading execution |
+| Tauri desktop shell | Operational client with guarded native runtime | The only user-selectable Rust desktop shell; manages the Python Service API and wires guarded native market/account/order cycles, while live submission remains promotion-gated |
 
 For this project, use `Tauri` for Rust desktop work because it is the only Rust shell with an interactive Service API client and managed local Python Service API flow.
 
 ## Native trading runtime boundary
 
-Rust native trading execution is currently disabled. The Rust workspace is a
-Service API client and tab/catalog parity layer. It must not be treated as a standalone trading engine until the native
-runtime capability gaps are implemented and tested.
+Rust native live trading execution is currently disabled. The workspace now has
+a persistent guarded execution cycle that combines native market ingestion,
+read-only account bootstrap, operational/exposure preflight, the Python-aligned
+order guard, order audit, and the Binance USD-M market-order adapter. It remains
+in dry-run mode and must not be treated as a standalone trading engine until the
+native runtime capability gaps are implemented, evidenced, and promoted.
 
 The C++ experiment already contains native runtime pieces that Rust does not:
 
@@ -163,7 +168,8 @@ unless the native cycle reports default `rsi` computation and no unsupported key
 the Rust core has a catalog-coverage regression test so a newly added Python indicator
 cannot silently become unsupported. It also compares every native series against a
 Python-generated reference fixture for canonical candles and enabled configurations;
-the source-sync audit rejects a stale fixture. Native order execution remains disabled.
+the source-sync audit rejects a stale fixture. Native live order submission remains
+disabled until the promotion guard permits it.
 Signed account evidence must prove position mode,
 
 The Tauri desktop exposes `evaluate_native_runtime_preview` for a local,

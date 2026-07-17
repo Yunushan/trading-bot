@@ -9,7 +9,7 @@ use crate::order_audit::{
     DEFAULT_CONNECTOR_ORDER_CIRCUIT_INCIDENT_MAX_BYTES, OrderAuditConfig, OrderAuditEvent,
     OrderAuditStatus, OrderAuditWriteError, append_connector_order_circuit_incident,
     append_order_audit_event, build_connector_order_circuit_incident, build_order_audit_status,
-    redact_order_params,
+    normalize_connector_order_circuit_config, redact_order_params,
 };
 use crate::order_guard::{
     BinanceOrderSubmitGuardInput, BinanceOrderSubmitGuardResult, LiveTradingSafetyConfig,
@@ -81,6 +81,25 @@ impl RuntimeOrderEngine {
             &self.audit_last_write_error_at,
             &self.audit_last_write_ok_at,
         )
+    }
+
+    pub fn configure_audit_and_circuit(
+        &mut self,
+        audit_config: OrderAuditConfig,
+        circuit_config: ConnectorOrderCircuitBreakerConfig,
+        incident_path: PathBuf,
+        incident_max_bytes: u64,
+        incident_backup_count: usize,
+        now_iso: impl AsRef<str>,
+    ) {
+        self.audit_config = audit_config;
+        let normalized_circuit = normalize_connector_order_circuit_config(circuit_config);
+        if self.circuit.config() != &normalized_circuit {
+            self.circuit = ConnectorOrderCircuitBreaker::new(normalized_circuit, now_iso.as_ref());
+        }
+        self.connector_incident_path = incident_path;
+        self.connector_incident_max_bytes = incident_max_bytes.max(1);
+        self.connector_incident_backup_count = incident_backup_count.min(100);
     }
 
     pub fn submit_futures_order<F>(
@@ -230,6 +249,81 @@ impl RuntimeOrderEngine {
                 directive.qty,
                 directive.position_side.as_deref(),
                 &directive.reason,
+                now_iso.as_ref(),
+                source.as_ref(),
+                &mut execute,
+            );
+            batch.requested_qty += result.requested_qty;
+            batch.closed_qty += result.closed_qty;
+            batch.attempts.extend(result.attempts);
+        }
+        batch.remaining_qty = remaining_qty(batch.requested_qty, batch.closed_qty);
+        batch.ok = batch.requested_qty <= 0.0
+            || batch.remaining_qty <= close_qty_epsilon(batch.requested_qty);
+        batch.audit_status = Some(self.audit_status());
+        batch
+    }
+
+    /// Execute a close plan produced from the reconciled account positions.
+    ///
+    /// `NativeRuntimeLoop::plan_close_positions` deliberately emits a
+    /// `ClosePosition` candidate followed by a quantity-specific reduce-only
+    /// candidate for each position. Binance futures market orders must use the
+    /// quantity-specific reduce-only form here: `closePosition=true` is not a
+    /// valid replacement for a generic MARKET close. Keeping the selection in
+    /// the order engine makes shutdown, stop-loss, and close-opposite paths
+    /// share the same audited position-side fallback behavior.
+    pub fn execute_planned_position_closes<F>(
+        &mut self,
+        directives: &[BinanceFuturesCloseDirective],
+        now_iso: impl AsRef<str>,
+        source: impl AsRef<str>,
+        mut execute: F,
+    ) -> RuntimeCloseBatchResult
+    where
+        F: FnMut(&BinanceFuturesCloseDirective) -> Result<BinanceFuturesOrderResult>,
+    {
+        let mut batch = RuntimeCloseBatchResult::default();
+        if self.dry_run {
+            for directive in directives
+                .iter()
+                .filter(|directive| directive.method == BinanceFuturesCloseMethod::ReduceOnly)
+            {
+                batch.requested_qty += directive.quantity.max(0.0);
+                self.write_close_audit(
+                    "order_close_dry_run",
+                    directive,
+                    now_iso.as_ref(),
+                    source.as_ref(),
+                    "runtime_shutdown_close",
+                    None,
+                    "Native runtime remains in dry-run mode; no close order was submitted.",
+                );
+                batch.attempts.push(RuntimeCloseAttempt {
+                    directive: Some(directive.clone()),
+                    success: false,
+                    result: None,
+                    error: "Native runtime remains in dry-run mode; no close order was submitted."
+                        .to_owned(),
+                });
+            }
+            batch.remaining_qty = batch.requested_qty;
+            batch.ok = batch.requested_qty <= 0.0;
+            batch.audit_status = Some(self.audit_status());
+            return batch;
+        }
+        for directive in directives
+            .iter()
+            .filter(|directive| directive.method == BinanceFuturesCloseMethod::ReduceOnly)
+        {
+            let preferred_position_side = (!directive.position_side.trim().is_empty())
+                .then_some(directive.position_side.as_str());
+            let result = self.execute_close_with_fallback(
+                &directive.symbol,
+                &directive.side,
+                directive.quantity,
+                preferred_position_side,
+                "runtime_shutdown_close",
                 now_iso.as_ref(),
                 source.as_ref(),
                 &mut execute,
@@ -922,6 +1016,97 @@ mod tests {
         let audit = fs::read_to_string(&audit_path).expect("audit");
         assert!(audit.contains("order_close_failed"));
         assert!(audit.contains("order_close_accepted"));
+        fs::remove_file(audit_path).ok();
+    }
+
+    #[test]
+    fn planned_position_close_executes_only_reduce_only_directives_and_audits() {
+        let (audit_path, incident_path) = temp_paths("planned-position-close");
+        let mut engine = live_engine(audit_path.clone(), incident_path);
+        let directives = vec![
+            BinanceFuturesCloseDirective {
+                symbol: "BTCUSDT".to_owned(),
+                side: "SELL".to_owned(),
+                position_side: "LONG".to_owned(),
+                quantity: 0.0,
+                quantity_text: String::new(),
+                reduce_only: false,
+                close_position: true,
+                method: BinanceFuturesCloseMethod::ClosePosition,
+            },
+            BinanceFuturesCloseDirective {
+                symbol: "BTCUSDT".to_owned(),
+                side: "SELL".to_owned(),
+                position_side: "LONG".to_owned(),
+                quantity: 1.25,
+                quantity_text: "1.25".to_owned(),
+                reduce_only: false,
+                close_position: false,
+                method: BinanceFuturesCloseMethod::ReduceOnly,
+            },
+        ];
+        let mut calls = 0usize;
+
+        let result = engine.execute_planned_position_closes(
+            &directives,
+            "2026-06-18T00:00:01Z",
+            "runtime-stop",
+            |directive| {
+                calls += 1;
+                assert_eq!(directive.method, BinanceFuturesCloseMethod::ReduceOnly);
+                assert_eq!(directive.position_side, "LONG");
+                Ok(order_result(
+                    &directive.symbol,
+                    &directive.side,
+                    directive.quantity,
+                    &directive.position_side,
+                ))
+            },
+        );
+
+        assert!(result.ok);
+        assert_eq!(calls, 1);
+        assert_eq!(result.requested_qty, 1.25);
+        assert_eq!(result.closed_qty, 1.25);
+        assert_eq!(result.remaining_qty, 0.0);
+        let audit = fs::read_to_string(&audit_path).expect("audit");
+        assert!(audit.contains("order_close_attempt"));
+        assert!(audit.contains("order_close_accepted"));
+        assert!(!audit.contains("\"closePosition\":\"true\""));
+        fs::remove_file(audit_path).ok();
+    }
+
+    #[test]
+    fn planned_position_close_stays_non_mutating_in_dry_run_mode() {
+        let (audit_path, incident_path) = temp_paths("planned-position-close-dry-run");
+        let mut engine = live_engine(audit_path.clone(), incident_path);
+        engine.dry_run = true;
+        let directives = vec![BinanceFuturesCloseDirective {
+            symbol: "ETHUSDT".to_owned(),
+            side: "BUY".to_owned(),
+            position_side: "SHORT".to_owned(),
+            quantity: 0.5,
+            quantity_text: "0.5".to_owned(),
+            reduce_only: false,
+            close_position: false,
+            method: BinanceFuturesCloseMethod::ReduceOnly,
+        }];
+
+        let result = engine.execute_planned_position_closes(
+            &directives,
+            "2026-06-18T00:00:01Z",
+            "runtime-stop",
+            |_| panic!("dry-run close must not call the exchange executor"),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(result.requested_qty, 0.5);
+        assert_eq!(result.closed_qty, 0.0);
+        assert_eq!(result.remaining_qty, 0.5);
+        assert_eq!(result.attempts.len(), 1);
+        let audit = fs::read_to_string(&audit_path).expect("audit");
+        assert!(audit.contains("order_close_dry_run"));
+        assert!(audit.contains("no close order was submitted"));
         fs::remove_file(audit_path).ok();
     }
 

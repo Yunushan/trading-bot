@@ -158,6 +158,16 @@ def _initialize_config_state(self) -> None:
     self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
     self.config.setdefault("theme", "Dark")
     self.config.setdefault("design", "Classic")
+    stored_theme = (
+        str((getattr(self, "_app_state", {}) or {}).get("theme") or "").strip().title()
+    )
+    if stored_theme in {"Light", "Dark", "Blue", "Yellow", "Green", "Red"}:
+        self.config["theme"] = stored_theme
+    stored_design = (
+        str((getattr(self, "_app_state", {}) or {}).get("design") or "").strip().title()
+    )
+    if stored_design in {"Classic", "Workstation"}:
+        self.config["design"] = stored_design
     self.config["close_on_exit"] = False
     self.config.setdefault("close_on_exit", False)
     self.config["allow_opposite_positions"] = coerce_bool(

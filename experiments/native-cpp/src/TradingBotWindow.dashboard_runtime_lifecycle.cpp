@@ -126,6 +126,30 @@ void TradingBotWindow::startDashboardRuntime() {
     dashboardRuntimeLastEvalMs_.clear();
     dashboardRuntimeEntryRetryAfterMs_.clear();
     dashboardRuntimeOpenQtyCaps_.clear();
+    dashboardRuntimeLiveSubmitAttemptCount_ = 0;
+    NativeOrderSafety::OrderAuditLogConfig orderAuditConfig;
+    orderAuditConfig.enabled = dashboardOrderAuditEnabledCheck_ && dashboardOrderAuditEnabledCheck_->isChecked();
+    orderAuditConfig.path = dashboardOrderAuditLogPathEdit_
+        ? dashboardOrderAuditLogPathEdit_->text().trimmed()
+        : QString();
+    orderAuditConfig.maxBytes = static_cast<quint64>(dashboardOrderAuditMaxBytesSpin_
+        ? dashboardOrderAuditMaxBytesSpin_->value()
+        : 10 * 1024 * 1024);
+    orderAuditConfig.backupCount = dashboardOrderAuditBackupCountSpin_
+        ? dashboardOrderAuditBackupCountSpin_->value()
+        : 1;
+    setNativeRuntimeOrderAuditLogConfig(orderAuditConfig);
+    NativeOrderSafety::ConnectorOrderCircuitConfig orderCircuitConfig;
+    orderCircuitConfig.enabled = dashboardConnectorOrderCircuitEnabledCheck_
+        && dashboardConnectorOrderCircuitEnabledCheck_->isChecked();
+    orderCircuitConfig.blockThreshold = dashboardConnectorOrderCircuitThresholdSpin_
+        ? dashboardConnectorOrderCircuitThresholdSpin_->value()
+        : 2;
+    orderCircuitConfig.blockWindowSeconds = dashboardConnectorOrderCircuitWindowSecondsSpin_
+        ? dashboardConnectorOrderCircuitWindowSecondsSpin_->value()
+        : 60.0;
+    dashboardRuntimeConnectorOrderCircuit_ = std::make_unique<NativeOrderSafety::ConnectorOrderCircuitBreaker>(
+        orderCircuitConfig);
     dashboardRuntimeConnectorWarnings_.clear();
     dashboardRuntimeIntervalWarnings_.clear();
     clearRuntimeSignalSockets(dashboardRuntimeSignalSockets_);

@@ -624,6 +624,58 @@ LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
     return {allowed, errors, allowed && liveMode ? currentCount + 1 : currentCount};
 }
 
+MinimumOrderAutoBumpGuardResult guardFuturesMinimumOrderAutoBump(
+    const MinimumOrderAutoBumpGuardInput &input) {
+    QStringList errors;
+    if (!qIsFinite(input.requestedQuantity) || input.requestedQuantity < 0.0
+        || !qIsFinite(input.normalizedQuantity) || input.normalizedQuantity <= 0.0
+        || !qIsFinite(input.price) || input.price <= 0.0) {
+        errors.append(QStringLiteral("invalid futures quantity or price for minimum-order safety validation"));
+        return {false, false, errors};
+    }
+
+    const bool autoBumpRequired = input.normalizedQuantity > input.requestedQuantity + 1e-12;
+    if (!autoBumpRequired) {
+        return {true, false, {}};
+    }
+
+    const int leverage = std::max(1, input.leverage);
+    const double requestedPct = std::max(0.0, input.requestedPositionPct);
+    const double requiredNotional = input.normalizedQuantity * input.price;
+    const double requiredMargin = requiredNotional / static_cast<double>(leverage);
+    const double availableUsdt = std::max(0.0, input.availableUsdt);
+    const double requiredPercent = (requiredNotional / std::max(availableUsdt * leverage, 1e-12)) * 100.0;
+    const double multiplier = input.config.autoBumpPercentMultiplier > 0.0
+        ? input.config.autoBumpPercentMultiplier
+        : 1.0;
+    const bool unlimitedPercent = input.config.maxAutoBumpPercent <= 0.0;
+    const double allowedPercent = unlimitedPercent
+        ? std::numeric_limits<double>::infinity()
+        : std::max(input.config.maxAutoBumpPercent, requestedPct * multiplier);
+    const bool withinMargin = !input.reduceOnly && requiredMargin <= availableUsdt * 1.01;
+    const bool withinPercent = unlimitedPercent || requiredPercent <= allowedPercent + 1e-9;
+
+    if (!withinMargin || !withinPercent) {
+        QString capNote;
+        if (!withinPercent && !unlimitedPercent) {
+            capNote = QStringLiteral(" (cap %1% / requested %2%)")
+                          .arg(normalizedDecimal(allowedPercent), normalizedDecimal(requestedPct));
+        }
+        errors.append(
+            QStringLiteral("insufficient funds for exchange minimum (~%1% needed)%2")
+                .arg(normalizedDecimal(requiredPercent), capNote));
+        return {false, true, errors};
+    }
+
+    if (isLiveTradingMode(input.mode) && !input.config.liveAllowAutoBumpToMinOrder) {
+        errors.append(
+            QStringLiteral("live auto-bump to exchange minimum is disabled; increase position percent "
+                           "or enable live_allow_auto_bump_to_min_order explicitly"));
+        return {false, true, errors};
+    }
+    return {true, true, {}};
+}
+
 QJsonObject buildOrderAuditEvent(
     const QString &event,
     const QString &market,

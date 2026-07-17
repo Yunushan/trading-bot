@@ -222,7 +222,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "05238a173d786f3902fc30708294757d8ea1d7662e973a80c4b1b96930a39830",
+  "contractHash": "39a1f7cf9944a1f107bb7bc6b18cca3834dfb55e897e8d5aad4bb2b46c133eab",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -1198,6 +1198,7 @@
     "mistral",
     "grok",
     "qwen",
+    "moonshot",
     "local",
     "ollama",
     "vllm",
@@ -1216,6 +1217,10 @@
       "label": "OpenAI / ChatGPT",
       "mode": "cloud",
       "model_suggestions": [
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.5-2026-04-23",
         "gpt-5.5-pro",
@@ -1250,7 +1255,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ]
     },
     {
@@ -1393,6 +1399,9 @@
       "label": "Alibaba Qwen / DashScope",
       "mode": "cloud",
       "model_suggestions": [
+        "qwen3.7-max",
+        "qwen3.7-max-2026-06-08",
+        "qwen3.7-max-2026-05-20",
         "qwen3.6-max-preview",
         "qwen3.6-plus",
         "qwen3.6-plus-2026-04-02",
@@ -1414,9 +1423,35 @@
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
+        "disabled",
+        "enabled",
         "low",
         "medium",
-        "high"
+        "high",
+        "max"
+      ]
+    },
+    {
+      "api_key_env": "MOONSHOT_API_KEY",
+      "default_base_url": "https://api.moonshot.ai/v1",
+      "default_model": "kimi-k3",
+      "default_reasoning_effort": "default",
+      "key": "moonshot",
+      "label": "Moonshot AI / Kimi",
+      "mode": "cloud",
+      "model_suggestions": [
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6",
+        "kimi-k2.5"
+      ],
+      "protocol": "openai-chat-completions",
+      "reasoning_efforts": [
+        "default",
+        "disabled",
+        "enabled",
+        "max"
       ]
     },
     {
