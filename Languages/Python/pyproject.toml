@@ -32,7 +32,7 @@ dependencies = [
     "requests==2.33.1",
     "binance-sdk-derivatives-trading-usds-futures==9.1.0",
     "binance-sdk-derivatives-trading-coin-futures==5.2.0",
-    "binance-sdk-spot==8.1.0",
+    "binance-sdk-spot==10.0.0",
 ]
 
 [project.optional-dependencies]
