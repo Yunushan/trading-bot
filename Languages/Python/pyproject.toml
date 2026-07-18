@@ -30,7 +30,7 @@ dependencies = [
     "pandas==2.3.2; python_version < '3.11'",
     "pandas==3.0.2; python_version >= '3.11'",
     "requests==2.33.1",
-    "binance-sdk-derivatives-trading-usds-futures==9.1.0",
+    "binance-sdk-derivatives-trading-usds-futures==14.0.0",
     "binance-sdk-derivatives-trading-coin-futures==5.2.0",
     "binance-sdk-spot==8.1.0",
 ]
