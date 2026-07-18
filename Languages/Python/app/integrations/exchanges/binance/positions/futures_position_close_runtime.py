@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Mapping
 
 
 def _finite_float(value: object, default: float = 0.0) -> float:
@@ -10,6 +11,71 @@ def _finite_float(value: object, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if math.isfinite(parsed) else default
+
+
+def _cancel_response_accepted(response: object) -> bool:
+    if not isinstance(response, Mapping) or not response:
+        return False
+    success = response.get("success", response.get("ok"))
+    if isinstance(success, str):
+        success = success.strip().lower() in {"true", "1", "yes", "ok"}
+    if success is False or response.get("error"):
+        return False
+    code = response.get("code")
+    if code is not None:
+        try:
+            return int(code) in {0, 200}
+        except (TypeError, ValueError):
+            return False
+    return success is True or str(response.get("status") or "").upper() in {"OK", "SUCCESS", "ACCEPTED"}
+
+
+def _cancel_symbol_open_orders_or_error(self, symbol: str) -> str | None:
+    """Cancel pending orders for ``symbol`` before a direct position close.
+
+    A reduce-only close alone is not enough if a resting entry order can fill
+    afterward.  The bulk endpoint is preferred; if it fails, each confirmed
+    open order must be canceled individually before the close is submitted.
+    """
+    client = getattr(self, "client", None)
+    cancel_all = getattr(client, "futures_cancel_all_open_orders", None)
+    if not callable(cancel_all):
+        return "symbol-scoped open-order cancellation is unavailable"
+    try:
+        response = cancel_all(symbol=symbol)
+        if not _cancel_response_accepted(response):
+            raise RuntimeError("exchange did not acknowledge bulk cancellation")
+        return None
+    except Exception as bulk_error:
+        list_open = getattr(client, "futures_get_open_orders", None)
+        cancel_one = getattr(client, "futures_cancel_order", None)
+        if not callable(list_open) or not callable(cancel_one):
+            return f"open-order cancellation failed: {bulk_error}"
+        try:
+            try:
+                open_orders = list_open(symbol=symbol)
+            except TypeError:
+                open_orders = list_open()
+        except Exception as snapshot_error:
+            return f"open-order cancellation failed: {bulk_error}; snapshot failed: {snapshot_error}"
+        if not isinstance(open_orders, (list, tuple)):
+            return "open-order cancellation returned an invalid open-order snapshot"
+        for order in open_orders:
+            if not isinstance(order, dict):
+                return "open-order cancellation returned a malformed open-order row"
+            row_symbol = str(order.get("symbol") or symbol).upper()
+            if row_symbol != symbol:
+                continue
+            order_id = order.get("orderId")
+            if order_id in (None, ""):
+                return "open-order cancellation returned an order without an orderId"
+            try:
+                response = cancel_one(symbol=symbol, orderId=order_id)
+                if not _cancel_response_accepted(response):
+                    raise RuntimeError("exchange did not acknowledge order cancellation")
+            except Exception as cancel_error:
+                return f"open-order cancellation failed for {order_id}: {cancel_error}"
+        return None
 
 
 def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_side: str | None = None):
@@ -51,8 +117,10 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
         def _live_closeable_qty(preferred_ps: str | None) -> tuple[float, bool]:
             total = 0.0
             try:
-                rows = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+                rows = self.list_open_futures_positions(max_age=0.0, force_refresh=True)
             except Exception:
+                return 0.0, False
+            if not isinstance(rows, (list, tuple)):
                 return 0.0, False
             for row in rows:
                 if str(row.get("symbol") or "").upper() != sym:
@@ -111,6 +179,15 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
 
         live_qty_preferred, known_preferred = _live_closeable_qty(ps_norm)
         live_qty_fallback, known_fallback = _live_closeable_qty(None)
+        if not known_preferred and not known_fallback:
+            return {
+                "ok": False,
+                "error": "close blocked: futures position snapshot unavailable",
+                "symbol": sym,
+                "requested_qty": _finite_float(qty),
+                "position_side": ps_norm,
+                "side": side_up,
+            }
         live_qty = live_qty_preferred if live_qty_preferred > qty_tol else live_qty_fallback
         if live_qty <= qty_tol and (known_preferred or known_fallback):
             return {"ok": True, "skipped": True, "symbol": sym, "reason": "position already flat"}
@@ -120,6 +197,17 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             q = abs(_finite_float(qty))
         if q <= qty_tol and (known_preferred or known_fallback):
             return {"ok": True, "skipped": True, "symbol": sym, "reason": "position already flat"}
+
+        cancellation_error = _cancel_symbol_open_orders_or_error(self, sym)
+        if cancellation_error:
+            return {
+                "ok": False,
+                "error": f"close blocked: {cancellation_error}",
+                "symbol": sym,
+                "requested_qty": _finite_float(qty),
+                "position_side": ps_norm,
+                "side": side_up,
+            }
 
         derived_ps = "LONG" if side_up == "SELL" else "SHORT"
         ps_attempts: list[str | None] = []
@@ -204,10 +292,14 @@ def close_futures_position(self, symbol: str):
         except Exception:
             step = 0.0
         dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
-        rows = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+        snapshot = self.list_open_futures_positions(max_age=0.0, force_refresh=True)
+        primary_snapshot_known = isinstance(snapshot, (list, tuple))
+        rows = list(snapshot) if primary_snapshot_known else []
+        raw_snapshot_known = False
         if not rows:
             try:
                 raw_rows = self.client.futures_position_information(symbol=sym) or []
+                raw_snapshot_known = True
             except Exception:
                 raw_rows = []
             for raw in raw_rows:
@@ -223,6 +315,33 @@ def close_futures_position(self, symbol: str):
                     )
                 except Exception:
                     continue
+        if not primary_snapshot_known and not raw_snapshot_known:
+            return {
+                "ok": False,
+                "closed": 0,
+                "failed": 0,
+                "errors": ["close blocked: futures position snapshot unavailable"],
+                "remaining": 0,
+                "symbol": sym,
+            }
+        has_open_position = any(
+            str(row.get("symbol") or "").upper() == sym
+            and abs(_finite_float(row.get("positionAmt"))) >= 1e-12
+            for row in rows
+            if isinstance(row, dict)
+        )
+        if has_open_position:
+            cancellation_error = _cancel_symbol_open_orders_or_error(self, sym)
+            if cancellation_error:
+                return {
+                    "ok": False,
+                    "closed": 0,
+                    "failed": 0,
+                    "errors": [f"close blocked: {cancellation_error}"],
+                    "remaining": 0,
+                    "symbol": sym,
+                }
+
         closed = 0
         failed = 0
         errors = []
@@ -232,8 +351,12 @@ def close_futures_position(self, symbol: str):
             fresh_rows = []
             known = False
             try:
-                fresh_rows = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
-                known = True
+                snapshot = self.list_open_futures_positions(max_age=0.0, force_refresh=True)
+                if isinstance(snapshot, (list, tuple)):
+                    fresh_rows = list(snapshot)
+                    known = True
+                else:
+                    snapshot_error = "futures position snapshot unavailable"
             except Exception as exc:
                 snapshot_error = str(exc)
             if not fresh_rows:
@@ -367,7 +490,9 @@ def cancel_all_open_futures_orders(self) -> dict:
                 results["errors"].append(f"position snapshot: {exc}")
         for sym in sorted(symbols):
             try:
-                self.client.futures_cancel_all_open_orders(symbol=sym)
+                response = self.client.futures_cancel_all_open_orders(symbol=sym)
+                if not _cancel_response_accepted(response):
+                    raise RuntimeError("exchange did not acknowledge cancellation")
                 results["canceled_symbols"] += 1
             except Exception as exc:
                 results["ok"] = False

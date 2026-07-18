@@ -49,7 +49,10 @@ def build_futures_stop_state(self, *, cw, df):
     def load_positions_cache():
         if state["positions_cache"] is None:
             try:
-                state["positions_cache"] = self.binance.list_open_futures_positions() or []
+                positions = self.binance.list_open_futures_positions()
+                if not isinstance(positions, (list, tuple)):
+                    raise RuntimeError("futures position snapshot unavailable")
+                state["positions_cache"] = list(positions)
                 state["positions_cache_ok"] = True
             except Exception:
                 state["positions_cache"] = []

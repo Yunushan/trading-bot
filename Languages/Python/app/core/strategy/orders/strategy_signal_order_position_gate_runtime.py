@@ -2,6 +2,16 @@ from __future__ import annotations
 
 import time
 
+from app.settings import is_live_trading_mode
+
+
+def _live_mode_for_position_gate(self) -> bool:  # noqa: ANN001
+    config = getattr(self, "config", {}) or {}
+    mode = config.get("mode") if isinstance(config, dict) else None
+    if mode in (None, ""):
+        mode = getattr(getattr(self, "binance", None), "mode", "")
+    return bool(is_live_trading_mode(mode))
+
 
 def _prepare_signal_order_position_gate(
     self,
@@ -21,6 +31,8 @@ def _prepare_signal_order_position_gate(
         abort_guard()
         return {"aborted": True}
 
+    live_mode = _live_mode_for_position_gate(self)
+
     key_bar = (cw["symbol"], cw.get("interval"), side)
     key_dup = key_bar
     try:
@@ -36,7 +48,8 @@ def _prepare_signal_order_position_gate(
             self._last_order_time.pop(key_bar, None)
             self._leg_ledger.pop(key_bar, None)
     except Exception:
-        pass
+        if live_mode:
+            return _abort()
 
     target_flip_qty = flip_close_qty if flip_close_qty > 0.0 else None
     if not self._close_opposite_position(
@@ -53,6 +66,7 @@ def _prepare_signal_order_position_gate(
         opp_side_guard = "SELL" if side == "BUY" else "BUY"
         indicator_interval_tokens = set(self._tokenize_interval_label(interval_norm))
         remaining_opp_qty = 0.0
+        indicator_qty_lookup_failed = False
         for token in indicator_tokens_for_guard:
             try:
                 qty_val = self._indicator_live_qty_total(
@@ -65,9 +79,12 @@ def _prepare_signal_order_position_gate(
                     use_exchange_fallback=False,
                 )
             except Exception:
+                indicator_qty_lookup_failed = True
                 qty_val = 0.0
             if qty_val > remaining_opp_qty:
                 remaining_opp_qty = qty_val
+        if indicator_qty_lookup_failed and live_mode:
+            return _abort()
         if remaining_opp_qty <= qty_tol_slot_guard:
             try:
                 account_type_check = str(
@@ -101,6 +118,8 @@ def _prepare_signal_order_position_gate(
                             ),
                         )
                     except Exception:
+                        if live_mode:
+                            return _abort()
                         exch_qty = 0.0
                     if exch_qty > qty_tol_slot_guard:
                         remaining_opp_qty = exch_qty
@@ -130,4 +149,5 @@ def _prepare_signal_order_position_gate(
 
 
 def bind_strategy_signal_order_position_gate_runtime(strategy_cls) -> None:
+    strategy_cls._live_mode_for_position_gate = _live_mode_for_position_gate
     strategy_cls._prepare_signal_order_position_gate = _prepare_signal_order_position_gate

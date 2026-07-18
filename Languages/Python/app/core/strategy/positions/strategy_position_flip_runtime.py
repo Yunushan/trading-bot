@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import math
+from collections.abc import Iterable, Mapping
 
 from . import strategy_close_opposite_runtime
+
+try:
+    from ....settings.live_safety import is_live_trading_mode
+except ImportError:  # pragma: no cover - standalone execution fallback
+    from settings.live_safety import is_live_trading_mode
 
 
 def _close_opposite_position(
@@ -14,37 +20,49 @@ def _close_opposite_position(
     indicator_key: Iterable[str] | str | None = None,
     target_qty: float | None = None,
 ) -> bool:
-    return strategy_close_opposite_runtime._close_opposite_position(
-        self,
-        symbol,
-        interval,
-        next_side,
-        trigger_signature=trigger_signature,
-        indicator_key=indicator_key,
-        target_qty=target_qty,
+    return bool(
+        strategy_close_opposite_runtime._close_opposite_position(
+            self,
+            symbol,
+            interval,
+            next_side,
+            trigger_signature=trigger_signature,
+            indicator_key=indicator_key,
+            target_qty=target_qty,
+        )
     )
 
 def _reconcile_liquidations(self, symbol: str) -> None:
     """Clear internal state for a symbol if exchange shows no exposure (e.g., liquidation)."""
     try:
-        positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
-    except Exception:
-        # Do not mutate miss counters on API failure; treat as inconclusive.
-        return
+        positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
+    except Exception as exc:
+        # The caller blocks live cycles when reconciliation is inconclusive.
+        raise RuntimeError("position reconciliation lookup failed") from exc
+    if positions is None:
+        raise RuntimeError("position reconciliation snapshot was unavailable")
+    if not isinstance(positions, (list, tuple)):
+        raise RuntimeError("position reconciliation snapshot had an invalid shape")
     try:
         dual_mode = bool(self.binance.get_futures_dual_side())
-    except Exception:
+    except Exception as exc:
+        if is_live_trading_mode(getattr(self.binance, "mode", "")):
+            raise RuntimeError("position reconciliation could not verify hedge mode") from exc
         dual_mode = False
     tol = 1e-9
     long_active = False
     short_active = False
     for pos in positions:
+        if not isinstance(pos, Mapping):
+            raise RuntimeError("position reconciliation snapshot contained an invalid row")
         if str(pos.get("symbol") or "").upper() != str(symbol or "").upper():
             continue
         try:
             amt_val = float(pos.get("positionAmt") or 0.0)
-        except Exception:
-            amt_val = 0.0
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("position reconciliation snapshot contained an invalid amount") from exc
+        if not math.isfinite(amt_val):
+            raise RuntimeError("position reconciliation snapshot contained a non-finite amount")
         pos_side = str(pos.get("positionSide") or pos.get("positionside") or "BOTH").upper()
         if dual_mode:
             if pos_side == "LONG" and amt_val > tol:
@@ -144,7 +162,7 @@ def _merge_flip_requests_into_indicator_orders(
         indicator_token = self._canonical_indicator_token(req.get("indicator_key")) or None
         if not indicator_token:
             sig = req.get("signature") or ()
-            if sig:
+            if isinstance(sig, (list, tuple)) and sig:
                 indicator_token = self._canonical_indicator_token(sig[0]) or str(sig[0] or "").strip().lower()
         if not indicator_token:
             continue
@@ -174,11 +192,11 @@ def _merge_flip_requests_into_indicator_orders(
             if not existing_req.get("flip_from") and req.get("flip_from"):
                 existing_req["flip_from"] = req.get("flip_from")
             try:
-                existing_flip_qty = float(existing_req.get("flip_qty") or 0.0)
+                existing_flip_qty = float(str(existing_req.get("flip_qty") or 0.0))
             except Exception:
                 existing_flip_qty = 0.0
             try:
-                existing_flip_target = float(existing_req.get("flip_qty_target") or 0.0)
+                existing_flip_target = float(str(existing_req.get("flip_qty_target") or 0.0))
             except Exception:
                 existing_flip_target = 0.0
             try:

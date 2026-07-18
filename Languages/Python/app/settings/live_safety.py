@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from collections.abc import Mapping
 
 from .exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
@@ -66,9 +67,10 @@ def _float_value(value: object, default: float) -> float:
     if isinstance(value, bool) or value in (None, ""):
         return float(default)
     try:
-        return float(str(value).strip())
+        parsed = float(str(value).strip())
     except (TypeError, ValueError):
         return float(default)
+    return parsed if math.isfinite(parsed) else float(default)
 
 
 def _int_value(value: object, default: int) -> int:

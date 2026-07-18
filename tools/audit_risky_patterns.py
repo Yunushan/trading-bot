@@ -67,7 +67,7 @@ PATTERNS = (
         "todo_marker",
         "low",
         re.compile(r"\bTODO\b|\bFIXME\b", re.IGNORECASE),
-        "Open TODO/FIXME markers should become tracked work or be removed.",
+        "Open work markers should become tracked work or be removed.",
     ),
 )
 

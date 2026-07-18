@@ -4,9 +4,27 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation, getcontext
 import math
 import time
+from collections.abc import Mapping
 from typing import Any, Dict, List
 
 getcontext().prec = 28
+
+
+def _cancel_response_accepted(response: object) -> bool:
+    if not isinstance(response, Mapping) or not response:
+        return False
+    success = response.get("success", response.get("ok"))
+    if isinstance(success, str):
+        success = success.strip().lower() in {"true", "1", "yes", "ok"}
+    if success is False or response.get("error"):
+        return False
+    code = response.get("code")
+    if code is not None:
+        try:
+            return int(code) in {0, 200}
+        except (TypeError, ValueError):
+            return False
+    return success is True or str(response.get("status") or "").upper() in {"OK", "SUCCESS", "ACCEPTED"}
 
 
 def _record_close_all_exception(binance, context: str, exc: BaseException) -> None:
@@ -73,21 +91,71 @@ def _quantize_qty(qty_raw: float, step: float, min_qty: float, max_qty: float) -
     return max(qty, 0.0)
 
 
-def _cancel_all(binance, sym: str):
+def _cancel_all(binance, sym: str) -> bool:
+    """Cancel a symbol's open orders before closing its position.
+
+    A close submitted while an entry order remains open can recreate exposure
+    immediately after the close fills.  Report whether cancellation was
+    actually confirmed so callers can fail closed instead of treating a
+    best-effort cancellation as a safety boundary.
+    """
     try:
-        binance.client.futures_cancel_all_open_orders(symbol=sym)
-        return
+        response = binance.client.futures_cancel_all_open_orders(symbol=sym)
+        if not _cancel_response_accepted(response):
+            raise RuntimeError("exchange did not acknowledge bulk cancellation")
+        return True
     except Exception as exc:
         _record_close_all_exception(binance, f"cancel_all_open_orders_bulk:{sym}", exc)
     # fallback: cancel one by one
     try:
-        for o in binance.client.futures_get_open_orders(symbol=sym):
+        open_orders = binance.client.futures_get_open_orders(symbol=sym)
+        if not isinstance(open_orders, (list, tuple)):
+            _record_close_all_exception(binance, f"cancel_all_open_orders_invalid_snapshot:{sym}", RuntimeError("invalid response"))
+            return False
+        cancelled = True
+        for o in open_orders:
             try:
-                binance.client.futures_cancel_order(symbol=sym, orderId=o.get("orderId"))
+                order_id = o.get("orderId") if isinstance(o, dict) else None
+                if order_id in (None, ""):
+                    raise RuntimeError("open order has no orderId")
+                response = binance.client.futures_cancel_order(symbol=sym, orderId=order_id)
+                if not _cancel_response_accepted(response):
+                    raise RuntimeError("exchange did not acknowledge order cancellation")
             except Exception as exc:
+                cancelled = False
                 _record_close_all_exception(binance, f"cancel_open_order:{sym}", exc)
+        return cancelled
     except Exception as exc:
         _record_close_all_exception(binance, f"cancel_all_open_orders_list:{sym}", exc)
+        return False
+
+
+def _close_order_response_accepted(response: object) -> bool:
+    """Return whether an emergency-close order has a traceable exchange ID."""
+    if not isinstance(response, Mapping) or not response:
+        return False
+    payload = response.get("data") if isinstance(response.get("data"), Mapping) else response
+    if not isinstance(payload, Mapping) or not payload:
+        return False
+    success = payload.get("success", payload.get("ok"))
+    if isinstance(success, str):
+        success = success.strip().lower() in {"true", "1", "yes", "ok"}
+    if success is False or payload.get("error"):
+        return False
+    code = payload.get("code")
+    if code is not None:
+        try:
+            if int(code) not in {0, 200}:
+                return False
+        except (TypeError, ValueError):
+            return False
+    status = str(payload.get("status") or "").upper()
+    if status in {"REJECTED", "EXPIRED", "CANCELED"}:
+        return False
+    return any(
+        payload.get(key) not in (None, "")
+        for key in ("orderId", "order_id", "id", "clientOrderId", "client_order_id", "clientOrderID")
+    )
 
 
 def _submit_futures_order(binance, params: dict) -> dict:
@@ -95,6 +163,8 @@ def _submit_futures_order(binance, params: dict) -> dict:
     submit = getattr(binance, "_futures_create_order_with_fallback", None)
     if callable(submit):
         order, _via = submit(dict(params))
+        if not _close_order_response_accepted(order):
+            raise RuntimeError("close order response was not explicitly acknowledged by the exchange")
         try:
             invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
             if callable(invalidate):
@@ -106,6 +176,8 @@ def _submit_futures_order(binance, params: dict) -> dict:
     if callable(guard):
         guard(market="futures", params=params, source="close_all_futures_positions")
     order = binance.client.futures_create_order(**params)
+    if not _close_order_response_accepted(order):
+        raise RuntimeError("close order response was not explicitly acknowledged by the exchange")
     try:
         invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
         if callable(invalidate):
@@ -451,14 +523,25 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
 
     if fast:
         positions, _ = _gather_positions(binance)
+        cancel_failures: set[str] = set()
         for sym in sorted({str(p.get("symbol") or "").upper() for p in positions} - {""}):
-            _cancel_all(binance, sym)
+            if not _cancel_all(binance, sym):
+                cancel_failures.add(sym)
         if positions and max_workers is None:
             max_workers = min(6, max(1, len(positions)))
 
         def _attempt_close_position(p):
             sym = p.get("symbol")
             pos_side = _normalize_position_side(p.get("positionSide"))
+            normalized_sym = str(sym or "").upper()
+            if normalized_sym in cancel_failures:
+                return {
+                    "ok": False,
+                    "symbol": sym,
+                    "positionSide": pos_side,
+                    "error": "open-order cancellation was not confirmed; close blocked to prevent re-opening exposure",
+                    "method": "cancel-verification",
+                }
             try:
                 amt = float(p.get("positionAmt") or 0.0)
             except Exception:
@@ -606,7 +689,17 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 if abs(amt) <= 0:
                     continue
                 if sym not in canceled_symbols:
-                    _cancel_all(binance, sym)
+                    if not _cancel_all(binance, sym):
+                        results.append(
+                            {
+                                "ok": False,
+                                "symbol": sym,
+                                "positionSide": pos_side,
+                                "error": "open-order cancellation was not confirmed; close blocked to prevent re-opening exposure",
+                                "method": "cancel-verification",
+                            }
+                        )
+                        continue
                     canceled_symbols.add(sym)
                 params, method = _build_market_close_params(
                     binance,

@@ -1,7 +1,9 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 import warnings
 from pathlib import Path
@@ -28,10 +30,16 @@ from app.service.api_contract import (  # noqa: E402
     SERVICE_API_VERSION,
 )
 from app.service.auth import (  # noqa: E402
+    MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH,
+    SERVICE_API_TOKEN_FILE_ENV,
     auth_required,
     host_requires_service_api_token,
+    resolve_service_api_token,
+    service_api_url_scheme,
     validate_bearer_token,
+    validate_service_api_exposure,
 )
+from app.desktop.service_bridge_host_runtime import _resolve_desktop_service_api_settings  # noqa: E402
 from app.service.runtime import TradingBotService  # noqa: E402
 from app.integrations.llm.local_models import (  # noqa: E402
     LocalModelServerStartResult,
@@ -78,6 +86,8 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             )
         self.assertIn("/", paths)
         self.assertIn("/health", paths)
+        self.assertIn("/livez", paths)
+        self.assertIn("/readyz", paths)
         self.assertIn("/ui", paths)
         self.assertEqual(SERVICE_API_BASE_PATH, "/api/v1")
         self.assertEqual(SERVICE_API_LEGACY_BASE_PATH, "/api")
@@ -149,6 +159,29 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertFalse(
             app.state.service.describe_runtime().to_dict()["control_plane"]["trading_execution_supported"]
         )
+
+    @unittest.skipUnless(
+        FASTAPI_TESTCLIENT_AVAILABLE,
+        "FastAPI TestClient optional dependencies are not installed",
+    )
+    def test_service_api_liveness_and_readiness_probes(self):
+        app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+        client = _create_test_client(app)
+
+        liveness = client.get("/livez")
+        readiness = client.get("/readyz")
+
+        self.assertEqual(200, liveness.status_code)
+        self.assertEqual({"status": "ok"}, liveness.json())
+        self.assertEqual(200, readiness.status_code)
+        self.assertEqual("ready", readiness.json()["status"])
+        self.assertEqual("trading-bot-service", readiness.json()["service_name"])
+
+        with mock.patch.object(app.state.service, "describe_runtime", side_effect=RuntimeError("boom")):
+            not_ready = client.get("/readyz")
+
+        self.assertEqual(503, not_ready.status_code)
+        self.assertEqual({"status": "not-ready"}, not_ready.json())
 
     @unittest.skipUnless(
         FASTAPI_TESTCLIENT_AVAILABLE,
@@ -284,6 +317,91 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertFalse(host_requires_service_api_token("localhost"))
         self.assertTrue(host_requires_service_api_token("0.0.0.0"))
         self.assertTrue(host_requires_service_api_token("192.168.1.10"))
+        validate_service_api_exposure("127.0.0.1", "short-token")
+        with self.assertRaisesRegex(RuntimeError, "at least 32 characters"):
+            validate_service_api_exposure("0.0.0.0", "short-token")
+        with self.assertRaisesRegex(RuntimeError, "requires TLS"):
+            validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
+        with mock.patch.dict(os.environ, {"BOT_SERVICE_API_TRUST_PROXY_TLS": "1"}, clear=True):
+            validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
+        with mock.patch.dict(os.environ, {"BOT_SERVICE_API_TRUST_LOOPBACK_PROXY": "1"}, clear=True):
+            validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            certificate = Path(temporary_directory) / "service.crt"
+            private_key = Path(temporary_directory) / "service.key"
+            certificate.write_text("certificate", encoding="utf-8")
+            private_key.write_text("private-key", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "BOT_SERVICE_API_TLS_CERTFILE": str(certificate),
+                    "BOT_SERVICE_API_TLS_KEYFILE": str(private_key),
+                },
+                clear=True,
+            ):
+                validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "BOT_SERVICE_API_TRUST_PROXY_TLS": "1",
+                "BOT_SERVICE_API_TLS_CERTFILE": "missing-service.crt",
+                "BOT_SERVICE_API_TLS_KEYFILE": "missing-service.key",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "certificate or key file does not exist"):
+                validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
+        with mock.patch.dict(os.environ, {"BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES": "1"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "only allowed when the service API binds to a loopback host"):
+                validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
+            validate_service_api_exposure("127.0.0.1", "short-token")
+
+    def test_service_api_token_file_fallback_is_bounded_and_explicit_token_wins(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            token_file = Path(temporary_directory) / "service-api-token"
+            token_file.write_text("file-token\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True):
+                self.assertEqual("file-token", resolve_service_api_token())
+                self.assertTrue(auth_required())
+                self.assertEqual("explicit-token", resolve_service_api_token("explicit-token"))
+            with mock.patch.dict(
+                os.environ,
+                {"BOT_SERVICE_API_TOKEN": "environment-token", SERVICE_API_TOKEN_FILE_ENV: str(token_file)},
+                clear=True,
+            ):
+                self.assertEqual("environment-token", resolve_service_api_token())
+
+            token_file.write_text("x" * 4097, encoding="utf-8")
+            with mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "safety limit"):
+                    resolve_service_api_token()
+            with mock.patch.dict(
+                os.environ,
+                {SERVICE_API_TOKEN_FILE_ENV: str(token_file.with_name("missing-token"))},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "readable file"):
+                    resolve_service_api_token()
+
+    def test_tls_enabled_service_api_reports_https_urls_to_desktop_clients(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            certificate = Path(temporary_directory) / "service.crt"
+            private_key = Path(temporary_directory) / "service.key"
+            certificate.write_text("certificate", encoding="utf-8")
+            private_key.write_text("private-key", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "BOT_SERVICE_API_TLS_CERTFILE": str(certificate),
+                    "BOT_SERVICE_API_TLS_KEYFILE": str(private_key),
+                },
+                clear=False,
+            ):
+                self.assertEqual("https", service_api_url_scheme())
+                host = ServiceApiBackgroundHost(host="127.0.0.1", port=8443, api_token="token-123")
+                self.assertEqual("https://127.0.0.1:8443", host.describe()["url"])
+                settings = _resolve_desktop_service_api_settings(object(), host="127.0.0.1", port=8443)
+                self.assertEqual("https://127.0.0.1:8443", settings["url"])
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_exposed_service_api_requires_token(self):
@@ -291,6 +409,12 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             run_service_api_server(host="0.0.0.0", port=8000, api_token="")
         with self.assertRaisesRegex(RuntimeError, "BOT_SERVICE_API_TOKEN"):
             ServiceApiBackgroundHost(host="0.0.0.0", port=8000, api_token="")
+        with self.assertRaisesRegex(RuntimeError, "requires TLS"):
+            run_service_api_server(
+                host="0.0.0.0",
+                port=8000,
+                api_token="x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH,
+            )
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_config_validation_errors_are_client_errors(self):
@@ -452,6 +576,8 @@ class ServiceApiHttpContractTests(unittest.TestCase):
 
         self.assertEqual(413, response.status_code)
         self.assertIn("too large", response.json()["detail"])
+        self.assertEqual("no-store", response.headers.get("cache-control"))
+        self.assertEqual("nosniff", response.headers.get("x-content-type-options"))
         self.assertFalse(any("HTTP_413_REQUEST_ENTITY_TOO_LARGE" in str(item.message) for item in caught))
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
@@ -492,6 +618,75 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertEqual(200, first.status_code)
         self.assertEqual(429, second.status_code)
         self.assertEqual("60", second.headers.get("retry-after"))
+        self.assertEqual("no-store", second.headers.get("cache-control"))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_sensitive_responses_disable_intermediary_caching(self):
+        app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+        client = _create_test_client(app)
+
+        for path in ("/health", "/livez", "/readyz", f"{SERVICE_API_BASE_PATH}/dashboard"):
+            response = client.get(path, headers={"Authorization": "Bearer token-123"})
+            self.assertEqual(200, response.status_code, path)
+            self.assertEqual("no-store", response.headers.get("cache-control"), path)
+            self.assertEqual("no-cache", response.headers.get("pragma"), path)
+            self.assertEqual("no-referrer", response.headers.get("referrer-policy"), path)
+            self.assertEqual("nosniff", response.headers.get("x-content-type-options"), path)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_bounds_rate_limit_client_tracking(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE": "1",
+                "BOT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS": "1",
+            },
+            clear=False,
+        ):
+            app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+            app.state.service_api_rate_limit_windows["existing-client"] = {
+                "started_at": time.monotonic(),
+                "count": 1,
+            }
+            client = _create_test_client(app)
+            response = client.post(
+                f"{SERVICE_API_BASE_PATH}/logs",
+                headers={"Authorization": "Bearer token-123"},
+                json={"message": "capacity"},
+            )
+
+        self.assertEqual(429, response.status_code)
+        self.assertEqual("60", response.headers.get("retry-after"))
+        self.assertIn("client capacity", response.json()["detail"])
+        self.assertEqual({"existing-client"}, set(app.state.service_api_rate_limit_windows))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_non_loopback_service_api_enforces_a_nonzero_write_rate_limit(self):
+        with mock.patch.dict("os.environ", {"BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE": ""}, clear=False):
+            app = create_service_api_app(
+                service=TradingBotService(),
+                api_token="token-123",
+                bound_host="0.0.0.0",
+            )
+            client = _create_test_client(app)
+            response = client.get("/health")
+
+        self.assertEqual(200, response.status_code)
+        limits = response.json()["service_api"]["limits"]
+        self.assertTrue(limits["non_loopback_binding"])
+        self.assertEqual(60, limits["write_rate_limit_per_minute"])
+        self.assertEqual(10_000, limits["write_rate_limit_max_clients"])
+
+        with mock.patch.dict("os.environ", {"BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE": "0"}, clear=False):
+            app = create_service_api_app(
+                service=TradingBotService(),
+                api_token="token-123",
+                bound_host="192.168.1.10",
+            )
+            client = _create_test_client(app)
+            response = client.get("/health")
+
+        self.assertEqual(1, response.json()["service_api"]["limits"]["write_rate_limit_per_minute"])
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_desktop_embedded_service_api_write_routes_accept_bearer_token(self):

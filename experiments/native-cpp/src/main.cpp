@@ -1,6 +1,7 @@
 #include "TradingBotWindow.h"
 
 #include <QApplication>
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
 #include <QEvent>
@@ -9,6 +10,7 @@
 #include <QGuiApplication>
 #include <QIcon>
 #include <QStringList>
+#include <QTabWidget>
 #include <QTextStream>
 #include <QTimer>
 
@@ -67,6 +69,50 @@ bool hasBoundedSmokeArg() {
         || args.contains(QStringLiteral("--healthcheck"));
 }
 
+bool verifyBoundedSmokeWindow(TradingBotWindow &window) {
+    const QStringList expectedTabs = {
+        QStringLiteral("Dashboard"),
+        QStringLiteral("Chart"),
+        QStringLiteral("Positions"),
+        QStringLiteral("Backtest"),
+        QStringLiteral("Liquidation Heatmap"),
+        QStringLiteral("Code Languages"),
+    };
+
+    QTabWidget *mainTabs = nullptr;
+    for (QTabWidget *candidate : window.findChildren<QTabWidget *>()) {
+        if (candidate && candidate->count() == expectedTabs.size()) {
+            bool matches = true;
+            for (int index = 0; index < expectedTabs.size(); ++index) {
+                if (candidate->tabText(index) != expectedTabs.at(index)) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                mainTabs = candidate;
+                break;
+            }
+        }
+    }
+    if (!mainTabs) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: primary desktop tabs are unavailable\n";
+        return false;
+    }
+
+    for (int index = 0; index < expectedTabs.size(); ++index) {
+        if (!mainTabs->widget(index)) {
+            QTextStream(stderr) << "Trading Bot C++ smoke failed: "
+                                << expectedTabs.at(index) << " page is unavailable\n";
+            return false;
+        }
+        mainTabs->setCurrentIndex(index);
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    }
+    mainTabs->setCurrentIndex(0);
+    return true;
+}
+
 int runBoundedSmoke(QApplication &app, const QIcon &icon) {
     app.setProperty("tradingBotBoundedSmoke", true);
 
@@ -76,8 +122,10 @@ int runBoundedSmoke(QApplication &app, const QIcon &icon) {
     }
 
     TradingBotWindow *windowPtr = window.get();
-    QTimer::singleShot(0, windowPtr, [windowPtr]() {
+    bool windowContractOk = true;
+    QTimer::singleShot(0, windowPtr, [windowPtr, &windowContractOk]() {
         windowPtr->show();
+        windowContractOk = verifyBoundedSmokeWindow(*windowPtr);
     });
     QTimer::singleShot(150, &app, &QCoreApplication::quit);
 
@@ -91,6 +139,9 @@ int runBoundedSmoke(QApplication &app, const QIcon &icon) {
         QTextStream(stderr) << "Trading Bot C++ smoke failed with Qt exit code "
                             << exitCode << '\n';
         return exitCode;
+    }
+    if (!windowContractOk) {
+        return 1;
     }
     QTextStream(stdout) << "Trading Bot C++ smoke ok\n";
     return 0;
@@ -115,6 +166,15 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationDisplayName("Trading Bot");
     app.setApplicationName("Trading Bot");
+
+    if (hasBoundedSmokeArg()) {
+        // Keep packaging smoke output deterministic so the bundle verifier can reject real diagnostics.
+        const QByteArray existingFlags = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+        if (!existingFlags.contains("--disable-logging")) {
+            const QByteArray separator = existingFlags.isEmpty() ? QByteArray() : QByteArray(" ");
+            qputenv("QTWEBENGINE_CHROMIUM_FLAGS", existingFlags + separator + "--disable-logging --log-level=3");
+        }
+    }
 
     const QIcon icon = loadAppIcon();
     if (!icon.isNull()) {

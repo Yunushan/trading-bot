@@ -13,6 +13,49 @@ python tools/check_client_dependency_locks.py --json --strict
 python tools/verify_all.py --skip-slow
 ```
 
+Run the Python dependency vulnerability audit with the explicit security extra:
+
+```bash
+python -m pip install -e "Languages/Python[security]"
+python tools/run_python_security_audit.py --skip-editable --progress-spinner=off
+```
+
+The launcher uses the operating system certificate store through `truststore`.
+It does not disable TLS verification; this is important on Windows networks that
+use a locally trusted inspection certificate.
+
+The scheduled supply-chain workflow also checks the Rust lockfile with pinned
+`cargo-audit` 0.22.2. To run that check locally after Cargo can reach crates.io:
+
+```bash
+cargo install cargo-audit --version 0.22.2 --locked
+cd experiments/rust-shells
+cargo audit --file Cargo.lock
+```
+
+The supply-chain workflow also builds `docker/backend.Dockerfile` and fails on
+known high- or critical-severity OS or Python-library vulnerabilities in the
+resulting image. Run the same build locally when Docker Desktop is running:
+
+```bash
+docker build --pull --file docker/backend.Dockerfile --tag trading-bot-service:local .
+```
+
+The CI scan is intentionally pinned to an immutable Trivy Action commit and
+does not suppress unfixed high- or critical-severity findings. Resolve those in
+the base image or declared Python dependencies before treating a release image
+as production-ready.
+
+Every third-party action in the CI and release workflows is pinned to an
+immutable commit. Dependabot proposes reviewed upgrades rather than allowing a
+mutable action tag to change behavior during a security scan or release.
+
+The service Dockerfile also pins its multi-platform Python base image by OCI
+digest. The Docker Dependabot entry proposes deliberate base-image refreshes;
+do not replace the digest with a mutable `python:3.14-slim` tag. The image
+bootstrap also pins `pip` 26.1.2 rather than upgrading to an unreviewed latest
+version during a container build.
+
 For a hard local setup gate, use:
 
 ```bash

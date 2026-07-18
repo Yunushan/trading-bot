@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
+from app.native_parity import INDICATOR_SOURCE_OPTIONS
 from app.gui.runtime.ui.theme_styles import DESIGN_CLASSIC, DESIGN_OPTIONS
 
 from ..shared.llm_settings_panel import create_llm_settings_panel
@@ -215,22 +216,7 @@ def _create_dashboard_header_section(self, scroll_layout):
 
     grid.addWidget(QtWidgets.QLabel("Indicator Source:"), 3, 0)
     self.ind_source_combo = QtWidgets.QComboBox()
-    self.ind_source_combo.addItems(
-        [
-            "Binance spot",
-            "Binance futures",
-            "TradingView",
-            "Bybit",
-            "Coinbase",
-            "OKX",
-            "Gate",
-            "Bitget",
-            "Mexc",
-            "Kucoin",
-            "HTX",
-            "Kraken",
-        ]
-    )
+    self.ind_source_combo.addItems(list(INDICATOR_SOURCE_OPTIONS))
     self.ind_source_combo.setCurrentText(
         self.config.get("indicator_source", "Binance futures")
     )

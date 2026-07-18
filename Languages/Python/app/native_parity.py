@@ -72,16 +72,7 @@ THEME_OPTIONS = ("Light", "Dark", "Blue", "Yellow", "Green", "Red")
 INDICATOR_SOURCE_OPTIONS = (
     "Binance spot",
     "Binance futures",
-    "TradingView",
     "Bybit",
-    "Coinbase",
-    "OKX",
-    "Gate",
-    "Bitget",
-    "Mexc",
-    "Kucoin",
-    "HTX",
-    "Kraken",
 )
 LLM_USE_FOR_OPTIONS = (
     ("Advisory", "advisory"),

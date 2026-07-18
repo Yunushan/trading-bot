@@ -24,10 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.25"
           cache: false
@@ -52,10 +52,10 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
           cache: pip
@@ -149,7 +149,7 @@ jobs:
 
       - name: Upload native source sync audit
         if: ${{ always() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: native-source-sync-audit
           path: artifacts/native-source-sync/native-source-sync-audit.json
@@ -196,7 +196,7 @@ jobs:
             --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md
 
       - name: Upload Rust native runtime evidence plan
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rust-native-runtime-evidence-plan
           path: artifacts/rust-native-runtime-evidence-plan.md
@@ -243,6 +243,36 @@ jobs:
           set -euo pipefail
           python apps/service-api/main.py --healthcheck
 
+      - name: Build and health-check Python 3.14 service container
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="trading-bot-service:ci"
+          container="trading-bot-service-ci"
+          docker build --pull --file docker/backend.Dockerfile --tag "$image" .
+          docker run --detach --rm --name "$container" \
+            --publish 127.0.0.1:18000:8000 \
+            --read-only \
+            --tmpfs /tmp:mode=1777 \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL \
+            --env BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789 \
+            --env BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1 \
+            "$image"
+          cleanup() {
+            docker logs "$container" || true
+            docker stop "$container" || true
+          }
+          trap cleanup EXIT
+          for _ in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:18000/readyz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Service container did not become healthy in 30 seconds." >&2
+          exit 1
+
       - name: Dry-run release smoke plan
         shell: bash
         run: |
@@ -277,10 +307,10 @@ jobs:
           - "3.14"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -324,10 +354,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
 
@@ -358,10 +388,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
 
@@ -390,10 +420,10 @@ jobs:
           - macos-15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
           cache: pip
@@ -424,10 +454,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
@@ -450,10 +480,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
@@ -491,10 +521,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
@@ -524,15 +554,15 @@ jobs:
             pkg-config
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
             experiments/rust-shells -> target

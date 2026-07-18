@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -56,6 +57,24 @@ def _result(
         output=redact_text(output or ""),
         source=redact_text(str(source or "terminal").strip() or "terminal"),
         created_at=_now_iso(),
+    )
+
+
+def _operation_result(
+    *,
+    command: str,
+    payload: object,
+    source: str,
+    accepted_key: str = "accepted",
+) -> ServiceTerminalCommandResult:
+    """Keep terminal status aligned with the operation it invokes."""
+    accepted = bool(payload.get(accepted_key, True)) if isinstance(payload, Mapping) else True
+    return _result(
+        accepted=accepted,
+        command=command,
+        output=_json_output(payload),
+        source=source,
+        exit_code=0 if accepted else 1,
     )
 
 
@@ -155,11 +174,11 @@ def run_service_terminal_command(
                 except Exception:
                     jobs = 1
             result = service.request_start(requested_job_count=jobs, source=source).to_dict()
-            return _result(accepted=True, command=command, output=_json_output(result), source=source)
+            return _operation_result(command=command, payload=result, source=source)
         if root == "stop":
             close_positions = "--close-positions" in args
             result = service.request_stop(close_positions=close_positions, source=source).to_dict()
-            return _result(accepted=True, command=command, output=_json_output(result), source=source)
+            return _operation_result(command=command, payload=result, source=source)
         if root == "backtest":
             action = str(args[0] if args else "status").lower()
             if action == "run":
@@ -176,7 +195,7 @@ def run_service_terminal_command(
                     source=source,
                     exit_code=2,
                 )
-            return _result(accepted=True, command=command, output=_json_output(result), source=source)
+            return _operation_result(command=command, payload=result, source=source)
         if root == "config":
             action = str(args[0] if args else "get").lower()
             if action == "get":
@@ -207,7 +226,7 @@ def run_service_terminal_command(
                     source=source,
                     exit_code=2,
                 )
-            return _result(accepted=True, command=command, output=_json_output(result), source=source)
+            return _operation_result(command=command, payload=result, source=source)
         if root == "llm":
             action = str(args[0] if args else "config").lower()
             if action == "providers":
@@ -233,7 +252,12 @@ def run_service_terminal_command(
                     source=source,
                     exit_code=2,
                 )
-            return _result(accepted=True, command=command, output=_json_output(result), source=source)
+            return _operation_result(
+                command=command,
+                payload=result,
+                source=source,
+                accepted_key="ok" if action == "prompt" else "accepted",
+            )
     except Exception as exc:
         return _result(accepted=False, command=command, output=str(exc), source=source, exit_code=1)
 

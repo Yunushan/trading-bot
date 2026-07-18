@@ -9,6 +9,13 @@ set(TB_QT_VERSION "6.10.3" CACHE STRING "Minimum supported Qt version for the C+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# A Qt target has many translation units. MSVC otherwise lets concurrent cl.exe
+# processes contend for its shared program database during local and CI builds.
+if (MSVC)
+    add_compile_options(/FS)
+endif()
+
 include(GNUInstallDirs)
 include(CTest)
 

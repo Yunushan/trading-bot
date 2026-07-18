@@ -44,10 +44,11 @@ invalidate_futures_positions_cache = formatter_runtime._invalidate_futures_posit
 
 
 class _CancelClient:
-    def __init__(self, *, orders=None, order_error=None, fail_symbol=None):
+    def __init__(self, *, orders=None, order_error=None, fail_symbol=None, cancel_response=None):
         self.orders = list(orders or [])
         self.order_error = order_error
         self.fail_symbol = fail_symbol
+        self.cancel_response = cancel_response
         self.cancel_calls = []
 
     def futures_get_open_orders(self):
@@ -59,7 +60,7 @@ class _CancelClient:
         self.cancel_calls.append(symbol)
         if symbol == self.fail_symbol:
             raise RuntimeError("cancel rejected")
-        return {"code": 200}
+        return {"code": 200} if self.cancel_response is None else self.cancel_response
 
 
 class _CancelWrapper:
@@ -95,6 +96,7 @@ class _ExactCloseWrapper:
         self.invalidations = 0
         self.clear_after_orders = clear_after_orders
         self.clear_raw_after_order = False
+        self.client = _RawPositionClient()
 
     def get_futures_dual_side(self):
         return self._futures_dual_side
@@ -127,11 +129,29 @@ class _ExactCloseWrapper:
 
 
 class _RawPositionClient:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, *, cancel_error=None, open_orders_error=None, cancel_response=None):
         self.rows = list(rows or [])
+        self.cancel_error = cancel_error
+        self.open_orders_error = open_orders_error
+        self.cancel_response = cancel_response
+        self.cancel_calls = []
 
     def futures_position_information(self, *, symbol):
         return [row for row in self.rows if str(row.get("symbol") or "").upper() == symbol]
+
+    def futures_cancel_all_open_orders(self, *, symbol):
+        self.cancel_calls.append(symbol)
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        return {"code": 200} if self.cancel_response is None else self.cancel_response
+
+    def futures_get_open_orders(self, **_params):
+        if self.open_orders_error is not None:
+            raise self.open_orders_error
+        return []
+
+    def futures_cancel_order(self, **_params):
+        return {"code": 200}
 
 
 class _LogWrapper:
@@ -226,6 +246,16 @@ class BinancePositionCloseSafetyTests(unittest.TestCase):
         self.assertEqual("position already flat", result["reason"])
         self.assertEqual([], wrapper.orders)
 
+    def test_exact_close_blocks_when_position_snapshot_is_unknown(self):
+        wrapper = _ExactCloseWrapper()
+        wrapper.list_open_futures_positions = lambda **_kwargs: None
+
+        result = close_futures_leg_exact(wrapper, "BTCUSDT", 1.0, "SELL")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("snapshot unavailable", result["error"])
+        self.assertEqual([], wrapper.orders)
+
     def test_exact_close_caps_requested_quantity_to_live_exposure(self):
         wrapper = _ExactCloseWrapper(
             positions=[{"symbol": "BTCUSDT", "positionAmt": "0.127", "positionSide": "BOTH"}]
@@ -253,6 +283,36 @@ class BinancePositionCloseSafetyTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["skipped"])
         self.assertEqual("position already flat", result["reason"])
+        self.assertEqual([], wrapper.orders)
+
+    def test_exact_close_blocks_when_open_order_cancellation_cannot_be_verified(self):
+        wrapper = _ExactCloseWrapper(
+            positions=[{"symbol": "BTCUSDT", "positionAmt": "0.2", "positionSide": "BOTH"}]
+        )
+        wrapper.client = _RawPositionClient(
+            cancel_error=RuntimeError("cancel rejected"),
+            open_orders_error=RuntimeError("orders unavailable"),
+        )
+
+        result = close_futures_leg_exact(wrapper, "BTCUSDT", 0.2, "SELL")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("close blocked", result["error"])
+        self.assertEqual([], wrapper.orders)
+
+    def test_exact_close_blocks_when_bulk_cancellation_returns_rejected_payload(self):
+        wrapper = _ExactCloseWrapper(
+            positions=[{"symbol": "BTCUSDT", "positionAmt": "0.2", "positionSide": "BOTH"}]
+        )
+        wrapper.client = _RawPositionClient(
+            cancel_response={"code": -2011, "msg": "unknown order"},
+            open_orders_error=RuntimeError("orders unavailable"),
+        )
+
+        result = close_futures_leg_exact(wrapper, "BTCUSDT", 0.2, "SELL")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("close blocked", result["error"])
         self.assertEqual([], wrapper.orders)
 
     def test_symbol_close_skips_non_finite_raw_exchange_exposure(self):
@@ -314,6 +374,18 @@ class BinancePositionCloseSafetyTests(unittest.TestCase):
         self.assertEqual("SELL", wrapper.orders[0]["side"])
         self.assertTrue(wrapper.orders[0]["reduceOnly"])
 
+    def test_symbol_close_blocks_when_all_position_snapshot_sources_are_unknown(self):
+        wrapper = _ExactCloseWrapper()
+        wrapper.list_open_futures_positions = lambda **_kwargs: None
+        wrapper.client = _RawPositionClient()
+        wrapper.client.futures_position_information = lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("unavailable"))
+
+        result = close_futures_position(wrapper, "BTCUSDT")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("snapshot unavailable" in error for error in result["errors"]))
+        self.assertEqual([], wrapper.orders)
+
     def test_symbol_close_reports_accepted_order_when_position_remains_open(self):
         wrapper = _ExactCloseWrapper(
             positions=[{"symbol": "BTCUSDT", "positionAmt": "0.2", "positionSide": "BOTH"}]
@@ -326,6 +398,22 @@ class BinancePositionCloseSafetyTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(1, result["remaining"])
         self.assertTrue(any("position remained open" in error for error in result["errors"]))
+
+    def test_symbol_close_blocks_when_open_order_cancellation_cannot_be_verified(self):
+        wrapper = _ExactCloseWrapper(
+            positions=[{"symbol": "BTCUSDT", "positionAmt": "0.2", "positionSide": "BOTH"}]
+        )
+        wrapper.client = _RawPositionClient(
+            cancel_error=RuntimeError("cancel rejected"),
+            open_orders_error=RuntimeError("orders unavailable"),
+        )
+
+        result = close_futures_position(wrapper, "BTCUSDT")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(0, result["closed"])
+        self.assertEqual([], wrapper.orders)
+        self.assertTrue(any("close blocked" in error for error in result["errors"]))
 
     def test_cancel_all_enumerates_unique_symbols_before_symbol_scoped_calls(self):
         client = _CancelClient(
@@ -377,6 +465,19 @@ class BinancePositionCloseSafetyTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(1, result["canceled_symbols"])
         self.assertTrue(any("ETHUSDT: cancel rejected" in error for error in result["errors"]))
+
+    def test_cancel_all_reports_unacknowledged_exchange_cancellation(self):
+        client = _CancelClient(
+            orders=[{"symbol": "BTCUSDT"}],
+            cancel_response={"status": "PENDING"},
+        )
+        wrapper = _CancelWrapper(client)
+
+        result = cancel_all_open_futures_orders(wrapper)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(0, result["canceled_symbols"])
+        self.assertTrue(any("did not acknowledge" in error for error in result["errors"]))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from typing import cast
+
 try:
     from . import strategy_signal_order_margin_runtime
     from . import strategy_signal_order_position_gate_runtime
@@ -48,8 +51,19 @@ def _resolve_signal_order_account_state(self, *, cw, last_price) -> dict[str, ob
     else:
         pct = pct_raw / 100.0 if pct_raw > 1.0 else pct_raw
     pct = max(0.0001, min(1.0, pct))
-    free_usdt = max(float(usdt_bal or 0.0), 0.0)
-    price = last_price or 0.0
+    try:
+        free_usdt = float(usdt_bal or 0.0)
+    except Exception:
+        free_usdt = 0.0
+    if not math.isfinite(free_usdt):
+        free_usdt = 0.0
+    free_usdt = max(free_usdt, 0.0)
+    try:
+        price = float(last_price or 0.0)
+    except Exception:
+        price = 0.0
+    if not math.isfinite(price):
+        price = 0.0
     return {
         "account_type": account_type,
         "futures_balance_snap": futures_balance_snap,
@@ -84,7 +98,7 @@ def _prepare_futures_signal_order_state(
         abort_guard()
         return {"aborted": True}
 
-    if price <= 0.0:
+    if not math.isfinite(price) or price <= 0.0:
         self.log(f"{cw['symbol']}@{cw.get('interval')} skipped: no market price available for sizing.")
         return _abort()
 
@@ -109,7 +123,7 @@ def _prepare_futures_signal_order_state(
         abort_guard=abort_guard,
     )
     if slot_state.get("aborted"):
-        return slot_state
+        return cast(dict[str, object], slot_state)
 
     signature = tuple(slot_state.get("signature") or signature)
     trigger_labels = list(slot_state.get("trigger_labels") or trigger_labels)
@@ -142,7 +156,7 @@ def _prepare_futures_signal_order_state(
         abort_guard=abort_guard,
     )
     if margin_state.get("aborted"):
-        return margin_state
+        return cast(dict[str, object], margin_state)
 
     try:
         lev = int(margin_state.get("lev") or lev)
@@ -168,7 +182,7 @@ def _prepare_futures_signal_order_state(
         abort_guard=abort_guard,
     )
     if position_gate_state.get("aborted"):
-        return position_gate_state
+        return cast(dict[str, object], position_gate_state)
     key_bar = position_gate_state.get("key_bar") or (cw["symbol"], cw.get("interval"), side)
     key_dup = position_gate_state.get("key_dup") or key_bar
 

@@ -115,14 +115,10 @@ def apply_futures_modes(self):
     gtdm = int(self.gtd_minutes_spin.value())
 
     def _do():
-        try:
-            self.shared_binance.set_position_mode(hedge)
-        except Exception:
-            pass
-        try:
-            self.shared_binance.set_multi_assets_mode(multi)
-        except Exception:
-            pass
+        if not self.shared_binance.set_position_mode(hedge):
+            raise RuntimeError("Binance rejected the requested futures position mode")
+        if not self.shared_binance.set_multi_assets_mode(multi):
+            raise RuntimeError("Binance rejected the requested multi-assets mode")
         return True
 
     def _done(res, err):

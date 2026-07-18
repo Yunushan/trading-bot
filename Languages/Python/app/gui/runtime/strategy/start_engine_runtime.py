@@ -11,6 +11,11 @@ from .start_shared_runtime import (
     _normalize_stop_loss,
 )
 
+try:
+    from ....settings.live_safety import is_live_trading_mode
+except ImportError:  # pragma: no cover - standalone execution fallback
+    from settings.live_safety import is_live_trading_mode
+
 
 class ServiceStartRejected(RuntimeError):
     pass
@@ -173,13 +178,27 @@ def _prepare_strategy_runtime_start(
                     getattr(self.shared_binance, "account_type", account_type_text)
                     or account_type_text
                 ).upper()
-                guard_obj.reconcile_with_exchange(
+                reconciliation_result = guard_obj.reconcile_with_exchange(
                     self.shared_binance,
                     guard_jobs,
                     account_type=guard_account_type,
                 )
+                if reconciliation_result is False and is_live_trading_mode(
+                    getattr(self.shared_binance, "mode", "")
+                ):
+                    if hasattr(guard_obj, "pause_new"):
+                        guard_obj.pause_new()
+                    detail = str(getattr(guard_obj, "last_exchange_guard_error", "") or "unknown error")
+                    self.log(
+                        "Live strategy entries remain paused because position reconciliation could not be "
+                        f"verified ({detail})."
+                    )
         except Exception as guard_reconcile_err:
             self.log(f"Guard reconcile warning: {guard_reconcile_err}")
+            if is_live_trading_mode(getattr(self.shared_binance, "mode", "")):
+                if hasattr(guard_obj, "pause_new"):
+                    guard_obj.pause_new()
+                self.log("Live strategy entries remain paused after a position reconciliation error.")
         try:
             self._sync_service_exchange_connector_snapshot(
                 wrapper=self.shared_binance,
@@ -297,7 +316,7 @@ def _start_strategy_engines(
 def _coerce_indicator_override(value) -> list[str]:
     indicators = _normalize_indicator_keys(value)
     if indicators:
-        return indicators
+        return [str(indicator) for indicator in indicators]
     if value and not isinstance(value, (list, tuple, set)):
         value_text = str(value).strip()
         if value_text:
@@ -411,4 +430,4 @@ def _resolve_active_indicators(self, cfg: dict, indicator_list: list[str]) -> li
         else:
             active_indicators = self._get_selected_indicator_keys("runtime")
 
-    return _normalize_indicator_keys(active_indicators)
+    return [str(indicator) for indicator in _normalize_indicator_keys(active_indicators)]

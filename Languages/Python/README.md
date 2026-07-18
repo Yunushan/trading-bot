@@ -198,7 +198,7 @@ The repo includes optional backend-only Docker packaging in [../../docker/README
 Quick start from the repository root:
 
 ```bash
-export BOT_SERVICE_API_TOKEN=your-secret-token
+export BOT_SERVICE_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 docker compose -f docker/compose.yaml up --build
 ```
 

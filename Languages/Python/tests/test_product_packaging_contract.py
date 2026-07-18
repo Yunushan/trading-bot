@@ -660,9 +660,47 @@ class ProductPackagingContractTests(unittest.TestCase):
 
     def test_docker_backend_uses_canonical_service_wrapper_and_dashboard_assets(self):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
+        ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6",
+            dockerfile,
+        )
         self.assertIn("COPY apps/service-api /app/apps/service-api", dockerfile)
         self.assertIn("COPY apps/web-dashboard /app/apps/web-dashboard", dockerfile)
+        self.assertIn("COPY Languages/Python/pyproject.toml Languages/Python/README.md", dockerfile)
+        self.assertIn("COPY Languages/Python/app /app/Languages/Python/app", dockerfile)
+        self.assertIn("COPY Languages/Python/trading_core /app/Languages/Python/trading_core", dockerfile)
+        self.assertNotIn("COPY Languages/Python /app/Languages/Python", dockerfile)
+        self.assertIn("# syntax=docker/dockerfile:1.7", dockerfile)
+        self.assertIn("--mount=type=secret,id=pip_ca,required=false", dockerfile)
+        self.assertIn("PIP_CERT=/run/secrets/pip_ca", dockerfile)
+        self.assertIn('python -m pip install --upgrade "pip==26.1.2"', dockerfile)
         self.assertIn('CMD ["python", "apps/service-api/main.py"', dockerfile)
+        self.assertIn("useradd --create-home --uid 10001", dockerfile)
+        self.assertIn("USER tradingbot", dockerfile)
+        self.assertIn("Build and health-check Python 3.14 service container", ci_workflow)
+        self.assertIn("docker build --pull --file docker/backend.Dockerfile", ci_workflow)
+        self.assertIn("http://127.0.0.1:18000/readyz", ci_workflow)
+        self.assertIn("BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1", ci_workflow)
+        self.assertIn("BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789", ci_workflow)
+        self.assertIn("--read-only", ci_workflow)
+        self.assertIn("--tmpfs /tmp:mode=1777", ci_workflow)
+        self.assertIn("--security-opt no-new-privileges:true", ci_workflow)
+        self.assertIn("--cap-drop ALL", ci_workflow)
+        compose = (REPO_ROOT / "docker" / "compose.yaml").read_text(encoding="utf-8")
+        self.assertIn('"127.0.0.1:8000:8000"', compose)
+        self.assertIn('BOT_SERVICE_API_TRUST_LOOPBACK_PROXY: "1"', compose)
+        self.assertIn('user: "10001:10001"', compose)
+        self.assertIn("read_only: true", compose)
+        self.assertIn("no-new-privileges:true", compose)
+        self.assertIn("cap_drop:", compose)
+        self.assertIn("- ALL", compose)
+        self.assertIn("trading-bot-service-data:/home/tradingbot/.trading-bot", compose)
+        dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+        self.assertIn("# Allowlist only the runtime files", dockerignore)
+        self.assertIn("!Languages/Python/app/**", dockerignore)
+        self.assertIn("!Languages/Python/trading_core/**", dockerignore)
+        self.assertNotIn("!Languages/Python/tests/**", dockerignore)
 
     def test_web_dashboard_surfaces_exchange_connector_health(self):
         dashboard_dir = REPO_ROOT / "apps" / "web-dashboard"
@@ -1291,7 +1329,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("Web Dashboard Quality", workflow)
-        self.assertIn("actions/setup-node@v6", workflow)
+        self.assertIn("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38", workflow)
         self.assertIn('node-version: "24"', workflow)
         self.assertIn("working-directory: apps/web-dashboard", workflow)
         self.assertIn("node --check modules/render.js", workflow)
@@ -1414,6 +1452,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertNotIn("aiohttp==0.13.1", windows_arm64_dependencies)
         self.assertIn("aiohttp>=3.9,<4", windows_arm64_dependencies)
 
+        self.assertEqual(
+            ["pip-audit==2.10.1", "truststore==0.10.4"],
+            optional_dependencies["security"],
+        )
+
     def test_dev_dependency_surface_includes_fastapi_testclient_transport(self):
         pyproject = tomllib.loads(
             (REPO_ROOT / "Languages" / "Python" / "pyproject.toml").read_text(encoding="utf-8")
@@ -1516,11 +1559,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("TB_RELEASE_DESKTOP_SMOKE_COMMAND", real_test_workflow)
         self.assertIn("browser_test_command", real_test_workflow)
         self.assertIn("TB_BROWSER_TEST_COMMAND", real_test_workflow)
-        self.assertIn("actions/upload-artifact@v7", real_test_workflow)
+        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", real_test_workflow)
         self.assertIn("gh run download", rust_release_evidence_workflow)
         self.assertIn("tools/write_rust_native_release_evidence.py", rust_release_evidence_workflow)
         self.assertIn("--only rust-native-release-platform-evidence", rust_release_evidence_workflow)
-        self.assertIn("actions/upload-artifact@v7", rust_release_evidence_workflow)
+        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", rust_release_evidence_workflow)
 
     def test_python_version_support_matrix_declares_and_checks_310_to_314(self):
         checker = REPO_ROOT / "tools" / "check_python_version_support.py"
@@ -1560,25 +1603,31 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertNotIn("actions/upload-artifact@v6", combined)
         self.assertNotIn("softprops/action-gh-release@v2", combined)
 
-        self.assertIn("TheMrMilchmann/setup-msvc-dev@v4", workflows["release-windows.yml"])
-        self.assertIn("actions/download-artifact@v7", workflows["release-windows.yml"])
-        self.assertIn("actions/download-artifact@v7", workflows["release-linux-macos.yml"])
+        self.assertIn("TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c", workflows["release-windows.yml"])
+        self.assertIn("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131", workflows["release-windows.yml"])
+        self.assertIn("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131", workflows["release-linux-macos.yml"])
         for workflow in workflows.values():
-            self.assertIn("actions/upload-artifact@v7", workflow)
-            self.assertIn("softprops/action-gh-release@v3", workflow)
+            self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
+            self.assertIn("softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228", workflow)
 
     def test_release_workflows_generate_attested_sboms(self):
         workflows = (
             REPO_ROOT / ".github" / "workflows" / "release-windows.yml",
             REPO_ROOT / ".github" / "workflows" / "release-linux-macos.yml",
+            REPO_ROOT / ".github" / "workflows" / "release-freebsd.yml",
         )
         for workflow_path in workflows:
             workflow = workflow_path.read_text(encoding="utf-8")
-            self.assertIn("anchore/sbom-action@v0", workflow)
-            self.assertIn("actions/attest@v4", workflow)
+            self.assertIn("anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610", workflow)
+            self.assertIn("actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6", workflow)
             self.assertIn("attestations: write", workflow)
             self.assertIn("id-token: write", workflow)
-            self.assertIn("release-sbom-${{ matrix.id }}.spdx.json", workflow)
+            expected_sbom_name = (
+                "release-sbom-freebsd.spdx.json"
+                if workflow_path.name == "release-freebsd.yml"
+                else "release-sbom-${{ matrix.id }}.spdx.json"
+            )
+            self.assertIn(expected_sbom_name, workflow)
 
     def test_release_workflows_execute_packaged_native_smokes(self):
         workflows = {

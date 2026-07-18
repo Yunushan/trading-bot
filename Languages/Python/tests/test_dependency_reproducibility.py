@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -425,9 +426,74 @@ class DependencyReproducibilityTests(unittest.TestCase):
     def test_repo_declares_local_runtime_tool_versions(self):
         self.assertEqual("3.14", (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip())
         self.assertEqual("24", (REPO_ROOT / ".node-version").read_text(encoding="utf-8").strip())
+        launcher = (PYTHON_ROOT / "Trading-Bot-Python.bat").read_text(encoding="utf-8")
+        self.assertIn("python-3.14.5-amd64.exe", launcher)
         docs = (REPO_ROOT / "docs" / "DEPENDENCY_REPRODUCIBILITY.md").read_text(encoding="utf-8")
         self.assertIn("python tools/check_local_tool_versions.py --strict", docs)
         self.assertIn("python tools/bootstrap_local_dev.py --dry-run", docs)
+
+    def test_dependabot_covers_every_shipped_dependency_ecosystem(self):
+        config = (REPO_ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+        blocks = re.findall(r"(?ms)^  - package-ecosystem: ([^\n]+)\n(.*?)(?=^  - package-ecosystem:|\Z)", config)
+        actual = {
+            (
+                ecosystem.strip(),
+                re.search(r'(?m)^    directory: "([^"]+)"$', body).group(1),
+            )
+            for ecosystem, body in blocks
+        }
+        self.assertEqual(
+            {
+                ("github-actions", "/"),
+                ("pip", "/Languages/Python"),
+                ("npm", "/apps/web-dashboard"),
+                ("npm", "/apps/mobile-client"),
+                ("cargo", "/experiments/rust-shells"),
+                ("docker", "/docker"),
+            },
+            actual,
+        )
+        self.assertEqual(6, config.count("interval: weekly"))
+
+    def test_supply_chain_security_workflow_audits_python_node_rust_and_container_clients(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "supply-chain-security.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('python -m pip install -e "./Languages/Python[service,security]"', workflow)
+        self.assertNotIn("actions/checkout@v5", workflow)
+        self.assertIn("actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd", workflow)
+        self.assertIn("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", workflow)
+        self.assertIn("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38", workflow)
+        self.assertIn("dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4", workflow)
+        self.assertIn("python tools/run_python_security_audit.py --skip-editable --progress-spinner=off", workflow)
+        self.assertIn("npm audit --omit=dev --audit-level=high", workflow)
+        self.assertIn("apps/web-dashboard", workflow)
+        self.assertIn("apps/mobile-client", workflow)
+        self.assertIn("cargo install cargo-audit --version 0.22.2 --locked", workflow)
+        self.assertIn("working-directory: experiments/rust-shells", workflow)
+        self.assertIn("cargo audit --file Cargo.lock", workflow)
+        self.assertIn("container-vulnerability-audit", workflow)
+        self.assertIn(
+            "docker build --pull --file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .",
+            workflow,
+        )
+        self.assertIn(
+            "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25",
+            workflow,
+        )
+        self.assertIn("image-ref: trading-bot-service:supply-chain", workflow)
+        self.assertIn("severity: HIGH,CRITICAL", workflow)
+        self.assertIn('exit-code: "1"', workflow)
+
+    def test_all_workflow_actions_are_pinned_to_immutable_commits(self):
+        for workflow_path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            workflow = workflow_path.read_text(encoding="utf-8")
+            references = re.findall(r"(?m)^\s*uses:\s*([^\s#]+)", workflow)
+            self.assertTrue(references, workflow_path)
+            for reference in references:
+                with self.subTest(workflow=workflow_path.name, reference=reference):
+                    self.assertRegex(reference, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
 
     def test_runtime_tool_version_remediations_are_actionable(self):
         module = _load_tool_version_module()
@@ -808,6 +874,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("severity_counts", payload)
         self.assertIn("top_paths", payload)
         self.assertNotIn("findings", payload)
+        self.assertNotIn("todo_marker", payload.get("counts", {}))
 
     def test_client_dependency_lock_checker_reports_client_lock_state(self):
         module = _load_script_module("check_client_dependency_locks", CLIENT_LOCK_SCRIPT)

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import math
 import time
+
+
+def _finite_float(value: float | str | None) -> float:
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def _convert_asset_to_usdt(self, amount: float | str | None, asset: str | None) -> float:
     """Convert a commission amount into USDT using last price when needed."""
-    try:
-        value = float(amount or 0.0)
-    except Exception:
-        return 0.0
+    value = _finite_float(amount)
     if value == 0.0:
         return 0.0
     code = str(asset or "").upper()
@@ -17,7 +23,7 @@ def _convert_asset_to_usdt(self, amount: float | str | None, asset: str | None) 
     if code in {"USDT", "BUSD", "USD"}:
         return value
     try:
-        px = float(self.get_last_price(f"{code}USDT") or 0.0)
+        px = _finite_float(self.get_last_price(f"{code}USDT"))
         if px > 0.0:
             return value * px
     except Exception:
@@ -64,24 +70,12 @@ def _summarize_futures_order_fills(
     realized_pnl = 0.0
     commission_by_asset: dict[str, float] = {}
     for trade in trades:
-        try:
-            qty = abs(float(trade.get("qty") or 0.0))
-        except Exception:
-            qty = 0.0
-        try:
-            price = float(trade.get("price") or 0.0)
-        except Exception:
-            price = 0.0
+        qty = abs(_finite_float(trade.get("qty")))
+        price = _finite_float(trade.get("price"))
         total_qty += qty
         total_quote += qty * price
-        try:
-            realized_pnl += float(trade.get("realizedPnl") or 0.0)
-        except Exception:
-            pass
-        try:
-            commission_val = float(trade.get("commission") or 0.0)
-        except Exception:
-            commission_val = 0.0
+        realized_pnl += _finite_float(trade.get("realizedPnl"))
+        commission_val = _finite_float(trade.get("commission"))
         asset = str(trade.get("commissionAsset") or "").upper() or "USDT"
         commission_by_asset[asset] = commission_by_asset.get(asset, 0.0) + commission_val
 

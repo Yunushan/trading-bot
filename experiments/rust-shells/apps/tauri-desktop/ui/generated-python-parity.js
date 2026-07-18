@@ -225,7 +225,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "a7f05cb9c417a23449dc0b3c2bd392912fdb36ceebf77d1a697bdde6220c48d3",
+  "contractHash": "b0af6262c01805946fadb828dc34b5d3b64cd253b632d80f55a2efbb2ee7a2f8",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -1124,54 +1124,9 @@
       "value": "Binance futures"
     },
     {
-      "key": "TradingView",
-      "label": "TradingView",
-      "value": "TradingView"
-    },
-    {
       "key": "Bybit",
       "label": "Bybit",
       "value": "Bybit"
-    },
-    {
-      "key": "Coinbase",
-      "label": "Coinbase",
-      "value": "Coinbase"
-    },
-    {
-      "key": "OKX",
-      "label": "OKX",
-      "value": "OKX"
-    },
-    {
-      "key": "Gate",
-      "label": "Gate",
-      "value": "Gate"
-    },
-    {
-      "key": "Bitget",
-      "label": "Bitget",
-      "value": "Bitget"
-    },
-    {
-      "key": "Mexc",
-      "label": "Mexc",
-      "value": "Mexc"
-    },
-    {
-      "key": "Kucoin",
-      "label": "Kucoin",
-      "value": "Kucoin"
-    },
-    {
-      "key": "HTX",
-      "label": "HTX",
-      "value": "HTX"
-    },
-    {
-      "key": "Kraken",
-      "label": "Kraken",
-      "value": "Kraken"
     }
   ],
   "leadTraderOptions": [

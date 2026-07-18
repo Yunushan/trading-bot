@@ -26,6 +26,19 @@ Tauri is the only Rust desktop shell release target unless another Rust shell is
 
 ## Release preflight
 
+Create a versioned QA note from `docs/release-qa/TEMPLATE.md` before creating a
+tag. The note must use the future tag as its filename, record the exact commit
+SHA, date, accountable operator, approved outcome, and all four completed
+checks. Tagged Windows, Linux, and macOS release workflows reject publication
+when this record is absent or does not match `GITHUB_SHA`.
+
+Validate the note locally before tagging. Replace the SHA with the exact commit
+that will receive the tag:
+
+```bash
+python tools/check_release_qa.py --tag v1.0.0 --note docs/release-qa/v1.0.0.md
+```
+
 Run the local release smoke before creating a tag:
 
 ```bash
@@ -87,11 +100,15 @@ Add `--list-expected` if you only want to preview the expected asset matrix.
 
 ## Integrity and provenance
 
-Each Windows, Linux, and macOS release matrix job writes a SHA-256 digest
+Each Windows, Linux, macOS, and FreeBSD release job writes a SHA-256 digest
 manifest, generates an SPDX SBOM, and creates GitHub Artifact Attestations for
 both the built files and their SBOM. The provenance and SBOM attestations use
 the GitHub Actions OIDC identity and are signed by Sigstore through
 `actions/attest`.
+
+Windows and Linux/macOS build jobs receive only read, OIDC, and attestation
+permissions. Repository write permission is isolated to the final publication
+job after artifacts have been built and attested.
 
 After downloading a release asset, verify its provenance with GitHub CLI:
 

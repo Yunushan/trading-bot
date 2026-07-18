@@ -953,6 +953,18 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertEqual([], state["load_positions_cache"]())
         self.assertEqual([True], position_requests)
 
+    @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for stop-context tests")
+    def test_stop_context_does_not_mark_an_unknown_position_snapshot_as_confirmed(self):
+        wrapper = _FakeStrategyBinance()
+        wrapper.list_open_futures_positions = lambda: None
+        engine = _build_engine(wrapper=wrapper)
+        frame = pd.DataFrame({"close": [100.0]})
+
+        state = build_futures_stop_state(engine, cw={"symbol": "BTCUSDT"}, df=frame)
+
+        self.assertEqual([], state["load_positions_cache"]())
+        self.assertFalse(state["positions_cache_ok"])
+
     def test_stop_context_rejects_non_finite_ledger_and_exchange_position_values(self):
         wrapper = _FakeStrategyBinance()
         wrapper.list_open_futures_positions = lambda: [

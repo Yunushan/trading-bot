@@ -2,10 +2,50 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import time
 import urllib.parse
+from collections.abc import Mapping
 
 import requests
+
+
+def _exchange_mutation_accepted(result: object, *, leverage: int | None = None) -> bool:
+    """Return whether a configuration mutation response represents acceptance."""
+    if not isinstance(result, Mapping) or not result:
+        return False
+    success = result.get("success", result.get("ok"))
+    if isinstance(success, str):
+        success = success.strip().lower() in {"true", "1", "yes"}
+    if success is False:
+        return False
+    if success is True:
+        return True
+    error = result.get("error")
+    if error:
+        return False
+    code = result.get("code")
+    if code is not None:
+        try:
+            if int(code) not in {0, 200}:
+                return False
+        except (TypeError, ValueError):
+            return False
+    if leverage is not None:
+        try:
+            return int(result.get("leverage")) == int(leverage)
+        except (TypeError, ValueError):
+            return False
+    if success is True:
+        return True
+    status = str(result.get("status") or "").upper()
+    return code is not None or status in {"OK", "SUCCESS", "ACCEPTED", "COMPLETED"}
+
+
+def _set_leverage_or_block(self, symbol: str, leverage: int) -> None:
+    result = self.client.futures_change_leverage(symbol=symbol, leverage=int(leverage))
+    if not _exchange_mutation_accepted(result, leverage=int(leverage)):
+        raise RuntimeError(f"unable to set leverage for {symbol}; order blocked")
 
 
 def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: int | None):
@@ -20,38 +60,50 @@ def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: in
     open_amt = 0.0
     try:
         pins = self.client.futures_position_information(symbol=sym)
-        if isinstance(pins, list) and pins:
-            types = []
-            for row in pins:
-                try:
-                    types.append((row.get("marginType") or "").upper())
-                    open_amt += abs(float(row.get("positionAmt") or 0.0))
-                except Exception:
-                    pass
-            current = next((item for item in types if item), None)
-            if target in types:
-                current = target
+        if not isinstance(pins, list):
+            raise RuntimeError("position probe returned a non-list response")
+        types = []
+        for row in pins:
+            if not isinstance(row, dict):
+                raise RuntimeError("position probe returned a malformed row")
+            row_symbol = str(row.get("symbol") or "").upper()
+            if row_symbol and row_symbol != sym:
+                continue
+            try:
+                amount = float(row.get("positionAmt") or 0.0)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("position probe returned an invalid position amount") from exc
+            if not math.isfinite(amount):
+                raise RuntimeError("position probe returned a non-finite position amount")
+            types.append((row.get("marginType") or "").upper())
+            open_amt += abs(amount)
+        current = next((item for item in types if item), None)
+        if target in types:
+            current = target
     except Exception as exc:
         self._log(f"margin probe failed for {sym}: {type(exc).__name__}: {exc}", lvl="warn")
-        current = None
+        raise RuntimeError(f"unable to verify futures exposure for {sym}; margin change blocked") from exc
 
     if (current or "").upper() == target:
         if want_lev:
             try:
-                self.client.futures_change_leverage(symbol=sym, leverage=int(want_lev))
-            except Exception:
-                pass
+                _set_leverage_or_block(self, sym, int(want_lev))
+            except Exception as exc:
+                raise RuntimeError(f"unable to set leverage for {sym}; order blocked") from exc
         return True
 
     if open_amt > 0:
         raise RuntimeError(f"wrong_margin_mode: current={current}, want={target}, symbol={sym}, openAmt={open_amt}")
 
+    try:
+        cancellation = self.client.futures_cancel_all_open_orders(symbol=sym)
+        if not _exchange_mutation_accepted(cancellation):
+            raise RuntimeError("exchange did not acknowledge open-order cancellation")
+    except Exception as exc:
+        raise RuntimeError(f"unable to cancel open futures orders for {sym}; margin change blocked") from exc
+
     assume_ok = False
     try:
-        try:
-            self.client.futures_cancel_all_open_orders(symbol=sym)
-        except Exception:
-            pass
         self.client.futures_change_margin_type(symbol=sym, marginType=target)
     except Exception as exc:
         msg = str(exc)
@@ -71,9 +123,9 @@ def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: in
     if (now == target) or (target in types2) or (assume_ok and (now in (None, ""))):
         if want_lev:
             try:
-                self.client.futures_change_leverage(symbol=sym, leverage=int(want_lev))
-            except Exception:
-                pass
+                _set_leverage_or_block(self, sym, int(want_lev))
+            except Exception as exc:
+                raise RuntimeError(f"unable to set leverage for {sym}; order blocked") from exc
         return True
 
     raise RuntimeError(f"wrong_margin_mode_after_change: now={now}, want={target}, symbol={sym}")
@@ -81,17 +133,18 @@ def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: in
 
 def set_position_mode(self, hedge: bool) -> bool:
     try:
-        self.client.futures_change_position_mode(dualSidePosition=bool(hedge))
-        return True
+        result = self.client.futures_change_position_mode(dualSidePosition=bool(hedge))
+        if _exchange_mutation_accepted(result):
+            return True
     except Exception:
-        for method_name in ("futures_change_position_side_dual", "futures_change_positionMode"):
-            try:
-                fn = getattr(self.client, method_name, None)
-                if fn:
-                    fn(dualSidePosition=bool(hedge))
-                    return True
-            except Exception:
-                continue
+        pass
+    for method_name in ("futures_change_position_side_dual", "futures_change_positionMode"):
+        try:
+            fn = getattr(self.client, method_name, None)
+            if fn and _exchange_mutation_accepted(fn(dualSidePosition=bool(hedge))):
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -105,26 +158,33 @@ def set_multi_assets_mode(self, enabled: bool) -> bool:
         try:
             fn = getattr(self.client, method_name, None)
             if fn:
-                fn(**payload)
-                return True
+                if _exchange_mutation_accepted(fn(**payload)):
+                    return True
         except Exception:
             continue
     try:
-        self.client._request_futures_api("post", "multiAssetsMargin", signed=True, data=payload)
-        return True
-    except Exception:
-        try:
-            headers = {"X-MBX-APIKEY": getattr(self.client, "API_KEY", self.api_key)}
-            ts = int(time.time() * 1000)
-            params = dict(payload)
-            params["timestamp"] = ts
-            query = urllib.parse.urlencode(params)
-            signature = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
-            url = f"{self._futures_base()}/v1/multiAssetsMargin"
-            requests.post(url, params={**params, "signature": signature}, headers=headers, timeout=5)
+        result = self.client._request_futures_api("post", "multiAssetsMargin", signed=True, data=payload)
+        if _exchange_mutation_accepted(result):
             return True
-        except Exception:
-            return False
+    except Exception:
+        pass
+    try:
+        headers = {"X-MBX-APIKEY": getattr(self.client, "API_KEY", self.api_key)}
+        ts = int(time.time() * 1000)
+        params = dict(payload)
+        params["timestamp"] = ts
+        query = urllib.parse.urlencode(params)
+        signature = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
+        url = f"{self._futures_base()}/v1/multiAssetsMargin"
+        response = requests.post(url, params={**params, "signature": signature}, headers=headers, timeout=5)
+        response.raise_for_status()
+        try:
+            response_payload = response.json()
+        except (AttributeError, ValueError):
+            response_payload = None
+        return _exchange_mutation_accepted(response_payload)
+    except Exception:
+        return False
 
 
 def bind_binance_futures_mode_runtime(wrapper_cls) -> None:

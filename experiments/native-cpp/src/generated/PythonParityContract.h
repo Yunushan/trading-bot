@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "a7f05cb9c417a23449dc0b3c2bd392912fdb36ceebf77d1a697bdde6220c48d3";
+inline constexpr std::string_view kPythonSourceContractHash = "b0af6262c01805946fadb828dc34b5d3b64cd253b632d80f55a2efbb2ee7a2f8";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -590,19 +590,10 @@ inline constexpr std::array<PythonUiOption, 2> kPythonDesignOptions = {
     PythonUiOption{"Workstation", "Workstation", false},
 };
 
-inline constexpr std::array<PythonUiOption, 12> kPythonIndicatorSourceOptions = {
+inline constexpr std::array<PythonUiOption, 3> kPythonIndicatorSourceOptions = {
     PythonUiOption{"Binance spot", "Binance spot", false},
     PythonUiOption{"Binance futures", "Binance futures", false},
-    PythonUiOption{"TradingView", "TradingView", false},
     PythonUiOption{"Bybit", "Bybit", false},
-    PythonUiOption{"Coinbase", "Coinbase", false},
-    PythonUiOption{"OKX", "OKX", false},
-    PythonUiOption{"Gate", "Gate", false},
-    PythonUiOption{"Bitget", "Bitget", false},
-    PythonUiOption{"Mexc", "Mexc", false},
-    PythonUiOption{"Kucoin", "Kucoin", false},
-    PythonUiOption{"HTX", "HTX", false},
-    PythonUiOption{"Kraken", "Kraken", false},
 };
 
 inline constexpr std::array<PythonUiOption, 11> kPythonExchangeOptions = {

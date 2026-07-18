@@ -5,7 +5,7 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "a7f05cb9c417a23449dc0b3c2bd392912fdb36ceebf77d1a697bdde6220c48d3";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "b0af6262c01805946fadb828dc34b5d3b64cd253b632d80f55a2efbb2ee7a2f8";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -1708,53 +1708,8 @@ pub const PYTHON_INDICATOR_SOURCE_OPTIONS: &[PythonUiOption] = &[
         disabled: false,
     },
     PythonUiOption {
-        key: "TradingView",
-        label: "TradingView",
-        disabled: false,
-    },
-    PythonUiOption {
         key: "Bybit",
         label: "Bybit",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "Coinbase",
-        label: "Coinbase",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "OKX",
-        label: "OKX",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "Gate",
-        label: "Gate",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "Bitget",
-        label: "Bitget",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "Mexc",
-        label: "Mexc",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "Kucoin",
-        label: "Kucoin",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "HTX",
-        label: "HTX",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "Kraken",
-        label: "Kraken",
         disabled: false,
     },
 ];

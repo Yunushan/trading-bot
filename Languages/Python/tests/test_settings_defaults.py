@@ -687,6 +687,26 @@ class SettingsDefaultsTests(unittest.TestCase):
                 env={},
             )
 
+    def test_live_trading_rejects_non_finite_position_pct(self):
+        safe_config = {
+            "live_trading_enabled": True,
+            "live_trading_acknowledgement": LIVE_TRADING_ACKNOWLEDGEMENT,
+            "live_trading_max_leverage": 5,
+            "live_trading_max_position_pct": 3.0,
+        }
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "position_pct must be > 0"):
+            validate_live_trading_safety(
+                mode="Live",
+                api_key="live-api-key",
+                api_secret="live-api-secret",
+                account_type="Futures",
+                leverage=1,
+                position_pct=float("nan"),
+                config=safe_config,
+                env={},
+            )
+
     def test_live_trading_can_be_confirmed_with_environment_pair(self):
         validate_live_trading_safety(
             mode="Live",

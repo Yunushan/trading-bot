@@ -1,9 +1,61 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 from .order_audit_runtime import audit_order_method
 from .order_fallback_runtime import _ensure_binance_client_order_id
+from ..transport.helpers import _is_binance_error_payload
+
+
+def _finite_float(value: object) -> float | None:
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return candidate if math.isfinite(candidate) else None
+
+
+def _validated_spot_order_response(response: object) -> dict:
+    """Return a verified spot-order acknowledgement or raise a rejection.
+
+    A transport call returning without an exception is not sufficient evidence
+    that Binance accepted an order.  In particular, wrappers may surface empty
+    or error payloads as normal return values.  Do not mark the local intent as
+    accepted until the response is an identifiable accepted order.
+    """
+    if response is None:
+        raise RuntimeError("spot order rejected: empty response")
+    if not isinstance(response, Mapping):
+        raise RuntimeError("spot order rejected: malformed response")
+    payload = dict(response)
+    if not payload:
+        raise RuntimeError("spot order rejected: empty response")
+    error = payload.get("error")
+    if isinstance(error, Mapping) and _is_binance_error_payload(dict(error)):
+        code = error.get("code")
+        message = error.get("msg") or error.get("message") or "order rejected"
+        raise RuntimeError(f"spot order rejected (code={code}): {message}")
+    if _is_binance_error_payload(payload):
+        code = payload.get("code")
+        message = payload.get("msg") or payload.get("message") or "order rejected"
+        raise RuntimeError(f"spot order rejected (code={code}): {message}")
+    success = payload.get("success")
+    if isinstance(success, str):
+        success = success.strip().lower() in {"true", "1", "yes"}
+    if success is False:
+        message = payload.get("msg") or payload.get("message") or "order rejected"
+        raise RuntimeError(f"spot order rejected: {message}")
+    nested = payload.get("data")
+    if isinstance(nested, Mapping) and nested:
+        payload = dict(nested)
+    status = str(payload.get("status") or "").upper()
+    if status in {"REJECTED", "EXPIRED", "CANCELED"}:
+        message = payload.get("msg") or payload.get("message") or status.lower()
+        raise RuntimeError(f"spot order rejected (status={status}): {message}")
+    if not any(payload.get(key) for key in ("orderId", "order_id", "id")):
+        raise RuntimeError("spot order rejected: response has no order identifier")
+    return payload
 
 
 def required_percent_for_symbol(self, symbol: str, leverage: int | float | None = None) -> float:
@@ -48,13 +100,18 @@ def place_spot_market_order(
     sym = symbol.upper()
     if self.account_type != "SPOT":
         return {"ok": False, "error": "account_type != SPOT"}
-    px = float(price if price is not None else (self.get_last_price(sym) or 0.0))
-    if px <= 0:
+    side_up = str(side or "").strip().upper()
+    if side_up not in {"BUY", "SELL"}:
+        return {"ok": False, "error": f"Unsupported spot order side: {side!r}"}
+    px = _finite_float(price if price is not None else (self.get_last_price(sym) or 0.0))
+    if px is None or px <= 0:
         return {"ok": False, "error": "No price available"}
-    qty = float(quantity or 0.0)
-    if side.upper() == "BUY" and use_quote:
-        qamt = float(quote_amount or 0.0)
-        if qamt <= 0:
+    qty = _finite_float(quantity) if quantity is not None else 0.0
+    if qty is None:
+        return {"ok": False, "error": "quantity must be a finite number"}
+    if side_up == "BUY" and use_quote:
+        qamt = _finite_float(quote_amount) if quote_amount is not None else 0.0
+        if qamt is None or qamt <= 0:
             return {"ok": False, "error": "quote_amount<=0"}
         qty = qamt / px
     intent_started = False
@@ -81,9 +138,16 @@ def place_spot_market_order(
                 "filters": {},
             },
         }
-    step = float(filters.get("stepSize", 0.0) or 0.0)
-    min_qty = float(filters.get("minQty", 0.0) or 0.0)
-    min_notional = float(filters.get("minNotional", 0.0) or 0.0)
+    filter_values: dict[str, float] = {}
+    for filter_key in ("stepSize", "minQty", "minNotional"):
+        raw_value = filters.get(filter_key, 0.0)
+        parsed_value = 0.0 if raw_value in (None, "") else _finite_float(raw_value)
+        if parsed_value is None or parsed_value < 0.0:
+            return {"ok": False, "error": f"spot symbol filter {filter_key} must be a finite non-negative number"}
+        filter_values[filter_key] = parsed_value
+    step = filter_values["stepSize"]
+    min_qty = filter_values["minQty"]
+    min_notional = filter_values["minNotional"]
     if step > 0:
         qty = self._floor_to_step(qty, step)
     if min_qty > 0 and qty < min_qty:
@@ -96,7 +160,7 @@ def place_spot_market_order(
             needed = self._ceil_to_step(needed, step)
         qty = max(needed, min_qty)
     params = _ensure_binance_client_order_id(
-        dict(symbol=sym, side=side.upper(), type="MARKET", quantity=str(qty))
+        dict(symbol=sym, side=side_up, type="MARKET", quantity=str(qty))
     )
     try:
         guard = getattr(self, "_guard_live_order_submit", None)
@@ -111,7 +175,7 @@ def place_spot_market_order(
             intent_started = True
         if callable(mark_submitted):
             mark_submitted(params, via="primary")
-        res = self.client.create_order(**params)
+        res = _validated_spot_order_response(self.client.create_order(**params))
         if callable(mark_accepted) and intent_started:
             mark_accepted(params, via="primary", result=res)
         return {
@@ -179,25 +243,40 @@ def ceil_to_decimals(value: float, decimals: int) -> float:
 
 
 def adjust_qty_to_filters_spot(self, symbol: str, qty: float, est_price: float):
-    if qty <= 0:
+    normalized_qty = _finite_float(qty)
+    normalized_price = _finite_float(est_price)
+    if normalized_qty is None:
+        return 0.0, "qty must be a finite number"
+    if normalized_price is None:
+        return 0.0, "price must be a finite number"
+    if normalized_qty <= 0:
         return 0.0, "qty<=0"
     try:
         filters = self.get_spot_symbol_filters(symbol)
     except Exception as exc:
         return 0.0, f"filters_error:{exc}"
 
-    step = filters["stepSize"] or 0.0
-    min_qty = filters["minQty"] or 0.0
-    min_notional = filters["minNotional"] or 0.0
+    if not isinstance(filters, Mapping):
+        return 0.0, "filters_error: invalid response"
+    filter_values: dict[str, float] = {}
+    for filter_key in ("stepSize", "minQty", "minNotional"):
+        raw_value = filters.get(filter_key, 0.0)
+        parsed_value = 0.0 if raw_value in (None, "") else _finite_float(raw_value)
+        if parsed_value is None or parsed_value < 0.0:
+            return 0.0, f"filters_error: {filter_key} must be a finite non-negative number"
+        filter_values[filter_key] = parsed_value
+    step = filter_values["stepSize"]
+    min_qty = filter_values["minQty"]
+    min_notional = filter_values["minNotional"]
 
-    adj = qty
+    adj = normalized_qty
     if step > 0:
         adj = self._floor_to_step(adj, step)
 
     if min_qty > 0 and adj < min_qty:
         adj = min_qty
-    if min_notional > 0 and (est_price or 0) > 0:
-        needed = min_notional / float(est_price)
+    if min_notional > 0 and normalized_price > 0:
+        needed = min_notional / normalized_price
         if step > 0:
             needed = self._ceil_to_step(needed, step)
         if min_qty > 0:
@@ -205,10 +284,10 @@ def adjust_qty_to_filters_spot(self, symbol: str, qty: float, est_price: float):
         if adj < needed:
             adj = needed
 
-    if est_price and min_notional > 0:
-        notional = adj * est_price
+    if normalized_price > 0 and min_notional > 0:
+        notional = adj * normalized_price
         if notional < min_notional:
-            needed_qty = (min_notional / est_price) if est_price > 0 else adj
+            needed_qty = min_notional / normalized_price
             if step > 0:
                 needed_qty = self._floor_to_step(needed_qty + step, step)
             if needed_qty < min_qty:
@@ -229,17 +308,32 @@ def adjust_qty_to_filters_futures(self, symbol: str, qty: float, price: float | 
         filters = self.get_futures_symbol_filters(symbol)
     except Exception as exc:
         return 0.0, f"filters_error:{exc}"
-    step = float(filters.get("stepSize", 0.0) or 0.0)
-    min_qty = float(filters.get("minQty", 0.0) or 0.0)
-    min_notional = float(filters.get("minNotional", 0.0) or 0.0)
+    if not isinstance(filters, Mapping):
+        return 0.0, "filters_error: invalid response"
+    normalized_qty = _finite_float(qty)
+    normalized_price = 0.0 if price is None else _finite_float(price)
+    if normalized_qty is None:
+        return 0.0, "qty must be a finite number"
+    if normalized_price is None:
+        return 0.0, "price must be a finite number"
+    filter_values: dict[str, float] = {}
+    for filter_key in ("stepSize", "minQty", "minNotional"):
+        raw_value = filters.get(filter_key, 0.0)
+        parsed_value = 0.0 if raw_value in (None, "") else _finite_float(raw_value)
+        if parsed_value is None or parsed_value < 0.0:
+            return 0.0, f"filters_error: {filter_key} must be a finite non-negative number"
+        filter_values[filter_key] = parsed_value
+    step = filter_values["stepSize"]
+    min_qty = filter_values["minQty"]
+    min_notional = filter_values["minNotional"]
 
-    adj = float(qty or 0.0)
+    adj = normalized_qty
     if step > 0:
         adj = self._floor_to_step(adj, step)
     if min_qty > 0 and adj < min_qty:
         adj = min_qty
-    if min_notional > 0 and (price or 0) > 0:
-        need = float(min_notional) / float(price)
+    if min_notional > 0 and normalized_price > 0:
+        need = min_notional / normalized_price
         if step > 0:
             need = self._ceil_to_step(need, step)
         if adj < need:

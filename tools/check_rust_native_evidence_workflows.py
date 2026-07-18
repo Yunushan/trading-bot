@@ -38,6 +38,7 @@ NATIVE_PARITY_DEPENDENCY_FRAGMENTS = (
     "Install native parity dependencies",
     'python -m pip install -e "./Languages/Python"',
 )
+PYTHON_SETUP_ACTION = "uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
 
 
 def _repo_root() -> Path:
@@ -83,7 +84,7 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
         (
             "workflow_dispatch:",
             "contents: read",
-            "uses: actions/setup-python@v6",
+            PYTHON_SETUP_ACTION,
             'python-version: "3.14"',
             *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}",
@@ -227,7 +228,7 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             "strategy:",
             "fromJson(needs.prepare-targets.outputs.targets).include",
             "matrix.target.target_id",
-            "uses: actions/setup-python@v6",
+            PYTHON_SETUP_ACTION,
             'python-version: "3.14"',
             "Set up Node for browser contracts",
             "Install browser contract dependencies",
@@ -307,7 +308,7 @@ def _check_release_evidence(root: Path) -> dict[str, Any]:
             "workflow_dispatch:",
             "actions: read",
             "contents: read",
-            "uses: actions/setup-python@v6",
+            PYTHON_SETUP_ACTION,
             'python-version: "3.14"',
             *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "platform_evidence_run_id",
@@ -381,7 +382,7 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
             "LIVE_SMOKE_RUN_ID: ${{ inputs.live_smoke_run_id }}",
             "RELEASE_EVIDENCE_RUN_ID: ${{ inputs.release_evidence_run_id }}",
             "RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}",
-            "uses: actions/setup-python@v6",
+            PYTHON_SETUP_ACTION,
             'python-version: "3.14"',
             *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "Validate promotion audit inputs",

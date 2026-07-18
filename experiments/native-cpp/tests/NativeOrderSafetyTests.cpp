@@ -1530,7 +1530,7 @@ int main(int argc, char **argv) {
             {QStringLiteral("tif"), QStringLiteral("ioc")},
             {QStringLiteral("position_pct"), QStringLiteral("2.5")},
             {QStringLiteral("connector_backend"), QStringLiteral("CCXT (Unified)")},
-            {QStringLiteral("indicator_source"), QStringLiteral("tradingview")},
+            {QStringLiteral("indicator_source"), QStringLiteral("bybit")},
             {QStringLiteral("theme"), QStringLiteral("green")},
             {QStringLiteral("design"), QStringLiteral("workstation")},
             {QStringLiteral("selected_exchange"), QStringLiteral("kucoin")},
@@ -1617,7 +1617,7 @@ int main(int argc, char **argv) {
           QStringLiteral("native service config validation should normalize time-in-force choices from Python source"));
     check(normalizedConfig.config.value(QStringLiteral("connector_backend")).toString() == QStringLiteral("ccxt"),
           QStringLiteral("native service config validation should normalize connector backend labels from Python source"));
-    check(normalizedConfig.config.value(QStringLiteral("indicator_source")).toString() == QStringLiteral("TradingView"),
+    check(normalizedConfig.config.value(QStringLiteral("indicator_source")).toString() == QStringLiteral("Bybit"),
           QStringLiteral("native service config validation should normalize indicator source choices from Python source"));
     check(normalizedConfig.config.value(QStringLiteral("theme")).toString() == QStringLiteral("Green"),
           QStringLiteral("native service config validation should normalize theme choices from Python source"));

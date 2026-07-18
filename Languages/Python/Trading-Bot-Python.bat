@@ -69,9 +69,9 @@ if exist "%TEMP%\_py_path.txt" (
 exit /b 0
 
 :INSTALL_PYTHON
-echo Python not detected. Attempting to download Python 3.12...
+echo Python not detected. Attempting to download Python 3.14.5...
 set "PY_SETUP=%TEMP%\python-installer.exe"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.5/python-3.12.5-amd64.exe' -OutFile '%PY_SETUP%'" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.14.5/python-3.14.5-amd64.exe' -OutFile '%PY_SETUP%'" >nul 2>&1
 if not exist "%PY_SETUP%" (
     echo Download failed. Please install Python manually.
     exit /b 0

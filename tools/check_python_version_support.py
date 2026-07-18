@@ -13,6 +13,8 @@ from pathlib import Path
 SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
 DEFAULT_PYTHON_VERSION = "3.14"
 PYTHON_REQUIRES = ">=3.10,<3.15"
+DOCKER_PYTHON_IMAGE = "python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6"
+WINDOWS_BOOTSTRAP_PYTHON_VERSION = "3.14.5"
 
 
 def _repo_root() -> Path:
@@ -60,6 +62,25 @@ def _check_default_version(root: Path) -> list[str]:
     return []
 
 
+def _check_deployment_versions(root: Path) -> list[str]:
+    issues: list[str] = []
+    dockerfile = _read(root / "docker" / "backend.Dockerfile")
+    if f"FROM {DOCKER_PYTHON_IMAGE}" not in dockerfile:
+        issues.append(f"docker backend must use the pinned base image {DOCKER_PYTHON_IMAGE!r}")
+
+    launcher = _read(root / "Languages" / "Python" / "Trading-Bot-Python.bat")
+    expected_installer = (
+        f"https://www.python.org/ftp/python/{WINDOWS_BOOTSTRAP_PYTHON_VERSION}/"
+        f"python-{WINDOWS_BOOTSTRAP_PYTHON_VERSION}-amd64.exe"
+    )
+    if expected_installer not in launcher:
+        issues.append(
+            "Windows launcher must bootstrap Python "
+            f"{WINDOWS_BOOTSTRAP_PYTHON_VERSION} from python.org"
+        )
+    return issues
+
+
 def _check_ci_matrix(root: Path) -> list[str]:
     workflow = _read(root / ".github" / "workflows" / "ci.yml")
     issues: list[str] = []
@@ -82,6 +103,7 @@ def run_checks(*, check_current: bool = False) -> dict[str, object]:
     root = _repo_root()
     issues: list[str] = []
     issues.extend(_check_default_version(root))
+    issues.extend(_check_deployment_versions(root))
     issues.extend(_check_pyproject(root))
     issues.extend(_check_ci_matrix(root))
     current = _current_minor()

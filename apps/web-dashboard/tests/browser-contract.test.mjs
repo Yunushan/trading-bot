@@ -157,6 +157,46 @@ async function runFirefoxBrowserContract(targetUrl) {
   }
 }
 
+async function runEdgeBrowserContract(targetUrl) {
+  let chromium;
+  try {
+    ({ chromium } = await import("playwright"));
+  } catch (error) {
+    throw new Error(
+      `Edge contract requires the pinned Playwright dependency. Run npm --prefix apps/web-dashboard ci first. ${error?.message || error}`,
+    );
+  }
+
+  let browser;
+  try {
+    browser = await chromium.launch({ channel: "msedge", headless: true });
+  } catch (error) {
+    throw new Error(
+      `Edge contract requires a locally installed Microsoft Edge browser. ${error?.message || error}`,
+    );
+  }
+
+  try {
+    const page = await browser.newPage();
+    await page.goto(targetUrl, { waitUntil: "networkidle" });
+    const rawPayload = await page.locator("html").getAttribute(RESULT_ATTRIBUTE);
+    if (!rawPayload) {
+      throw new Error("Edge browser contract did not produce a result payload.");
+    }
+    const payload = JSON.parse(decodeURIComponent(rawPayload));
+    if (!payload.ok) {
+      throw new Error(`Edge browser contract failed in page: ${payload.error}`);
+    }
+    return {
+      browser: "edge",
+      executable: "msedge",
+      payload,
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
 function harnessHtml() {
   return `<!doctype html>
 <meta charset="utf-8">
@@ -317,14 +357,16 @@ async function main() {
   if (!["chrome", "edge", "firefox"].includes(args.browser)) {
     throw new Error(`Unsupported browser ${args.browser}; supported browser contract targets are chrome, edge, and firefox.`);
   }
-  const executable = args.browser === "firefox" ? "" : await resolveBrowserExecutable(args.browser, args.executable);
-  const profileDir = await mkdtemp(path.join(os.tmpdir(), "trading-bot-web-dashboard-browser-"));
+  const executable = args.browser === "chrome" ? await resolveBrowserExecutable(args.browser, args.executable) : "";
+  const profileDir = args.browser === "chrome" ? await mkdtemp(path.join(os.tmpdir(), "trading-bot-web-dashboard-browser-")) : null;
   const { server, port } = await serveDashboard();
   const targetUrl = `http://127.0.0.1:${port}/__browser_contract_harness__.html`;
   try {
     let browserResult;
     if (args.browser === "firefox") {
       browserResult = await runFirefoxBrowserContract(targetUrl);
+    } else if (args.browser === "edge") {
+      browserResult = await runEdgeBrowserContract(targetUrl);
     } else {
       const commandArgs = [
         "--headless=new",
@@ -364,7 +406,9 @@ async function main() {
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(profileDir, { recursive: true, force: true });
+    if (profileDir) {
+      await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    }
   }
 }
 

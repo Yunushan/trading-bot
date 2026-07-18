@@ -40,10 +40,10 @@ jobs:
       targets: ${{ steps.matrix.outputs.targets }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
@@ -82,26 +82,26 @@ jobs:
         target: ${{ fromJson(needs.prepare-targets.outputs.targets).include }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
       - name: Set up Node for browser contracts
         if: ${{ startsWith(matrix.target.target_id, 'browser-') }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
 
       - name: Set up Rust for native release probes
         if: ${{ !startsWith(matrix.target.target_id, 'browser-') }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Rust dependencies for native release probes
         if: ${{ !startsWith(matrix.target.target_id, 'browser-') }}
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
             experiments/rust-shells -> target
@@ -231,7 +231,7 @@ jobs:
 
       - name: Upload native source sync audit
         if: ${{ always() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: native-source-sync-audit
           path: artifacts/native-source-sync/native-source-sync-audit.json
@@ -263,7 +263,7 @@ jobs:
             --target-filter "${{ matrix.target.target_id }}"
 
       - name: Upload target evidence
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-platform-evidence-${{ matrix.target.target_id }}
           path: release-platform-evidence/${{ matrix.target.target_id }}.json
@@ -276,10 +276,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
@@ -291,7 +291,7 @@ jobs:
           python -m pip install -e "./Languages/Python"
 
       - name: Download release platform evidence
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: release-platform-evidence-*
           path: release-platform-evidence

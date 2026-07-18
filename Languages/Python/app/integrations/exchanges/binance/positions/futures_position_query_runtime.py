@@ -105,7 +105,7 @@ def get_futures_dual_side(self) -> bool:
     return False
 
 
-def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bool = False):
+def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bool = False) -> list[dict] | None:
     if force_refresh and bool(getattr(self, "_fast_order_mode", False)):
         try:
             fast_ttl = float(getattr(self, "_fast_positions_cache_ttl", 0.0) or 0.0)
@@ -133,6 +133,8 @@ def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bo
         except Exception:
             infos = None
     risk_lookup = {}
+    if infos is not None and not isinstance(infos, (list, tuple)):
+        infos = None
     if risk_infos is None and infos is not None:
         risk_infos = infos
     if isinstance(risk_infos, list):
@@ -148,15 +150,20 @@ def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bo
             except Exception:
                 continue
     out = []
+    primary_snapshot_available = infos is not None
+    account_snapshot_available = False
     if not infos:
         try:
             acc = self._get_futures_account_cached(force_refresh=True) or {}
-            for pos in acc.get("positions", []):
+            raw_positions = acc.get("positions") if isinstance(acc, dict) else None
+            if isinstance(raw_positions, (list, tuple)):
+                account_snapshot_available = True
+            for pos in raw_positions or []:
                 row = _normalize_open_position(pos)
                 if row is not None:
                     out.append(row)
         except Exception:
-            pass
+            account_snapshot_available = False
     else:
         for pos in infos or []:
             try:
@@ -165,6 +172,8 @@ def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bo
                     out.append(row)
             except Exception:
                 continue
+    if not primary_snapshot_available and not account_snapshot_available:
+        return None
     if risk_lookup:
         for row in out:
             try:

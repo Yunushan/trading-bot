@@ -133,11 +133,9 @@ def _futures_create_order_with_fallback(self, params: dict):
         if order_obj is None:
             _raise_from_last_error("order rejected: empty response")
         if isinstance(order_obj, (list, tuple)):
-            if not order_obj:
-                _raise_from_last_error("order rejected: empty response")
-            return
+            _raise_from_last_error("order rejected: malformed response")
         if not isinstance(order_obj, dict):
-            return
+            _raise_from_last_error("order rejected: malformed response")
         err_obj = order_obj.get("error")
         if isinstance(err_obj, dict) and _is_binance_error_payload(err_obj):
             code = err_obj.get("code")
@@ -163,11 +161,11 @@ def _futures_create_order_with_fallback(self, params: dict):
                 code = data_obj.get("code")
                 msg = data_obj.get("msg") or data_obj.get("message") or "order rejected"
                 raise RuntimeError(f"order rejected (code={code}): {msg}")
-            if _order_has_id(data_obj) or data_obj.get("status"):
+            if _order_has_id(data_obj):
                 order_obj.clear()
                 order_obj.update(data_obj)
-        if not _order_has_id(order_obj) and not order_obj.get("status"):
-            _raise_from_last_error("order rejected: empty response")
+        if not _order_has_id(order_obj):
+            _raise_from_last_error("order rejected: response has no order identifier")
 
     try:
         _audit("exchange_order_request", order_params=params, via=order_via)

@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-and-release:
@@ -22,7 +24,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Validate tagged release QA sign-off
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_release_qa.py \
+            --tag "${{ github.ref_name }}" \
+            --note "docs/release-qa/${{ github.ref_name }}.md" \
+            --require-current-revision
 
       - name: Refresh README LOC snapshot
         shell: bash
@@ -134,8 +146,41 @@ jobs:
           tar -C release -czf "release/Trading-Bot-Python-freebsd-${arch}-${release_version}.tar.gz" "Trading-Bot-Python-freebsd-${arch}"
           tar -C release -czf "release/Trading-Bot-C++-freebsd-${arch}-${release_version}.tar.gz" "Trading-Bot-C++"
 
+      - name: Write and verify artifact digest manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="release/release-manifest-freebsd.json"
+          mapfile -t artifacts < <(find release -maxdepth 1 -type f ! -name 'release-manifest-*.json' -print)
+          if [[ "${#artifacts[@]}" -eq 0 ]]; then
+            echo "No release artifacts were found to include in the digest manifest." >&2
+            exit 1
+          fi
+          python3 tools/write_release_manifest.py "${artifacts[@]}" --output "${manifest}" --repo-root "${GITHUB_WORKSPACE}"
+          python3 tools/write_release_manifest.py --verify "${manifest}" --repo-root "${GITHUB_WORKSPACE}" --require-current-revision
+
+      - name: Generate SPDX SBOM for release assets
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: release
+          format: spdx-json
+          output-file: release/release-sbom-freebsd.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest release asset provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: release/*
+
+      - name: Attest release asset SBOM
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: release/*
+          sbom-path: release/release-sbom-freebsd.spdx.json
+
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: freebsd-release-assets
           path: release/*
@@ -143,7 +188,7 @@ jobs:
 
       - name: Publish GitHub release assets
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: |
             release/Trading-Bot-Python-freebsd-*.tar.gz

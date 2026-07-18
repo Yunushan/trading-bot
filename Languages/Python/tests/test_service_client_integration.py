@@ -369,3 +369,22 @@ print("ok")
         prompt_result = service.run_terminal_command("llm prompt Explain BTC risk", source="test-terminal").to_dict()
         self.assertTrue(prompt_result["accepted"])
         self.assertIn('"dry_run": true', prompt_result["output"])
+
+    def test_service_terminal_propagates_rejected_control_and_backtest_commands(self):
+        service = TradingBotService()
+        rejected_control = mock.Mock(to_dict=lambda: {"accepted": False, "status_message": "control dispatch denied"})
+        rejected_backtest = mock.Mock(to_dict=lambda: {"accepted": False, "status_message": "no active backtest"})
+
+        with (
+            mock.patch.object(service, "request_start", return_value=rejected_control),
+            mock.patch.object(service, "stop_backtest", return_value=rejected_backtest),
+        ):
+            start_result = service.run_terminal_command("start", source="test-terminal").to_dict()
+            stop_result = service.run_terminal_command("backtest stop", source="test-terminal").to_dict()
+
+        self.assertFalse(start_result["accepted"])
+        self.assertEqual(1, start_result["exit_code"])
+        self.assertIn('"accepted": false', start_result["output"])
+        self.assertFalse(stop_result["accepted"])
+        self.assertEqual(1, stop_result["exit_code"])
+        self.assertIn("no active backtest", stop_result["output"])

@@ -94,10 +94,13 @@ python -m app.service.main --serve --host 127.0.0.1 --port 8000
 Expose it to the local network:
 
 ```bash
-BOT_SERVICE_API_TOKEN=your-secret-token python apps/service-api/main.py --serve --host 0.0.0.0 --port 8000
+BOT_SERVICE_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  python apps/service-api/main.py --serve --host 0.0.0.0 --port 8000
 ```
 
-Non-loopback host bindings such as `0.0.0.0` require a bearer token.
+Non-loopback host bindings such as `0.0.0.0` require a bearer token with at
+least 32 characters. Generate it with `secrets.token_urlsafe(32)` as shown
+above; do not reuse an exchange key or a short human-memorable password.
 
 ### Standalone lifecycle scope
 
@@ -170,6 +173,17 @@ Environment-variable form:
 BOT_SERVICE_API_TOKEN=your-secret-token python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
 ```
 
+Secret-file form for container/orchestrator deployments:
+
+```bash
+BOT_SERVICE_API_TOKEN_FILE=/run/secrets/service_api_token \
+  python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
+```
+
+The token resolution order is explicit CLI token, `BOT_SERVICE_API_TOKEN`, then
+`BOT_SERVICE_API_TOKEN_FILE`. The file is limited to 4 KiB and must not be
+checked into source control.
+
 PowerShell:
 
 ```powershell
@@ -187,20 +201,56 @@ When bearer auth is enabled:
 - write endpoints require a bearer token in both standalone and desktop-hosted
   API modes. If no token is configured, read routes stay available but
   mutation/control routes return `403`. `BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES=1`
-  is a local development escape hatch only.
+  is a local development escape hatch only; startup rejects it for non-loopback
+  bindings.
 - `/health`, `/api/v1/dashboard`, and service API metadata include
   `service_api.unsafe_flags_active` plus `service_api.security.warnings` when
   unsafe write/config escape hatches are active.
+- `/livez` is a process liveness probe. `/readyz` verifies that the runtime
+  descriptor can be built and returns `503` when the service is not ready to
+  accept work. Container health checks use `/readyz`.
+
+## Non-loopback TLS policy
+
+The service refuses a non-loopback host unless it has a bearer token of at
+least 32 characters and one of the following deployment protections:
+
+- Direct TLS: configure both `BOT_SERVICE_API_TLS_CERTFILE` and
+  `BOT_SERVICE_API_TLS_KEYFILE`. The service passes these paths to Uvicorn and
+  serves HTTPS itself.
+- TLS-terminating reverse proxy: set `BOT_SERVICE_API_TRUST_PROXY_TLS=1` only
+  when the proxy enforces HTTPS and the service network is not directly
+  reachable by untrusted clients.
+- Host-loopback container proxy: set `BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1`
+  only when Docker or another proxy publishes the container port exclusively
+  on `127.0.0.1` or `::1`. The checked-in Docker Compose file uses this mode
+  with `127.0.0.1:8000:8000`; do not reuse it for a LAN or public port mapping.
+
+For direct TLS, keep the certificate and private key outside the repository
+and restrict their filesystem permissions. Do not set either trusted-proxy
+variable merely to bypass this check.
 
 Request safety limits:
 
 - `BOT_SERVICE_API_MAX_REQUEST_BYTES` caps incoming request bodies. The default
   is 1 MiB. Oversized requests return `413`.
 - `BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE` optionally rate-limits write
-  methods per client. Leave it unset or `0` for no local rate limit; positive
-  values return `429` with `Retry-After` once exceeded.
+  methods per client. The quota is shared across `POST`, `PUT`, `PATCH`, and
+  `DELETE`. Loopback hosts may leave it unset or set it to `0` for no
+  local rate limit. Non-loopback hosts default to 60 writes per minute and
+  enforce a minimum of one write per minute even when the value is set to `0`.
+  Positive limits return `429` with `Retry-After` once exceeded.
+- `BOT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS` bounds the in-memory client
+  tracking table used by a positive write limit. It defaults to 10,000 clients;
+  expired one-minute windows are pruned before a new client is admitted. A full
+  table returns `429` instead of allowing unbounded memory growth.
 - Both limits are reported in `service_api.limits` metadata so browser/mobile
   clients can display the active policy.
+- Health, readiness, liveness, and `/api/...` responses include `Cache-Control:
+  no-store`, `Pragma: no-cache`, `Referrer-Policy: no-referrer`, and
+  `X-Content-Type-Options: nosniff`. This keeps account, strategy, and runtime
+  data out of shared proxy/browser caches without disabling normal caching for
+  static dashboard assets.
 
 ## Built-in web dashboard
 
@@ -270,6 +320,8 @@ metadata changes.
 Core routes:
 
 - `GET /health`
+- `GET /livez`
+- `GET /readyz`
 - `GET /api/v1/dashboard`
 - `GET /api/v1/runtime`
 - `GET /api/v1/runtime/operational-preflight`

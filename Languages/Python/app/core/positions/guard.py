@@ -1,9 +1,16 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
+from collections.abc import Mapping
 from typing import Dict, List, Optional, Tuple
+
+try:
+    from ...settings.live_safety import is_live_trading_mode
+except ImportError:  # pragma: no cover - standalone execution fallback
+    from settings.live_safety import is_live_trading_mode
 
 class IntervalPositionGuard:
     """Prevents duplicate opens for (symbol, interval, side).
@@ -26,6 +33,7 @@ class IntervalPositionGuard:
         self.allow_opposite: bool = False
         self._bw = None  # late-attached binance wrapper
         self.block_new: bool = False  # when stopping, disallow new opens immediately
+        self.last_exchange_guard_error: str | None = None
         self._lock = threading.RLock()
 
     # ----- lifecycle / integration
@@ -39,6 +47,15 @@ class IntervalPositionGuard:
             self.pending_attempts.clear()
             self.active.clear()
             self.block_new = False
+            self.last_exchange_guard_error = None
+
+    @staticmethod
+    def _live_exchange_mode(wrapper: object) -> bool:
+        return bool(is_live_trading_mode(getattr(wrapper, "mode", "")))
+
+    def _block_exchange_snapshot(self, message: str) -> bool:
+        self.last_exchange_guard_error = message
+        return False
 
     # ----- internal
     def _expire_old_unlocked(self) -> None:
@@ -69,18 +86,52 @@ class IntervalPositionGuard:
                         self.active.pop((sym, iv), None)
 
     # ----- public
-    def reconcile_with_exchange(self, bw=None, jobs: Optional[List[dict]]=None, account_type: str='FUTURES') -> None:
+    def reconcile_with_exchange(
+        self,
+        bw=None,
+        jobs: Optional[List[dict]] = None,
+        account_type: str = 'FUTURES',
+    ) -> bool:
         bw = bw or self._bw
         if not bw or (account_type or '').upper() != 'FUTURES':
-            return
+            return True
         with self._lock:
             self._expire_old_unlocked()
+            live_exchange = self._live_exchange_mode(bw)
             try:
                 now = time.time()
                 live = {}
-                for p in (bw.list_open_futures_positions() or []):
+                positions = bw.list_open_futures_positions()
+                if positions is None:
+                    if live_exchange:
+                        return self._block_exchange_snapshot("live reconciliation position snapshot was unavailable")
+                    positions = []
+                if not isinstance(positions, (list, tuple)):
+                    if live_exchange:
+                        return self._block_exchange_snapshot("live reconciliation position snapshot had an invalid shape")
+                    positions = []
+                for p in positions:
+                    if not isinstance(p, Mapping):
+                        if live_exchange:
+                            return self._block_exchange_snapshot(
+                                "live reconciliation position snapshot contained an invalid row"
+                            )
+                        continue
                     sym = str(p.get('symbol') or '').upper()
-                    amt = float(p.get('positionAmt') or 0.0)
+                    try:
+                        amt = float(p.get('positionAmt') or 0.0)
+                    except (TypeError, ValueError, OverflowError):
+                        if live_exchange:
+                            return self._block_exchange_snapshot(
+                                "live reconciliation position snapshot contained an invalid amount"
+                            )
+                        continue
+                    if not math.isfinite(amt):
+                        if live_exchange:
+                            return self._block_exchange_snapshot(
+                                "live reconciliation position snapshot contained a non-finite amount"
+                            )
+                        continue
                     if amt > 0:
                         live[(sym, 'BUY')] = True
                     elif amt < 0:
@@ -97,9 +148,13 @@ class IntervalPositionGuard:
                                     ctx_map = {}
                                     self.ledger[key] = ctx_map
                                 ctx_map["__reconciled__"] = now
-            except Exception:
-                # never block on reconciliation errors
-                pass
+                self.last_exchange_guard_error = None
+                return True
+            except Exception as exc:
+                self.last_exchange_guard_error = (
+                    f"position reconciliation failed: {type(exc).__name__}"
+                )
+                return not live_exchange
 
     def can_open(self, symbol: str, interval: str, side: str, context: str | None = None) -> bool:
         sym = (symbol or '').upper()
@@ -107,6 +162,9 @@ class IntervalPositionGuard:
         sd = (side or '').upper()
         ctx = str(context) if context is not None else "__legacy__"
         with self._lock:
+            self.last_exchange_guard_error = None
+            if sd not in {'BUY', 'SELL'}:
+                return self._block_exchange_snapshot(f"unsupported position side: {side!r}")
             self._expire_old_unlocked()
             state = self.active.get((sym, iv), {})
             opposite = 'SELL' if sd == 'BUY' else 'BUY'
@@ -139,25 +197,51 @@ class IntervalPositionGuard:
                     if context is None or any(c != ctx for c in contexts.keys()):
                         return False
             # defensive exchange check
+            bw = self._bw
+            live_exchange = self._live_exchange_mode(bw) if bw is not None else False
             try:
-                bw = self._bw
                 # Only enforce global symbol-side duplication guard when we are in strict mode
                 # or no contextual key was provided. In hedge/stacking scenarios the caller
                 # passes a unique context per indicator, so we allow multiple active legs even
                 # if the exchange already reports an open quantity.
                 if bw and (self.strict_symbol_side or context is None):
-                    for p in (bw.list_open_futures_positions(force_refresh=True) or []):
+                    positions = bw.list_open_futures_positions(force_refresh=True)
+                    if positions is None:
+                        if live_exchange:
+                            return self._block_exchange_snapshot("live position snapshot was unavailable")
+                        positions = []
+                    if not isinstance(positions, (list, tuple)):
+                        if live_exchange:
+                            return self._block_exchange_snapshot("live position snapshot had an invalid shape")
+                        positions = []
+                    for p in positions:
+                        if not isinstance(p, Mapping):
+                            if live_exchange:
+                                return self._block_exchange_snapshot("live position snapshot contained an invalid row")
+                            continue
                         if str(p.get('symbol') or '').upper() != sym:
                             continue
-                        amt = float(p.get('positionAmt') or 0.0)
+                        try:
+                            amt = float(p.get('positionAmt') or 0.0)
+                        except (TypeError, ValueError, OverflowError):
+                            if live_exchange:
+                                return self._block_exchange_snapshot("live position snapshot contained an invalid amount")
+                            continue
+                        if not math.isfinite(amt):
+                            if live_exchange:
+                                return self._block_exchange_snapshot("live position snapshot contained a non-finite amount")
+                            continue
                         if sd == 'BUY' and amt > 0:
                             self._record_active(sym, iv, 'BUY', delta=1)
                             return False
                         if sd == 'SELL' and amt < 0:
                             self._record_active(sym, iv, 'SELL', delta=1)
                             return False
-            except Exception:
-                pass
+            except Exception as exc:
+                if live_exchange:
+                    return self._block_exchange_snapshot(
+                        f"live position snapshot lookup failed: {type(exc).__name__}"
+                    )
             # reserve pending attempt immediately (coalescing window)
             self.pending_attempts[(sym, sd, ctx)] = (time.time(), iv)
             return True

@@ -4,6 +4,7 @@ import traceback
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from app.integrations.exchanges.binance.positions.close_all_runtime import close_all_futures_positions
+from app.settings.live_safety import is_live_trading_mode
 
 
 class StopWorker(QThread):
@@ -169,33 +170,33 @@ class StartWorker(QThread):
                 pass
             try:
                 self.progress_signal.emit("Reconciling with exchange...")
-                try:
-                    if hasattr(self.guard, "attach_wrapper"):
-                        self.guard.attach_wrapper(self.bw)
-                    if hasattr(self.guard, "reset"):
-                        self.guard.reset()
-                    if hasattr(self.guard, "resume_new"):
-                        self.guard.resume_new()
-                    if hasattr(self.guard, "reconcile_with_exchange"):
-                        self.guard.reconcile_with_exchange(
-                            self.bw,
-                            self.jobs,
-                            account_type=getattr(self.bw, "account_type", "FUTURES"),
-                        )
-                except Exception as _e:
-                    self.log_signal.emit(f"Guard prep error: {_e}")
+                if hasattr(self.guard, "attach_wrapper"):
+                    self.guard.attach_wrapper(self.bw)
                 if hasattr(self.guard, "reset"):
                     self.guard.reset()
                 if hasattr(self.guard, "resume_new"):
                     self.guard.resume_new()
+                reconciliation_result = True
                 if hasattr(self.guard, "reconcile_with_exchange"):
-                    self.guard.reconcile_with_exchange(
+                    reconciliation_result = self.guard.reconcile_with_exchange(
                         self.bw,
                         self.jobs,
                         account_type=getattr(self.bw, "account_type", "Futures"),
                     )
+                if reconciliation_result is False and is_live_trading_mode(getattr(self.bw, "mode", "")):
+                    detail = str(getattr(self.guard, "last_exchange_guard_error", "") or "unknown error")
+                    self.log_signal.emit(
+                        f"Live strategy start blocked: position reconciliation could not be verified ({detail})."
+                    )
+                    self.progress_signal.emit("Live strategy start blocked by exchange reconciliation.")
+                    ok = False
+                    return
             except Exception as e:
                 self.log_signal.emit(f"Guard reconcile error: {e}\n{traceback.format_exc()}")
+                if is_live_trading_mode(getattr(self.bw, "mode", "")):
+                    self.progress_signal.emit("Live strategy start blocked by exchange reconciliation.")
+                    ok = False
+                    return
 
             # Stagger starts a bit to avoid CPU spikes
             for job in self.jobs:

@@ -45,6 +45,11 @@ DEV_DEPENDENCY_NAMES = {
     "types-requests",
 }
 
+SECURITY_DEPENDENCIES = {
+    "pip-audit": "pip-audit==2.10.1",
+    "truststore": "truststore==0.10.4",
+}
+
 PYTHON_VERSION_RUNTIME_PINS = {
     "numpy": {
         "numpy==2.2.6; python_version < '3.11'",
@@ -189,6 +194,13 @@ def _check_dependency_groups(pyproject: dict[str, Any]) -> list[str]:
     errors.extend(_check_exact_group("service", list(optional.get("service") or [])))
     errors.extend(_check_windows_arm64_group(list(optional.get("windows-arm64") or [])))
     errors.extend(_check_dev_group(list(optional.get("dev") or [])))
+    security_dependencies = list(optional.get("security") or [])
+    actual_security = {_dependency_name(requirement): requirement for requirement in security_dependencies}
+    for name, expected in SECURITY_DEPENDENCIES.items():
+        if actual_security.get(name) != expected:
+            errors.append(f"security dependency {name!r} must be pinned as {expected!r}")
+    for name in sorted(set(actual_security) - set(SECURITY_DEPENDENCIES)):
+        errors.append(f"security dependencies include unreviewed tool: {name}")
     return errors
 
 

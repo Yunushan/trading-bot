@@ -16,9 +16,7 @@ name: Release Linux and macOS Binaries
         default: false
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-linux-macos-${{ github.ref }}
@@ -29,6 +27,10 @@ env:
 
 jobs:
   build:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     runs-on: ${{ matrix.os }}
     if: >
       github.event_name != 'workflow_dispatch' ||
@@ -81,10 +83,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
           cache: pip
@@ -92,8 +94,18 @@ jobs:
             Languages/Python/requirements.txt
             Languages/Python/pyproject.toml
 
+      - name: Validate tagged release QA sign-off
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_qa.py \
+            --tag "${{ github.ref_name }}" \
+            --note "docs/release-qa/${{ github.ref_name }}.md" \
+            --require-current-revision
+
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Refresh README LOC snapshot
         shell: bash
@@ -143,7 +155,7 @@ jobs:
           sudo gem install --no-document fpm
 
       - name: Install Qt 6
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
           version: "6.11.0"
           host: ${{ matrix.qt_host }}
@@ -269,7 +281,7 @@ jobs:
           python tools/write_release_manifest.py --verify "${manifest}" --repo-root "${GITHUB_WORKSPACE}" --require-current-revision
 
       - name: Generate SPDX SBOM for release assets
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           path: release
           format: spdx-json
@@ -278,30 +290,32 @@ jobs:
           upload-release-assets: false
 
       - name: Attest release asset provenance
-        uses: actions/attest@v4
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
           subject-path: release/*
 
       - name: Attest release asset SBOM
-        uses: actions/attest@v4
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
           subject-path: release/*
           sbom-path: release/release-sbom-${{ matrix.id }}.spdx.json
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.artifact_name }}
           path: release/*
           if-no-files-found: error
 
   publish-release:
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Download built assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: "*-release-assets"
           merge-multiple: true
@@ -314,6 +328,6 @@ jobs:
           ls -lah release
 
       - name: Publish GitHub release assets
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: release/*

@@ -48,9 +48,12 @@ def _close_opposite_position(
             interval_norm_guard = tuple(sorted(interval_tokens))
 
     try:
-        positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+        positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
     except Exception as e:
         self.log(f"{symbol}@{interval} read positions failed: {e}")
+        return False
+    if not isinstance(positions, (list, tuple)):
+        self.log(f"{symbol}@{interval} read positions unavailable; opposite close blocked.")
         return False
 
     desired = (next_side or "").upper()

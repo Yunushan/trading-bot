@@ -3,7 +3,10 @@ from __future__ import annotations
 
 def _refresh_positions_snapshot(self, symbol: str, interval: str) -> list[dict] | None:
     try:
-        return self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+        positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
+        if not isinstance(positions, (list, tuple)):
+            raise RuntimeError("futures position snapshot unavailable")
+        return list(positions)
     except Exception as refresh_exc:
         try:
             self.log(f"{symbol}@{interval} close-opposite refresh failed: {refresh_exc}")
@@ -70,7 +73,9 @@ def _finalize_close_cleanup(self, symbol: str, opp: str, qty_tol: float, closed_
             import time as _t
 
             for _ in range(6):
-                positions_refresh = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+                positions_refresh = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
+                if not isinstance(positions_refresh, (list, tuple)):
+                    return
                 still_opposite = False
                 for pos in positions_refresh:
                     if str(pos.get("symbol") or "").upper() != symbol:
@@ -89,7 +94,9 @@ def _finalize_close_cleanup(self, symbol: str, opp: str, qty_tol: float, closed_
                 self._remove_leg_entry(key, None)
                 self._guard_mark_leg_closed(key)
     try:
-        positions_latest = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+        positions_latest = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
+        if not isinstance(positions_latest, (list, tuple)):
+            return
         live_qty_latest = 0.0
         for pos in positions_latest:
             if str(pos.get("symbol") or "").upper() != symbol:

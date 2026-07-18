@@ -290,5 +290,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("CMAKE_BUILD_PARALLEL_LEVEL", str(os.cpu_count() or 2))
+    # `/FS` is also set by the CMake project, but keeping the orchestration
+    # serial on Windows avoids target-PDB contention in generated Qt builds.
+    if sys.platform == "win32":
+        os.environ["CMAKE_BUILD_PARALLEL_LEVEL"] = "1"
+    else:
+        os.environ.setdefault("CMAKE_BUILD_PARALLEL_LEVEL", str(os.cpu_count() or 2))
     raise SystemExit(main())

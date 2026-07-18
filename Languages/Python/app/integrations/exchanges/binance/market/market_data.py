@@ -47,6 +47,32 @@ SPOT_NATIVE_INTERVALS = {
 }
 
 
+# These are the only indicator sources with a concrete live-kline implementation.
+# Keep this guard close to the transport so stale settings or external API callers
+# cannot silently receive Binance data while claiming another exchange as the source.
+SUPPORTED_LIVE_KLINE_SOURCES = frozenset(
+    {
+        "",
+        "binance futures",
+        "binance_futures",
+        "futures",
+        "binance spot",
+        "binance_spot",
+        "spot",
+        "bybit",
+    }
+)
+
+
+def _require_supported_live_kline_source(source: str) -> None:
+    if source in SUPPORTED_LIVE_KLINE_SOURCES:
+        return
+    raise NotImplementedError(
+        f"Indicator source '{source or 'unknown'}' is not implemented for live klines. "
+        "Choose Binance spot, Binance futures, or Bybit."
+    )
+
+
 def _fetch_futures_klines_rest(self, params: dict, *, live: bool = False):
     """
     Fetch klines directly from REST. When live=True, always hit production futures
@@ -64,6 +90,7 @@ def _fetch_futures_klines_rest(self, params: dict, *, live: bool = False):
 
 def get_klines(self, symbol, interval, limit=500):
     source = (getattr(self, "indicator_source", "") or "").strip().lower()
+    _require_supported_live_kline_source(source)
     acct = str(getattr(self, "account_type", "") or "").upper()
     if source in ("binance spot", "binance_spot", "spot"):
         native_intervals = SPOT_NATIVE_INTERVALS

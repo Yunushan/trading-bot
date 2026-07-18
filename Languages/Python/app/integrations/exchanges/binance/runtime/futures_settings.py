@@ -1,8 +1,34 @@
 from __future__ import annotations
 
+import math
 import time
+from collections.abc import Mapping
 
 from .....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+
+
+def _mutation_accepted(result: object, *, leverage: int | None = None) -> bool:
+    """Return whether a settings mutation has an explicit valid acknowledgement."""
+    if not isinstance(result, Mapping) or not result:
+        return False
+    success = result.get("success", result.get("ok"))
+    if isinstance(success, str):
+        success = success.strip().lower() in {"true", "1", "yes"}
+    if success is False or result.get("error"):
+        return False
+    code = result.get("code")
+    if code is not None:
+        try:
+            if int(code) not in {0, 200}:
+                return False
+        except (TypeError, ValueError):
+            return False
+    if leverage is not None:
+        try:
+            return int(result.get("leverage")) == int(leverage)
+        except (TypeError, ValueError):
+            return False
+    return success is True or code is not None or str(result.get("status") or "").upper() in {"OK", "SUCCESS", "ACCEPTED"}
 
 
 def _coerce_max_futures_leverage(value: object = None) -> int:
@@ -17,11 +43,34 @@ def _max_futures_leverage_limit(self) -> int:
     return _coerce_max_futures_leverage(configured)
 
 
-def get_symbol_margin_type(self, symbol: str) -> str | None:
+def get_symbol_margin_type(
+    self,
+    symbol: str,
+    *,
+    allow_default_fallback: bool = True,
+    raise_on_lookup_error: bool = False,
+) -> str | None:
     """Return current margin type for symbol ('ISOLATED' | 'CROSSED') or None on error."""
     sym = (symbol or "").upper()
     if not sym:
         return None
+
+    def _is_error_payload(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        success = value.get("success")
+        if isinstance(success, str):
+            success = success.strip().lower() in {"true", "1", "yes"}
+        if success is False or value.get("error"):
+            return True
+        code = value.get("code")
+        if code is None:
+            return False
+        try:
+            return int(code) not in {0, 200}
+        except (TypeError, ValueError):
+            return True
+
     try:
         info = None
         try:
@@ -29,10 +78,16 @@ def get_symbol_margin_type(self, symbol: str) -> str | None:
         except Exception:
             try:
                 info = self.client.futures_position_risk(symbol=sym)
-            except Exception:
+            except Exception as fallback_exc:
+                if raise_on_lookup_error:
+                    raise RuntimeError(f"Unable to read margin type for {sym}") from fallback_exc
                 info = None
+        if raise_on_lookup_error and (info is None or _is_error_payload(info)):
+            raise RuntimeError(f"Unable to read margin type for {sym}")
         rows = []
         if isinstance(info, list):
+            if raise_on_lookup_error and any(_is_error_payload(row) for row in info):
+                raise RuntimeError(f"Unable to read margin type for {sym}")
             rows.extend(info)
         elif info:
             rows.append(info)
@@ -65,7 +120,11 @@ def get_symbol_margin_type(self, symbol: str) -> str | None:
                     return mt
         except Exception:
             pass
-    except Exception:
+    except Exception as exc:
+        if raise_on_lookup_error:
+            raise RuntimeError(f"Unable to read margin type for {sym}") from exc
+        return None
+    if not allow_default_fallback:
         return None
     fallback = getattr(self, "_default_margin_mode", None)
     if fallback:
@@ -92,12 +151,20 @@ def _futures_net_position_amt(self, symbol: str) -> float:
             if (row or {}).get("symbol", "").upper() != sym:
                 continue
             try:
-                total += float(row.get("positionAmt") or 0)
+                amount = float(row.get("positionAmt") or 0)
             except Exception:
                 pass
+            else:
+                # Do not treat an invalid exchange position as flat. The caller
+                # must block a margin-mode change until exposure is trustworthy.
+                if not math.isfinite(amount):
+                    return math.inf
+                total += amount
         return float(total)
     except Exception:
-        return 0.0
+        # A failed position lookup leaves exposure unknown. Treat it as open so
+        # a margin-mode transition cannot be attempted against live exposure.
+        return math.inf
 
 
 def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, desired_lev: int | None):
@@ -141,7 +208,14 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
         except Exception:
             pass
 
-    cur = (self.get_symbol_margin_type(sym) or "").upper()
+    cur = (
+        self.get_symbol_margin_type(
+            sym,
+            allow_default_fallback=False,
+            raise_on_lookup_error=True,
+        )
+        or ""
+    ).upper()
     if cur and cur != want_mm:
         if abs(self._futures_net_position_amt(sym)) > 0:
             raise RuntimeError(
@@ -151,11 +225,13 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
     try:
         if self._futures_open_orders_count(sym) > 0:
             try:
-                self.client.futures_cancel_all_open_orders(symbol=sym)
-            except Exception:
-                pass
+                cancellation = self.client.futures_cancel_all_open_orders(symbol=sym)
+                if not _mutation_accepted(cancellation):
+                    raise RuntimeError("exchange did not acknowledge open-order cancellation")
+            except Exception as exc:
+                raise RuntimeError(f"Unable to cancel open futures orders for {sym}; order blocked") from exc
     except Exception:
-        pass
+        raise
 
     last_err = None
     for _attempt in range(5):
@@ -171,12 +247,20 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
                 )
             else:
                 last_err = exc
-        v = (self.get_symbol_margin_type(sym) or "").upper()
+        v = (
+            self.get_symbol_margin_type(
+                sym,
+                allow_default_fallback=False,
+                raise_on_lookup_error=True,
+            )
+            or ""
+        ).upper()
         if v == want_mm:
             break
         if not v:
-            self._log(f"margin_type probe returned blank for {sym}; assuming {want_mm}", lvl="info")
-            break
+            if last_err:
+                raise RuntimeError(f"Failed to set margin type for {sym} to {want_mm}: {last_err}") from last_err
+            raise RuntimeError(f"Unable to verify margin type for {sym}; order blocked")
         try:
             net_amt = abs(float(self._futures_net_position_amt(sym)))
         except Exception:
@@ -188,14 +272,20 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
     else:
         if last_err:
             raise RuntimeError(f"Failed to set margin type for {sym} to {want_mm}: {last_err}")
-        vv = (self.get_symbol_margin_type(sym) or "").upper()
+        vv = (
+            self.get_symbol_margin_type(
+                sym,
+                allow_default_fallback=False,
+                raise_on_lookup_error=True,
+            )
+            or ""
+        ).upper()
         try:
             net_amt = abs(float(self._futures_net_position_amt(sym)))
         except Exception:
             net_amt = None
         if not vv:
-            self._log(f"margin_type still blank for {sym}; proceeding as {want_mm}", lvl="warn")
-            vv = want_mm
+            raise RuntimeError(f"Unable to verify margin type for {sym}; order blocked")
         if vv != want_mm:
             label = vv if vv else "UNKNOWN"
             raise RuntimeError(f"Margin type for {sym} is {label}; wanted {want_mm}. Blocking order.")
@@ -203,10 +293,12 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
     if desired_lev is not None:
         lev = self.clamp_futures_leverage(sym, desired_lev)
         try:
-            self.client.futures_change_leverage(symbol=sym, leverage=lev)
+            result = self.client.futures_change_leverage(symbol=sym, leverage=lev)
+            if not _mutation_accepted(result, leverage=lev):
+                raise RuntimeError("exchange did not acknowledge leverage update")
             self.futures_leverage = lev
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(f"Unable to set leverage for {sym}; order blocked") from exc
     try:
         cache = getattr(self, "_futures_settings_cache", None)
         if cache is None:
@@ -230,41 +322,46 @@ def ensure_futures_settings(
     margin_mode: str | None = None,
     hedge_mode: bool | None = None,
 ):
+    if hedge_mode is not None:
+        try:
+            result = self.client.futures_change_position_mode(dualSidePosition=bool(hedge_mode))
+            if not _mutation_accepted(result):
+                raise RuntimeError("exchange did not acknowledge position mode update")
+        except Exception as exc:
+            raise RuntimeError("Unable to set futures position mode") from exc
+    sym = (symbol or "").upper()
+    if not sym:
+        return
+    mm = (margin_mode or getattr(self, "_default_margin_mode", "ISOLATED") or "ISOLATED").upper()
+    if mm == "CROSS":
+        mm = "CROSSED"
     try:
-        if hedge_mode is not None:
-            try:
-                self.client.futures_change_position_mode(dualSidePosition=bool(hedge_mode))
-            except Exception:
-                pass
-        sym = (symbol or "").upper()
-        if not sym:
-            return
-        mm = (margin_mode or getattr(self, "_default_margin_mode", "ISOLATED") or "ISOLATED").upper()
-        if mm == "CROSS":
-            mm = "CROSSED"
-        try:
-            self.client.futures_change_margin_type(symbol=sym, marginType=mm)
-        except Exception as exc:
-            if "no need to change" not in str(exc).lower() and "-4046" not in str(exc):
-                pass
-        try:
-            lev_requested = int(
-                leverage
-                if leverage is not None
-                else getattr(self, "_requested_default_leverage", getattr(self, "_default_leverage", 5)) or 5
-            )
-        except Exception:
-            lev_requested = 5
-        lev = self.clamp_futures_leverage(sym, lev_requested)
-        try:
-            self.client.futures_change_leverage(symbol=sym, leverage=lev)
-        except Exception as exc:
-            if "same leverage" not in str(exc).lower() and "not modified" not in str(exc).lower():
-                pass
-        self._default_margin_mode = mm
-        self.futures_leverage = lev
+        result = self.client.futures_change_margin_type(symbol=sym, marginType=mm)
+        if not _mutation_accepted(result):
+            raise RuntimeError("exchange did not acknowledge margin mode update")
+    except Exception as exc:
+        message = str(exc).lower()
+        if "no need to change" not in message and "-4046" not in message:
+            raise RuntimeError(f"Unable to set margin mode for {sym}; order blocked") from exc
+    try:
+        lev_requested = int(
+            leverage
+            if leverage is not None
+            else getattr(self, "_requested_default_leverage", getattr(self, "_default_leverage", 5)) or 5
+        )
     except Exception:
-        pass
+        lev_requested = 5
+    lev = self.clamp_futures_leverage(sym, lev_requested)
+    try:
+        result = self.client.futures_change_leverage(symbol=sym, leverage=lev)
+        if not _mutation_accepted(result, leverage=lev):
+            raise RuntimeError("exchange did not acknowledge leverage update")
+    except Exception as exc:
+        message = str(exc).lower()
+        if "same leverage" not in message and "not modified" not in message:
+            raise RuntimeError(f"Unable to set leverage for {sym}; order blocked") from exc
+    self._default_margin_mode = mm
+    self.futures_leverage = lev
 
 
 def configure_futures_symbol(self, symbol: str):

@@ -8,6 +8,7 @@ import traceback
 
 try:
     from ....integrations.exchanges.binance import NetworkConnectivityError
+    from ....settings.live_safety import is_live_trading_mode
     from ....config import (
         STOP_LOSS_MODE_ORDER,
         STOP_LOSS_SCOPE_OPTIONS,
@@ -16,6 +17,7 @@ try:
     )
 except ImportError:  # pragma: no cover - standalone execution fallback
     from binance_wrapper import NetworkConnectivityError
+    from settings.live_safety import is_live_trading_mode
     from config import (
         STOP_LOSS_MODE_ORDER,
         STOP_LOSS_SCOPE_OPTIONS,
@@ -261,8 +263,15 @@ def _fetch_cycle_market_state(self, *, ctx: dict[str, object]) -> dict[str, obje
 
     try:
         self._reconcile_liquidations(cw["symbol"])
-    except Exception:
-        pass
+    except Exception as exc:
+        if is_live_trading_mode(getattr(self.binance, "mode", "")):
+            try:
+                self.log(
+                    f"{cw['symbol']}@{cw['interval']} liquidation reconciliation failed; live cycle blocked: {exc}"
+                )
+            except Exception:
+                pass
+            return None
     if self.stopped():
         return None
 

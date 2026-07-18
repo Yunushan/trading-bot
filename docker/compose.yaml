@@ -9,16 +9,31 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       BOT_SERVICE_API_TOKEN: ${BOT_SERVICE_API_TOKEN:?Set BOT_SERVICE_API_TOKEN before exposing the service API}
+      # The Docker port is explicitly published only on host loopback above.
+      BOT_SERVICE_API_TRUST_LOOPBACK_PROXY: "1"
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - trading-bot-service-data:/home/tradingbot/.trading-bot
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=5).read()",
         ]
       interval: 20s
       timeout: 5s
       retries: 3
       start_period: 10s
     restart: unless-stopped
+
+volumes:
+  trading-bot-service-data:

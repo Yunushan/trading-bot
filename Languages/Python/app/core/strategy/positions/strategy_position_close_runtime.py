@@ -400,19 +400,31 @@ def _close_indicator_positions(
                     cw_clone = dict(cw)
                     cw_clone["interval"] = leg_key[1]
                     request_qty = min(entry_qty, qty_remaining)
-                    closed_qty_entry = self._close_leg_entry(
-                        cw_clone,
-                        leg_key,
-                        entry_match,
-                        side_norm,
-                        close_side,
-                        position_side,
-                        loss_usdt=0.0,
-                        price_pct=0.0,
-                        margin_pct=0.0,
-                        qty_limit=request_qty,
-                        reason=reason,
-                    )
+                    try:
+                        closed_qty_entry = self._close_leg_entry(
+                            cw_clone,
+                            leg_key,
+                            entry_match,
+                            side_norm,
+                            close_side,
+                            position_side,
+                            loss_usdt=0.0,
+                            price_pct=0.0,
+                            margin_pct=0.0,
+                            qty_limit=request_qty,
+                            reason=reason,
+                        )
+                    except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+                        logger = getattr(self, "log", None)
+                        if callable(logger):
+                            try:
+                                logger(
+                                    f"{symbol}@{interval_text or 'default'} fallback close skipped for "
+                                    f"indicator {indicator_key}: {exc}"
+                                )
+                            except (RuntimeError, TypeError):
+                                continue
+                        continue
                     if closed_qty_entry > 0.0:
                         closed_count += 1
                         total_qty_closed += closed_qty_entry

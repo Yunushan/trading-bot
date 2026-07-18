@@ -361,10 +361,18 @@ def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = Fa
                 try:
                     for _ in range(3):
                         try:
-                            remaining = self.shared_binance.list_open_futures_positions(force_refresh=True) or []
+                            remaining = self.shared_binance.list_open_futures_positions(force_refresh=True)
+                            if not isinstance(remaining, (list, tuple)):
+                                raise RuntimeError("futures position snapshot unavailable")
                         except Exception as exc:
                             _record_positions_tracking_exception(self, "verify_close_all_remaining_positions", exc)
-                            remaining = []
+                            results.append(
+                                {
+                                    "ok": False,
+                                    "error": f"close verification unavailable: {type(exc).__name__}: {exc}",
+                                }
+                            )
+                            break
                         open_left = [p for p in remaining if abs(float(p.get("positionAmt") or 0.0)) > 0.0]
                         if not open_left:
                             break

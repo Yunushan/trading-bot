@@ -56,11 +56,17 @@ class _AbortGuardBinance(_FakeStrategyBinance):
             "network": {"offline": False, "offline_hits": 0},
         }
         self.operational_snapshot = {}
+        self.connector_snapshot_error: Exception | None = None
+        self.operational_snapshot_error: Exception | None = None
 
     def get_connector_health_snapshot(self):
+        if self.connector_snapshot_error is not None:
+            raise self.connector_snapshot_error
         return dict(self.connector_health)
 
     def get_operational_snapshot(self):
+        if self.operational_snapshot_error is not None:
+            raise self.operational_snapshot_error
         return dict(self.operational_snapshot)
 
     def list_open_futures_positions(self, max_age=0.0, force_refresh=False):  # noqa: ARG002
@@ -69,6 +75,26 @@ class _AbortGuardBinance(_FakeStrategyBinance):
     def place_futures_market_order(self, *args, **kwargs):  # noqa: ARG002
         self.place_calls += 1
         return {"ok": True}
+
+
+class _RaisingBeginOpenGuard:
+    def begin_open(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("position guard unavailable")
+
+    def end_open(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        return None
+
+
+class _PositionSnapshotWrapper:
+    def __init__(self, *, mode: str, result=None, error: Exception | None = None) -> None:
+        self.mode = mode
+        self.result = result
+        self.error = error
+
+    def list_open_futures_positions(self, force_refresh=False):  # noqa: ARG002
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 def _build_engine(*, wrapper=None, can_open_callback=None):
@@ -89,6 +115,81 @@ def _build_engine(*, wrapper=None, can_open_callback=None):
 
 
 class PositionGuardBehaviorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        StrategyEngine._GLOBAL_PAUSE.clear()
+        StrategyEngine._CONNECTOR_ORDER_CIRCUIT_OPEN = False
+        StrategyEngine._CONNECTOR_ORDER_BLOCK_EVENTS = []
+
+    def test_live_guard_fails_closed_when_position_snapshot_lookup_fails(self):
+        guard = IntervalPositionGuard()
+        guard.attach_wrapper(
+            _PositionSnapshotWrapper(mode="Live", error=RuntimeError("exchange unavailable"))
+        )
+
+        self.assertFalse(guard.can_open("BTCUSDT", "1m", "BUY"))
+        self.assertEqual([], guard.snapshot_pending_attempts())
+        self.assertIn("lookup failed", guard.last_exchange_guard_error or "")
+
+    def test_live_guard_fails_closed_for_invalid_position_snapshots(self):
+        invalid_snapshots = (
+            None,
+            {"symbol": "BTCUSDT"},
+            [{"symbol": "BTCUSDT", "positionAmt": "not-a-number"}],
+            [{"symbol": "BTCUSDT", "positionAmt": "nan"}],
+        )
+
+        for snapshot in invalid_snapshots:
+            with self.subTest(snapshot=snapshot):
+                guard = IntervalPositionGuard()
+                guard.attach_wrapper(_PositionSnapshotWrapper(mode="Live", result=snapshot))
+
+                self.assertFalse(guard.can_open("BTCUSDT", "1m", "BUY"))
+                self.assertEqual([], guard.snapshot_pending_attempts())
+                self.assertIsNotNone(guard.last_exchange_guard_error)
+
+    def test_live_reconciliation_fails_closed_when_position_snapshot_lookup_fails(self):
+        guard = IntervalPositionGuard()
+        guard.attach_wrapper(
+            _PositionSnapshotWrapper(mode="Live", error=RuntimeError("exchange unavailable"))
+        )
+
+        self.assertFalse(
+            guard.reconcile_with_exchange(
+                jobs=[{"symbol": "BTCUSDT", "interval": "1m"}],
+                account_type="FUTURES",
+            )
+        )
+        self.assertIn("reconciliation failed", guard.last_exchange_guard_error or "")
+
+    def test_demo_reconciliation_remains_best_effort_when_position_snapshot_lookup_fails(self):
+        guard = IntervalPositionGuard()
+        guard.attach_wrapper(
+            _PositionSnapshotWrapper(mode="Demo", error=RuntimeError("exchange unavailable"))
+        )
+
+        self.assertTrue(
+            guard.reconcile_with_exchange(
+                jobs=[{"symbol": "BTCUSDT", "interval": "1m"}],
+                account_type="FUTURES",
+            )
+        )
+
+    def test_demo_guard_preserves_best_effort_behavior_when_position_snapshot_fails(self):
+        guard = IntervalPositionGuard()
+        guard.attach_wrapper(
+            _PositionSnapshotWrapper(mode="Demo", error=RuntimeError("exchange unavailable"))
+        )
+
+        self.assertTrue(guard.can_open("BTCUSDT", "1m", "BUY"))
+        self.assertEqual(1, len(guard.snapshot_pending_attempts()))
+
+    def test_guard_rejects_unknown_position_side(self):
+        guard = IntervalPositionGuard()
+
+        self.assertFalse(guard.can_open("BTCUSDT", "1m", "SIDEWAYS"))
+        self.assertEqual([], guard.snapshot_pending_attempts())
+        self.assertIn("unsupported position side", guard.last_exchange_guard_error or "")
+
     def test_mark_closed_with_context_preserves_other_contexts(self):
         guard = IntervalPositionGuard()
         first_context = "1m:BUY:rsi|slot0"
@@ -423,6 +524,195 @@ class PositionGuardBehaviorTests(unittest.TestCase):
         self.assertIn("futures order blocked by operational safety", joined_logs)
         self.assertIn("exchange connector", joined_logs)
         self.assertIn("account", joined_logs)
+
+    def test_submit_order_blocks_live_when_connector_snapshot_lookup_fails(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        wrapper.mode = "Live"
+        wrapper.connector_snapshot_error = RuntimeError("connector unavailable")
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Live"
+
+        order_res, order_success, submit_aborted = engine._submit_futures_signal_order(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            flip_active=False,
+            context_key="1m:BUY:rsi|slot0",
+            signature=("rsi", "slot0"),
+            key_bar=("BTCUSDT", "1m", "BUY"),
+            key_dup=("BTCUSDT", "1m", "BUY"),
+            current_batch_index=0,
+            order_batch_total=1,
+            desired_ps=None,
+            qty_est=1.0,
+            reduce_only=False,
+            last_price=100.0,
+            lev=5,
+            abort_guard=lambda: None,
+        )
+
+        self.assertTrue(submit_aborted)
+        self.assertFalse(order_success)
+        self.assertEqual(0, wrapper.place_calls)
+        self.assertIn("Connector health snapshot unavailable", str(order_res.get("error")))
+
+    def test_submit_order_blocks_live_when_operational_snapshot_lookup_fails(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        wrapper.operational_snapshot_error = RuntimeError("operational snapshot unavailable")
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Live"
+
+        order_res, order_success, submit_aborted = engine._submit_futures_signal_order(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            flip_active=False,
+            context_key="1m:BUY:rsi|slot0",
+            signature=("rsi", "slot0"),
+            key_bar=("BTCUSDT", "1m", "BUY"),
+            key_dup=("BTCUSDT", "1m", "BUY"),
+            current_batch_index=0,
+            order_batch_total=1,
+            desired_ps=None,
+            qty_est=1.0,
+            reduce_only=False,
+            last_price=100.0,
+            lev=5,
+            abort_guard=lambda: None,
+        )
+
+        self.assertTrue(submit_aborted)
+        self.assertFalse(order_success)
+        self.assertEqual(0, wrapper.place_calls)
+        self.assertIn("Operational safety snapshot unavailable", str(order_res.get("error")))
+
+    def test_submit_order_blocks_live_when_position_guard_claim_raises(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Live"
+        engine.set_guard(_RaisingBeginOpenGuard())
+
+        order_res, order_success, submit_aborted = engine._submit_futures_signal_order(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            flip_active=False,
+            context_key="1m:BUY:rsi|slot0",
+            signature=("rsi", "slot0"),
+            key_bar=("BTCUSDT", "1m", "BUY"),
+            key_dup=("BTCUSDT", "1m", "BUY"),
+            current_batch_index=0,
+            order_batch_total=1,
+            desired_ps=None,
+            qty_est=1.0,
+            reduce_only=False,
+            last_price=100.0,
+            lev=5,
+            abort_guard=lambda: None,
+        )
+
+        self.assertTrue(submit_aborted)
+        self.assertFalse(order_success)
+        self.assertEqual(0, wrapper.place_calls)
+        self.assertEqual("position_guard_claim_unavailable", order_res.get("error"))
+
+    def test_position_gate_blocks_live_when_indicator_opposite_position_lookup_fails(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Live"
+        engine._close_opposite_position = lambda *_args, **_kwargs: True
+
+        def _raise_indicator_lookup(*_args, **_kwargs):
+            raise RuntimeError("indicator position lookup unavailable")
+
+        engine._indicator_live_qty_total = _raise_indicator_lookup
+        aborted = engine._prepare_signal_order_position_gate(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            interval_norm="1m",
+            signature=("rsi",),
+            indicator_key_hint="rsi",
+            indicator_tokens_for_order=["rsi"],
+            indicator_tokens_for_guard=["rsi"],
+            flip_close_qty=0.0,
+            qty_tol_slot_guard=1e-9,
+            abort_guard=lambda: None,
+        )
+
+        self.assertTrue(aborted["aborted"])
+
+    def test_position_gate_keeps_demo_best_effort_when_indicator_lookup_fails(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Demo/Testnet"
+        engine._close_opposite_position = lambda *_args, **_kwargs: True
+
+        def _raise_indicator_lookup(*_args, **_kwargs):
+            raise RuntimeError("indicator position lookup unavailable")
+
+        engine._indicator_live_qty_total = _raise_indicator_lookup
+        result = engine._prepare_signal_order_position_gate(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            interval_norm="1m",
+            signature=("rsi",),
+            indicator_key_hint="rsi",
+            indicator_tokens_for_order=["rsi"],
+            indicator_tokens_for_guard=["rsi"],
+            flip_close_qty=0.0,
+            qty_tol_slot_guard=1e-9,
+            abort_guard=lambda: None,
+        )
+
+        self.assertFalse(result["aborted"])
+
+    def test_prepare_orders_keeps_live_ledger_when_position_snapshots_fail(self):
+        wrapper = _AbortGuardBinance()
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Live"
+        key = ("BTCUSDT", "1m", "BUY")
+        engine._leg_ledger[key] = {"qty": 1.0, "timestamp": 0.0, "entries": []}
+
+        def _raise_position_cache():
+            raise RuntimeError("cached position snapshot unavailable")
+
+        wrapper.list_open_futures_positions = lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fresh position snapshot unavailable")
+        )
+        orders, _snapshot, aborted = engine._filter_signal_order_candidates(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            orders_to_execute=[{"side": "BUY", "signature": ("rsi",), "labels": ["rsi"]}],
+            dual_side=False,
+            load_positions_cache=_raise_position_cache,
+        )
+
+        self.assertFalse(aborted)
+        self.assertEqual([], orders)
+        self.assertIn(key, engine._leg_ledger)
+
+    def test_prepare_orders_treats_malformed_position_rows_as_active(self):
+        engine = _build_engine()
+
+        self.assertTrue(
+            engine._is_futures_position_active_for_order(
+                "BTCUSDT",
+                "BUY",
+                False,
+                [object()],
+            )
+        )
+
+    def test_order_sizing_rejects_non_finite_market_price(self):
+        engine = _build_engine()
+
+        state = engine._resolve_signal_order_account_state(
+            cw={"position_pct": 25, "position_pct_units": "percent"},
+            last_price=float("nan"),
+        )
+
+        self.assertEqual(0.0, state["price"])
 
     def test_submit_order_warns_but_allows_demo_when_operational_inputs_are_stale(self):
         wrapper = _AbortGuardBinance()

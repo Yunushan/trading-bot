@@ -15,10 +15,10 @@ except ImportError:  # pragma: no cover - standalone execution fallback
 def _connector_order_guard_detail(snapshot: dict[str, Any]) -> str:
     attention = snapshot.get("attention")
     if isinstance(attention, list) and attention:
-        return redact_text(str(attention[0] or "").strip())
+        return str(redact_text(str(attention[0] or "").strip()))
     last_error = snapshot.get("last_error")
     if isinstance(last_error, dict):
-        return redact_text(str(last_error.get("message") or "").strip())
+        return str(redact_text(str(last_error.get("message") or "").strip()))
     return ""
 
 
@@ -29,9 +29,12 @@ def _evaluate_connector_order_guard(wrapper) -> tuple[bool, str, str, dict[str, 
     try:
         raw_snapshot = getter() or {}
     except Exception as exc:
+        message = f"Connector health snapshot unavailable before order submit: {redact_text(exc)}"
+        if is_live_trading_mode(getattr(wrapper, "mode", "")):
+            return False, message, "error", {}
         return (
             True,
-            f"Connector health snapshot unavailable before order submit: {redact_text(exc)}",
+            message,
             "warning",
             {},
         )
@@ -93,7 +96,7 @@ def _live_mode_for_order_guard(self, wrapper) -> bool:  # noqa: ANN001
     mode = config.get("mode") if isinstance(config, dict) else None
     if mode in (None, ""):
         mode = getattr(wrapper, "mode", "")
-    return is_live_trading_mode(mode)
+    return bool(is_live_trading_mode(mode))
 
 
 def _evaluate_operational_order_guard(self, wrapper) -> tuple[bool, str, str, dict[str, Any]]:  # noqa: ANN001
@@ -115,9 +118,12 @@ def _evaluate_operational_order_guard(self, wrapper) -> tuple[bool, str, str, di
     try:
         snapshot = _get_operational_order_snapshot(self, wrapper)
     except Exception as exc:
+        message = f"Operational safety snapshot unavailable before order submit: {redact_text(exc)}"
+        if _live_mode_for_order_guard(self, wrapper):
+            return False, message, "error", {}
         return (
             True,
-            f"Operational safety snapshot unavailable before order submit: {redact_text(exc)}",
+            message,
             "warning",
             {},
         )
@@ -458,9 +464,11 @@ def _submit_futures_signal_order(
                     existing_positions = self.binance.list_open_futures_positions(
                         max_age=0.0,
                         force_refresh=True,
-                    ) or []
+                    )
                 except Exception:
-                    existing_positions = []
+                    existing_positions = None
+                if not isinstance(existing_positions, (list, tuple)):
+                    raise RuntimeError("futures position snapshot unavailable during flip refresh")
                 if not self._signal_order_has_opposite_open(
                     positions=existing_positions,
                     symbol=cw["symbol"],
@@ -475,7 +483,9 @@ def _submit_futures_signal_order(
             existing_positions = self.binance.list_open_futures_positions(
                 max_age=0.0,
                 force_refresh=True,
-            ) or []
+            )
+        if not isinstance(existing_positions, (list, tuple)):
+            raise RuntimeError("futures position snapshot unavailable")
         for pos in existing_positions:
             if str(pos.get("symbol") or "").upper() != cw["symbol"].upper():
                 continue
@@ -558,8 +568,28 @@ def _submit_futures_signal_order(
                 abort_guard()
                 return order_res, order_success, True
             can_open_claimed = False
-        except Exception:
-            pass
+        except Exception as exc_guard:
+            strategy_order_error_logging.log_order_error(
+                self,
+                "futures order position guard claim failed",
+                cw=cw,
+                side=side,
+                account_type="FUTURES",
+                exc=exc_guard,
+                extra={
+                    "context_key": context_key,
+                    "signature": signature,
+                },
+                level="error" if _live_mode_for_order_guard(self, self.binance) else "warning",
+            )
+            if _live_mode_for_order_guard(self, self.binance):
+                _release_can_open_claim()
+                abort_guard()
+                return {
+                    "ok": False,
+                    "symbol": cw["symbol"],
+                    "error": "position_guard_claim_unavailable",
+                }, False, True
     if self.stopped():
         if guard_obj and hasattr(guard_obj, "end_open"):
             try:

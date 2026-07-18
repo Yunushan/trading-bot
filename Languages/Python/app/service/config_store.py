@@ -339,7 +339,18 @@ def write_service_config_file(
     with tmp_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     tmp_path.replace(resolved_path)
+    try:
+        directory_fd = os.open(resolved_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        # Windows and some network filesystems do not support directory fsync.
+        pass
     try:
         os.chmod(resolved_path, 0o600)
     except Exception:

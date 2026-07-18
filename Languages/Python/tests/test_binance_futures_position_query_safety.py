@@ -130,6 +130,21 @@ class BinanceFuturesPositionQuerySafetyTests(unittest.TestCase):
         self.assertTrue(harness.account_force_refresh)
         self.assertEqual(1, len(harness.stored))
 
+    def test_query_returns_unknown_when_every_position_snapshot_source_is_unavailable(self):
+        client = _PositionClient(
+            risk=RuntimeError("risk endpoint unavailable"),
+            information=RuntimeError("position endpoint unavailable"),
+        )
+        harness = _PositionHarness(client)
+        harness._get_futures_account_cached = lambda *, force_refresh=False: (_ for _ in ()).throw(
+            RuntimeError("account endpoint unavailable")
+        )
+
+        result = positions_runtime.list_open_futures_positions(harness, force_refresh=True)
+
+        self.assertIsNone(result)
+        self.assertEqual([], harness.stored)
+
     def test_query_discards_tiny_ghost_positions_like_native_clients(self):
         client = _PositionClient(
             risk=[

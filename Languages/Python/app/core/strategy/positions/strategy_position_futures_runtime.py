@@ -44,14 +44,11 @@ def _current_futures_position_qty(
     rows: list[dict] | None
     if positions is None:
         try:
-            rows = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+            rows = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
         except Exception:
             return None
-        if not rows:
-            try:
-                rows = self.binance.client.futures_position_information(symbol=sym_norm) or []
-            except Exception:
-                rows = []
+        if not isinstance(rows, (list, tuple)):
+            return None
     else:
         rows = positions
     side_norm = "BUY" if str(side_label or "").upper() in {"BUY", "LONG"} else "SELL"

@@ -188,6 +188,20 @@ class _CancelFallbackClient(_GhostClient):
 
     def futures_cancel_order(self, **params):
         self.individual_cancel_calls.append(dict(params))
+        return {"code": 200}
+
+
+class _CancelFailureCloseClient(_DelayedCloseClient):
+    def futures_cancel_all_open_orders(self, **_params):
+        raise RuntimeError("bulk cancel unavailable")
+
+    def futures_get_open_orders(self, **_params):
+        raise RuntimeError("open-order snapshot unavailable")
+
+
+class _CancelFailureCloseWrapper(_GhostWrapper):
+    def __init__(self):
+        super().__init__(mode="Live", client=_CancelFailureCloseClient(close_after_orders=1))
 
 
 class BinanceGhostPositionCloseAllTests(unittest.TestCase):
@@ -328,10 +342,23 @@ class BinanceGhostPositionCloseAllTests(unittest.TestCase):
         self.assertTrue(results[0]["ok"])
         self.assertTrue(results[0]["reconciled"])
 
+    def test_close_order_submission_rejects_unacknowledged_responses(self):
+        cases = (None, "accepted", {}, {"status": "NEW"}, {"code": -2010, "msg": "rejected"})
+        for response in cases:
+            with self.subTest(response=response):
+                wrapper = _GhostWrapper(mode="Live")
+                wrapper.client.futures_create_order = lambda **_params: response
+
+                with self.assertRaisesRegex(RuntimeError, "not explicitly acknowledged"):
+                    close_all_runtime._submit_futures_order(
+                        wrapper,
+                        {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"},
+                    )
+
     def test_symbol_cancel_falls_back_to_individual_orders(self):
         wrapper = _GhostWrapper(client=_CancelFallbackClient())
 
-        close_all_runtime._cancel_all(wrapper, "BTCUSDT")
+        self.assertTrue(close_all_runtime._cancel_all(wrapper, "BTCUSDT"))
 
         self.assertEqual(
             [
@@ -340,6 +367,17 @@ class BinanceGhostPositionCloseAllTests(unittest.TestCase):
             ],
             wrapper.client.individual_cancel_calls,
         )
+
+    def test_close_all_blocks_a_symbol_when_open_order_cancellation_is_unverified(self):
+        wrapper = _CancelFailureCloseWrapper()
+
+        results = close_all_futures_positions(wrapper, fast=True, max_workers=1)
+
+        self.assertEqual([], wrapper.client.orders)
+        self.assertEqual(1, len(results))
+        self.assertFalse(results[0]["ok"])
+        self.assertEqual("cancel-verification", results[0]["method"])
+        self.assertIn("cancellation was not confirmed", results[0]["error"])
 
 
 if __name__ == "__main__":

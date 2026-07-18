@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from ..service.api import ServiceApiBackgroundHost
+from ..service.auth import service_api_url_scheme
 from .service_bridge_client_runtime import _ensure_service_client, _service_bridge_log
 
 
@@ -64,7 +65,7 @@ def _resolve_desktop_service_api_settings(
         "host": str(host or "127.0.0.1").strip() or "127.0.0.1",
         "port": port,
         "api_token": api_token,
-        "url": f"http://{str(host or '127.0.0.1').strip() or '127.0.0.1'}:{port}",
+        "url": f"{service_api_url_scheme()}://{str(host or '127.0.0.1').strip() or '127.0.0.1'}:{port}",
         "auth_enabled": bool(api_token),
     }
 

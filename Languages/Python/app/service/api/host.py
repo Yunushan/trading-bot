@@ -10,7 +10,12 @@ import time
 
 from .app import create_service_api_app
 from ..api_contract import SERVICE_API_BASE_PATH, SERVICE_API_LEGACY_BASE_PATH
-from ..auth import resolve_service_api_token, validate_service_api_exposure
+from ..auth import (
+    resolve_service_api_token,
+    service_api_tls_settings,
+    service_api_url_scheme,
+    validate_service_api_exposure,
+)
 from ..runtime import TradingBotService
 
 
@@ -56,7 +61,7 @@ class ServiceApiBackgroundHost:
         return {
             "host": self._host,
             "port": self._port,
-            "url": f"http://{self._host}:{self._port}",
+            "url": f"{service_api_url_scheme()}://{self._host}:{self._port}",
             "api_base_path": SERVICE_API_BASE_PATH,
             "legacy_api_base_path": SERVICE_API_LEGACY_BASE_PATH,
             "running": self.is_running(),
@@ -76,6 +81,7 @@ class ServiceApiBackgroundHost:
                 api_token=self._api_token,
                 host_context="desktop-embedded",
                 host_owner="desktop-gui",
+                bound_host=self._host,
             )
             self._server = None
 
@@ -90,6 +96,8 @@ class ServiceApiBackgroundHost:
                         log_level="warning",
                         access_log=False,
                         lifespan="off",
+                        ssl_certfile=service_api_tls_settings()[0] or None,
+                        ssl_keyfile=service_api_tls_settings()[1] or None,
                     )
                     server = uvicorn.Server(config)
                     server.install_signal_handlers = lambda: None

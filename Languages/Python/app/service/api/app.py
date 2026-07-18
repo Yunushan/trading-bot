@@ -27,8 +27,11 @@ if __package__ in (None, ""):
         SERVICE_API_VERSION,
     )
     from app.service.auth import (
+        SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV,
         auth_required,
+        host_requires_service_api_token,
         resolve_service_api_token,
+        service_api_tls_settings,
         validate_bearer_token,
         validate_service_api_exposure,
     )
@@ -56,8 +59,11 @@ else:
         SERVICE_API_VERSION,
     )
     from ..auth import (
+        SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV,
         auth_required,
+        host_requires_service_api_token,
         resolve_service_api_token,
+        service_api_tls_settings,
         validate_bearer_token,
         validate_service_api_exposure,
     )
@@ -94,10 +100,17 @@ _HTTP_422_UNPROCESSABLE_CONTENT = (
 _HTTP_413_CONTENT_TOO_LARGE = (
     getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413) if FASTAPI_AVAILABLE else 413
 )
-SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV = "BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES"
 SERVICE_API_MAX_REQUEST_BYTES_ENV = "BOT_SERVICE_API_MAX_REQUEST_BYTES"
 SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE"
+SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS"
 DEFAULT_SERVICE_API_MAX_REQUEST_BYTES = 1_048_576
+DEFAULT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS = 10_000
+SERVICE_API_SENSITIVE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
 
 
 def _require_fastapi() -> None:
@@ -222,6 +235,7 @@ def create_service_api_app(
     api_token: str | None = None,
     host_context: str = "standalone-service",
     host_owner: str = "service-process",
+    bound_host: str = "127.0.0.1",
     enable_local_executor: bool | None = None,
 ):
     _require_fastapi()
@@ -256,6 +270,7 @@ def create_service_api_app(
     app.state.web_ui_available = web_ui_available
     app.state.service_api_host_context = resolved_host_context
     app.state.service_api_host_owner = resolved_host_owner
+    app.state.service_api_non_loopback_bind = host_requires_service_api_token(bound_host)
     app.state.service_api_streaming = True
     app.state.service_api_version = SERVICE_API_VERSION
     app.state.service_api_base_path = SERVICE_API_BASE_PATH
@@ -301,6 +316,18 @@ def create_service_api_app(
             "host_owner": service_api["host_owner"],
             "sse_available": service_api["sse_available"],
             "service_api": service_api,
+        }
+
+    def _readiness_payload() -> dict[str, object]:
+        descriptor = _service().describe_runtime()
+        service_name = str(getattr(descriptor, "service_name", "") or "").strip()
+        if not service_name:
+            raise RuntimeError("Service runtime descriptor is incomplete")
+        return {
+            "status": "ready",
+            "service_name": service_name,
+            "host_context": app.state.service_api_host_context,
+            "host_owner": app.state.service_api_host_owner,
         }
 
     def _build_dashboard_payload(*, log_limit: int = 30, incident_limit: int = 20) -> dict[str, object]:
@@ -355,10 +382,21 @@ def create_service_api_app(
         )
 
     def _write_rate_limit_per_minute() -> int:
+        default_limit = 60 if app.state.service_api_non_loopback_bind else 0
         return _env_int(
             SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV,
-            0,
-            minimum=0,
+            default_limit,
+            minimum=1 if app.state.service_api_non_loopback_bind else 0,
+            maximum=100_000,
+        )
+
+    def _write_rate_limit_max_clients() -> int:
+        rate_limit = _write_rate_limit_per_minute()
+        default_limit = DEFAULT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS if rate_limit > 0 else 0
+        return _env_int(
+            SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS_ENV,
+            default_limit,
+            minimum=1 if rate_limit > 0 else 0,
             maximum=100_000,
         )
 
@@ -366,9 +404,12 @@ def create_service_api_app(
         return {
             "max_request_bytes": _max_request_bytes(),
             "write_rate_limit_per_minute": _write_rate_limit_per_minute(),
+            "write_rate_limit_max_clients": _write_rate_limit_max_clients(),
+            "non_loopback_binding": bool(app.state.service_api_non_loopback_bind),
             "env_vars": {
                 "max_request_bytes": SERVICE_API_MAX_REQUEST_BYTES_ENV,
                 "write_rate_limit_per_minute": SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV,
+                "write_rate_limit_max_clients": SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS_ENV,
             },
             "cors_allowed_origins": [],
         }
@@ -387,6 +428,18 @@ def create_service_api_app(
             },
         )
 
+    def _is_sensitive_service_api_path(path: str) -> bool:
+        normalized_path = str(path or "").rstrip("/") or "/"
+        return normalized_path in {SERVICE_API_HEALTH_PATH, "/livez", "/readyz"} or normalized_path.startswith(
+            f"{SERVICE_API_LEGACY_BASE_PATH}/"
+        )
+
+    def _apply_service_api_response_headers(response, *, path: str):
+        if _is_sensitive_service_api_path(path):
+            for name, value in SERVICE_API_SENSITIVE_RESPONSE_HEADERS.items():
+                response.headers.setdefault(name, value)
+        return response
+
     async def _cache_limited_request_body(request: Request, *, max_request_bytes: int) -> int:
         total = 0
         chunks: list[bytes] = []
@@ -400,6 +453,20 @@ def create_service_api_app(
         setattr(request, "_body", b"".join(chunks))
         return total
 
+    def _prune_rate_limit_windows(now: float) -> dict[str, dict[str, float | int]]:
+        windows = app.state.service_api_rate_limit_windows
+        if not isinstance(windows, dict):
+            windows = {}
+            app.state.service_api_rate_limit_windows = windows
+        for key, window in list(windows.items()):
+            try:
+                started_at = float(window.get("started_at", 0.0) if isinstance(window, dict) else 0.0)
+            except (TypeError, ValueError):
+                started_at = 0.0
+            if now - started_at >= 60.0:
+                windows.pop(key, None)
+        return windows
+
     @app.middleware("http")
     async def _enforce_request_limits(request: Request, call_next):
         max_request_bytes = _max_request_bytes()
@@ -411,42 +478,62 @@ def create_service_api_app(
             except Exception:
                 request_bytes = max_request_bytes + 1
             if request_bytes > max_request_bytes:
-                return _request_too_large_response(
-                    request_bytes=request_bytes,
-                    max_request_bytes=max_request_bytes,
+                return _apply_service_api_response_headers(
+                    _request_too_large_response(
+                        request_bytes=request_bytes,
+                        max_request_bytes=max_request_bytes,
+                    ),
+                    path=request.url.path,
                 )
 
         if _write_method(request.method) or request_bytes:
             measured_bytes = await _cache_limited_request_body(request, max_request_bytes=max_request_bytes)
             if measured_bytes > max_request_bytes:
-                return _request_too_large_response(
-                    request_bytes=measured_bytes,
-                    max_request_bytes=max_request_bytes,
+                return _apply_service_api_response_headers(
+                    _request_too_large_response(
+                        request_bytes=measured_bytes,
+                        max_request_bytes=max_request_bytes,
+                    ),
+                    path=request.url.path,
                 )
 
         rate_limit = _write_rate_limit_per_minute()
         if rate_limit > 0 and _write_method(request.method):
             client = request.client.host if request.client else "unknown"
-            key = f"{client}:{request.method}"
             now = time.monotonic()
-            window = app.state.service_api_rate_limit_windows.get(key)
+            windows = _prune_rate_limit_windows(now)
+            window = windows.get(client)
             if not isinstance(window, dict) or now - float(window.get("started_at", 0.0) or 0.0) >= 60.0:
+                if len(windows) >= _write_rate_limit_max_clients():
+                    return _apply_service_api_response_headers(
+                        JSONResponse(
+                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            content={
+                                "detail": "Write request rate-limit client capacity has been reached."
+                            },
+                            headers={"Retry-After": "60"},
+                        ),
+                        path=request.url.path,
+                    )
                 window = {"started_at": now, "count": 0}
             window["count"] = int(window.get("count", 0) or 0) + 1
-            app.state.service_api_rate_limit_windows[key] = window
+            windows[client] = window
             if int(window["count"]) > rate_limit:
-                return JSONResponse(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content={
-                        "detail": (
-                            f"Write request rate limit exceeded. "
-                            f"Maximum is {rate_limit} write request(s) per minute."
-                        )
-                    },
-                    headers={"Retry-After": "60"},
+                return _apply_service_api_response_headers(
+                    JSONResponse(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        content={
+                            "detail": (
+                                f"Write request rate limit exceeded. "
+                                f"Maximum is {rate_limit} write request(s) per minute."
+                            )
+                        },
+                        headers={"Retry-After": "60"},
+                    ),
+                    path=request.url.path,
                 )
 
-        return await call_next(request)
+        return _apply_service_api_response_headers(await call_next(request), path=request.url.path)
 
     def _unsafe_runtime_flags() -> dict[str, object]:
         unauthenticated_writes = _env_flag(SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV, False)
@@ -525,6 +612,20 @@ def create_service_api_app(
     @app.get(SERVICE_API_HEALTH_PATH)
     def health():
         return _health_payload()
+
+    @app.get("/livez", include_in_schema=False)
+    def liveness():
+        return {"status": "ok"}
+
+    @app.get("/readyz", include_in_schema=False)
+    def readiness():
+        try:
+            return _readiness_payload()
+        except Exception:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"status": "not-ready"},
+            )
 
     @api_router.get("/runtime")
     def get_runtime():
@@ -868,6 +969,7 @@ def run_service_api_server(
     _require_fastapi()
     resolved_token = resolve_service_api_token(api_token)
     validate_service_api_exposure(host, resolved_token)
+    tls_certfile, tls_keyfile, _, _ = service_api_tls_settings()
     try:
         import uvicorn
     except Exception as exc:  # pragma: no cover - handled via runtime check
@@ -885,6 +987,14 @@ def run_service_api_server(
         api_token=resolved_token,
         host_context="standalone-service",
         host_owner="service-process",
+        bound_host=host,
         enable_local_executor=True,
     )
-    uvicorn.run(app, host=str(host or "127.0.0.1"), port=max(1, int(port)), log_level="info")
+    uvicorn.run(
+        app,
+        host=str(host or "127.0.0.1"),
+        port=max(1, int(port)),
+        log_level="info",
+        ssl_certfile=tls_certfile or None,
+        ssl_keyfile=tls_keyfile or None,
+    )

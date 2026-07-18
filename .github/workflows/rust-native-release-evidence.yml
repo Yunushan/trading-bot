@@ -45,10 +45,10 @@ jobs:
       RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
@@ -89,7 +89,7 @@ jobs:
 
       - name: Upload native source sync audit
         if: ${{ always() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: native-source-sync-audit
           path: artifacts/native-source-sync/native-source-sync-audit.json
@@ -158,7 +158,7 @@ jobs:
             --write-evidence-plan "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/rust-native-runtime-evidence-plan.md"
 
       - name: Upload Rust native release evidence
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rust-native-release-platform-evidence
           path: ${{ inputs.evidence_dir }}/rust-native-release-platform-evidence.json
@@ -166,7 +166,7 @@ jobs:
 
       - name: Upload post-release Rust native runtime evidence plan
         if: ${{ always() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rust-native-release-platform-evidence-plan
           path: ${{ inputs.evidence_dir }}/rust-native-runtime-evidence-plan.md

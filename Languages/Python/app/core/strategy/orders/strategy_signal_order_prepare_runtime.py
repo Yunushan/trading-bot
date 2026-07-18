@@ -4,6 +4,17 @@ import math
 import re
 import time
 
+from app.settings import is_live_trading_mode
+
+
+def _live_mode_for_signal_order_prepare(self) -> bool:  # noqa: ANN001
+    config = getattr(self, "config", {}) or {}
+    mode = config.get("mode") if isinstance(config, dict) else None
+    if mode in (None, ""):
+        mode = getattr(getattr(self, "binance", None), "mode", "")
+    return bool(is_live_trading_mode(mode))
+
+
 def _segment_matches_indicator_context(self, indicator_key: str | None, segment: str) -> bool:
     key_norm = self._canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
     if not key_norm:
@@ -218,7 +229,9 @@ def _is_futures_position_active_for_order(
                 if (not side_is_long) and amt < -1e-9:
                     return True
         except Exception:
-            continue
+            # A malformed exchange row must not be treated as proof that the
+            # account is flat; retain the duplicate guard until reconciliation.
+            return True
     return False
 
 
@@ -233,6 +246,7 @@ def _filter_signal_order_candidates(
 ) -> tuple[list[dict[str, object]], list[dict] | None, bool]:
     filtered_orders: list[dict[str, object]] = []
     positions_cache_snapshot = positions_cache
+    live_mode = _live_mode_for_signal_order_prepare(self)
     if self.stopped():
         return filtered_orders, positions_cache_snapshot, True
     for order in orders_to_execute:
@@ -309,10 +323,15 @@ def _filter_signal_order_candidates(
                 )
                 if existing_qty > 0.0 and not signature_tracked_elsewhere:
                     cache = []
+                    position_snapshot_unavailable = False
                     if callable(load_positions_cache):
                         try:
-                            cache = load_positions_cache() or []
+                            loaded_cache = load_positions_cache()
+                            if not isinstance(loaded_cache, list):
+                                raise TypeError("position cache must be a list")
+                            cache = loaded_cache
                         except Exception:
+                            position_snapshot_unavailable = True
                             cache = []
                     elif isinstance(positions_cache_snapshot, list):
                         cache = positions_cache_snapshot
@@ -327,7 +346,9 @@ def _filter_signal_order_candidates(
                             fresh_cache = self.binance.list_open_futures_positions(
                                 max_age=0.0,
                                 force_refresh=True,
-                            ) or []
+                            )
+                            if not isinstance(fresh_cache, list):
+                                raise TypeError("fresh position snapshot must be a list")
                             if fresh_cache:
                                 positions_cache_snapshot = fresh_cache
                             position_active = self._is_futures_position_active_for_order(
@@ -337,8 +358,14 @@ def _filter_signal_order_candidates(
                                 fresh_cache,
                             )
                         except Exception:
-                            position_active = False
-                    if position_active:
+                            position_snapshot_unavailable = True
+                    if position_snapshot_unavailable and live_mode:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} duplicate {side_upper} open prevented "
+                            "(exchange position snapshot unavailable)."
+                        )
+                        allow_order = False
+                    elif position_active:
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} duplicate {side_upper} open prevented (position still active)."
                         )
@@ -443,6 +470,7 @@ def _prepare_signal_orders(
 
 
 def bind_strategy_signal_order_prepare_runtime(strategy_cls) -> None:
+    strategy_cls._live_mode_for_signal_order_prepare = _live_mode_for_signal_order_prepare
     strategy_cls._segment_matches_indicator_context = _segment_matches_indicator_context
     strategy_cls._build_trigger_desc_for_order = _build_trigger_desc_for_order
     strategy_cls._normalize_order_trigger_actions = _normalize_order_trigger_actions

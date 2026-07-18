@@ -45,7 +45,18 @@ def write_backtest_snapshot_file(snapshot: ServiceBacktestSnapshot, *, path: str
     with temporary.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     temporary.replace(resolved)
+    try:
+        directory_fd = os.open(resolved.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        # Windows and some network filesystems do not support directory fsync.
+        pass
     try:
         os.chmod(resolved, 0o600)
     except OSError:
