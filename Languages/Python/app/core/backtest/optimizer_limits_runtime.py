@@ -17,10 +17,13 @@ BACKTEST_OPTIMIZER_MAX_DURATION_SECONDS = 7 * 24 * 60 * 60
 
 
 def normalize_optimizer_duration_seconds(value: object) -> int:
-    try:
-        seconds = int(float(value))
-    except (TypeError, ValueError, OverflowError):
+    if not isinstance(value, (str, int, float)):
         seconds = BACKTEST_OPTIMIZER_DEFAULT_DURATION_SECONDS
+    else:
+        try:
+            seconds = int(float(value))
+        except (ValueError, OverflowError):
+            seconds = BACKTEST_OPTIMIZER_DEFAULT_DURATION_SECONDS
     return max(
         BACKTEST_OPTIMIZER_MIN_DURATION_SECONDS,
         min(BACKTEST_OPTIMIZER_MAX_DURATION_SECONDS, seconds),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .strategy_cycle_risk_stop_context_runtime import (
+    _finite_positive,
     build_futures_stop_state,
     ensure_futures_leg_entry_price,
     purge_flat_futures_cycle_legs,
@@ -57,28 +58,26 @@ def apply_futures_cycle_risk_management(
 
         if qty_long <= 0.0 and pos_long:
             try:
-                qty_long = max(0.0, float(pos_long.get("positionAmt") or 0.0))
+                qty_long = _finite_positive(pos_long.get("positionAmt"))
             except Exception:
                 qty_long = 0.0
             if qty_long > 0.0:
                 self._sync_leg_entry_totals(key_long, qty_long)
         if pos_long:
             try:
-                amt_val = float(pos_long.get("positionAmt") or 0.0)
-                pos_long_qty_total = abs(amt_val)
+                pos_long_qty_total = _finite_positive(pos_long.get("positionAmt"))
             except Exception:
                 pos_long_qty_total = 0.0
         if qty_short <= 0.0 and pos_short:
             try:
-                qty_short = abs(float(pos_short.get("positionAmt") or 0.0))
+                qty_short = _finite_positive(abs(float(pos_short.get("positionAmt") or 0.0)))
             except Exception:
                 qty_short = 0.0
             if qty_short > 0.0:
                 self._sync_leg_entry_totals(key_short, qty_short)
         if pos_short:
             try:
-                amt_val = float(pos_short.get("positionAmt") or 0.0)
-                pos_short_qty_total = abs(amt_val)
+                pos_short_qty_total = _finite_positive(abs(float(pos_short.get("positionAmt") or 0.0)))
             except Exception:
                 pos_short_qty_total = 0.0
 
@@ -114,10 +113,10 @@ def apply_futures_cycle_risk_management(
                 )
             leg_long = self._leg_ledger.get(key_long, {}) or {}
             leg_short = self._leg_ledger.get(key_short, {}) or {}
-            qty_long = float(leg_long.get("qty") or 0.0)
-            qty_short = float(leg_short.get("qty") or 0.0)
-            entry_price_long = float(leg_long.get("entry_price") or 0.0)
-            entry_price_short = float(leg_short.get("entry_price") or 0.0)
+            qty_long = _finite_positive(leg_long.get("qty"))
+            qty_short = _finite_positive(leg_short.get("qty"))
+            entry_price_long = _finite_positive(leg_long.get("entry_price"))
+            entry_price_short = _finite_positive(leg_short.get("entry_price"))
         elif is_cumulative:
             cumulative_triggered = apply_cumulative_futures_stop_management(
                 self,
@@ -156,8 +155,8 @@ def apply_futures_cycle_risk_management(
             )
         leg_long_state = self._leg_ledger.get(key_long, {}) or {}
         leg_short_state = self._leg_ledger.get(key_short, {}) or {}
-        qty_long = float(leg_long_state.get("qty") or 0.0)
-        qty_short = float(leg_short_state.get("qty") or 0.0)
+        qty_long = _finite_positive(leg_long_state.get("qty"))
+        qty_short = _finite_positive(leg_short_state.get("qty"))
         long_open = qty_long > 0.0
         short_open = qty_short > 0.0
 

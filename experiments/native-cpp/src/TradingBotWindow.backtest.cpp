@@ -957,6 +957,11 @@ QWidget *TradingBotWindow::createBacktestTab() {
     auto *controlsLayout = new QHBoxLayout();
     runButton_ = new QPushButton("Run Backtest", outputGroup);
     controlsLayout->addWidget(runButton_);
+    resumeBacktestButton_ = new QPushButton("Resume Optimizer", outputGroup);
+    resumeBacktestButton_->setEnabled(false);
+    resumeBacktestButton_->setToolTip(
+        "Available after the Python Service API saves an optimizer time-budget checkpoint.");
+    controlsLayout->addWidget(resumeBacktestButton_);
     stopButton_ = new QPushButton("Stop", outputGroup);
     stopButton_->setEnabled(false);
     controlsLayout->addWidget(stopButton_);
@@ -1036,6 +1041,10 @@ void TradingBotWindow::setBacktestRunningUi(bool running) {
     }
     if (runButton_) runButton_->setEnabled(!running);
     if (stopButton_) stopButton_->setEnabled(running);
+    if (resumeBacktestButton_) {
+        resumeBacktestButton_->setEnabled(
+            !running && resumeBacktestButton_->property("checkpointAvailable").toBool());
+    }
     if (backtestExecutionBackendCombo_) backtestExecutionBackendCombo_->setEnabled(!running);
     refreshPositionsSummaryLabels();
 }
@@ -1044,6 +1053,10 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     if (backtestFutureWatcher_ && backtestFutureWatcher_->isRunning()) {
         updateStatusMessage(QStringLiteral("A native C++ backtest is already running."));
         return;
+    }
+    if (resumeBacktestButton_) {
+        resumeBacktestButton_->setProperty("checkpointAvailable", false);
+        resumeBacktestButton_->setEnabled(false);
     }
 
     const QString backend = comboValue(backtestExecutionBackendCombo_, QStringLiteral("local")).toLower();
@@ -1141,9 +1154,16 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     request.insert(QStringLiteral("scan_top_n"), spinValue(backtestScanTopNSpin_, 200));
     request.insert(QStringLiteral("scan_mdd_limit"), doubleSpinValue(backtestScanMddSpin_, 10.0));
     request.insert(QStringLiteral("optimizer_mode"), optimizerMode);
+    request.insert(
+        QStringLiteral("optimizer_max_duration_seconds"),
+        spinValue(backtestOptimizerMaxDurationSpin_, 240) * 60);
     request.insert(QStringLiteral("optimizer_metric"), comboValue(backtestOptimizerMetricCombo_, QStringLiteral("roi_percent")));
     request.insert(QStringLiteral("optimizer_combo_size"), spinValue(backtestOptimizerComboSizeSpin_, 2));
     request.insert(QStringLiteral("optimizer_min_trades"), spinValue(backtestOptimizerMinTradesSpin_, 1));
+    request.insert(
+        QStringLiteral("queue_if_busy"),
+        backtestQueueIfBusyCheck_ && backtestQueueIfBusyCheck_->isChecked());
+    request.insert(QStringLiteral("resume_checkpoint"), false);
     request.insert(QStringLiteral("stop_loss"), stopLoss);
 
     if (backend == QStringLiteral("local") && nativeBinanceBacktest) {
@@ -1292,9 +1312,45 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
             QStringLiteral("%1 backtest is delegated to the Python Service API; the local C++ backtest loader is Binance-only.")
                 .arg(selectedExchange));
     }
+    submitServiceBacktest(
+        request,
+        loopInterval,
+        QStringLiteral("Submitting C++ backtest to Python Service API..."));
+}
+
+void TradingBotWindow::resumeBacktestCheckpoint() {
+    if ((backtestFutureWatcher_ && backtestFutureWatcher_->isRunning()) || backtestServiceRunActive_) {
+        updateStatusMessage(QStringLiteral("A backtest is already running."));
+        return;
+    }
+    if (!resumeBacktestButton_ || !resumeBacktestButton_->property("checkpointAvailable").toBool()) {
+        updateStatusMessage(QStringLiteral("No saved optimizer checkpoint is available to resume."));
+        return;
+    }
+
+    QJsonObject request;
+    request.insert(QStringLiteral("queue_if_busy"), false);
+    request.insert(QStringLiteral("resume_checkpoint"), true);
+    resumeBacktestButton_->setProperty("checkpointAvailable", false);
+    submitServiceBacktest(
+        request,
+        comboValue(backtestLoopCombo_, QStringLiteral("1m")),
+        QStringLiteral("Resuming saved optimizer through the Python Service API..."));
+}
+
+void TradingBotWindow::submitServiceBacktest(
+    const QJsonObject &request,
+    const QString &loopInterval,
+    const QString &startMessage) {
+    const bool resumingCheckpoint = request.value(QStringLiteral("resume_checkpoint")).toBool(false);
+    const auto restoreResumeAvailability = [this, resumingCheckpoint]() {
+        if (resumeBacktestButton_) {
+            resumeBacktestButton_->setProperty("checkpointAvailable", resumingCheckpoint);
+        }
+    };
     setBacktestRunningUi(true);
     backtestServiceRunActive_ = true;
-    updateStatusMessage(QStringLiteral("Submitting C++ backtest to Python Service API..."));
+    updateStatusMessage(startMessage);
     QCoreApplication::processEvents();
 
     QJsonObject wrapper;
@@ -1308,6 +1364,7 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
         45000);
     if (!submitResult.ok) {
         backtestServiceRunActive_ = false;
+        restoreResumeAvailability();
         setBacktestRunningUi(false);
         updateStatusMessage(QStringLiteral("Python Service API backtest submit failed: %1").arg(submitResult.error));
         return;
@@ -1315,6 +1372,7 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     const QJsonObject submitPayload = submitResult.document.object();
     if (submitPayload.contains(QStringLiteral("accepted")) && !submitPayload.value(QStringLiteral("accepted")).toBool(true)) {
         backtestServiceRunActive_ = false;
+        restoreResumeAvailability();
         setBacktestRunningUi(false);
         updateStatusMessage(
             QStringLiteral("Python Service API rejected backtest: %1")
@@ -1331,6 +1389,7 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
             30000);
         if (!snapshotResult.ok) {
             backtestServiceRunActive_ = false;
+            restoreResumeAvailability();
             setBacktestRunningUi(false);
             updateStatusMessage(QStringLiteral("Python Service API backtest snapshot failed: %1").arg(snapshotResult.error));
             return;
@@ -1351,6 +1410,14 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     const bool stillActive = backtestSnapshotActive(snapshot);
     backtestServiceRunActive_ = stillActive;
     const int addedRows = appendBacktestRows(resultsTable_, snapshot, loopInterval);
+    const QString state = jsonText(snapshot, QStringLiteral("state")).toLower();
+    const bool checkpointAvailable = state == QStringLiteral("budget_exhausted");
+    if (resumeBacktestButton_) {
+        resumeBacktestButton_->setProperty("checkpointAvailable", checkpointAvailable);
+        resumeBacktestButton_->setToolTip(checkpointAvailable
+            ? QStringLiteral("Resume the saved optimizer checkpoint using current Python Service API credentials.")
+            : QStringLiteral("Available after the Python Service API saves an optimizer time-budget checkpoint."));
+    }
     setBacktestRunningUi(stillActive);
     if (stillActive) {
         updateStatusMessage(
@@ -1360,7 +1427,12 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     }
 
     const QString status = backtestSnapshotStatusText(snapshot, QStringLiteral("Backtest complete."));
-    if (backtestSnapshotCancelled(snapshot)) {
+    if (checkpointAvailable) {
+        updateStatusMessage(
+            QStringLiteral("Python Service API optimizer reached its time budget: %1 row(s) imported. %2 Use Resume Optimizer to continue.")
+                .arg(addedRows)
+                .arg(status));
+    } else if (backtestSnapshotCancelled(snapshot)) {
         updateStatusMessage(QStringLiteral("Python Service API backtest cancelled: %1 row(s) imported. %2").arg(addedRows).arg(status));
     } else {
         updateStatusMessage(QStringLiteral("Python Service API backtest complete: %1 row(s) imported. %2").arg(addedRows).arg(status));
@@ -1780,8 +1852,23 @@ QWidget *TradingBotWindow::createParametersGroup() {
     backtestOptimizerMinTradesSpin_ = optimizerMinTradesSpin;
     addOptimizerWidget(2, 2, "Min Trades:", optimizerMinTradesSpin);
 
+    auto *optimizerMaxDurationSpin = new QSpinBox(optimizerRow);
+    optimizerMaxDurationSpin->setRange(1, 10'080);
+    optimizerMaxDurationSpin->setSuffix(" min");
+    optimizerMaxDurationSpin->setValue(240);
+    optimizerMaxDurationSpin->setToolTip(
+        "Stop an optimizer batch after this time and make it available for checkpoint resume.");
+    backtestOptimizerMaxDurationSpin_ = optimizerMaxDurationSpin;
+    addOptimizerWidget(2, 4, "Max Time:", optimizerMaxDurationSpin);
+
+    auto *queueIfBusyCheck = new QCheckBox("Queue if another backtest is running", optimizerRow);
+    queueIfBusyCheck->setToolTip(
+        "Ask the Python Service API to queue this run instead of rejecting it when another backtest is active.");
+    backtestQueueIfBusyCheck_ = queueIfBusyCheck;
+    optimizerGrid->addWidget(queueIfBusyCheck, 3, 0, 1, 4);
+
     auto *scanBtn = new QPushButton("Run Optimizer", optimizerRow);
-    optimizerGrid->addWidget(scanBtn, 2, 4, 1, 2);
+    optimizerGrid->addWidget(scanBtn, 3, 4, 1, 2);
     auto updateOptimizerModeWidgets = [optimizerModeCombo, optimizerComboSizeSpin]() {
         const QString mode = optimizerModeCombo->currentData().toString().trimmed();
         optimizerComboSizeSpin->setEnabled(mode != QStringLiteral("current") && mode != QStringLiteral("off"));
@@ -1906,6 +1993,7 @@ void TradingBotWindow::populateDefaults() {
 
 void TradingBotWindow::wireSignals() {
     connect(runButton_, &QPushButton::clicked, this, &TradingBotWindow::handleRunBacktest);
+    connect(resumeBacktestButton_, &QPushButton::clicked, this, &TradingBotWindow::resumeBacktestCheckpoint);
     connect(stopButton_, &QPushButton::clicked, this, &TradingBotWindow::handleStopBacktest);
     auto importBacktestRowsToDashboard = [this](const QList<int> &targetRows) {
         if (!resultsTable_ || !dashboardOverridesTable_) {

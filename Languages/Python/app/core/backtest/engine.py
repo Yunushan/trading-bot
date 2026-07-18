@@ -28,8 +28,15 @@ class BacktestEngine:
         request: BacktestRequest,
         progress: Optional[Callable[[str], None]] = None,
         should_stop: Optional[Callable[[], bool]] = None,
+        resume_combo_offset: int = 0,
     ) -> Dict[str, object]:
-        return run_backtest(self, request, progress=progress, should_stop=should_stop)
+        return run_backtest(
+            self,
+            request,
+            progress=progress,
+            should_stop=should_stop,
+            resume_combo_offset=resume_combo_offset,
+        )
 
     def _load_klines(
         self,

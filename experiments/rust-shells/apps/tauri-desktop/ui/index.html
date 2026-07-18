@@ -565,7 +565,7 @@
       <article class="tab-panel" id="backtest" aria-label="Backtest">
         <div class="section-head">
           <div><h2>Backtest</h2><p class="muted">Backtest markets, parameters, indicators, output, scanner, and results mirrored from Python and C++.</p></div>
-          <div class="actions"><button class="action primary" id="run-backtest-btn" type="button">Run Backtest</button><button class="action" id="stop-backtest-btn" type="button">Stop</button><button class="action" id="backtest-add-selected-dashboard-btn" type="button">Add Selected to Dashboard</button><button class="action" id="backtest-add-all-dashboard-btn" type="button">Add All to Dashboard</button></div>
+          <div class="actions"><button class="action primary" id="run-backtest-btn" type="button">Run Backtest</button><button class="action" id="resume-backtest-btn" type="button" disabled title="Available after an optimizer time budget is reached">Resume Optimizer</button><button class="action" id="stop-backtest-btn" type="button">Stop</button><button class="action" id="backtest-add-selected-dashboard-btn" type="button">Add Selected to Dashboard</button><button class="action" id="backtest-add-all-dashboard-btn" type="button">Add All to Dashboard</button></div>
         </div>
         <div class="grid-3">
           <section class="panel">
@@ -1819,6 +1819,15 @@
       const state = String(payload?.state || "").toLowerCase();
       return ["accepted", "pending", "preparing", "running", "starting"].includes(state);
     };
+    const syncBacktestResumeAvailability = (payload) => {
+      const resumeButton = $("resume-backtest-btn");
+      if (!resumeButton) return;
+      const available = String(payload?.state || "").toLowerCase() === "budget_exhausted";
+      resumeButton.disabled = !available;
+      resumeButton.title = available
+        ? "Resume the saved optimizer checkpoint using current Service API credentials."
+        : "Available after an optimizer time budget is reached.";
+    };
     const pollBacktestUntilIdle = async (label, maxAttempts = 60) => {
       let latest = null;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -1832,6 +1841,7 @@
         const payload = latest.payload || {};
         const runs = backtestRunsFromPayload(payload);
         if (runs.length) renderBacktestResultsTable(runs);
+        syncBacktestResumeAvailability(payload);
         const progress = Number(payload.progress_percent);
         setText("backtest-scan-status-text", isBacktestSnapshotActive(payload) ? `Running${Number.isFinite(progress) ? ` ${formatNumber(progress, 1)}%` : ""}` : String(payload.status_message || payload.state || "Complete"));
         if (!isBacktestSnapshotActive(payload)) return latest;
@@ -3080,6 +3090,7 @@
         optimizer_max_duration_seconds: numberFrom("backtest-optimizer-max-duration", 14400),
         optimizer_mode: selectedValue("backtest-optimizer-mode") || "current",
         queue_if_busy: Boolean($("backtest-queue-if-busy")?.checked),
+        resume_checkpoint: false,
         pair_overrides: overrideRowsForRequest("backtest"),
         stop_loss: {
           enabled: Boolean($("backtest-stop-loss-enabled")?.checked),
@@ -3420,6 +3431,36 @@
           return;
         }
         const snapshot = await pollBacktestUntilIdle("Run backtest");
+        const runs = backtestRunsFromPayload(snapshot?.payload);
+        renderBacktestResultsTable(runs);
+        setText(
+          "backtest-scan-status-text",
+          String(snapshot?.payload?.status_message || snapshot?.payload?.state || `Complete (${runs.length} run(s))`)
+        );
+      } finally {
+        runButton.disabled = false;
+        if (scanButton) scanButton.disabled = false;
+      }
+    });
+    $("resume-backtest-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      const runButton = $("run-backtest-btn");
+      const resumeButton = $("resume-backtest-btn");
+      const scanButton = $("backtest-scan-symbols-btn");
+      runButton.disabled = true;
+      resumeButton.disabled = true;
+      if (scanButton) scanButton.disabled = true;
+      setText("backtest-scan-status-text", "Resuming optimizer checkpoint...");
+      try {
+        const result = await requestAndReport("Resume optimizer", "backtest_run", "POST", {
+          request: { resume_checkpoint: true },
+          source: "tauri-desktop"
+        });
+        if (!result.ok || result.payload?.accepted === false) {
+          setText("backtest-scan-status-text", result.payload?.status_message || result.error || "Optimizer resume rejected.");
+          return;
+        }
+        const snapshot = await pollBacktestUntilIdle("Resume optimizer");
         const runs = backtestRunsFromPayload(snapshot?.payload);
         renderBacktestResultsTable(runs);
         setText(

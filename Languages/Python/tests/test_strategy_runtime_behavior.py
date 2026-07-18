@@ -22,6 +22,19 @@ from app.core.strategy import StrategyEngine  # noqa: E402
 from app.core.strategy.positions.strategy_close_opposite_ledger_runtime import (  # noqa: E402
     _close_interval_side_entries,
 )
+from app.core.strategy.runtime.strategy_cycle_risk_stop_context_runtime import (  # noqa: E402
+    build_futures_stop_state,
+    ensure_futures_leg_entry_price,
+)
+from app.core.strategy.runtime.strategy_cycle_risk_stop_runtime import (  # noqa: E402
+    apply_futures_cycle_risk_management,
+)
+from app.core.strategy.runtime.strategy_cycle_risk_stop_directional_runtime import (  # noqa: E402
+    _apply_long_futures_stop,
+)
+from app.core.strategy.runtime.strategy_cycle_risk_stop_cumulative_runtime import (  # noqa: E402
+    apply_cumulative_futures_stop_management,
+)
 
 
 class _FakeStrategyBinance:
@@ -73,6 +86,75 @@ def _build_engine(*, wrapper=None, logs=None):
 
 
 class StrategyRuntimeBehaviorTests(unittest.TestCase):
+    def setUp(self):
+        StrategyEngine._GLOBAL_SHUTDOWN.clear()
+        StrategyEngine._GLOBAL_PAUSE.clear()
+        with StrategyEngine._CONNECTOR_ORDER_BLOCK_LOCK:
+            StrategyEngine._CONNECTOR_ORDER_BLOCK_EVENTS.clear()
+            StrategyEngine._CONNECTOR_ORDER_CIRCUIT_OPEN = False
+
+    def tearDown(self):
+        StrategyEngine._GLOBAL_SHUTDOWN.clear()
+        StrategyEngine._GLOBAL_PAUSE.clear()
+        with StrategyEngine._CONNECTOR_ORDER_BLOCK_LOCK:
+            StrategyEngine._CONNECTOR_ORDER_BLOCK_EVENTS.clear()
+            StrategyEngine._CONNECTOR_ORDER_CIRCUIT_OPEN = False
+
+    def test_pause_resume_and_shutdown_fail_closed_with_connector_circuit_reset(self):
+        engine = _build_engine()
+        StrategyEngine._CONNECTOR_ORDER_BLOCK_EVENTS.append({"reason": "network"})
+        StrategyEngine._CONNECTOR_ORDER_CIRCUIT_OPEN = True
+
+        StrategyEngine.pause_trading()
+        self.assertTrue(engine.stopped())
+
+        StrategyEngine.resume_trading()
+        self.assertFalse(engine.stopped())
+        self.assertEqual([], StrategyEngine._CONNECTOR_ORDER_BLOCK_EVENTS)
+        self.assertFalse(StrategyEngine._CONNECTOR_ORDER_CIRCUIT_OPEN)
+
+        StrategyEngine.pause_trading()
+        StrategyEngine.request_shutdown()
+        StrategyEngine.resume_trading()
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+        self.assertTrue(engine.stopped())
+
+    def test_network_outage_uses_bounded_backoff_and_escalates_once_when_connector_requested_close(self):
+        logs: list[str] = []
+        wrapper = _FakeStrategyBinance()
+        wrapper._network_emergency_dispatched = True
+        emergency_calls: list[dict[str, str]] = []
+
+        def trigger_emergency_close_all(**kwargs):
+            emergency_calls.append(kwargs)
+
+        wrapper.trigger_emergency_close_all = trigger_emergency_close_all
+        engine = _build_engine(wrapper=wrapper, logs=logs)
+
+        first_backoff = engine._handle_network_outage("BTCUSDT", "1m", RuntimeError("network_offline: timeout"))
+        second_backoff = engine._handle_network_outage("BTCUSDT", "1m", RuntimeError("network_offline: timeout"))
+
+        self.assertEqual(5.0, first_backoff)
+        self.assertEqual(7.5, second_backoff)
+        self.assertTrue(engine.stopped())
+        self.assertTrue(engine._emergency_close_triggered)
+        self.assertEqual(1, len(emergency_calls))
+        self.assertEqual("strategy", emergency_calls[0]["source"])
+        self.assertIn("BTCUSDT@1m connectivity lost", "\n".join(logs))
+
+    def test_emergency_close_dispatch_failure_is_recorded_while_strategy_stops(self):
+        logs: list[str] = []
+        wrapper = _FakeStrategyBinance()
+        wrapper.trigger_emergency_close_all = lambda **_kwargs: {"ok": False, "error": "connector unavailable"}
+        engine = _build_engine(wrapper=wrapper, logs=logs)
+
+        engine._trigger_emergency_close("BTCUSDT", "1m", "network outage")
+
+        self.assertTrue(engine.stopped())
+        self.assertTrue(engine._emergency_close_triggered)
+        self.assertEqual("dispatch_failed", engine._emergency_close_status)
+        self.assertIn("emergency close dispatch was rejected", "\n".join(logs))
+
     def test_engine_coerces_string_boolean_runtime_flags(self):
         wrapper = _FakeStrategyBinance()
         config = build_default_config()
@@ -85,6 +167,35 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
 
         self.assertFalse(engine._indicator_use_live_values)
         self.assertFalse(engine._indicator_reentry_requires_reset)
+
+    def test_cycle_context_fails_closed_for_string_false_and_malformed_stop_limits(self):
+        engine = _build_engine()
+        engine.config["stop_loss"] = {
+            "enabled": "false",
+            "mode": "both",
+            "scope": "per_trade",
+            "usdt": 10.0,
+            "percent": 1.0,
+        }
+
+        disabled = engine._build_cycle_context()
+
+        self.assertFalse(disabled["stop_enabled"])
+        self.assertFalse(disabled["apply_usdt_limit"])
+        self.assertFalse(disabled["apply_percent_limit"])
+
+        engine.config["stop_loss"] = {
+            "enabled": "true",
+            "mode": "both",
+            "scope": "per_trade",
+            "usdt": "not-a-number",
+            "percent": float("inf"),
+        }
+        malformed = engine._build_cycle_context()
+
+        self.assertEqual(0.0, malformed["stop_usdt_limit"])
+        self.assertEqual(0.0, malformed["stop_percent_limit"])
+        self.assertFalse(malformed["stop_enabled"])
 
     @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for strategy signal behavior tests")
     def test_generate_signal_respects_string_indicator_enabled_flags(self):
@@ -660,6 +771,351 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertFalse(state["aborted"])
         self.assertTrue(state["reduce_only"])
         self.assertAlmostEqual(2.0, state["qty_est"])
+
+    def test_close_leg_refuses_non_finite_live_quantity_without_submitting_order(self):
+        logs: list[str] = []
+        engine = _build_engine(logs=logs)
+        submitted: list[tuple[object, ...]] = []
+        engine._current_futures_position_qty = lambda *_args: float("nan")
+
+        def _submit(*args):
+            submitted.append(args)
+            return True, {"ok": True}
+
+        engine._execute_close_with_fallback = _submit
+        closed_qty = engine._close_leg_entry(
+            {"symbol": "BTCUSDT", "interval": "1m"},
+            ("BTCUSDT", "1m", "BUY"),
+            {"qty": 1.0, "ledger_id": "ledger-1"},
+            "BUY",
+            "SELL",
+            None,
+            loss_usdt=0.0,
+            price_pct=0.0,
+            margin_pct=0.0,
+        )
+
+        self.assertEqual(0.0, closed_qty)
+        self.assertEqual([], submitted)
+        self.assertIn("close refused: live quantity snapshot was not finite", "\n".join(logs))
+
+    def test_close_leg_refuses_non_finite_ledger_quantity_without_submitting_order(self):
+        engine = _build_engine()
+        submitted: list[tuple[object, ...]] = []
+        engine._current_futures_position_qty = lambda *_args: 1.0
+        engine._execute_close_with_fallback = lambda *args: submitted.append(args) or (True, {"ok": True})
+
+        closed_qty = engine._close_leg_entry(
+            {"symbol": "BTCUSDT", "interval": "1m"},
+            ("BTCUSDT", "1m", "BUY"),
+            {"qty": float("inf"), "ledger_id": "ledger-1"},
+            "BUY",
+            "SELL",
+            None,
+            loss_usdt=0.0,
+            price_pct=0.0,
+            margin_pct=0.0,
+        )
+
+        self.assertEqual(0.0, closed_qty)
+        self.assertEqual([], submitted)
+
+    def test_per_trade_stop_refuses_non_finite_market_price_without_closing(self):
+        logs: list[str] = []
+        engine = _build_engine(logs=logs)
+        close_attempts: list[tuple[object, ...]] = []
+        engine._close_leg_entry = lambda *args, **kwargs: close_attempts.append(args) or 1.0
+
+        triggered = engine._evaluate_per_trade_stop(
+            {"symbol": "BTCUSDT", "interval": "1m"},
+            ("BTCUSDT", "1m", "BUY"),
+            [{"qty": 1.0, "entry_price": 100.0}],
+            side_label="BUY",
+            last_price=float("inf"),
+            apply_usdt_limit=True,
+            apply_percent_limit=False,
+            stop_usdt_limit=1.0,
+            stop_percent_limit=0.0,
+            dual_side=False,
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual([], close_attempts)
+        self.assertIn("market price was not a positive finite value", "\n".join(logs))
+
+    def test_hedge_close_does_not_retry_another_leg_after_position_side_mismatch(self):
+        wrapper = _FakeStrategyBinance()
+        calls: list[str | None] = []
+
+        def close_futures_leg_exact(_symbol, _qty, *, side, position_side):
+            self.assertEqual("SELL", side)
+            calls.append(position_side)
+            return {"ok": False, "error": "Position side does not match"}
+
+        wrapper.close_futures_leg_exact = close_futures_leg_exact
+        engine = _build_engine(wrapper=wrapper)
+
+        ok, result = engine._execute_close_with_fallback("BTCUSDT", "SELL", 1.0, "LONG")
+
+        self.assertFalse(ok)
+        self.assertEqual(["LONG"], calls)
+        self.assertEqual("Position side does not match", result["error"])
+
+    def test_entire_account_stop_loss_triggers_verified_emergency_close(self):
+        wrapper = _FakeStrategyBinance()
+        wrapper.get_total_unrealized_pnl = lambda: -125.0
+        calls: list[tuple[object, ...]] = []
+        engine = _build_engine(wrapper=wrapper)
+        engine._trigger_emergency_close = lambda *args: calls.append(args)
+
+        triggered = engine._apply_entire_account_stop_loss(
+            ctx={
+                "cw": {"symbol": "BTCUSDT", "interval": "1m"},
+                "account_type": "FUTURES",
+                "is_entire_account": True,
+                "apply_usdt_limit": True,
+                "apply_percent_limit": False,
+                "stop_usdt_limit": 100.0,
+                "stop_percent_limit": 0.0,
+            }
+        )
+
+        self.assertTrue(triggered)
+        self.assertEqual(
+            [("BTCUSDT", "1m", "entire-account-usdt-limit (-125.00)")],
+            calls,
+        )
+
+    def test_entire_account_stop_loss_ignores_non_finite_threshold(self):
+        wrapper = _FakeStrategyBinance()
+        wrapper.get_total_unrealized_pnl = lambda: -125.0
+        calls: list[tuple[object, ...]] = []
+        engine = _build_engine(wrapper=wrapper)
+        engine._trigger_emergency_close = lambda *args: calls.append(args)
+
+        triggered = engine._apply_entire_account_stop_loss(
+            ctx={
+                "cw": {"symbol": "BTCUSDT", "interval": "1m"},
+                "account_type": "FUTURES",
+                "is_entire_account": True,
+                "apply_usdt_limit": True,
+                "apply_percent_limit": False,
+                "stop_usdt_limit": "nan",
+                "stop_percent_limit": 0.0,
+            }
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual([], calls)
+
+    def test_per_trade_stop_loss_closes_when_loss_limit_is_reached(self):
+        engine = _build_engine()
+        close_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def close_leg(*args, **kwargs):
+            close_calls.append((args, kwargs))
+            return 1.0
+
+        engine._close_leg_entry = close_leg
+        triggered = engine._evaluate_per_trade_stop(
+            {"symbol": "BTCUSDT", "interval": "1m"},
+            ("BTCUSDT", "1m", "BUY"),
+            [{"qty": 1.0, "entry_price": 100.0, "leverage": 5.0}],
+            side_label="BUY",
+            last_price=90.0,
+            apply_usdt_limit=True,
+            apply_percent_limit=False,
+            stop_usdt_limit=5.0,
+            stop_percent_limit=0.0,
+            dual_side=False,
+        )
+
+        self.assertTrue(triggered)
+        self.assertEqual(1, len(close_calls))
+        args, kwargs = close_calls[0]
+        self.assertEqual("BUY", args[3])
+        self.assertEqual("SELL", args[4])
+        self.assertEqual("per_trade_stop_loss", kwargs["reason"])
+
+    @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for stop-context tests")
+    def test_stop_context_uses_finite_dataframe_price_and_caches_exchange_positions(self):
+        wrapper = _FakeStrategyBinance()
+        wrapper.get_last_price = lambda _symbol: float("nan")
+        position_requests: list[bool] = []
+        wrapper.list_open_futures_positions = lambda: position_requests.append(True) or []
+        engine = _build_engine(wrapper=wrapper)
+        frame = pd.DataFrame({"close": [80.0, 90.0]})
+
+        state = build_futures_stop_state(engine, cw={"symbol": "BTCUSDT"}, df=frame)
+
+        self.assertEqual(90.0, state["last_price"])
+        self.assertEqual([], state["load_positions_cache"]())
+        self.assertEqual([], state["load_positions_cache"]())
+        self.assertEqual([True], position_requests)
+
+    def test_stop_context_rejects_non_finite_ledger_and_exchange_position_values(self):
+        wrapper = _FakeStrategyBinance()
+        wrapper.list_open_futures_positions = lambda: [
+            {"symbol": "BTCUSDT", "positionAmt": "nan", "entryPrice": "nan"}
+        ]
+        engine = _build_engine(wrapper=wrapper)
+        leg_key = ("BTCUSDT", "1m", "BUY")
+        engine._leg_ledger[leg_key] = {"qty": "inf", "entry_price": "nan"}
+        state = {
+            "load_positions_cache": lambda: wrapper.list_open_futures_positions(),
+        }
+
+        leg, qty, entry_price, matched = ensure_futures_leg_entry_price(
+            engine,
+            cw={"symbol": "BTCUSDT"},
+            leg_key=leg_key,
+            expect_long=True,
+            dual_side=False,
+            state=state,
+        )
+
+        self.assertEqual(0.0, qty)
+        self.assertEqual(0.0, entry_price)
+        self.assertIsNone(matched)
+        self.assertEqual("nan", leg["entry_price"])
+
+    @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for stop-cycle tests")
+    def test_futures_stop_cycle_routes_valid_leg_through_per_trade_stop_evaluation(self):
+        wrapper = _FakeStrategyBinance()
+        wrapper.get_last_price = lambda _symbol: 90.0
+        wrapper.list_open_futures_positions = lambda: []
+        engine = _build_engine(wrapper=wrapper)
+        key_long = ("BTCUSDT", "1m", "BUY")
+        key_short = ("BTCUSDT", "1m", "SELL")
+        engine._leg_ledger[key_long] = {
+            "qty": 1.0,
+            "entry_price": 100.0,
+            "entries": [{"qty": 1.0, "entry_price": 100.0}],
+        }
+        engine._purge_flat_futures_legs = lambda *_args, **_kwargs: None
+        stop_calls: list[dict[str, object]] = []
+        engine._evaluate_per_trade_stop = lambda *args, **kwargs: stop_calls.append(kwargs) or False
+
+        result = apply_futures_cycle_risk_management(
+            engine,
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            df=pd.DataFrame({"close": [90.0]}),
+            account_type="FUTURES",
+            dual_side=False,
+            key_long=key_long,
+            key_short=key_short,
+            long_open=True,
+            short_open=False,
+            stop_enabled=True,
+            apply_usdt_limit=True,
+            apply_percent_limit=False,
+            stop_usdt_limit=5.0,
+            stop_percent_limit=0.0,
+            scope="per_trade",
+            is_cumulative=False,
+        )
+
+        self.assertEqual(1, len(stop_calls))
+        self.assertEqual("BUY", stop_calls[0]["side_label"])
+        self.assertEqual(90.0, stop_calls[0]["last_price"])
+        self.assertTrue(result["long_open"])
+        self.assertFalse(result["short_open"])
+
+    def test_directional_stop_partial_fill_keeps_ledger_for_reconciliation(self):
+        logs: list[str] = []
+        wrapper = _FakeStrategyBinance()
+        wrapper.close_futures_leg_exact = lambda *_args, **_kwargs: {
+            "ok": True,
+            "executedQty": "0.25",
+        }
+        engine = _build_engine(wrapper=wrapper, logs=logs)
+        engine._compute_position_margin_fields = lambda *_args, **_kwargs: (0.0, 0.0, 0.0, 0.0)
+        removed: list[tuple[object, ...]] = []
+        engine._remove_leg_entry = lambda *args: removed.append(args)
+
+        _apply_long_futures_stop(
+            engine,
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            dual_side=False,
+            key_long=("BTCUSDT", "1m", "BUY"),
+            qty_long=1.0,
+            entry_price_long=100.0,
+            pos_long=None,
+            pos_long_qty_total=1.0,
+            apply_usdt_limit=True,
+            apply_percent_limit=False,
+            stop_usdt_limit=5.0,
+            stop_percent_limit=0.0,
+            last_price=90.0,
+        )
+
+        self.assertEqual([], removed)
+        self.assertIn("partially filled", "\n".join(logs))
+
+    def test_cumulative_stop_partial_fill_keeps_ledger_for_reconciliation(self):
+        logs: list[str] = []
+        wrapper = _FakeStrategyBinance()
+        wrapper.close_futures_leg_exact = lambda *_args, **_kwargs: {
+            "ok": True,
+            "executedQty": "0.25",
+        }
+        engine = _build_engine(wrapper=wrapper, logs=logs)
+        leg_key = ("BTCUSDT", "1m", "BUY")
+        engine._leg_ledger[leg_key] = {
+            "qty": 1.0,
+            "entry_price": 100.0,
+            "entries": [{"qty": 1.0, "entry_price": 100.0}],
+        }
+        removed: list[tuple[object, ...]] = []
+        engine._remove_leg_entry = lambda *args: removed.append(args)
+
+        triggered = apply_cumulative_futures_stop_management(
+            engine,
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            last_price=90.0,
+            dual_side=False,
+            apply_usdt_limit=True,
+            apply_percent_limit=False,
+            stop_usdt_limit=5.0,
+            stop_percent_limit=0.0,
+            state={
+                "load_positions_cache": lambda: [
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionAmt": "1",
+                        "entryPrice": "100",
+                        "isolatedWallet": "20",
+                    }
+                ]
+            },
+        )
+
+        self.assertTrue(triggered)
+        self.assertEqual([], removed)
+        self.assertIn("partially filled", "\n".join(logs))
+
+    def test_cumulative_stop_rejects_non_finite_market_price(self):
+        wrapper = _FakeStrategyBinance()
+        close_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        wrapper.close_futures_leg_exact = lambda *args, **kwargs: close_calls.append(
+            (args, kwargs)
+        ) or {"ok": True}
+        engine = _build_engine(wrapper=wrapper)
+
+        triggered = apply_cumulative_futures_stop_management(
+            engine,
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            last_price=float("nan"),
+            dual_side=False,
+            apply_usdt_limit=True,
+            apply_percent_limit=False,
+            stop_usdt_limit=5.0,
+            stop_percent_limit=0.0,
+            state={"load_positions_cache": lambda: []},
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual([], close_calls)
 
     def test_close_interval_side_entries_uses_bound_interval_helper(self):
         engine = _build_engine()

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
 import time
+
+from .strategy_cycle_risk_stop_context_runtime import _reconciled_close_qty
 
 
 def apply_cumulative_futures_stop_management(
@@ -15,6 +18,8 @@ def apply_cumulative_futures_stop_management(
     stop_percent_limit: float,
     state,
 ) -> bool:
+    if not math.isfinite(last_price) or last_price <= 0.0:
+        return False
     load_positions_cache = state.get("load_positions_cache")
     cache = load_positions_cache() if callable(load_positions_cache) else []
     totals = {
@@ -28,7 +33,7 @@ def apply_cumulative_futures_stop_management(
             pos_side = str(pos.get("positionSide") or "").upper()
             amt = float(pos.get("positionAmt") or 0.0)
             entry_px = float(pos.get("entryPrice") or 0.0)
-            if entry_px <= 0.0:
+            if not math.isfinite(amt) or not math.isfinite(entry_px) or entry_px <= 0.0:
                 continue
             if dual_side:
                 if pos_side == "LONG":
@@ -48,15 +53,15 @@ def apply_cumulative_futures_stop_management(
                     side_key = "SHORT"
                 else:
                     continue
-            if qty_pos <= 0.0:
+            if not math.isfinite(qty_pos) or qty_pos <= 0.0:
                 continue
             margin_val = float(pos.get("isolatedWallet") or 0.0)
-            if margin_val <= 0.0:
+            if not math.isfinite(margin_val) or margin_val <= 0.0:
                 margin_val = float(pos.get("initialMargin") or 0.0)
-            if margin_val <= 0.0:
+            if not math.isfinite(margin_val) or margin_val <= 0.0:
                 notional_val = abs(float(pos.get("notional") or 0.0))
                 lev = float(pos.get("leverage") or 1.0) or 1.0
-                if lev > 0.0:
+                if math.isfinite(notional_val) and math.isfinite(lev) and lev > 0.0:
                     margin_val = notional_val / lev
             if side_key == "LONG":
                 loss_val = max(0.0, (entry_px - last_price) * qty_pos)
@@ -64,7 +69,7 @@ def apply_cumulative_futures_stop_management(
                 loss_val = max(0.0, (last_price - entry_px) * qty_pos)
             totals[side_key]["qty"] += qty_pos
             totals[side_key]["loss"] += loss_val
-            totals[side_key]["margin"] += max(0.0, margin_val)
+            totals[side_key]["margin"] += max(0.0, margin_val) if math.isfinite(margin_val) else 0.0
         except Exception:
             continue
     cumulative_triggered = False
@@ -99,10 +104,20 @@ def apply_cumulative_futures_stop_management(
                 pass
             continue
         if isinstance(res, dict) and res.get("ok"):
+            closed_qty = _reconciled_close_qty(res, data["qty"])
+            if closed_qty + max(1e-9, data["qty"] * 1e-6) < data["qty"]:
+                try:
+                    self.log(
+                        f"Cumulative stop-loss close partially filled for {cw['symbol']} ({side_key}): "
+                        f"{closed_qty:.10f}/{data['qty']:.10f}; preserving ledger for reconciliation."
+                    )
+                except Exception:
+                    continue
+                continue
             latency_s = max(0.0, time.time() - start_ts)
             target_side_label = "BUY" if side_key == "LONG" else "SELL"
             payload = self._build_close_event_payload(
-                cw["symbol"], cw.get("interval"), target_side_label, data["qty"], res
+                cw["symbol"], cw.get("interval"), target_side_label, closed_qty, res
             )
             try:
                 payload["reason"] = "cumulative_stop_loss"

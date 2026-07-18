@@ -77,6 +77,8 @@ private:
     void clearBacktestSymbolIntervalPairs();
     void refreshBacktestSymbolIntervalTable();
     void startBacktest(bool optimizerRequested);
+    void resumeBacktestCheckpoint();
+    void submitServiceBacktest(const QJsonObject &request, const QString &loopInterval, const QString &startMessage);
     void setBacktestRunningUi(bool running);
     void startDashboardRuntime();
     void stopDashboardRuntime();
@@ -136,6 +138,7 @@ private:
     QLabel *backtestPnlClosedLabel_;
     QPushButton *runButton_;
     QPushButton *stopButton_;
+    QPushButton *resumeBacktestButton_ = nullptr;
     QPushButton *addSelectedBtn_;
     QPushButton *addAllBtn_;
     QComboBox *symbolSourceCombo_;
@@ -168,6 +171,8 @@ private:
     QComboBox *backtestOptimizerMetricCombo_;
     QSpinBox *backtestOptimizerComboSizeSpin_;
     QSpinBox *backtestOptimizerMinTradesSpin_;
+    QSpinBox *backtestOptimizerMaxDurationSpin_ = nullptr;
+    QCheckBox *backtestQueueIfBusyCheck_ = nullptr;
     QFutureWatcher<QJsonObject> *backtestFutureWatcher_ = nullptr;
     std::shared_ptr<std::atomic_bool> backtestStopFlag_;
     bool backtestServiceRunActive_ = false;

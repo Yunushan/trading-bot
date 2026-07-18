@@ -5,7 +5,7 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "a9e15f87add34bf94b77675f06ed7a879eeb0768a5287c0e0c00a3625d390c83";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "a7f05cb9c417a23449dc0b3c2bd392912fdb36ceebf77d1a697bdde6220c48d3";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -631,6 +631,7 @@ pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[
     "position_pct",
     "position_pct_units",
     "queue_if_busy",
+    "resume_checkpoint",
     "scan_mdd_limit",
     "scan_scope",
     "scan_top_n",

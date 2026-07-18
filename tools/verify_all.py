@@ -67,7 +67,12 @@ def _mypy_cache_dir() -> str:
     return str(Path(tempfile.gettempdir()) / "trading-bot-mypy-cache")
 
 
-def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
+def _checks(
+    root: Path,
+    *,
+    skip_slow: bool,
+    skip_promotion_evidence: bool = False,
+) -> list[Check]:
     python = _python()
     cargo = _command_path("cargo")
     node = _command_path("node")
@@ -303,6 +308,12 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
         ),
         Check("diff whitespace", ("git", "diff", "--check"), root),
     ]
+    if skip_promotion_evidence:
+        checks = [
+            check
+            for check in checks
+            if check.name != "rust native evidence import audit"
+        ]
     if not skip_slow:
         checks.insert(
             3,
@@ -558,12 +569,37 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the repository verification suite from one command.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--skip-slow", action="store_true", help="Skip the full Python test suite and source compile.")
+    parser.add_argument(
+        "--skip-promotion-evidence",
+        action="store_true",
+        help="Skip only the external clean-commit/runtime evidence import gate; all code and smoke checks still run.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Keep full stdout/stderr in JSON output.")
     args = parser.parse_args(argv)
     root = _repo_root()
-    results = [_run_check(check, verbose=args.verbose) for check in _checks(root, skip_slow=args.skip_slow)]
+    results = [
+        _run_check(check, verbose=args.verbose)
+        for check in _checks(
+            root,
+            skip_slow=args.skip_slow,
+            skip_promotion_evidence=args.skip_promotion_evidence,
+        )
+    ]
     ok = _report_ok(results)
-    report = {"ok": ok, "results": results, "remediations": _collect_remediations(results)}
+    skipped_checks = []
+    if args.skip_promotion_evidence:
+        skipped_checks.append(
+            {
+                "name": "rust native evidence import audit",
+                "reason": "requires clean-commit external runtime and release evidence",
+            }
+        )
+    report = {
+        "ok": ok,
+        "results": results,
+        "remediations": _collect_remediations(results),
+        "skipped_checks": skipped_checks,
+    }
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
@@ -586,6 +622,10 @@ def main(argv: list[str] | None = None) -> int:
             print("Recommended fixes:")
             for remediation in report["remediations"]:
                 print(f"- {remediation}")
+        if report["skipped_checks"]:
+            print("Explicitly skipped checks:")
+            for item in report["skipped_checks"]:
+                print(f"- {item['name']}: {item['reason']}")
     return 0 if ok else 1
 
 

@@ -744,8 +744,16 @@ fn close_directive(
 }
 
 fn close_position_side_attempts(close_side: &str, preferred: Option<&str>) -> Vec<Option<String>> {
+    let normalized_preferred = preferred
+        .map(|text| text.trim().to_uppercase())
+        .filter(|text| text == "LONG" || text == "SHORT");
+    if let Some(position_side) = normalized_preferred {
+        // An explicit hedge side belongs to a specific leg. Falling back to the
+        // other leg or one-way mode after a mismatch could close unrelated risk.
+        return vec![Some(position_side)];
+    }
+
     let mut attempts = Vec::new();
-    push_position_side_attempt(&mut attempts, preferred);
     let hedge_side = if close_side.trim().eq_ignore_ascii_case("BUY") {
         Some("SHORT")
     } else if close_side.trim().eq_ignore_ascii_case("SELL") {
@@ -883,6 +891,18 @@ mod tests {
     }
 
     #[test]
+    fn explicit_hedge_close_never_falls_back_to_another_position_side() {
+        assert_eq!(
+            close_position_side_attempts("SELL", Some("LONG")),
+            vec![Some("LONG".to_owned())]
+        );
+        assert_eq!(
+            close_position_side_attempts("BUY", Some("SHORT")),
+            vec![Some("SHORT".to_owned())]
+        );
+    }
+
+    #[test]
     fn runtime_order_engine_persists_guarded_order_audit_and_circuit_like_python() {
         let (audit_path, incident_path) = temp_paths("blocked");
         let mut engine = live_engine(audit_path.clone(), incident_path.clone());
@@ -966,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_loss_close_execution_uses_python_position_side_fallback_and_reconciles() {
+    fn stop_loss_close_execution_fails_closed_on_explicit_position_side_mismatch() {
         let (audit_path, incident_path) = temp_paths("stop-loss");
         let mut engine = live_engine(audit_path.clone(), incident_path);
         let directives = vec![FuturesStopCloseDirective {
@@ -987,35 +1007,23 @@ mod tests {
             &directives,
             "2026-06-18T00:00:01Z",
             "stop-loss",
-            |directive| {
+            |_directive| {
                 calls += 1;
-                if directive.position_side == "LONG" {
-                    return Err(anyhow!("Position side does not match user's setting."));
-                }
-                Ok(order_result(
-                    &directive.symbol,
-                    &directive.side,
-                    directive.quantity,
-                    &directive.position_side,
-                ))
+                Err(anyhow!("Position side does not match user's setting."))
             },
         );
 
-        assert!(result.ok);
-        assert_eq!(calls, 2);
-        assert_eq!(result.closed_qty, 2.0);
-        assert_eq!(result.remaining_qty, 0.0);
+        assert!(!result.ok);
+        assert_eq!(calls, 1);
+        assert_eq!(result.closed_qty, 0.0);
+        assert_eq!(result.remaining_qty, 2.0);
         assert_eq!(
             result.attempts[0].directive.as_ref().unwrap().position_side,
             "LONG"
         );
-        assert_eq!(
-            result.attempts[1].directive.as_ref().unwrap().position_side,
-            "SHORT"
-        );
         let audit = fs::read_to_string(&audit_path).expect("audit");
         assert!(audit.contains("order_close_failed"));
-        assert!(audit.contains("order_close_accepted"));
+        assert!(!audit.contains("order_close_accepted"));
         fs::remove_file(audit_path).ok();
     }
 

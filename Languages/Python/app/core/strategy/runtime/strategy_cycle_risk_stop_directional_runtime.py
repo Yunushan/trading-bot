@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+from .strategy_cycle_risk_stop_context_runtime import _reconciled_close_qty
+
 try:
     from ....integrations.exchanges.binance import normalize_margin_ratio
 except ImportError:  # pragma: no cover - standalone execution fallback
@@ -66,9 +68,16 @@ def _apply_long_futures_stop(
             cw["symbol"], qty_long, side="SELL", position_side=desired_ps
         )
         if isinstance(res, dict) and res.get("ok"):
+            closed_qty = _reconciled_close_qty(res, qty_long)
+            if closed_qty + max(1e-9, qty_long * 1e-6) < qty_long:
+                self.log(
+                    f"Stop-loss close partially filled for {cw['symbol']}@{cw.get('interval')} (BUY): "
+                    f"{closed_qty:.10f}/{qty_long:.10f}; preserving ledger for reconciliation."
+                )
+                return
             latency_s = max(0.0, time.time() - start_ts)
             payload = self._build_close_event_payload(
-                cw["symbol"], cw.get("interval"), "BUY", qty_long, res
+                cw["symbol"], cw.get("interval"), "BUY", closed_qty, res
             )
             try:
                 payload["reason"] = "stop_loss_long"
@@ -199,9 +208,16 @@ def _apply_short_futures_stop(
             cw["symbol"], qty_short, side="BUY", position_side=desired_ps
         )
         if isinstance(res, dict) and res.get("ok"):
+            closed_qty = _reconciled_close_qty(res, qty_short)
+            if closed_qty + max(1e-9, qty_short * 1e-6) < qty_short:
+                self.log(
+                    f"Stop-loss close partially filled for {cw['symbol']}@{cw.get('interval')} (SELL): "
+                    f"{closed_qty:.10f}/{qty_short:.10f}; preserving ledger for reconciliation."
+                )
+                return
             latency_s = max(0.0, time.time() - start_ts)
             payload = self._build_close_event_payload(
-                cw["symbol"], cw.get("interval"), "SELL", qty_short, res
+                cw["symbol"], cw.get("interval"), "SELL", closed_qty, res
             )
             try:
                 payload["reason"] = "stop_loss_short"

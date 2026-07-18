@@ -567,7 +567,7 @@ class NativeFullParityContractTests(unittest.TestCase):
             "runtime_order_engine_dry_run_audits_without_executing_or_counting_live_submit", runtime_order_engine
         )
         self.assertIn(
-            "stop_loss_close_execution_uses_python_position_side_fallback_and_reconciles", runtime_order_engine
+            "stop_loss_close_execution_fails_closed_on_explicit_position_side_mismatch", runtime_order_engine
         )
         self.assertIn("close_opposite_execution_blocks_open_until_residual_is_flat", runtime_order_engine)
         self.assertIn("runtime-owned order engine with deterministic dry-run", core)
@@ -1607,6 +1607,17 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("backtestOptimizerComboSizeSpin_", backtest_source)
         self.assertIn('request.insert(QStringLiteral("scan_scope"), scanScope)', backtest_source)
         self.assertIn('request.insert(QStringLiteral("optimizer_mode"), optimizerMode)', backtest_source)
+        self.assertIn('QStringLiteral("optimizer_max_duration_seconds")', backtest_source)
+        self.assertIn('spinValue(backtestOptimizerMaxDurationSpin_, 240) * 60', backtest_source)
+        self.assertIn('QStringLiteral("queue_if_busy")', backtest_source)
+        self.assertIn('backtestQueueIfBusyCheck_ && backtestQueueIfBusyCheck_->isChecked()', backtest_source)
+        self.assertIn('request.insert(QStringLiteral("resume_checkpoint"), false)', backtest_source)
+        self.assertIn("resumeBacktestCheckpoint", window_header)
+        self.assertIn("resumeBacktestButton_", window_header)
+        self.assertIn("backtestOptimizerMaxDurationSpin_", window_header)
+        self.assertIn("backtestQueueIfBusyCheck_", window_header)
+        self.assertIn('QStringLiteral("resume_checkpoint"), true', backtest_source)
+        self.assertIn('QStringLiteral("budget_exhausted")', backtest_source)
         self.assertIn(
             'request.insert(QStringLiteral("optimizer_metric"), comboValue(backtestOptimizerMetricCombo_',
             backtest_source,

@@ -517,6 +517,7 @@ SERVICE_BACKTEST_RUN_REQUEST_FIELDS: tuple[str, ...] = (
     "position_pct",
     "position_pct_units",
     "queue_if_busy",
+    "resume_checkpoint",
     "scan_mdd_limit",
     "scan_scope",
     "scan_top_n",

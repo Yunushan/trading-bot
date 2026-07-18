@@ -306,6 +306,7 @@ def run_backtest(
     request: BacktestRequest,
     progress=None,
     should_stop=None,
+    resume_combo_offset: int = 0,
 ) -> Dict[str, object]:
     progress = progress or (lambda _msg: None)
     source_label = (request.symbol_source or "").strip() if hasattr(request, "symbol_source") else ""
@@ -327,6 +328,11 @@ def run_backtest(
     signal_cache: SignalCache = {}
     result_collector = OptimizerTopResultCollector.from_request(request)
     processed_count = 0
+    try:
+        normalized_resume_offset = max(0, int(resume_combo_offset or 0))
+    except (TypeError, ValueError, OverflowError):
+        normalized_resume_offset = 0
+    completed_combo_count = normalized_resume_offset
     optimizer_started_at = time.monotonic()
     optimizer_budget_seconds = max(0, int(getattr(request, "optimizer_max_duration_seconds", 0) or 0))
     optimizer_deadline = (
@@ -351,7 +357,11 @@ def run_backtest(
     engine._should_stop_cb = should_stop
     try:
         source_label_lower = str(request.symbol_source or "").strip().lower()
-        for symbol, interval, override_keys, override_leverage, override_controls in iter_request_combos(request):
+        for combo_index, (symbol, interval, override_keys, override_leverage, override_controls) in enumerate(
+            iter_request_combos(request)
+        ):
+            if combo_index < normalized_resume_offset:
+                continue
             _check_execution_boundary()
             try:
                 effective_leverage = resolve_effective_leverage(
@@ -465,6 +475,7 @@ def run_backtest(
                 ):
                     raise
                 errors.append({"symbol": symbol, "interval": interval, "error": str(exc)})
+            completed_combo_count = combo_index + 1
     except _OptimizerTimeBudgetExhausted:
         budget_exhausted = True
         errors.append(
@@ -482,4 +493,10 @@ def run_backtest(
 
     if result_collector is not None:
         runs = result_collector.finish()
-    return {"runs": runs, "errors": errors, "budget_exhausted": budget_exhausted}
+    return {
+        "runs": runs,
+        "errors": errors,
+        "budget_exhausted": budget_exhausted,
+        "resume_combo_offset": normalized_resume_offset,
+        "completed_combo_count": completed_combo_count,
+    }

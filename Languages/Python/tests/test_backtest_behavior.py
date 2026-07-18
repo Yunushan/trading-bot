@@ -162,6 +162,22 @@ class BacktestBehaviorTests(unittest.TestCase):
             result["errors"][0]["error"],
         )
 
+    def test_optimizer_resume_offset_skips_completed_combinations(self):
+        df = _build_frame([100.0, 101.0, 102.0, 103.0])
+        engine = _BudgetBacktestEngine({"rsi": [50.0] * len(df)}, frame=df)
+        request = _build_request(
+            df,
+            [IndicatorDefinition(key="rsi", params={"length": 14})],
+            symbols=["BTCUSDT", "ETHUSDT"],
+        )
+
+        result = engine.run(request, resume_combo_offset=1)
+
+        self.assertFalse(result["budget_exhausted"])
+        self.assertEqual(1, result["resume_combo_offset"])
+        self.assertEqual(2, result["completed_combo_count"])
+        self.assertEqual(["ETHUSDT"], [run.symbol for run in result["runs"]])
+
     def test_compute_atr_indicator_series(self):
         df = _build_frame(
             [10.0, 12.0, 13.0, 12.0],

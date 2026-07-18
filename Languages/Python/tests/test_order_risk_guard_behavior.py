@@ -149,6 +149,46 @@ class OrderRiskGuardBehaviorTests(unittest.TestCase):
         self.assertEqual([True], abort_calls)
         self.assertTrue(any("opposite SELL still open" in item for item in logs))
 
+    def test_position_snapshot_with_non_finite_amount_is_treated_as_active(self):
+        engine = _build_engine([])
+
+        active = engine._is_futures_position_active_for_order(
+            "BTCUSDT",
+            "BUY",
+            False,
+            [{"symbol": "BTCUSDT", "positionAmt": "nan"}],
+        )
+
+        self.assertTrue(active)
+
+    def test_candidate_filter_blocks_duplicate_order_when_live_position_amount_is_non_finite(self):
+        logs: list[str] = []
+        engine = _build_engine(logs)
+        leg_key = ("BTCUSDT", "1m", "BUY")
+        engine._leg_ledger[leg_key] = {
+            "qty": 1.0,
+            "timestamp": 0.0,
+            "entries": [{"qty": 1.0, "trigger_signature": ["rsi"]}],
+        }
+
+        filtered, _cache, aborted = engine._filter_signal_order_candidates(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            orders_to_execute=[
+                {
+                    "side": "BUY",
+                    "labels": ["rsi"],
+                    "signature": ("rsi",),
+                    "indicator_key": "rsi",
+                }
+            ],
+            dual_side=False,
+            positions_cache=[{"symbol": "BTCUSDT", "positionAmt": "nan"}],
+        )
+
+        self.assertFalse(aborted)
+        self.assertEqual([], filtered)
+        self.assertTrue(any("position still active" in item for item in logs))
+
 
 if __name__ == "__main__":
     unittest.main()

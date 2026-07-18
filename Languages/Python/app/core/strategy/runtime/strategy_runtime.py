@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 import threading
 import time
 import traceback
@@ -113,6 +114,7 @@ def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
     if self._emergency_close_triggered:
         return
     self._emergency_close_triggered = True
+    self._emergency_close_status = "requested"
     try:
         self.log(f"{sym}@{interval} connectivity lost ({reason}); scheduling emergency close of all positions.")
     except Exception:
@@ -120,7 +122,15 @@ def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
     try:
         closer = getattr(self.binance, "trigger_emergency_close_all", None)
         if callable(closer):
-            closer(reason=f"{sym}@{interval}: {reason}", source="strategy")
+            dispatch_result = closer(reason=f"{sym}@{interval}: {reason}", source="strategy")
+            if isinstance(dispatch_result, dict) and dispatch_result.get("ok") is False:
+                self._emergency_close_status = "dispatch_failed"
+                self.log(
+                    f"{sym}@{interval} emergency close dispatch was rejected: "
+                    f"{dispatch_result.get('error') or dispatch_result}."
+                )
+            else:
+                self._emergency_close_status = "dispatched"
         else:
             try:
                 from app.integrations.exchanges.binance.positions.close_all_runtime import (
@@ -133,12 +143,29 @@ def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
 
             def _do_close():
                 try:
-                    close_all_futures_positions(self.binance)
-                except Exception:
-                    pass
+                    close_result = close_all_futures_positions(self.binance)
+                    failures = [
+                        item
+                        for item in close_result or []
+                        if isinstance(item, dict) and item.get("ok") is False
+                    ]
+                    if failures:
+                        self._emergency_close_status = "completed_with_failures"
+                        self.log(
+                            f"{sym}@{interval} emergency close completed with {len(failures)} failed leg(s)."
+                        )
+                    else:
+                        self._emergency_close_status = "completed"
+                except Exception as exc:
+                    self._emergency_close_status = "execution_failed"
+                    try:
+                        self.log(f"{sym}@{interval} emergency close execution failed: {exc}")
+                    except Exception:
+                        return
 
             threading.Thread(target=_do_close, name=f"EmergencyClose-{sym}@{interval}", daemon=True).start()
     except Exception as exc:
+        self._emergency_close_status = "dispatch_failed"
         try:
             self.log(f"{sym}@{interval} emergency close scheduling failed: {exc}")
         except Exception:
@@ -176,6 +203,14 @@ def _handle_network_outage(self, sym: str, interval: str, exc: Exception) -> flo
     return backoff
 
 
+def _finite_nonnegative(value: object) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return number if math.isfinite(number) and number >= 0.0 else 0.0
+
+
 def _build_cycle_context(self) -> dict[str, object] | None:
     cw = self.config
     if self.stopped():
@@ -188,12 +223,12 @@ def _build_cycle_context(self) -> dict[str, object] | None:
     stop_mode = str(stop_cfg.get("mode") or "usdt").lower()
     if stop_mode not in STOP_LOSS_MODE_ORDER:
         stop_mode = STOP_LOSS_MODE_ORDER[0]
-    stop_usdt_limit = max(0.0, float(stop_cfg.get("usdt", 0.0) or 0.0))
-    stop_percent_limit = max(0.0, float(stop_cfg.get("percent", 0.0) or 0.0))
+    stop_usdt_limit = _finite_nonnegative(stop_cfg.get("usdt", 0.0))
+    stop_percent_limit = _finite_nonnegative(stop_cfg.get("percent", 0.0))
     scope = str(stop_cfg.get("scope") or "per_trade").lower()
     if scope not in STOP_LOSS_SCOPE_OPTIONS:
         scope = STOP_LOSS_SCOPE_OPTIONS[0]
-    stop_enabled = bool(stop_cfg.get("enabled", False))
+    stop_enabled = coerce_bool(stop_cfg.get("enabled"), False)
     apply_usdt_limit = stop_enabled and stop_mode in ("usdt", "both") and stop_usdt_limit > 0.0
     apply_percent_limit = stop_enabled and stop_mode in ("percent", "both") and stop_percent_limit > 0.0
     stop_enabled = apply_usdt_limit or apply_percent_limit

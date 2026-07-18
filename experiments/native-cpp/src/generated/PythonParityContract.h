@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "a9e15f87add34bf94b77675f06ed7a879eeb0768a5287c0e0c00a3625d390c83";
+inline constexpr std::string_view kPythonSourceContractHash = "a7f05cb9c417a23449dc0b3c2bd392912fdb36ceebf77d1a697bdde6220c48d3";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -194,7 +194,7 @@ inline constexpr std::array<PythonServiceRouteSchema, 34> kPythonServiceRouteSch
     PythonServiceRouteSchema{"stream_dashboard", "log_limit,incident_limit,interval_ms,max_events", "", "event,data"},
 };
 
-inline constexpr std::array<std::string_view, 34> kPythonBacktestRunRequestFields = {
+inline constexpr std::array<std::string_view, 35> kPythonBacktestRunRequestFields = {
     "account_mode",
     "account_type",
     "api_key",
@@ -221,6 +221,7 @@ inline constexpr std::array<std::string_view, 34> kPythonBacktestRunRequestField
     "position_pct",
     "position_pct_units",
     "queue_if_busy",
+    "resume_checkpoint",
     "scan_mdd_limit",
     "scan_scope",
     "scan_top_n",

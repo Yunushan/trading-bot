@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ...core.backtest import BacktestEngine
+from ...core.backtest.optimizer_limits_runtime import MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
 from .backtest_executor_request_runtime import clean_text, rank_optimizer_runs, run_to_mapping
 from .backtest_executor_snapshot_runtime import finish_snapshots, set_running_snapshots
 
@@ -43,12 +44,18 @@ def run_backtest_thread(
             engine_request,
             progress=_progress,
             should_stop=lambda: bool(adapter._cancel_event and adapter._cancel_event.is_set()),
+            resume_combo_offset=int(summary.get("resume_combo_offset") or 0),
         )
         run_records = list(result.get("runs", []) or []) if isinstance(result, dict) else []
         budget_exhausted = bool(result.get("budget_exhausted")) if isinstance(result, dict) else False
+        if bool(summary.get("resume_checkpoint")):
+            run_records = [*list(summary.get("resume_prior_runs") or []), *run_records]
         if bool(summary.get("optimizer_enabled")):
             first_record = run_to_mapping(run_records[0]) if run_records else {}
-            if first_record.get("optimizer_rank") is not None or first_record.get("optimizer_candidate_count") is not None:
+            if (
+                not bool(summary.get("resume_checkpoint"))
+                and (first_record.get("optimizer_rank") is not None or first_record.get("optimizer_candidate_count") is not None)
+            ):
                 run_records = [run_to_mapping(run) for run in run_records]
                 run_records.sort(key=lambda row: int(row.get("optimizer_rank") or 1_000_000))
             else:
@@ -61,7 +68,10 @@ def run_backtest_thread(
                     scope=str(summary.get("optimizer_scope") or ""),
                     run_count=int(summary.get("estimated_run_count") or len(run_records)),
                 )
+            run_records = run_records[:MAX_BACKTEST_OPTIMIZER_TABLE_ROWS]
         error_records = list(result.get("errors", []) or []) if isinstance(result, dict) else []
+        if bool(summary.get("resume_checkpoint")):
+            error_records = [*list(summary.get("resume_prior_errors") or []), *error_records]
         cancelled = bool(adapter._cancel_event and adapter._cancel_event.is_set())
         if cancelled:
             message = f"Backtest session cancelled after {len(run_records)} run(s)."
@@ -81,7 +91,20 @@ def run_backtest_thread(
             adapter._runtime.record_log_event(message, source="service-backtest-executor", level="warn")
             return
         if budget_exhausted:
-            message = f"Backtest optimizer time budget reached after {len(run_records)} completed run(s)."
+            completed_combo_count = int(result.get("completed_combo_count") or 0)
+            adapter._persist_optimizer_checkpoint(
+                session_id=session_id,
+                engine_request=engine_request,
+                wrapper_kwargs=wrapper_kwargs,
+                summary=summary,
+                completed_combo_count=completed_combo_count,
+                run_records=[run_to_mapping(run) for run in run_records],
+                error_records=[dict(item) for item in error_records if isinstance(item, dict)],
+            )
+            message = (
+                f"Backtest optimizer time budget reached after {len(run_records)} completed run(s). "
+                "A credential-free checkpoint is available for an explicit resume."
+            )
             finish_snapshots(
                 adapter,
                 session_id=session_id,
@@ -114,6 +137,7 @@ def run_backtest_thread(
             progress_percent=100.0,
             action="complete",
         )
+        adapter._clear_optimizer_checkpoint()
         adapter._runtime.record_log_event(message, source="service-backtest-executor", level="info")
     except Exception as exc:
         if str(exc).lower().startswith("backtest_cancelled"):

@@ -16,6 +16,13 @@ from ...integrations.exchanges.binance import BinanceWrapper
 from ..schemas.backtest import ServiceBacktestCommandResult, build_backtest_snapshot, make_backtest_command_result
 from .backtest_executor_request_runtime import build_request, utc_now_iso
 from .backtest_executor_snapshot_runtime import set_running_snapshots
+from .backtest_checkpoint_store import (
+    delete_backtest_checkpoint_file,
+    deserialize_backtest_request,
+    load_backtest_checkpoint_file,
+    resolve_backtest_checkpoint_path,
+    write_backtest_checkpoint_file,
+)
 from .backtest_snapshot_store import load_backtest_snapshot_file, write_backtest_snapshot_file
 from .backtest_executor_worker_runtime import run_backtest_thread
 
@@ -41,6 +48,12 @@ class ServiceBacktestExecutionAdapter:
         self._current_summary: dict[str, object] = {}
         self._pending_jobs: list[dict[str, object]] = []
         self._snapshot_path = Path(snapshot_path).expanduser().resolve() if snapshot_path else None
+        self._checkpoint_path = (
+            resolve_backtest_checkpoint_path(self._snapshot_path) if self._snapshot_path is not None else None
+        )
+        self._resume_checkpoint: dict[str, object] | None = (
+            load_backtest_checkpoint_file(self._checkpoint_path) if self._checkpoint_path is not None else None
+        )
         if self._snapshot_path is not None:
             recovered = load_backtest_snapshot_file(self._snapshot_path)
             if recovered is not None:
@@ -51,6 +64,67 @@ class ServiceBacktestExecutionAdapter:
                         source="service-backtest-recovery",
                         level="warn",
                     )
+
+    def _persist_optimizer_checkpoint(
+        self,
+        *,
+        session_id: str,
+        engine_request,
+        wrapper_kwargs: dict[str, object],
+        summary: dict[str, object],
+        completed_combo_count: int,
+        run_records: list[dict[str, object]],
+        error_records: list[dict[str, object]],
+    ) -> None:
+        if self._checkpoint_path is None:
+            return
+        try:
+            write_backtest_checkpoint_file(
+                path=self._checkpoint_path,
+                session_id=session_id,
+                request=engine_request,
+                wrapper_options=wrapper_kwargs,
+                summary=summary,
+                completed_combo_count=completed_combo_count,
+                previous_runs=run_records,
+                previous_errors=error_records,
+            )
+            self._resume_checkpoint = load_backtest_checkpoint_file(self._checkpoint_path)
+        except (OSError, TypeError, ValueError) as exc:
+            self._runtime.record_log_event(
+                f"Could not persist the backtest optimizer checkpoint: {exc}",
+                source="service-backtest-executor",
+                level="warn",
+            )
+
+    def _clear_optimizer_checkpoint(self) -> None:
+        if self._checkpoint_path is not None:
+            delete_backtest_checkpoint_file(self._checkpoint_path)
+        self._resume_checkpoint = None
+
+    def _resume_workload(self) -> tuple[object, dict[str, object], dict[str, object]]:
+        checkpoint = self._resume_checkpoint
+        if checkpoint is None and self._checkpoint_path is not None:
+            checkpoint = load_backtest_checkpoint_file(self._checkpoint_path)
+        if checkpoint is None:
+            raise ValueError("No resumable optimizer checkpoint is available.")
+        request_payload = checkpoint.get("request")
+        summary_payload = checkpoint.get("summary")
+        if not isinstance(request_payload, dict) or not isinstance(summary_payload, dict):
+            raise ValueError("The optimizer checkpoint is malformed.")
+        engine_request = deserialize_backtest_request(request_payload)
+        wrapper_kwargs = dict(checkpoint.get("wrapper_options") or {})
+        config = self._runtime.config if isinstance(self._runtime.config, dict) else {}
+        for key in ("api_key", "api_secret"):
+            value = str(config.get(key) or "").strip()
+            if value:
+                wrapper_kwargs[key] = value
+        summary = dict(summary_payload)
+        summary["resume_checkpoint"] = True
+        summary["resume_combo_offset"] = max(0, int(checkpoint.get("completed_combo_count") or 0))
+        summary["resume_prior_runs"] = list(checkpoint.get("previous_runs") or [])
+        summary["resume_prior_errors"] = list(checkpoint.get("previous_errors") or [])
+        return engine_request, wrapper_kwargs, summary
 
     def _persist_backtest_snapshot(self) -> None:
         if self._snapshot_path is None:
@@ -160,8 +234,19 @@ class ServiceBacktestExecutionAdapter:
         source: str = "service",
     ) -> ServiceBacktestCommandResult:
         queue_if_busy = bool(isinstance(request_patch, dict) and request_patch.get("queue_if_busy"))
+        resume_checkpoint = bool(isinstance(request_patch, dict) and request_patch.get("resume_checkpoint"))
         with self._lock:
             running = self._is_running_unlocked()
+            if resume_checkpoint and running:
+                snapshot = self._runtime.get_backtest_snapshot()
+                return make_backtest_command_result(
+                    accepted=False,
+                    action="resume",
+                    session_id=snapshot.session_id,
+                    state=snapshot.state,
+                    status_message="Stop the active backtest before resuming an optimizer checkpoint.",
+                    source=source,
+                )
             if running and not queue_if_busy:
                 snapshot = self._runtime.get_backtest_snapshot()
                 return make_backtest_command_result(
@@ -182,7 +267,10 @@ class ServiceBacktestExecutionAdapter:
                 source=source,
             )
         try:
-            engine_request, wrapper_kwargs, summary = self._build_request(request_patch)
+            if resume_checkpoint:
+                engine_request, wrapper_kwargs, summary = self._resume_workload()
+            else:
+                engine_request, wrapper_kwargs, summary = self._build_request(request_patch)
         except Exception as exc:
             now = utc_now_iso()
             self._runtime.set_backtest_snapshot(
@@ -245,8 +333,12 @@ class ServiceBacktestExecutionAdapter:
                 engine_request=engine_request,
                 wrapper_kwargs=wrapper_kwargs,
                 summary=summary,
-                message="Backtest session accepted. Preparing market data.",
-                action="start",
+                message=(
+                    "Resuming backtest optimizer checkpoint. Preparing remaining market data."
+                    if resume_checkpoint
+                    else "Backtest session accepted. Preparing market data."
+                ),
+                action="resume" if resume_checkpoint else "start",
             )
 
         self._runtime.record_log_event(
@@ -256,10 +348,10 @@ class ServiceBacktestExecutionAdapter:
         )
         return make_backtest_command_result(
             accepted=True,
-            action="run",
+            action="resume" if resume_checkpoint else "run",
             session_id=session_id,
             state="running",
-            status_message="Backtest session accepted.",
+            status_message=("Backtest optimizer checkpoint resumed." if resume_checkpoint else "Backtest session accepted."),
             source=source,
         )
 

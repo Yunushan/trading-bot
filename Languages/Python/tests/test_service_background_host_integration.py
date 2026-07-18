@@ -206,6 +206,116 @@ class ServiceBackgroundHostIntegrationTests(unittest.TestCase):
         self.assertEqual("cancelled", snapshot["state"])
         self.assertEqual(first["session_id"], snapshot["session_id"])
 
+    def test_service_backtest_optimizer_checkpoint_resumes_after_restart(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        class _CheckpointWrapper:
+            calls: list[dict[str, object]] = []
+
+            def __init__(self, **kwargs):
+                self.__class__.calls.append(dict(kwargs))
+
+        class _CheckpointEngine:
+            def __init__(self, _wrapper):
+                pass
+
+            def run(self, _request, *, progress, should_stop, resume_combo_offset=0):
+                progress("Checkpoint test execution")
+                if should_stop():
+                    raise AssertionError("checkpoint test should not be cancelled")
+                if int(resume_combo_offset or 0) == 0:
+                    return {
+                        "runs": [
+                            {
+                                "symbol": "BTCUSDT",
+                                "interval": "1h",
+                                "trades": 3,
+                                "roi_percent": 4.0,
+                                "roi_value": 40.0,
+                                "max_drawdown_percent": 2.0,
+                            }
+                        ],
+                        "errors": [],
+                        "budget_exhausted": True,
+                        "completed_combo_count": 1,
+                    }
+                return {
+                    "runs": [
+                        {
+                            "symbol": "ETHUSDT",
+                            "interval": "1h",
+                            "trades": 4,
+                            "roi_percent": 5.0,
+                            "roi_value": 50.0,
+                            "max_drawdown_percent": 1.0,
+                        }
+                    ],
+                    "errors": [],
+                    "budget_exhausted": False,
+                    "completed_combo_count": 2,
+                }
+
+        def wait_for_state(service, expected_state: str) -> dict[str, object]:
+            deadline = time.monotonic() + 5.0
+            snapshot = service.get_backtest_snapshot().to_dict()
+            while time.monotonic() < deadline:
+                snapshot = service.get_backtest_snapshot().to_dict()
+                if snapshot["state"] == expected_state:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(expected_state, snapshot["state"])
+            return snapshot
+
+        _CheckpointWrapper.calls = []
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "service-config.json"
+            first_service = TradingBotService(
+                config={"api_key": "first-key", "api_secret": "first-secret"},
+                config_path=config_path,
+            )
+            first_service.enable_backtest_executor(wrapper_factory=_CheckpointWrapper)
+            request = {
+                "symbols": ["BTCUSDT"],
+                "intervals": ["1h"],
+                "logic": "AND",
+                "symbol_source": "Futures",
+                "capital": 1000.0,
+                "start": "2025-01-01T00:00:00",
+                "end": "2025-01-10T00:00:00",
+                "optimizer_mode": "single",
+                "indicators": [{"key": "rsi", "params": {"length": 14, "buy_value": 30, "sell_value": 70}}],
+            }
+            with patch("app.service.runners.backtest_executor_worker_runtime.BacktestEngine", _CheckpointEngine):
+                started = first_service.submit_backtest(request, source="checkpoint-test").to_dict()
+                self.assertTrue(started["accepted"])
+                exhausted = wait_for_state(first_service, "budget_exhausted")
+                self.assertEqual(1, exhausted["run_count"])
+
+                checkpoint_path = config_path.with_name("backtest-session.checkpoint.json")
+                self.assertTrue(checkpoint_path.is_file())
+                checkpoint_text = checkpoint_path.read_text(encoding="utf-8")
+                self.assertNotIn("first-key", checkpoint_text)
+                self.assertNotIn("first-secret", checkpoint_text)
+
+                restarted_service = TradingBotService(
+                    config={"api_key": "current-key", "api_secret": "current-secret"},
+                    config_path=config_path,
+                )
+                restarted_service.enable_backtest_executor(wrapper_factory=_CheckpointWrapper)
+                resumed = restarted_service.submit_backtest(
+                    {"resume_checkpoint": True},
+                    source="checkpoint-test",
+                ).to_dict()
+                self.assertTrue(resumed["accepted"])
+                self.assertEqual("resume", resumed["action"])
+                completed = wait_for_state(restarted_service, "completed")
+
+            self.assertEqual(2, completed["run_count"])
+            self.assertFalse(checkpoint_path.exists())
+            self.assertEqual("current-key", _CheckpointWrapper.calls[-1]["api_key"])
+            self.assertEqual("current-secret", _CheckpointWrapper.calls[-1]["api_secret"])
+
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_background_service_api_host_serves_embedded_service_state(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

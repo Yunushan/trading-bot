@@ -70,6 +70,27 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("Languages/Python/tools/run_python_tests.py", full_checks["python tests"].command)
         self.assertNotIn("compileall", " ".join(" ".join(check.command) for check in module._checks(REPO_ROOT, skip_slow=False)))
 
+    def test_verify_all_can_explicitly_skip_external_promotion_evidence(self):
+        module = _load_verify_all_module()
+
+        default_names = {
+            check.name
+            for check in module._checks(REPO_ROOT, skip_slow=True)
+        }
+        local_names = {
+            check.name
+            for check in module._checks(
+                REPO_ROOT,
+                skip_slow=True,
+                skip_promotion_evidence=True,
+            )
+        }
+
+        self.assertIn("rust native evidence import audit", default_names)
+        self.assertNotIn("rust native evidence import audit", local_names)
+        self.assertIn("native c++ build and tests", local_names)
+        self.assertIn("rust core tests", local_names)
+
     def test_verify_all_runtime_remediation_reports_expected_and_actual_versions(self):
         module = _load_verify_all_module()
         stdout = json.dumps(

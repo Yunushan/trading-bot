@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import time
 
@@ -201,6 +202,10 @@ def _is_futures_position_active_for_order(
             if str(pos.get("symbol") or "").upper() != symbol_norm:
                 continue
             amt = float(pos.get("positionAmt") or 0.0)
+            if not math.isfinite(amt):
+                # A malformed exchange snapshot must not be interpreted as flat;
+                # doing so could permit an unbounded duplicate opening order.
+                return True
             if dual_side:
                 pos_side = str(pos.get("positionSide") or "").upper()
                 if side_is_long and pos_side == "LONG" and amt > 1e-9:

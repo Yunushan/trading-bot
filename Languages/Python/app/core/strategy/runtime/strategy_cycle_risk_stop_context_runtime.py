@@ -1,17 +1,42 @@
 from __future__ import annotations
 
+import math
+
+
+def _finite_positive(value: object) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return number if math.isfinite(number) and number > 0.0 else 0.0
+
+
+def _reconciled_close_qty(result: object, requested_qty: float) -> float:
+    if not math.isfinite(requested_qty) or requested_qty <= 0.0:
+        return 0.0
+    if isinstance(result, dict):
+        for field in ("sent_qty", "executed_qty", "executedQty", "origQty"):
+            try:
+                quantity = float(result.get(field) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(quantity) and quantity > 0.0:
+                return min(requested_qty, quantity)
+    return requested_qty
+
 
 def build_futures_stop_state(self, *, cw, df):
     last_price = None
     try:
-        live_price = float(self.binance.get_last_price(cw["symbol"]) or 0.0)
+        live_price = _finite_positive(self.binance.get_last_price(cw["symbol"]))
         if live_price > 0.0:
             last_price = live_price
     except Exception:
         last_price = None
     if last_price is None and not df.empty:
         try:
-            last_price = float(df["close"].iloc[-1])
+            close_price = _finite_positive(df["close"].iloc[-1])
+            last_price = close_price if close_price > 0.0 else None
         except Exception:
             last_price = None
 
@@ -60,8 +85,8 @@ def ensure_futures_leg_entry_price(
     state,
 ):
     leg = self._leg_ledger.get(leg_key, {}) or {}
-    qty_val = float(leg.get("qty") or 0.0)
-    entry_px = float(leg.get("entry_price") or 0.0)
+    qty_val = _finite_positive(leg.get("qty"))
+    entry_px = _finite_positive(leg.get("entry_price"))
     matched_pos = None
     load_positions_cache = state.get("load_positions_cache")
     cache = load_positions_cache() if callable(load_positions_cache) else []
@@ -70,6 +95,8 @@ def ensure_futures_leg_entry_price(
             if str(pos.get("symbol") or "").upper() != cw["symbol"]:
                 continue
             amt = float(pos.get("positionAmt") or 0.0)
+            if not math.isfinite(amt):
+                continue
             if dual_side:
                 pos_side = str(pos.get("positionSide") or "").upper()
                 if expect_long and pos_side != "LONG":
@@ -88,7 +115,7 @@ def ensure_futures_leg_entry_price(
             matched_pos = pos
             if entry_px <= 0.0:
                 try:
-                    entry_px = float(pos.get("entryPrice") or entry_px)
+                    entry_px = _finite_positive(pos.get("entryPrice"))
                 except Exception:
                     pass
             break
