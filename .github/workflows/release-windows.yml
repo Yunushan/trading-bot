@@ -139,20 +139,49 @@ jobs:
         if: matrix.id == 'windows-arm64'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           python -m pip install --upgrade aqtinstall
           $qtOutputDir = "C:/Qt"
-          python -m aqt install-qt windows desktop 6.10.3 win64_msvc2022_arm64_cross_compiled --outputdir $qtOutputDir --modules qtwebsockets qtwebchannel qtpositioning --autodesktop
+
+          function Install-AqtPackage {
+            param([string[]]$Arguments)
+
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              & python -m aqt @Arguments
+              if ($LASTEXITCODE -eq 0) {
+                return
+              }
+              if ($attempt -lt 3) {
+                Write-Warning "aqt install failed on attempt $attempt of 3; retrying after a transient download failure."
+                Start-Sleep -Seconds (15 * $attempt)
+              }
+            }
+            throw "aqt install failed after 3 attempts: $($Arguments -join ' ')"
+          }
+
+          Install-AqtPackage @(
+            "install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_arm64_cross_compiled",
+            "--outputdir", $qtOutputDir, "--modules", "qtwebsockets", "qtwebchannel", "qtpositioning", "--autodesktop"
+          )
 
           $hostQmake = "C:/Qt/6.10.3/msvc2022_64/bin/qmake.exe"
           if (!(Test-Path $hostQmake)) {
-            python -m aqt install-qt windows desktop 6.10.3 win64_msvc2022_64 --outputdir $qtOutputDir --archives qtbase qttools
+            Install-AqtPackage @(
+              "install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_64",
+              "--outputdir", $qtOutputDir, "--archives", "qtbase", "qttools"
+            )
           }
 
-          $qtArm64Bin = "C:/Qt/6.10.3/msvc2022_arm64/bin"
+          $qtArm64BinCandidates = @(
+            "C:/Qt/6.10.3/msvc2022_arm64/bin",
+            "C:/Qt/6.10.3/msvc2022_arm64_cross_compiled/bin"
+          )
           $qtHostBin = "C:/Qt/6.10.3/msvc2022_64/bin"
 
-          if (Test-Path $qtArm64Bin) {
-            $qtArm64Bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          foreach ($qtArm64Bin in $qtArm64BinCandidates) {
+            if (Test-Path $qtArm64Bin) {
+              $qtArm64Bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            }
           }
           if (Test-Path $qtHostBin) {
             $qtHostBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -162,11 +191,13 @@ jobs:
         shell: pwsh
         run: |
           if ("${{ matrix.id }}" -eq "windows-arm64") {
-            $qtPrefix = "C:/Qt/6.10.3/msvc2022_arm64"
-            $qtConfig = Join-Path $qtPrefix "lib/cmake/Qt6/Qt6Config.cmake"
-            if (!(Test-Path $qtConfig)) {
-              throw "Qt6Config.cmake not found for ARM64 kit at $qtConfig"
+            $qtConfigCandidates = Get-ChildItem -Path "C:/Qt/6.10.3" -Recurse -Filter "Qt6Config.cmake" -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match "msvc2022_arm64(_cross_compiled)?[\\/]lib[\\/]cmake[\\/]Qt6[\\/]Qt6Config\\.cmake$" }
+            $qtConfig = $qtConfigCandidates | Select-Object -First 1
+            if ($null -eq $qtConfig) {
+              throw "Qt6Config.cmake was not found in the installed ARM64 kit under C:/Qt/6.10.3."
             }
+            $qtPrefix = Split-Path (Split-Path (Split-Path (Split-Path $qtConfig.FullName -Parent) -Parent) -Parent) -Parent
             $qtHostPath = "C:/Qt/6.10.3/msvc2022_64"
             if (Test-Path (Join-Path $qtHostPath "bin/qmake.exe")) {
               "QT_HOST_PATH=$qtHostPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

@@ -225,6 +225,28 @@ jobs:
           rm -rf "${install_prefix}"
           cmake --install "build/binance_cpp" --config Release --prefix "${install_prefix}"
 
+      - name: Deploy macOS Qt frameworks
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_bundle="${GITHUB_WORKSPACE}/release/Trading-Bot-C++/Trading-Bot-C++.app"
+          qt_prefix="$(qmake -query QT_INSTALL_PREFIX)"
+          macdeployqt="${qt_prefix}/bin/macdeployqt"
+          if [[ ! -x "${macdeployqt}" ]]; then
+            echo "macdeployqt was not found at ${macdeployqt}" >&2
+            exit 1
+          fi
+          if [[ ! -d "${app_bundle}" ]]; then
+            echo "Packaged C++ app bundle was not found at ${app_bundle}" >&2
+            exit 1
+          fi
+          "${macdeployqt}" "${app_bundle}" -always-overwrite
+          if [[ ! -d "${app_bundle}/Contents/Frameworks/QtConcurrent.framework" ]]; then
+            echo "macdeployqt did not embed QtConcurrent.framework in ${app_bundle}" >&2
+            exit 1
+          fi
+
       - name: Smoke packaged native binaries
         shell: bash
         run: |
