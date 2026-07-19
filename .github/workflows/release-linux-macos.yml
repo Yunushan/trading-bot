@@ -209,7 +209,8 @@ jobs:
                 -B "build/binance_cpp" \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DQt6_DIR="${QT_CMAKE_DIR}" \
-                -DTB_REQUIRE_QT_WEBENGINE=ON
+                -DTB_REQUIRE_QT_WEBENGINE=ON \
+                -DTB_ENABLE_QT_DEPLOY_SCRIPT=OFF
 
       - name: Build C++ binary
         shell: bash
@@ -241,9 +242,14 @@ jobs:
             echo "Packaged C++ app bundle was not found at ${app_bundle}" >&2
             exit 1
           fi
-          "${macdeployqt}" "${app_bundle}" -always-overwrite
+          "${macdeployqt}" "${app_bundle}" -always-overwrite "-libpath=${qt_prefix}/lib"
           if [[ ! -d "${app_bundle}/Contents/Frameworks/QtConcurrent.framework" ]]; then
             echo "macdeployqt did not embed QtConcurrent.framework in ${app_bundle}" >&2
+            exit 1
+          fi
+          cpp_bin="${app_bundle}/Contents/MacOS/Trading-Bot-C++"
+          if ! otool -l "${cpp_bin}" | grep -Fq "@executable_path/../Frameworks"; then
+            echo "macOS app binary is missing the embedded-framework LC_RPATH." >&2
             exit 1
           fi
 

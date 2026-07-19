@@ -1699,7 +1699,10 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', macos_release_workflow)
         self.assertIn("Deploy macOS Qt frameworks", macos_release_workflow)
         self.assertIn('"${macdeployqt}" "${app_bundle}" -always-overwrite', macos_release_workflow)
+        self.assertIn('"-libpath=${qt_prefix}/lib"', macos_release_workflow)
+        self.assertIn("-DTB_ENABLE_QT_DEPLOY_SCRIPT=OFF", macos_release_workflow)
         self.assertIn("QtConcurrent.framework", macos_release_workflow)
+        self.assertIn("embedded-framework LC_RPATH", macos_release_workflow)
         self.assertLess(
             macos_release_workflow.index("Deploy macOS Qt frameworks"),
             macos_release_workflow.index("Smoke packaged native binaries"),
@@ -1708,6 +1711,10 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("function Install-AqtPackage", windows_release_workflow)
         self.assertIn("aqt install failed after 3 attempts", windows_release_workflow)
         self.assertIn("msvc2022_arm64(_cross_compiled)?", windows_release_workflow)
+        native_cpp_cmake = (REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('INSTALL_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-freebsd.yml"])
         for workflow_name in ("release-linux-macos.yml", "release-freebsd.yml"):
             workflow = workflows[workflow_name]

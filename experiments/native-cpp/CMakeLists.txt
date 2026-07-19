@@ -301,8 +301,14 @@ if (BUILD_TESTING)
 endif()
 
 if (APPLE)
-    # Produce a native .app bundle on macOS so deployment tooling can package Qt frameworks.
-    set_target_properties(binance_backtest_tab PROPERTIES MACOSX_BUNDLE TRUE)
+    # Keep the installed app self-contained. macdeployqt copies frameworks into this
+    # location and resolves @rpath references through the executable's bundle path.
+    set_target_properties(
+        binance_backtest_tab
+        PROPERTIES
+            MACOSX_BUNDLE TRUE
+            INSTALL_RPATH "@executable_path/../Frameworks"
+    )
 endif()
 
 install(
