@@ -1703,6 +1703,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("-DTB_ENABLE_QT_DEPLOY_SCRIPT=OFF", macos_release_workflow)
         self.assertIn("QtConcurrent.framework", macos_release_workflow)
         self.assertIn("embedded-framework LC_RPATH", macos_release_workflow)
+        self.assertNotIn("mapfile -t artifacts", macos_release_workflow)
+        self.assertIn("while IFS= read -r artifact", macos_release_workflow)
+        self.assertIn('artifacts+=("${artifact}")', macos_release_workflow)
         self.assertLess(
             macos_release_workflow.index("Deploy macOS Qt frameworks"),
             macos_release_workflow.index("Smoke packaged native binaries"),
@@ -1711,6 +1714,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("function Install-AqtPackage", windows_release_workflow)
         self.assertIn("aqt install failed after 3 attempts", windows_release_workflow)
         self.assertIn("msvc2022_arm64(_cross_compiled)?", windows_release_workflow)
+        self.assertNotIn('"qtpositioning", "--autodesktop"', windows_release_workflow)
         native_cpp_cmake = (REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt").read_text(
             encoding="utf-8"
         )

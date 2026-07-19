@@ -295,7 +295,10 @@ jobs:
         run: |
           set -euo pipefail
           manifest="release/release-manifest-${{ matrix.id }}.json"
-          mapfile -t artifacts < <(find release -maxdepth 1 -type f ! -name 'release-manifest-*.json' -print)
+          artifacts=()
+          while IFS= read -r artifact; do
+            artifacts+=("${artifact}")
+          done < <(find release -maxdepth 1 -type f ! -name 'release-manifest-*.json' -print)
           if [[ "${#artifacts[@]}" -eq 0 ]]; then
             echo "No release artifacts were found to include in the digest manifest." >&2
             exit 1
