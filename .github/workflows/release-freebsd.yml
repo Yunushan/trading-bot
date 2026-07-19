@@ -34,7 +34,8 @@ jobs:
           python3 tools/check_release_qa.py \
             --tag "${{ github.ref_name }}" \
             --note "docs/release-qa/${{ github.ref_name }}.md" \
-            --require-current-revision
+            --require-current-revision \
+            --allow-release-qa-commit
 
       - name: Refresh README LOC snapshot
         shell: bash

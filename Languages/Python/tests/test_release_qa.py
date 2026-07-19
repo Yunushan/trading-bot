@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -58,6 +60,21 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("QA note Outcome must be approved", issues)
         self.assertIn("QA note must record a completed Release package check", issues)
 
+    def test_release_qa_commit_mode_requires_a_current_revision(self):
+        checker = _load_checker()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit) as error:
+                checker.main(
+                    [
+                        "--tag",
+                        "v1.2.3",
+                        "--note",
+                        "docs/release-qa/v1.2.3.md",
+                        "--allow-release-qa-commit",
+                    ]
+                )
+        self.assertEqual(2, error.exception.code)
+
     def test_tagged_release_workflows_require_versioned_qa_note(self):
         for workflow_name in RELEASE_WORKFLOWS:
             with self.subTest(workflow=workflow_name):
@@ -67,6 +84,7 @@ class ReleaseQaTests(unittest.TestCase):
                 self.assertIn("tools/check_release_qa.py", workflow)
                 self.assertIn("docs/release-qa/${{ github.ref_name }}.md", workflow)
                 self.assertIn("--require-current-revision", workflow)
+                self.assertIn("--allow-release-qa-commit", workflow)
 
     def test_split_release_workflows_use_job_scoped_permissions(self):
         for workflow_name in ("release-windows.yml", "release-linux-macos.yml"):

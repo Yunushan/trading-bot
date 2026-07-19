@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -66,6 +67,42 @@ def validate_release_qa_note(
     return issues
 
 
+def _release_qa_parent_revision(note: Path, release_revision: str) -> tuple[str, list[str]]:
+    """Return the tested parent revision for a metadata-only tagged QA commit."""
+
+    try:
+        repository = Path(
+            subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        ).resolve()
+        relative_note = note.resolve().relative_to(repository).as_posix()
+        parent = subprocess.run(
+            ["git", "rev-parse", f"{release_revision}^"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        changed_files = subprocess.run(
+            ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", release_revision],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError) as error:
+        return "", [f"could not inspect tagged release QA commit: {error}"]
+
+    if changed_files != [relative_note]:
+        return "", [
+            "a release QA metadata commit must change only its versioned QA note "
+            f"({relative_note}); found: {', '.join(changed_files) or '<none>'}"
+        ]
+    return parent, []
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate the versioned manual QA record required before release publication.",
@@ -77,16 +114,31 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Require Source revision to match the GitHub Actions GITHUB_SHA environment variable.",
     )
+    parser.add_argument(
+        "--allow-release-qa-commit",
+        action="store_true",
+        help=(
+            "Allow a tag to target a metadata-only QA commit whose note records its "
+            "immediately preceding tested product revision."
+        ),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
     revision = os.environ.get("GITHUB_SHA", "") if args.require_current_revision else ""
+    if args.allow_release_qa_commit and not args.require_current_revision:
+        parser.error("--allow-release-qa-commit requires --require-current-revision")
     if args.require_current_revision and not REVISION_PATTERN.fullmatch(revision):
         print("error: GITHUB_SHA must contain the 40-character release commit SHA", file=sys.stderr)
         return 2
-    issues = validate_release_qa_note(args.note, tag=args.tag, source_revision=revision)
+    issues: list[str] = []
+    if args.allow_release_qa_commit:
+        revision, metadata_issues = _release_qa_parent_revision(args.note, revision)
+        issues.extend(metadata_issues)
+    issues.extend(validate_release_qa_note(args.note, tag=args.tag, source_revision=revision))
     if issues:
         for issue in issues:
             print(f"error: {issue}", file=sys.stderr)

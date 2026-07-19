@@ -26,14 +26,16 @@ Tauri is the only Rust desktop shell release target unless another Rust shell is
 
 ## Release preflight
 
-Create a versioned QA note from `docs/release-qa/TEMPLATE.md` before creating a
-tag. The note must use the future tag as its filename, record the exact commit
-SHA, date, accountable operator, approved outcome, and all four completed
-checks. Tagged Windows, Linux, and macOS release workflows reject publication
-when this record is absent or does not match `GITHUB_SHA`.
+Create a versioned QA note from `docs/release-qa/TEMPLATE.md` after committing
+the tested product changes. The note must use the future tag as its filename,
+record that tested product commit SHA, date, accountable operator, approved
+outcome, and all four completed checks. Commit only this QA note, then tag that
+metadata-only commit. Tagged Windows, Linux, and macOS release workflows reject
+publication unless the note records the immediate parent revision and the tagged
+commit changes only that versioned note.
 
-Validate the note locally before tagging. Replace the SHA with the exact commit
-that will receive the tag:
+Validate the note locally before tagging. Replace the SHA with the tested
+product commit, which will be the parent of the QA-note commit:
 
 ```bash
 python tools/check_release_qa.py --tag v1.0.0 --note docs/release-qa/v1.0.0.md
@@ -73,16 +75,18 @@ python tools/release_smoke.py --python-command "python" --skip-full-tests --manu
 
 ## Release steps
 
-1. Commit and push your source changes.
-2. Create and push a version tag:
+1. Commit and push your tested source changes.
+2. Create, validate, commit, and push the versioned QA note as a metadata-only
+   commit.
+3. Create and push a version tag on that QA-note commit:
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-3. Open the Actions tab and wait for release workflows to finish.
-4. Check the new GitHub Release assets, including:
+4. Open the Actions tab and wait for release workflows to finish.
+5. Check the new GitHub Release assets, including:
    - `Trading-Bot-Python-*`
    - `Trading-Bot-C++-*`
    - `Trading-Bot-Rust-*`
@@ -90,7 +94,7 @@ git push origin v1.0.0
    - Linux, macOS, and FreeBSD artifacts from their respective workflows
    - Per-platform `release-manifest-*.json` SHA-256 manifests and
      `release-sbom-*.spdx.json` software bills of materials
-5. Verify the published release automatically:
+6. Verify the published release automatically:
 
 ```bash
 python tools/check_release_assets.py v1.0.30
