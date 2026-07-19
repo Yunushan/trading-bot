@@ -259,11 +259,7 @@ jobs:
             --env BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789 \
             --env BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1 \
             "$image"
-          cleanup() {
-            docker logs "$container" || true
-            docker stop "$container" || true
-          }
-          trap cleanup EXIT
+          trap 'docker logs "$container" || true; docker stop "$container" || true' EXIT
           for _ in {1..30}; do
             if curl --fail --silent --show-error http://127.0.0.1:18000/readyz >/dev/null; then
               exit 0

@@ -13,7 +13,8 @@ from pathlib import Path
 SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
 DEFAULT_PYTHON_VERSION = "3.14"
 PYTHON_REQUIRES = ">=3.10,<3.15"
-DOCKER_PYTHON_IMAGE = "python:3.14.6-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30"
+DOCKER_PYTHON_BUILDER_IMAGE = "cgr.dev/chainguard/python:latest-dev@sha256:31d318170df60ddec4b04ed595cbe79c33eeb2cf94f9676db6f9eaf46542e6be"
+DOCKER_PYTHON_RUNTIME_IMAGE = "cgr.dev/chainguard/python:latest@sha256:2c6a2e8bdeb1336cd8545d3586d1c1e5b4f7564ef00924b0447ebfbe57a549ee"
 WINDOWS_BOOTSTRAP_PYTHON_VERSION = "3.14.5"
 
 
@@ -65,8 +66,9 @@ def _check_default_version(root: Path) -> list[str]:
 def _check_deployment_versions(root: Path) -> list[str]:
     issues: list[str] = []
     dockerfile = _read(root / "docker" / "backend.Dockerfile")
-    if f"FROM {DOCKER_PYTHON_IMAGE}" not in dockerfile:
-        issues.append(f"docker backend must use the pinned base image {DOCKER_PYTHON_IMAGE!r}")
+    for image in (DOCKER_PYTHON_BUILDER_IMAGE, DOCKER_PYTHON_RUNTIME_IMAGE):
+        if f"FROM {image}" not in dockerfile:
+            issues.append(f"docker backend must use the pinned base image {image!r}")
 
     launcher = _read(root / "Languages" / "Python" / "Trading-Bot-Python.bat")
     expected_installer = (

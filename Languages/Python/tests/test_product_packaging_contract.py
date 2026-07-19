@@ -662,22 +662,27 @@ class ProductPackagingContractTests(unittest.TestCase):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "FROM python:3.14.6-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30",
+            "FROM cgr.dev/chainguard/python:latest-dev@sha256:31d318170df60ddec4b04ed595cbe79c33eeb2cf94f9676db6f9eaf46542e6be AS builder",
             dockerfile,
         )
-        self.assertIn("COPY apps/service-api /app/apps/service-api", dockerfile)
-        self.assertIn("COPY apps/web-dashboard /app/apps/web-dashboard", dockerfile)
+        self.assertIn(
+            "FROM cgr.dev/chainguard/python:latest@sha256:2c6a2e8bdeb1336cd8545d3586d1c1e5b4f7564ef00924b0447ebfbe57a549ee",
+            dockerfile,
+        )
+        self.assertIn("COPY --chown=65532:65532 apps/service-api /app/apps/service-api", dockerfile)
+        self.assertIn("COPY --chown=65532:65532 apps/web-dashboard /app/apps/web-dashboard", dockerfile)
         self.assertIn("COPY Languages/Python/pyproject.toml Languages/Python/README.md", dockerfile)
-        self.assertIn("COPY Languages/Python/app /app/Languages/Python/app", dockerfile)
-        self.assertIn("COPY Languages/Python/trading_core /app/Languages/Python/trading_core", dockerfile)
+        self.assertIn("COPY --chown=65532:65532 Languages/Python/app /app/Languages/Python/app", dockerfile)
+        self.assertIn("COPY --chown=65532:65532 Languages/Python/trading_core /app/Languages/Python/trading_core", dockerfile)
         self.assertNotIn("COPY Languages/Python /app/Languages/Python", dockerfile)
         self.assertIn("# syntax=docker/dockerfile:1.7", dockerfile)
         self.assertIn("--mount=type=secret,id=pip_ca,required=false", dockerfile)
         self.assertIn("PIP_CERT=/run/secrets/pip_ca", dockerfile)
         self.assertIn('python -m pip install --upgrade "pip==26.1.2"', dockerfile)
-        self.assertIn('CMD ["python", "apps/service-api/main.py"', dockerfile)
-        self.assertIn("useradd --create-home --uid 10001", dockerfile)
-        self.assertIn("USER tradingbot", dockerfile)
+        self.assertIn('ENTRYPOINT ["/opt/venv/bin/python"]', dockerfile)
+        self.assertIn('CMD ["apps/service-api/main.py"', dockerfile)
+        self.assertIn("USER 65532", dockerfile)
+        self.assertIn("apk add --no-cache build-base linux-headers", dockerfile)
         self.assertIn("Build and health-check Python 3.14 service container", ci_workflow)
         self.assertIn("docker build --pull --file docker/backend.Dockerfile", ci_workflow)
         self.assertIn("http://127.0.0.1:18000/readyz", ci_workflow)

@@ -55,13 +55,14 @@ Every third-party action in the CI and release workflows is pinned to an
 immutable commit. Dependabot proposes reviewed upgrades rather than allowing a
 mutable action tag to change behavior during a security scan or release.
 
-The service Dockerfile also pins its multi-platform Python base image by OCI
-digest. The Docker Dependabot entry proposes deliberate base-image refreshes;
-do not replace the pinned `python:3.14.6-slim-bookworm` digest with a mutable
-tag. Bookworm is selected deliberately instead of the default Slim/Trixie
-line so the image is based on Debian's stable security-maintenance channel. The image
-bootstrap also pins `pip` 26.1.2 rather than upgrading to an unreviewed latest
-version during a container build.
+The service Dockerfile pins both its Chainguard Python builder and distroless
+Wolfi runtime images by OCI digest. The Docker Dependabot entry proposes
+deliberate base-image refreshes; do not replace either digest with a mutable
+tag. Dependencies are installed in the `-dev` builder, while the production
+stage copies only the virtual environment into the unprivileged runtime image.
+This removes package-manager and compiler tooling from the release image. The
+image bootstrap also pins `pip` 26.1.2 rather than upgrading to an unreviewed
+latest version during a container build.
 
 For a hard local setup gate, use:
 
