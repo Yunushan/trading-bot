@@ -1697,5 +1697,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("Trading Bot Tauri packaged smoke passed", tauri_main)
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-linux-macos.yml"])
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-freebsd.yml"])
+        for workflow_name in ("release-linux-macos.yml", "release-freebsd.yml"):
+            workflow = workflows[workflow_name]
+            self.assertIn("bash Languages/Python/tools/build_binary.sh", workflow)
+            self.assertNotIn("chmod +x Languages/Python/tools/build_binary.sh", workflow)
+        self.assertIn("bash .github/scripts/package_linux_macos_release.sh", workflows["release-linux-macos.yml"])
+        self.assertNotIn("chmod +x .github/scripts/package_linux_macos_release.sh", workflows["release-linux-macos.yml"])
         for workflow in workflows.values():
             self.assertNotIn("tools/update_loc_snapshot.py", workflow)

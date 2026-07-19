@@ -181,8 +181,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x Languages/Python/tools/build_binary.sh
-          Languages/Python/tools/build_binary.sh \
+          bash Languages/Python/tools/build_binary.sh \
             --python python \
             --name Trading-Bot-Python \
             --skip-dependency-install \
@@ -261,8 +260,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x .github/scripts/package_linux_macos_release.sh
-          .github/scripts/package_linux_macos_release.sh
+          bash .github/scripts/package_linux_macos_release.sh
 
       - name: Write and verify artifact digest manifest
         shell: bash

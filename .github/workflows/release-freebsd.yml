@@ -64,8 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x Languages/Python/tools/build_binary.sh
-          Languages/Python/tools/build_binary.sh \
+          bash Languages/Python/tools/build_binary.sh \
             --python python3 \
             --name Trading-Bot-Python \
             --skip-dependency-install \
