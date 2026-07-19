@@ -85,6 +85,7 @@ class ReleaseQaTests(unittest.TestCase):
                 self.assertIn("docs/release-qa/${{ github.ref_name }}.md", workflow)
                 self.assertIn("--require-current-revision", workflow)
                 self.assertIn("--allow-release-qa-commit", workflow)
+                self.assertIn("fetch-depth: 2", workflow)
 
     def test_split_release_workflows_use_job_scoped_permissions(self):
         for workflow_name in ("release-windows.yml", "release-linux-macos.yml"):
