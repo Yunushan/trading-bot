@@ -110,12 +110,6 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      - name: Refresh README LOC snapshot
-        shell: bash
-        run: |
-          set -euo pipefail
-          python tools/update_loc_snapshot.py --readme README.md
-
       - name: Install Linux packaging dependencies
         if: matrix.platform == 'linux'
         shell: bash

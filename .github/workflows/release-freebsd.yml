@@ -39,12 +39,6 @@ jobs:
             --require-current-revision \
             --allow-release-qa-commit
 
-      - name: Refresh README LOC snapshot
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 tools/update_loc_snapshot.py --readme README.md
-
       - name: Validate FreeBSD runner prerequisites
         shell: bash
         run: |

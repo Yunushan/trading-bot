@@ -117,11 +117,6 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      - name: Refresh README LOC snapshot
-        shell: pwsh
-        run: |
-          python tools/update_loc_snapshot.py --readme README.md
-
       - name: Set up MSVC toolchain
         if: matrix.msvc_arch != ''
         uses: TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c # v4.0.0

@@ -1695,3 +1695,5 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("Trading Bot Tauri packaged smoke passed", tauri_main)
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-linux-macos.yml"])
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-freebsd.yml"])
+        for workflow in workflows.values():
+            self.assertNotIn("tools/update_loc_snapshot.py", workflow)
