@@ -67,6 +67,11 @@ def _market_smoke_suite_results(symbol: str = "BTCUSDT") -> list[dict[str, objec
         {"name": "fetch_klines", "status": "passed", "observed_count": 10},
         {"name": "fetch_ticker_price", "status": "passed", "symbol": symbol},
         {
+            "name": "native_runtime_rest_kline_ingestion",
+            "status": "passed",
+            "poll_status": "rest_closed_kline",
+        },
+        {
             "name": "native_runtime_read_only_market_cycle",
             "status": "passed",
             "stream_connected": True,
@@ -5314,6 +5319,40 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("abc123", payload["commit"])
         self.assertEqual([], result["source_control_write_guard"]["non_generated_in_repo_write_targets"])
 
+    def test_release_platform_probe_reports_failed_suite_diagnostics(self):
+        target = {
+            "id": "ubuntu-24_04-x64",
+            "kind": "platform",
+            "test_suites": ["native-build-smoke"],
+        }
+        suite_results = [
+            {
+                "name": "native-build-smoke",
+                "status": "failed",
+                "returncode": 2,
+                "stderr": "release build failed",
+                "stdout": "build output",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "release-platform-evidence" / "ubuntu-24_04-x64.json"
+            with (
+                patch.object(release_platform_probe, "_suite_results", return_value=suite_results),
+                patch.object(release_platform_probe, "_current_git_commit", return_value="abc123"),
+                patch.object(release_platform_probe, "_source_tree_clean", return_value=True),
+                patch.object(
+                    release_platform_probe,
+                    "native_python_source_contract_hash",
+                    return_value=PYTHON_SOURCE_CONTRACT_HASH,
+                ),
+            ):
+                result = release_platform_probe._run_probe(target, output=output, root=root)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(suite_results, result["failed_suites"])
+
     def test_release_platform_probe_refuses_in_repo_nongenerated_output_before_running_suites(self):
         target = {
             "id": "ubuntu-24_04-x64",
@@ -6394,6 +6433,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             )
 
             market_payload["suite_results"] = _market_smoke_suite_results()
+            market_payload["suite_results"][3]["poll_status"] = "unknown"
+            market_path.write_text(json.dumps(market_payload), encoding="utf-8")
+            invalid_rest_kline_observation = runtime_evidence.validate(
+                runtime_evidence.DEFAULT_MANIFEST_PATH,
+                require_evidence=True,
+                evidence_dir_override=evidence_dir,
+                requirement_ids={market_id},
+            )
+
+            market_payload["suite_results"] = _market_smoke_suite_results()
             market_payload["suite_results"][-1]["computed_indicator_keys"] = []
             market_path.write_text(json.dumps(market_payload), encoding="utf-8")
             missing_native_rsi = runtime_evidence.validate(
@@ -6489,6 +6538,13 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(missing_market_suite["ok"])
         self.assertTrue(
             any("missing live-smoke suite results: fetch_klines" in issue for issue in missing_market_suite["issues"])
+        )
+        self.assertFalse(invalid_rest_kline_observation["ok"])
+        self.assertTrue(
+            any(
+                "suite_results[native_runtime_rest_kline_ingestion].poll_status must be rest_closed_kline" in issue
+                for issue in invalid_rest_kline_observation["issues"]
+            )
         )
         self.assertFalse(missing_native_rsi["ok"])
         self.assertTrue(

@@ -685,11 +685,21 @@ def _run_probe(target: dict[str, Any], *, output: Path, root: Path) -> dict[str,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    failed_suites = [
+        {
+            key: item[key]
+            for key in ("name", "status", "returncode", "stderr", "stdout")
+            if key in item
+        }
+        for item in suite_results
+        if item.get("status") != "passed"
+    ]
     return {
         "ok": ok,
         "target_id": payload["target_id"],
         "output": str(output),
         "source_control_write_guard": source_control_write_guard,
+        "failed_suites": failed_suites,
     }
 
 

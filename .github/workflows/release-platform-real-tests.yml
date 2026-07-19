@@ -263,11 +263,12 @@ jobs:
             --target-filter "${{ matrix.target.target_id }}"
 
       - name: Upload target evidence
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-platform-evidence-${{ matrix.target.target_id }}
           path: release-platform-evidence/${{ matrix.target.target_id }}.json
-          if-no-files-found: error
+          if-no-files-found: warn
 
   full-evidence-gate:
     name: Full Evidence Gate

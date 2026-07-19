@@ -81,6 +81,7 @@ EXPECTED_LIVE_SMOKE_SUITE_RESULTS: dict[str, set[str]] = {
         "fetch_usdt_symbols",
         "fetch_klines",
         "fetch_ticker_price",
+        "native_runtime_rest_kline_ingestion",
         "native_runtime_read_only_market_cycle",
     },
     "rust-native-live-account-read-smoke": {
@@ -604,6 +605,11 @@ def _validate_live_smoke_suite_evidence(
         ticker_row = rows_by_name.get("fetch_ticker_price")
         if ticker_row is not None and not str(ticker_row.get("symbol") or "").strip():
             issues.append(f"{artifact_path} suite_results[fetch_ticker_price].symbol is required")
+        rest_kline_row = rows_by_name.get("native_runtime_rest_kline_ingestion")
+        if rest_kline_row is not None and rest_kline_row.get("poll_status") != "rest_closed_kline":
+            issues.append(
+                f"{artifact_path} suite_results[native_runtime_rest_kline_ingestion].poll_status must be rest_closed_kline"
+            )
         market_cycle_row = rows_by_name.get("native_runtime_read_only_market_cycle")
         if market_cycle_row is not None:
             if market_cycle_row.get("stream_connected") is not True:
