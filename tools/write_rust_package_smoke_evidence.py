@@ -79,13 +79,19 @@ def _current_git_commit() -> str:
 
 
 def _source_tree_clean() -> bool:
+    """Return whether tracked source files remain unchanged during packaging.
+
+    Release jobs build several native targets in the checkout. Their generated,
+    untracked files do not change the revision represented by the evidence, so
+    they must not invalidate an otherwise reproducible package smoke result.
+    """
     try:
         completed = subprocess.run(
             [
                 "git",
                 "status",
                 "--porcelain",
-                "--untracked-files=all",
+                "--untracked-files=no",
                 "--",
                 ".",
                 ":(exclude)release",
@@ -214,7 +220,7 @@ def build_evidence(
     source_clean = _source_tree_clean()
     if require_clean_source and not source_clean:
         raise EvidenceError(
-            "source tree must be clean before release package evidence is written"
+            "tracked source tree must be clean before release package evidence is written"
         )
 
     revision = source_revision.strip() or _current_git_commit()
@@ -297,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--require-clean-source",
         action="store_true",
-        help="Refuse evidence when tracked or untracked source files are dirty.",
+        help="Refuse evidence when tracked source files are dirty.",
     )
     parser.add_argument("--json", action="store_true", help="Print the result as JSON.")
     args = parser.parse_args(argv)

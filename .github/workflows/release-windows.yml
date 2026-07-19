@@ -641,6 +641,7 @@ jobs:
           & ./tools/Test-NativeCppWindowsBundle.ps1 `
             -BundleDir (Split-Path $cppExe -Parent) `
             -RequireCompilerRuntime `
+            -RequireQtWebEngine:($env:TB_REQUIRE_QT_WEBENGINE -eq "ON") `
             -Architecture $cppArchitecture `
             -EvidencePath $cppSmokeEvidence `
             -SourceRevision "${{ github.sha }}"

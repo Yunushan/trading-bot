@@ -8,6 +8,9 @@ param(
     [switch]$RequireCompilerRuntime,
 
     [Parameter(ParameterSetName = "Bundle")]
+    [switch]$RequireQtWebEngine,
+
+    [Parameter(ParameterSetName = "Bundle")]
     [ValidateSet("x64", "arm64")]
     [string]$Architecture = "x64",
 
@@ -25,7 +28,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 function Get-NativeCppBundleRequiredPaths {
-    param([bool]$RequireCompilerRuntime)
+    param(
+        [bool]$RequireCompilerRuntime,
+        [bool]$RequireQtWebEngine
+    )
 
     $requiredPaths = @(
         "Trading-Bot-C++.exe",
@@ -33,14 +39,18 @@ function Get-NativeCppBundleRequiredPaths {
         "Qt6Gui.dll",
         "Qt6Network.dll",
         "Qt6Widgets.dll",
-        "Qt6WebEngineCore.dll",
-        "Qt6WebEngineWidgets.dll",
-        "QtWebEngineProcess.exe",
-        "platforms\qwindows.dll",
-        "resources\icudtl.dat",
-        "resources\qtwebengine_resources.pak",
-        "translations\qtwebengine_locales\en-US.pak"
+        "platforms\qwindows.dll"
     )
+    if ($RequireQtWebEngine) {
+        $requiredPaths += @(
+            "Qt6WebEngineCore.dll",
+            "Qt6WebEngineWidgets.dll",
+            "QtWebEngineProcess.exe",
+            "resources\icudtl.dat",
+            "resources\qtwebengine_resources.pak",
+            "translations\qtwebengine_locales\en-US.pak"
+        )
+    }
     if ($RequireCompilerRuntime) {
         $requiredPaths += @(
             "concrt140.dll",
@@ -55,10 +65,13 @@ function Get-NativeCppBundleRequiredPaths {
 function Assert-NativeCppBundleComplete {
     param(
         [string]$BundlePath,
-        [bool]$RequireCompilerRuntime
+        [bool]$RequireCompilerRuntime,
+        [bool]$RequireQtWebEngine
     )
 
-    $requiredPaths = Get-NativeCppBundleRequiredPaths -RequireCompilerRuntime $RequireCompilerRuntime
+    $requiredPaths = Get-NativeCppBundleRequiredPaths `
+        -RequireCompilerRuntime $RequireCompilerRuntime `
+        -RequireQtWebEngine $RequireQtWebEngine
     $missingPaths = @(
         $requiredPaths | Where-Object {
             -not (Test-Path -LiteralPath (Join-Path $BundlePath $_) -PathType Leaf)
@@ -173,6 +186,7 @@ function Write-NativeCppBundleEvidence {
     param(
         [string]$BundlePath,
         [bool]$RequireCompilerRuntime,
+        [bool]$RequireQtWebEngine,
         [ValidateSet("x64", "arm64")][string]$Architecture,
         [string]$EvidencePath,
         [string]$SourceRevision,
@@ -186,7 +200,9 @@ function Write-NativeCppBundleEvidence {
     }
     $executablePath = Join-Path $BundlePath "Trading-Bot-C++.exe"
     $executable = Get-Item -LiteralPath $executablePath
-    $requiredPaths = @(Get-NativeCppBundleRequiredPaths -RequireCompilerRuntime $RequireCompilerRuntime)
+    $requiredPaths = @(Get-NativeCppBundleRequiredPaths `
+        -RequireCompilerRuntime $RequireCompilerRuntime `
+        -RequireQtWebEngine $RequireQtWebEngine)
     $qtCore = Get-Item -LiteralPath (Join-Path $BundlePath "Qt6Core.dll")
     $payload = [ordered]@{
         schema_version = 1
@@ -203,7 +219,7 @@ function Write-NativeCppBundleEvidence {
         }
         qt = [ordered]@{
             core_file_version = $qtCore.VersionInfo.FileVersion
-            webengine_required = $true
+            webengine_required = $RequireQtWebEngine
         }
         bundle = [ordered]@{
             required_path_count = $requiredPaths.Count
@@ -261,7 +277,9 @@ function Invoke-NativeCppWindowsBundleSelfTest {
     }
 
     try {
-        foreach ($relativePath in (Get-NativeCppBundleRequiredPaths -RequireCompilerRuntime $true)) {
+        foreach ($relativePath in (Get-NativeCppBundleRequiredPaths `
+            -RequireCompilerRuntime $true `
+            -RequireQtWebEngine $true)) {
             $path = Join-Path $testRoot $relativePath
             $parent = Split-Path $path -Parent
             if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
@@ -269,14 +287,36 @@ function Invoke-NativeCppWindowsBundleSelfTest {
             }
             Set-Content -LiteralPath $path -Value "fixture" -NoNewline
         }
-        Assert-NativeCppBundleComplete -BundlePath $testRoot -RequireCompilerRuntime $true
+        Assert-NativeCppBundleComplete `
+            -BundlePath $testRoot `
+            -RequireCompilerRuntime $true `
+            -RequireQtWebEngine $true
 
         Remove-Item -LiteralPath (Join-Path $testRoot "Qt6Core.dll") -Force
         Assert-ExpectedFailure `
             -Action {
-                Assert-NativeCppBundleComplete -BundlePath $testRoot -RequireCompilerRuntime $true
-            } `
+                Assert-NativeCppBundleComplete `
+                    -BundlePath $testRoot `
+                    -RequireCompilerRuntime $true `
+                    -RequireQtWebEngine $true
+        } `
             -MessagePattern "C++ bundle is incomplete. Missing: *Qt6Core.dll*"
+
+        Set-Content -LiteralPath (Join-Path $testRoot "Qt6Core.dll") -Value "fixture" -NoNewline
+        foreach ($relativePath in @(
+            "Qt6WebEngineCore.dll",
+            "Qt6WebEngineWidgets.dll",
+            "QtWebEngineProcess.exe",
+            "resources\icudtl.dat",
+            "resources\qtwebengine_resources.pak",
+            "translations\qtwebengine_locales\en-US.pak"
+        )) {
+            Remove-Item -LiteralPath (Join-Path $testRoot $relativePath) -Force
+        }
+        Assert-NativeCppBundleComplete `
+            -BundlePath $testRoot `
+            -RequireCompilerRuntime $true `
+            -RequireQtWebEngine $false
 
         Assert-NativeCppSmokeResult -ExitCode 0 -Stdout "Trading Bot C++ smoke ok" -Stderr ""
         Assert-ExpectedFailure `
@@ -321,7 +361,6 @@ function Invoke-NativeCppWindowsBundleSelfTest {
             }
         }
 
-        Set-Content -LiteralPath (Join-Path $testRoot "Qt6Core.dll") -Value "fixture" -NoNewline
         $evidencePath = Join-Path $testRoot "evidence\native-cpp-smoke.json"
         $smokeResult = [pscustomobject]@{
             ExitCode = 0
@@ -331,6 +370,7 @@ function Invoke-NativeCppWindowsBundleSelfTest {
         Write-NativeCppBundleEvidence `
             -BundlePath $testRoot `
             -RequireCompilerRuntime $true `
+            -RequireQtWebEngine $false `
             -Architecture "x64" `
             -EvidencePath $evidencePath `
             -SourceRevision "self-test-revision" `
@@ -340,6 +380,7 @@ function Invoke-NativeCppWindowsBundleSelfTest {
             $evidence.kind -ne "native-cpp-windows-bundle-smoke" -or
             $evidence.source_revision -ne "self-test-revision" -or
             $evidence.architecture -ne "x64" -or
+            $evidence.qt.webengine_required -or
             -not $evidence.bundle.complete -or
             -not $evidence.smoke.ok -or
             $evidence.executable.sha256 -notmatch "^[0-9a-f]{64}$"
@@ -372,12 +413,14 @@ if ($SelfTest) {
     }
     Assert-NativeCppBundleComplete `
         -BundlePath $bundlePath `
-        -RequireCompilerRuntime ([bool]$RequireCompilerRuntime)
+        -RequireCompilerRuntime ([bool]$RequireCompilerRuntime) `
+        -RequireQtWebEngine ([bool]$RequireQtWebEngine)
     $smokeResult = Invoke-NativeCppBundleSmoke -BundlePath $bundlePath
     if (-not [string]::IsNullOrWhiteSpace($EvidencePath)) {
         Write-NativeCppBundleEvidence `
             -BundlePath $bundlePath `
             -RequireCompilerRuntime ([bool]$RequireCompilerRuntime) `
+            -RequireQtWebEngine ([bool]$RequireQtWebEngine) `
             -Architecture $Architecture `
             -EvidencePath $EvidencePath `
             -SourceRevision $SourceRevision `

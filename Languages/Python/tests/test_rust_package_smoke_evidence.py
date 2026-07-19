@@ -109,7 +109,7 @@ class RustPackageSmokeEvidenceTests(unittest.TestCase):
         source_sync.assert_not_called()
         run.assert_not_called()
 
-    def test_source_clean_guard_checks_untracked_source_and_excludes_release_outputs(self):
+    def test_source_clean_guard_checks_tracked_source_and_excludes_release_outputs(self):
         completed = subprocess.CompletedProcess(
             ["git", "status"],
             0,
@@ -120,7 +120,7 @@ class RustPackageSmokeEvidenceTests(unittest.TestCase):
             self.assertTrue(package_evidence._source_tree_clean())
 
         command = run.call_args.args[0]
-        self.assertIn("--untracked-files=all", command)
+        self.assertIn("--untracked-files=no", command)
         self.assertIn(":(exclude)release", command)
 
     def test_main_does_not_write_partial_evidence_on_smoke_failure(self):
