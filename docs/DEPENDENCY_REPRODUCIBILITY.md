@@ -33,6 +33,11 @@ cd experiments/rust-shells
 cargo audit --file Cargo.lock
 ```
 
+The Tauri macOS dependency path temporarily patches `plist` to a reviewed,
+immutable upstream commit. This is required because the published `plist` 1.8.0
+release pins a vulnerable `quick-xml` range; remove the patch when a released
+plist version contains the same `quick-xml >=0.41.0` remediation.
+
 The supply-chain workflow also builds `docker/backend.Dockerfile` and fails on
 known high- or critical-severity OS or Python-library vulnerabilities in the
 resulting image. Run the same build locally when Docker Desktop is running:
@@ -52,7 +57,9 @@ mutable action tag to change behavior during a security scan or release.
 
 The service Dockerfile also pins its multi-platform Python base image by OCI
 digest. The Docker Dependabot entry proposes deliberate base-image refreshes;
-do not replace the digest with a mutable `python:3.14-slim` tag. The image
+do not replace the pinned `python:3.14.6-slim-bookworm` digest with a mutable
+tag. Bookworm is selected deliberately instead of the default Slim/Trixie
+line so the image is based on Debian's stable security-maintenance channel. The image
 bootstrap also pins `pip` 26.1.2 rather than upgrading to an unreviewed latest
 version during a container build.
 
