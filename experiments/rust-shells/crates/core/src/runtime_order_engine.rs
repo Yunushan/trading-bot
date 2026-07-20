@@ -391,6 +391,8 @@ impl RuntimeOrderEngine {
         }
     }
 
+    // Independent values are retained for complete close-order audit records.
+    #[allow(clippy::too_many_arguments)]
     fn execute_close_with_fallback<F>(
         &mut self,
         symbol: &str,
@@ -561,6 +563,8 @@ impl RuntimeOrderEngine {
         }
     }
 
+    // Audit records intentionally receive every close-order field explicitly.
+    #[allow(clippy::too_many_arguments)]
     fn write_close_audit(
         &mut self,
         event: &str,
@@ -772,7 +776,7 @@ fn push_position_side_attempt(attempts: &mut Vec<Option<String>>, value: Option<
     let normalized = value
         .map(|text| text.trim().to_uppercase())
         .filter(|text| !text.is_empty());
-    if attempts.iter().any(|current| *current == normalized) {
+    if attempts.contains(&normalized) {
         return;
     }
     attempts.push(normalized);

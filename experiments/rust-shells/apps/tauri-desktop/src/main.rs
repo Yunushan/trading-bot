@@ -1247,8 +1247,10 @@ fn configure_native_runtime_order_engine(
 }
 
 fn native_runtime_order_audit_config(config: &Value) -> OrderAuditConfig {
-    let mut audit = OrderAuditConfig::default();
-    audit.enabled = config_bool(config, "order_audit_enabled", true);
+    let mut audit = OrderAuditConfig {
+        enabled: config_bool(config, "order_audit_enabled", true),
+        ..Default::default()
+    };
     let configured_path = first_config_string(config, "order_audit_log_path", "");
     if !configured_path.trim().is_empty() {
         audit.path = configured_path;
@@ -1549,11 +1551,11 @@ fn native_runtime_snapshot(
 
 impl Drop for ServiceProcessState {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.child.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        if let Ok(mut guard) = self.child.lock()
+            && let Some(mut child) = guard.take()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -1795,7 +1797,7 @@ fn build_service_url(
         {
             let mut pairs = url.query_pairs_mut();
             for (key, value) in params {
-                pairs.append_pair(&key, &value);
+                pairs.append_pair(key, value);
             }
         }
     }
@@ -1919,10 +1921,10 @@ fn find_repo_root(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(current_dir) = env::current_dir() {
         push_candidate_ancestors(&mut candidates, current_dir);
     }
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            push_candidate_ancestors(&mut candidates, parent);
-        }
+    if let Ok(current_exe) = env::current_exe()
+        && let Some(parent) = current_exe.parent()
+    {
+        push_candidate_ancestors(&mut candidates, parent);
     }
     if let Ok(resource_dir) = app.path().resource_dir() {
         push_candidate_ancestors(&mut candidates, resource_dir);
@@ -1942,11 +1944,14 @@ fn python_executable() -> String {
 }
 
 fn executable_names(base_name: &str) -> Vec<String> {
-    let mut names = Vec::new();
     #[cfg(target_os = "windows")]
-    names.push(format!("{base_name}.exe"));
-    names.push(base_name.to_string());
-    names
+    {
+        vec![format!("{base_name}.exe"), base_name.to_string()]
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![base_name.to_string()]
+    }
 }
 
 fn find_python_desktop_entrypoint(repo_root: &Path) -> Option<PathBuf> {
@@ -1997,6 +2002,8 @@ fn find_cpp_desktop_executable(repo_root: &Path) -> Option<PathBuf> {
 fn apply_no_console_flag(command: &mut Command) {
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
+    #[cfg(not(target_os = "windows"))]
+    let _ = command;
 }
 
 fn prepend_process_path(command: &mut Command, directory: &Path) {
@@ -2060,10 +2067,10 @@ fn service_pythonpath(repo_root: &Path) -> String {
             .to_string_lossy()
             .to_string(),
     ];
-    if let Ok(existing) = env::var("PYTHONPATH") {
-        if !existing.trim().is_empty() {
-            paths.push(existing);
-        }
+    if let Ok(existing) = env::var("PYTHONPATH")
+        && !existing.trim().is_empty()
+    {
+        paths.push(existing);
     }
     paths.join(separator)
 }

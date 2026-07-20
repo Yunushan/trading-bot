@@ -403,15 +403,15 @@ pub fn guard_live_order_submit(
         }));
     }
 
-    if live_mode || PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES {
-        if !input.order_audit_enabled {
-            errors.push("order audit is disabled".to_owned());
-        }
+    if (live_mode || PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES)
+        && !input.order_audit_enabled
+    {
+        errors.push("order audit is disabled".to_owned());
     }
-    if live_mode || PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES {
-        if !input.order_audit_writable {
-            errors.push("order audit is not writable".to_owned());
-        }
+    if (live_mode || PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES)
+        && !input.order_audit_writable
+    {
+        errors.push("order audit is not writable".to_owned());
     }
     if live_mode || PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES {
         errors.extend(connector_health_errors(
@@ -809,11 +809,11 @@ mod tests {
 
     #[test]
     fn paper_order_guard_allows_valid_dry_run_without_live_credentials() {
-        assert!(PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES);
-        assert!(PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES);
-        assert!(PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES);
-        assert!(PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES);
-        assert!(PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES);
+        const { assert!(PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES) };
+        const { assert!(PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES) };
+        const { assert!(PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES) };
+        const { assert!(PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES) };
+        const { assert!(PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES) };
         assert!(
             PYTHON_ORDER_GUARD_BEHAVIOR_JSON.contains("validate_exchange_filters_all_modes\":true")
         );

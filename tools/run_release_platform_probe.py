@@ -201,6 +201,8 @@ def _run_command(
             cwd=cwd,
             env=env,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout,
             check=False,

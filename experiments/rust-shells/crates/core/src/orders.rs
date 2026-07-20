@@ -74,6 +74,8 @@ impl BinanceSignedRestClient {
         )
     }
 
+    // The public request mirrors Binance's independent order fields and the Python contract.
+    #[allow(clippy::too_many_arguments)]
     pub fn place_futures_limit_order(
         &self,
         credentials: &BinanceApiCredentials,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import html as _html
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -47,7 +47,7 @@ _WEBENGINE_VIEW_BASE = QWebEngineView if QWebEngineView is not None else QtWidge
 
 def _log_chart_event(message: str) -> None:
     try:
-        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         ts = "unknown-time"
     try:

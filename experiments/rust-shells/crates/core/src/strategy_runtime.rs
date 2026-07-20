@@ -159,53 +159,19 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         }
     };
 
-    if let Some((_, _, value)) = indicator_values(&input, "rsi") {
-        if enabled(&input, "rsi") {
-            if value.is_finite() {
-                descriptions.push(format!("RSI={value:.2}"));
-                let rule = rule(&input, "rsi");
-                let buy = rule.buy_value.unwrap_or(30.0);
-                let sell = rule.sell_value.unwrap_or(70.0);
-                if buy_allowed && value <= buy {
-                    action(
-                        "rsi",
-                        "BUY",
-                        format!("RSI <= {buy:.2} -> BUY"),
-                        &mut signal,
-                        &mut descriptions,
-                        &mut sources,
-                        &mut actions,
-                    );
-                } else if sell_allowed && value >= sell {
-                    action(
-                        "rsi",
-                        "SELL",
-                        format!("RSI >= {sell:.2} -> SELL"),
-                        &mut signal,
-                        &mut descriptions,
-                        &mut sources,
-                        &mut actions,
-                    );
-                }
-            } else {
-                descriptions.push("RSI=NaN/inf skipped".to_owned());
-            }
-        }
-    }
-
-    if let Some((prev, live, value)) = indicator_values(&input, "stoch_rsi_k") {
-        if enabled(&input, "stoch_rsi") {
-            descriptions.push(format!(
-                "StochRSI %K={value:.2} (prev={prev:.2}, live={live:.2})"
-            ));
-            let rule = rule(&input, "stoch_rsi");
-            let buy = rule.buy_value.unwrap_or(20.0);
-            let sell = rule.sell_value.unwrap_or(80.0);
+    if let Some((_, _, value)) = indicator_values(&input, "rsi")
+        && enabled(&input, "rsi")
+    {
+        if value.is_finite() {
+            descriptions.push(format!("RSI={value:.2}"));
+            let rule = rule(&input, "rsi");
+            let buy = rule.buy_value.unwrap_or(30.0);
+            let sell = rule.sell_value.unwrap_or(70.0);
             if buy_allowed && value <= buy {
                 action(
-                    "stoch_rsi",
+                    "rsi",
                     "BUY",
-                    format!("StochRSI %K <= {buy:.2} -> BUY"),
+                    format!("RSI <= {buy:.2} -> BUY"),
                     &mut signal,
                     &mut descriptions,
                     &mut sources,
@@ -213,47 +179,81 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
                 );
             } else if sell_allowed && value >= sell {
                 action(
-                    "stoch_rsi",
+                    "rsi",
                     "SELL",
-                    format!("StochRSI %K >= {sell:.2} -> SELL"),
+                    format!("RSI >= {sell:.2} -> SELL"),
                     &mut signal,
                     &mut descriptions,
                     &mut sources,
                     &mut actions,
                 );
             }
+        } else {
+            descriptions.push("RSI=NaN/inf skipped".to_owned());
         }
     }
 
-    if let Some((prev, live, value)) = indicator_values(&input, "willr") {
-        if enabled(&input, "willr") {
-            descriptions.push(format!(
-                "Williams %R(prev={prev:.2}, live={live:.2}) -> using {value:.2}"
-            ));
-            let rule = rule(&input, "willr");
-            let buy_upper = rule.buy_value.unwrap_or(-80.0).clamp(-100.0, 0.0);
-            let sell_lower = rule.sell_value.unwrap_or(-20.0).clamp(-100.0, 0.0);
-            if buy_allowed && (-100.0..=buy_upper).contains(&value) {
-                action(
-                    "willr",
-                    "BUY",
-                    format!("Williams %R in [-100.00, {buy_upper:.2}] -> BUY"),
-                    &mut signal,
-                    &mut descriptions,
-                    &mut sources,
-                    &mut actions,
-                );
-            } else if sell_allowed && (sell_lower..=0.0).contains(&value) {
-                action(
-                    "willr",
-                    "SELL",
-                    format!("Williams %R in [{sell_lower:.2}, 0.00] -> SELL"),
-                    &mut signal,
-                    &mut descriptions,
-                    &mut sources,
-                    &mut actions,
-                );
-            }
+    if let Some((prev, live, value)) = indicator_values(&input, "stoch_rsi_k")
+        && enabled(&input, "stoch_rsi")
+    {
+        descriptions.push(format!(
+            "StochRSI %K={value:.2} (prev={prev:.2}, live={live:.2})"
+        ));
+        let rule = rule(&input, "stoch_rsi");
+        let buy = rule.buy_value.unwrap_or(20.0);
+        let sell = rule.sell_value.unwrap_or(80.0);
+        if buy_allowed && value <= buy {
+            action(
+                "stoch_rsi",
+                "BUY",
+                format!("StochRSI %K <= {buy:.2} -> BUY"),
+                &mut signal,
+                &mut descriptions,
+                &mut sources,
+                &mut actions,
+            );
+        } else if sell_allowed && value >= sell {
+            action(
+                "stoch_rsi",
+                "SELL",
+                format!("StochRSI %K >= {sell:.2} -> SELL"),
+                &mut signal,
+                &mut descriptions,
+                &mut sources,
+                &mut actions,
+            );
+        }
+    }
+
+    if let Some((prev, live, value)) = indicator_values(&input, "willr")
+        && enabled(&input, "willr")
+    {
+        descriptions.push(format!(
+            "Williams %R(prev={prev:.2}, live={live:.2}) -> using {value:.2}"
+        ));
+        let rule = rule(&input, "willr");
+        let buy_upper = rule.buy_value.unwrap_or(-80.0).clamp(-100.0, 0.0);
+        let sell_lower = rule.sell_value.unwrap_or(-20.0).clamp(-100.0, 0.0);
+        if buy_allowed && (-100.0..=buy_upper).contains(&value) {
+            action(
+                "willr",
+                "BUY",
+                format!("Williams %R in [-100.00, {buy_upper:.2}] -> BUY"),
+                &mut signal,
+                &mut descriptions,
+                &mut sources,
+                &mut actions,
+            );
+        } else if sell_allowed && (sell_lower..=0.0).contains(&value) {
+            action(
+                "willr",
+                "SELL",
+                format!("Williams %R in [{sell_lower:.2}, 0.00] -> SELL"),
+                &mut signal,
+                &mut descriptions,
+                &mut sources,
+                &mut actions,
+            );
         }
     }
 
@@ -263,7 +263,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "natr",
         "NATR",
         "{:.4}",
-        Compare::BuyGeSellLe,
+        Compare::GeLe,
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -288,7 +288,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "mfi",
         "MFI",
         "{:.2}",
-        Compare::BuyLeSellGeDefaults(20.0, 80.0),
+        Compare::LeGeDefaults(20.0, 80.0),
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -315,7 +315,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
                 "OBV",
                 "{:.2}",
                 value,
-                Compare::BuyGeSellLe,
+                Compare::GeLe,
                 buy_allowed,
                 sell_allowed,
                 &mut signal,
@@ -333,7 +333,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "rvol",
         "RVOL",
         "{:.4}",
-        Compare::BuyGeSellLe,
+        Compare::GeLe,
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -360,7 +360,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
                 "CMF",
                 "{:.4}",
                 value,
-                Compare::BuyGeSellLe,
+                Compare::GeLe,
                 buy_allowed,
                 sell_allowed,
                 &mut signal,
@@ -378,7 +378,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "cci",
         "CCI",
         "{:.2}",
-        Compare::BuyLeSellGeDefaults(-100.0, 100.0),
+        Compare::LeGeDefaults(-100.0, 100.0),
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -391,7 +391,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "roc",
         "ROC",
         "{:.2}",
-        Compare::BuyGeSellLeDefaults(0.0, 0.0),
+        Compare::GeLeDefaults(0.0, 0.0),
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -404,7 +404,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "trix",
         "TRIX",
         "{:.4}",
-        Compare::BuyGeSellLeDefaults(0.0, 0.0),
+        Compare::GeLeDefaults(0.0, 0.0),
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -417,7 +417,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "bbw",
         "BBW",
         "{:.4}",
-        Compare::BuyGeSellLe,
+        Compare::GeLe,
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -446,7 +446,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "ao",
         "AO",
         "{:.4}",
-        Compare::BuyGeSellLeDefaults(0.0, 0.0),
+        Compare::GeLeDefaults(0.0, 0.0),
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -485,7 +485,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
                 "Aroon",
                 "{:.2}",
                 value,
-                Compare::BuyGeSellLeDefaults(50.0, -50.0),
+                Compare::GeLeDefaults(50.0, -50.0),
                 buy_allowed,
                 sell_allowed,
                 &mut signal,
@@ -503,7 +503,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "chop",
         "CHOP",
         "{:.4}",
-        Compare::BuyLeSellGe,
+        Compare::LeGe,
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -512,108 +512,108 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         &mut actions,
     );
 
-    if enabled(&input, "ma") {
-        if let Some(ma) = input.indicators.get("ma") {
-            let clean: Vec<f64> = ma.iter().copied().filter(|value| !value.is_nan()).collect();
-            if clean.len() >= 2 && clean.len() > signal_index {
-                let last_ma = clean[signal_index];
-                let prev_ma = clean[prev_index];
-                descriptions.push(format!("MA_prev={prev_ma:.8},MA_last={last_ma:.8}"));
-                if buy_allowed && prev_close < prev_ma && sig_close > last_ma {
-                    action(
-                        "ma",
-                        "BUY",
-                        "MA crossover -> BUY".to_owned(),
-                        &mut signal,
-                        &mut descriptions,
-                        &mut sources,
-                        &mut actions,
-                    );
-                } else if sell_allowed && prev_close > prev_ma && sig_close < last_ma {
-                    action(
-                        "ma",
-                        "SELL",
-                        "MA crossover -> SELL".to_owned(),
-                        &mut signal,
-                        &mut descriptions,
-                        &mut sources,
-                        &mut actions,
-                    );
-                }
+    if enabled(&input, "ma")
+        && let Some(ma) = input.indicators.get("ma")
+    {
+        let clean: Vec<f64> = ma.iter().copied().filter(|value| !value.is_nan()).collect();
+        if clean.len() >= 2 && clean.len() > signal_index {
+            let last_ma = clean[signal_index];
+            let prev_ma = clean[prev_index];
+            descriptions.push(format!("MA_prev={prev_ma:.8},MA_last={last_ma:.8}"));
+            if buy_allowed && prev_close < prev_ma && sig_close > last_ma {
+                action(
+                    "ma",
+                    "BUY",
+                    "MA crossover -> BUY".to_owned(),
+                    &mut signal,
+                    &mut descriptions,
+                    &mut sources,
+                    &mut actions,
+                );
+            } else if sell_allowed && prev_close > prev_ma && sig_close < last_ma {
+                action(
+                    "ma",
+                    "SELL",
+                    "MA crossover -> SELL".to_owned(),
+                    &mut signal,
+                    &mut descriptions,
+                    &mut sources,
+                    &mut actions,
+                );
             }
         }
     }
 
-    if enabled(&input, "bb") {
-        if let (Some(upper), Some(mid), Some(lower)) = (
+    if enabled(&input, "bb")
+        && let (Some(upper), Some(mid), Some(lower)) = (
             value_at(&input, "bb_upper", signal_index),
             value_at(&input, "bb_mid", signal_index),
             value_at(&input, "bb_lower", signal_index),
-        ) {
-            descriptions.push(format!(
-                "BB_up={upper:.8},BB_mid={mid:.8},BB_low={lower:.8}"
-            ));
-        }
+        )
+    {
+        descriptions.push(format!(
+            "BB_up={upper:.8},BB_mid={mid:.8},BB_low={lower:.8}"
+        ));
     }
 
-    if enabled(&input, "keltner") {
-        if let (Some(upper), Some(mid), Some(lower)) = (
+    if enabled(&input, "keltner")
+        && let (Some(upper), Some(mid), Some(lower)) = (
             value_at(&input, "keltner_upper", signal_index),
             value_at(&input, "keltner_mid", signal_index),
             value_at(&input, "keltner_lower", signal_index),
-        ) {
-            let channel_state = if sig_close > upper {
-                "above upper"
-            } else if sig_close < lower {
-                "below lower"
-            } else {
-                "inside channel"
-            };
-            descriptions.push(format!(
-                "KC_up={upper:.8},KC_mid={mid:.8},KC_low={lower:.8},close {channel_state}"
-            ));
-        }
+        )
+    {
+        let channel_state = if sig_close > upper {
+            "above upper"
+        } else if sig_close < lower {
+            "below lower"
+        } else {
+            "inside channel"
+        };
+        descriptions.push(format!(
+            "KC_up={upper:.8},KC_mid={mid:.8},KC_low={lower:.8},close {channel_state}"
+        ));
     }
 
-    if enabled(&input, "ichimoku") {
-        if let (Some(tenkan), Some(kijun)) = (
+    if enabled(&input, "ichimoku")
+        && let (Some(tenkan), Some(kijun)) = (
             value_at(&input, "ichimoku_tenkan", signal_index),
             value_at(&input, "ichimoku_kijun", signal_index),
-        ) {
-            let span_a = value_at(&input, "ichimoku_span_a", signal_index).unwrap_or(f64::NAN);
-            let span_b = value_at(&input, "ichimoku_span_b", signal_index).unwrap_or(f64::NAN);
-            let spread = tenkan - kijun;
-            let cloud_state = if span_a.is_finite() && span_b.is_finite() {
-                let top = span_a.max(span_b);
-                let bottom = span_a.min(span_b);
-                if sig_close > top {
-                    "above cloud"
-                } else if sig_close < bottom {
-                    "below cloud"
-                } else {
-                    "inside cloud"
-                }
+        )
+    {
+        let span_a = value_at(&input, "ichimoku_span_a", signal_index).unwrap_or(f64::NAN);
+        let span_b = value_at(&input, "ichimoku_span_b", signal_index).unwrap_or(f64::NAN);
+        let spread = tenkan - kijun;
+        let cloud_state = if span_a.is_finite() && span_b.is_finite() {
+            let top = span_a.max(span_b);
+            let bottom = span_a.min(span_b);
+            if sig_close > top {
+                "above cloud"
+            } else if sig_close < bottom {
+                "below cloud"
             } else {
-                "cloud unavailable"
-            };
-            descriptions.push(format!(
+                "inside cloud"
+            }
+        } else {
+            "cloud unavailable"
+        };
+        descriptions.push(format!(
                 "IC_tenkan={tenkan:.8},IC_kijun={kijun:.8},IC_span_a={span_a:.8},IC_span_b={span_b:.8},spread={spread:.8},close {cloud_state}"
             ));
-            threshold_action_existing_value(
-                &input,
-                "ichimoku",
-                "IC spread",
-                "{:.2}",
-                spread,
-                Compare::BuyGeSellLe,
-                buy_allowed,
-                sell_allowed,
-                &mut signal,
-                &mut descriptions,
-                &mut sources,
-                &mut actions,
-            );
-        }
+        threshold_action_existing_value(
+            &input,
+            "ichimoku",
+            "IC spread",
+            "{:.2}",
+            spread,
+            Compare::GeLe,
+            buy_allowed,
+            sell_allowed,
+            &mut signal,
+            &mut descriptions,
+            &mut sources,
+            &mut actions,
+        );
     }
 
     if descriptions.is_empty() {
@@ -811,10 +811,10 @@ pub fn build_clean_override_entry(kind: &str, entry: &Value) -> Value {
         .and_then(Value::as_i64)
         .or_else(|| int_value(object.get("leverage")))
         .map(|value| value.max(1));
-    if let Some(leverage) = leverage {
-        if let Some(control_object) = controls.as_object_mut() {
-            control_object.insert("leverage".to_owned(), json!(leverage));
-        }
+    if let Some(leverage) = leverage
+        && let Some(control_object) = controls.as_object_mut()
+    {
+        control_object.insert("leverage".to_owned(), json!(leverage));
     }
 
     let mut clean = Map::new();
@@ -860,10 +860,10 @@ pub fn build_clean_override_entry(kind: &str, entry: &Value) -> Value {
     if let Some(leverage) = leverage {
         clean.insert("leverage".to_owned(), json!(leverage));
     }
-    if !clean.contains_key("stop_loss") {
-        if let Some(stop_loss) = object.get("stop_loss").filter(|value| value.is_object()) {
-            clean.insert("stop_loss".to_owned(), normalize_stop_loss(stop_loss));
-        }
+    if !clean.contains_key("stop_loss")
+        && let Some(stop_loss) = object.get("stop_loss").filter(|value| value.is_object())
+    {
+        clean.insert("stop_loss".to_owned(), normalize_stop_loss(stop_loss));
     }
     let backtest_result =
         clean_backtest_result_payload(object.get("backtest_result").unwrap_or(&Value::Null));
@@ -923,23 +923,28 @@ pub fn next_network_backoff(previous: f64) -> f64 {
     if previous <= 0.0 {
         5.0
     } else {
-        (previous * 1.5).max(5.0).min(90.0)
+        let scaled = previous * 1.5;
+        if scaled.is_nan() {
+            5.0
+        } else {
+            scaled.clamp(5.0, 90.0)
+        }
     }
 }
 
 #[derive(Clone, Copy)]
 enum Compare {
-    BuyLeSellGe,
-    BuyGeSellLe,
-    BuyLeSellGeDefaults(f64, f64),
-    BuyGeSellLeDefaults(f64, f64),
+    LeGe,
+    GeLe,
+    LeGeDefaults(f64, f64),
+    GeLeDefaults(f64, f64),
 }
 
 fn enabled(input: &StrategySignalInput, key: &str) -> bool {
     input.rules.get(key).is_some_and(|rule| rule.enabled)
 }
 
-fn rule<'a>(input: &'a StrategySignalInput, key: &str) -> IndicatorRule {
+fn rule(input: &StrategySignalInput, key: &str) -> IndicatorRule {
     input.rules.get(key).cloned().unwrap_or_default()
 }
 
@@ -1044,20 +1049,20 @@ fn threshold_action_existing_value(
 ) {
     let rule = rule(input, key);
     let (buy, sell, buy_ge) = match compare {
-        Compare::BuyLeSellGe => match (rule.buy_value, rule.sell_value) {
+        Compare::LeGe => match (rule.buy_value, rule.sell_value) {
             (Some(buy), Some(sell)) => (buy, sell, false),
             _ => return,
         },
-        Compare::BuyGeSellLe => match (rule.buy_value, rule.sell_value) {
+        Compare::GeLe => match (rule.buy_value, rule.sell_value) {
             (Some(buy), Some(sell)) => (buy, sell, true),
             _ => return,
         },
-        Compare::BuyLeSellGeDefaults(buy, sell) => (
+        Compare::LeGeDefaults(buy, sell) => (
             rule.buy_value.unwrap_or(buy),
             rule.sell_value.unwrap_or(sell),
             false,
         ),
-        Compare::BuyGeSellLeDefaults(buy, sell) => (
+        Compare::GeLeDefaults(buy, sell) => (
             rule.buy_value.unwrap_or(buy),
             rule.sell_value.unwrap_or(sell),
             true,
@@ -1148,7 +1153,7 @@ fn histogram_action(
             action_label,
             "{:.4}",
             hist,
-            Compare::BuyGeSellLeDefaults(0.0, 0.0),
+            Compare::GeLeDefaults(0.0, 0.0),
             buy_allowed,
             sell_allowed,
             signal,
@@ -1428,10 +1433,10 @@ fn normalize_backtest_interval(value: Option<&Value>) -> String {
         "w" => Some(amount * 604800.0),
         _ => None,
     };
-    if let Some(seconds) = seconds {
-        if let Some(canonical) = canonical_interval_by_seconds(seconds) {
-            return canonical.to_owned();
-        }
+    if let Some(seconds) = seconds
+        && let Some(canonical) = canonical_interval_by_seconds(seconds)
+    {
+        return canonical.to_owned();
     }
     format!("{}{}", format_amount(amount), unit)
 }

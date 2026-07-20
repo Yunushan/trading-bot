@@ -414,10 +414,10 @@ pub fn update_closed_allocations(
         if let Some(close_price) = update.close_price_reported.filter(|value| *value > 0.0) {
             entry.close_price = Some(close_price);
         }
-        if let Some(entry_price) = update.entry_price_reported.filter(|value| *value > 0.0) {
-            if entry.entry_price.is_none() {
-                entry.entry_price = Some(entry_price);
-            }
+        if let Some(entry_price) = update.entry_price_reported.filter(|value| *value > 0.0)
+            && entry.entry_price.is_none()
+        {
+            entry.entry_price = Some(entry_price);
         }
         if let Some(leverage) = update.leverage_reported.filter(|value| *value > 0) {
             entry.leverage = Some(leverage);
@@ -716,41 +716,44 @@ fn allocation_matches_target_identity(
         return false;
     }
     for field in ["trade_id", "client_order_id", "order_id", "event_uid"] {
-        if let Some(expected) = target_identity.get(field) {
-            if !expected.is_empty() && allocation_identity_value(entry, field) == expected {
-                return true;
-            }
-        }
-    }
-
-    if let Some(target_slot) = target_identity.get("slot_id") {
-        if !target_slot.is_empty() && entry.slot_id.trim() == target_slot {
-            if let Some(target_context) = target_identity.get("context_key") {
-                let entry_context = entry.context_key.trim();
-                if !target_context.is_empty()
-                    && !entry_context.is_empty()
-                    && entry_context != target_context
-                {
-                    return false;
-                }
-            }
+        if let Some(expected) = target_identity.get(field)
+            && !expected.is_empty()
+            && allocation_identity_value(entry, field) == expected
+        {
             return true;
         }
     }
 
-    if let Some(target_context) = target_identity.get("context_key") {
-        if !target_context.is_empty() && entry.context_key.trim() == target_context {
-            if let Some(target_open_time) = target_identity.get("open_time") {
-                let entry_open_time = entry.open_time.trim();
-                if !target_open_time.is_empty()
-                    && !entry_open_time.is_empty()
-                    && entry_open_time != target_open_time
-                {
-                    return false;
-                }
+    if let Some(target_slot) = target_identity.get("slot_id")
+        && !target_slot.is_empty()
+        && entry.slot_id.trim() == target_slot
+    {
+        if let Some(target_context) = target_identity.get("context_key") {
+            let entry_context = entry.context_key.trim();
+            if !target_context.is_empty()
+                && !entry_context.is_empty()
+                && entry_context != target_context
+            {
+                return false;
             }
-            return true;
         }
+        return true;
+    }
+
+    if let Some(target_context) = target_identity.get("context_key")
+        && !target_context.is_empty()
+        && entry.context_key.trim() == target_context
+    {
+        if let Some(target_open_time) = target_identity.get("open_time") {
+            let entry_open_time = entry.open_time.trim();
+            if !target_open_time.is_empty()
+                && !entry_open_time.is_empty()
+                && entry_open_time != target_open_time
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     target_identity
@@ -859,19 +862,19 @@ fn build_closed_allocation_snapshot(
 ) -> PortfolioAllocation {
     let mut snapshot = entry.clone();
     let entry_qty = entry.qty.abs();
-    if let Some(qty_closed) = qty_closed.filter(|value| value.is_finite()) {
-        if entry_qty > POSITION_QTY_TOL {
-            let qty_used = qty_closed.max(0.0).min(entry_qty);
-            snapshot.qty = qty_used;
-            scale_allocation_fields(
-                &mut snapshot,
-                if entry_qty > 0.0 {
-                    qty_used / entry_qty
-                } else {
-                    1.0
-                },
-            );
-        }
+    if let Some(qty_closed) = qty_closed.filter(|value| value.is_finite())
+        && entry_qty > POSITION_QTY_TOL
+    {
+        let qty_used = qty_closed.max(0.0).min(entry_qty);
+        snapshot.qty = qty_used;
+        scale_allocation_fields(
+            &mut snapshot,
+            if entry_qty > 0.0 {
+                qty_used / entry_qty
+            } else {
+                1.0
+            },
+        );
     }
     if let Some(close_time) = close_time.map(str::trim).filter(|value| !value.is_empty()) {
         snapshot.close_time = close_time.to_owned();

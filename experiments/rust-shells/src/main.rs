@@ -609,7 +609,7 @@ fn collect_market_smoke_evidence<C: MarketSmokeClient + ?Sized>(
             "native runtime REST kline ingestion failed: {}",
             rest_ingestion
                 .poll_error
-                .unwrap_or_else(|| rest_ingestion.poll_status)
+                .unwrap_or(rest_ingestion.poll_status)
         )
         .into());
     }
@@ -1486,12 +1486,12 @@ fn repo_root() -> PathBuf {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output();
-    if let Ok(output) = output {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if !path.is_empty() {
-                return PathBuf::from(path);
-            }
+    if let Ok(output) = output
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !path.is_empty() {
+            return PathBuf::from(path);
         }
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -1515,12 +1515,12 @@ fn current_git_commit() -> String {
         }
     }
     let output = Command::new("git").args(["rev-parse", "HEAD"]).output();
-    if let Ok(output) = output {
-        if output.status.success() {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if !value.is_empty() {
-                return value;
-            }
+    if let Ok(output) = output
+        && output.status.success()
+    {
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !value.is_empty() {
+            return value;
         }
     }
     "unknown-local-commit".to_owned()

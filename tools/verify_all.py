@@ -19,6 +19,7 @@ class Check:
     required: bool = True
     remediation: str = ""
     blocks_success: bool = False
+    timeout_seconds: int = 240
 
 
 def _repo_root() -> Path:
@@ -77,7 +78,7 @@ def _checks(
     cargo = _command_path("cargo")
     node = _command_path("node")
     npm = _command_path("npm")
-    native_cpp_command = (python, "tools/check_native_cpp.py", "--json")
+    native_cpp_command = (python, "tools/check_native_cpp.py", "--json", "--timeout", "900")
     if skip_slow:
         native_cpp_command = (
             python,
@@ -88,6 +89,8 @@ def _checks(
             "--smoke-targets-only",
             "--qt-version",
             "6.4.0",
+            "--timeout",
+            "900",
         )
     checks = [
         Check(
@@ -238,7 +241,10 @@ def _checks(
             "rust native live-smoke preflight",
             (python, "tools/check_rust_native_live_smoke_preflight.py", "--json"),
             root,
-            remediation="Install Rust with rustup and keep the Rust native live-smoke preflight read-only, redacted, and artifact-free.",
+            remediation=(
+                "Ensure Rust is installed and Cargo can securely access its dependency registry; "
+                "keep the Rust native live-smoke preflight read-only, redacted, and artifact-free."
+            ),
         ),
         Check(
             "rust native runtime promotion audit",
@@ -278,21 +284,24 @@ def _checks(
         ),
         Check(
             "rust workspace check",
-            (cargo, "check", "--workspace"),
+            (cargo, "check", "--workspace", "--locked"),
             root / "experiments" / "rust-shells",
-            remediation="Install Rust with rustup before running native Rust checks.",
+            remediation="Ensure Rust is installed and Cargo can securely access its dependency registry before running native Rust checks.",
         ),
         Check(
             "rust core tests",
-            (cargo, "test", "-p", "trading-bot-core"),
+            (cargo, "test", "-p", "trading-bot-core", "--locked"),
             root / "experiments" / "rust-shells",
-            remediation="Install Rust with rustup before running native Rust tests.",
+            remediation="Ensure Rust is installed and Cargo can securely access its dependency registry before running native Rust tests.",
         ),
         Check(
             "rust native local recovery evidence",
             (python, "tools/check_rust_native_local_recovery_evidence.py", "--json"),
             root,
-            remediation="Install Rust with rustup and rerun the deterministic Rust recovery evidence command.",
+            remediation=(
+                "Ensure Rust is installed and Cargo can securely access its dependency registry; "
+                "then rerun the deterministic Rust recovery evidence command."
+            ),
         ),
         Check(
             "tauri ui behavior tests",
@@ -305,6 +314,7 @@ def _checks(
             native_cpp_command,
             root,
             remediation="Install Qt 6.10.x, CMake, and a C++ compiler before running native C++ checks.",
+            timeout_seconds=900,
         ),
         Check("diff whitespace", ("git", "diff", "--check"), root),
     ]
@@ -499,7 +509,7 @@ def _run_check(check: Check, *, verbose: bool) -> dict[str, object]:
             cwd=check.cwd,
             capture_output=True,
             text=True,
-            timeout=240,
+            timeout=check.timeout_seconds,
             check=False,
             env=env,
         )

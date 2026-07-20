@@ -258,7 +258,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Build only native smoke test targets instead of the full GUI executable.",
     )
-    parser.add_argument("--timeout", type=int, default=300, help="Timeout per step in seconds.")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=900,
+        help="Timeout per step in seconds (15 minutes by default for cold native builds).",
+    )
     args = parser.parse_args(argv)
 
     report = check_native_cpp(
@@ -268,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         enable_qt_deploy_script=args.enable_qt_deploy_script,
         smoke_targets_only=bool(args.smoke_targets_only),
         qt_version=str(args.qt_version or "").strip() or None,
-        timeout=max(30, int(args.timeout or 300)),
+        timeout=max(30, int(args.timeout or 900)),
     )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

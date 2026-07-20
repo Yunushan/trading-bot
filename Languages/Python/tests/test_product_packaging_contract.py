@@ -1446,14 +1446,19 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertNotIn("pandas==3.0.2", runtime_dependencies)
 
         desktop_dependencies = optional_dependencies["desktop"]
-        self.assertIn(
-            "numba==0.65.0; platform_system != 'Darwin' or platform_machine != 'x86_64'",
-            desktop_dependencies,
-        )
-        self.assertIn(
-            "llvmlite==0.47.0; platform_system != 'Darwin' or platform_machine != 'x86_64'",
-            desktop_dependencies,
-        )
+        self.assertNotIn("numba", "\n".join(desktop_dependencies))
+        self.assertNotIn("llvmlite", "\n".join(desktop_dependencies))
+
+        dependency_catalog = (
+            PYTHON_ROOT / "app" / "gui" / "code" / "code_language_catalog.py"
+        ).read_text(encoding="utf-8")
+        dependency_usage_runtime = (
+            PYTHON_ROOT / "app" / "gui" / "code" / "dependency_versions_usage_runtime.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn('"package": "numba"', dependency_catalog)
+        self.assertNotIn('"package": "llvmlite"', dependency_catalog)
+        self.assertNotIn('"numba":', dependency_usage_runtime)
+        self.assertNotIn('"llvmlite":', dependency_usage_runtime)
 
         windows_arm64_dependencies = optional_dependencies["windows-arm64"]
         self.assertNotIn("aiohttp==0.13.1", windows_arm64_dependencies)

@@ -227,7 +227,7 @@ pub struct ConnectorOrderCircuitBreakerSnapshot {
     pub generated_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ConnectorOrderCircuitSnapshotInput {
     pub active: Option<bool>,
     pub state: String,
@@ -249,33 +249,6 @@ pub struct ConnectorOrderCircuitSnapshotInput {
     pub reset_blocked_reason: String,
     pub reset_blocked_at: String,
     pub last_event: Option<Value>,
-}
-
-impl Default for ConnectorOrderCircuitSnapshotInput {
-    fn default() -> Self {
-        Self {
-            active: None,
-            state: String::new(),
-            reason: String::new(),
-            message: String::new(),
-            block_count: None,
-            block_threshold: None,
-            block_window_seconds: None,
-            tripped_at: String::new(),
-            cleared_at: String::new(),
-            source: String::new(),
-            symbol: String::new(),
-            interval: String::new(),
-            side: String::new(),
-            account_type: String::new(),
-            connector_health: None,
-            connector_state: None,
-            reset_blocked: false,
-            reset_blocked_reason: String::new(),
-            reset_blocked_at: String::new(),
-            last_event: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -588,10 +561,10 @@ pub fn finalize_order_audit_event(mut event: OrderAuditEvent) -> OrderAuditEvent
     event.result = event.result.map(redact_value);
     event.extra = event.extra.map(redact_value);
     event.error = redact_text(&event.error);
-    if event.order_id.is_none() {
-        if let Some(result) = &event.result {
-            event.order_id = extract_order_id(result);
-        }
+    if event.order_id.is_none()
+        && let Some(result) = &event.result
+    {
+        event.order_id = extract_order_id(result);
     }
     event
 }
@@ -610,10 +583,11 @@ pub fn extract_order_id(payload: &Value) -> Option<Value> {
         "client_order_id",
         "clientOrderID",
     ] {
-        if let Some(value) = candidates.get(key) {
-            if !value.is_null() && value.as_str().map(|text| !text.is_empty()).unwrap_or(true) {
-                return Some(value.clone());
-            }
+        if let Some(value) = candidates.get(key)
+            && !value.is_null()
+            && value.as_str().map(|text| !text.is_empty()).unwrap_or(true)
+        {
+            return Some(value.clone());
         }
     }
     None
@@ -783,10 +757,10 @@ fn expand_user_path(path: &Path) -> PathBuf {
     if text == "~" {
         return home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
-    if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
-        if let Some(home) = home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\"))
+        && let Some(home) = home_dir()
+    {
+        return home.join(rest);
     }
     path.to_path_buf()
 }

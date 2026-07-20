@@ -90,25 +90,13 @@ pub struct RustConfigPersistenceBoundary {
     pub operational: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ServiceConfigRuntimeState {
     pub loaded: bool,
     pub dirty: bool,
     pub last_loaded_at: String,
     pub last_saved_at: String,
     pub migrated_from_format_version: Option<i64>,
-}
-
-impl Default for ServiceConfigRuntimeState {
-    fn default() -> Self {
-        Self {
-            loaded: false,
-            dirty: false,
-            last_loaded_at: String::new(),
-            last_saved_at: String::new(),
-            migrated_from_format_version: None,
-        }
-    }
 }
 
 pub const RUST_CONFIG_PERSISTENCE_BOUNDARIES: &[RustConfigPersistenceBoundary] =
@@ -225,13 +213,14 @@ fn validate_service_runtime_config_state(
     validate_bool(&mut cfg, "lead_trader_enabled", &mut issues, "", false);
     validate_nullable_text(&mut cfg, "lead_trader_profile", &mut issues, "", true);
     validate_text(&mut cfg, "loop_interval_override", &mut issues, "", true);
-    if let Some(value) = cfg.get("loop_interval_override") {
-        if !value_to_text(value).trim().is_empty() && normalize_interval(value).is_none() {
-            issues.push(ServiceConfigValidationIssue::new(
-                "loop_interval_override",
-                "must be a valid interval",
-            ));
-        }
+    if let Some(value) = cfg.get("loop_interval_override")
+        && !value_to_text(value).trim().is_empty()
+        && normalize_interval(value).is_none()
+    {
+        issues.push(ServiceConfigValidationIssue::new(
+            "loop_interval_override",
+            "must be a valid interval",
+        ));
     }
     validate_pair_list(&mut cfg, "runtime_symbol_interval_pairs", &mut issues, "");
     validate_pair_list(&mut cfg, "backtest_symbol_interval_pairs", &mut issues, "");
@@ -603,7 +592,8 @@ pub fn coerce_service_config_persistence_payload(
                 path.as_ref()
             ));
         }
-        let config = validate_service_runtime_config(&without_inline_service_config_secret_values(&config))?;
+        let config =
+            validate_service_runtime_config(&without_inline_service_config_secret_values(&config))?;
         return Ok(ServiceConfigLoadResult {
             config,
             metadata: ServiceConfigLoadMetadata {
@@ -630,7 +620,8 @@ pub fn coerce_service_config_persistence_payload(
             path.as_ref()
         ));
     }
-    let config = validate_service_runtime_config(&without_inline_service_config_secret_values(raw_payload))?;
+    let config =
+        validate_service_runtime_config(&without_inline_service_config_secret_values(raw_payload))?;
     Ok(ServiceConfigLoadResult {
         config,
         metadata: ServiceConfigLoadMetadata {
@@ -758,45 +749,43 @@ pub fn service_config_file_status(path: Option<&Path>) -> Value {
         Value::Number(SERVICE_CONFIG_FORMAT_VERSION.into()),
     );
 
-    if resolved.is_file() {
-        if let Ok(text) = fs::read_to_string(&resolved) {
-            if let Ok(raw) = serde_json::from_str::<Value>(&text) {
-                if let Some(object) = raw.as_object() {
-                    insert_non_empty(
-                        &mut payload,
-                        "contains_secrets",
-                        object
-                            .get("contains_secrets")
-                            .cloned()
-                            .unwrap_or(Value::Bool(false)),
-                    );
-                    insert_non_empty(
-                        &mut payload,
-                        "secret_fields",
-                        object
-                            .get("secret_fields")
-                            .cloned()
-                            .unwrap_or_else(|| Value::Array(Vec::new())),
-                    );
-                    insert_non_empty(
-                        &mut payload,
-                        "secret_storage",
-                        object
-                            .get("secret_storage")
-                            .cloned()
-                            .unwrap_or_else(|| Value::String(String::new())),
-                    );
-                    insert_non_empty(
-                        &mut payload,
-                        "secret_storage_warning",
-                        object
-                            .get("secret_storage_warning")
-                            .cloned()
-                            .unwrap_or_else(|| Value::String(String::new())),
-                    );
-                }
-            }
-        }
+    if resolved.is_file()
+        && let Ok(text) = fs::read_to_string(&resolved)
+        && let Ok(raw) = serde_json::from_str::<Value>(&text)
+        && let Some(object) = raw.as_object()
+    {
+        insert_non_empty(
+            &mut payload,
+            "contains_secrets",
+            object
+                .get("contains_secrets")
+                .cloned()
+                .unwrap_or(Value::Bool(false)),
+        );
+        insert_non_empty(
+            &mut payload,
+            "secret_fields",
+            object
+                .get("secret_fields")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        );
+        insert_non_empty(
+            &mut payload,
+            "secret_storage",
+            object
+                .get("secret_storage")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new())),
+        );
+        insert_non_empty(
+            &mut payload,
+            "secret_storage_warning",
+            object
+                .get("secret_storage_warning")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new())),
+        );
     }
 
     Value::Object(payload)
@@ -879,10 +868,10 @@ fn expand_user_path(path: &Path) -> PathBuf {
     if text == "~" {
         return home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
-    if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
-        if let Some(home) = home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\"))
+        && let Some(home) = home_dir()
+    {
+        return home.join(rest);
     }
     path.to_path_buf()
 }
@@ -1946,13 +1935,13 @@ fn validate_mapping(
     issues: &mut Vec<ServiceConfigValidationIssue>,
     prefix: &str,
 ) {
-    if let Some(value) = cfg.get(key) {
-        if !value.is_object() {
-            issues.push(ServiceConfigValidationIssue::new(
-                field(prefix, key),
-                "must be an object",
-            ));
-        }
+    if let Some(value) = cfg.get(key)
+        && !value.is_object()
+    {
+        issues.push(ServiceConfigValidationIssue::new(
+            field(prefix, key),
+            "must be an object",
+        ));
     }
 }
 

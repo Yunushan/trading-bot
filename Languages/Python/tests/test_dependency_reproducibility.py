@@ -69,6 +69,11 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("python tests", full_check_names)
         self.assertIn("python source compile", full_check_names)
         self.assertIn("Languages/Python/tools/run_python_tests.py", full_checks["python tests"].command)
+        self.assertEqual(900, full_checks["native c++ build and tests"].timeout_seconds)
+        self.assertEqual("900", full_checks["native c++ build and tests"].command[-1])
+        self.assertIn("Cargo can securely access", full_checks["rust workspace check"].remediation)
+        self.assertIn("--locked", full_checks["rust workspace check"].command)
+        self.assertIn("--locked", full_checks["rust core tests"].command)
         self.assertNotIn("compileall", " ".join(" ".join(check.command) for check in module._checks(REPO_ROOT, skip_slow=False)))
 
     def test_verify_all_can_explicitly_skip_external_promotion_evidence(self):
@@ -127,6 +132,17 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(["fix runtime"], module._collect_remediations([result]))
         self.assertFalse(module._report_ok([result]))
         self.assertEqual("1", run.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"])
+
+    def test_verify_all_uses_check_specific_timeout(self):
+        module = _load_verify_all_module()
+        check = module.Check("native c++ build and tests", (sys.executable,), REPO_ROOT, timeout_seconds=900)
+        completed = module.subprocess.CompletedProcess(list(check.command), 0, stdout="", stderr="")
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed) as run:
+            result = module._run_check(check, verbose=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(900, run.call_args.kwargs["timeout"])
 
     def test_verify_all_nonblocking_advisory_failure_does_not_fail_report(self):
         module = _load_verify_all_module()

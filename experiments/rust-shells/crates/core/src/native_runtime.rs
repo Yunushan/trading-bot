@@ -609,7 +609,7 @@ impl NativeRuntimeLoop {
                 }
             }
             Err(error) => {
-                let redacted_error = redact_text(&error.to_string());
+                let redacted_error = redact_text(error.to_string());
                 self.status_message = format!("Stream ingestion error: {redacted_error}");
                 NativeRuntimeIngestionSnapshot {
                     poll_status: "error".to_owned(),
@@ -736,10 +736,10 @@ impl NativeRuntimeLoop {
         let mut margin_modes = Vec::new();
         let mut leverages = Vec::new();
         for position in &matching_positions {
-            if let Ok(margin_mode) = normalize_futures_margin_type(&position.margin_type) {
-                if !margin_modes.contains(&margin_mode) {
-                    margin_modes.push(margin_mode);
-                }
+            if let Ok(margin_mode) = normalize_futures_margin_type(&position.margin_type)
+                && !margin_modes.contains(&margin_mode)
+            {
+                margin_modes.push(margin_mode);
             }
             if position.leverage.is_finite()
                 && position.leverage >= 1.0
@@ -1347,15 +1347,15 @@ pub fn build_native_operational_preflight(
 
     let mut start_issues = native_preflight_issues(&health, &start_stale_labels);
     let mut order_issues = native_preflight_issues(&health, &order_stale_labels);
-    if let Some(account_preflight) = &input.account_preflight {
-        if !account_preflight.signal_evaluation_allowed {
-            let reason = format!(
-                "native account preflight is blocked: {}",
-                account_preflight.status_message
-            );
-            push_unique_reason(&mut start_issues, reason.clone());
-            push_unique_reason(&mut order_issues, reason);
-        }
+    if let Some(account_preflight) = &input.account_preflight
+        && !account_preflight.signal_evaluation_allowed
+    {
+        let reason = format!(
+            "native account preflight is blocked: {}",
+            account_preflight.status_message
+        );
+        push_unique_reason(&mut start_issues, reason.clone());
+        push_unique_reason(&mut order_issues, reason);
     }
 
     let live_mode = is_native_live_trading_mode(&input.mode);
@@ -1426,7 +1426,7 @@ pub fn build_native_freshness_payload(
             0
         }
     });
-    let stale = input.should_warn && age_ms.map_or(true, |age_ms| age_ms > max_age_ms);
+    let stale = input.should_warn && age_ms.is_none_or(|age_ms| age_ms > max_age_ms);
     NativeRuntimeFreshnessSnapshot {
         stale,
         max_age_ms,
@@ -1735,6 +1735,8 @@ fn exposure_block(reason: impl Into<String>) -> NativeRuntimeExposureGuardSnapsh
     exposure_block_with_values(reason, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, None)
 }
 
+// Each value is reported independently in the Python-compatible guard snapshot.
+#[allow(clippy::too_many_arguments)]
 fn exposure_block_with_values(
     reason: impl Into<String>,
     equity_usdt: f64,

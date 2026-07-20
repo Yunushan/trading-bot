@@ -277,7 +277,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("reqwest.workspace = true", core_cargo)
         self.assertIn("sha2.workspace = true", core_cargo)
         self.assertIn("tungstenite.workspace = true", core_cargo)
-        self.assertIn('tungstenite = { version = "0.27", features = ["native-tls"] }', rust_workspace_cargo)
+        self.assertIn('tungstenite = { version = "0.30", features = ["native-tls"] }', rust_workspace_cargo)
         self.assertIn("pub fn set_read_timeout", streams)
         self.assertIn("configure_websocket_read_timeout", streams)
         self.assertIn("pub fn connect_subscription_with_timeout", streams)

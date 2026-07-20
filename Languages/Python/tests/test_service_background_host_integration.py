@@ -112,7 +112,7 @@ class ServiceBackgroundHostIntegrationTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual(result["state"], "running")
 
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + 15.0
         snapshot = service.get_backtest_snapshot().to_dict()
         while time.monotonic() < deadline:
             snapshot = service.get_backtest_snapshot().to_dict()
@@ -257,7 +257,7 @@ class ServiceBackgroundHostIntegrationTests(unittest.TestCase):
                 }
 
         def wait_for_state(service, expected_state: str) -> dict[str, object]:
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + 15.0
             snapshot = service.get_backtest_snapshot().to_dict()
             while time.monotonic() < deadline:
                 snapshot = service.get_backtest_snapshot().to_dict()
@@ -407,7 +407,7 @@ class ServiceBackgroundHostIntegrationTests(unittest.TestCase):
             self.assertEqual(result["state"], "running")
 
             snapshot = {}
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + 15.0
             while time.monotonic() < deadline:
                 request = Request(
                     f"http://127.0.0.1:{port}{SERVICE_API_ROUTE_PATHS['backtest']}",

@@ -5211,6 +5211,28 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertTrue(any("native_source_sync.audit_path must be" in issue for issue in partial_binding))
 
+    def test_release_platform_probe_decodes_external_output_as_utf8_with_replacement(self):
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(b'browser output\\x90\\n'); "
+                "sys.stderr.buffer.write(b'browser diagnostic\\x90\\n'); "
+                "raise SystemExit(1)"
+            ),
+        ]
+
+        result = release_platform_probe._run_command(
+            "browser-contract",
+            command,
+            cwd=REPO_ROOT,
+        )
+
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("browser output\N{REPLACEMENT CHARACTER}", result["stdout"])
+        self.assertEqual("browser diagnostic\N{REPLACEMENT CHARACTER}", result["stderr"])
+
     def test_release_platform_probe_writes_source_binding_fields(self):
         target = {
             "id": "ubuntu-24_04-x64",

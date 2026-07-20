@@ -223,8 +223,6 @@ DEFAULT_DEPENDENCY_VERSION_TARGETS = [
     {"label": "PyQt6", "package": "PyQt6"},
     {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6"},
     {"label": "PyQt6-WebEngine", "package": "PyQt6-WebEngine"},
-    {"label": "numba", "package": "numba"},
-    {"label": "llvmlite", "package": "llvmlite"},
     {"label": "numpy", "package": "numpy"},
     {"label": "pandas", "package": "pandas"},
     {"label": "requests", "package": "requests"},

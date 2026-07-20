@@ -294,6 +294,8 @@ pub fn evaluate_per_trade_stop_loss(
         .collect()
 }
 
+// The inputs are separate exchange values to preserve the Python risk API shape.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_directional_futures_stop_loss(
     symbol: impl AsRef<str>,
     interval: impl AsRef<str>,
@@ -458,16 +460,12 @@ pub fn has_opposite_live(
         }
         let position_side = position.position_side.trim().to_uppercase();
         let amt = position.position_amt;
-        if opposite_side == "BUY" {
-            if (position_side == "LONG" && amt > tol)
-                || ((position_side == "BOTH" || position_side.is_empty()) && amt > tol)
-            {
-                return true;
-            }
-        } else if opposite_side == "SELL"
-            && ((position_side == "SHORT" && amt < -tol)
-                || ((position_side == "BOTH" || position_side.is_empty()) && amt < -tol))
-        {
+        let side_is_one_way_or_long = matches!(position_side.as_str(), "LONG" | "BOTH" | "");
+        let side_is_one_way_or_short = matches!(position_side.as_str(), "SHORT" | "BOTH" | "");
+        if opposite_side == "BUY" && side_is_one_way_or_long && amt > tol {
+            return true;
+        }
+        if opposite_side == "SELL" && side_is_one_way_or_short && amt < -tol {
             return true;
         }
     }
@@ -581,6 +579,8 @@ pub fn plan_close_opposite_position(
     }
 }
 
+// This maps a single position leg's independent exchange values into one directive.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_directional_leg(
     symbol: &str,
     interval: &str,
@@ -746,6 +746,8 @@ fn normalized_margin_ratio(value: f64) -> f64 {
     if value <= 1.0 { value * 100.0 } else { value }
 }
 
+// A plan preserves each request field for audit and execution parity.
+#[allow(clippy::too_many_arguments)]
 fn close_opposite_plan(
     allowed_to_open_now: bool,
     action: CloseOppositeAction,

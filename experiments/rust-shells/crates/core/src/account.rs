@@ -793,18 +793,14 @@ pub fn parse_futures_usdt_balance(
                     continue;
                 }
                 snapshot.asset = preferred_asset.to_owned();
-                if !has_total {
-                    if let Some(total) = total {
-                        snapshot.usdt_balance = total;
-                        snapshot.total_usdt_balance = total;
-                        has_total = true;
-                    }
+                if !has_total && let Some(total) = total {
+                    snapshot.usdt_balance = total;
+                    snapshot.total_usdt_balance = total;
+                    has_total = true;
                 }
-                if !has_available {
-                    if let Some(available) = available {
-                        snapshot.available_usdt_balance = available;
-                        has_available = true;
-                    }
+                if !has_available && let Some(available) = available {
+                    snapshot.available_usdt_balance = available;
+                    has_available = true;
                 }
                 if has_total && has_available {
                     break;

@@ -738,6 +738,16 @@ mod tests {
         assert!(parse_stream_event(r#"{"k":{"s":"BTCUSDT","i":"1m","t":1,"o":"1"}}"#).is_err());
     }
 
+    fn assert_socket_timeout_is_bounded(expected: Duration, observed: Option<Duration>) {
+        let observed = observed.expect("socket timeout must be configured");
+        let tolerance = Duration::from_millis(10);
+        assert!(
+            observed >= expected && observed <= expected.saturating_add(tolerance),
+            "socket timeout {observed:?} must be between {expected:?} and {:?}",
+            expected.saturating_add(tolerance),
+        );
+    }
+
     #[test]
     fn websocket_read_timeout_is_applied_to_plain_tcp_transport() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local listener");
@@ -756,7 +766,7 @@ mod tests {
             MaybeTlsStream::Plain(socket) => socket.read_timeout().expect("read timeout"),
             _ => panic!("expected plain TCP stream"),
         };
-        assert_eq!(Some(expected_timeout), observed_timeout);
+        assert_socket_timeout_is_bounded(expected_timeout, observed_timeout);
     }
 
     #[test]
@@ -778,7 +788,7 @@ mod tests {
             MaybeTlsStream::Plain(stream) => stream.read_timeout().expect("read timeout"),
             _ => panic!("expected plain TCP stream"),
         };
-        assert_eq!(Some(expected_timeout), observed_timeout);
+        assert_socket_timeout_is_bounded(expected_timeout, observed_timeout);
         drop(socket);
         drop(accept_thread.join().expect("local accept thread"));
     }

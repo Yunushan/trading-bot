@@ -77,6 +77,27 @@ def finish_snapshots(
     sorted_runs = sort_runs(run_records or [])
     run_payload = [build_backtest_run_record(item) for item in sorted_runs]
     error_payload = [build_backtest_error_record(item) for item in (error_records or [])[:10]]
+    adapter._runtime.set_execution_snapshot(
+        executor_kind="service-backtest-executor",
+        owner="service-process",
+        state="idle",
+        workload_kind="backtest-run",
+        session_id=session_id,
+        requested_job_count=int(summary.get("estimated_run_count") or 0),
+        active_engine_count=0,
+        progress_label=message,
+        progress_percent=progress_percent,
+        heartbeat_at=updated_at,
+        tick_count=adapter._progress_tick_count,
+        last_action=action,
+        last_message=message,
+        started_at=started_at,
+        source="service-backtest-executor",
+        notes=(
+            "Backtest execution is owned by the standalone service process.",
+            "The latest service-owned backtest session has finished.",
+        ),
+    )
     adapter._runtime.set_backtest_snapshot(
         build_backtest_snapshot(
             session_id=session_id,
@@ -101,24 +122,3 @@ def finish_snapshots(
         )
     )
     adapter._persist_backtest_snapshot()
-    adapter._runtime.set_execution_snapshot(
-        executor_kind="service-backtest-executor",
-        owner="service-process",
-        state="idle",
-        workload_kind="backtest-run",
-        session_id=session_id,
-        requested_job_count=int(summary.get("estimated_run_count") or 0),
-        active_engine_count=0,
-        progress_label=message,
-        progress_percent=progress_percent,
-        heartbeat_at=updated_at,
-        tick_count=adapter._progress_tick_count,
-        last_action=action,
-        last_message=message,
-        started_at=started_at,
-        source="service-backtest-executor",
-        notes=(
-            "Backtest execution is owned by the standalone service process.",
-            "The latest service-owned backtest session has finished.",
-        ),
-    )

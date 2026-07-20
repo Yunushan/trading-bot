@@ -1040,13 +1040,15 @@ fn shift_left(values: &[f64], offset: usize) -> Vec<f64> {
         .collect()
 }
 
+type IchimokuCloud = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+
 fn ichimoku_cloud(
     candles: &[BinanceKlineCandle],
     conversion_length: usize,
     base_length: usize,
     span_b_length: usize,
     displacement: usize,
-) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+) -> IchimokuCloud {
     let tenkan = rolling_midpoint(candles, conversion_length);
     let kijun = rolling_midpoint(candles, base_length);
     let unshifted_span_a = tenkan

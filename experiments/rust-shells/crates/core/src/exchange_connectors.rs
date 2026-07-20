@@ -229,8 +229,7 @@ pub fn build_exchange_support_payload(
             && (order_execution_exchange || uses_ccxt_order_routing))
             || (uses_broker && uses_broker_order_routing));
     let order_execution_supported =
-        (!uses_broker && exchange_supported && broker_supported && order_routing_supported)
-            || (uses_broker && broker_supported && order_routing_supported);
+        (uses_broker || exchange_supported) && broker_supported && order_routing_supported;
     let live_evidence_required =
         order_execution_supported && (uses_broker || !order_execution_exchange);
 
@@ -357,9 +356,7 @@ pub fn estimate_request_weight(path: impl AsRef<str>) -> f64 {
     }
     if lower.contains("exchangeinfo") {
         10.0
-    } else if lower.contains("balance") || lower.contains("account") {
-        5.0
-    } else if lower.contains("position") {
+    } else if lower.contains("balance") || lower.contains("account") || lower.contains("position") {
         5.0
     } else if lower.contains("klines") {
         4.0
