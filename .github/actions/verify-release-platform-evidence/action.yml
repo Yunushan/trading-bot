@@ -1,0 +1,55 @@
+name: Verify release platform evidence
+description: Require full current-source release-platform evidence before publishing tagged assets.
+
+inputs:
+  tag:
+    description: Release tag being published.
+    required: true
+  note:
+    description: Versioned release QA note.
+    required: true
+  evidence_dir:
+    description: Temporary directory for downloaded release-platform evidence.
+    required: false
+    default: ${{ runner.temp }}/release-platform-evidence
+
+runs:
+  using: composite
+  steps:
+    - id: release_qa
+      name: Resolve release QA evidence binding
+      shell: bash
+      run: |
+        set -euo pipefail
+        common_args=(
+          --tag "${{ inputs.tag }}"
+          --note "${{ inputs.note }}"
+          --require-current-revision
+          --allow-release-qa-commit
+          --require-platform-evidence-run
+        )
+        source_revision="$(python tools/check_release_qa.py "${common_args[@]}" --print-source-revision)"
+        evidence_run_id="$(python tools/check_release_qa.py "${common_args[@]}" --print-platform-evidence-run-id)"
+        echo "source_revision=${source_revision}" >> "${GITHUB_OUTPUT}"
+        echo "evidence_run_id=${evidence_run_id}" >> "${GITHUB_OUTPUT}"
+
+    - name: Download release platform evidence
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+      with:
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        run-id: ${{ steps.release_qa.outputs.evidence_run_id }}
+        pattern: release-platform-evidence-*
+        path: ${{ inputs.evidence_dir }}
+        merge-multiple: true
+
+    - name: Validate release platform evidence
+      shell: bash
+      run: |
+        set -euo pipefail
+        git checkout --detach "${{ steps.release_qa.outputs.source_revision }}"
+        python tools/check_release_platform_matrix.py \
+          --require-evidence \
+          --require-current-commit \
+          --require-clean-source \
+          --evidence-dir "${{ inputs.evidence_dir }}"

@@ -503,13 +503,28 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn('exit-code: "1"', workflow)
 
     def test_all_workflow_actions_are_pinned_to_immutable_commits(self):
+        action_pin_pattern = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"
         for workflow_path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
             workflow = workflow_path.read_text(encoding="utf-8")
             references = re.findall(r"(?m)^\s*uses:\s*([^\s#]+)", workflow)
             self.assertTrue(references, workflow_path)
             for reference in references:
                 with self.subTest(workflow=workflow_path.name, reference=reference):
-                    self.assertRegex(reference, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+                    if reference.startswith("./.github/actions/"):
+                        action_dir = (REPO_ROOT / reference[2:]).resolve()
+                        allowed_root = (REPO_ROOT / ".github" / "actions").resolve()
+                        self.assertTrue(action_dir.is_relative_to(allowed_root), reference)
+                        action_manifest = action_dir / "action.yml"
+                        self.assertTrue(action_manifest.is_file(), action_manifest)
+                        action_references = re.findall(
+                            r"(?m)^\s*uses:\s*([^\s#]+)",
+                            action_manifest.read_text(encoding="utf-8"),
+                        )
+                        self.assertTrue(action_references, action_manifest)
+                        for action_reference in action_references:
+                            self.assertRegex(action_reference, action_pin_pattern)
+                    else:
+                        self.assertRegex(reference, action_pin_pattern)
 
     def test_runtime_tool_version_remediations_are_actionable(self):
         module = _load_tool_version_module()
@@ -562,6 +577,16 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         for docs_text in docs.values():
             self.assertIn("python tools/bootstrap_local_dev.py --dry-run", docs_text)
+
+    def test_contributing_native_workspace_commands_use_existing_paths(self):
+        contributing = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+        self.assertIn("experiments/rust-shells/", contributing)
+        self.assertIn("cd experiments/rust-shells", contributing)
+        self.assertIn("experiments/native-cpp/", contributing)
+        self.assertIn("cmake -S experiments/native-cpp -B build/binance_cpp", contributing)
+        self.assertNotIn("Languages/Rust", contributing)
+        self.assertNotIn("Languages/C++", contributing)
 
     def test_runtime_tool_version_checker_reports_expected_shape(self):
         module = _load_tool_version_module()

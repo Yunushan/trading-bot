@@ -59,8 +59,8 @@ pip install -r requirements.service.txt
 
 Optional workspaces:
 
-- `Languages/Rust/` for Rust shells and shared crates
-- `Languages/C++/` for the native Qt preview path
+- `experiments/rust-shells/` for Rust shells and shared crates
+- `experiments/native-cpp/` for the native Qt preview path
 
 ## Validation
 
@@ -92,14 +92,14 @@ python tools/release_smoke.py --python-command "python" --skip-full-tests --manu
 Rust:
 
 ```bash
-cd Languages/Rust
+cd experiments/rust-shells
 cargo check --workspace
 ```
 
 C++:
 
 ```bash
-cmake -S Languages/C++ -B build/binance_cpp
+cmake -S experiments/native-cpp -B build/binance_cpp
 cmake --build build/binance_cpp
 ```
 

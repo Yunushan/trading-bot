@@ -7,7 +7,9 @@ param(
   [string]$Name = "Trading-Bot-Python",
   [switch]$Console,
   [switch]$SkipDependencyInstall,
-  [string]$ReleaseTag = ""
+  [string]$ReleaseTag = "",
+  [string]$DistPath = "",
+  [string]$WorkPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +18,18 @@ $repoRoot = (Resolve-Path (Join-Path $pythonRoot "..\\..")).Path
 $desktopEntryScript = Join-Path $repoRoot "apps\\desktop-pyqt\\main.py"
 $releaseInfoPath = ""
 $pythonCommand = $Python
+$distRoot = if ([string]::IsNullOrWhiteSpace($DistPath)) {
+  Join-Path $pythonRoot "dist"
+}
+else {
+  [System.IO.Path]::GetFullPath($DistPath)
+}
+$workRoot = if ([string]::IsNullOrWhiteSpace($WorkPath)) {
+  Join-Path $pythonRoot "build"
+}
+else {
+  [System.IO.Path]::GetFullPath($WorkPath)
+}
 if (Test-Path -LiteralPath $Python -PathType Leaf) {
   $pythonCommand = (Resolve-Path -LiteralPath $Python).Path
 }
@@ -47,7 +61,7 @@ try {
     }
   }
   if (-not [string]::IsNullOrWhiteSpace($effectiveReleaseTag)) {
-    $releaseInfoPath = Join-Path $pythonRoot "build\\release-info.json"
+    $releaseInfoPath = Join-Path $workRoot "release-info.json"
     New-Item -ItemType Directory -Force -Path (Split-Path $releaseInfoPath -Parent) | Out-Null
     $releaseInfoPayload = @{
       release_tag = $effectiveReleaseTag
@@ -114,7 +128,9 @@ else:
     "--onefile",
     "--clean",
     "--noconfirm",
-    "--specpath", "build",
+    "--distpath", $distRoot,
+    "--workpath", $workRoot,
+    "--specpath", $workRoot,
     "--paths", $repoRoot,
     "--paths", $pythonRoot,
     "--hidden-import", "binance.client",
@@ -198,7 +214,7 @@ else:
     }
   }
 
-  $binaryPath = Join-Path $pythonRoot "dist\$Name.exe"
+  $binaryPath = Join-Path $distRoot "$Name.exe"
   if (!(Test-Path $binaryPath)) {
     throw "Built executable not found at $binaryPath"
   }
