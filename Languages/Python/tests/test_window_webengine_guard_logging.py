@@ -25,6 +25,17 @@ except Exception as exc:
 
 @unittest.skipIf(not PYQT_AVAILABLE, f"PyQt6 unavailable: {PYQT_UNAVAILABLE_REASON}")
 class WindowWebEngineGuardLoggingTests(unittest.TestCase):
+    def test_bounded_env_int_uses_default_for_invalid_values_and_clamps_bounds(self):
+        helper = window_webengine_guard_runtime._bounded_env_int
+        with mock.patch.dict(os.environ, {"BOT_TEST_DELAY": "not-a-number"}, clear=False):
+            self.assertEqual(250, helper("BOT_TEST_DELAY", 250, 100, 500))
+        with mock.patch.dict(os.environ, {"BOT_TEST_DELAY": "25"}, clear=False):
+            self.assertEqual(100, helper("BOT_TEST_DELAY", 250, 100, 500))
+        with mock.patch.dict(os.environ, {"BOT_TEST_DELAY": "750"}, clear=False):
+            self.assertEqual(500, helper("BOT_TEST_DELAY", 250, 100, 500))
+        with mock.patch.dict(os.environ, {"BOT_TEST_DELAY": "400"}, clear=False):
+            self.assertEqual(400, helper("BOT_TEST_DELAY", 250, 100, 500))
+
     def test_record_webengine_guard_exception_uses_window_debug_logger(self):
         class _Window:
             def __init__(self):

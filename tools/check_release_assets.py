@@ -24,14 +24,21 @@ VERSION_PATTERN = re.compile(
     r"(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)"
 )
 
-WINDOWS_ASSET_TAGS = ("windows-x64",)
+WINDOWS_ASSET_TAGS = (
+    "windows-x64",
+    "windows-arm64",
+)
 LINUX_ARCHES = (
     ("x86_64", "amd64", "x86_64"),
+    ("aarch64", "arm64", "aarch64"),
 )
 MACOS_ASSET_TAGS = (
+    "macos-14-arm64",
+    "macos-15-intel",
     "macos-15-arm64",
+    "macos-26-arm64",
 )
-OPTIONAL_RUST_PREFIXES = (
+REQUIRED_RUST_PREFIXES = (
     "Trading-Bot-Rust-tauri",
 )
 
@@ -75,8 +82,8 @@ def _build_expected_assets(tag: str) -> tuple[str, list[ExpectedAsset]]:
                 ExpectedAsset(f"Trading-Bot-C++-{asset_tag}-{version}.zip", True, group),
             ]
         )
-        for rust_prefix in OPTIONAL_RUST_PREFIXES:
-            assets.append(ExpectedAsset(f"{rust_prefix}-{asset_tag}-{version}.exe", False, group))
+        for rust_prefix in REQUIRED_RUST_PREFIXES:
+            assets.append(ExpectedAsset(f"{rust_prefix}-{asset_tag}-{version}.exe", True, group))
 
     for arch, deb_arch, rpm_arch in LINUX_ARCHES:
         group = f"Linux {arch}"
@@ -89,8 +96,8 @@ def _build_expected_assets(tag: str) -> tuple[str, list[ExpectedAsset]]:
                 ExpectedAsset(f"trading-bot-python_{version}_{rpm_arch}.rpm", True, group),
             ]
         )
-        for rust_prefix in OPTIONAL_RUST_PREFIXES:
-            assets.append(ExpectedAsset(f"{rust_prefix}-linux-{arch}-{version}.tar.gz", False, group))
+        for rust_prefix in REQUIRED_RUST_PREFIXES:
+            assets.append(ExpectedAsset(f"{rust_prefix}-linux-{arch}-{version}.tar.gz", True, group))
 
     for asset_tag in MACOS_ASSET_TAGS:
         group = f"macOS {asset_tag.removeprefix('macos-')}"
@@ -101,8 +108,8 @@ def _build_expected_assets(tag: str) -> tuple[str, list[ExpectedAsset]]:
                 ExpectedAsset(f"Trading-Bot-C++-{asset_tag}-{version}.zip", True, group),
             ]
         )
-        for rust_prefix in OPTIONAL_RUST_PREFIXES:
-            assets.append(ExpectedAsset(f"{rust_prefix}-{asset_tag}-{version}.zip", False, group))
+        for rust_prefix in REQUIRED_RUST_PREFIXES:
+            assets.append(ExpectedAsset(f"{rust_prefix}-{asset_tag}-{version}.zip", True, group))
 
     return version, assets
 

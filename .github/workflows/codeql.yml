@@ -1,0 +1,61 @@
+name: CodeQL
+
+"on":
+  push:
+    branches:
+      - main
+    paths:
+      - "Languages/Python/**"
+      - "apps/web-dashboard/**"
+      - "apps/mobile-client/**"
+      - "experiments/native-cpp/**"
+      - "experiments/rust-shells/**"
+      - ".github/workflows/codeql.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "Languages/Python/**"
+      - "apps/web-dashboard/**"
+      - "apps/mobile-client/**"
+      - "experiments/native-cpp/**"
+      - "experiments/rust-shells/**"
+      - ".github/workflows/codeql.yml"
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: c-cpp
+            build-mode: none
+          - language: rust
+            build-mode: none
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e0647621c2984b5ed2f768cb892365bf2a616ad1 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@e0647621c2984b5ed2f768cb892365bf2a616ad1 # v4
+        with:
+          category: "/language:${{ matrix.language }}"

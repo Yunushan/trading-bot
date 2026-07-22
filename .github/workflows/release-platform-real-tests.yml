@@ -187,12 +187,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python -m pip install 'aqtinstall==3.3.0'
-          python -m aqt install-qt --outputdir "$env:RUNNER_TEMP/qt" windows desktop 6.10.3 win64_msvc2022_64 -m qtwebengine qtwebsockets
+          python -m aqt install-qt --outputdir "$env:RUNNER_TEMP/qt" windows desktop 6.10.3 win64_msvc2022_64 -m qtwebengine qtwebsockets qtwebchannel
           $qtConfig = Get-ChildItem -Path "$env:RUNNER_TEMP/qt" -Recurse -Filter Qt6Config.cmake | Select-Object -First 1
           if ($null -eq $qtConfig) { throw 'Qt6Config.cmake was not installed.' }
           $qt6Dir = $qtConfig.Directory.FullName
           $qtRoot = (Resolve-Path (Join-Path $qt6Dir '..\..\..')).Path
+          $webEngineConfig = Join-Path $qtRoot 'lib/cmake/Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake'
+          if (!(Test-Path $webEngineConfig)) { throw "Qt6WebEngineWidgetsConfig.cmake was not installed at $webEngineConfig." }
           "Qt6_DIR=$qt6Dir" | Add-Content -Path $env:GITHUB_ENV
+          "CMAKE_PREFIX_PATH=$qtRoot" | Add-Content -Path $env:GITHUB_ENV
           (Join-Path $qtRoot 'bin') | Add-Content -Path $env:GITHUB_PATH
 
       - name: Install Qt for Unix native release smoke
@@ -208,12 +211,14 @@ jobs:
             host=linux
             arch=linux_gcc_64
           fi
-          python -m aqt install-qt --outputdir "$RUNNER_TEMP/qt" "$host" desktop 6.10.3 "$arch" -m qtwebengine qtwebsockets
+          python -m aqt install-qt --outputdir "$RUNNER_TEMP/qt" "$host" desktop 6.10.3 "$arch" -m qtwebengine qtwebsockets qtwebchannel
           qt_config="$(find "$RUNNER_TEMP/qt" -path '*/lib/cmake/Qt6/Qt6Config.cmake' -print -quit)"
           test -n "$qt_config"
           qt6_dir="$(dirname "$qt_config")"
           qt_root="$(cd "$qt6_dir/../../.." && pwd)"
+          test -f "$qt_root/lib/cmake/Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake"
           echo "Qt6_DIR=$qt6_dir" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$qt_root" >> "$GITHUB_ENV"
           echo "$qt_root/bin" >> "$GITHUB_PATH"
 
       - name: Validate matrix contract

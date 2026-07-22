@@ -3,6 +3,14 @@ from __future__ import annotations
 import sys
 
 
+def _optional_qt_call(callback, *args) -> bool:
+    try:
+        callback(*args)
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    return True
+
+
 def _create_qt_application(
     *,
     QApplication,
@@ -17,18 +25,17 @@ def _create_qt_application(
 ):
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
     if sys.platform == "win32":
-        try:
-            QtCore.QCoreApplication.setAttribute(
-                QtCore.Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings,
+        _optional_qt_call(
+            QtCore.QCoreApplication.setAttribute,
+            QtCore.Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings,
+            True,
+        )
+        if env_flag("BOT_FORCE_SOFTWARE_OPENGL"):
+            _optional_qt_call(
+                QtCore.QCoreApplication.setAttribute,
+                QtCore.Qt.ApplicationAttribute.AA_UseSoftwareOpenGL,
                 True,
             )
-        except Exception:
-            pass
-        if env_flag("BOT_FORCE_SOFTWARE_OPENGL"):
-            try:
-                QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
-            except Exception:
-                pass
 
     app = QApplication(sys.argv)
     app.setApplicationName(app_display_name)
@@ -39,15 +46,9 @@ def _create_qt_application(
         uninstall_startup_window_suppression=uninstall_startup_window_suppression,
         uninstall_cbt_startup_window_suppression=uninstall_cbt_startup_window_suppression,
     )
-    try:
-        QtGui.QGuiApplication.setDesktopFileName(app_user_model_id)
-    except Exception:
-        pass
+    _optional_qt_call(QtGui.QGuiApplication.setDesktopFileName, app_user_model_id)
     if sys.platform == "win32":
-        try:
-            app.setQuitOnLastWindowClosed(False)
-        except Exception:
-            pass
+        _optional_qt_call(app.setQuitOnLastWindowClosed, False)
     return app
 
 
@@ -59,22 +60,16 @@ def _load_application_icon(*, QtGui, app, env_flag, force_app_icon: bool):
     if not disable_app_icon:
         try:
             icon = load_app_icon()
-        except Exception:
+        except (OSError, RuntimeError, TypeError):
             icon = QtGui.QIcon()
     if (force_app_icon or not disable_app_icon) and icon.isNull():
         try:
             fallback_path = find_primary_icon_file()
-        except Exception:
+        except OSError:
             fallback_path = None
         if fallback_path and fallback_path.is_file():
-            try:
-                icon = QtGui.QIcon(str(fallback_path))
-            except Exception:
-                icon = QtGui.QIcon()
+            icon = QtGui.QIcon(str(fallback_path))
     if not icon.isNull():
-        try:
-            app.setWindowIcon(icon)
-            QtGui.QGuiApplication.setWindowIcon(icon)
-        except Exception:
-            pass
+        _optional_qt_call(app.setWindowIcon, icon)
+        _optional_qt_call(QtGui.QGuiApplication.setWindowIcon, icon)
     return icon, disable_app_icon

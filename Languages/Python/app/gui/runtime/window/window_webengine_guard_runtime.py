@@ -31,6 +31,14 @@ def _record_webengine_guard_exception(self, context: str, exc: BaseException) ->
         return
 
 
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
 def schedule_tradingview_prewarm(self) -> None:
     if getattr(self, "_tradingview_prewarm_scheduled", False) or getattr(self, "_tradingview_prewarmed", False):
         return
@@ -41,11 +49,7 @@ def schedule_tradingview_prewarm(self) -> None:
     flag = str(os.environ.get("BOT_PREWARM_TRADINGVIEW", "0")).strip().lower()
     if flag in {"0", "false", "no", "off"}:
         return
-    try:
-        delay_ms = int(os.environ.get("BOT_PREWARM_TRADINGVIEW_DELAY_MS") or 1200)
-    except Exception:
-        delay_ms = 1200
-    delay_ms = max(100, min(delay_ms, 10000))
+    delay_ms = _bounded_env_int("BOT_PREWARM_TRADINGVIEW_DELAY_MS", 1200, 100, 10000)
     self._tradingview_prewarm_scheduled = True
     QtCore.QTimer.singleShot(delay_ms, self._prewarm_tradingview)
 
@@ -58,11 +62,7 @@ def schedule_webengine_runtime_prewarm(self) -> None:
     flag = str(os.environ.get("BOT_PREWARM_WEBENGINE", "0")).strip().lower()
     if flag in {"0", "false", "no", "off"}:
         return
-    try:
-        delay_ms = int(os.environ.get("BOT_PREWARM_WEBENGINE_DELAY_MS") or 1800)
-    except Exception:
-        delay_ms = 1800
-    delay_ms = max(250, min(delay_ms, 15000))
+    delay_ms = _bounded_env_int("BOT_PREWARM_WEBENGINE_DELAY_MS", 1800, 250, 15000)
     self._webengine_runtime_prewarm_scheduled = True
     QtCore.QTimer.singleShot(delay_ms, self._maybe_run_deferred_webengine_prewarm)
 
@@ -153,11 +153,7 @@ def prewarm_webengine_runtime(
         _record_webengine_guard_exception(self, "prewarm_create_view", exc)
         return
 
-    try:
-        hold_ms = int(os.environ.get("BOT_PREWARM_WEBENGINE_HOLD_MS") or 2200)
-    except Exception:
-        hold_ms = 2200
-    hold_ms = max(500, min(hold_ms, 10000))
+    hold_ms = _bounded_env_int("BOT_PREWARM_WEBENGINE_HOLD_MS", 2200, 500, 10000)
 
     def _cleanup():
         view_obj = getattr(self, "_webengine_runtime_prewarm_view", None)
@@ -189,16 +185,8 @@ def start_tradingview_visibility_guard(self) -> None:
         return
     if getattr(self, "_tv_visibility_guard_active", False):
         return
-    try:
-        duration_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_GUARD_MS") or 2500)
-    except Exception:
-        duration_ms = 2500
-    duration_ms = max(500, min(duration_ms, 8000))
-    try:
-        interval_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_GUARD_INTERVAL_MS") or 50)
-    except Exception:
-        interval_ms = 50
-    interval_ms = max(20, min(interval_ms, 200))
+    duration_ms = _bounded_env_int("BOT_TRADINGVIEW_VISIBILITY_GUARD_MS", 2500, 500, 8000)
+    interval_ms = _bounded_env_int("BOT_TRADINGVIEW_VISIBILITY_GUARD_INTERVAL_MS", 50, 20, 200)
 
     timer = QtCore.QTimer(self)
     timer.setInterval(interval_ms)
@@ -235,11 +223,7 @@ def start_tradingview_visibility_watchdog(self) -> None:
     flag = str(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_WATCHDOG", "1")).strip().lower()
     if flag in {"0", "false", "no", "off"}:
         return
-    try:
-        interval_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_WATCHDOG_INTERVAL_MS") or 200)
-    except Exception:
-        interval_ms = 200
-    interval_ms = max(50, min(interval_ms, 1000))
+    interval_ms = _bounded_env_int("BOT_TRADINGVIEW_VISIBILITY_WATCHDOG_INTERVAL_MS", 200, 50, 1000)
     timer = QtCore.QTimer(self)
     timer.setInterval(interval_ms)
     self._tv_visibility_watchdog_active = True
@@ -262,11 +246,7 @@ def start_tradingview_visibility_watchdog(self) -> None:
 def start_tradingview_close_guard(self) -> None:
     if sys.platform != "win32":
         return
-    try:
-        duration_ms = int(os.environ.get("BOT_TRADINGVIEW_CLOSE_GUARD_MS") or 2500)
-    except Exception:
-        duration_ms = 2500
-    duration_ms = max(500, min(duration_ms, 8000))
+    duration_ms = _bounded_env_int("BOT_TRADINGVIEW_CLOSE_GUARD_MS", 2500, 500, 8000)
     try:
         self._tv_close_guard_until = time.monotonic() + (duration_ms / 1000.0)
     except Exception:
@@ -285,11 +265,7 @@ def start_webengine_close_guard(self, *, webengine_charts_allowed) -> None:
         return
     if not webengine_charts_allowed():
         return
-    try:
-        duration_ms = int(os.environ.get("BOT_WEBENGINE_CLOSE_GUARD_MS") or 3500)
-    except Exception:
-        duration_ms = 3500
-    duration_ms = max(800, min(duration_ms, 15000))
+    duration_ms = _bounded_env_int("BOT_WEBENGINE_CLOSE_GUARD_MS", 3500, 800, 15000)
     try:
         until = time.monotonic() + (duration_ms / 1000.0)
     except Exception:
@@ -320,11 +296,7 @@ def start_webengine_visibility_watchdog(self, *, allow_guard_bypass, restore_win
         return
     if getattr(self, "_webengine_visibility_watchdog_active", False):
         return
-    try:
-        interval_ms = int(os.environ.get("BOT_WEBENGINE_CLOSE_GUARD_WATCHDOG_INTERVAL_MS") or 120)
-    except Exception:
-        interval_ms = 120
-    interval_ms = max(30, min(interval_ms, 1000))
+    interval_ms = _bounded_env_int("BOT_WEBENGINE_CLOSE_GUARD_WATCHDOG_INTERVAL_MS", 120, 30, 1000)
     timer = QtCore.QTimer(self)
     timer.setInterval(interval_ms)
     self._webengine_visibility_watchdog_active = True

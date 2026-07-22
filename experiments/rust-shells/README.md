@@ -108,7 +108,7 @@ TRADING_BOT_RUST_LIVE_SMOKE=1 \
 BINANCE_API_KEY=... \
 BINANCE_API_SECRET=... \
 BINANCE_TESTNET=true \
-cargo run -p trading-bot-rust -- --native-live-smoke
+cargo run --locked -p trading-bot-rust -- --native-live-smoke
 ```
 
 Optional inputs:
@@ -121,7 +121,7 @@ Before running the live smoke, operators can check prerequisites without
 network access or secret output:
 
 ```bash
-cargo run -p trading-bot-rust -- --native-live-smoke-preflight
+cargo run --locked -p trading-bot-rust -- --native-live-smoke-preflight
 ```
 
 The preflight prints redacted JSON with explicit prerequisite booleans, does not contact Binance,
@@ -189,10 +189,10 @@ Market-data evidence can also be collected separately without account
 credentials:
 
 ```bash
-cargo run -p trading-bot-rust -- --native-live-market-smoke-preflight
+cargo run --locked -p trading-bot-rust -- --native-live-market-smoke-preflight
 TRADING_BOT_RUST_MARKET_SMOKE=1 \
 BINANCE_TESTNET=true \
-cargo run -p trading-bot-rust -- --native-live-market-smoke
+cargo run --locked -p trading-bot-rust -- --native-live-market-smoke
 ```
 
 That public/read-only command writes only
@@ -224,7 +224,7 @@ order audit, runtime order engine, and risk-close behavior without using live
 credentials:
 
 ```bash
-cargo run -p trading-bot-rust -- --write-local-recovery-evidence
+cargo run --locked -p trading-bot-rust -- --write-local-recovery-evidence
 ```
 
 This writes `rust-native-live-stream-recovery.json` and
@@ -588,8 +588,8 @@ diagnostics, LLM advisory, and startup/packaging/platform integration.
 From `experiments/rust-shells`:
 
 ```bash
-cargo run -p trading-bot-rust
-cargo run -p trading-bot-tauri-desktop
+cargo run --locked -p trading-bot-rust
+cargo run --locked -p trading-bot-tauri-desktop
 ```
 
 If `cargo` is not installed yet, install Rust with `rustup` first.

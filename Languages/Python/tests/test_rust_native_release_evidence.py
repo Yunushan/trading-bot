@@ -1172,7 +1172,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     token=None,
                 )
 
-    def test_required_rust_release_assets_match_tier_one_desktop_targets(self):
+    def test_required_rust_release_assets_match_tagged_desktop_publishers(self):
         version, assets = release_assets._build_expected_assets("v1.2.3")
         required_rust_assets = {
             asset.name for asset in assets if asset.required and asset.name.startswith("Trading-Bot-Rust-")
@@ -1189,8 +1189,21 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(
             {
                 "Trading-Bot-Rust-windows-x64-1.2.3.exe",
+                "Trading-Bot-Rust-tauri-windows-x64-1.2.3.exe",
+                "Trading-Bot-Rust-windows-arm64-1.2.3.exe",
+                "Trading-Bot-Rust-tauri-windows-arm64-1.2.3.exe",
                 "Trading-Bot-Rust-linux-x86_64-1.2.3.tar.gz",
+                "Trading-Bot-Rust-tauri-linux-x86_64-1.2.3.tar.gz",
+                "Trading-Bot-Rust-linux-aarch64-1.2.3.tar.gz",
+                "Trading-Bot-Rust-tauri-linux-aarch64-1.2.3.tar.gz",
+                "Trading-Bot-Rust-macos-14-arm64-1.2.3.zip",
+                "Trading-Bot-Rust-tauri-macos-14-arm64-1.2.3.zip",
+                "Trading-Bot-Rust-macos-15-intel-1.2.3.zip",
+                "Trading-Bot-Rust-tauri-macos-15-intel-1.2.3.zip",
                 "Trading-Bot-Rust-macos-15-arm64-1.2.3.zip",
+                "Trading-Bot-Rust-tauri-macos-15-arm64-1.2.3.zip",
+                "Trading-Bot-Rust-macos-26-arm64-1.2.3.zip",
+                "Trading-Bot-Rust-tauri-macos-26-arm64-1.2.3.zip",
             },
             required_rust_assets,
         )

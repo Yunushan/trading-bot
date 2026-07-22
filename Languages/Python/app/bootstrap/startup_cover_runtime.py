@@ -245,29 +245,35 @@ def _show_native_startup_cover() -> _NativeStartupCover | None:
         user32.SendMessageW(hwnd, STM_SETIMAGE, IMAGE_BITMAP, bitmap)
         user32.SetWindowPos(hwnd, HWND_TOPMOST, left, top, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW)
         user32.UpdateWindow(hwnd)
-        return _NativeStartupCover(hwnd=hwnd, hbitmap=bitmap)
+        cover = _NativeStartupCover(hwnd=hwnd, hbitmap=bitmap)
+        hwnd = 0
+        bitmap = 0
+        return cover
     except Exception:
-        if hwnd:
-            try:
-                user32.DestroyWindow(hwnd)
-            except Exception:
-                pass
-        if bitmap:
-            try:
-                gdi32.DeleteObject(bitmap)
-            except Exception:
-                pass
         return None
     finally:
-        try:
-            if mem_dc:
+        if mem_dc:
+            try:
                 if old_obj:
                     gdi32.SelectObject(mem_dc, old_obj)
+            except (AttributeError, OSError, TypeError, ValueError):
+                pass
+            try:
                 gdi32.DeleteDC(mem_dc)
-        except Exception:
-            pass
+            except (AttributeError, OSError, TypeError, ValueError):
+                pass
         try:
             if screen_dc:
                 user32.ReleaseDC(0, screen_dc)
+        except Exception:
+            pass
+        try:
+            if hwnd:
+                user32.DestroyWindow(hwnd)
+        except Exception:
+            pass
+        try:
+            if bitmap:
+                gdi32.DeleteObject(bitmap)
         except Exception:
             pass

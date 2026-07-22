@@ -49,6 +49,7 @@ def apply_taskbar_metadata(
     if hr != 0 or not store_ptr:
         return False
     store = store_ptr
+    metadata_applied = False
     try:
         if app_id:
             shared.set_prop_string(store, shared.PKEY_AppUserModel_ID, app_id)
@@ -60,13 +61,16 @@ def apply_taskbar_metadata(
             icon_str = f"{Path(icon_path).resolve()},0"
             shared.set_prop_string(store, shared.PKEY_RelaunchIconResource, icon_str)
         commit = store.contents.lpVtbl.contents.Commit
-        commit(store)
+        metadata_applied = commit(store) == 0
     except Exception:
-        pass
+        metadata_applied = False
     finally:
-        release = store.contents.lpVtbl.contents.Release
-        release(store)
-    return True
+        try:
+            release = store.contents.lpVtbl.contents.Release
+            release(store)
+        except Exception:
+            metadata_applied = False
+    return metadata_applied
 
 
 def ensure_taskbar_visible(window) -> bool:

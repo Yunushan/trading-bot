@@ -7,6 +7,7 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import os
+import stat
 from pathlib import Path
 
 
@@ -26,13 +27,21 @@ def _service_api_token_from_file() -> str:
         return ""
     path = Path(configured_path).expanduser()
     try:
-        if not path.is_file():
-            raise RuntimeError(f"{SERVICE_API_TOKEN_FILE_ENV} does not point to a readable file.")
-        if path.stat().st_size > MAX_SERVICE_API_TOKEN_FILE_BYTES:
-            raise RuntimeError(
-                f"{SERVICE_API_TOKEN_FILE_ENV} exceeds the {MAX_SERVICE_API_TOKEN_FILE_BYTES}-byte safety limit."
-            )
-        return path.read_text(encoding="utf-8").strip()
+        with path.open("r", encoding="utf-8") as handle:
+            file_stat = os.fstat(handle.fileno())
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise RuntimeError(f"{SERVICE_API_TOKEN_FILE_ENV} does not point to a readable regular file.")
+            if file_stat.st_size > MAX_SERVICE_API_TOKEN_FILE_BYTES:
+                raise RuntimeError(
+                    f"{SERVICE_API_TOKEN_FILE_ENV} exceeds the {MAX_SERVICE_API_TOKEN_FILE_BYTES}-byte safety limit."
+                )
+            if os.name != "nt" and file_stat.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                raise RuntimeError(
+                    f"{SERVICE_API_TOKEN_FILE_ENV} must not grant group or other permissions on POSIX hosts."
+                )
+            return handle.read().strip()
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{SERVICE_API_TOKEN_FILE_ENV} does not point to a readable file.") from exc
     except OSError as exc:
         raise RuntimeError(f"Unable to read {SERVICE_API_TOKEN_FILE_ENV}.") from exc
 
@@ -89,7 +98,33 @@ def service_api_url_scheme() -> str:
     return "https" if certfile and keyfile else "http"
 
 
+def _validate_service_api_tls_files() -> tuple[str, str, bool, bool]:
+    certfile, keyfile, trusted_proxy_tls, trusted_loopback_proxy = service_api_tls_settings()
+    if not certfile and not keyfile:
+        return certfile, keyfile, trusted_proxy_tls, trusted_loopback_proxy
+    if not certfile or not keyfile:
+        raise RuntimeError(
+            f"Configure both {SERVICE_API_TLS_CERTFILE_ENV} and {SERVICE_API_TLS_KEYFILE_ENV}, "
+            "or remove both settings."
+        )
+    if not Path(certfile).is_file():
+        raise RuntimeError("The configured non-loopback service API TLS certificate or key file does not exist.")
+    try:
+        with Path(keyfile).open("rb") as handle:
+            file_stat = os.fstat(handle.fileno())
+    except FileNotFoundError as exc:
+        raise RuntimeError("The configured non-loopback service API TLS certificate or key file does not exist.") from exc
+    except OSError as exc:
+        raise RuntimeError("Unable to read the configured service API TLS private-key file.") from exc
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise RuntimeError("The configured service API TLS private-key path is not a regular file.")
+    if os.name != "nt" and file_stat.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise RuntimeError("The configured service API TLS private-key file must not grant group or other permissions.")
+    return certfile, keyfile, trusted_proxy_tls, trusted_loopback_proxy
+
+
 def validate_service_api_exposure(host: str | None, token: str | None = None) -> None:
+    certfile, keyfile, trusted_proxy_tls, trusted_loopback_proxy = _validate_service_api_tls_files()
     if not host_requires_service_api_token(host):
         return
     resolved_token = resolve_service_api_token(token)
@@ -110,17 +145,7 @@ def validate_service_api_exposure(host: str | None, token: str | None = None) ->
             f"{SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV} is only allowed when the service API "
             "binds to a loopback host."
         )
-    certfile, keyfile, trusted_proxy_tls, trusted_loopback_proxy = service_api_tls_settings()
-    if certfile or keyfile:
-        if not certfile or not keyfile:
-            raise RuntimeError(
-                f"Configure both {SERVICE_API_TLS_CERTFILE_ENV} and {SERVICE_API_TLS_KEYFILE_ENV}, "
-                "or remove both settings."
-            )
-        if not Path(certfile).is_file() or not Path(keyfile).is_file():
-            raise RuntimeError(
-                "The configured non-loopback service API TLS certificate or key file does not exist."
-            )
+    if certfile and keyfile:
         return
     if trusted_proxy_tls or trusted_loopback_proxy:
         return

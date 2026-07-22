@@ -10,6 +10,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from rust_command import run_cargo_with_secure_wsl_fallback
+except ModuleNotFoundError:  # pragma: no cover - exercised by package imports
+    from tools.rust_command import run_cargo_with_secure_wsl_fallback
+
 
 @dataclass(frozen=True, slots=True)
 class Check:
@@ -296,7 +301,7 @@ def _checks(
         ),
         Check(
             "rust native local recovery evidence",
-            (python, "tools/check_rust_native_local_recovery_evidence.py", "--json"),
+            (python, "tools/check_rust_native_local_recovery_evidence.py", "--json", "--timeout", "900"),
             root,
             remediation=(
                 "Ensure Rust is installed and Cargo can securely access its dependency registry; "
@@ -503,16 +508,25 @@ def _remediation_for(check: Check, *, returncode: int | None, stdout: str, stder
 def _run_check(check: Check, *, verbose: bool) -> dict[str, object]:
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    execution_environment = "native"
     try:
-        result = subprocess.run(
-            list(check.command),
-            cwd=check.cwd,
-            capture_output=True,
-            text=True,
-            timeout=check.timeout_seconds,
-            check=False,
-            env=env,
-        )
+        if check.name in {"rust workspace check", "rust core tests"}:
+            result, execution_environment = run_cargo_with_secure_wsl_fallback(
+                list(check.command),
+                cwd=check.cwd,
+                env=env,
+                timeout=check.timeout_seconds,
+            )
+        else:
+            result = subprocess.run(
+                list(check.command),
+                cwd=check.cwd,
+                capture_output=True,
+                text=True,
+                timeout=check.timeout_seconds,
+                check=False,
+                env=env,
+            )
     except (OSError, subprocess.SubprocessError) as exc:
         return {
             "name": check.name,
@@ -546,6 +560,8 @@ def _run_check(check: Check, *, verbose: bool) -> dict[str, object]:
         "stdout": stdout,
         "stderr": stderr,
     }
+    if check.name in {"rust workspace check", "rust core tests"}:
+        payload["execution_environment"] = execution_environment
     if advisory_reason:
         payload["advisory_reason"] = advisory_reason
     remediation = _remediation_for(check, returncode=result.returncode, stdout=stdout, stderr=stderr)

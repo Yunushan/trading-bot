@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from rust_command import run_cargo_with_secure_wsl_fallback
+except ModuleNotFoundError:  # pragma: no cover - exercised by package imports
+    from tools.rust_command import run_cargo_with_secure_wsl_fallback
+
+try:
     from app.native_parity import native_python_source_contract_hash
 except ModuleNotFoundError:  # pragma: no cover - exercised when run from repo root
     import sys
@@ -82,6 +87,7 @@ def _parse_stdout_json(stdout: str) -> tuple[dict[str, Any] | None, str]:
 def _preflight_env(evidence_dir: Path, *, with_dummy_credentials: bool) -> dict[str, str]:
     env = os.environ.copy()
     env["RUST_NATIVE_RUNTIME_EVIDENCE_DIR"] = str(evidence_dir)
+    env["TRADING_BOT_COMMIT"] = _current_git_commit()
     env["BINANCE_TESTNET"] = "true"
     env.pop("BINANCE_API_KEY", None)
     env.pop("BINANCE_API_SECRET", None)
@@ -96,6 +102,7 @@ def _preflight_env(evidence_dir: Path, *, with_dummy_credentials: bool) -> dict[
 def _market_preflight_env(evidence_dir: Path, *, confirmed: bool) -> dict[str, str]:
     env = os.environ.copy()
     env["RUST_NATIVE_RUNTIME_EVIDENCE_DIR"] = str(evidence_dir)
+    env["TRADING_BOT_COMMIT"] = _current_git_commit()
     env["BINANCE_TESTNET"] = "true"
     env.pop("BINANCE_API_KEY", None)
     env.pop("BINANCE_API_SECRET", None)
@@ -117,23 +124,20 @@ def _run_preflight(
         return {
             "ok": False,
             "returncode": None,
-            "command": "cargo run -p trading-bot-rust -- --native-live-smoke-preflight",
+            "command": "cargo run --locked -p trading-bot-rust -- --native-live-smoke-preflight",
             "stdout_tail": "",
             "stderr_tail": "cargo was not found on PATH",
             "payload": None,
             "issues": ["cargo was not found on PATH"],
         }
 
-    command = [cargo, "run", "-p", "trading-bot-rust", "--", "--native-live-smoke-preflight"]
+    command = [cargo, "run", "--locked", "-p", "trading-bot-rust", "--", "--native-live-smoke-preflight"]
     try:
-        result = subprocess.run(
+        result, execution_environment = run_cargo_with_secure_wsl_fallback(
             command,
             cwd=_rust_workspace(),
             env=_preflight_env(evidence_dir, with_dummy_credentials=with_dummy_credentials),
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         return {
@@ -151,6 +155,7 @@ def _run_preflight(
         "ok": not parse_issue,
         "returncode": result.returncode,
         "command": " ".join(command),
+        "execution_environment": execution_environment,
         "stdout_tail": _tail(result.stdout),
         "stderr_tail": _tail(result.stderr),
         "payload": payload,
@@ -169,23 +174,20 @@ def _run_market_preflight(
         return {
             "ok": False,
             "returncode": None,
-            "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke-preflight",
+            "command": "cargo run --locked -p trading-bot-rust -- --native-live-market-smoke-preflight",
             "stdout_tail": "",
             "stderr_tail": "cargo was not found on PATH",
             "payload": None,
             "issues": ["cargo was not found on PATH"],
         }
 
-    command = [cargo, "run", "-p", "trading-bot-rust", "--", "--native-live-market-smoke-preflight"]
+    command = [cargo, "run", "--locked", "-p", "trading-bot-rust", "--", "--native-live-market-smoke-preflight"]
     try:
-        result = subprocess.run(
+        result, execution_environment = run_cargo_with_secure_wsl_fallback(
             command,
             cwd=_rust_workspace(),
             env=_market_preflight_env(evidence_dir, confirmed=confirmed),
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         return {
@@ -203,6 +205,7 @@ def _run_market_preflight(
         "ok": not parse_issue,
         "returncode": result.returncode,
         "command": " ".join(command),
+        "execution_environment": execution_environment,
         "stdout_tail": _tail(result.stdout),
         "stderr_tail": _tail(result.stderr),
         "payload": payload,
@@ -258,6 +261,7 @@ def _validate_payload(
     expected_prerequisites: dict[str, Any],
     evidence_dir: Path,
     expected_operator_fragments: tuple[str, ...],
+    execution_environment: str = "native",
 ) -> list[str]:
     if payload is None:
         return ["missing preflight JSON payload"]
@@ -293,7 +297,12 @@ def _validate_payload(
         issues.append(f"payload commit must match current git commit {current_commit}")
     if not isinstance(payload.get("source_tree_clean"), bool):
         issues.append("payload source_tree_clean must be a boolean")
-    if Path(str(payload.get("evidence_dir") or "")) != evidence_dir:
+    reported_evidence_dir = str(payload.get("evidence_dir") or "").replace("\\", "/")
+    expected_evidence_dir = str(evidence_dir).replace("\\", "/")
+    same_evidence_dir = reported_evidence_dir == expected_evidence_dir
+    if execution_environment == "wsl" and len(expected_evidence_dir) >= 3 and expected_evidence_dir[1:3] == ":/":
+        same_evidence_dir = same_evidence_dir or reported_evidence_dir.endswith(expected_evidence_dir[2:])
+    if not same_evidence_dir:
         issues.append("payload evidence_dir must match the isolated preflight directory")
     expected = sorted(expected_artifacts)
     if sorted(str(item) for item in payload.get("expected_artifacts", [])) != expected:
@@ -383,6 +392,7 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
                 },
                 evidence_dir=missing_dir,
                 expected_operator_fragments=("BINANCE_API_KEY=...", "BINANCE_API_SECRET=...", "--native-live-smoke"),
+                execution_environment=str(missing_run.get("execution_environment") or "native"),
             )
         )
         issues.extend(
@@ -403,6 +413,7 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
                 },
                 evidence_dir=dummy_dir,
                 expected_operator_fragments=("BINANCE_API_KEY=...", "BINANCE_API_SECRET=...", "--native-live-smoke"),
+                execution_environment=str(dummy_run.get("execution_environment") or "native"),
             )
         )
         issues.extend(
@@ -421,6 +432,7 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
                 },
                 evidence_dir=market_missing_dir,
                 expected_operator_fragments=("TRADING_BOT_RUST_MARKET_SMOKE=1", "--native-live-market-smoke"),
+                execution_environment=str(market_missing_run.get("execution_environment") or "native"),
             )
         )
         issues.extend(
@@ -439,6 +451,7 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
                 },
                 evidence_dir=market_confirmed_dir,
                 expected_operator_fragments=("TRADING_BOT_RUST_MARKET_SMOKE=1", "--native-live-market-smoke"),
+                execution_environment=str(market_confirmed_run.get("execution_environment") or "native"),
             )
         )
 

@@ -250,7 +250,7 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         "evidence_dir": evidence_dir.display().to_string(),
         "expected_artifacts": expected_artifacts,
         "source_control_write_guard": source_control_write_guard.as_json(),
-        "operator_command": "TRADING_BOT_RUST_LIVE_SMOKE=1 BINANCE_API_KEY=... BINANCE_API_SECRET=... BINANCE_TESTNET=true cargo run -p trading-bot-rust -- --native-live-smoke"
+        "operator_command": "TRADING_BOT_RUST_LIVE_SMOKE=1 BINANCE_API_KEY=... BINANCE_API_SECRET=... BINANCE_TESTNET=true cargo run --locked -p trading-bot-rust -- --native-live-smoke"
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     if ok {
@@ -304,7 +304,7 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         "evidence_dir": evidence_dir.display().to_string(),
         "expected_artifacts": expected_artifacts,
         "source_control_write_guard": source_control_write_guard.as_json(),
-        "operator_command": "TRADING_BOT_RUST_MARKET_SMOKE=1 BINANCE_TESTNET=true cargo run -p trading-bot-rust -- --native-live-market-smoke"
+        "operator_command": "TRADING_BOT_RUST_MARKET_SMOKE=1 BINANCE_TESTNET=true cargo run --locked -p trading-bot-rust -- --native-live-market-smoke"
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     if ok {

@@ -69,6 +69,7 @@ Focused service test map:
 | `tests.test_service_lifecycle_runtime` | lifecycle control, control-plane descriptors, runtime samples, and live preflight gates |
 | `tests.test_service_client_integration` | desktop service client selection and service terminal/LLM commands |
 | `tests.test_service_background_host_integration` | embedded background host and background-hosted backtest API flows |
+| `tests.test_service_api_host_contract` | background host validation and startup configuration contracts |
 | `tests.test_service_product_main` | canonical service CLI commands, remote requests, validation, and error boundaries |
 
 If you want the fuller backend environment used by Docker and service-owned backtest workloads:
@@ -226,9 +227,10 @@ least 32 characters and one of the following deployment protections:
   on `127.0.0.1` or `::1`. The checked-in Docker Compose file uses this mode
   with `127.0.0.1:8000:8000`; do not reuse it for a LAN or public port mapping.
 
-For direct TLS, keep the certificate and private key outside the repository
-and restrict their filesystem permissions. Do not set either trusted-proxy
-variable merely to bypass this check.
+For direct TLS, keep the certificate and private key outside the repository.
+The private-key path must resolve to a regular file and, on POSIX, may not grant
+any group or other permissions. Do not set either trusted-proxy variable merely
+to bypass this check.
 
 Request safety limits:
 
@@ -371,6 +373,11 @@ Save responses include `contains_secrets`, `secret_fields`, and
 plain-JSON credentials. Inline secret values are redacted from saved config
 files by default; set `BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS=1` only when you
 explicitly want plain-JSON secret persistence.
+
+When an operating-system credential store is available, service secrets use the
+native platform API (Windows Credential Manager, macOS Keychain, or Linux Secret
+Service). The macOS integration calls the Keychain framework directly, so secret
+values are not placed in a `security` command-line argument.
 
 - `GET /api/v1/config/persistence` returns the configured file path, whether it
   exists, last load/save timestamps, and whether runtime changes are dirty.

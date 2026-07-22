@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from rust_command import run_cargo_with_secure_wsl_fallback
+except ModuleNotFoundError:  # pragma: no cover - exercised by package imports
+    from tools.rust_command import run_cargo_with_secure_wsl_fallback
+
+try:
     from audit_native_source_sync import audit_native_source_sync
     from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_rust_native_runtime_evidence import (
@@ -210,23 +215,20 @@ def _run_recovery_evidence_command(evidence_dir: Path, *, timeout: int) -> dict[
         return {
             "ok": False,
             "returncode": None,
-            "command": "cargo run -p trading-bot-rust -- --write-local-recovery-evidence",
+            "command": "cargo run --locked -p trading-bot-rust -- --write-local-recovery-evidence",
             "stdout_tail": "",
             "stderr_tail": "cargo was not found on PATH",
         }
 
-    command = [cargo, "run", "-p", "trading-bot-rust", "--", "--write-local-recovery-evidence"]
+    command = [cargo, "run", "--locked", "-p", "trading-bot-rust", "--", "--write-local-recovery-evidence"]
     env = os.environ.copy()
     env["RUST_NATIVE_RUNTIME_EVIDENCE_DIR"] = str(evidence_dir)
     try:
-        result = subprocess.run(
+        result, execution_environment = run_cargo_with_secure_wsl_fallback(
             command,
             cwd=_rust_workspace(),
             env=env,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         return {
@@ -240,6 +242,7 @@ def _run_recovery_evidence_command(evidence_dir: Path, *, timeout: int) -> dict[
         "ok": result.returncode == 0,
         "returncode": result.returncode,
         "command": " ".join(command),
+        "execution_environment": execution_environment,
         "stdout_tail": _tail(result.stdout),
         "stderr_tail": _tail(result.stderr),
     }

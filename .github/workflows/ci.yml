@@ -568,14 +568,14 @@ jobs:
         working-directory: experiments/rust-shells
         run: |
           set -euo pipefail
-          cargo check --workspace
+          cargo check --workspace --locked
 
       - name: Test Rust core hardening contracts
         shell: bash
         working-directory: experiments/rust-shells
         run: |
           set -euo pipefail
-          cargo test -p trading-bot-core
+          cargo test --locked -p trading-bot-core
 
       - name: Test and smoke required Tauri desktop
         shell: bash

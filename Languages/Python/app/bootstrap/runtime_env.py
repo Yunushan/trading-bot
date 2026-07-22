@@ -15,44 +15,39 @@ os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"
 try:
     if os.name == "posix":
         is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-        flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
-        flag_parts = [part for part in flags.split() if part]
-        needed_flags = [
-            "--no-sandbox",
-            "--disable-gpu",
-            "--disable-gpu-sandbox",
-            "--disable-software-rasterizer",
-            "--disable-dev-shm-usage",
-            "--no-zygote",
-        ]
-        for flag in needed_flags:
-            if flag not in flag_parts:
-                flag_parts.append(flag)
-        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flag_parts).strip()
-        os.environ.setdefault(
-            "QTWEBENGINE_DISABLE_SANDBOX",
-            "1" if is_root else os.environ.get("QTWEBENGINE_DISABLE_SANDBOX", "0"),
-        )
-        os.environ.setdefault(
-            "QTWEBENGINE_USE_SANDBOX",
-            "0" if is_root else os.environ.get("QTWEBENGINE_USE_SANDBOX", "1"),
-        )
-        os.environ.setdefault("QT_OPENGL", "software")
-        os.environ.setdefault("QSG_RHI_BACKEND", "software")
-        os.environ.setdefault("QT_QUICK_BACKEND", "software")
-        os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
-        # Some distros crash unless XDG_RUNTIME_DIR is defined; fallback to /tmp for headless runs.
-        if is_root and not os.environ.get("XDG_RUNTIME_DIR"):
-            tmp_runtime = "/tmp/qt-runtime-root"
-            try:
-                os.makedirs(tmp_runtime, mode=0o700, exist_ok=True)
-            except Exception:
-                tmp_runtime = "/tmp"
-            try:
-                os.chmod(tmp_runtime, 0o700)
-            except Exception:
-                pass
-            os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
+        if is_root:
+            flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+            flag_parts = [part for part in flags.split() if part]
+            needed_flags = [
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-gpu-sandbox",
+                "--disable-software-rasterizer",
+                "--disable-dev-shm-usage",
+                "--no-zygote",
+            ]
+            for flag in needed_flags:
+                if flag not in flag_parts:
+                    flag_parts.append(flag)
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flag_parts).strip()
+            os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+            os.environ.setdefault("QTWEBENGINE_USE_SANDBOX", "0")
+            os.environ.setdefault("QT_OPENGL", "software")
+            os.environ.setdefault("QSG_RHI_BACKEND", "software")
+            os.environ.setdefault("QT_QUICK_BACKEND", "software")
+            os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
+            # Some distros crash unless XDG_RUNTIME_DIR is defined; fall back to /tmp for root headless runs.
+            if not os.environ.get("XDG_RUNTIME_DIR"):
+                tmp_runtime = "/tmp/qt-runtime-root"
+                try:
+                    os.makedirs(tmp_runtime, mode=0o700, exist_ok=True)
+                except OSError:
+                    tmp_runtime = "/tmp"
+                try:
+                    os.chmod(tmp_runtime, 0o700)
+                except OSError:
+                    pass
+                os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
 
     # Windows-specific QtWebEngine tuning: prefer GPU acceleration for responsiveness
     if os.name == "nt":
@@ -70,10 +65,17 @@ try:
             disable_gpu = False
         else:
             disable_gpu = False
+        disable_sandbox = str(os.environ.get("BOT_WEBENGINE_DISABLE_SANDBOX", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
         drop_flags = {
             "--single-process",
             "--in-process-gpu",
+            "--no-sandbox",
         }
         if disable_gpu:
             drop_flags |= {
@@ -103,12 +105,18 @@ try:
             and not part.startswith("--log-level=")
         ]
         windows_flags = [
-            "--no-sandbox",
             "--disable-logging",
             "--disable-renderer-backgrounding",
             "--disable-background-timer-throttling",
             log_level_flag,
         ]
+        if disable_sandbox:
+            windows_flags.append("--no-sandbox")
+            os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
+            os.environ["QTWEBENGINE_USE_SANDBOX"] = "0"
+        else:
+            os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "0")
+            os.environ.setdefault("QTWEBENGINE_USE_SANDBOX", "1")
         if disable_gpu:
             windows_flags += [
                 "--disable-gpu",
@@ -131,8 +139,7 @@ try:
             if flag not in flag_parts:
                 flag_parts.append(flag)
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flag_parts).strip()
-        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
-except Exception:
+except OSError:
     # Never allow env-setup failures to abort app startup.
     pass
 
@@ -157,7 +164,7 @@ try:
             QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts,
             True,
         )
-except Exception:
+except (ImportError, AttributeError, RuntimeError):
     pass
 
 
@@ -166,11 +173,11 @@ def _resolve_pandas_version():
         import pandas as _pd
 
         return getattr(_pd, "__version__", "installed")
-    except Exception:
+    except ImportError:
         try:
             _pd = importlib.import_module("pandas")
             return getattr(_pd, "__version__", "installed")
-        except Exception:
+        except ImportError:
             return "not-installed"
 
 
@@ -185,13 +192,13 @@ def _resolve_module_version(primary: str, *alternates: str) -> str:
             continue
         try:
             return _md.version(cand)
-        except Exception:
+        except _md.PackageNotFoundError:
             continue
     module_name = primary.replace("-", "_")
     try:
         module = importlib.import_module(module_name)
         return getattr(module, "__version__", "installed")
-    except Exception:
+    except ImportError:
         return "not-installed"
 
 
@@ -200,7 +207,7 @@ try:
     from PyQt6.QtCore import PYQT_VERSION_STR as _PYQT_VER, QT_VERSION_STR as _QT_VER
 
     _QT_LINE = f"PyQt6={_PYQT_VER} (Qt={_QT_VER})"
-except Exception:
+except ImportError:
     pass
 
 
@@ -208,7 +215,7 @@ def _resolve_webengine_version():
     for dist in ("PyQt6-WebEngine", "pyqt6-webengine", "PyQt6_WebEngine"):
         try:
             return _md.version(dist)
-        except Exception:
+        except _md.PackageNotFoundError:
             pass
     # Avoid importing QtWebEngine modules during startup on Windows.
     # Importing them can spawn helper processes that briefly flash windows

@@ -73,6 +73,7 @@ Focused service test map:
 | `tests.test_service_lifecycle_runtime` | lifecycle control, control-plane descriptors, runtime samples, and live preflight gates |
 | `tests.test_service_client_integration` | desktop service client selection and service terminal/LLM commands |
 | `tests.test_service_background_host_integration` | embedded background host and background-hosted backtest API flows |
+| `tests.test_service_api_host_contract` | background host validation and startup configuration contracts |
 | `tests.test_service_product_main` | canonical service CLI commands, remote requests, validation, and error boundaries |
 
 Windows launcher:

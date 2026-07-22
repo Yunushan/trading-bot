@@ -18,6 +18,7 @@ _CRED_TYPE_GENERIC = 1
 _CRED_PERSIST_LOCAL_MACHINE = 2
 _KEYCHAIN_ACCOUNT = "trading-bot-service-config"
 _LINUX_SECRET_LABEL = "Trading Bot service configuration"
+_ERR_SEC_ITEM_NOT_FOUND = -25300
 
 
 def _platform_name() -> str:
@@ -29,7 +30,7 @@ def credential_store_backend() -> str:
     if os.name == "nt" or system == "windows":
         return "windows-credential-manager"
     if system == "darwin":
-        return "macos-keychain" if shutil.which("security") else "unavailable"
+        return "macos-keychain"
     if system == "linux":
         return "linux-secret-service" if shutil.which("secret-tool") else "unavailable"
     return "unavailable"
@@ -92,6 +93,81 @@ def _windows_api():
     return advapi32, _CREDENTIALW
 
 
+def _macos_keychain_api():
+    if _platform_name() != "darwin":
+        raise CredentialStoreUnavailable("No supported OS credential store is available on this platform.")
+    try:
+        security = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
+        core_foundation = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    except OSError as exc:
+        raise CredentialStoreUnavailable("The macOS Keychain framework is unavailable.") from exc
+
+    security.SecKeychainAddGenericPassword.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    security.SecKeychainAddGenericPassword.restype = ctypes.c_int32
+    security.SecKeychainFindGenericPassword.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    security.SecKeychainFindGenericPassword.restype = ctypes.c_int32
+    security.SecKeychainItemModifyAttributesAndData.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    security.SecKeychainItemModifyAttributesAndData.restype = ctypes.c_int32
+    security.SecKeychainItemDelete.argtypes = (ctypes.c_void_p,)
+    security.SecKeychainItemDelete.restype = ctypes.c_int32
+    security.SecKeychainItemFreeContent.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+    security.SecKeychainItemFreeContent.restype = ctypes.c_int32
+    core_foundation.CFRelease.argtypes = (ctypes.c_void_p,)
+    core_foundation.CFRelease.restype = None
+    return security, core_foundation
+
+
+def _macos_keychain_identity(target: str) -> tuple[bytes, bytes]:
+    return target.encode("utf-8"), _KEYCHAIN_ACCOUNT.encode("utf-8")
+
+
+def _macos_keychain_find(target: str):
+    security, core_foundation = _macos_keychain_api()
+    service, account = _macos_keychain_identity(target)
+    password_size = ctypes.c_uint32()
+    password_data = ctypes.c_void_p()
+    item = ctypes.c_void_p()
+    status = security.SecKeychainFindGenericPassword(
+        None,
+        len(service),
+        service,
+        len(account),
+        account,
+        ctypes.byref(password_size),
+        ctypes.byref(password_data),
+        ctypes.byref(item),
+    )
+    return security, core_foundation, status, password_size, password_data, item
+
+
+def _macos_keychain_release(core_foundation, item: ctypes.c_void_p) -> None:
+    if item.value:
+        core_foundation.CFRelease(item)
+
+
 def put_secret(*, scope: str, account: str, value: str) -> None:
     raw = str(value).encode("utf-8")
     if not raw:
@@ -114,13 +190,30 @@ def put_secret(*, scope: str, account: str, value: str) -> None:
             raise OSError(ctypes.get_last_error(), "CredWriteW failed")
         return
     if backend == "macos-keychain":
-        # The macOS security utility has no stdin value mode for generic passwords.
-        # Do not log this command or its arguments: the value is intentionally transient.
-        result = _run_secret_command(
-            ["security", "add-generic-password", "-a", _KEYCHAIN_ACCOUNT, "-s", target, "-w", str(value), "-U"]
-        )
-        if result.returncode:
-            raise _command_error("macOS Keychain write", result)
+        security, core_foundation, status, _size, password_data, item = _macos_keychain_find(target)
+        try:
+            if password_data.value:
+                security.SecKeychainItemFreeContent(None, password_data)
+            if status not in (_ERR_SEC_ITEM_NOT_FOUND, 0):
+                raise OSError(status, "SecKeychainFindGenericPassword failed")
+            if status == 0:
+                status = security.SecKeychainItemModifyAttributesAndData(item, None, len(raw), raw)
+            else:
+                service, keychain_account = _macos_keychain_identity(target)
+                status = security.SecKeychainAddGenericPassword(
+                    None,
+                    len(service),
+                    service,
+                    len(keychain_account),
+                    keychain_account,
+                    len(raw),
+                    raw,
+                    ctypes.byref(item),
+                )
+            if status:
+                raise OSError(status, "macOS Keychain write failed")
+        finally:
+            _macos_keychain_release(core_foundation, item)
         return
     if backend == "linux-secret-service":
         result = _run_secret_command(
@@ -152,10 +245,19 @@ def get_secret(*, scope: str, account: str) -> str:
         finally:
             advapi32.CredFree(credential_pointer)
     if backend == "macos-keychain":
-        result = _run_secret_command(["security", "find-generic-password", "-a", _KEYCHAIN_ACCOUNT, "-s", target, "-w"])
-        if result.returncode:
-            return ""
-        return str(result.stdout or "").rstrip("\r\n")
+        security, core_foundation, status, password_size, password_data, item = _macos_keychain_find(target)
+        try:
+            if status == _ERR_SEC_ITEM_NOT_FOUND:
+                return ""
+            if status:
+                raise OSError(status, "SecKeychainFindGenericPassword failed")
+            if not password_data.value or not password_size.value:
+                return ""
+            return ctypes.string_at(password_data, password_size.value).decode("utf-8")
+        finally:
+            if password_data.value:
+                security.SecKeychainItemFreeContent(None, password_data)
+            _macos_keychain_release(core_foundation, item)
     if backend == "linux-secret-service":
         result = _run_secret_command(["secret-tool", "lookup", "service", "trading-bot", "target", target])
         if result.returncode:
@@ -175,9 +277,19 @@ def delete_secret(*, scope: str, account: str) -> None:
                 raise OSError(error, "CredDeleteW failed")
         return
     if backend == "macos-keychain":
-        result = _run_secret_command(["security", "delete-generic-password", "-a", _KEYCHAIN_ACCOUNT, "-s", target])
-        if result.returncode and "could not be found" not in str(result.stderr or "").casefold():
-            raise _command_error("macOS Keychain delete", result)
+        security, core_foundation, status, _size, password_data, item = _macos_keychain_find(target)
+        try:
+            if status == _ERR_SEC_ITEM_NOT_FOUND:
+                return
+            if status:
+                raise OSError(status, "SecKeychainFindGenericPassword failed")
+            status = security.SecKeychainItemDelete(item)
+            if status:
+                raise OSError(status, "SecKeychainItemDelete failed")
+        finally:
+            if password_data.value:
+                security.SecKeychainItemFreeContent(None, password_data)
+            _macos_keychain_release(core_foundation, item)
         return
     if backend == "linux-secret-service":
         result = _run_secret_command(["secret-tool", "clear", "service", "trading-bot", "target", target])

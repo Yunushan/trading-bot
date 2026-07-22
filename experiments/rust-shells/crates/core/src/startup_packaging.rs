@@ -80,7 +80,7 @@ pub const RUST_TAURI_STARTUP_PACKAGING_CONTRACT: NativeStartupPackagingContract 
             "BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH",
         ],
         release_smoke_commands: &[
-            "cargo build --workspace",
+            "cargo build --workspace --locked",
             "node apps/tauri-desktop/ui/tauri-ui-behavior.test.cjs",
         ],
         delegates_trading_execution_to_python: true,

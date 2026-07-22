@@ -43,6 +43,10 @@ SERVICE_TESTS = (
         "embedded background host and background-hosted backtest API flows",
     ),
     ServiceTestEntry(
+        "tests.test_service_api_host_contract",
+        "background host validation and startup configuration contracts",
+    ),
+    ServiceTestEntry(
         "tests.test_service_product_main",
         "canonical service CLI commands, remote requests, validation, and error boundaries",
     ),

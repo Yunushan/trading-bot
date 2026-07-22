@@ -118,8 +118,8 @@ jobs:
             echo "BINANCE_API_KEY and BINANCE_API_SECRET repository secrets are required for Rust signed account-read smoke." >&2
             exit 1
           fi
-          cargo run -p trading-bot-rust -- --native-live-smoke-preflight
-          cargo run -p trading-bot-rust -- --native-live-smoke
+          cargo run --locked -p trading-bot-rust -- --native-live-smoke-preflight
+          cargo run --locked -p trading-bot-rust -- --native-live-smoke
 
       - name: Validate signed account-read smoke evidence
         shell: bash

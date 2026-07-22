@@ -1,6 +1,9 @@
 name: Release FreeBSD Binaries
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       run_freebsd:

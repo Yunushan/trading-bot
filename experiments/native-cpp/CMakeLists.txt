@@ -123,8 +123,10 @@ if (WIN32)
 endif()
 
 find_package(Qt6 ${TB_QT_VERSION} REQUIRED COMPONENTS Core Widgets Network Concurrent)
-find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} QUIET)
-find_package(Qt6WebSockets ${TB_QT_VERSION} QUIET)
+# Qt6_DIR points at lib/cmake/Qt6.  The optional module config packages live
+# alongside it, so explicitly hint that parent directory for archive installs.
+find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} QUIET HINTS "${Qt6_DIR}/..")
+find_package(Qt6WebSockets ${TB_QT_VERSION} QUIET HINTS "${Qt6_DIR}/..")
 
 set(HAS_WEBENGINE 0)
 if (TARGET Qt6::WebEngineWidgets)

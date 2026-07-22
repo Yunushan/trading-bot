@@ -1696,6 +1696,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('"Trading-Bot-Rust-tauri:trading-bot-tauri-desktop"', packaging_script)
         self.assertIn('for rust_entry in "${required_rust_assets[@]}"', packaging_script)
         self.assertNotIn("optional_rust_assets", packaging_script)
+        self.assertIn("cargo check --workspace --locked", ci_workflow)
+        self.assertIn("cargo test --locked -p trading-bot-core", ci_workflow)
         self.assertIn("cargo test --locked --package trading-bot-tauri-desktop", ci_workflow)
         self.assertIn(
             "cargo run --locked --release --package trading-bot-tauri-desktop -- --smoke",
@@ -1728,6 +1730,14 @@ class ProductPackagingContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('INSTALL_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
+        self.assertIn("find_package(Qt6WebEngineWidgets", native_cpp_cmake)
+        self.assertIn('HINTS "${Qt6_DIR}/.."', native_cpp_cmake)
+        release_platform_workflow = (
+            REPO_ROOT / ".github" / "workflows" / "release-platform-real-tests.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("qtwebengine qtwebsockets qtwebchannel", release_platform_workflow)
+        self.assertIn("Qt6WebEngineWidgetsConfig.cmake", release_platform_workflow)
+        self.assertIn("CMAKE_PREFIX_PATH", release_platform_workflow)
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-freebsd.yml"])
         for workflow_name in ("release-linux-macos.yml", "release-freebsd.yml"):
             workflow = workflows[workflow_name]

@@ -29,14 +29,14 @@ diff whitespace.
 | 1. Runtime versions | Python and Node match `.python-version` and `.node-version`. | `tools/check_local_tool_versions.py --json` passes. |
 | 2. Workspace hygiene | Generated artifacts do not pollute source audits. | `tools/audit_workspace_hygiene.py --json` reports zero noisy artifacts after cleanup. |
 | 3. Python dependency health | Python desktop, service, and dev dependencies install under the declared runtime. | `python -m pip install -e "Languages/Python[desktop,service,dev]"` completes. |
-| 4. Python tests and coverage | Full Python tests pass and total coverage does not fall below the configured 38% floor. | `python -m pytest Languages/Python/tests -q` passes with `--cov-fail-under=38`. |
+| 4. Python tests and coverage | Full Python tests pass and total coverage does not fall below the configured 40% floor. | `python -m pytest Languages/Python/tests -q` passes with `--cov-fail-under=40`. |
 | 5. Python lint/type contracts | Ruff and mypy pass for the reviewed typed surface. | `tools/verify_all.py` Python lint and type checks pass. |
 | 6. Service API contracts | Service schema and HTTP contract tests stay in sync with the UI/client assumptions. | `Languages/Python/tools/check_service_api_contracts.py` and service tests pass. |
 | 7. Backtest optimizer guardrails | Large searches show estimated runtime, keep bounded result rows, require user confirmation for very large interactive runs, and reject invalid OHLCV/timestamp data before simulation. | Optimizer and data-quality unit tests plus UI execution helpers pass. |
 | 8. Risky-pattern regression gate | Broad exception, silent pass, TODO, bare except, and disabled TLS counts cannot increase above the reviewed baseline. | `tools/audit_risky_patterns.py --baseline tools/risky_patterns_baseline.json --fail-on-regression --fail-on-high` passes. |
 | 9. Web dashboard quality | Web dashboard tests pass under the declared Node runtime. | `npm test` in `apps/web-dashboard`. |
 | 10. Mobile client quality | Mobile thin-client tests pass under the declared Node runtime. | `npm test` in `apps/mobile-client`. |
-| 11. Rust shared-core health | Rust workspace compiles and core tests pass. | `cargo check --workspace` and `cargo test -p trading-bot-core` in `experiments/rust-shells`. |
+| 11. Rust shared-core health | Rust workspace compiles and core tests pass. | `cargo check --workspace --locked` and `cargo test --locked -p trading-bot-core` in `experiments/rust-shells`. |
 | 12. Tauri desktop behavior | Tauri UI behavior mirrors the operational tab surface and key controls. | `node experiments/rust-shells/apps/tauri-desktop/ui/tauri-ui-behavior.test.cjs` passes. |
 | 13. Native C++ health | Qt/C++ experiment configures, builds, and runs CTest. | `python tools/check_native_cpp.py --json` passes. |
 | 14. CI workflow parity | GitHub Actions contains equivalent Python, support-claim, web, mobile, Rust, and native C++ gates. | `.github/workflows/ci.yml` workflow lint and the remote run pass. |
@@ -250,7 +250,7 @@ diff whitespace.
   match the current source revision and Python source-of-truth contract, so
   stale Rust builds cannot satisfy the preflight gate. Public market-data
   evidence may be collected separately with
-  `TRADING_BOT_RUST_MARKET_SMOKE=1 cargo run -p trading-bot-rust -- --native-live-market-smoke`;
+  `TRADING_BOT_RUST_MARKET_SMOKE=1 cargo run --locked -p trading-bot-rust -- --native-live-market-smoke`;
   signed account evidence still requires the credential-gated
   `--native-live-smoke` command. Operators can also run the manual
   `.github/workflows/rust-native-live-smoke.yml` workflow after configuring

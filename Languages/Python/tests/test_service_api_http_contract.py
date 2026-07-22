@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import stat
 import sys
 import tempfile
 import time
@@ -331,6 +332,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             private_key = Path(temporary_directory) / "service.key"
             certificate.write_text("certificate", encoding="utf-8")
             private_key.write_text("private-key", encoding="utf-8")
+            private_key.chmod(stat.S_IRUSR | stat.S_IWUSR)
             with mock.patch.dict(
                 os.environ,
                 {
@@ -340,6 +342,24 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 clear=True,
             ):
                 validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "BOT_SERVICE_API_TLS_CERTFILE": str(certificate),
+                    "BOT_SERVICE_API_TLS_KEYFILE": str(private_key),
+                },
+                clear=True,
+            ), mock.patch(
+                "app.service.auth.token.os.name", "posix"
+            ), mock.patch(
+                "app.service.auth.token.os.fstat",
+                return_value=mock.Mock(
+                    st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP,
+                    st_size=len("private-key"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "private-key file must not grant group or other permissions"):
+                    validate_service_api_exposure("127.0.0.1", "short-token")
         with mock.patch.dict(
             os.environ,
             {
@@ -371,6 +391,25 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             ):
                 self.assertEqual("environment-token", resolve_service_api_token())
 
+            with mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True), mock.patch(
+                "app.service.auth.token.os.name", "posix"
+            ), mock.patch(
+                "app.service.auth.token.os.fstat",
+                return_value=mock.Mock(st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR, st_size=len("file-token\n")),
+            ):
+                self.assertEqual("file-token", resolve_service_api_token())
+            with mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True), mock.patch(
+                "app.service.auth.token.os.name", "posix"
+            ), mock.patch(
+                "app.service.auth.token.os.fstat",
+                return_value=mock.Mock(
+                    st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP,
+                    st_size=len("file-token\n"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "must not grant group or other permissions"):
+                    resolve_service_api_token()
+
             token_file.write_text("x" * 4097, encoding="utf-8")
             with mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True):
                 with self.assertRaisesRegex(RuntimeError, "safety limit"):
@@ -389,6 +428,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             private_key = Path(temporary_directory) / "service.key"
             certificate.write_text("certificate", encoding="utf-8")
             private_key.write_text("private-key", encoding="utf-8")
+            private_key.chmod(stat.S_IRUSR | stat.S_IWUSR)
             with mock.patch.dict(
                 os.environ,
                 {

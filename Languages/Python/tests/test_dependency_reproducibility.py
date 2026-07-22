@@ -502,8 +502,90 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("severity: HIGH,CRITICAL", workflow)
         self.assertIn('exit-code: "1"', workflow)
 
+    def test_mobile_production_lockfile_overrides_brace_expansion_security_fix(self):
+        mobile_root = REPO_ROOT / "apps" / "mobile-client"
+        package = json.loads((mobile_root / "package.json").read_text(encoding="utf-8"))
+        lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
+
+        for parent in ("react-native", "rimraf", "test-exclude"):
+            self.assertEqual("1.1.16", package["overrides"][parent]["brace-expansion"])
+            package_path = f"node_modules/{parent}/node_modules/brace-expansion"
+            self.assertEqual("1.1.16", lockfile["packages"][package_path]["version"])
+
+    def test_codeql_workflow_scans_python_javascript_and_native_languages_with_pinned_actions(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
+
+        self.assertIn("security-events: write", workflow)
+        self.assertIn("- language: python", workflow)
+        self.assertIn("- language: javascript-typescript", workflow)
+        self.assertIn("- language: c-cpp", workflow)
+        self.assertIn("- language: rust", workflow)
+        self.assertIn("build-mode: ${{ matrix.build-mode }}", workflow)
+        self.assertEqual(4, workflow.count("build-mode: none"))
+        self.assertIn("github/codeql-action/init@e0647621c2984b5ed2f768cb892365bf2a616ad1", workflow)
+        self.assertIn("github/codeql-action/analyze@e0647621c2984b5ed2f768cb892365bf2a616ad1", workflow)
+
+    def test_rust_live_evidence_commands_use_the_workspace_lockfile(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "rust-native-live-smoke.yml").read_text(
+            encoding="utf-8"
+        )
+        preflight = (REPO_ROOT / "tools" / "check_rust_native_live_smoke_preflight.py").read_text(
+            encoding="utf-8"
+        )
+        recovery = (REPO_ROOT / "tools" / "check_rust_native_local_recovery_evidence.py").read_text(
+            encoding="utf-8"
+        )
+        rust_main = (REPO_ROOT / "experiments" / "rust-shells" / "src" / "main.rs").read_text(
+            encoding="utf-8"
+        )
+        readme = (REPO_ROOT / "experiments" / "rust-shells" / "README.md").read_text(encoding="utf-8")
+        quality_gates = (REPO_ROOT / "docs" / "QUALITY_AND_EVIDENCE_GATES.md").read_text(
+            encoding="utf-8"
+        )
+        startup_packaging = (
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "startup_packaging.rs"
+        ).read_text(encoding="utf-8")
+
+        for content in (workflow, preflight, recovery, rust_main, readme, quality_gates):
+            self.assertIn("cargo run --locked -p trading-bot-rust", content)
+            self.assertNotIn("cargo run -p trading-bot-rust", content)
+        self.assertIn("cargo run --locked -p trading-bot-tauri-desktop", readme)
+        self.assertIn("cargo check --workspace --locked", quality_gates)
+        self.assertIn("cargo test --locked -p trading-bot-core", quality_gates)
+        self.assertIn("cargo build --workspace --locked", startup_packaging)
+
+    def test_quality_gate_coverage_documentation_matches_pytest_configuration(self):
+        pytest_config = (PYTHON_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        quality_gates = (REPO_ROOT / "docs" / "QUALITY_AND_EVIDENCE_GATES.md").read_text(
+            encoding="utf-8"
+        )
+
+        configured_floor = re.search(r"--cov-fail-under=(\d+)", pytest_config)
+        self.assertIsNotNone(configured_floor)
+        assert configured_floor is not None
+        self.assertIn(f"configured {configured_floor.group(1)}% floor", quality_gates)
+        self.assertIn(f"--cov-fail-under={configured_floor.group(1)}", quality_gates)
+
+    def test_posix_webengine_sandbox_workaround_is_root_only(self):
+        runtime_env = (PYTHON_ROOT / "app" / "bootstrap" / "runtime_env.py").read_text(encoding="utf-8")
+
+        posix_start = runtime_env.index('if os.name == "posix":')
+        windows_start = runtime_env.index('if os.name == "nt":')
+        posix_setup = runtime_env[posix_start:windows_start]
+        root_setup_start = posix_setup.index("if is_root:")
+        no_sandbox_start = posix_setup.index('"--no-sandbox"')
+        self.assertLess(root_setup_start, no_sandbox_start)
+        self.assertIn('os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")', posix_setup)
+        self.assertIn('os.environ.setdefault("QTWEBENGINE_USE_SANDBOX", "0")', posix_setup)
+
+        windows_setup = runtime_env[windows_start:]
+        self.assertIn('BOT_WEBENGINE_DISABLE_SANDBOX', windows_setup)
+        self.assertIn('windows_flags.append("--no-sandbox")', windows_setup)
+        self.assertIn('os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "0")', windows_setup)
+        self.assertIn('os.environ.setdefault("QTWEBENGINE_USE_SANDBOX", "1")', windows_setup)
+
     def test_all_workflow_actions_are_pinned_to_immutable_commits(self):
-        action_pin_pattern = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"
+        action_pin_pattern = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?@[0-9a-f]{40}$"
         for workflow_path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
             workflow = workflow_path.read_text(encoding="utf-8")
             references = re.findall(r"(?m)^\s*uses:\s*([^\s#]+)", workflow)

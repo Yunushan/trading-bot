@@ -275,17 +275,17 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
             f"BINANCE_TESTNET={binance_testnet} "
             f"BINANCE_LIVE_SMOKE_SYMBOL={live_smoke_symbol} "
             f"BINANCE_LIVE_SMOKE_INTERVAL={live_smoke_interval} "
-            "cargo run -p trading-bot-rust -- --native-live-market-smoke"
+            "cargo run --locked -p trading-bot-rust -- --native-live-market-smoke"
         ),
-        "market_preflight_command": "cargo run -p trading-bot-rust -- --native-live-market-smoke-preflight",
+        "market_preflight_command": "cargo run --locked -p trading-bot-rust -- --native-live-market-smoke-preflight",
         "command": (
             "TRADING_BOT_RUST_LIVE_SMOKE=1 BINANCE_API_KEY=... BINANCE_API_SECRET=... "
             f"BINANCE_TESTNET={binance_testnet} "
             f"BINANCE_LIVE_SMOKE_SYMBOL={live_smoke_symbol} "
             f"BINANCE_LIVE_SMOKE_INTERVAL={live_smoke_interval} "
-            "cargo run -p trading-bot-rust -- --native-live-smoke"
+            "cargo run --locked -p trading-bot-rust -- --native-live-smoke"
         ),
-        "preflight_command": "cargo run -p trading-bot-rust -- --native-live-smoke-preflight",
+        "preflight_command": "cargo run --locked -p trading-bot-rust -- --native-live-smoke-preflight",
         "github_workflow": (
             f"gh workflow run {LIVE_SMOKE_WORKFLOW} "
             f"-f binance_testnet={binance_testnet} "
@@ -586,7 +586,7 @@ def _evidence_collection_plan(
                     expected_artifact=expected_artifact,
                     local_preflight_command="",
                     local_command=(
-                        "cargo run -p trading-bot-rust -- --write-local-recovery-evidence && "
+                        "cargo run --locked -p trading-bot-rust -- --write-local-recovery-evidence && "
                         "python tools/check_rust_native_local_recovery_evidence.py "
                         "--evidence-dir artifacts/rust-native-runtime-evidence "
                         "--require-clean-source --require-native-source-sync --json"
@@ -914,8 +914,8 @@ def _next_action_plan(
             action_id="collect_rust_native_live_market_smoke",
             title="Collect Rust native live market-data smoke evidence",
             summary=(
-                "Run cargo run -p trading-bot-rust -- --native-live-market-smoke-preflight, then run "
-                "TRADING_BOT_RUST_MARKET_SMOKE=1 BINANCE_TESTNET=true cargo run -p trading-bot-rust "
+                "Run cargo run --locked -p trading-bot-rust -- --native-live-market-smoke-preflight, then run "
+                "TRADING_BOT_RUST_MARKET_SMOKE=1 BINANCE_TESTNET=true cargo run --locked -p trading-bot-rust "
                 "-- --native-live-market-smoke; it writes rust-native-live-market-data-smoke.json "
                 "without credentials or order submission."
             ),
@@ -964,7 +964,7 @@ def _next_action_plan(
             action_id="collect_rust_native_live_account_smoke",
             title="Collect Rust native signed account-read smoke evidence",
             summary=(
-                "Run cargo run -p trading-bot-rust -- --native-live-smoke-preflight, then run "
+                "Run cargo run --locked -p trading-bot-rust -- --native-live-smoke-preflight, then run "
                 "the guarded Rust live smoke with Binance credentials on testnet or production; "
                 "it writes rust-native-live-account-read-smoke.json without submitting orders. "
                 "On GitHub, use the manual rust-native-live-smoke.yml workflow with "

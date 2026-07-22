@@ -30,13 +30,20 @@ class ServiceApiBackgroundHost:
     ) -> None:
         self._service = service or TradingBotService()
         self._host = str(host or "127.0.0.1").strip() or "127.0.0.1"
-        self._port = max(1, int(port))
+        try:
+            parsed_port = int(port)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Service API port must be an integer between 1 and 65535.") from exc
+        if not 1 <= parsed_port <= 65535:
+            raise ValueError("Service API port must be between 1 and 65535.")
+        self._port = parsed_port
         self._api_token = resolve_service_api_token(api_token)
         validate_service_api_exposure(self._host, self._api_token)
         self._app = None
         self._server = None
         self._thread = None
         self._startup_error: Exception | None = None
+        self._shutdown_requested = False
         self._lock = threading.RLock()
 
     @property
@@ -76,6 +83,7 @@ class ServiceApiBackgroundHost:
             if self.is_running():
                 return True
             self._startup_error = None
+            self._shutdown_requested = False
             self._app = create_service_api_app(
                 service=self._service,
                 api_token=self._api_token,
@@ -85,31 +93,8 @@ class ServiceApiBackgroundHost:
             )
             self._server = None
 
-            def _run() -> None:
-                try:
-                    import uvicorn
-
-                    config = uvicorn.Config(
-                        self._app,
-                        host=self._host,
-                        port=self._port,
-                        log_level="warning",
-                        access_log=False,
-                        lifespan="off",
-                        ssl_certfile=service_api_tls_settings()[0] or None,
-                        ssl_keyfile=service_api_tls_settings()[1] or None,
-                    )
-                    server = uvicorn.Server(config)
-                    server.install_signal_handlers = lambda: None
-                    with self._lock:
-                        self._server = server
-                    asyncio.run(server.serve())
-                except Exception as exc:  # pragma: no cover - exercised through start()
-                    with self._lock:
-                        self._startup_error = exc
-
             self._thread = threading.Thread(
-                target=_run,
+                target=self._run_server,
                 name=f"TradingBotServiceApiHost:{self._port}",
                 daemon=True,
             )
@@ -132,12 +117,40 @@ class ServiceApiBackgroundHost:
         with self._lock:
             if self._startup_error is not None:
                 raise RuntimeError(f"Embedded service API host failed to start: {self._startup_error}") from self._startup_error
+        self.stop(timeout_seconds=min(max(float(timeout_seconds), 0.5), 5.0))
         raise RuntimeError("Embedded service API host did not become ready before the timeout.")
+
+    def _run_server(self) -> None:
+        try:
+            import uvicorn
+
+            config = uvicorn.Config(
+                self._app,
+                host=self._host,
+                port=self._port,
+                log_level="warning",
+                access_log=False,
+                lifespan="off",
+                ssl_certfile=service_api_tls_settings()[0] or None,
+                ssl_keyfile=service_api_tls_settings()[1] or None,
+            )
+            server = uvicorn.Server(config)
+            server.install_signal_handlers = lambda: None
+            with self._lock:
+                self._server = server
+                shutdown_requested = self._shutdown_requested
+            if shutdown_requested:
+                server.should_exit = True
+            asyncio.run(server.serve())
+        except Exception as exc:  # pragma: no cover - exercised through start()
+            with self._lock:
+                self._startup_error = exc
 
     def stop(self, *, timeout_seconds: float = 5.0) -> bool:
         with self._lock:
             server = self._server
             thread = self._thread
+            self._shutdown_requested = True
             if server is None and (thread is None or not thread.is_alive()):
                 self._server = None
                 self._thread = None

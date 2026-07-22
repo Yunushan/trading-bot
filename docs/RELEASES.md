@@ -104,6 +104,9 @@ python tools/check_release_assets.py v1.0.30
 ```
 
 Add `--list-expected` if you only want to preview the expected asset matrix.
+The verifier requires every asset published by the tagged Windows, Linux, and
+macOS workflows, including ARM64 and the required Tauri desktop shell; it does
+not treat a smaller tier-one evidence lab as a substitute for release assets.
 
 ## Integrity and provenance
 

@@ -9,12 +9,24 @@ from pathlib import Path
 from .startup_ui_shared import _PROJECT_ROOT, _boot_log, _env_flag, _native_icon_handles
 
 
+_native_icon_cache: dict[tuple[int, int], str] = {}
+
+
 def _record_startup_icon_exception(context: str, exc: BaseException) -> None:
     message = str(exc).replace("\n", " ")
     try:
         _boot_log(f"startup icon suppressed exception context={context} error={type(exc).__name__}: {message}")
     except Exception:
         return
+
+
+def _destroy_unapplied_native_icon(user32, handle: int) -> None:
+    if not handle:
+        return
+    try:
+        user32.DestroyIcon(handle)
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        _record_startup_icon_exception("native_icon_destroy_unapplied", exc)
 
 
 def _resolve_native_icon_path() -> Path | None:
@@ -166,6 +178,10 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
     if icon_path is None or not icon_path.is_file():
         return False
     try:
+        icon_key = str(icon_path.resolve())
+    except OSError:
+        icon_key = str(icon_path)
+    try:
         import ctypes
         import ctypes.wintypes as wintypes
     except Exception:
@@ -173,6 +189,9 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
     hwnd = _get_hwnd(window)
     if not hwnd:
         return False
+    cache_key = (id(window), hwnd)
+    if _native_icon_cache.get(cache_key) == icon_key:
+        return True
     user32 = ctypes.windll.user32
     try:
         user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -244,10 +263,21 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
         cy_big = int(user32.GetSystemMetrics(12))
     except Exception:
         cx_small = cy_small = cx_big = cy_big = 0
-    hicon_small = user32.LoadImageW(0, str(icon_path), IMAGE_ICON, cx_small, cy_small, LR_LOADFROMFILE)
-    hicon_big = user32.LoadImageW(0, str(icon_path), IMAGE_ICON, cx_big, cy_big, LR_LOADFROMFILE)
-    if not hicon_small and not hicon_big:
-        hicon_big = user32.LoadImageW(0, str(icon_path), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+    try:
+        hicon_small = user32.LoadImageW(0, str(icon_path), IMAGE_ICON, cx_small, cy_small, LR_LOADFROMFILE)
+        hicon_big = user32.LoadImageW(0, str(icon_path), IMAGE_ICON, cx_big, cy_big, LR_LOADFROMFILE)
+        if not hicon_small and not hicon_big:
+            hicon_big = user32.LoadImageW(
+                0,
+                str(icon_path),
+                IMAGE_ICON,
+                0,
+                0,
+                LR_LOADFROMFILE | LR_DEFAULTSIZE,
+            )
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        _record_startup_icon_exception("native_icon_load_image", exc)
+        return False
     if not hicon_small and not hicon_big:
         return False
     WM_SETICON = 0x0080
@@ -265,13 +295,23 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
         _record_startup_icon_exception("native_icon_send_message_signature", exc)
     applied = False
     if hicon_small:
-        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
-        _native_icon_handles.append(int(hicon_small))
-        applied = True
+        try:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            _record_startup_icon_exception("native_icon_apply_small", exc)
+            _destroy_unapplied_native_icon(user32, int(hicon_small))
+        else:
+            _native_icon_handles.append(int(hicon_small))
+            applied = True
     if hicon_big:
-        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
-        _native_icon_handles.append(int(hicon_big))
-        applied = True
+        try:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            _record_startup_icon_exception("native_icon_apply_big", exc)
+            _destroy_unapplied_native_icon(user32, int(hicon_big))
+        else:
+            _native_icon_handles.append(int(hicon_big))
+            applied = True
     try:
         user32.SetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
         user32.SetClassLongPtrW.restype = ctypes.c_void_p
@@ -293,6 +333,8 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
                 set_class(hwnd, GCLP_HICONSM, hicon_small)
         except Exception as exc:
             _record_startup_icon_exception("native_icon_set_class_icons", exc)
+    if applied:
+        _native_icon_cache[cache_key] = icon_key
     return applied
 
 

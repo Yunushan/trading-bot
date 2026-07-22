@@ -105,6 +105,12 @@ class ReleaseQaTests(unittest.TestCase):
                 self.assertIn("--require-platform-evidence-run", workflow)
                 self.assertIn("fetch-depth: 2", workflow)
 
+    def test_tagged_release_workflows_trigger_on_version_tags(self):
+        for workflow_name in RELEASE_WORKFLOWS:
+            with self.subTest(workflow=workflow_name):
+                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+                self.assertRegex(workflow, r'(?ms)^\s*push:\s*\n\s*tags:\s*\n\s*- "v\*"')
+
     def test_tagged_release_publishers_validate_downloaded_platform_evidence(self):
         for workflow_name in RELEASE_WORKFLOWS:
             with self.subTest(workflow=workflow_name):

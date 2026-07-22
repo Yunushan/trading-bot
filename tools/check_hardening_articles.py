@@ -86,7 +86,7 @@ HARDENING_ARTICLES: tuple[Article, ...] = (
         "Rust behavioral tests",
         (
             Evidence("tools/verify_all.py", ("cargo", "test", "trading-bot-core")),
-            Evidence(".github/workflows/ci.yml", ("cargo test -p trading-bot-core",)),
+            Evidence(".github/workflows/ci.yml", ("cargo test --locked -p trading-bot-core",)),
             Evidence(
                 "tools/check_rust_native_local_recovery_evidence.py",
                 (

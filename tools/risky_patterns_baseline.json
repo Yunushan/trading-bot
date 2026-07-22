@@ -1,12 +1,10 @@
 {
   "counts": {
-    "broad_exception": 3197,
-    "silent_pass": 1038,
-    "todo_marker": 1
+    "broad_exception": 3156,
+    "silent_pass": 1021
   },
-  "finding_count": 4236,
+  "finding_count": 4177,
   "severity_counts": {
-    "low": 1,
-    "medium": 4235
+    "medium": 4177
   }
 }

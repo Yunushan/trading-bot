@@ -21,6 +21,23 @@ bool contains(const QStringList &values, const QString &expected) {
     return values.contains(expected);
 }
 
+void writeJsonResponseAndClose(QTcpSocket *socket, const QByteArray &body) {
+    QByteArray response =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Connection: close\r\n"
+        "Content-Length: ";
+    response += QByteArray::number(body.size());
+    response += "\r\n\r\n";
+    response += body;
+    QObject::connect(socket, &QTcpSocket::bytesWritten, socket, [socket](qint64) {
+        if (socket->bytesToWrite() == 0 && socket->state() != QAbstractSocket::UnconnectedState) {
+            socket->disconnectFromHost();
+        }
+    });
+    socket->write(response);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -166,17 +183,7 @@ int main(int argc, char **argv) {
                 return;
             }
             const QByteArray body = R"([[1700000000000,"1","2","0.5","1.5","42"]])";
-            QByteArray response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: application/json\r\n"
-                "Connection: close\r\n"
-                "Content-Length: ";
-            response += QByteArray::number(body.size());
-            response += "\r\n\r\n";
-            response += body;
-            socket->write(response);
-            socket->flush();
-            socket->disconnectFromHost();
+            writeJsonResponseAndClose(socket, body);
         });
     });
     const auto coinKlines = BinanceRestClient::fetchKlines(
@@ -231,17 +238,7 @@ int main(int argc, char **argv) {
             }
             const QByteArray body =
                 R"({"runtime":{"service_name":"Trading Bot Service"},"service_api":{"host_context":"cpp-test"}})";
-            QByteArray response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: application/json\r\n"
-                "Connection: close\r\n"
-                "Content-Length: ";
-            response += QByteArray::number(body.size());
-            response += "\r\n\r\n";
-            response += body;
-            socket->write(response);
-            socket->flush();
-            socket->disconnectFromHost();
+            writeJsonResponseAndClose(socket, body);
         });
     });
 
@@ -273,17 +270,7 @@ int main(int argc, char **argv) {
             }
             const QByteArray body =
                 R"({"command":"status api_key=<redacted>","exit_code":0,"output":"{\"state\":\"ready\"}","source":"cpp-test","created_at":"2026-06-18T12:10:00+00:00","command_type":"service-command"})";
-            QByteArray response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: application/json\r\n"
-                "Connection: close\r\n"
-                "Content-Length: ";
-            response += QByteArray::number(body.size());
-            response += "\r\n\r\n";
-            response += body;
-            socket->write(response);
-            socket->flush();
-            socket->disconnectFromHost();
+            writeJsonResponseAndClose(socket, body);
         });
     });
 
@@ -357,17 +344,7 @@ int main(int argc, char **argv) {
                 });
             }
             const QByteArray body = QJsonDocument(candles).toJson(QJsonDocument::Compact);
-            QByteArray response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: application/json\r\n"
-                "Connection: close\r\n"
-                "Content-Length: ";
-            response += QByteArray::number(body.size());
-            response += "\r\n\r\n";
-            response += body;
-            socket->write(response);
-            socket->flush();
-            socket->disconnectFromHost();
+            writeJsonResponseAndClose(socket, body);
         });
     });
     const QString klineBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(klineServer.serverPort());
