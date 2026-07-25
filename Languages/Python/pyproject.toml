@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "python-binance==1.0.36",
+    "python-binance==1.0.37",
     "binance-connector==3.12.0",
     "ccxt==4.5.46",
     "numpy==2.2.6; python_version < '3.11'",
