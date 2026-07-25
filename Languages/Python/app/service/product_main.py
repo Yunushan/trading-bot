@@ -9,7 +9,6 @@ import json
 import sys
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[2]
@@ -19,12 +18,14 @@ if __package__ in (None, ""):
     from app.service.api_contract import SERVICE_API_BASE_PATH, service_api_route
     from app.service.runtime import TradingBotService
     from app.service.schemas.control import make_start_request, make_stop_request
+    from app.security.network_url import open_validated_url, validate_http_url
     from app.settings import ConfigValidationError
 else:
     from .api import run_service_api_server
     from .api_contract import SERVICE_API_BASE_PATH, service_api_route
     from .runtime import TradingBotService
     from .schemas.control import make_start_request, make_stop_request
+    from ..security.network_url import open_validated_url, validate_http_url
     from ..settings import ConfigValidationError
 
 
@@ -124,16 +125,31 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def _remote_json_request(base_url: str, path: str, *, api_token: str = "", payload: dict | None = None):
-    url = f"{str(base_url or '').rstrip('/')}{path}"
+    clean_base_url = validate_http_url(
+        base_url,
+        field_name="service base URL",
+        allow_loopback_http=True,
+        allow_query=False,
+    ).rstrip("/")
+    if not str(path or "").startswith("/"):
+        raise ValueError("service API path must start with a slash")
+    url = f"{clean_base_url}{path}"
     data = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
     headers = {"Accept": "application/json"}
     if data is not None:
         headers["Content-Type"] = "application/json"
     if api_token:
         headers["Authorization"] = f"Bearer {api_token}"
-    request = Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
     try:
-        with urlopen(request, timeout=10) as response:
+        with open_validated_url(
+            url,
+            data=data,
+            headers=headers,
+            method="POST" if data is not None else "GET",
+            timeout=10,
+            allow_loopback_http=True,
+            allow_redirects=False,
+        ) as response:
             raw = response.read().decode("utf-8")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")

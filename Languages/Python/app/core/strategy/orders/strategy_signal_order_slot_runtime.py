@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from .strategy_indicator_order_common_runtime import _indicator_exchange_qty
+from .strategy_order_error_logging import pause_for_order_uncertainty
+
 
 def _prepare_signal_order_slot_state(
     self,
@@ -85,8 +88,13 @@ def _prepare_signal_order_slot_state(
             leg_entries = self._leg_entries((leg_sym, leg_iv, leg_side))
             for entry in leg_entries:
                 entries_side_all.append(((leg_sym, leg_iv, leg_side), entry))
-    except Exception:
-        entries_side_all = list(entries_side_all)
+    except Exception as exc:
+        pause_for_order_uncertainty(
+            self,
+            f"{cw['symbol']}@{cw.get('interval') or 'default'} slot ledger lookup failed: {exc}",
+            reconciliation_required=True,
+        )
+        return _abort()
 
     def _normalized_signature(entry_dict: dict) -> tuple[str, ...]:
         raw_sig = entry_dict.get("trigger_signature") or entry_dict.get("trigger_indicators")
@@ -131,8 +139,13 @@ def _prepare_signal_order_slot_state(
             keys_for_entry = self._extract_indicator_keys(entry)
             try:
                 qty_val_slot = max(0.0, float(entry.get("qty") or 0.0))
-            except Exception:
-                qty_val_slot = 0.0
+            except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{cw.get('interval') or 'default'} slot ledger quantity is invalid: {exc}",
+                    reconciliation_required=True,
+                )
+                return _abort()
             if qty_val_slot <= qty_tol_slot:
                 continue
             if indicator_key_for_order in keys_for_entry:
@@ -144,8 +157,13 @@ def _prepare_signal_order_slot_state(
                 continue
             try:
                 qty_val_slot = max(0.0, float(entry.get("qty") or 0.0))
-            except Exception:
-                qty_val_slot = 0.0
+            except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{cw.get('interval') or 'default'} slot ledger quantity is invalid: {exc}",
+                    reconciliation_required=True,
+                )
+                return _abort()
             if qty_val_slot <= qty_tol_slot:
                 continue
             if _normalized_signature(entry) == sig_tuple_base:
@@ -157,8 +175,13 @@ def _prepare_signal_order_slot_state(
                 continue
             try:
                 qty_val_slot = max(0.0, float(entry.get("qty") or 0.0))
-            except Exception:
-                qty_val_slot = 0.0
+            except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{cw.get('interval') or 'default'} slot ledger quantity is invalid: {exc}",
+                    reconciliation_required=True,
+                )
+                return _abort()
             if qty_val_slot > qty_tol_slot:
                 indicator_entries_all.append((leg_key, entry))
 
@@ -194,20 +217,27 @@ def _prepare_signal_order_slot_state(
                 desired_ps_check = None
                 if self.binance.get_futures_dual_side():
                     desired_ps_check = "LONG" if side == "BUY" else "SHORT"
-                exch_qty = max(
-                    0.0,
-                    float(self._current_futures_position_qty(cw["symbol"], side, desired_ps_check) or 0.0),
+                exch_qty = _indicator_exchange_qty(
+                    self,
+                    cw["symbol"],
+                    side,
+                    desired_ps_check,
                 )
             except Exception:
-                exch_qty = 0.0
+                return _abort()
             if exch_qty <= qty_tol_slot:
                 try:
                     if indicator_key_for_order:
                         self._purge_indicator_tracking(
                             cw["symbol"], order_iv_key, indicator_key_for_order, side
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    pause_for_order_uncertainty(
+                        self,
+                        f"{cw['symbol']}@{cw.get('interval') or 'default'} stale slot tracking purge failed: {exc}",
+                        reconciliation_required=True,
+                    )
+                    return _abort()
                 active_slot_tokens_all = set()
                 existing_margin_indicator_total = 0.0
                 slot_count_existing = 0
@@ -231,8 +261,13 @@ def _prepare_signal_order_slot_state(
     if isinstance(trigger_labels, (list, tuple)):
         try:
             trigger_labels = [str(lbl).strip() for lbl in trigger_labels if str(lbl).strip()]
-        except Exception:
-            trigger_labels = []
+        except Exception as exc:
+            pause_for_order_uncertainty(
+                self,
+                f"{cw['symbol']}@{cw.get('interval') or 'default'} slot trigger labels are invalid: {exc}",
+                reconciliation_required=True,
+            )
+            return _abort()
     elif isinstance(trigger_labels, str) and trigger_labels.strip():
         trigger_labels = [trigger_labels.strip()]
     else:

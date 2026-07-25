@@ -208,6 +208,19 @@ class BinanceFuturesSettingsSafetyTests(unittest.TestCase):
         self.assertEqual([], client.margin_changes)
         self.assertEqual([], client.leverage_changes)
 
+    def test_order_settings_guard_blocks_when_open_order_snapshot_is_unknown(self):
+        client = _FuturesSettingsClient(
+            position_rows=[{"symbol": "BTCUSDT", "marginType": "ISOLATED", "positionAmt": "0"}]
+        )
+        client.futures_get_open_orders = lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline"))
+        wrapper = _FuturesSettingsWrapper(client)
+
+        with self.assertRaisesRegex(RuntimeError, "Unable to verify open futures orders"):
+            wrapper._ensure_margin_and_leverage_or_block("BTCUSDT", "CROSSED", 10)
+
+        self.assertEqual([], client.margin_changes)
+        self.assertEqual([], client.leverage_changes)
+
     def test_order_settings_guard_blocks_when_open_order_cancellation_is_unacknowledged(self):
         client = _FuturesSettingsClient(
             position_rows=[{"symbol": "BTCUSDT", "marginType": "ISOLATED", "positionAmt": "0"}],
@@ -380,6 +393,15 @@ class BinanceFuturesSettingsSafetyTests(unittest.TestCase):
         self.assertEqual(20, wrapper.futures_leverage)
         wrapper.set_futures_leverage("invalid")
         self.assertEqual(20, wrapper.futures_leverage)
+
+    def test_compatibility_symbol_configuration_propagates_setup_failure(self):
+        wrapper = _FuturesSettingsWrapper(_FuturesSettingsClient())
+        wrapper.ensure_futures_settings = lambda _symbol: (_ for _ in ()).throw(RuntimeError("setup rejected"))
+
+        with self.assertRaisesRegex(RuntimeError, "setup rejected"):
+            wrapper.configure_futures_symbol("BTCUSDT")
+
+        self.assertTrue(any(level == "error" for level, _message in wrapper.logs))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+from ..runtime_diagnostics import report_runtime_fallback
 from ..transport.helpers import _auth_error_hint_for
 from .account_cache_runtime import _is_testnet_mode
 
@@ -13,6 +14,24 @@ def _finite_float(value) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return parsed if math.isfinite(parsed) else None
+
+
+def _testnet_auth_hints(self, code: object) -> str:
+    suffix = ""
+    try:
+        if _is_testnet_mode(self.mode) and str(getattr(self, "account_type", "") or "").upper().startswith("FUT"):
+            scope = self._diagnose_testnet_key_scope()
+            if scope == "spot":
+                suffix += " | hint2: These keys appear to be Spot Testnet keys; Futures Testnet uses different API keys."
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures testnet key-scope diagnosis failed", exc)
+    try:
+        extra_hint = self._testnet_auth_hint(code)
+        if extra_hint:
+            suffix += f" | hint3: {extra_hint}"
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures testnet authentication hint failed", exc)
+    return suffix
 
 
 def get_futures_balance_usdt(self, *, force_refresh: bool = False) -> float:
@@ -58,8 +77,8 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
     if self.api_key and self.api_secret:
         try:
             self._sync_futures_time_offset(force=False)
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, "Futures time synchronization failed before balance snapshot", exc)
 
     entries = self._get_futures_account_balance_cached(force_refresh=force_refresh) or []
     chosen_row = None
@@ -76,7 +95,8 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
                 asset = code
                 chosen_row = candidates[code]
                 break
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures balance asset selection failed", exc)
         chosen_row = None
 
     if isinstance(chosen_row, dict) and chosen_row:
@@ -149,8 +169,8 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
                             if wallet is None:
                                 wallet = candidate_wallet
                             break
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        report_runtime_fallback(self, "Futures account asset fallback normalization failed", exc)
 
     if (
         self.api_key
@@ -179,19 +199,7 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
             hint = _auth_error_hint_for(self.mode, self.account_type, code)
             if hint:
                 suffix += f" | hint: {hint}"
-            try:
-                if _is_testnet_mode(self.mode) and str(getattr(self, "account_type", "") or "").upper().startswith("FUT"):
-                    scope = self._diagnose_testnet_key_scope()
-                    if scope == "spot":
-                        suffix += " | hint2: These keys appear to be Spot Testnet keys; Futures Testnet uses different API keys."
-            except Exception:
-                pass
-            try:
-                extra_hint = self._testnet_auth_hint(code)
-                if extra_hint:
-                    suffix += f" | hint3: {extra_hint}"
-            except Exception:
-                pass
+            suffix += _testnet_auth_hints(self, code)
             raise RuntimeError(f"Futures balance fetch failed: {msg}{suffix}")
         raise RuntimeError("Futures balance fetch failed: unrecognized balance response format")
 
@@ -215,19 +223,7 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
             hint = _auth_error_hint_for(self.mode, self.account_type, code)
             if hint:
                 suffix += f" | hint: {hint}"
-            try:
-                if _is_testnet_mode(self.mode) and str(getattr(self, "account_type", "") or "").upper().startswith("FUT"):
-                    scope = self._diagnose_testnet_key_scope()
-                    if scope == "spot":
-                        suffix += " | hint2: These keys appear to be Spot Testnet keys; Futures Testnet uses different API keys."
-            except Exception:
-                pass
-            try:
-                extra_hint = self._testnet_auth_hint(code)
-                if extra_hint:
-                    suffix += f" | hint3: {extra_hint}"
-            except Exception:
-                pass
+            suffix += _testnet_auth_hints(self, code)
             raise RuntimeError(f"Futures balance fetch failed: {msg}{suffix}")
         raise RuntimeError("Futures balance fetch failed: empty response")
 
@@ -250,8 +246,8 @@ def get_futures_available_balance(self, *, force_refresh: bool = False) -> float
                 free = row.get("free")
                 if free is not None:
                     return float(free)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures available-balance fallback failed", exc)
     return 0.0
 
 
@@ -324,8 +320,8 @@ def get_total_usdt_value(self, *, force_refresh: bool = False) -> float:
         _push(self.get_futures_available_balance())
     try:
         _push(self.get_spot_balance("USDT"))
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Spot USDT balance fallback failed", exc)
     if not candidates and not force_refresh:
         return self.get_total_usdt_value(force_refresh=True)
     if not candidates:
@@ -334,16 +330,30 @@ def get_total_usdt_value(self, *, force_refresh: bool = False) -> float:
 
 
 def get_total_unrealized_pnl(self) -> float:
+    primary_error: Exception | None = None
     try:
-        positions = self.list_open_futures_positions() or []
+        positions = self.list_open_futures_positions()
+        if positions is None:
+            raise RuntimeError("futures position snapshot unavailable")
+        if not isinstance(positions, (list, tuple)):
+            raise RuntimeError("futures position snapshot returned an invalid payload")
         total = 0.0
-        for pos in positions:
+        for index, pos in enumerate(positions):
+            if not isinstance(pos, dict):
+                raise RuntimeError(f"futures position row {index} is malformed")
             parsed = _finite_float(pos.get("unRealizedProfit"))
-            if parsed is not None:
-                total += parsed
+            if parsed is None:
+                raise RuntimeError(f"futures position row {index} has invalid unrealized PnL")
+            total += parsed
         return float(total)
-    except Exception:
-        acct_dict = self._get_futures_account_cached()
+    except Exception as exc:
+        primary_error = exc
+        report_runtime_fallback(self, "Futures unrealized PnL position snapshot failed", exc)
+        try:
+            acct_dict = self._get_futures_account_cached()
+        except Exception as account_exc:
+            report_runtime_fallback(self, "Futures unrealized PnL account fallback failed", account_exc)
+            raise RuntimeError("futures unrealized PnL is unavailable") from account_exc
         if isinstance(acct_dict, dict):
             val = acct_dict.get("totalUnrealizedProfit")
             if val is None:
@@ -352,7 +362,7 @@ def get_total_unrealized_pnl(self) -> float:
                 parsed = _finite_float(val)
                 if parsed is not None:
                     return parsed
-    return 0.0
+    raise RuntimeError("futures unrealized PnL is unavailable") from primary_error
 
 
 def get_total_wallet_balance(self) -> float:
@@ -370,5 +380,6 @@ def get_total_wallet_balance(self) -> float:
                 return parsed
     try:
         return float(self.get_total_usdt_value())
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Total wallet balance fallback failed", exc)
         return 0.0

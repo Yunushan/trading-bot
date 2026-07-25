@@ -4,6 +4,7 @@ from .strategy_indicator_order_common_runtime import (
     _indicator_exchange_qty,
     _purge_indicator_side_if_exchange_flat,
 )
+from .strategy_order_error_logging import pause_for_order_uncertainty, safe_strategy_log
 
 
 def _build_directional_indicator_order_request(
@@ -75,8 +76,13 @@ def _build_directional_indicator_order_request(
                 still_open = self._indicator_has_open(
                     symbol, interval_current, indicator_key, opposite_side
                 )
-            except Exception:
-                still_open = False
+            except Exception as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{symbol}@{interval_current or 'default'} indicator ownership lookup failed: {exc}",
+                    reconciliation_required=True,
+                )
+                return None
             if still_open:
                 target_qty_hint = qty_cap
                 if (target_qty_hint is None or target_qty_hint <= 0.0) and remaining_opposite_qty > 0.0:
@@ -143,13 +149,12 @@ def _build_directional_indicator_order_request(
             tracked_qty=remaining_opposite_qty,
         )
         if remaining_opposite_qty > qty_tol_indicator:
-            try:
-                self.log(
-                    f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} skipped: "
-                    f"{opposite_side.lower()} leg still live on exchange."
-                )
-            except Exception:
-                pass
+            safe_strategy_log(
+                self,
+                f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} skipped: "
+                f"{opposite_side.lower()} leg still live on exchange.",
+                level="warning",
+            )
             return None
 
     flip_from_side = None
@@ -167,21 +172,19 @@ def _build_directional_indicator_order_request(
         flip_from_side = opposite_side
         flip_qty = closed_opposite_qty
         flip_qty_target = closed_opposite_qty
-        try:
-            self.log(
-                f"{symbol}@{interval_current} {indicator_key} flip {opposite_side}→{target_side} "
-                f"(closed {flip_qty:.10f})."
-            )
-        except Exception:
-            pass
+        safe_strategy_log(
+            self,
+            f"{symbol}@{interval_current} {indicator_key} flip {opposite_side}→{target_side} "
+            f"(closed {flip_qty:.10f}).",
+            level="warning",
+        )
     elif remaining_opposite_qty > 0.0:
-        try:
-            self.log(
-                f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} deferred: "
-                f"{remaining_opposite_qty:.10f} {opposite_side.lower()} qty still open."
-            )
-        except Exception:
-            pass
+        safe_strategy_log(
+            self,
+            f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} deferred: "
+            f"{remaining_opposite_qty:.10f} {opposite_side.lower()} qty still open.",
+            level="warning",
+        )
         return None
     else:
         protect_opposite_residual = self._symbol_side_has_other_positions(
@@ -198,21 +201,19 @@ def _build_directional_indicator_order_request(
         )
         tol_live = max(1e-9, live_opposite_residual * 1e-6)
         if protect_opposite_residual and live_opposite_residual > tol_live:
-            try:
-                self.log(
-                    f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} skipping residual "
-                    f"{opposite_side.lower()} close (other {opposite_side} legs still active)."
-                )
-            except Exception:
-                pass
+            safe_strategy_log(
+                self,
+                f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} skipping residual "
+                f"{opposite_side.lower()} close (other {opposite_side} legs still active).",
+                level="warning",
+            )
         elif live_opposite_residual > tol_live:
-            try:
-                self.log(
-                    f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} forcing close of residual "
-                    f"{opposite_side.lower()} ({live_opposite_residual:.10f})."
-                )
-            except Exception:
-                pass
+            safe_strategy_log(
+                self,
+                f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} forcing close of residual "
+                f"{opposite_side.lower()} ({live_opposite_residual:.10f}).",
+                level="warning",
+            )
             if not self._close_opposite_position(
                 symbol,
                 interval_current,
@@ -255,8 +256,13 @@ def _build_directional_indicator_order_request(
                 flip_qty = float(recent_close.get("qty") or 0.0)
             if flip_qty_target <= 0.0 and flip_qty > 0.0:
                 flip_qty_target = flip_qty
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+            pause_for_order_uncertainty(
+                self,
+                f"{symbol}@{interval_current or 'default'} recent close quantity is invalid: {exc}",
+                reconciliation_required=True,
+            )
+            return None
 
     current_target_qty = self._indicator_open_qty(
         symbol,
@@ -292,13 +298,12 @@ def _build_directional_indicator_order_request(
             now_ts=now_indicator_ts,
         )
         if reentry_remaining > 0.0:
-            try:
-                self.log(
-                    f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} suppressed by "
-                    f"re-entry guard ({reentry_remaining:.1f}s)."
-                )
-            except Exception:
-                pass
+            safe_strategy_log(
+                self,
+                f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} suppressed by "
+                f"re-entry guard ({reentry_remaining:.1f}s).",
+                level="warning",
+            )
             return None
 
     return {

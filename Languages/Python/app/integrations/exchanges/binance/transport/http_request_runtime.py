@@ -8,6 +8,7 @@ from typing import Any
 
 import requests
 
+from ..runtime_diagnostics import report_runtime_fallback
 from .helpers import (
     _http_debug_enabled,
     _http_slow_seconds,
@@ -192,8 +193,8 @@ def _clear_direct_spot_http_error(self) -> None:
             clear = getattr(self, "_clear_futures_http_error", None)
             if callable(clear):
                 clear()
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Spot HTTP error-state cleanup failed", exc)
 
 
 def _coerce_error_code(value: Any) -> int | None:
@@ -323,10 +324,10 @@ def _record_direct_futures_http_error(
     except TypeError:
         try:
             recorder(path, status_code=status_code, code=code, message=message)
-        except Exception:
-            pass
-    except Exception:
-        pass
+        except Exception as exc:
+            report_runtime_fallback(self, f"Futures HTTP error recorder fallback failed for {path}", exc)
+    except Exception as exc:
+        report_runtime_fallback(self, f"Futures HTTP error recorder failed for {path}", exc)
 
 
 def _handle_direct_futures_rate_limit(
@@ -341,7 +342,8 @@ def _handle_direct_futures_rate_limit(
     if callable(handler):
         try:
             return handler(status_code=status_code, code=code, message=message, retry_after=retry_after)
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, "Futures HTTP rate-limit handler failed", exc)
             return None
     return None
 
@@ -352,8 +354,9 @@ def _seconds_until_direct_futures_request_allowed(self) -> float:
         return 0.0
     try:
         return max(float(checker() or 0.0), 0.0)
-    except Exception:
-        return 0.0
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures HTTP ban-state check failed; applying conservative cooldown", exc)
+        return 8.0
 
 
 def _throttle_direct_futures_request(self, path: str | None) -> None:
@@ -361,8 +364,9 @@ def _throttle_direct_futures_request(self, path: str | None) -> None:
     if callable(throttler):
         try:
             throttler(path)
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, f"Futures HTTP throttle failed for {path}", exc, level="error")
+            raise RuntimeError("futures HTTP request blocked because throttling failed") from exc
 
 
 def _mark_direct_futures_network_offline(self, path: str, exc: Exception) -> None:
@@ -370,8 +374,8 @@ def _mark_direct_futures_network_offline(self, path: str, exc: Exception) -> Non
     if callable(handler):
         try:
             handler(f"Binance futures REST {path}", exc)
-        except Exception:
-            pass
+        except Exception as handler_exc:
+            report_runtime_fallback(self, f"Futures network-offline handler failed for {path}", handler_exc)
 
 
 def _mark_direct_futures_network_recovered(self) -> None:
@@ -379,15 +383,12 @@ def _mark_direct_futures_network_recovered(self) -> None:
     if callable(handler):
         try:
             handler()
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, "Futures network-recovery handler failed", exc)
 
 
 def _sleep_before_futures_retry(attempt: int) -> None:
-    try:
-        time.sleep(min(0.25 * (attempt + 1), 1.0))
-    except Exception:
-        pass
+    time.sleep(min(0.25 * (attempt + 1), 1.0))
 
 
 def _empty_futures_http_result(response_kind: str) -> dict | list:
@@ -553,8 +554,8 @@ def _http_signed_futures_impl(
                 if dt >= _http_slow_seconds():
                     try:
                         self._log(f"Futures REST {path} took {dt:.2f}s", lvl="warn")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        report_runtime_fallback(self, f"Futures REST {path} slow-request log failed", exc)
             return _coerce_futures_http_result(data, response_kind)
 
         err_code, err_msg = _parse_futures_error_response(resp)

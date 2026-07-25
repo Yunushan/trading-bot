@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import sys
 from collections import deque
 from datetime import datetime, timezone
@@ -663,25 +664,34 @@ class BotRuntimeStateMixin:
     def _timestamp_epoch(value: object) -> float | None:
         if value in (None, "", "-"):
             return None
+        if isinstance(value, bool):
+            return None
         if isinstance(value, (int, float)):
             try:
-                return float(value)
-            except Exception:
+                numeric_value = float(value)
+            except (TypeError, ValueError, OverflowError):
                 return None
+            return numeric_value if math.isfinite(numeric_value) else None
         text = str(value or "").strip()
         if not text or text == "-":
             return None
         try:
-            return float(text)
-        except Exception:
-            pass
+            numeric_value = float(text)
+        except (TypeError, ValueError, OverflowError):
+            numeric_value = None
+        if numeric_value is not None:
+            return numeric_value if math.isfinite(numeric_value) else None
         try:
             parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except Exception:
+        except ValueError:
             return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.timestamp()
+        try:
+            epoch = parsed.timestamp()
+        except (OSError, OverflowError, ValueError):
+            return None
+        return epoch if math.isfinite(epoch) else None
 
     @classmethod
     def _freshness_payload(

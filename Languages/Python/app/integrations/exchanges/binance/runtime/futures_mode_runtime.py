@@ -9,6 +9,8 @@ from collections.abc import Mapping
 
 import requests
 
+from ..runtime_diagnostics import report_runtime_fallback
+
 
 def _exchange_mutation_accepted(result: object, *, leverage: int | None = None) -> bool:
     """Return whether a configuration mutation response represents acceptance."""
@@ -117,7 +119,8 @@ def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: in
         pins2 = self.client.futures_position_information(symbol=sym)
         types2 = [(row.get("marginType") or "").upper() for row in (pins2 or []) if isinstance(row, dict)]
         now = next((item for item in types2 if item), None)
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, f"Margin-mode verification failed for {sym}", exc)
         types2, now = [], None
 
     if (now == target) or (target in types2) or (assume_ok and (now in (None, ""))):
@@ -136,14 +139,15 @@ def set_position_mode(self, hedge: bool) -> bool:
         result = self.client.futures_change_position_mode(dualSidePosition=bool(hedge))
         if _exchange_mutation_accepted(result):
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Primary futures position-mode mutation failed", exc)
     for method_name in ("futures_change_position_side_dual", "futures_change_positionMode"):
         try:
             fn = getattr(self.client, method_name, None)
             if fn and _exchange_mutation_accepted(fn(dualSidePosition=bool(hedge))):
                 return True
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, f"Futures position-mode mutation via {method_name} failed", exc)
             continue
     return False
 
@@ -160,14 +164,15 @@ def set_multi_assets_mode(self, enabled: bool) -> bool:
             if fn:
                 if _exchange_mutation_accepted(fn(**payload)):
                     return True
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, f"Multi-assets mutation via {method_name} failed", exc)
             continue
     try:
         result = self.client._request_futures_api("post", "multiAssetsMargin", signed=True, data=payload)
         if _exchange_mutation_accepted(result):
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Internal multi-assets mutation failed", exc)
     try:
         headers = {"X-MBX-APIKEY": getattr(self.client, "API_KEY", self.api_key)}
         ts = int(time.time() * 1000)
@@ -183,7 +188,8 @@ def set_multi_assets_mode(self, enabled: bool) -> bool:
         except (AttributeError, ValueError):
             response_payload = None
         return _exchange_mutation_accepted(response_payload)
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Signed HTTP multi-assets mutation failed", exc)
         return False
 
 

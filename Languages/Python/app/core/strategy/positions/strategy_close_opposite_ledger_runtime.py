@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import math
+
+from .close_execution import _pause_for_close_uncertainty
+
 
 def _close_interval_side_entries(
     self,
@@ -28,9 +32,21 @@ def _close_interval_side_entries(
     limit_tol = 1e-9
     if qty_limit is not None:
         try:
-            limit_remaining = max(0.0, float(qty_limit))
-        except Exception:
-            limit_remaining = 0.0
+            limit_remaining = float(qty_limit)
+        except (TypeError, ValueError, OverflowError) as exc:
+            _pause_for_close_uncertainty(
+                self,
+                f"{symbol}@{interval_norm or 'default'} close quantity limit is invalid: {exc}",
+                reconciliation_required=False,
+            )
+            return 0, True, 0.0
+        if not math.isfinite(limit_remaining) or limit_remaining < 0.0:
+            _pause_for_close_uncertainty(
+                self,
+                f"{symbol}@{interval_norm or 'default'} close quantity limit must be finite and nonnegative",
+                reconciliation_required=False,
+            )
+            return 0, True, 0.0
 
     for leg_key in list(self._leg_ledger.keys()):
         if limit_remaining is not None and limit_remaining <= limit_tol:
@@ -91,8 +107,13 @@ def _close_interval_side_entries(
                 already = getattr(self, "_close_leg_guard", set())
                 if key_guard in already:
                     continue
-            except Exception:
-                key_guard = None
+            except Exception as exc:
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{symbol}@{leg_interval_norm or 'default'} close guard lookup failed: {exc}",
+                    reconciliation_required=True,
+                )
+                return closed_entries, True, qty_closed
             indicator_hold_key = indicator_filter_norm or (entry_keys[0] if entry_keys else None)
             if indicator_hold_key:
                 try:
@@ -137,18 +158,22 @@ def _close_interval_side_entries(
                             already = getattr(self, "_close_leg_guard", set())
                             already.add(key_guard)
                             self._close_leg_guard = already
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            _pause_for_close_uncertainty(
+                                self,
+                                f"{symbol}@{leg_interval_norm or 'default'} close guard update failed: {exc}",
+                                reconciliation_required=True,
+                            )
+                            return closed_entries, True, qty_closed
                 else:
                     failed = True
                     break
             except Exception as entry_exc:
-                try:
-                    self.log(
-                        f"{symbol}@{interval_norm or leg_interval} close-opposite ledger entry failed: {entry_exc}"
-                    )
-                except Exception:
-                    pass
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{symbol}@{interval_norm or leg_interval} close-opposite ledger entry failed: {entry_exc}",
+                    reconciliation_required=True,
+                )
                 failed = True
                 break
         if failed:

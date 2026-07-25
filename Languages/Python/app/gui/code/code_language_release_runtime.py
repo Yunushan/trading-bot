@@ -4,9 +4,9 @@ import json
 import os
 import re
 import sys
-import urllib.request
 from pathlib import Path
 
+from ...security.network_url import open_validated_url
 from .code_language_catalog import RELEASE_INFO_JSON_NAME, RELEASE_TAG_TEXT_NAME
 
 _THIS_FILE = Path(__file__).resolve()
@@ -44,8 +44,11 @@ def http_get_text(url: str, timeout: float = 8.0) -> str | None:
         return None
     timeout_val = max(2.0, float(timeout or 8.0))
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
-        with urllib.request.urlopen(request, timeout=timeout_val) as response:
+        with open_validated_url(
+            url,
+            timeout=timeout_val,
+            headers={"User-Agent": "trading-bot-starter/1.0"},
+        ) as response:
             data = response.read()
         return data.decode("utf-8", errors="ignore")
     except Exception:

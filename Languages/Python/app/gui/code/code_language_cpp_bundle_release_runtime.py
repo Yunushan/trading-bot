@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import time
-import urllib.request
 from pathlib import Path
 
+from ...security.network_url import open_validated_url
 from . import code_language_release_runtime
 from .code_language_catalog import (
     CPP_RELEASE_CPP_ASSET,
@@ -79,8 +79,11 @@ def cpp_release_is_newer(latest_tag: str | None, cached_tag: str | None) -> bool
 def download_binary_file(url: str, target_path: Path, timeout: float = 45.0) -> None:
     timeout_val = max(8.0, float(timeout or 45.0))
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout_val) as response:
+    with open_validated_url(
+        url,
+        timeout=timeout_val,
+        headers={"User-Agent": "trading-bot-starter/1.0"},
+    ) as response:
         with target_path.open("wb") as handle:
             while True:
                 chunk = response.read(1024 * 1024)

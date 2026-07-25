@@ -1,9 +1,26 @@
 from __future__ import annotations
 
+import logging
 import math
 import time
 
 from .strategy_cycle_risk_stop_context_runtime import _reconciled_close_qty
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _safe_log(self, message: str, *, level: int = logging.WARNING) -> bool:
+    callback = getattr(self, "log", None)
+    if callable(callback):
+        try:
+            callback(message)
+            return True
+        except Exception:
+            _LOGGER.exception("Cumulative stop-loss log callback failed while reporting: %s", message)
+            return False
+    _LOGGER.log(level, message)
+    return False
 
 
 def apply_cumulative_futures_stop_management(
@@ -71,6 +88,7 @@ def apply_cumulative_futures_stop_management(
             totals[side_key]["loss"] += loss_val
             totals[side_key]["margin"] += max(0.0, margin_val) if math.isfinite(margin_val) else 0.0
         except Exception:
+            _LOGGER.debug("Skipping malformed cumulative stop-loss position", exc_info=True)
             continue
     cumulative_triggered = False
     for side_key in ("LONG", "SHORT"):
@@ -98,31 +116,31 @@ def apply_cumulative_futures_stop_management(
                 cw["symbol"], data["qty"], side=close_side, position_side=position_side
             )
         except Exception as exc:
-            try:
-                self.log(f"Cumulative stop-loss close error for {cw['symbol']} ({side_key}): {exc}")
-            except Exception:
-                pass
+            _safe_log(self, f"Cumulative stop-loss close error for {cw['symbol']} ({side_key}): {exc}")
             continue
         if isinstance(res, dict) and res.get("ok"):
             closed_qty = _reconciled_close_qty(res, data["qty"])
             if closed_qty + max(1e-9, data["qty"] * 1e-6) < data["qty"]:
-                try:
-                    self.log(
-                        f"Cumulative stop-loss close partially filled for {cw['symbol']} ({side_key}): "
-                        f"{closed_qty:.10f}/{data['qty']:.10f}; preserving ledger for reconciliation."
-                    )
-                except Exception:
-                    continue
+                _safe_log(
+                    self,
+                    f"Cumulative stop-loss close partially filled for {cw['symbol']} ({side_key}): "
+                    f"{closed_qty:.10f}/{data['qty']:.10f}; preserving ledger for reconciliation.",
+                )
                 continue
             latency_s = max(0.0, time.time() - start_ts)
             target_side_label = "BUY" if side_key == "LONG" else "SELL"
-            payload = self._build_close_event_payload(
-                cw["symbol"], cw.get("interval"), target_side_label, closed_qty, res
-            )
             try:
-                payload["reason"] = "cumulative_stop_loss"
-            except Exception:
-                pass
+                payload = self._build_close_event_payload(
+                    cw["symbol"], cw.get("interval"), target_side_label, closed_qty, res
+                )
+            except Exception as exc:
+                payload = {"qty": closed_qty}
+                _safe_log(
+                    self,
+                    f"Cumulative stop-loss close metadata failed for "
+                    f"{cw['symbol']} ({side_key}); using minimal payload: {exc}",
+                )
+            payload["reason"] = "cumulative_stop_loss"
             for leg_key in list(self._leg_ledger.keys()):
                 if leg_key[0] == cw["symbol"] and leg_key[2] == target_side_label:
                     try:
@@ -134,8 +152,12 @@ def apply_cumulative_futures_stop_management(
                                     entry,
                                     target_side_label,
                                 )
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                _safe_log(
+                                    self,
+                                    f"Failed to mark cumulative {target_side_label} stop-loss reentry state "
+                                    f"for {cw['symbol']}@{cw.get('interval')}: {exc}",
+                                )
                             try:
                                 for indicator_key in self._extract_indicator_keys(entry):
                                     self._record_indicator_close(
@@ -145,8 +167,12 @@ def apply_cumulative_futures_stop_management(
                                         target_side_label,
                                         entry.get("qty"),
                                     )
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                _safe_log(
+                                    self,
+                                    f"Failed to record cumulative {target_side_label} stop-loss indicator close "
+                                    f"for {cw['symbol']}@{cw.get('interval')}: {exc}",
+                                )
                             try:
                                 self._queue_flip_on_close(
                                     cw.get("interval"),
@@ -154,43 +180,72 @@ def apply_cumulative_futures_stop_management(
                                     entry,
                                     payload,
                                 )
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    self._remove_leg_entry(leg_key, None)
-            self._mark_guard_closed(cw["symbol"], cw.get("interval"), target_side_label)
-            self._notify_interval_closed(
-                cw["symbol"],
-                cw.get("interval"),
-                target_side_label,
-                **payload,
-                latency_seconds=latency_s,
-                latency_ms=latency_s * 1000.0,
-                reason="cumulative_stop_loss",
-            )
+                            except Exception as exc:
+                                _safe_log(
+                                    self,
+                                    f"Failed to queue cumulative {target_side_label} stop-loss flip "
+                                    f"for {cw['symbol']}@{cw.get('interval')}: {exc}",
+                                )
+                    except Exception as exc:
+                        _safe_log(
+                            self,
+                            f"Failed to inspect cumulative {target_side_label} stop-loss ledger "
+                            f"for {cw['symbol']}@{cw.get('interval')}: {exc}",
+                        )
+                    try:
+                        self._remove_leg_entry(leg_key, None)
+                    except Exception as exc:
+                        _safe_log(
+                            self,
+                            f"Failed to remove closed cumulative {target_side_label} stop-loss ledger "
+                            f"for {cw['symbol']}@{cw.get('interval')}: {exc}",
+                        )
             try:
-                margin_val = data["margin"] or 0.0
-                pct_loss = (data["loss"] / margin_val * 100.0) if margin_val > 0.0 else 0.0
+                self._mark_guard_closed(cw["symbol"], cw.get("interval"), target_side_label)
+            except Exception as exc:
+                _safe_log(
+                    self,
+                    f"Failed to mark cumulative {target_side_label} stop-loss guard closed "
+                    f"for {cw['symbol']}@{cw.get('interval')}: {exc}",
+                )
+            try:
+                self._notify_interval_closed(
+                    cw["symbol"],
+                    cw.get("interval"),
+                    target_side_label,
+                    **payload,
+                    latency_seconds=latency_s,
+                    latency_ms=latency_s * 1000.0,
+                )
+            except Exception as exc:
+                _safe_log(
+                    self,
+                    f"Failed to notify cumulative {target_side_label} stop-loss close "
+                    f"for {cw['symbol']}@{cw.get('interval')}: {exc}",
+                )
+            try:
                 self._log_latency_metric(
                     cw["symbol"],
                     cw.get("interval"),
                     f"cumulative stop-loss {target_side_label}",
                     latency_s,
                 )
-                self.log(
-                    f"Cumulative stop-loss closed {target_side_label} for {cw['symbol']}@{cw.get('interval')} "
-                    f"(loss {data['loss']:.4f} USDT / {pct_loss:.2f}%)."
+            except Exception as exc:
+                _safe_log(
+                    self,
+                    f"Failed to record cumulative {target_side_label} stop-loss latency "
+                    f"for {cw['symbol']}@{cw.get('interval')}: {exc}",
                 )
-            except Exception:
-                pass
+            margin_val = data["margin"] or 0.0
+            pct_loss = (data["loss"] / margin_val * 100.0) if margin_val > 0.0 else 0.0
+            _safe_log(
+                self,
+                f"Cumulative stop-loss closed {target_side_label} for {cw['symbol']}@{cw.get('interval')} "
+                f"(loss {data['loss']:.4f} USDT / {pct_loss:.2f}%).",
+                level=logging.INFO,
+            )
         else:
-            try:
-                self.log(
-                    f"Cumulative stop-loss close failed for {cw['symbol']} ({side_key}): {res}"
-                )
-            except Exception:
-                pass
+            _safe_log(self, f"Cumulative stop-loss close failed for {cw['symbol']} ({side_key}): {res}")
     return cumulative_triggered
 
 

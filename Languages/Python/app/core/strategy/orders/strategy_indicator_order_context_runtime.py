@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from . import strategy_indicator_order_build_runtime
+from .strategy_order_error_logging import pause_for_order_uncertainty, safe_strategy_log
 
 
 def _prepare_indicator_signal_request_context(
@@ -23,8 +24,13 @@ def _prepare_indicator_signal_request_context(
     interval_current = cw.get("interval")
     try:
         interval_seconds_est = float(self._interval_to_seconds(str(interval_current or "1m")))
-    except Exception:
-        interval_seconds_est = 60.0
+    except Exception as exc:
+        pause_for_order_uncertainty(
+            self,
+            f"{cw['symbol']}@{interval_current or 'default'} indicator interval is invalid: {exc}",
+            reconciliation_required=False,
+        )
+        return None
     indicator_interval_tokens: set[str] = set(self._tokenize_interval_label(interval_current))
     label_interval_tokens = strategy_type._extract_interval_tokens_from_labels([indicator_label])
     if label_interval_tokens:
@@ -44,7 +50,12 @@ def _prepare_indicator_signal_request_context(
             opp_side_label,
             max_age_seconds=recent_close_window,
         )
-    except Exception:
+    except Exception as exc:
+        safe_strategy_log(
+            self,
+            f"{cw['symbol']}@{interval_current or 'default'} recent indicator close lookup failed: {exc}",
+            level="warning",
+        )
         recent_close = None
     same_side_live = self._indicator_live_qty_total(
         cw["symbol"],
@@ -73,13 +84,12 @@ def _prepare_indicator_signal_request_context(
         )
         block_side = self._indicator_reentry_signal_blocks.get(block_key)
         if block_side == action_side_label and opp_side_live <= qty_tol_indicator:
-            try:
-                self.log(
-                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_norm} {action_side_label} "
-                    "blocked: signal has not reset since last close."
-                )
-            except Exception:
-                pass
+            safe_strategy_log(
+                self,
+                f"{cw['symbol']}@{interval_current or 'default'} {indicator_norm} {action_side_label} "
+                "blocked: signal has not reset since last close.",
+                level="warning",
+            )
             return None
     if same_side_live > qty_tol_indicator and opp_side_live <= qty_tol_indicator:
         stale_cleared = False
@@ -104,14 +114,18 @@ def _prepare_indicator_signal_request_context(
                     )
                     same_side_live = 0.0
                     stale_cleared = True
-                    try:
-                        self.log(
-                            f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
-                            f"{action_side_label} stale guard cleared (no live position)."
-                        )
-                    except Exception:
-                        pass
-            except Exception:
+                    safe_strategy_log(
+                        self,
+                        f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
+                        f"{action_side_label} stale guard cleared (no live position).",
+                        level="warning",
+                    )
+            except Exception as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{interval_current or 'default'} stale indicator guard verification failed: {exc}",
+                    reconciliation_required=True,
+                )
                 stale_cleared = False
         if not stale_cleared:
             return None
@@ -149,29 +163,32 @@ def _prepare_indicator_signal_request_context(
                 )
                 if opp_live_exch > qty_tol_indicator:
                     allow_flip_cooldown_bypass = True
-            except Exception:
+            except Exception as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{interval_current or 'default'} cooldown ownership lookup failed: {exc}",
+                    reconciliation_required=False,
+                )
                 allow_flip_cooldown_bypass = False
         if not allow_flip_cooldown_bypass and recent_close:
             allow_flip_cooldown_bypass = True
         if not allow_flip_cooldown_bypass:
-            try:
-                self.log(
-                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
-                    f"{action_side_label} suppressed: cooldown {cooldown_remaining:.1f}s remaining."
-                )
-            except Exception:
-                pass
+            safe_strategy_log(
+                self,
+                f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
+                f"{action_side_label} suppressed: cooldown {cooldown_remaining:.1f}s remaining.",
+                level="warning",
+            )
             return None
     reentry_block = self._reentry_block_remaining(
         cw["symbol"], interval_current, action_side_label, now_ts=now_ts
     )
     if reentry_block > 0.0:
-        try:
-            self.log(
-                f"{cw['symbol']}@{interval_current} {action_side_label} re-entry guard: waiting {reentry_block:.1f}s."
-            )
-        except Exception:
-            pass
+        safe_strategy_log(
+            self,
+            f"{cw['symbol']}@{interval_current} {action_side_label} re-entry guard: waiting {reentry_block:.1f}s.",
+            level="warning",
+        )
         return None
     return {
         "indicator_key": indicator_key,
@@ -201,8 +218,13 @@ def _prepare_fallback_indicator_request_context(
     action_norm = str(indicator_action or "").strip().lower()
     try:
         interval_seconds_est = float(self._interval_to_seconds(str(interval_current or "1m")))
-    except Exception:
-        interval_seconds_est = 60.0
+    except Exception as exc:
+        pause_for_order_uncertainty(
+            self,
+            f"{cw['symbol']}@{interval_current or 'default'} fallback indicator interval is invalid: {exc}",
+            reconciliation_required=False,
+        )
+        return None
     if action_norm not in {"buy", "sell"}:
         return None
     if not self._indicator_signal_confirmation_ready(

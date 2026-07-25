@@ -1,7 +1,40 @@
 from __future__ import annotations
 
+import logging
 import math
 import time
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _safe_log(self, message: str, *, level: int = logging.WARNING) -> bool:
+    callback = getattr(self, "log", None)
+    if callable(callback):
+        try:
+            callback(message)
+            return True
+        except Exception:
+            _LOGGER.exception("Position close log callback failed while reporting: %s", message)
+            return False
+    _LOGGER.log(level, message)
+    return False
+
+
+def _pause_for_close_uncertainty(self, message: str, *, reconciliation_required: bool) -> None:
+    if reconciliation_required:
+        self._ledger_reconciliation_required = True
+    cls = type(self)
+    pause_event = getattr(cls, "_GLOBAL_PAUSE", None)
+    if pause_event is None:
+        cls._GLOBAL_PAUSE_FALLBACK = True
+    else:
+        try:
+            pause_event.set()
+        except Exception:
+            cls._GLOBAL_PAUSE_FALLBACK = True
+            _LOGGER.exception("Global pause event failed after close-state uncertainty")
+    _safe_log(self, f"{message}; trading paused pending reconciliation.")
 
 
 def _finite_float(value: object, *, default: float = 0.0) -> float:
@@ -24,8 +57,13 @@ def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
     total_unrealized = 0.0
     try:
         total_unrealized = _finite_float(self.binance.get_total_unrealized_pnl())
-    except Exception:
-        total_unrealized = 0.0
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"Entire-account stop-loss PnL snapshot failed: {exc}",
+            reconciliation_required=False,
+        )
+        return False
 
     triggered = False
     reason = None
@@ -55,8 +93,13 @@ def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
         total_wallet = 0.0
         try:
             total_wallet = _finite_float(self.binance.get_total_wallet_balance())
-        except Exception:
-            total_wallet = 0.0
+        except Exception as exc:
+            _pause_for_close_uncertainty(
+                self,
+                f"Entire-account stop-loss wallet snapshot failed: {exc}",
+                reconciliation_required=False,
+            )
+            return False
         if total_wallet > 0.0 and total_unrealized < 0.0:
             loss_pct = (abs(total_unrealized) / total_wallet) * 100.0
             if loss_pct >= stop_percent_limit:
@@ -66,10 +109,10 @@ def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
     if not triggered:
         return False
 
-    try:
-        self.log(f"{cw['symbol']}@{cw.get('interval')} entire account stop-loss triggered: {reason}.")
-    except Exception:
-        pass
+    _safe_log(
+        self,
+        f"{cw['symbol']}@{cw.get('interval')} entire account stop-loss triggered: {reason}.",
+    )
     self._trigger_emergency_close(cw["symbol"], cw.get("interval"), reason or "entire_account_stop")
     return True
 
@@ -109,6 +152,15 @@ def _execute_close_with_fallback(
             res = {"ok": False, "error": str(exc)}
         last_res = res
         if isinstance(res, dict) and res.get("ok"):
+            if res.get("reconciliation_required"):
+                warnings = res.get("warnings")
+                warning_text = "; ".join(str(item) for item in warnings) if isinstance(warnings, list) else ""
+                _pause_for_close_uncertainty(
+                    self,
+                    f"Confirmed {symbol} close requires reconciliation"
+                    + (f": {warning_text}" if warning_text else "."),
+                    reconciliation_required=True,
+                )
             return True, res
         if isinstance(res, dict):
             message = str(res.get("error") or res)
@@ -141,40 +193,42 @@ def _close_leg_entry(
         return 0.0
     qty_to_close = qty_recorded
     if qty_limit is not None:
-        try:
-            qty_cap = max(0.0, _finite_float(qty_limit))
-        except Exception:
-            qty_cap = 0.0
+        qty_cap = max(0.0, _finite_float(qty_limit))
         if qty_cap <= 0.0:
             return 0.0
         qty_to_close = min(qty_to_close, qty_cap)
-    actual_qty = self._current_futures_position_qty(symbol, side_label, position_side)
+    try:
+        actual_qty = self._current_futures_position_qty(symbol, side_label, position_side)
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{symbol}@{interval} ({side_label}) live quantity query failed: {exc}",
+            reconciliation_required=False,
+        )
+        return 0.0
     if actual_qty is not None:
         actual_qty = _finite_float(actual_qty, default=-1.0)
         if actual_qty < 0.0:
-            try:
-                self.log(
-                    f"{symbol}@{interval} ({side_label}) close refused: live quantity snapshot was not finite."
-                )
-            except Exception:
-                return 0.0
+            _safe_log(
+                self,
+                f"{symbol}@{interval} ({side_label}) close refused: live quantity snapshot was not finite.",
+            )
             return 0.0
         eps = max(1e-9, actual_qty * 1e-6)
         if actual_qty <= eps:
-            try:
-                self.log(
-                    f"{symbol}@{interval} ({side_label}) live qty snapshot is flat; attempting verified close to avoid stale-snapshot misses."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"{symbol}@{interval} ({side_label}) live qty snapshot is flat; "
+                "attempting verified close to avoid stale-snapshot misses.",
+                level=logging.INFO,
+            )
         elif qty_to_close - actual_qty > eps:
-            try:
-                self.log(
-                    f"Adjusting close size for {symbol}@{interval} ({side_label}) "
-                    f"from {qty_to_close:.10f} to live {actual_qty:.10f}."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"Adjusting close size for {symbol}@{interval} ({side_label}) "
+                f"from {qty_to_close:.10f} to live {actual_qty:.10f}.",
+                level=logging.INFO,
+            )
             qty_to_close = actual_qty
     if qty_to_close <= 0.0:
         return 0.0
@@ -187,42 +241,41 @@ def _close_leg_entry(
             position_side,
         )
     except Exception as exc:
-        try:
-            self.log(f"Per-trade stop-loss close error for {symbol}@{interval} ({side_label}): {exc}")
-        except Exception:
-            pass
+        _safe_log(self, f"Per-trade stop-loss close error for {symbol}@{interval} ({side_label}): {exc}")
         return 0.0
     if not ok_close:
-        try:
-            self.log(f"Per-trade stop-loss close failed for {symbol}@{interval} ({side_label}): {res}")
-        except Exception:
-            pass
+        _safe_log(self, f"Per-trade stop-loss close failed for {symbol}@{interval} ({side_label}): {res}")
         return 0.0
     closed_qty = qty_to_close
     if isinstance(res, dict):
-        try:
-            sent_qty = _finite_float(
-                res.get("sent_qty")
-                or res.get("executed_qty")
-                or res.get("executedQty")
-                or res.get("origQty")
-                or 0.0
-            )
-        except Exception:
-            sent_qty = 0.0
+        sent_qty = _finite_float(
+            res.get("sent_qty")
+            or res.get("executed_qty")
+            or res.get("executedQty")
+            or res.get("origQty")
+            or 0.0
+        )
         if sent_qty > 0.0:
             closed_qty = min(qty_to_close, sent_qty)
     if closed_qty <= 0.0:
         closed_qty = qty_to_close
     latency_s = max(0.0, time.time() - start_ts)
-    payload = self._build_close_event_payload(
-        symbol,
-        interval,
-        side_label,
-        closed_qty,
-        res,
-        leg_info_override=entry,
-    )
+    try:
+        payload = self._build_close_event_payload(
+            symbol,
+            interval,
+            side_label,
+            closed_qty,
+            res,
+            leg_info_override=entry,
+        )
+    except Exception as exc:
+        payload = {"qty": closed_qty}
+        _pause_for_close_uncertainty(
+            self,
+            f"Confirmed {symbol}@{interval} ({side_label}) close metadata failed: {exc}",
+            reconciliation_required=True,
+        )
     reason_text = (
         str(reason).strip()
         if isinstance(reason, str) and str(reason).strip()
@@ -235,45 +288,54 @@ def _close_leg_entry(
     fully_closed = remaining_qty <= eps_remaining or not entry.get("ledger_id")
     payload["remaining_qty"] = max(0.0, remaining_qty)
     payload["fully_closed"] = fully_closed
-    if fully_closed:
-        self._remove_leg_entry(leg_key, entry.get("ledger_id"))
-        self._mark_guard_closed(symbol, interval, side_norm, entry=entry)
-    else:
-        self._decrement_leg_entry_qty(
-            leg_key,
-            entry.get("ledger_id"),
-            qty_recorded,
-            remaining_qty,
-        )
-    if fully_closed:
-        self._mark_indicator_reentry_signal_block(symbol, interval, entry, side_label)
-        try:
+    try:
+        if fully_closed:
+            self._remove_leg_entry(leg_key, entry.get("ledger_id"))
+            self._mark_guard_closed(symbol, interval, side_norm, entry=entry)
+        else:
+            self._decrement_leg_entry_qty(
+                leg_key,
+                entry.get("ledger_id"),
+                qty_recorded,
+                remaining_qty,
+            )
+        if fully_closed:
+            self._mark_indicator_reentry_signal_block(symbol, interval, entry, side_label)
             for indicator_key in self._extract_indicator_keys(entry):
                 self._record_indicator_close(symbol, interval, indicator_key, side_label, closed_qty)
-        except Exception:
-            pass
-    self._notify_interval_closed(
-        symbol,
-        interval,
-        side_label,
-        **payload,
-        latency_seconds=latency_s,
-        latency_ms=latency_s * 1000.0,
-    )
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"Confirmed {symbol}@{interval} ({side_label}) close could not reconcile local state: {exc}",
+            reconciliation_required=True,
+        )
+    try:
+        self._notify_interval_closed(
+            symbol,
+            interval,
+            side_label,
+            **payload,
+            latency_seconds=latency_s,
+            latency_ms=latency_s * 1000.0,
+        )
+    except Exception as exc:
+        _safe_log(self, f"Confirmed {symbol}@{interval} ({side_label}) close notification failed: {exc}")
     if queue_flip and fully_closed:
         try:
             self._queue_flip_on_close(interval, side_label, entry, payload)
-        except Exception:
-            pass
-    self._log_latency_metric(symbol, interval, f"stop-loss {side_label.lower()} leg", latency_s)
+        except Exception as exc:
+            _safe_log(self, f"Confirmed {symbol}@{interval} ({side_label}) close flip queue failed: {exc}")
     try:
-        pct_display = max(price_pct, margin_pct)
-        self.log(
-            f"Per-trade stop-loss closed {side_label} for {symbol}@{interval} "
-            f"(qty {closed_qty:.10f}, loss {loss_usdt:.4f} USDT / {pct_display:.2f}%)."
-        )
-    except Exception:
-        pass
+        self._log_latency_metric(symbol, interval, f"stop-loss {side_label.lower()} leg", latency_s)
+    except Exception as exc:
+        _safe_log(self, f"Confirmed {symbol}@{interval} ({side_label}) close latency metric failed: {exc}")
+    pct_display = max(price_pct, margin_pct)
+    _safe_log(
+        self,
+        f"Per-trade stop-loss closed {side_label} for {symbol}@{interval} "
+        f"(qty {closed_qty:.10f}, loss {loss_usdt:.4f} USDT / {pct_display:.2f}%).",
+        level=logging.INFO,
+    )
     return closed_qty
 
 
@@ -295,10 +357,7 @@ def _evaluate_per_trade_stop(
         return False
     last_price = _finite_float(last_price, default=-1.0)
     if last_price <= 0.0:
-        try:
-            self.log("Per-trade stop-loss evaluation skipped: market price was not a positive finite value.")
-        except Exception:
-            return False
+        _safe_log(self, "Per-trade stop-loss evaluation skipped: market price was not a positive finite value.")
         return False
     symbol, interval, _ = leg_key
     desired_position_side = None

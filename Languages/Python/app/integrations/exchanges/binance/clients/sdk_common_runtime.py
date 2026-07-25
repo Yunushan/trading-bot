@@ -4,9 +4,12 @@ from __future__ import annotations
 # ruff: noqa: F401
 
 from enum import Enum
+import logging
 from typing import Any
 
 import requests
+
+LOGGER = logging.getLogger(__name__)
 
 _USDS_REST_PROD = None
 _USDS_REST_TESTNET = None
@@ -35,6 +38,7 @@ try:
     try:
         from binance_sdk_derivatives_trading_usds_futures.rest_api.models import enums as _UsdsEnums
     except Exception:
+        LOGGER.debug("USD-S futures SDK enum models are unavailable", exc_info=True)
         _UsdsEnums = None
     if _UsdsEnums is not None:
         _UsdsMarginTypeEnum = getattr(_UsdsEnums, "ChangeMarginTypeMarginTypeEnum", None)
@@ -46,7 +50,7 @@ try:
         _UsdsPriceMatchEnum = getattr(_UsdsEnums, "NewOrderPriceMatchEnum", None)
         _UsdsStpEnum = getattr(_UsdsEnums, "NewOrderSelfTradePreventionModeEnum", None)
 except Exception:
-    pass
+    LOGGER.debug("USD-S futures SDK is unavailable", exc_info=True)
 
 try:
     from binance_sdk_derivatives_trading_coin_futures import (
@@ -159,11 +163,11 @@ def _enum_value(enum_cls: Any, value: Any):
         try:
             return enum_cls(candidate)
         except Exception:
-            pass
+            LOGGER.debug("SDK enum value candidate was rejected: %s", candidate, exc_info=True)
     try:
         return enum_cls[text.upper()]
     except Exception:
-        pass
+        LOGGER.debug("SDK enum name was rejected: %s", text, exc_info=True)
     return None
 
 
@@ -174,7 +178,7 @@ def _sdk_to_plain(obj: Any) -> Any:
         try:
             obj = obj.data()
         except Exception:
-            pass
+            LOGGER.debug("SDK response data() conversion failed", exc_info=True)
     if isinstance(obj, Enum):
         return obj.value
     if isinstance(obj, list):
@@ -194,12 +198,12 @@ def _sdk_to_plain(obj: Any) -> Any:
         try:
             return _sdk_to_plain(obj.to_dict())
         except Exception:
-            pass
+            LOGGER.debug("SDK response to_dict() conversion failed", exc_info=True)
     if hasattr(obj, "model_dump"):
         try:
             return _sdk_to_plain(obj.model_dump(by_alias=True, exclude_none=True))
         except Exception:
-            pass
+            LOGGER.debug("SDK response model_dump() conversion failed", exc_info=True)
     return obj
 
 

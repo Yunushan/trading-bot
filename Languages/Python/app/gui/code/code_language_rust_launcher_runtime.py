@@ -159,7 +159,9 @@ def launch_rust_from_code_tab(
 
         _progress(f"Launching Rust {framework_title} shell...")
         try:
-            process = subprocess.Popen([str(exe_path)], **popen_kwargs)
+            process = subprocess.Popen(  # noqa: S603 - executable is the verified Cargo build output.
+                [str(exe_path)], **popen_kwargs
+            )
         except Exception as exc:
             window.log(f"Rust launch failed: {exc}")
             _dismiss_progress_dialog()

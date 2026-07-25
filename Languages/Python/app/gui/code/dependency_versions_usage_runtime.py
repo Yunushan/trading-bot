@@ -6,11 +6,12 @@ import json
 import re
 import sys
 import time
-import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 from PyQt6 import QtCore, QtWidgets
 
+from ...security.network_url import open_validated_url
 from .code_language_catalog import (
     BASE_PROJECT_PATH as _BASE_PROJECT_PATH,
     CPP_CODE_LANGUAGE_KEY,
@@ -387,14 +388,19 @@ def _latest_version_from_pypi(package: str, timeout: float = 8.0) -> str | None:
     now = time.time()
     if cache_entry and now - cache_entry[1] < 1800:
         return cache_entry[0]
-    url = f"https://pypi.org/pypi/{package}/json"
+    url = f"https://pypi.org/pypi/{quote(package, safe='')}/json"
     timeout_val = max(2.0, float(timeout or 8.0))
     latest = None
 
     try:
         import requests  # type: ignore
 
-        resp = requests.get(url, timeout=timeout_val, headers={"User-Agent": "trading-bot-starter/1.0"})
+        resp = requests.get(
+            url,
+            timeout=timeout_val,
+            headers={"User-Agent": "trading-bot-starter/1.0"},
+            allow_redirects=False,
+        )
         if resp.status_code == 200:
             payload = resp.json()
             latest = payload.get("info", {}).get("version")
@@ -403,8 +409,11 @@ def _latest_version_from_pypi(package: str, timeout: float = 8.0) -> str | None:
 
     if latest is None:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
-            with urllib.request.urlopen(req, timeout=timeout_val) as resp:
+            with open_validated_url(
+                url,
+                timeout=timeout_val,
+                headers={"User-Agent": "trading-bot-starter/1.0"},
+            ) as resp:
                 payload = json.load(resp)
                 latest = payload.get("info", {}).get("version")
         except Exception:

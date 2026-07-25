@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 from binance.client import Client
@@ -7,6 +8,9 @@ from app.settings.live_safety import LiveTradingSafetyError
 
 from ..clients.connector_clients import _normalize_connector_choice
 from ..transport.helpers import _is_binance_error_payload, _requests_timeout
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _is_testnet_mode(mode: str | None) -> bool:
@@ -59,7 +63,7 @@ def _testnet_order_fallback_client(self):
                 try:
                     setattr(self._fallback_py_client, "requests_params", requests_params)
                 except Exception:
-                    pass
+                    LOGGER.debug("Could not attach timeout settings to fallback Binance client", exc_info=True)
             setattr(self._fallback_py_client, "_bw_throttled", True)
         except Exception:
             self._fallback_py_client = None

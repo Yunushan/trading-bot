@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import time
 
+from ..runtime_diagnostics import report_runtime_fallback
+
 
 def _finite_float(value: float | str | None) -> float:
     try:
@@ -26,9 +28,10 @@ def _convert_asset_to_usdt(self, amount: float | str | None, asset: str | None) 
         px = _finite_float(self.get_last_price(f"{code}USDT"))
         if px > 0.0:
             return value * px
-    except Exception:
-        pass
-    return value
+    except Exception as exc:
+        report_runtime_fallback(self, f"Commission conversion failed for {code}", exc)
+        raise RuntimeError(f"commission conversion unavailable for {code}") from exc
+    raise RuntimeError(f"commission conversion price unavailable for {code}")
 
 
 def _summarize_futures_order_fills(
@@ -53,15 +56,13 @@ def _summarize_futures_order_fills(
         try:
             self._throttle_request("/fapi/v1/userTrades")
             trades = self.client.futures_account_trades(symbol=sym, orderId=oid, limit=100) or []
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, f"Futures fill lookup failed for {sym} order {oid}", exc)
             trades = []
         if trades:
             break
         if attempt < attempts:
-            try:
-                time.sleep(max(0.0, float(delay)))
-            except Exception:
-                pass
+            time.sleep(max(0.0, float(delay)))
     if not trades:
         return {}
 
@@ -69,7 +70,11 @@ def _summarize_futures_order_fills(
     total_quote = 0.0
     realized_pnl = 0.0
     commission_by_asset: dict[str, float] = {}
-    for trade in trades:
+    if not isinstance(trades, (list, tuple)):
+        raise RuntimeError("futures fill endpoint returned an invalid snapshot")
+    for index, trade in enumerate(trades):
+        if not isinstance(trade, dict):
+            raise RuntimeError(f"futures fill row {index} is malformed")
         qty = abs(_finite_float(trade.get("qty")))
         price = _finite_float(trade.get("price"))
         total_qty += qty

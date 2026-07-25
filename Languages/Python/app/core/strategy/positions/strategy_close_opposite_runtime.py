@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import math
 
+from .close_execution import _pause_for_close_uncertainty, _safe_log
 from .strategy_close_opposite_common_runtime import (
     _finalize_close_cleanup,
     _goal_met,
@@ -50,19 +52,33 @@ def _close_opposite_position(
     try:
         positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
     except Exception as e:
-        self.log(f"{symbol}@{interval} read positions failed: {e}")
+        _pause_for_close_uncertainty(
+            self,
+            f"{symbol}@{interval} read positions failed: {e}",
+            reconciliation_required=False,
+        )
         return False
     if not isinstance(positions, (list, tuple)):
-        self.log(f"{symbol}@{interval} read positions unavailable; opposite close blocked.")
+        _pause_for_close_uncertainty(
+            self,
+            f"{symbol}@{interval} read positions unavailable; opposite close blocked",
+            reconciliation_required=False,
+        )
         return False
 
     desired = (next_side or "").upper()
     if desired not in ("BUY", "SELL"):
-        return True
+        _safe_log(self, f"{symbol}@{interval} close-opposite rejected invalid next side: {next_side!r}")
+        return False
     try:
         dual = bool(self.binance.get_futures_dual_side())
-    except Exception:
-        dual = False
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{symbol}@{interval} futures position mode lookup failed: {exc}",
+            reconciliation_required=False,
+        )
+        return False
 
     opp = "SELL" if desired == "BUY" else "BUY"
     warn_key = (str(symbol or "").upper(), interval_norm_lower or "default", opp)
@@ -70,68 +86,64 @@ def _close_opposite_position(
     strict_flip_guard = self._strategy_coerce_bool(self.config.get("strict_indicator_flip_enforcement"), True)
 
     if dual and not indicator_tokens and not signature_hint_tokens:
-        try:
-            self.log(
-                f"{symbol}@{interval_norm or 'default'} close-opposite skipped (hedge scope missing)."
-            )
-        except Exception:
-            pass
+        _safe_log(
+            self,
+            f"{symbol}@{interval_norm or 'default'} close-opposite skipped (hedge scope missing).",
+        )
         return True
 
     if allow_opposite_requested:
         if not indicator_tokens or not signature_hint_tokens:
-            try:
-                self.log(
-                    f"{symbol}@{interval_norm or 'default'} close-opposite skipped (hedge isolation, missing indicator/signature)."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"{symbol}@{interval_norm or 'default'} close-opposite skipped "
+                "(hedge isolation, missing indicator/signature).",
+            )
             return True
     if strict_flip_guard and indicator_tokens and not signature_hint_tokens:
-        try:
-            self.log(
-                f"{symbol}@{interval_norm or 'default'} close-opposite skipped: missing opposite signature for "
-                f"{', '.join(indicator_tokens)}."
-            )
-        except Exception:
-            pass
-        return True
+        _safe_log(
+            self,
+            f"{symbol}@{interval_norm or 'default'} close-opposite blocked: missing opposite signature for "
+            f"{', '.join(indicator_tokens)}.",
+        )
+        return False
 
     if allow_opposite_requested and (not indicator_tokens or not signature_hint_tokens or not interval_norm):
-        try:
-            self.log(
-                f"{symbol}@{interval_norm or 'default'} close-opposite skipped: "
-                f"hedge stacking enabled and no indicator scope available."
-            )
-        except Exception:
-            pass
+        _safe_log(
+            self,
+            f"{symbol}@{interval_norm or 'default'} close-opposite skipped: "
+            "hedge stacking enabled and no indicator scope available.",
+        )
         return True
     if allow_opposite_requested and indicator_tokens:
         if not interval_tokens or interval_norm_guard is None or not signature_hint_tokens:
-            try:
-                self.log(
-                    f"{symbol}@{interval_norm or 'default'} close-opposite skipped: "
-                    f"hedge isolation guard (missing interval/signature guard)."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"{symbol}@{interval_norm or 'default'} close-opposite skipped: "
+                "hedge isolation guard (missing interval/signature guard).",
+            )
             return True
     if allow_opposite_requested and interval_norm_guard:
         other_iv = self._tokenize_interval_label(interval_norm)
         if set(interval_norm_guard) != other_iv:
-            try:
-                self.log(
-                    f"{symbol}@{interval_norm or 'default'} close-opposite blocked: "
-                    f"interval mismatch (guard {interval_norm_guard}, got {sorted(other_iv)})."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"{symbol}@{interval_norm or 'default'} close-opposite blocked: "
+                f"interval mismatch (guard {interval_norm_guard}, got {sorted(other_iv)}).",
+            )
             return True
 
     try:
         qty_goal = float(target_qty) if target_qty is not None else None
-    except Exception:
-        qty_goal = None
+        if qty_goal is not None and (not math.isfinite(qty_goal) or qty_goal < 0.0):
+            raise ValueError("target quantity must be finite and nonnegative")
+    except (TypeError, ValueError, OverflowError) as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{symbol}@{interval_norm or 'default'} close-opposite target quantity is invalid: {exc}",
+            reconciliation_required=False,
+        )
+        return False
 
     state: dict[str, object] = {
         "symbol": str(symbol or "").upper(),
@@ -171,7 +183,12 @@ def _close_opposite_position(
             if _has_opposite_live(state["positions"], state["symbol"], opp):
                 _warn_oneway_overlap(self, warn_key, state["symbol"], interval_norm, indicator_tokens, opp)
                 return False
-        except Exception:
+        except Exception as exc:
+            _pause_for_close_uncertainty(
+                self,
+                f"{state['symbol']}@{interval_norm or 'default'} opposite-position snapshot is invalid: {exc}",
+                reconciliation_required=False,
+            )
             _warn_oneway_overlap(self, warn_key, state["symbol"], interval_norm, indicator_tokens, opp)
             return False
 
@@ -213,12 +230,12 @@ def _close_opposite_position(
             qty_limit=state.get("qty_goal"),
         )
     if ledger_failed:
-        try:
-            self.log(
-                f"{state['symbol']}@{interval_norm or 'default'} flip aborted: failed to close existing {opp} ledger entries."
-            )
-        except Exception:
-            pass
+        _pause_for_close_uncertainty(
+            self,
+            f"{state['symbol']}@{interval_norm or 'default'} flip aborted: "
+            f"failed to close existing {opp} ledger entries",
+            reconciliation_required=False,
+        )
         return False
     if ledger_closed:
         state["closed_any"] = True
@@ -235,8 +252,18 @@ def _close_opposite_position(
                 return True
         elif indicator_tokens and state["indicator_target_cleared"]:
             return True
-        elif not _has_opposite_live(state["positions"], state["symbol"], opp):
-            return True
+        else:
+            try:
+                opposite_live = _has_opposite_live(state["positions"], state["symbol"], opp)
+            except Exception as exc:
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{state['symbol']}@{interval_norm or 'default'} residual position snapshot is invalid: {exc}",
+                    reconciliation_required=False,
+                )
+                return False
+            if not opposite_live:
+                return True
     elif _goal_met(state):
         return True
 

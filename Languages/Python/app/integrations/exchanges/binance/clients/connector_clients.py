@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import re
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CONNECTOR_BACKEND = "binance-sdk-derivatives-trading-usds-futures"
 
@@ -103,8 +106,9 @@ if _OfficialAPIBase is not None and _OfficialSpotClient is not None:
             if callable(cb):
                 try:
                     cb(path)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    LOGGER.error("Official connector throttle failed for %s", path, exc_info=True)
+                    raise RuntimeError("official connector request blocked because throttling failed") from exc
 
         def _call(self, func, *args, **kwargs):
             try:
@@ -286,13 +290,13 @@ class CcxtBinanceAdapter:
         try:
             default_type = "future" if self.account_type.startswith("FUT") else "spot"
             self._exchange.options["defaultType"] = default_type
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("ccxt default market type configuration failed") from exc
         if _is_testnet_mode(self.mode):
             try:
                 self._exchange.set_sandbox_mode(True)
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError("ccxt testnet mode could not be enabled; refusing live fallback") from exc
             self._apply_testnet_urls()
 
     def _apply_testnet_urls(self) -> None:
@@ -305,10 +309,13 @@ class CcxtBinanceAdapter:
                 return
             spot_base = "https://testnet.binance.vision"
             futures_base = "https://testnet.binancefuture.com"
+            replaced = 0
 
             def _swap(key: str, value: str) -> None:
+                nonlocal replaced
                 if key in api and isinstance(api.get(key), str):
                     api[key] = value
+                    replaced += 1
 
             _swap("public", f"{spot_base}/api/v3")
             _swap("private", f"{spot_base}/api/v3")
@@ -316,16 +323,19 @@ class CcxtBinanceAdapter:
             _swap("fapiPrivate", f"{futures_base}/fapi/v1")
             _swap("dapiPublic", f"{futures_base}/dapi/v1")
             _swap("dapiPrivate", f"{futures_base}/dapi/v1")
-        except Exception:
-            pass
+            if replaced == 0:
+                raise RuntimeError("ccxt did not expose configurable Binance API URLs")
+        except Exception as exc:
+            raise RuntimeError("ccxt testnet URL configuration failed; refusing live fallback") from exc
 
     def _throttle(self, path: str | None) -> None:
         cb = getattr(self, "_bw_throttle", None)
         if callable(cb):
             try:
                 cb(path)
-            except Exception:
-                pass
+            except Exception as exc:
+                LOGGER.error("ccxt connector throttle failed for %s", path, exc_info=True)
+                raise RuntimeError("ccxt request blocked because throttling failed") from exc
 
     def _call(self, func, *args, **kwargs):
         try:

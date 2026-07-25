@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from collections.abc import Callable, Mapping
@@ -20,6 +21,7 @@ ORDER_AUDIT_LOG_PATH_ENV = "BOT_ORDER_AUDIT_LOG_PATH"
 ORDER_AUDIT_DISABLED_ENV = "BOT_ORDER_AUDIT_DISABLED"
 
 _AUDIT_LOCK = threading.Lock()
+LOGGER = logging.getLogger(__name__)
 
 
 def _default_order_audit_path() -> Path:
@@ -174,7 +176,11 @@ def _audit_order_event(
             try:
                 self._log(f"Order audit write failed: {redact_text(str(exc))}", lvl="warn")
             except Exception:
-                pass
+                LOGGER.warning(
+                    "Order audit write failed and the wrapper logger was unavailable: %s",
+                    redact_text(str(exc)),
+                    exc_info=True,
+                )
 
 
 def get_order_audit_status(self) -> dict[str, object]:

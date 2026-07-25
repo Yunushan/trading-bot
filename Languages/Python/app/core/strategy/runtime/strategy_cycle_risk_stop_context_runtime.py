@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+from ..positions.close_execution import _pause_for_close_uncertainty
+
 
 def _finite_positive(value: object) -> float:
     try:
@@ -27,18 +29,28 @@ def _reconciled_close_qty(result: object, requested_qty: float) -> float:
 
 def build_futures_stop_state(self, *, cw, df):
     last_price = None
+    live_price_error: Exception | None = None
     try:
         live_price = _finite_positive(self.binance.get_last_price(cw["symbol"]))
         if live_price > 0.0:
             last_price = live_price
-    except Exception:
+    except Exception as exc:
+        live_price_error = exc
         last_price = None
     if last_price is None and not df.empty:
         try:
             close_price = _finite_positive(df["close"].iloc[-1])
             last_price = close_price if close_price > 0.0 else None
-        except Exception:
+        except Exception as exc:
+            if live_price_error is None:
+                live_price_error = exc
             last_price = None
+    if last_price is None and live_price_error is not None:
+        _pause_for_close_uncertainty(
+            self,
+            f"{cw['symbol']} futures stop-loss price is unavailable: {live_price_error}",
+            reconciliation_required=False,
+        )
 
     state = {
         "last_price": last_price,
@@ -54,9 +66,14 @@ def build_futures_stop_state(self, *, cw, df):
                     raise RuntimeError("futures position snapshot unavailable")
                 state["positions_cache"] = list(positions)
                 state["positions_cache_ok"] = True
-            except Exception:
+            except Exception as exc:
                 state["positions_cache"] = []
                 state["positions_cache_ok"] = False
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{cw['symbol']} futures stop-loss position snapshot failed: {exc}",
+                    reconciliation_required=False,
+                )
         return state["positions_cache"] or []
 
     state["load_positions_cache"] = load_positions_cache
@@ -74,8 +91,12 @@ def purge_flat_futures_cycle_legs(self, *, cw, dual_side: bool, state) -> None:
                 state.get("positions_cache") or [],
                 dual_side=dual_side,
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{cw['symbol']} flat futures leg purge failed during stop-loss cycle: {exc}",
+            reconciliation_required=True,
+        )
 
 
 def ensure_futures_leg_entry_price(
@@ -117,13 +138,15 @@ def ensure_futures_leg_entry_price(
                 continue
             matched_pos = pos
             if entry_px <= 0.0:
-                try:
-                    entry_px = _finite_positive(pos.get("entryPrice"))
-                except Exception:
-                    pass
+                entry_px = _finite_positive(pos.get("entryPrice"))
             break
-        except Exception:
-            continue
+        except Exception as exc:
+            _pause_for_close_uncertainty(
+                self,
+                f"{cw['symbol']} futures stop-loss position row is invalid: {exc}",
+                reconciliation_required=True,
+            )
+            return leg, qty_val, entry_px, None
     if matched_pos and entry_px > 0.0:
         leg["entry_price"] = entry_px
         self._leg_ledger[leg_key] = leg

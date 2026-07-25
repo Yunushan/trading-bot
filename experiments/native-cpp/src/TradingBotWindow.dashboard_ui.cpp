@@ -203,6 +203,11 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
             QStringLiteral("oanda-rest"),
             QStringLiteral("fxcmpy"),
             QStringLiteral("ig-rest"),
+            QStringLiteral("citic-ctp"),
+            QStringLiteral("metatrader4-bridge"),
+            QStringLiteral("metatrader5"),
+            QStringLiteral("trading212-public-api"),
+            QStringLiteral("moomoo-opend"),
         });
     connectorCombo->setToolTip(
         "Matches Python connector options.\n"

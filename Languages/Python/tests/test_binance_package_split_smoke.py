@@ -366,6 +366,7 @@ class _BaseFuturesExposureWrapper:
         self._futures_leverage = 1
         self._default_margin_mode = "ISOLATED"
         self.logged = []
+        self.submit_calls = []
 
     def _ensure_margin_and_leverage_or_block(self, *_args, **_kwargs):
         return None
@@ -384,6 +385,19 @@ class _BaseFuturesExposureWrapper:
 
     def required_percent_for_symbol(self, _symbol, _leverage):
         return 1.0
+
+    def get_futures_dual_side(self):
+        return False
+
+    def _format_quantity_for_order(self, qty, _step):
+        return f"{float(qty):.8f}".rstrip("0").rstrip(".")
+
+    def _futures_create_order_with_fallback(self, params):
+        self.submit_calls.append(dict(params))
+        return {"orderId": 456, **params}, "primary"
+
+    def _invalidate_futures_positions_cache(self):
+        return None
 
     def _log(self, message, lvl="info"):
         self.logged.append((lvl, message))
@@ -743,7 +757,9 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
 
             self.assertEqual([], wrapper.client.orders)
             rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
-            self.assertEqual(["exchange_order_request", "live_order_blocked", "exchange_order_error"], [r["event"] for r in rows])
+            self.assertEqual(
+                ["exchange_order_request", "live_order_blocked", "exchange_order_error"], [r["event"] for r in rows]
+            )
 
     def test_close_all_submit_path_keeps_live_order_guard_before_client_call(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1044,12 +1060,10 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         self.assertIn("Unsupported futures order side", strict_result["error"])
 
     def test_futures_market_order_sizers_reject_non_finite_or_fractional_leverage(self):
-        for leverage in (float("nan"), float("inf"), 2.5, 0):
+        for leverage in (True, float("nan"), float("inf"), 2.5, 0):
             with self.subTest(leverage=leverage):
                 flex_wrapper = _FlexFuturesOrderWrapper()
-                flex_result = flex_wrapper.place_futures_market_order(
-                    "BTCUSDT", "BUY", quantity=0.1, leverage=leverage
-                )
+                flex_result = flex_wrapper.place_futures_market_order("BTCUSDT", "BUY", quantity=0.1, leverage=leverage)
                 self.assertFalse(flex_result["ok"])
                 self.assertIn("Bad leverage", flex_result["error"])
                 self.assertEqual([], flex_wrapper.submit_calls)
@@ -1073,6 +1087,93 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
                 )
                 self.assertFalse(strict_result["ok"])
                 self.assertIn("Bad leverage", strict_result["error"])
+
+    def test_futures_sizers_reject_invalid_account_quantity_and_percent_before_submission(self):
+        wrappers = (
+            (
+                "base",
+                lambda wrapper, **kwargs: new_place_futures_market_order(
+                    wrapper,
+                    "BTCUSDT",
+                    "BUY",
+                    price=100.0,
+                    **kwargs,
+                ),
+                lambda: _BaseFuturesExposureWrapper(mode="Demo/Testnet"),
+            ),
+            (
+                "flex",
+                lambda wrapper, **kwargs: wrapper.place_futures_market_order(
+                    "BTCUSDT",
+                    "BUY",
+                    price=100.0,
+                    **kwargs,
+                ),
+                _FlexFuturesOrderWrapper,
+            ),
+            (
+                "strict",
+                lambda wrapper, **kwargs: new_place_futures_market_order_strict(
+                    wrapper,
+                    "BTCUSDT",
+                    "BUY",
+                    price=100.0,
+                    **kwargs,
+                ),
+                _FlexFuturesOrderWrapper,
+            ),
+        )
+
+        for mode, submit, factory in wrappers:
+            wrapper = factory()
+            wrapper.account_type = "SPOT"
+            result = submit(wrapper, quantity=0.1)
+            with self.subTest(mode=mode, field="account_type"):
+                self.assertFalse(result["ok"])
+                self.assertIn("account_type != FUTURES", result["error"])
+                self.assertEqual([], wrapper.submit_calls)
+
+            for invalid_quantity in (True, 0, -0.1):
+                wrapper = factory()
+                if mode == "strict":
+                    wrapper._ensure_symbol_margin = lambda *_args, **_kwargs: None
+                    wrapper.ensure_futures_settings = lambda *_args, **_kwargs: None
+                result = submit(wrapper, quantity=invalid_quantity)
+                with self.subTest(mode=mode, field="quantity", value=invalid_quantity):
+                    self.assertFalse(result["ok"])
+                    self.assertIn("Bad quantity override", result["error"])
+                    self.assertEqual([], wrapper.submit_calls)
+
+            for invalid_percent in (True, 0, -1, 100.1):
+                wrapper = factory()
+                if mode == "strict":
+                    wrapper._ensure_symbol_margin = lambda *_args, **_kwargs: None
+                    wrapper.ensure_futures_settings = lambda *_args, **_kwargs: None
+                result = submit(wrapper, percent_balance=invalid_percent)
+                with self.subTest(mode=mode, field="percent_balance", value=invalid_percent):
+                    self.assertFalse(result["ok"])
+                    self.assertIn("Bad percent balance", result["error"])
+                    self.assertEqual([], wrapper.submit_calls)
+
+    def test_base_futures_sizer_floors_quantity_without_exceeding_requested_step(self):
+        wrapper = _BaseFuturesExposureWrapper(mode="Demo/Testnet")
+        wrapper.get_futures_symbol_filters = lambda _symbol: {
+            "stepSize": 0.1,
+            "minQty": 0.1,
+            "minNotional": 0.1,
+        }
+
+        result = new_place_futures_market_order(
+            wrapper,
+            "BTCUSDT",
+            "BUY",
+            price=10.0,
+            quantity=0.16,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertAlmostEqual(0.1, result["computed"]["qty"])
+        self.assertEqual("0.1", wrapper.submit_calls[0]["quantity"])
 
     def test_futures_market_order_sizers_reject_invalid_filter_metadata(self):
         invalid_filters = {"stepSize": "NaN", "minQty": 0.001, "minNotional": 5.0}
@@ -1180,9 +1281,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             invalid_percent = flex_wrapper.place_futures_market_order(
                 "BTCUSDT", "BUY", price=100.0, percent_balance=invalid
             )
-            invalid_quantity = flex_wrapper.place_futures_market_order(
-                "BTCUSDT", "BUY", price=100.0, quantity=invalid
-            )
+            invalid_quantity = flex_wrapper.place_futures_market_order("BTCUSDT", "BUY", price=100.0, quantity=invalid)
 
             self.assertFalse(invalid_price["ok"])
             self.assertEqual("No price available", invalid_price["error"])
@@ -1586,9 +1685,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         self.assertEqual(0.0, adjusted)
         self.assertEqual("price must be a finite number", error)
 
-        invalid_filters_wrapper = _SpotSizingWrapper(
-            filters={"stepSize": "NaN", "minQty": 0.001, "minNotional": 5.0}
-        )
+        invalid_filters_wrapper = _SpotSizingWrapper(filters={"stepSize": "NaN", "minQty": 0.001, "minNotional": 5.0})
         adjusted, error = invalid_filters_wrapper.adjust_qty_to_filters_spot("BTCUSDT", 0.1, 100.0)
         self.assertEqual(0.0, adjusted)
         self.assertIn("stepSize", str(error))

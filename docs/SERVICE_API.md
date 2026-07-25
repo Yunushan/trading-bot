@@ -67,6 +67,7 @@ Focused service test map:
 | `tests.test_service_config_runtime` | service config validation and durable config persistence |
 | `tests.test_service_operational_runtime` | operational health snapshots, connector incidents, JSONL rotation, and redaction |
 | `tests.test_service_lifecycle_runtime` | lifecycle control, control-plane descriptors, runtime samples, and live preflight gates |
+| `tests.test_service_runner_hardening` | runner shutdown, timestamp validation, and market-source fail-closed behavior |
 | `tests.test_service_client_integration` | desktop service client selection and service terminal/LLM commands |
 | `tests.test_service_background_host_integration` | embedded background host and background-hosted backtest API flows |
 | `tests.test_service_api_host_contract` | background host validation and startup configuration contracts |

@@ -81,6 +81,21 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertFalse(summary["rust_standalone_runtime_ready"])
         self.assertFalse(summary["cpp_full_parity"])
         self.assertFalse(summary["rust_full_parity"])
+        self.assertEqual(
+            summary["supported_brokers"],
+            [mapping["broker"] for mapping in summary["broker_order_routing_backends"]],
+        )
+        self.assertIn("Trading 212", summary["supported_brokers"])
+        self.assertNotIn("Trading 212", summary["supported_forex_brokers"])
+        self.assertIn("StoneX", summary["supported_brokers"])
+        self.assertNotIn("StoneX", summary["supported_forex_brokers"])
+        self.assertIn("AI Gold Securities", summary["supported_brokers"])
+        self.assertNotIn("AI Gold Securities", summary["supported_forex_brokers"])
+        for broker in ("Trade Nation", "FXTF", "FOREX EXCHANGE"):
+            self.assertIn(broker, summary["supported_forex_brokers"])
+        self.assertIn("metatrader4-bridge", summary["connector_keys"])
+        self.assertIn("CITIC Futures", summary["supported_brokers"])
+        self.assertNotIn("CITIC Futures", summary["supported_forex_brokers"])
         self.assertEqual(12, len(summary["domain_keys"]))
         self.assertIn("service_api_contract", summary["domain_keys"])
         self.assertIn("backtest_engine", summary["domain_keys"])
@@ -114,7 +129,9 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("python_source_rust_contract_parity_ready", rust_core)
         self.assertIn("python_source_cpp_standalone_runtime_ready", rust_core)
         self.assertIn("python_source_rust_standalone_runtime_ready", rust_core)
-        rust_generated = _read(REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "generated_python_parity.rs")
+        rust_generated = _read(
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "generated_python_parity.rs"
+        )
         tauri_generated = _read(
             REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "generated-python-parity.js"
         )
@@ -124,12 +141,18 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pub const RUST_STANDALONE_RUNTIME_READY: bool = false;", rust_generated)
         self.assertIn("pub const CPP_FULL_PARITY_READY: bool = false;", rust_generated)
         self.assertIn("pub const RUST_FULL_PARITY_READY: bool = false;", rust_generated)
+        self.assertIn("PYTHON_SUPPORTED_BROKERS", rust_generated)
+        self.assertIn("PYTHON_SUPPORTED_FOREX_BROKERS", rust_generated)
+        self.assertIn("PYTHON_BROKER_ORDER_ROUTING_BACKENDS", rust_generated)
         self.assertIn('"cppContractParityReady": true', tauri_generated)
         self.assertIn('"rustContractParityReady": true', tauri_generated)
         self.assertIn('"cppStandaloneRuntimeReady": false', tauri_generated)
         self.assertIn('"rustStandaloneRuntimeReady": false', tauri_generated)
         self.assertIn('"cppFullParityReady": false', tauri_generated)
         self.assertIn('"rustFullParityReady": false', tauri_generated)
+        self.assertIn('"supportedBrokers"', tauri_generated)
+        self.assertIn('"supportedForexBrokers"', tauri_generated)
+        self.assertIn('"brokerOrderRoutingBackends"', tauri_generated)
         self.assertIn("python_source_tradingview_interval_map", rust_core)
         self.assertIn("python_source_default_chart_symbols", rust_core)
         self.assertIn("python_source_default_execution_symbols", rust_core)
@@ -399,14 +422,8 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
 
     def test_generated_parity_domains_match_python_source_contract(self):
         summary = native_python_source_contract_summary()
-        source_domains = {
-            domain.key: domain
-            for domain in NATIVE_PARITY_DOMAINS
-        }
-        summary_domains = {
-            str(domain["key"]): domain
-            for domain in summary["domains"]
-        }
+        source_domains = {domain.key: domain for domain in NATIVE_PARITY_DOMAINS}
+        summary_domains = {str(domain["key"]): domain for domain in summary["domains"]}
 
         self.assertEqual(list(source_domains), list(summary_domains))
         rust_generated = _read(RUST_OUTPUT)
@@ -443,14 +460,8 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
 
     def test_generated_service_routes_match_python_source_contract(self):
         summary = native_python_source_contract_summary()
-        service_routes = {
-            str(route["name"]): route
-            for route in summary["service_routes"]
-        }
-        service_route_schemas = {
-            str(schema["name"]): schema
-            for schema in summary["service_route_schemas"]
-        }
+        service_routes = {str(route["name"]): route for route in summary["service_routes"]}
+        service_route_schemas = {str(schema["name"]): schema for schema in summary["service_route_schemas"]}
 
         self.assertEqual(list(SERVICE_API_ROUTE_SUFFIXES), list(service_routes))
         self.assertEqual(list(SERVICE_API_ROUTE_SUFFIXES), list(service_route_schemas))
@@ -494,10 +505,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         for route_name in SERVICE_API_ROUTE_SUFFIXES:
             route_path = SERVICE_API_ROUTE_PATHS[route_name]
             route_schema = SERVICE_API_ROUTE_SCHEMAS[route_name]
-            rust_methods = ", ".join(
-                f'"{method}"'
-                for method in SERVICE_API_ROUTE_METHODS[route_name]
-            )
+            rust_methods = ", ".join(f'"{method}"' for method in SERVICE_API_ROUTE_METHODS[route_name])
             rust_query_fields = ", ".join(json.dumps(str(field)) for field in route_schema["query_fields"])
             rust_request_fields = ", ".join(json.dumps(str(field)) for field in route_schema["request_fields"])
             rust_response_fields = ", ".join(json.dumps(str(field)) for field in route_schema["response_fields"])
@@ -560,9 +568,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             cpp_backtest_config = _cpp_string(
                 json.dumps(indicator["backtest_config"], ensure_ascii=True, sort_keys=True, separators=(",", ":"))
             )
-            cpp_runtime_output_keys = _cpp_string(
-                ",".join(str(value) for value in indicator["runtime_output_keys"])
-            )
+            cpp_runtime_output_keys = _cpp_string(",".join(str(value) for value in indicator["runtime_output_keys"]))
 
             self.assertIn(f"key: {js_key}", rust_generated)
             self.assertIn(f"display_name: {js_name}", rust_generated)
@@ -842,7 +848,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertIn(f"interval: {interval_json}", rust_generated)
             self.assertIn(f"code: {code_json}", rust_generated)
             self.assertIn(f"PythonTradingViewInterval{{{interval_json}, {code_json}}}", cpp_generated)
-            self.assertIn(f'{interval_json}: {code_json}', tauri_generated)
+            self.assertIn(f"{interval_json}: {code_json}", tauri_generated)
 
         self.assertIn('"defaultExecution"', tauri_generated)
         self.assertIn('"defaultBacktest"', tauri_generated)

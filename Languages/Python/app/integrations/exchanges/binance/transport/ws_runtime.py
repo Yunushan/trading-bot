@@ -4,6 +4,7 @@ import time
 
 import requests
 
+from ..runtime_diagnostics import report_runtime_fallback
 from .helpers import _env_flag
 
 try:
@@ -21,7 +22,8 @@ def _use_live_futures_data_for_indicators(self) -> bool:
     try:
         default_live = _is_testnet_mode(self.mode)
         return _env_flag("BINANCE_INDICATOR_LIVE_DATA", default_live)
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Live-indicator source configuration failed", exc)
         return False
 
 
@@ -37,8 +39,8 @@ def _live_futures_symbol_set(self) -> set:
             self._live_fut_symbols_cache = symbols
             self._live_fut_symbols_ts = now
             return symbols
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Live futures symbol catalog refresh failed", exc)
     return self._live_fut_symbols_cache or set()
 
 
@@ -51,7 +53,8 @@ def _symbol_available_on_live_futures(self, symbol: str) -> bool:
         if not live_symbols and _is_testnet_mode(self.mode):
             return True
         return sym in live_symbols
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, f"Live futures symbol lookup failed for {symbol}", exc)
         return False
 
 
@@ -65,8 +68,8 @@ def _ensure_ws_manager(self):
         try:
             if ws_testnet and self._use_live_futures_data_for_indicators():
                 ws_testnet = False
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, "WebSocket live-data override failed", exc)
         self._ws_twm = _TWM(
             api_key=self.api_key or "",
             api_secret=self.api_secret or "",
@@ -75,10 +78,7 @@ def _ensure_ws_manager(self):
         )
         self._ws_twm.start()
     except Exception as exc:
-        try:
-            self._log(f"WebSocket manager init failed; disabling fast indicators ({exc})", lvl="warn")
-        except Exception:
-            pass
+        report_runtime_fallback(self, "WebSocket manager init failed; disabling fast indicators", exc)
         self._ws_twm = None
         self._ws_enabled = False
 
@@ -108,8 +108,8 @@ def _ws_kline_handler(self, msg):
         key = (sym, interval)
         with self._ws_lock:
             self._ws_kline_cache[key] = row
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "WebSocket kline payload was malformed", exc)
 
 
 def _ensure_ws_stream(self, symbol: str, interval: str):
@@ -131,11 +131,8 @@ def _ensure_ws_stream(self, symbol: str, interval: str):
         )
         with self._ws_lock:
             self._ws_streams[key] = stream_id
-    except Exception:
-        try:
-            self._log(f"WebSocket subscribe failed for {sym}@{interval}; continuing without WS.", lvl="warn")
-        except Exception:
-            pass
+    except Exception as exc:
+        report_runtime_fallback(self, f"WebSocket subscribe failed for {sym}@{interval}; continuing without WS", exc)
 
 
 def _ws_latest_candle(self, symbol: str, interval: str):

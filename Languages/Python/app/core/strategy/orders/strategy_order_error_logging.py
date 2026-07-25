@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import logging
 import traceback
 from typing import Any
 
 from app.security.redaction import REDACTED_TEXT, is_sensitive_key, redact_text
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _safe_repr(value: Any, *, max_len: int = 180, depth: int = 0) -> str:
@@ -114,18 +118,49 @@ def _format_context(context: Mapping[str, Any]) -> str:
 def safe_strategy_log(strategy, message: str, *, level: str = "error") -> None:
     log_fn = getattr(strategy, "log", None)
     if not callable(log_fn):
+        _LOGGER.log(getattr(logging, level.upper(), logging.ERROR), "%s", message)
         return
     try:
         log_fn(message, lvl=level)
         return
-    except TypeError:
-        pass
+    except TypeError as first_exc:
+        signature_error = first_exc
     except Exception:
+        _LOGGER.exception("Strategy log callback failed while reporting: %s", message)
         return
     try:
         log_fn(message)
     except Exception:
-        pass
+        _LOGGER.exception(
+            "Strategy log callback failed with and without a level argument while reporting: %s",
+            message,
+            exc_info=(type(signature_error), signature_error, signature_error.__traceback__),
+        )
+
+
+def pause_for_order_uncertainty(
+    strategy,
+    message: str,
+    *,
+    reconciliation_required: bool,
+) -> None:
+    if reconciliation_required:
+        strategy._ledger_reconciliation_required = True
+    strategy_type = type(strategy)
+    pause_event = getattr(strategy_type, "_GLOBAL_PAUSE", None)
+    if pause_event is None:
+        strategy_type._GLOBAL_PAUSE_FALLBACK = True
+    else:
+        try:
+            pause_event.set()
+        except Exception:
+            strategy_type._GLOBAL_PAUSE_FALLBACK = True
+            _LOGGER.exception("Global pause event failed after order-state uncertainty")
+    safe_strategy_log(
+        strategy,
+        f"{message}; trading paused pending reconciliation.",
+        level="error",
+    )
 
 
 def log_order_error(

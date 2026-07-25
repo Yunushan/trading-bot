@@ -44,6 +44,25 @@ class DependencyVersionRequirementTests(unittest.TestCase):
             with self.subTest(requirement=requirement):
                 self.assertEqual(dependency_versions_runtime._extract_requirement_name(requirement), expected)
 
+    def test_python_install_spec_rejects_pip_option_and_url_injection(self):
+        for package_name in (
+            "--index-url",
+            "-r",
+            "package @ https://attacker.invalid/archive.whl",
+            "https://attacker.invalid/archive.whl",
+            "package name",
+        ):
+            with self.subTest(package_name=package_name), self.assertRaises(ValueError):
+                dependency_versions_ui._python_install_spec_for_target(package_name, {"latest": "1.2.3"})
+
+        self.assertEqual(
+            "valid-package_name==1.2.3",
+            dependency_versions_ui._python_install_spec_for_target(
+                "valid-package_name",
+                {"latest": "1.2.3"},
+            ),
+        )
+
     def test_local_only_requirements_fall_back_to_default_python_targets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             requirements_path = Path(temp_dir) / "requirements.txt"

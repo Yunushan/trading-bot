@@ -134,12 +134,12 @@ def _maybe_relaunch_via_pythonw() -> None:
         shortcut_path = None
     if shortcut_path is not None:
         try:
-            os.startfile(str(shortcut_path))
+            os.startfile(str(shortcut_path))  # noqa: S606 - shortcut was created for the resolved GUI host.
             raise SystemExit(0)
         except Exception as exc:
             _record_desktop_bootstrap_exception("pythonw_relaunch_start_shortcut", exc)
     try:
-        subprocess.Popen(
+        subprocess.Popen(  # noqa: S603 - resolved GUI host and argument vector; shell is disabled.
             args,
             cwd=str(PYTHON_WORKSPACE_DIR),
             env=env,

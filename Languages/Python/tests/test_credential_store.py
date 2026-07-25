@@ -92,10 +92,28 @@ class CredentialStoreTests(unittest.TestCase):
             self.assertEqual("secret-value", credential_store.get_secret(scope="scope", account="api_key"))
             credential_store.delete_secret(scope="scope", account="api_key")
 
-        self.assertEqual("secret-tool", run.call_args_list[0].args[0][0])
+        self.assertEqual("/usr/bin/secret-tool", run.call_args_list[0].args[0][0])
         self.assertEqual("secret-value", run.call_args_list[0].kwargs["input"])
         self.assertIn("lookup", run.call_args_list[1].args[0])
         self.assertIn("clear", run.call_args_list[2].args[0])
+
+    def test_linux_secret_service_rejects_unexpected_commands(self):
+        with mock.patch(
+            "app.security.credential_store.shutil.which",
+            return_value="/usr/bin/secret-tool",
+        ), mock.patch("app.security.credential_store.subprocess.run") as run:
+            with self.assertRaisesRegex(
+                credential_store.CredentialStoreUnavailable,
+                "unexpected",
+            ):
+                credential_store._run_secret_command(["secret-tool", "search", "service", "trading-bot"])
+            with self.assertRaisesRegex(
+                credential_store.CredentialStoreUnavailable,
+                "unexpected",
+            ):
+                credential_store._run_secret_command(["sh", "-c", "secret-tool lookup"])
+
+        run.assert_not_called()
 
     def test_unsupported_platform_refuses_secret_persistence(self):
         with mock.patch("app.security.credential_store.os.name", "posix"), mock.patch(

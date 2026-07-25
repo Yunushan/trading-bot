@@ -35,6 +35,9 @@ from app.core.strategy.runtime.strategy_cycle_risk_stop_directional_runtime impo
 from app.core.strategy.runtime.strategy_cycle_risk_stop_cumulative_runtime import (  # noqa: E402
     apply_cumulative_futures_stop_management,
 )
+from app.core.strategy.runtime.strategy_cycle_risk_rsi_runtime import (  # noqa: E402
+    apply_rsi_exit_management,
+)
 
 
 class _FakeStrategyBinance:
@@ -772,6 +775,35 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertTrue(state["reduce_only"])
         self.assertAlmostEqual(2.0, state["qty_est"])
 
+    def test_prepare_signal_order_margin_state_blocks_unknown_add_only_position(self):
+        wrapper = _FakeStrategyBinance()
+        wrapper.net_amt = None
+        logs: list[str] = []
+        engine = _build_engine(wrapper=wrapper, logs=logs)
+        engine.config["add_only"] = "true"
+        aborted: list[bool] = []
+
+        state = engine._prepare_signal_order_margin_state(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="SELL",
+            pct=0.1,
+            free_usdt=1000.0,
+            price=100.0,
+            futures_balance_snap={"available": 1000.0, "wallet": 1000.0},
+            flip_close_qty=0.0,
+            entries_side_all=[],
+            active_slot_tokens_all=set(),
+            existing_margin_indicator_total=0.0,
+            slot_label="rsi",
+            slot_token_for_order="rsi",
+            lev=5,
+            abort_guard=lambda: aborted.append(True),
+        )
+
+        self.assertTrue(state["aborted"])
+        self.assertEqual([True], aborted)
+        self.assertTrue(any("net futures position is unavailable" in message for message in logs))
+
     def test_close_leg_refuses_non_finite_live_quantity_without_submitting_order(self):
         logs: list[str] = []
         engine = _build_engine(logs=logs)
@@ -860,6 +892,24 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(["LONG"], calls)
         self.assertEqual("Position side does not match", result["error"])
+
+    def test_confirmed_close_reconciliation_warning_pauses_new_orders(self):
+        wrapper = _FakeStrategyBinance()
+        logs: list[str] = []
+        wrapper.close_futures_leg_exact = lambda *_args, **_kwargs: {
+            "ok": True,
+            "reconciliation_required": True,
+            "warnings": ["confirmed close cache invalidation failed"],
+        }
+        engine = _build_engine(wrapper=wrapper, logs=logs)
+
+        ok, result = engine._execute_close_with_fallback("BTCUSDT", "SELL", 1.0, "LONG")
+
+        self.assertTrue(ok)
+        self.assertTrue(result["reconciliation_required"])
+        self.assertTrue(engine._ledger_reconciliation_required)
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+        self.assertTrue(any("requires reconciliation" in message for message in logs))
 
     def test_entire_account_stop_loss_triggers_verified_emergency_close(self):
         wrapper = _FakeStrategyBinance()
@@ -952,6 +1002,7 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertEqual([], state["load_positions_cache"]())
         self.assertEqual([], state["load_positions_cache"]())
         self.assertEqual([True], position_requests)
+        self.assertFalse(StrategyEngine._GLOBAL_PAUSE.is_set())
 
     @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for stop-context tests")
     def test_stop_context_does_not_mark_an_unknown_position_snapshot_as_confirmed(self):
@@ -964,6 +1015,66 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
 
         self.assertEqual([], state["load_positions_cache"]())
         self.assertFalse(state["positions_cache_ok"])
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+
+    @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for stop-context tests")
+    def test_stop_context_pauses_when_no_price_source_is_available(self):
+        wrapper = _FakeStrategyBinance()
+
+        def fail_price(_symbol):
+            raise RuntimeError("price feed unavailable")
+
+        wrapper.get_last_price = fail_price
+        engine = _build_engine(wrapper=wrapper)
+        frame = pd.DataFrame({"close": []})
+
+        state = build_futures_stop_state(engine, cw={"symbol": "BTCUSDT"}, df=frame)
+
+        self.assertIsNone(state["last_price"])
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+
+    def test_rsi_exit_close_failure_pauses_for_reconciliation(self):
+        engine = _build_engine()
+        engine._indicator_has_open = lambda *_args, **_kwargs: True
+
+        def fail_close(*_args, **_kwargs):
+            raise RuntimeError("close transport unavailable")
+
+        engine._close_indicator_positions = fail_close
+
+        state = apply_rsi_exit_management(
+            engine,
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            account_type="FUTURES",
+            allow_opposite_enabled=False,
+            desired_ps_long_guard=None,
+            desired_ps_short_guard=None,
+            key_long=("BTCUSDT", "1m", "BUY"),
+            key_short=("BTCUSDT", "1m", "SELL"),
+            long_open=True,
+            short_open=False,
+            last_rsi=80.0,
+            exit_up=70.0,
+            exit_dn=30.0,
+        )
+
+        self.assertEqual((True, False), state)
+        self.assertTrue(engine._ledger_reconciliation_required)
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+
+    def test_close_event_callback_failure_propagates(self):
+        engine = _build_engine()
+
+        def fail_trade_callback(_payload):
+            raise RuntimeError("trade event sink unavailable")
+
+        engine.trade_cb = fail_trade_callback
+
+        with self.assertLogs(
+            "app.core.strategy.runtime.strategy_runtime_support",
+            level="ERROR",
+        ), self.assertRaisesRegex(RuntimeError, "trade event sink unavailable"):
+            engine._notify_interval_closed("BTCUSDT", "1m", "BUY", qty=1.0)
 
     def test_stop_context_rejects_non_finite_ledger_and_exchange_position_values(self):
         wrapper = _FakeStrategyBinance()

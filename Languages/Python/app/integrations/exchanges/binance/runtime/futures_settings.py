@@ -5,6 +5,7 @@ import time
 from collections.abc import Mapping
 
 from .....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+from ..runtime_diagnostics import report_runtime_fallback
 
 
 def _mutation_accepted(result: object, *, leverage: int | None = None) -> bool:
@@ -118,8 +119,8 @@ def get_symbol_margin_type(
                 mt = _extract(row)
                 if mt:
                     return mt
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, f"Futures account margin-type fallback failed for {sym}", exc)
     except Exception as exc:
         if raise_on_lookup_error:
             raise RuntimeError(f"Unable to read margin type for {sym}") from exc
@@ -137,9 +138,12 @@ def get_symbol_margin_type(
 def _futures_open_orders_count(self, symbol: str) -> int:
     try:
         arr = self.client.futures_get_open_orders(symbol=(symbol or "").upper())
+        if not isinstance(arr, (list, tuple)):
+            raise RuntimeError("open-order endpoint returned an invalid snapshot")
         return len(arr or [])
-    except Exception:
-        return 0
+    except Exception as exc:
+        report_runtime_fallback(self, f"Open futures order lookup failed for {symbol}", exc)
+        raise RuntimeError(f"Unable to verify open futures orders for {symbol}; order blocked") from exc
 
 
 def _futures_net_position_amt(self, symbol: str) -> float:
@@ -152,8 +156,9 @@ def _futures_net_position_amt(self, symbol: str) -> float:
                 continue
             try:
                 amount = float(row.get("positionAmt") or 0)
-            except Exception:
-                pass
+            except Exception as exc:
+                report_runtime_fallback(self, f"Malformed futures position amount for {sym}", exc)
+                return math.inf
             else:
                 # Do not treat an invalid exchange position as flat. The caller
                 # must block a margin-mode change until exposure is trustworthy.
@@ -205,8 +210,8 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
                 age = time.time() - float(entry.get("ts") or 0.0)
                 if cached_mm == want_mm and (desired_lev_norm is None or cached_lev == desired_lev_norm) and age < ttl:
                     return
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, f"Futures settings cache lookup failed for {sym}", exc)
 
     cur = (
         self.get_symbol_margin_type(
@@ -311,8 +316,8 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
                 cache[sym] = payload
         else:
             cache[sym] = payload
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, f"Futures settings cache write failed for {sym}", exc)
 
 
 def ensure_futures_settings(
@@ -368,8 +373,9 @@ def configure_futures_symbol(self, symbol: str):
     """Back-compat shim: some strategy code calls this; forward to ensure_futures_settings."""
     try:
         self.ensure_futures_settings(symbol)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, f"Futures symbol configuration failed for {symbol}", exc, level="error")
+        raise
 
 
 def set_futures_leverage(self, lev: int):

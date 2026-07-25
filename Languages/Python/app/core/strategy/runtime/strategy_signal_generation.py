@@ -601,8 +601,8 @@ def generate_signal(self, df, ind):
             bm = float(ind["bb_mid"].iloc[sig_idx])
             bl = float(ind["bb_lower"].iloc[sig_idx])
             trigger_desc.append(f"BB_up={bu:.8f},BB_mid={bm:.8f},BB_low={bl:.8f}")
-        except Exception:
-            pass
+        except Exception as exc:
+            trigger_desc.append(f"Bollinger Bands error:{exc!r}")
 
     if (
         coerce_enabled(cfg["indicators"].get("keltner", {}).get("enabled"), False)
@@ -622,8 +622,8 @@ def generate_signal(self, df, ind):
             trigger_desc.append(
                 f"KC_up={ku:.8f},KC_mid={km:.8f},KC_low={kl:.8f},close {channel_state}"
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            trigger_desc.append(f"Keltner Channel error:{exc!r}")
 
     ichimoku_cfg = cfg["indicators"].get("ichimoku", {})
     if (

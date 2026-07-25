@@ -3,6 +3,7 @@ from __future__ import annotations
 import requests
 
 from .....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+from ..runtime_diagnostics import report_runtime_fallback
 
 
 def _coerce_max_futures_leverage(value: object = None) -> int:
@@ -29,7 +30,8 @@ def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
             resp = requests.get(url, timeout=timeout)
             if resp.status_code == 200:
                 return resp.json()
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, f"Exchange metadata HTTP request failed for {url}", exc)
             return None
         return None
 
@@ -40,7 +42,8 @@ def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
         info = None
         try:
             info = self.client.futures_exchange_info()
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, "Futures exchange metadata SDK request failed", exc)
             info = None
         if not info or not isinstance(info, dict) or "symbols" not in info:
             info = _safe_json(f"{self._futures_base()}/v1/exchangeInfo") or {}
@@ -53,7 +56,8 @@ def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
                     and symbol_info.get("contractType") == "PERPETUAL"
                 ):
                     allowed.add((symbol_info.get("symbol") or "").upper())
-            except Exception:
+            except Exception as exc:
+                report_runtime_fallback(self, "Malformed futures symbol metadata row ignored", exc)
                 continue
 
         ordered = sorted(list(allowed))
@@ -64,7 +68,8 @@ def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
                 sym = (ticker.get("symbol") or "").upper()
                 try:
                     vol_map[sym] = float(ticker.get("quoteVolume") or 0.0)
-                except Exception:
+                except Exception as exc:
+                    report_runtime_fallback(self, f"Malformed futures volume for {sym}", exc)
                     vol_map[sym] = 0.0
             ordered = sorted(ordered, key=lambda s: vol_map.get(s, 0.0), reverse=True)
 
@@ -75,7 +80,8 @@ def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
     info = None
     try:
         info = self.client.get_exchange_info()
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Spot exchange metadata SDK request failed", exc)
         info = None
     if not info or not isinstance(info, dict) or "symbols" not in info:
         info = _safe_json(f"{self._spot_base()}/v3/exchangeInfo") or {}
@@ -84,7 +90,8 @@ def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
         try:
             if symbol_info.get("status") == "TRADING" and symbol_info.get("quoteAsset") == "USDT":
                 allowed.add((symbol_info.get("symbol") or "").upper())
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, "Malformed spot symbol metadata row ignored", exc)
             continue
 
     ordered = sorted(list(allowed))
@@ -95,7 +102,8 @@ def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
             sym = (ticker.get("symbol") or "").upper()
             try:
                 vol_map[sym] = float(ticker.get("quoteVolume") or 0.0)
-            except Exception:
+            except Exception as exc:
+                report_runtime_fallback(self, f"Malformed spot volume for {sym}", exc)
                 vol_map[sym] = 0.0
         ordered = sorted(ordered, key=lambda s: vol_map.get(s, 0.0), reverse=True)
 
@@ -110,7 +118,8 @@ def get_symbol_info_spot(self, symbol: str) -> dict:
         info = None
         try:
             info = self.client.get_symbol_info(key)
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, f"Spot symbol metadata SDK request failed for {key}", exc)
             info = None
         if not info:
             try:
@@ -121,7 +130,8 @@ def get_symbol_info_spot(self, symbol: str) -> dict:
                         symbols = data.get("symbols") or []
                         if symbols:
                             info = symbols[0]
-            except Exception:
+            except Exception as exc:
+                report_runtime_fallback(self, f"Spot symbol metadata HTTP request failed for {key}", exc)
                 info = None
         if not info:
             raise ValueError(f"No spot symbol info for {symbol}")
@@ -179,7 +189,8 @@ def get_futures_symbol_filters(self, symbol: str) -> dict:
             mn = filt.get("notional") or filt.get("minNotional") or 0
             try:
                 min_notional = float(mn)
-            except Exception:
+            except Exception as exc:
+                report_runtime_fallback(self, f"Malformed futures min-notional filter for {symbol}", exc)
                 min_notional = 0.0
     return {
         "stepSize": step_size or 0.0,
@@ -198,8 +209,8 @@ def get_futures_max_leverage(self, symbol: str) -> int:
     if sym in cache:
         try:
             return int(cache[sym])
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, f"Malformed cached leverage cap for {sym}", exc)
     max_lev = None
     try:
         data = self.client.futures_leverage_bracket(symbol=sym)
@@ -218,13 +229,15 @@ def get_futures_max_leverage(self, symbol: str) -> int:
                 lev_val = bracket.get("initialLeverage") or bracket.get("initial_leverage")
                 try:
                     lev_int = int(float(lev_val))
-                except Exception:
+                except Exception as exc:
+                    report_runtime_fallback(self, f"Malformed leverage bracket for {sym}", exc)
                     continue
                 if lev_int > 0:
                     max_lev = max(max_lev or 0, lev_int)
             if max_lev:
                 break
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, f"Futures leverage bracket request failed for {sym}", exc)
         max_lev = None if max_lev is None else max_lev
     if max_lev is None:
         try:
@@ -235,8 +248,8 @@ def get_futures_max_leverage(self, symbol: str) -> int:
                     if lev_val is not None:
                         max_lev = int(float(lev_val))
                         break
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, f"Futures leverage metadata fallback failed for {sym}", exc)
     if not max_lev or int(max_lev) <= 0:
         max_lev = max_futures_leverage
     max_lev = max(1, min(int(max_lev), max_futures_leverage))
@@ -264,16 +277,17 @@ def get_recent_force_orders(
     if start_time:
         try:
             params["startTime"] = int(start_time)
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, "Forced-order start time is invalid", exc)
     if end_time:
         try:
             params["endTime"] = int(end_time)
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, "Forced-order end time is invalid", exc)
     try:
         data = func(**params)
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Forced-order history request failed", exc)
         return []
     if isinstance(data, dict):
         seq = None
@@ -333,11 +347,8 @@ def clamp_futures_leverage(self, symbol: str, leverage: int | None = None) -> in
         if sym not in notified:
             try:
                 self._log(f"{sym} max futures leverage {max_allowed}x; requested {desired_int}x -> using {effective}x.", lvl="warn")
-            except Exception:
-                try:
-                    print(f"[BinanceWrapper] {sym} leverage limited to {effective}x (requested {desired_int}x).")
-                except Exception:
-                    pass
+            except Exception as exc:
+                report_runtime_fallback(self, f"{sym} leverage-cap notification failed", exc)
             notified.add(sym)
             self._leverage_cap_notified = notified
     return effective

@@ -263,7 +263,7 @@ class ServiceProductMainTests(unittest.TestCase):
 
     def test_remote_json_request_builds_authenticated_get_and_post_requests(self):
         responses = (_FakeHttpResponse(b'{"status":"ok"}'), _FakeHttpResponse(b'{"exit_code":0}'))
-        with patch.object(product_main, "urlopen", side_effect=responses) as urlopen_mock:
+        with patch.object(product_main, "open_validated_url", side_effect=responses) as open_url:
             get_result = product_main._remote_json_request(
                 "http://127.0.0.1:8000/",
                 "/api/v1/status",
@@ -278,13 +278,32 @@ class ServiceProductMainTests(unittest.TestCase):
 
         self.assertEqual({"status": "ok"}, get_result)
         self.assertEqual({"exit_code": 0}, post_result)
-        get_request = urlopen_mock.call_args_list[0].args[0]
-        post_request = urlopen_mock.call_args_list[1].args[0]
-        self.assertEqual("GET", get_request.method)
-        self.assertEqual("POST", post_request.method)
-        self.assertEqual("Bearer secret-token", get_request.get_header("Authorization"))
-        self.assertEqual("application/json", post_request.get_header("Content-type"))
-        self.assertEqual(b'{"command": "status"}', post_request.data)
+        get_call, post_call = open_url.call_args_list
+        self.assertEqual("http://127.0.0.1:8000/api/v1/status", get_call.args[0])
+        self.assertEqual("GET", get_call.kwargs["method"])
+        self.assertEqual("POST", post_call.kwargs["method"])
+        self.assertEqual("Bearer secret-token", get_call.kwargs["headers"]["Authorization"])
+        self.assertEqual("application/json", post_call.kwargs["headers"]["Content-Type"])
+        self.assertEqual(b'{"command": "status"}', post_call.kwargs["data"])
+        self.assertFalse(get_call.kwargs["allow_redirects"])
+        self.assertTrue(get_call.kwargs["allow_loopback_http"])
+
+    def test_remote_json_request_rejects_unsafe_base_urls_before_transport(self):
+        invalid_urls = (
+            "http://service.example.com",
+            "file:///tmp/service.sock",
+            "https://user:secret@service.example.com",
+            "https://service.example.com?target=other",
+            "https://service.example.com/#fragment",
+        )
+        with patch.object(product_main, "open_validated_url") as open_url:
+            for base_url in invalid_urls:
+                with self.subTest(base_url=base_url), self.assertRaises(ValueError):
+                    product_main._remote_json_request(base_url, "/api/v1/status")
+        open_url.assert_not_called()
+
+        with self.assertRaisesRegex(ValueError, "must start with a slash"):
+            product_main._remote_json_request("https://service.example.com", "api/v1/status")
 
     def test_remote_json_request_converts_http_error_to_redacted_runtime_error(self):
         error = HTTPError(
@@ -294,7 +313,7 @@ class ServiceProductMainTests(unittest.TestCase):
             hdrs=None,
             fp=io.BytesIO(b'{"detail":"missing token"}'),
         )
-        with patch.object(product_main, "urlopen", side_effect=error):
+        with patch.object(product_main, "open_validated_url", side_effect=error):
             with self.assertRaisesRegex(RuntimeError, "401 Unauthorized"):
                 product_main._remote_json_request("http://127.0.0.1:8000", "/api/v1/status")
 

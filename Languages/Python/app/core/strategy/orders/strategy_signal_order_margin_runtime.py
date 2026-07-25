@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 
 def _prepare_signal_order_margin_state(
     self,
@@ -227,8 +229,18 @@ def _prepare_signal_order_margin_state(
         if not dual:
             try:
                 net_amt = float(self.binance.get_net_futures_position_amt(cw["symbol"]))
-            except Exception:
-                net_amt = 0.0
+            except Exception as exc:
+                self.log(
+                    f"{cw['symbol']}@{cw['interval']} add-only sizing blocked: "
+                    f"net futures position is unavailable ({type(exc).__name__}: {exc})."
+                )
+                return _abort()
+            if not math.isfinite(net_amt):
+                self.log(
+                    f"{cw['symbol']}@{cw['interval']} add-only sizing blocked: "
+                    "net futures position is unavailable or non-finite."
+                )
+                return _abort()
             if net_amt > 0 and side == "SELL":
                 qty_est = min(qty_est, abs(net_amt))
                 reduce_only = True

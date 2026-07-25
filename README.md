@@ -117,7 +117,8 @@ connector targets are declared in `docs/connector-support-matrix.json`.
 | Crypto spot trading | Supported now | Current live path is Binance-led |
 | Crypto futures trading | Supported now | Current primary live/demo path |
 | Multi-exchange crypto expansion | Order-routing supported / evidence-gated | ccxt market/account diagnostics and guarded order routing are implemented for listed venues; official live support needs venue evidence |
-| FX / broker integrations | Order-routing supported / evidence-gated | OANDA, FXCM, and IG have guarded connector paths; official live support needs broker evidence |
+| FX / broker integrations | Order-routing supported / evidence-gated | OANDA, FXCM, IG, Trade Nation, FXTF, FOREX EXCHANGE, 34 forex-capable MetaTrader 5 brokers, plus futures-scoped StoneX and commodity-scoped AI Gold Securities MT5 paths have guarded connectors; official live support needs per-broker evidence |
+| Scoped non-forex broker APIs | Order-routing supported / evidence-gated | Trading 212 covers Invest/Stocks ISA equities, moomoo OpenD covers its documented multi-market scope, and CITIC Futures CTP covers China futures/options; none claims forex routing |
 | Unlisted markets outside the current crypto/FX scope | Not supported today | Would require new connector work and testing |
 
 | Venue / integration | Status | Notes |
@@ -126,9 +127,16 @@ connector targets are declared in `docs/connector-support-matrix.json`.
 | Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Order-routing supported / evidence-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account/order routing |
 | HTX / Crypto.com Exchange / Kraken / Bitfinex | Order-routing supported / evidence-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account/order routing |
 | OANDA / FXCM / IG | Order-routing supported / evidence-gated | OANDA REST-v20, FXCM fxcmpy, and IG REST connector paths are implemented with dry-run/live guards |
+| Trade Nation / FXTF / FOREX EXCHANGE | MT4 bridge order-routing supported / evidence-gated | Included local/remote bridge host and MT4 Expert Advisor implement reads, guarded orders, cancellation, and position close with token auth and persistent replay protection |
+| 36 official-source MT5 brokers | Order-routing supported / evidence-gated | Official MetaTrader 5 terminal integration provides guarded account, market, position, order, preflight, and execution operations on Windows x64; StoneX is futures-scoped, AI Gold Securities is commodity-scoped, and every broker remains independently evidence-gated |
+| Trading 212 | Equity order-routing supported / forex unavailable / evidence-gated | The official beta Public API supports Invest/Stocks ISA equities with demo/live/custom service URLs; Trading 212 CFD and forex accounts are outside that API |
+| moomoo | Multi-market order-routing supported / forex unavailable / evidence-gated | The official SDK connects to a local or remote OpenD host and exposes account, market, position, order, cancel, and the documented advanced order types; an OpenD gateway and per-account evidence are required |
+| CITIC Futures | Futures/options order-routing supported / forex unavailable / evidence-gated | The official CTP route supports configurable TCP fronts, authentication, settlement confirmation, account/position/order/instrument/market queries, guarded order submission, and cancellation; production access and per-account evidence are required |
 | Venues not listed in the repo | Not supported today | Requires a new connector and validation work |
 
-For the fuller breakdown, see [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
+All 49 broker names in the requested scope are now machine-accounted: 44 have implemented, evidence-gated connector routes (39 forex and 5 deliberately non-forex), while Mitrade, AXPM, Spreadex, Jefferies, and Marex are recorded as external prerequisites because no public order contract is available for the first three and client onboarding is required for the latter two. They are not falsely advertised as supported.
+
+For the fuller breakdown, including those exact dispositions, see [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md). MT4 installation, remote TLS, replay protection, and connector examples are documented in [docs/MT4_BRIDGE.md](docs/MT4_BRIDGE.md).
 
 ---
 

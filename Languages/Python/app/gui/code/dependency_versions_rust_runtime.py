@@ -9,9 +9,9 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
+from ...security.network_url import open_validated_url
 from . import code_language_launch
 from .code_language_catalog import (
     BASE_PROJECT_PATH as _BASE_PROJECT_PATH,
@@ -173,7 +173,7 @@ def _rust_tool_version(command: list[str], *, cache_key: str) -> str | None:
                 run_kwargs["startupinfo"] = startupinfo
             except Exception:
                 pass
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 - tool path is resolved from the constrained Rust tool names.
             resolved_command,
             **run_kwargs,
         )
@@ -269,8 +269,11 @@ def _rustup_windows_install_url() -> str:
 
 def _download_to_path(url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
-    with urllib.request.urlopen(request, timeout=45.0) as response:
+    with open_validated_url(
+        url,
+        timeout=45.0,
+        headers={"User-Agent": "trading-bot-starter/1.0"},
+    ) as response:
         with open(destination, "wb") as fh:
             while True:
                 chunk = response.read(64 * 1024)

@@ -4,6 +4,7 @@ import time
 
 from . import strategy_indicator_order_build_runtime
 from . import strategy_indicator_order_context_runtime
+from .strategy_order_error_logging import pause_for_order_uncertainty
 
 
 def _indicator_exchange_qty(self, symbol: str, side_label: str, desired_ps: str | None) -> float:
@@ -183,8 +184,13 @@ def _collect_indicator_order_requests(
         tol_cfg = float(cw.get("indicator_qty_tolerance") or cw.get("qty_tolerance") or 0.0)
         if tol_cfg > 0.0:
             qty_tol_indicator = max(qty_tol_indicator, tol_cfg)
-    except Exception:
-        pass
+    except (TypeError, ValueError, OverflowError) as exc:
+        pause_for_order_uncertainty(
+            self,
+            f"{cw['symbol']}@{cw.get('interval') or 'default'} indicator quantity tolerance is invalid: {exc}",
+            reconciliation_required=False,
+        )
+        return [], qty_tol_indicator
     interval_current = cw.get("interval")
     action_side_map: dict[str, str] = {}
     for indicator_name, indicator_action in (trigger_actions or {}).items():
@@ -300,4 +306,3 @@ def _collect_indicator_order_requests(
 
 def bind_strategy_signal_order_collect_runtime(strategy_cls) -> None:
     strategy_cls._collect_indicator_order_requests = _collect_indicator_order_requests
-

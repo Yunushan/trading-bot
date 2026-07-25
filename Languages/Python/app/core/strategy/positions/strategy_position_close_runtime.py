@@ -7,6 +7,8 @@ from .close_execution import (
     _close_leg_entry,
     _evaluate_per_trade_stop,
     _execute_close_with_fallback,
+    _pause_for_close_uncertainty,
+    _safe_log,
 )
 
 
@@ -47,8 +49,12 @@ def _close_indicator_positions(
         # Fallback: include trade-book and live exchange qty for this slot to avoid skipping closes.
         try:
             book_qty = self._indicator_trade_book_qty(symbol, interval_text, indicator_lookup_key, side_label)
-        except Exception:
+        except Exception as exc:
             book_qty = 0.0
+            _safe_log(
+                self,
+                f"{symbol}@{interval_text or 'default'} indicator trade-book quantity lookup failed: {exc}",
+            )
         try:
             exch_qty = 0.0
             desired_ps_local = None
@@ -67,8 +73,13 @@ def _close_indicator_positions(
                     or 0.0
                 ),
             )
-        except Exception:
+        except Exception as exc:
             exch_qty = 0.0
+            _pause_for_close_uncertainty(
+                self,
+                f"{symbol}@{interval_text or 'default'} live indicator close quantity lookup failed: {exc}",
+                reconciliation_required=False,
+            )
         qty_for_indicator = max(qty_for_indicator or 0.0, book_qty or 0.0, exch_qty or 0.0)
         qty_tol = 1e-9
         if qty_for_indicator <= qty_tol:
@@ -146,12 +157,13 @@ def _close_indicator_positions(
     if not self._enter_close_guard(symbol, side_norm, guard_label):
         try:
             blocking = self._describe_close_guard(symbol) or {}
-            self.log(
+            _safe_log(
+                self,
                 f"{symbol}@{interval_text or 'default'} close skipped: {guard_label} blocked by active "
                 f"{blocking.get('side') or 'side'} close {blocking.get('label') or ''}".strip()
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _safe_log(self, f"{symbol}@{interval_text or 'default'} close guard is active: {exc}")
         return 0, 0.0
     if strict_interval and interval_has_filter and not indicator_scope_found and not allow_hedge_close:
         self._exit_close_guard(symbol, side_norm)
@@ -222,7 +234,12 @@ def _close_indicator_positions(
                 total_qty_closed += closed_qty
                 if limit_remaining is not None:
                     limit_remaining = max(0.0, limit_remaining - closed_qty)
-        except Exception:
+        except Exception as exc:
+            _pause_for_close_uncertainty(
+                self,
+                f"{symbol}@{interval_text or 'default'} indicator ledger close failed: {exc}",
+                reconciliation_required=False,
+            )
             continue
         if limit_remaining is not None and limit_remaining <= limit_tol:
             break
@@ -300,7 +317,12 @@ def _close_indicator_positions(
                         total_qty_closed += closed_qty
                         if limit_remaining is not None:
                             limit_remaining = max(0.0, limit_remaining - closed_qty)
-                except Exception:
+                except Exception as exc:
+                    _pause_for_close_uncertainty(
+                        self,
+                        f"{symbol}@{interval_text or 'default'} targeted indicator close failed: {exc}",
+                        reconciliation_required=False,
+                    )
                     continue
             if closed_count > 0:
                 self._exit_close_guard(symbol, side_norm)
@@ -353,7 +375,12 @@ def _close_indicator_positions(
                 try:
                     qty_val = max(0.0, float(entry.get("qty") or 0.0))
                     fallback_qty_target += qty_val
-                except Exception:
+                except Exception as exc:
+                    _pause_for_close_uncertainty(
+                        self,
+                        f"{symbol}@{interval_text or 'default'} fallback ledger quantity is invalid: {exc}",
+                        reconciliation_required=True,
+                    )
                     continue
                 fallback_entries.append((leg_key, entry.get("ledger_id"), qty_val))
         indicator_scope_found = indicator_scope_found or bool(fallback_entries)
@@ -366,8 +393,13 @@ def _close_indicator_positions(
                 0.0,
                 float(self._current_futures_position_qty(symbol, side_norm, position_side)),
             )
-        except Exception:
+        except Exception as exc:
             live_qty = 0.0
+            _pause_for_close_uncertainty(
+                self,
+                f"{symbol}@{interval_text or 'default'} fallback live quantity lookup failed: {exc}",
+                reconciliation_required=False,
+            )
         qty_limit_hint = None
         if qty_limit is not None:
             try:
@@ -415,15 +447,12 @@ def _close_indicator_positions(
                             reason=reason,
                         )
                     except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
-                        logger = getattr(self, "log", None)
-                        if callable(logger):
-                            try:
-                                logger(
-                                    f"{symbol}@{interval_text or 'default'} fallback close skipped for "
-                                    f"indicator {indicator_key}: {exc}"
-                                )
-                            except (RuntimeError, TypeError):
-                                continue
+                        _pause_for_close_uncertainty(
+                            self,
+                            f"{symbol}@{interval_text or 'default'} fallback close skipped for "
+                            f"indicator {indicator_key}: {exc}",
+                            reconciliation_required=False,
+                        )
                         continue
                     if closed_qty_entry > 0.0:
                         closed_count += 1
@@ -432,13 +461,11 @@ def _close_indicator_positions(
                         if limit_remaining is not None:
                             limit_remaining = max(0.0, limit_remaining - closed_qty_entry)
                 if qty_remaining > tol:
-                    try:
-                        self.log(
-                            f"{symbol}@{interval_text or 'default'} fallback close incomplete for {indicator_key}: "
-                            f"residual {qty_remaining:.10f} {side_norm} still open."
-                        )
-                    except Exception:
-                        pass
+                    _safe_log(
+                        self,
+                        f"{symbol}@{interval_text or 'default'} fallback close incomplete for {indicator_key}: "
+                        f"residual {qty_remaining:.10f} {side_norm} still open.",
+                    )
             else:
                 success, res = self._execute_close_with_fallback(
                     symbol,
@@ -447,13 +474,21 @@ def _close_indicator_positions(
                     position_side,
                 )
                 if success:
-                    payload = self._build_close_event_payload(
-                        symbol,
-                        interval_text or cw.get("interval") or "default",
-                        side_norm,
-                        qty_remaining,
-                        res,
-                    )
+                    try:
+                        payload = self._build_close_event_payload(
+                            symbol,
+                            interval_text or cw.get("interval") or "default",
+                            side_norm,
+                            qty_remaining,
+                            res,
+                        )
+                    except Exception as exc:
+                        payload = {"qty": qty_remaining}
+                        _pause_for_close_uncertainty(
+                            self,
+                            f"Confirmed {symbol}@{interval_text or 'default'} fallback close metadata failed: {exc}",
+                            reconciliation_required=True,
+                        )
                     if isinstance(reason, str) and reason.strip():
                         payload["reason"] = reason.strip()
                     try:
@@ -463,12 +498,19 @@ def _close_indicator_positions(
                             side_norm,
                             **payload,
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _safe_log(
+                            self,
+                            f"Confirmed {symbol}@{interval_text or 'default'} fallback close notification failed: {exc}",
+                        )
                     try:
                         self._mark_guard_closed(symbol, interval_text or cw.get("interval"), side_norm)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _pause_for_close_uncertainty(
+                            self,
+                            f"Confirmed {symbol}@{interval_text or 'default'} fallback close guard update failed: {exc}",
+                            reconciliation_required=True,
+                        )
                     try:
                         if indicator_lookup_key:
                             self._purge_indicator_tracking(
@@ -477,19 +519,21 @@ def _close_indicator_positions(
                                 indicator_lookup_key,
                                 side_norm,
                             )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _pause_for_close_uncertainty(
+                            self,
+                            f"Confirmed {symbol}@{interval_text or 'default'} fallback indicator purge failed: {exc}",
+                            reconciliation_required=True,
+                        )
                     closed_count += 1
                     total_qty_closed += qty_remaining
                     if limit_remaining is not None:
                         limit_remaining = max(0.0, limit_remaining - qty_remaining)
                 else:
-                    try:
-                        self.log(
-                            f"{symbol}@{interval_text or 'default'} fallback close failed for indicator {indicator_key}: {res}"
-                        )
-                    except Exception:
-                        pass
+                    _safe_log(
+                        self,
+                        f"{symbol}@{interval_text or 'default'} fallback close failed for indicator {indicator_key}: {res}",
+                    )
     self._exit_close_guard(symbol, side_norm)
     return closed_count, total_qty_closed
 

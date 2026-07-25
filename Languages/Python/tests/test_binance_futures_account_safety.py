@@ -128,8 +128,8 @@ class BinanceFuturesAccountSafetyTests(unittest.TestCase):
         harness.get_total_usdt_value = lambda: 12.0
         self.assertEqual(12.0, futures_account.get_total_wallet_balance(harness))
 
-    def test_unrealized_pnl_and_total_usdt_value_ignore_nonfinite_values(self):
-        harness = _FuturesAccountHarness()
+    def test_unrealized_pnl_uses_account_total_when_position_rows_are_malformed(self):
+        harness = _FuturesAccountHarness(accounts={False: {"totalUnrealizedProfit": "1.75"}})
         harness.positions = [
             {"unRealizedProfit": "nan"},
             {"unRealizedProfit": "2.5"},
@@ -138,6 +138,16 @@ class BinanceFuturesAccountSafetyTests(unittest.TestCase):
         ]
 
         self.assertEqual(1.75, futures_account.get_total_unrealized_pnl(harness))
+
+    def test_unrealized_pnl_raises_when_all_authoritative_sources_are_unknown(self):
+        harness = _FuturesAccountHarness()
+        harness.list_open_futures_positions = lambda: None
+
+        with self.assertRaisesRegex(RuntimeError, "unrealized PnL is unavailable"):
+            futures_account.get_total_unrealized_pnl(harness)
+
+    def test_total_usdt_value_ignores_nonfinite_candidates(self):
+        harness = _FuturesAccountHarness()
         harness.get_futures_wallet_balance = lambda *, force_refresh=False: math.nan
         harness.get_futures_balance_usdt = lambda *, force_refresh=False: 18.0
         harness.get_futures_available_balance = lambda: math.inf

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+from .close_execution import _pause_for_close_uncertainty, _safe_log
+
 
 def _side_token(side: str | None) -> str:
     return "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
@@ -24,32 +26,45 @@ def _indicator_hold_ready(
     base_hold = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
     try:
         interval_seconds = max(1.0, float(interval_seconds or 0.0))
-    except Exception:
-        interval_seconds = 60.0
+    except (TypeError, ValueError, OverflowError) as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{str(symbol or '').upper()}@{interval or 'default'} hold interval is invalid: {exc}",
+            reconciliation_required=False,
+        )
+        return False
     bars_hold = max(0, getattr(self, "_indicator_min_hold_bars", 0))
     effective_hold = max(base_hold, interval_seconds * bars_hold)
     if effective_hold <= 0.0:
         return True
     try:
         ts_val = float(entry_ts or 0.0)
-    except Exception:
-        ts_val = 0.0
+    except (TypeError, ValueError, OverflowError) as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{str(symbol or '').upper()}@{interval or 'default'} hold timestamp is invalid: {exc}",
+            reconciliation_required=True,
+        )
+        return False
     if ts_val <= 0.0:
-        return True
+        _pause_for_close_uncertainty(
+            self,
+            f"{str(symbol or '').upper()}@{interval or 'default'} hold timestamp is missing",
+            reconciliation_required=True,
+        )
+        return False
     if now_ts is None:
         now_ts = time.time()
     age = max(0.0, now_ts - ts_val)
     if age >= effective_hold:
         return True
     remaining = max(0.0, effective_hold - age)
-    try:
-        indicator_label = str(indicator_key or "").upper() or "<indicator>"
-        self.log(
-            f"{str(symbol or '').upper()}@{interval or 'default'} hold guard: waiting {remaining:.1f}s "
-            f"before flipping {indicator_label} {side_label}."
-        )
-    except Exception:
-        pass
+    indicator_label = str(indicator_key or "").upper() or "<indicator>"
+    _safe_log(
+        self,
+        f"{str(symbol or '').upper()}@{interval or 'default'} hold guard: waiting {remaining:.1f}s "
+        f"before flipping {indicator_label} {side_label}.",
+    )
     return False
 
 
@@ -92,13 +107,11 @@ def _indicator_signal_confirmation_ready(
     self._indicator_signal_tracker[key] = tracker
     if count >= confirm_req:
         return True
-    try:
-        self.log(
-            f"{symbol}@{interval or 'default'} {indicator_key} {action_norm.upper()} "
-            f"confirmation {count}/{confirm_req} – waiting additional bar(s)."
-        )
-    except Exception:
-        pass
+    _safe_log(
+        self,
+        f"{symbol}@{interval or 'default'} {indicator_key} {action_norm.upper()} "
+        f"confirmation {count}/{confirm_req} – waiting additional bar(s).",
+    )
     return False
 
 
@@ -307,8 +320,12 @@ def _mark_guard_closed(
             guard_obj.mark_closed(symbol, interval, side_norm, context=context_key)
         else:
             guard_obj.mark_closed(symbol, interval, side_norm)
-    except Exception:
-        pass
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{str(symbol or '').upper()}@{interval or 'default'} position guard close update failed: {exc}",
+            reconciliation_required=True,
+        )
 
 
 def _guard_mark_leg_closed(self, leg_key: tuple[str, str, str]) -> None:
@@ -316,8 +333,12 @@ def _guard_mark_leg_closed(self, leg_key: tuple[str, str, str]) -> None:
         symbol, interval, side = leg_key
         side_norm = _side_token(side)
         self._mark_guard_closed(symbol, interval, side_norm)
-    except Exception:
-        pass
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"Position guard leg-close update failed for {leg_key!r}: {exc}",
+            reconciliation_required=True,
+        )
 
 
 def _enter_close_guard(self, symbol: str, side: str, label: str | None = None) -> bool:

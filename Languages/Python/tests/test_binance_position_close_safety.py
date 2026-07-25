@@ -270,7 +270,7 @@ class BinancePositionCloseSafetyTests(unittest.TestCase):
         self.assertEqual(100.0, result["info"]["avgPrice"])
         self.assertEqual(1, wrapper.invalidations)
 
-    def test_exact_close_ignores_non_finite_exchange_exposure(self):
+    def test_exact_close_blocks_non_finite_exchange_exposure(self):
         wrapper = _ExactCloseWrapper(
             positions=[
                 {"symbol": "BTCUSDT", "positionAmt": "NaN", "positionSide": "BOTH"},
@@ -280,10 +280,36 @@ class BinancePositionCloseSafetyTests(unittest.TestCase):
 
         result = close_futures_leg_exact(wrapper, "BTCUSDT", 1.0, "SELL")
 
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["skipped"])
-        self.assertEqual("position already flat", result["reason"])
+        self.assertFalse(result["ok"])
+        self.assertIn("snapshot unavailable", result["error"])
         self.assertEqual([], wrapper.orders)
+
+    def test_exact_close_blocks_when_position_mode_is_unknown(self):
+        wrapper = _ExactCloseWrapper(
+            positions=[{"symbol": "BTCUSDT", "positionAmt": "0.2", "positionSide": "BOTH"}]
+        )
+        wrapper.get_futures_dual_side = lambda: (_ for _ in ()).throw(RuntimeError("mode unavailable"))
+
+        result = close_futures_leg_exact(wrapper, "BTCUSDT", 0.2, "SELL")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("position mode unavailable", result["error"])
+        self.assertEqual([], wrapper.orders)
+
+    def test_exact_close_marks_confirmed_order_for_reconciliation_when_cache_invalidation_fails(self):
+        wrapper = _ExactCloseWrapper(
+            positions=[{"symbol": "BTCUSDT", "positionAmt": "0.2", "positionSide": "BOTH"}]
+        )
+        wrapper._invalidate_futures_positions_cache = lambda: (_ for _ in ()).throw(
+            RuntimeError("cache unavailable")
+        )
+
+        result = close_futures_leg_exact(wrapper, "BTCUSDT", 0.2, "SELL")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["reconciliation_required"])
+        self.assertTrue(any("cache invalidation failed" in warning for warning in result["warnings"]))
+        self.assertEqual(1, len(wrapper.orders))
 
     def test_exact_close_blocks_when_open_order_cancellation_cannot_be_verified(self):
         wrapper = _ExactCloseWrapper(

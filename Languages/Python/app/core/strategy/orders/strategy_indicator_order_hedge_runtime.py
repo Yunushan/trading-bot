@@ -4,6 +4,7 @@ from .strategy_indicator_order_common_runtime import (
     _indicator_exchange_qty,
     _purge_indicator_side_if_exchange_flat,
 )
+from .strategy_order_error_logging import pause_for_order_uncertainty, safe_strategy_log
 
 
 def _build_hedge_indicator_order_request(
@@ -48,8 +49,13 @@ def _build_hedge_indicator_order_request(
             protect_other = self._symbol_side_has_other_positions(
                 symbol, interval_current, indicator_key, opposite_side
             )
-        except Exception:
-            protect_other = False
+        except Exception as exc:
+            pause_for_order_uncertainty(
+                self,
+                f"{symbol}@{interval_current or 'default'} hedge ownership lookup failed: {exc}",
+                reconciliation_required=True,
+            )
+            return True, None
         if not protect_other:
             exch_qty = _indicator_exchange_qty(
                 self,
@@ -107,13 +113,12 @@ def _build_hedge_indicator_order_request(
         tracked_qty=remaining_after_close,
     )
     if remaining_after_close > qty_tol_indicator:
-        try:
-            self.log(
-                f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} deferred: "
-                f"{remaining_after_close:.10f} {opposite_side.lower()} qty still open."
-            )
-        except Exception:
-            pass
+        safe_strategy_log(
+            self,
+            f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} deferred: "
+            f"{remaining_after_close:.10f} {opposite_side.lower()} qty still open.",
+            level="warning",
+        )
         return True, None
 
     flip_from_side = opposite_side if closed_qty > 0.0 else None

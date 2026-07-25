@@ -423,10 +423,13 @@ def _cpp_qt_update_verification_failures(runtime, targets: list[dict[str, str]])
 
 
 def _python_install_spec_for_target(package_name: str, target: dict[str, str]) -> str:
+    clean_package_name = str(package_name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", clean_package_name):
+        raise ValueError("Python dependency name is not a valid package name")
     latest_version = str(target.get("_latest_version") or target.get("latest") or "").strip()
     if _version_text_is_installable(latest_version):
-        return f"{package_name}=={latest_version}"
-    return package_name
+        return f"{clean_package_name}=={latest_version}"
+    return clean_package_name
 
 
 def _run_python_package_install(
@@ -451,7 +454,9 @@ def _run_python_package_install(
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
     try:
-        proc = subprocess.Popen(command, **popen_kwargs)
+        proc = subprocess.Popen(  # noqa: S603 - validated pip argument vector; shell is disabled.
+            command, **popen_kwargs
+        )
     except FileNotFoundError:
         return False, f"Command not found: {command[0]}"
     except Exception as exc:

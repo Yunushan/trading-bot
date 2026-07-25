@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import importlib
 import os
+import tempfile
 from importlib import metadata as _md
+
+from .runtime_directory import create_private_runtime_directory
+
+
+_QT_RUNTIME_TEMP_DIR: tempfile.TemporaryDirectory[str] | None = None
 
 # Must be set BEFORE any Qt object exists. Force the value so Qt picks it up even if the
 # environment already provided something else (Windows defaults to RoundPreferFloor).
@@ -36,18 +42,10 @@ try:
             os.environ.setdefault("QSG_RHI_BACKEND", "software")
             os.environ.setdefault("QT_QUICK_BACKEND", "software")
             os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
-            # Some distros crash unless XDG_RUNTIME_DIR is defined; fall back to /tmp for root headless runs.
+            # Some distros crash unless XDG_RUNTIME_DIR is defined for root headless runs.
             if not os.environ.get("XDG_RUNTIME_DIR"):
-                tmp_runtime = "/tmp/qt-runtime-root"
-                try:
-                    os.makedirs(tmp_runtime, mode=0o700, exist_ok=True)
-                except OSError:
-                    tmp_runtime = "/tmp"
-                try:
-                    os.chmod(tmp_runtime, 0o700)
-                except OSError:
-                    pass
-                os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
+                _QT_RUNTIME_TEMP_DIR = create_private_runtime_directory()
+                os.environ["XDG_RUNTIME_DIR"] = _QT_RUNTIME_TEMP_DIR.name
 
     # Windows-specific QtWebEngine tuning: prefer GPU acceleration for responsiveness
     if os.name == "nt":

@@ -85,7 +85,7 @@ def _maybe_launch_via_shell_shortcut() -> None:
     except Exception as exc:
         _boot_log(f"legacy shortcut cleanup failed: {exc!r}")
     try:
-        os.startfile(str(shortcut_path))
+        os.startfile(str(shortcut_path))  # noqa: S606 - shortcut was created for the resolved GUI host.
         _boot_log(f"shell shortcut launched via {shortcut_path}")
     except Exception as exc:
         _boot_log(f"shell shortcut launch failed: {exc!r}")

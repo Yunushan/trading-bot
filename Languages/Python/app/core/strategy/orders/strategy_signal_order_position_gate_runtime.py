@@ -4,6 +4,9 @@ import time
 
 from app.settings import is_live_trading_mode
 
+from .strategy_indicator_order_common_runtime import _indicator_exchange_qty
+from .strategy_order_error_logging import pause_for_order_uncertainty, safe_strategy_log
+
 
 def _live_mode_for_position_gate(self) -> bool:  # noqa: ANN001
     config = getattr(self, "config", {}) or {}
@@ -47,9 +50,19 @@ def _prepare_signal_order_position_gate(
         if now_ts - last_ts > guard_stale_secs:
             self._last_order_time.pop(key_bar, None)
             self._leg_ledger.pop(key_bar, None)
-    except Exception:
+    except Exception as exc:
         if live_mode:
+            pause_for_order_uncertainty(
+                self,
+                f"{cw['symbol']}@{interval_norm or 'default'} order timing guard failed: {exc}",
+                reconciliation_required=True,
+            )
             return _abort()
+        safe_strategy_log(
+            self,
+            f"{cw['symbol']}@{interval_norm or 'default'} demo order timing guard failed: {exc}",
+            level="warning",
+        )
 
     target_flip_qty = flip_close_qty if flip_close_qty > 0.0 else None
     if not self._close_opposite_position(
@@ -78,8 +91,20 @@ def _prepare_signal_order_position_gate(
                     strict_interval=True,
                     use_exchange_fallback=False,
                 )
-            except Exception:
+            except Exception as exc:
                 indicator_qty_lookup_failed = True
+                if live_mode:
+                    pause_for_order_uncertainty(
+                        self,
+                        f"{cw['symbol']}@{interval_norm or 'default'} indicator quantity lookup failed: {exc}",
+                        reconciliation_required=True,
+                    )
+                else:
+                    safe_strategy_log(
+                        self,
+                        f"{cw['symbol']}@{interval_norm or 'default'} demo indicator quantity lookup failed: {exc}",
+                        level="warning",
+                    )
                 qty_val = 0.0
             if qty_val > remaining_opp_qty:
                 remaining_opp_qty = qty_val
@@ -90,8 +115,13 @@ def _prepare_signal_order_position_gate(
                 account_type_check = str(
                     (self.config.get("account_type") or self.binance.account_type)
                 ).upper()
-            except Exception:
-                account_type_check = ""
+            except Exception as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{interval_norm or 'default'} account type lookup failed: {exc}",
+                    reconciliation_required=False,
+                )
+                return _abort()
             if account_type_check == "FUTURES":
                 protect_other = False
                 for token in indicator_tokens_for_guard:
@@ -101,44 +131,45 @@ def _prepare_signal_order_position_gate(
                         ):
                             protect_other = True
                             break
-                    except Exception:
-                        continue
+                    except Exception as exc:
+                        pause_for_order_uncertainty(
+                            self,
+                            f"{cw['symbol']}@{interval_norm or 'default'} position ownership lookup failed: {exc}",
+                            reconciliation_required=True,
+                        )
+                        return _abort()
                 if not protect_other:
                     try:
                         desired_ps_check = None
                         if self.binance.get_futures_dual_side():
                             desired_ps_check = "LONG" if opp_side_guard == "BUY" else "SHORT"
-                        exch_qty = max(
-                            0.0,
-                            float(
-                                self._current_futures_position_qty(
-                                    cw["symbol"], opp_side_guard, desired_ps_check
-                                )
-                                or 0.0
-                            ),
+                        exch_qty = _indicator_exchange_qty(
+                            self,
+                            cw["symbol"],
+                            opp_side_guard,
+                            desired_ps_check,
                         )
                     except Exception:
-                        if live_mode:
-                            return _abort()
-                        exch_qty = 0.0
+                        return _abort()
                     if exch_qty > qty_tol_slot_guard:
                         remaining_opp_qty = exch_qty
         if remaining_opp_qty > qty_tol_slot_guard:
-            try:
-                indicator_label_guard = (
-                    indicator_key_hint
-                    or (indicator_tokens_for_guard[0] if indicator_tokens_for_guard else "indicator")
-                ).upper()
-                self.log(
-                    f"{cw['symbol']}@{interval_norm or 'default'} {indicator_label_guard} {side} blocked: "
-                    f"opposite {opp_side_guard} still open ({remaining_opp_qty:.10f})."
-                )
-                self.log(
-                    f"{cw['symbol']}@{interval_norm or 'default'} {indicator_label_guard} "
-                    f"guard=opp_open block {side}."
-                )
-            except Exception:
-                pass
+            indicator_label_guard = (
+                indicator_key_hint
+                or (indicator_tokens_for_guard[0] if indicator_tokens_for_guard else "indicator")
+            ).upper()
+            safe_strategy_log(
+                self,
+                f"{cw['symbol']}@{interval_norm or 'default'} {indicator_label_guard} {side} blocked: "
+                f"opposite {opp_side_guard} still open ({remaining_opp_qty:.10f}).",
+                level="warning",
+            )
+            safe_strategy_log(
+                self,
+                f"{cw['symbol']}@{interval_norm or 'default'} {indicator_label_guard} "
+                f"guard=opp_open block {side}.",
+                level="warning",
+            )
             return _abort()
 
     return {

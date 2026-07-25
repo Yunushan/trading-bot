@@ -582,7 +582,9 @@ def run_command_capture_hidden(
     if timeout is not None:
         run_kwargs["timeout"] = max(1.0, float(timeout))
     try:
-        result = subprocess.run(command, check=True, **run_kwargs)
+        result = subprocess.run(  # noqa: S603 - callers pass argument vectors; shell is never enabled.
+            command, check=True, **run_kwargs
+        )
         output = ((result.stdout or "") + (result.stderr or "")).strip()
         return True, output
     except FileNotFoundError:

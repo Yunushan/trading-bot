@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 
 DEFAULT_API_KEY_ENV = "BINANCE_API_KEY"
-DEFAULT_API_SECRET_ENV = "BINANCE_API_SECRET"
+DEFAULT_API_SECRET_ENV = "BINANCE_API_SECRET"  # noqa: S105 - environment variable name.
 
 
 @dataclass(frozen=True, slots=True)

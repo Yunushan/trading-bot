@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 
 from ...security.redaction import redact_value
@@ -10,11 +11,13 @@ FxcmClientFactory = Callable[[str, str], object]
 
 
 def _positive_float(value: object, *, field: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a positive number")
     try:
         parsed = float(value)
-    except Exception as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{field} must be a positive number") from exc
-    if parsed <= 0:
+    if not math.isfinite(parsed) or parsed <= 0:
         raise ValueError(f"{field} must be a positive number")
     return parsed
 
@@ -37,7 +40,7 @@ def _plain_payload(value: object) -> object:
     if callable(to_dict):
         try:
             return _plain_payload(to_dict())
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return repr(value)
     return repr(value)
 
@@ -79,7 +82,7 @@ class FxcmBrokerConnector:
         self._require_live_credentials()
         try:
             import fxcmpy  # type: ignore
-        except Exception as exc:
+        except ImportError as exc:
             raise RuntimeError("FXCM live requests require the optional fxcmpy package") from exc
         return fxcmpy.fxcmpy(access_token=self.access_token, server=self.server)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 
 from .strategy_cycle_risk_stop_context_runtime import _reconciled_close_qty
@@ -8,6 +9,22 @@ try:
     from ....integrations.exchanges.binance import normalize_margin_ratio
 except ImportError:  # pragma: no cover - standalone execution fallback
     from binance_wrapper import normalize_margin_ratio
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _safe_log(self, message: str, *, level: int = logging.WARNING) -> bool:
+    callback = getattr(self, "log", None)
+    if callable(callback):
+        try:
+            callback(message)
+            return True
+        except Exception:
+            _LOGGER.exception("Strategy stop-loss log callback failed while reporting: %s", message)
+            return False
+    _LOGGER.log(level, message)
+    return False
 
 
 def _apply_long_futures_stop(
@@ -49,7 +66,7 @@ def _apply_long_futures_stop(
             if margin_pct > loss_pct_long:
                 loss_pct_long = margin_pct
         except Exception:
-            pass
+            _LOGGER.debug("Unable to compute BUY stop-loss margin percentage", exc_info=True)
     triggered_long = False
     if apply_usdt_limit and loss_usdt_long >= stop_usdt_limit:
         triggered_long = True
@@ -70,7 +87,8 @@ def _apply_long_futures_stop(
         if isinstance(res, dict) and res.get("ok"):
             closed_qty = _reconciled_close_qty(res, qty_long)
             if closed_qty + max(1e-9, qty_long * 1e-6) < qty_long:
-                self.log(
+                _safe_log(
+                    self,
                     f"Stop-loss close partially filled for {cw['symbol']}@{cw.get('interval')} (BUY): "
                     f"{closed_qty:.10f}/{qty_long:.10f}; preserving ledger for reconciliation."
                 )
@@ -79,10 +97,7 @@ def _apply_long_futures_stop(
             payload = self._build_close_event_payload(
                 cw["symbol"], cw.get("interval"), "BUY", closed_qty, res
             )
-            try:
-                payload["reason"] = "stop_loss_long"
-            except Exception:
-                pass
+            payload["reason"] = "stop_loss_long"
             try:
                 for entry in self._leg_entries(key_long):
                     self._mark_indicator_reentry_signal_block(
@@ -100,16 +115,24 @@ def _apply_long_futures_stop(
                                 "BUY",
                                 entry.get("qty"),
                             )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _safe_log(
+                            self,
+                            f"Failed to record BUY stop-loss indicator close for "
+                            f"{cw['symbol']}@{cw.get('interval')}: {exc}",
+                        )
                     self._queue_flip_on_close(
                         cw.get("interval"),
                         "BUY",
                         entry,
                         payload,
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                _safe_log(
+                    self,
+                    f"Failed to prepare BUY stop-loss reentry/flip state for "
+                    f"{cw['symbol']}@{cw.get('interval')}: {exc}",
+                )
             self._remove_leg_entry(key_long, None)
             self._mark_guard_closed(cw["symbol"], cw.get("interval"), "BUY")
             self._log_latency_metric(
@@ -125,29 +148,23 @@ def _apply_long_futures_stop(
                 **payload,
                 latency_seconds=latency_s,
                 latency_ms=latency_s * 1000.0,
-                reason="stop_loss_long",
             )
-            try:
-                self.log(
-                    f"Stop-loss closed BUY for {cw['symbol']}@{cw.get('interval')} "
-                    f"(loss {loss_usdt_long:.4f} USDT / {loss_pct_long:.2f}%)."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"Stop-loss closed BUY for {cw['symbol']}@{cw.get('interval')} "
+                f"(loss {loss_usdt_long:.4f} USDT / {loss_pct_long:.2f}%).",
+                level=logging.INFO,
+            )
         else:
-            try:
-                self.log(
-                    f"Stop-loss close failed for {cw['symbol']}@{cw.get('interval')} (BUY): {res}"
-                )
-            except Exception:
-                pass
-    except Exception as exc:
-        try:
-            self.log(
-                f"Stop-loss close error for {cw['symbol']}@{cw.get('interval')} (BUY): {exc}"
+            _safe_log(
+                self,
+                f"Stop-loss close failed for {cw['symbol']}@{cw.get('interval')} (BUY): {res}",
             )
-        except Exception:
-            pass
+    except Exception as exc:
+        _safe_log(
+            self,
+            f"Stop-loss close error for {cw['symbol']}@{cw.get('interval')} (BUY): {exc}",
+        )
 
 
 def _apply_short_futures_stop(
@@ -189,7 +206,7 @@ def _apply_short_futures_stop(
             if margin_pct > loss_pct_short:
                 loss_pct_short = margin_pct
         except Exception:
-            pass
+            _LOGGER.debug("Unable to compute SELL stop-loss margin percentage", exc_info=True)
     triggered_short = False
     if apply_usdt_limit and loss_usdt_short >= stop_usdt_limit:
         triggered_short = True
@@ -210,7 +227,8 @@ def _apply_short_futures_stop(
         if isinstance(res, dict) and res.get("ok"):
             closed_qty = _reconciled_close_qty(res, qty_short)
             if closed_qty + max(1e-9, qty_short * 1e-6) < qty_short:
-                self.log(
+                _safe_log(
+                    self,
                     f"Stop-loss close partially filled for {cw['symbol']}@{cw.get('interval')} (SELL): "
                     f"{closed_qty:.10f}/{qty_short:.10f}; preserving ledger for reconciliation."
                 )
@@ -219,10 +237,7 @@ def _apply_short_futures_stop(
             payload = self._build_close_event_payload(
                 cw["symbol"], cw.get("interval"), "SELL", closed_qty, res
             )
-            try:
-                payload["reason"] = "stop_loss_short"
-            except Exception:
-                pass
+            payload["reason"] = "stop_loss_short"
             try:
                 for entry in self._leg_entries(key_short):
                     self._mark_indicator_reentry_signal_block(
@@ -240,16 +255,24 @@ def _apply_short_futures_stop(
                                 "SELL",
                                 entry.get("qty"),
                             )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _safe_log(
+                            self,
+                            f"Failed to record SELL stop-loss indicator close for "
+                            f"{cw['symbol']}@{cw.get('interval')}: {exc}",
+                        )
                     self._queue_flip_on_close(
                         cw.get("interval"),
                         "SELL",
                         entry,
                         payload,
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                _safe_log(
+                    self,
+                    f"Failed to prepare SELL stop-loss reentry/flip state for "
+                    f"{cw['symbol']}@{cw.get('interval')}: {exc}",
+                )
             self._remove_leg_entry(key_short, None)
             self._mark_guard_closed(cw["symbol"], cw.get("interval"), "SELL")
             self._log_latency_metric(
@@ -265,29 +288,23 @@ def _apply_short_futures_stop(
                 **payload,
                 latency_seconds=latency_s,
                 latency_ms=latency_s * 1000.0,
-                reason="stop_loss_short",
             )
-            try:
-                self.log(
-                    f"Stop-loss closed SELL for {cw['symbol']}@{cw.get('interval')} "
-                    f"(loss {loss_usdt_short:.4f} USDT / {loss_pct_short:.2f}%)."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"Stop-loss closed SELL for {cw['symbol']}@{cw.get('interval')} "
+                f"(loss {loss_usdt_short:.4f} USDT / {loss_pct_short:.2f}%).",
+                level=logging.INFO,
+            )
         else:
-            try:
-                self.log(
-                    f"Stop-loss close failed for {cw['symbol']}@{cw.get('interval')} (SELL): {res}"
-                )
-            except Exception:
-                pass
-    except Exception as exc:
-        try:
-            self.log(
-                f"Stop-loss close error for {cw['symbol']}@{cw.get('interval')} (SELL): {exc}"
+            _safe_log(
+                self,
+                f"Stop-loss close failed for {cw['symbol']}@{cw.get('interval')} (SELL): {res}",
             )
-        except Exception:
-            pass
+    except Exception as exc:
+        _safe_log(
+            self,
+            f"Stop-loss close error for {cw['symbol']}@{cw.get('interval')} (SELL): {exc}",
+        )
 
 
 def apply_directional_futures_stop_management(

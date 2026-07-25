@@ -786,13 +786,13 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         provider_label = str(payload.get("provider_label") or payload.get("provider") or "LLM")
         mode = str(payload.get("mode") or "")
         if payload.get("api_key_present"):
-            token_text = "token ready"
+            credential_status = "token ready"
         elif mode == "local":
-            token_text = "token optional"
+            credential_status = "token optional"
         else:
-            token_text = "token missing"
+            credential_status = "token missing"
         reasoning = str(payload.get("reasoning_effort") or "default")
-        self.status_label.setText(f"{provider_label} ({mode}) - {token_text} - reasoning: {reasoning}")
+        self.status_label.setText(f"{provider_label} ({mode}) - {credential_status} - reasoning: {reasoning}")
 
 
 def create_llm_settings_panel(

@@ -717,6 +717,156 @@ int main(int argc, char **argv) {
           QStringLiteral("native exchange support payload should expose IG order routing"));
     check(igBroker.value(QStringLiteral("live_evidence_required")).toBool(false),
           QStringLiteral("native exchange support payload should require live evidence for IG"));
+    const QJsonObject brokerBackends = igBroker.value(QStringLiteral("broker_order_routing_backends")).toObject();
+    int mt5BrokerCount = 0;
+    for (const QJsonValue &brokerValue : igBroker.value(QStringLiteral("supported_forex_brokers")).toArray()) {
+        const QString broker = brokerValue.toString();
+        const QString backend = brokerBackends.value(NativeExchangeConnectors::supportKey(broker)).toString();
+        if (backend != QStringLiteral("metatrader5")) {
+            continue;
+        }
+        ++mt5BrokerCount;
+        const QJsonObject mt5Broker = NativeExchangeConnectors::buildExchangeSupportPayload(
+            NativeExchangeConnectors::ExchangeSupportInput{
+                {},
+                QStringLiteral("metatrader5"),
+                broker,
+            });
+        check(mt5Broker.value(QStringLiteral("broker_supported")).toBool(false),
+              QStringLiteral("native exchange support payload should accept %1 MT5 routing").arg(broker));
+        check(mt5Broker.value(QStringLiteral("order_routing_supported")).toBool(false),
+              QStringLiteral("native exchange support payload should expose %1 MT5 order routing").arg(broker));
+        check(mt5Broker.value(QStringLiteral("order_execution_supported")).toBool(false),
+              QStringLiteral("native exchange support payload should expose %1 MT5 execution routing").arg(broker));
+        check(mt5Broker.value(QStringLiteral("live_evidence_required")).toBool(false),
+              QStringLiteral("native exchange support payload should require live evidence for %1").arg(broker));
+    }
+    check(mt5BrokerCount >= 34,
+          QStringLiteral("native exchange support payload should consume the complete generated MT5 broker catalog"));
+    int mt4BrokerCount = 0;
+    for (const QJsonValue &brokerValue : igBroker.value(QStringLiteral("supported_forex_brokers")).toArray()) {
+        const QString broker = brokerValue.toString();
+        const QString backend = brokerBackends.value(NativeExchangeConnectors::supportKey(broker)).toString();
+        if (backend != QStringLiteral("metatrader4-bridge")) {
+            continue;
+        }
+        ++mt4BrokerCount;
+        const QJsonObject mt4Broker = NativeExchangeConnectors::buildExchangeSupportPayload(
+            NativeExchangeConnectors::ExchangeSupportInput{
+                {},
+                QStringLiteral("metatrader4-bridge"),
+                broker,
+            });
+        check(mt4Broker.value(QStringLiteral("broker_supported")).toBool(false),
+              QStringLiteral("native exchange support payload should accept %1 MT4 bridge routing").arg(broker));
+        check(mt4Broker.value(QStringLiteral("order_routing_supported")).toBool(false),
+              QStringLiteral("native exchange support payload should expose %1 MT4 order routing").arg(broker));
+        check(mt4Broker.value(QStringLiteral("forex_order_routing_supported")).toBool(false),
+              QStringLiteral("native exchange support payload should retain %1 forex scope").arg(broker));
+        check(mt4Broker.value(QStringLiteral("live_evidence_required")).toBool(false),
+              QStringLiteral("native exchange support payload should evidence-gate %1").arg(broker));
+    }
+    check(mt4BrokerCount == 3,
+          QStringLiteral("native exchange support payload should consume all generated MT4 bridge brokers"));
+    const QJsonObject trading212Broker = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("trading212-public-api"),
+            QStringLiteral("Trading 212"),
+        });
+    check(trading212Broker.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept Trading 212 broker routing"));
+    check(trading212Broker.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose Trading 212 equity order routing"));
+    check(!trading212Broker.value(QStringLiteral("forex_order_routing_supported")).toBool(true),
+          QStringLiteral("native exchange support payload must not claim Trading 212 forex routing"));
+    check(trading212Broker.value(QStringLiteral("broker_market_scope")).toString()
+              == QStringLiteral("invest-and-stocks-isa-equities-only"),
+          QStringLiteral("native exchange support payload should retain Trading 212 public API scope"));
+    check(jsonArrayContains(
+              trading212Broker.value(QStringLiteral("supported_brokers")).toArray(),
+              QStringLiteral("Trading 212")),
+          QStringLiteral("native exchange support payload should include Trading 212 in general brokers"));
+    check(!jsonArrayContains(
+              trading212Broker.value(QStringLiteral("supported_forex_brokers")).toArray(),
+              QStringLiteral("Trading 212")),
+          QStringLiteral("native exchange support payload must keep Trading 212 outside forex brokers"));
+    const QJsonObject moomooBroker = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("moomoo-opend"),
+            QStringLiteral("moomoo"),
+        });
+    check(moomooBroker.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept moomoo OpenD routing"));
+    check(moomooBroker.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose moomoo order routing"));
+    check(!moomooBroker.value(QStringLiteral("forex_order_routing_supported")).toBool(true),
+          QStringLiteral("native exchange support payload must not claim moomoo forex routing"));
+    check(moomooBroker.value(QStringLiteral("broker_market_scope")).toString()
+              == QStringLiteral("stocks-etfs-options-futures-funds-and-supported-crypto"),
+          QStringLiteral("native exchange support payload should retain moomoo market scope"));
+    const QJsonObject stoneXBroker = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("metatrader5"),
+            QStringLiteral("StoneX"),
+        });
+    check(stoneXBroker.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept StoneX MT5 routing"));
+    check(stoneXBroker.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose StoneX futures routing"));
+    check(!stoneXBroker.value(QStringLiteral("forex_order_routing_supported")).toBool(true),
+          QStringLiteral("native exchange support payload must not claim StoneX forex routing"));
+    check(stoneXBroker.value(QStringLiteral("broker_market_scope")).toString()
+              == QStringLiteral("futures-and-options-on-futures"),
+          QStringLiteral("native exchange support payload should retain StoneX futures scope"));
+    check(jsonArrayContains(
+              stoneXBroker.value(QStringLiteral("supported_brokers")).toArray(),
+              QStringLiteral("StoneX")),
+          QStringLiteral("native exchange support payload should include StoneX in general brokers"));
+    check(!jsonArrayContains(
+              stoneXBroker.value(QStringLiteral("supported_forex_brokers")).toArray(),
+              QStringLiteral("StoneX")),
+          QStringLiteral("native exchange support payload must keep StoneX outside forex brokers"));
+    const QJsonObject aiGoldBroker = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("metatrader5"),
+            QStringLiteral("AI Gold Securities"),
+        });
+    check(aiGoldBroker.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept AI Gold MT5 routing"));
+    check(aiGoldBroker.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose AI Gold commodity routing"));
+    check(!aiGoldBroker.value(QStringLiteral("forex_order_routing_supported")).toBool(true),
+          QStringLiteral("native exchange support payload must not claim AI Gold forex routing"));
+    check(aiGoldBroker.value(QStringLiteral("broker_market_scope")).toString()
+              == QStringLiteral("otc-commodity-derivatives"),
+          QStringLiteral("native exchange support payload should retain AI Gold commodity scope"));
+    const QJsonObject citicBroker = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("citic-ctp"),
+            QStringLiteral("CITIC Futures"),
+        });
+    check(citicBroker.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept CITIC Futures CTP routing"));
+    check(citicBroker.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose CITIC Futures order routing"));
+    check(!citicBroker.value(QStringLiteral("forex_order_routing_supported")).toBool(true),
+          QStringLiteral("native exchange support payload must not claim CITIC Futures forex routing"));
+    check(citicBroker.value(QStringLiteral("broker_market_scope")).toString()
+              == QStringLiteral("china-futures-and-options"),
+          QStringLiteral("native exchange support payload should retain CITIC Futures scope"));
+    check(jsonArrayContains(
+              citicBroker.value(QStringLiteral("supported_brokers")).toArray(),
+              QStringLiteral("CITIC Futures")),
+          QStringLiteral("native exchange support payload should include CITIC Futures in general brokers"));
+    check(!jsonArrayContains(
+              citicBroker.value(QStringLiteral("supported_forex_brokers")).toArray(),
+              QStringLiteral("CITIC Futures")),
+          QStringLiteral("native exchange support payload must keep CITIC Futures outside forex brokers"));
     const QJsonObject wrongBrokerBackend = NativeExchangeConnectors::buildExchangeSupportPayload(
         NativeExchangeConnectors::ExchangeSupportInput{
             {},

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .strategy_indicator_order_common_runtime import _indicator_exchange_qty
+from .strategy_order_error_logging import pause_for_order_uncertainty, safe_strategy_log
 
 
 def _build_fallback_indicator_order_request(
@@ -33,28 +34,48 @@ def _build_fallback_indicator_order_request(
             strict_interval=True,
             use_exchange_fallback=False,
         )
-    except Exception:
-        opp_live_qty = 0.0
+    except Exception as exc:
+        pause_for_order_uncertainty(
+            self,
+            f"{symbol}@{interval_current or 'default'} fallback ownership lookup failed: {exc}",
+            reconciliation_required=True,
+        )
+        return None
     if opp_live_qty <= qty_tol_indicator:
         try:
             account_type = str((self.config.get("account_type") or self.binance.account_type)).upper()
-        except Exception:
-            account_type = ""
+        except Exception as exc:
+            pause_for_order_uncertainty(
+                self,
+                f"{symbol}@{interval_current or 'default'} account type lookup failed: {exc}",
+                reconciliation_required=False,
+            )
+            return None
         if account_type == "FUTURES":
             protect_other = False
             try:
                 protect_other = self._symbol_side_has_other_positions(
                     symbol, interval_current, indicator_key, opposite_side
                 )
-            except Exception:
-                protect_other = False
+            except Exception as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{symbol}@{interval_current or 'default'} other-position ownership lookup failed: {exc}",
+                    reconciliation_required=True,
+                )
+                return None
             if not protect_other:
                 desired_ps_check = None
                 try:
                     if self.binance.get_futures_dual_side():
                         desired_ps_check = desired_ps_opposite
-                except Exception:
-                    desired_ps_check = None
+                except Exception as exc:
+                    pause_for_order_uncertainty(
+                        self,
+                        f"{symbol}@{interval_current or 'default'} position mode lookup failed: {exc}",
+                        reconciliation_required=False,
+                    )
+                    return None
                 exch_qty = _indicator_exchange_qty(
                     self,
                     symbol,
@@ -64,18 +85,17 @@ def _build_fallback_indicator_order_request(
                 if exch_qty > qty_tol_indicator:
                     opp_live_qty = exch_qty
     if opp_live_qty > qty_tol_indicator:
-        try:
-            self.log(
-                f"{symbol}@{interval_current or 'default'} {indicator_key} "
-                f"{target_side} skipped: opposite {opposite_side} still open "
-                f"({opp_live_qty:.10f})."
-            )
-            self.log(
-                f"{symbol}@{interval_current or 'default'} {indicator_key} "
-                f"guard=opp_open skip {target_side}."
-            )
-        except Exception:
-            pass
+        safe_strategy_log(
+            self,
+            f"{symbol}@{interval_current or 'default'} {indicator_key} "
+            f"{target_side} skipped: opposite {opposite_side} still open ({opp_live_qty:.10f}).",
+            level="warning",
+        )
+        safe_strategy_log(
+            self,
+            f"{symbol}@{interval_current or 'default'} {indicator_key} guard=opp_open skip {target_side}.",
+            level="warning",
+        )
         return None
     if not hedge_overlap_allowed:
         live_opposite_qty = _indicator_exchange_qty(
@@ -85,13 +105,12 @@ def _build_fallback_indicator_order_request(
             desired_ps_opposite,
         )
         if live_opposite_qty > 0.0:
-            try:
-                self.log(
-                    f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} skipped:"
-                    f" {opposite_side.lower()} leg still live on exchange ({live_opposite_qty:.10f})."
-                )
-            except Exception:
-                pass
+            safe_strategy_log(
+                self,
+                f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} skipped:"
+                f" {opposite_side.lower()} leg still live on exchange ({live_opposite_qty:.10f}).",
+                level="warning",
+            )
             return None
     reentry_remaining = self._reentry_block_remaining(
         symbol,
@@ -100,13 +119,12 @@ def _build_fallback_indicator_order_request(
         now_ts=now_indicator_ts,
     )
     if reentry_remaining > 0.0:
-        try:
-            self.log(
-                f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} suppressed by "
-                f"re-entry guard ({reentry_remaining:.1f}s)."
-            )
-        except Exception:
-            pass
+        safe_strategy_log(
+            self,
+            f"{symbol}@{interval_current or 'default'} {indicator_key} {target_side} suppressed by "
+            f"re-entry guard ({reentry_remaining:.1f}s).",
+            level="warning",
+        )
         return None
     return {
         "side": target_side,

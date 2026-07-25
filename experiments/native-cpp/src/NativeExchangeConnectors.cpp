@@ -103,6 +103,60 @@ QStringList supportedConnectorBackends() {
     return values;
 }
 
+static QStringList supportedBrokers() {
+    QStringList values;
+    for (const std::string_view broker : PythonParityContract::kPythonSupportedBrokers) {
+        values.append(parityString(broker));
+    }
+    return values;
+}
+
+static QStringList supportedForexBrokers() {
+    QStringList values;
+    for (const std::string_view broker : PythonParityContract::kPythonSupportedForexBrokers) {
+        values.append(parityString(broker));
+    }
+    return values;
+}
+
+static QString brokerMarketScope(const QString &broker) {
+    const QString key = supportKey(broker);
+    for (const auto &mapping : PythonParityContract::kPythonBrokerOrderRoutingBackends) {
+        if (supportKey(parityString(mapping.key)) == key) {
+            return parityString(mapping.marketScope);
+        }
+    }
+    return {};
+}
+
+static bool brokerForexOrderRoutingSupported(const QString &broker) {
+    const QString key = supportKey(broker);
+    for (const auto &mapping : PythonParityContract::kPythonBrokerOrderRoutingBackends) {
+        if (supportKey(parityString(mapping.key)) == key) {
+            return mapping.forexOrderRoutingSupported;
+        }
+    }
+    return false;
+}
+
+static QString brokerOrderRoutingBackend(const QString &broker) {
+    const QString key = supportKey(broker);
+    for (const auto &mapping : PythonParityContract::kPythonBrokerOrderRoutingBackends) {
+        if (supportKey(parityString(mapping.key)) == key) {
+            return parityString(mapping.backend);
+        }
+    }
+    return {};
+}
+
+static QJsonObject brokerOrderRoutingBackends() {
+    QJsonObject values;
+    for (const auto &mapping : PythonParityContract::kPythonBrokerOrderRoutingBackends) {
+        values.insert(parityString(mapping.key), parityString(mapping.backend));
+    }
+    return values;
+}
+
 QString ccxtExchangeIdFor(const QString &exchange) {
     const QString key = supportKey(exchange);
     if (key == QStringLiteral("bybit")) return QStringLiteral("bybit");
@@ -152,7 +206,8 @@ QJsonObject buildExchangeSupportPayload(
 
     const QStringList exchanges = supportedExchanges();
     const QStringList backends = supportedConnectorBackends();
-    const QStringList brokers = {QStringLiteral("OANDA"), QStringLiteral("FXCM"), QStringLiteral("IG")};
+    const QStringList brokers = supportedBrokers();
+    const QStringList forexBrokers = supportedForexBrokers();
     const QString exchangeKey = supportKey(selectedExchange);
     const QString backendKey = supportKey(connectorBackend);
     const QString brokerKey = supportKey(selectedForexBroker);
@@ -164,15 +219,11 @@ QJsonObject buildExchangeSupportPayload(
         || containsSupportKey(brokers, selectedForexBroker);
     const bool usesCcxtDiagnostics = !ccxtExchangeId.isEmpty() && backendKey == QStringLiteral("ccxt");
     const bool usesCcxtOrderRouting = usesCcxtDiagnostics;
-    QString expectedBrokerBackend;
-    if (brokerKey == QStringLiteral("oanda")) {
-        expectedBrokerBackend = QStringLiteral("oanda-rest");
-    } else if (brokerKey == QStringLiteral("fxcm")) {
-        expectedBrokerBackend = QStringLiteral("fxcmpy");
-    } else if (brokerKey == QStringLiteral("ig")) {
-        expectedBrokerBackend = QStringLiteral("ig-rest");
-    }
+    const QString expectedBrokerBackend = brokerOrderRoutingBackend(brokerKey);
     const bool usesBrokerOrderRouting = !expectedBrokerBackend.isEmpty() && backendKey == expectedBrokerBackend;
+    const QString brokerScope = brokerMarketScope(selectedForexBroker);
+    const bool forexOrderRoutingSupported = usesBrokerOrderRouting
+        && brokerForexOrderRoutingSupported(selectedForexBroker);
     const bool orderExecutionExchange = exchangeKey == QStringLiteral("binance");
     const bool marketDataSupported = backendSupported
         && ((!usesBroker && brokerSupported && (orderExecutionExchange || usesCcxtDiagnostics))
@@ -195,7 +246,7 @@ QJsonObject buildExchangeSupportPayload(
         reasons.append(QStringLiteral("Connector backend '%1' is not implemented by this runtime.").arg(connectorBackend));
     }
     if (!brokerSupported) {
-        reasons.append(QStringLiteral("Forex broker '%1' is not implemented by this runtime.").arg(selectedForexBroker));
+        reasons.append(QStringLiteral("Broker '%1' is not implemented by this runtime.").arg(selectedForexBroker));
     }
     if (usesBroker && brokerSupported && backendSupported && !usesBrokerOrderRouting) {
         if (!expectedBrokerBackend.isEmpty()) {
@@ -223,6 +274,11 @@ QJsonObject buildExchangeSupportPayload(
                 QStringLiteral("Official live support for exchange '%1' requires a passed connector evidence artifact.")
                     .arg(selectedExchange));
         }
+    }
+    if (usesBrokerOrderRouting && !forexOrderRoutingSupported) {
+        capabilityGaps.append(
+            QStringLiteral("Broker '%1' connector is scoped to %2; forex/CFD order routing is not exposed or claimed by this connector.")
+                .arg(selectedForexBroker, brokerScope));
     }
     QJsonArray exchangeArray;
     for (const QString &exchange : exchanges) {
@@ -255,6 +311,8 @@ QJsonObject buildExchangeSupportPayload(
         {QStringLiteral("exchange_supported"), exchangeSupported},
         {QStringLiteral("connector_backend_supported"), backendSupported},
         {QStringLiteral("broker_supported"), brokerSupported},
+        {QStringLiteral("broker_market_scope"), brokerScope},
+        {QStringLiteral("forex_order_routing_supported"), forexOrderRoutingSupported},
         {QStringLiteral("market_data_supported"), marketDataSupported},
         {QStringLiteral("account_snapshot_supported"), accountSnapshotSupported},
         {QStringLiteral("order_routing_supported"), orderRoutingSupported},
@@ -268,24 +326,13 @@ QJsonObject buildExchangeSupportPayload(
         {QStringLiteral("unsupported_reasons"), reasons},
         {QStringLiteral("supported_exchanges"), exchangeArray},
         {QStringLiteral("supported_connector_backends"), backendArray},
-        {QStringLiteral("supported_forex_brokers"), QJsonArray{
-            QStringLiteral("OANDA"),
-            QStringLiteral("FXCM"),
-            QStringLiteral("IG"),
-        }},
+        {QStringLiteral("supported_brokers"), QJsonArray::fromStringList(brokers)},
+        {QStringLiteral("supported_forex_brokers"), QJsonArray::fromStringList(forexBrokers)},
         {QStringLiteral("ccxt_diagnostic_exchanges"), ccxtDiagnosticArray},
         {QStringLiteral("ccxt_order_routing_exchanges"), ccxtDiagnosticArray},
         {QStringLiteral("order_execution_exchanges"), QJsonArray{QStringLiteral("Binance")}},
-        {QStringLiteral("broker_order_routing_brokers"), QJsonArray{
-            QStringLiteral("OANDA"),
-            QStringLiteral("FXCM"),
-            QStringLiteral("IG"),
-        }},
-        {QStringLiteral("broker_order_routing_backends"), QJsonObject{
-            {QStringLiteral("oanda"), QStringLiteral("oanda-rest")},
-            {QStringLiteral("fxcm"), QStringLiteral("fxcmpy")},
-            {QStringLiteral("ig"), QStringLiteral("ig-rest")},
-        }},
+        {QStringLiteral("broker_order_routing_brokers"), QJsonArray::fromStringList(brokers)},
+        {QStringLiteral("broker_order_routing_backends"), brokerOrderRoutingBackends()},
     };
 }
 

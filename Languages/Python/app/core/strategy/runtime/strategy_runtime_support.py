@@ -1,7 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import time
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _safe_runtime_log(self, message: str) -> None:
+    try:
+        self.log(message)
+    except Exception:
+        _LOGGER.exception("Strategy runtime log callback failed while reporting: %s", message)
 
 
 def _notify_interval_closed(self, symbol: str, interval: str, position_side: str, **extra):
@@ -55,13 +66,15 @@ def _notify_interval_closed(self, symbol: str, interval: str, position_side: str
             if isinstance(reason_val, str) and reason_val.strip():
                 reason_text = f" [{reason_val.replace('_', ' ').strip()}]"
             interval_display = interval or info.get("interval") or "default"
-            self.log(
+            _safe_runtime_log(
+                self,
                 f"{symbol}@{interval_display} CLOSE {position_side}: "
                 f"{', '.join(log_parts)} (context={indicator_label}){reason_text}."
             )
         self.trade_cb(info)
     except Exception:
-        pass
+        _LOGGER.exception("Close-event callback failed for %s@%s", symbol, interval)
+        raise
 
 
 def _queue_flip_on_close(
@@ -82,9 +95,9 @@ def _queue_flip_on_close(
         return
     interval_raw = str(interval or "").strip()
     interval_tokens = [
-        token
-        for token in self._tokenize_interval_label(interval_raw)
-        if token and token != "-"
+        segment
+        for segment in self._tokenize_interval_label(interval_raw)
+        if segment and segment != "-"
     ]
     if not interval_tokens:
         interval_tokens = [interval_raw.lower() or "default"]
@@ -123,26 +136,24 @@ def _queue_flip_on_close(
                 "event_id": event_id,
                 "ts": now_ts,
             }
-            try:
-                qty_display = f"{qty:.10f}" if isinstance(qty, (int, float)) else str(qty)
-                symbol_label = str(self.config.get("symbol") or "").upper()
-                if not symbol_label:
-                    symbols = self.config.get("symbols") or []
-                    symbol_label = str(symbols[0] if symbols else "").upper()
-                symbol_label = symbol_label or "SYMBOL"
-                reason_val = ""
-                if isinstance(payload, dict):
-                    reason_val = str(payload.get("reason") or "").strip()
-                if not reason_val and isinstance(entry, dict):
-                    reason_val = str(entry.get("reason") or "").strip()
-                if not reason_val:
-                    reason_val = "unspecified"
-                self.log(
-                    f"{symbol_label}@{interval_key} flip-on-close queued: "
-                    f"{indicator_key} {closed_norm}->{open_side} qty={qty_display} reason={reason_val}."
-                )
-            except Exception:
-                pass
+            qty_display = f"{qty:.10f}" if isinstance(qty, (int, float)) else str(qty)
+            symbol_label = str(self.config.get("symbol") or "").upper()
+            if not symbol_label:
+                symbols = self.config.get("symbols") or []
+                symbol_label = str(symbols[0] if symbols else "").upper()
+            symbol_label = symbol_label or "SYMBOL"
+            reason_val = ""
+            if isinstance(payload, dict):
+                reason_val = str(payload.get("reason") or "").strip()
+            if not reason_val and isinstance(entry, dict):
+                reason_val = str(entry.get("reason") or "").strip()
+            if not reason_val:
+                reason_val = "unspecified"
+            _safe_runtime_log(
+                self,
+                f"{symbol_label}@{interval_key} flip-on-close queued: "
+                f"{indicator_key} {closed_norm}->{open_side} qty={qty_display} reason={reason_val}.",
+            )
 
 
 def _drain_flip_on_close_requests(self, interval: str | None) -> list[dict[str, object]]:
@@ -183,13 +194,11 @@ def _log_latency_metric(self, symbol: str, interval: str, label: str, latency_se
         latency_seconds = max(0.0, float(latency_seconds))
     except Exception:
         latency_seconds = 0.0
-    try:
-        self.log(
-            f"{symbol}@{interval} {label} signal->order latency: "
-            f"{latency_seconds * 1000.0:.0f} ms ({latency_seconds:.3f}s)."
-        )
-    except Exception:
-        pass
+    _safe_runtime_log(
+        self,
+        f"{symbol}@{interval} {label} signal->order latency: "
+        f"{latency_seconds * 1000.0:.0f} ms ({latency_seconds:.3f}s).",
+    )
 
 
 def _order_field(order_res, *names):
@@ -403,8 +412,8 @@ def _interval_seconds_value(interval_value: str | None) -> float:
             return float(int(text[:-1]) * 3600)
         if text.endswith("d"):
             return float(int(text[:-1]) * 86400)
-    except Exception:
-        pass
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 60.0
     return 60.0
 
 

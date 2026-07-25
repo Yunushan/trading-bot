@@ -6,6 +6,8 @@ import time
 
 import requests
 
+from ..runtime_diagnostics import report_runtime_fallback
+
 
 def close_all_spot_positions(self):
     results = []
@@ -176,8 +178,8 @@ def trigger_emergency_close_all(
                 self._network_emergency_dispatched = False
                 self._network_offline_hits = 0
                 self._network_offline_since = time.time()
-            except Exception:
-                pass
+            except Exception as exc:
+                report_runtime_fallback(self, "Emergency close network-state reset failed", exc)
 
         thread = threading.Thread(target=_worker, name="EmergencyCloseAll", daemon=True)
         self._emergency_closer_thread = thread
@@ -206,7 +208,8 @@ def get_last_price(self, symbol: str, *, max_age: float = 5.0) -> float:
         else:
             ticker = self.client.get_symbol_ticker(symbol=sym)
             price = float(ticker.get("price", 0.0))
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, f"Price lookup failed for {sym}", exc)
         price = 0.0
     if price <= 0.0 and self.account_type != "FUTURES" and sym:
         try:
@@ -215,8 +218,8 @@ def get_last_price(self, symbol: str, *, max_age: float = 5.0) -> float:
                 data = resp.json()
                 if isinstance(data, dict):
                     price = float(data.get("price") or 0.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, f"Spot price HTTP fallback failed for {sym}", exc)
     if cache is not None and sym and price:
         cache[sym] = (price, time.time())
     return price
@@ -253,14 +256,14 @@ def _handle_network_offline(self, context: str, exc: Exception) -> None:
                     f"Emergency close-all triggered after {hits} offline hits (elapsed {elapsed:.1f}s).",
                     lvl="warn",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                report_runtime_fallback(self, "Emergency offline-close notification failed", exc)
             delay = min(180.0, max(30.0, elapsed))
             self._network_emergency_dispatched = True
             reason = context or "network_offline"
             self.trigger_emergency_close_all(reason=reason, source="network", initial_delay=delay)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Network-offline state handling failed", exc, level="error")
 
 
 def _handle_network_recovered(self) -> None:
@@ -271,8 +274,8 @@ def _handle_network_recovered(self) -> None:
         self._network_emergency_dispatched = False
         try:
             self._log("Network connectivity restored.", lvl="info")
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, "Network recovery notification failed", exc)
 
 
 def bind_binance_operational_runtime(wrapper_cls) -> None:

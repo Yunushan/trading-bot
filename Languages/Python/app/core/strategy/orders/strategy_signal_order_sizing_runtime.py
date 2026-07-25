@@ -159,13 +159,22 @@ def _prepare_futures_signal_order_state(
         return cast(dict[str, object], margin_state)
 
     try:
-        lev = int(margin_state.get("lev") or lev)
-    except Exception:
-        pass
+        approved_lev = int(margin_state.get("lev"))
+    except (TypeError, ValueError, OverflowError):
+        self.log(f"{cw['symbol']}@{cw.get('interval')} sizing blocked: margin gate returned invalid leverage.")
+        return _abort()
+    if approved_lev <= 0:
+        self.log(f"{cw['symbol']}@{cw.get('interval')} sizing blocked: margin gate returned invalid leverage.")
+        return _abort()
+    lev = approved_lev
     try:
-        qty_est = float(margin_state.get("qty_est") or 0.0)
-    except Exception:
-        qty_est = 0.0
+        qty_est = float(margin_state.get("qty_est"))
+    except (TypeError, ValueError, OverflowError):
+        self.log(f"{cw['symbol']}@{cw.get('interval')} sizing blocked: margin gate returned invalid quantity.")
+        return _abort()
+    if not math.isfinite(qty_est) or qty_est <= 0.0:
+        self.log(f"{cw['symbol']}@{cw.get('interval')} sizing blocked: margin gate returned invalid quantity.")
+        return _abort()
     reduce_only = bool(margin_state.get("reduce_only"))
     desired_ps = margin_state.get("desired_ps")
 

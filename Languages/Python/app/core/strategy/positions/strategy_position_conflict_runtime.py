@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .close_execution import _safe_log
+
 
 def _resolve_indicator_conflicts(
     self,
@@ -21,8 +23,8 @@ def _resolve_indicator_conflicts(
     if account_type == "FUTURES":
         try:
             dual_side = bool(self.binance.get_futures_dual_side())
-        except Exception:
-            dual_side = False
+        except Exception as exc:
+            raise RuntimeError("indicator conflict resolution could not verify position mode") from exc
     desired_ps_opposite = None
     desired_ps_current = None
     if dual_side:
@@ -34,14 +36,13 @@ def _resolve_indicator_conflicts(
         if not conflicts:
             continue
         conflict_found = True
-        try:
-            self.log(
-                f"{symbol}@{interval or 'default'} conflict: {indicator_key} has active {opposite_side} leg while opening {side_norm}. "
-                "Forcing additional close."
-            )
-        except Exception:
-            pass
+        _safe_log(
+            self,
+            f"{symbol}@{interval or 'default'} conflict: {indicator_key} has active {opposite_side} "
+            f"leg while opening {side_norm}. Forcing additional close.",
+        )
         for conflict_leg_key, conflict_entry in conflicts:
+            close_error: Exception | None = None
             try:
                 self._close_leg_entry(
                     cw_stub,
@@ -55,20 +56,25 @@ def _resolve_indicator_conflicts(
                     margin_pct=0.0,
                     queue_flip=False,
                 )
-            except Exception:
+            except Exception as exc:
+                close_error = exc
+            if close_error is not None:
+                _safe_log(
+                    self,
+                    f"{symbol}@{interval or 'default'} failed to close conflicting "
+                    f"{opposite_side} leg: {close_error}",
+                )
                 continue
     if conflict_found:
         # After forcing opposite closes, re-check. If still conflicting, drop the newly opened leg.
         for indicator_key in indicator_keys:
             residual = self._iter_indicator_entries(symbol, interval, indicator_key, opposite_side)
             if residual:
-                try:
-                    self.log(
-                        f"{symbol}@{interval or 'default'} conflict persists for {indicator_key}; "
-                        f"closing newly opened {side_norm} leg to avoid overlap."
-                    )
-                except Exception:
-                    pass
+                _safe_log(
+                    self,
+                    f"{symbol}@{interval or 'default'} conflict persists for {indicator_key}; "
+                    f"closing newly opened {side_norm} leg to avoid overlap.",
+                )
                 self._close_leg_entry(
                     cw_stub,
                     leg_key,

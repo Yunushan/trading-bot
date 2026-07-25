@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import math
 import time
 
 try:
+    from . import strategy_indicator_order_common_runtime
     from . import strategy_order_error_logging
     from . import strategy_signal_order_guard_runtime
     from . import strategy_signal_order_result_runtime
     from . import strategy_signal_order_sizing_runtime
     from . import strategy_signal_order_submit_runtime
 except ImportError:  # pragma: no cover - standalone execution fallback
+    import strategy_indicator_order_common_runtime  # type: ignore[no-redef]
     import strategy_order_error_logging  # type: ignore[no-redef]
     import strategy_signal_order_guard_runtime  # type: ignore[no-redef]
     import strategy_signal_order_result_runtime  # type: ignore[no-redef]
@@ -56,27 +59,48 @@ def _execute_signal_order(
         flip_from_norm = str(flip_from_side or "").upper()
         try:
             flip_qty_val = float(flip_qty or 0.0)
-        except Exception:
-            flip_qty_val = 0.0
+        except (TypeError, ValueError, OverflowError) as exc:
+            strategy_order_error_logging.pause_for_order_uncertainty(
+                self,
+                f"{cw['symbol']}@{interval_norm or 'default'} flip quantity is invalid: {exc}",
+                reconciliation_required=True,
+            )
+            return
         try:
             flip_qty_target_val = float(
                 flip_qty_target if flip_qty_target is not None else (flip_qty or 0.0)
             )
-        except Exception:
-            flip_qty_target_val = 0.0
+        except (TypeError, ValueError, OverflowError) as exc:
+            strategy_order_error_logging.pause_for_order_uncertainty(
+                self,
+                f"{cw['symbol']}@{interval_norm or 'default'} flip target quantity is invalid: {exc}",
+                reconciliation_required=True,
+            )
+            return
+        if (
+            not math.isfinite(flip_qty_val)
+            or flip_qty_val < 0.0
+            or not math.isfinite(flip_qty_target_val)
+            or flip_qty_target_val < 0.0
+        ):
+            strategy_order_error_logging.pause_for_order_uncertainty(
+                self,
+                f"{cw['symbol']}@{interval_norm or 'default'} flip quantities must be finite and nonnegative",
+                reconciliation_required=True,
+            )
+            return
         flip_active = flip_from_norm in ("BUY", "SELL") and flip_from_norm != side
         flip_close_qty = 0.0
         if flip_active:
             if flip_qty_target_val > 0.0:
                 flip_close_qty = flip_qty_target_val
             if flip_qty_val > 0.0:
-                try:
-                    self.log(
-                        f"{cw['symbol']}@{interval_norm or 'default'} flip {flip_from_norm}→{side} "
-                        f"request (qty {flip_qty_val:.10f})."
-                    )
-                except Exception:
-                    pass
+                strategy_order_error_logging.safe_strategy_log(
+                    self,
+                    f"{cw['symbol']}@{interval_norm or 'default'} flip {flip_from_norm}→{side} "
+                    f"request (qty {flip_qty_val:.10f}).",
+                    level="warning",
+                )
         current_batch_index = order_batch_counter
         order_batch_counter += 1
         try:
@@ -229,34 +253,39 @@ def _execute_signal_order(
                         desired_ps_check = None
                         if self.binance.get_futures_dual_side():
                             desired_ps_check = "LONG" if side == "BUY" else "SHORT"
-                        exch_qty = max(
-                            0.0,
-                            float(self._current_futures_position_qty(cw["symbol"], side, desired_ps_check) or 0.0),
+                        exch_qty = strategy_indicator_order_common_runtime._indicator_exchange_qty(
+                            self,
+                            cw["symbol"],
+                            side,
+                            desired_ps_check,
                         )
                     except Exception:
-                        exch_qty = 0.0
+                        return
                     if exch_qty <= qty_tol_slot_guard:
                         try:
                             self._purge_indicator_tracking(cw["symbol"], interval_norm, slot_indicator_token, side)
-                        except Exception:
-                            pass
-                    else:
-                        try:
-                            self.log(
-                                f"{cw['symbol']}@{interval_norm or 'default'} {slot_indicator_token} {side} blocked: "
-                                f"slot still open on exchange ({exch_qty:.10f})."
+                        except Exception as exc:
+                            strategy_order_error_logging.pause_for_order_uncertainty(
+                                self,
+                                f"{cw['symbol']}@{interval_norm or 'default'} stale slot tracking purge failed: {exc}",
+                                reconciliation_required=True,
                             )
-                        except Exception:
-                            pass
+                            return
+                    else:
+                        strategy_order_error_logging.safe_strategy_log(
+                            self,
+                            f"{cw['symbol']}@{interval_norm or 'default'} {slot_indicator_token} {side} blocked: "
+                            f"slot still open on exchange ({exch_qty:.10f}).",
+                            level="warning",
+                        )
                         return
                 else:
-                    try:
-                        self.log(
-                            f"{cw['symbol']}@{interval_norm or 'default'} {slot_indicator_token} {side} blocked: slot already active "
-                            f"(tracked qty {slot_qty_guard:.10f})."
-                        )
-                    except Exception:
-                        pass
+                    strategy_order_error_logging.safe_strategy_log(
+                        self,
+                        f"{cw['symbol']}@{interval_norm or 'default'} {slot_indicator_token} {side} blocked: "
+                        f"slot already active (tracked qty {slot_qty_guard:.10f}).",
+                        level="warning",
+                    )
                     return
 
         guard_state = self._prepare_signal_order_guard(

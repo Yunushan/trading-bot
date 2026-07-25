@@ -70,8 +70,8 @@ def _interval_to_seconds(iv: str) -> int:
             return int(iv[:-1]) * 3600
         if iv.endswith('d'):
             return int(iv[:-1]) * 86400
-    except Exception:
-        pass
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 60
     return 60
 
 
@@ -164,6 +164,8 @@ class StrategyEngine:
     _MAX_ACTIVE = _MAX_PARALLEL_RUNS
     _GLOBAL_SHUTDOWN = threading.Event()
     _GLOBAL_PAUSE = threading.Event()
+    _GLOBAL_SHUTDOWN_FALLBACK = False
+    _GLOBAL_PAUSE_FALLBACK = False
     _ORDER_THROTTLE_LOCK = threading.Lock()
     _ORDER_LAST_TS = 0.0
     _ORDER_MIN_SPACING = 0.35  # seconds between order submissions by default
@@ -181,8 +183,8 @@ class StrategyEngine:
         if job_count is not None:
             try:
                 limit = min(limit, max(1, int(job_count)))
-            except Exception:
-                pass
+            except (TypeError, ValueError, OverflowError):
+                return limit
         return limit
 
     @classmethod
@@ -247,6 +249,7 @@ class StrategyEngine:
             operational_snapshot_callback if callable(operational_snapshot_callback) else None
         )
         self._leg_ledger = {}
+        self._ledger_reconciliation_required = False
         self._last_order_time = {}  # (symbol, interval, side)->{'qty': float, 'timestamp': float}
         self._last_bar_key = set()  # prevent multi entries within same bar per (symbol, interval, side)
         self._bar_order_tracker: dict[tuple[str, str, str], dict[str, object]] = {}

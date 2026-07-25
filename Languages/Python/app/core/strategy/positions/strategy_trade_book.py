@@ -1,7 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import math
 import time
+
+
+def _nonnegative_float(value: object, *, field: str) -> float:
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field} must be numeric") from exc
+    if not math.isfinite(number) or number < 0.0:
+        raise ValueError(f"{field} must be finite and nonnegative")
+    return number
 
 
 def _side_token(side: str | None) -> str:
@@ -55,25 +66,25 @@ def _trade_book_add_entry(
     key = self._trade_book_key(symbol, interval, indicator_key, side)
     if not key:
         return
-    try:
-        qty_val = max(0.0, float(qty or 0.0))
-    except Exception:
-        qty_val = 0.0
+    qty_val = _nonnegative_float(qty, field="trade-book quantity")
     if qty_val <= 0.0:
         return
     meta = {
         "ledger_id": ledger_id,
         "qty": qty_val,
-        "timestamp": float(entry.get("timestamp") or time.time()),
+        "timestamp": _nonnegative_float(
+            entry.get("timestamp") or time.time(),
+            field="trade-book timestamp",
+        ),
     }
-    try:
-        meta["entry_price"] = float(entry.get("entry_price") or 0.0)
-    except Exception:
-        pass
-    try:
-        meta["margin_usdt"] = float(entry.get("margin_usdt") or 0.0)
-    except Exception:
-        pass
+    meta["entry_price"] = _nonnegative_float(
+        entry.get("entry_price"),
+        field="trade-book entry price",
+    )
+    meta["margin_usdt"] = _nonnegative_float(
+        entry.get("margin_usdt"),
+        field="trade-book margin",
+    )
     with self._trade_book_lock:
         bucket = self._trade_book.setdefault(key, {})
         bucket[ledger_id] = meta
@@ -187,10 +198,7 @@ def _trade_book_update_qty(
             return
         meta = bucket.get(ledger_id)
         if isinstance(meta, dict):
-            try:
-                meta["qty"] = max(0.0, float(qty or 0.0))
-            except Exception:
-                meta["qty"] = 0.0
+            meta["qty"] = _nonnegative_float(qty, field="trade-book updated quantity")
 
 
 def _trade_book_entries(
@@ -234,10 +242,9 @@ def _trade_book_total_qty(
             return None
         total = 0.0
         for meta in bucket.values():
-            try:
-                total += max(0.0, float(meta.get("qty") or 0.0))
-            except Exception:
-                continue
+            if not isinstance(meta, dict):
+                raise RuntimeError("trade-book entry metadata is not an object")
+            total += _nonnegative_float(meta.get("qty"), field="trade-book quantity")
         return total
 
 
@@ -254,10 +261,7 @@ def _indicator_trade_book_qty(
     entries = self._trade_book_entries(symbol, interval, key, side)
     total = 0.0
     for meta in entries:
-        try:
-            total += max(0.0, float(meta.get("qty") or 0.0))
-        except Exception:
-            continue
+        total += _nonnegative_float(meta.get("qty"), field="indicator trade-book quantity")
     return total
 
 
@@ -276,11 +280,10 @@ def _trade_book_has_entries(
         if not bucket:
             return False
         for meta in bucket.values():
-            try:
-                if max(0.0, float(meta.get("qty") or 0.0)) > 0.0:
-                    return True
-            except Exception:
-                continue
+            if not isinstance(meta, dict):
+                raise RuntimeError("trade-book entry metadata is not an object")
+            if _nonnegative_float(meta.get("qty"), field="trade-book quantity") > 0.0:
+                return True
     return False
 
 
@@ -326,10 +329,7 @@ def _symbol_side_has_other_positions(
             continue
         leg_interval_norm = str(leg_interval or "").strip().lower()
         for entry in entries:
-            try:
-                qty_val = max(0.0, float(entry.get("qty") or 0.0))
-            except Exception:
-                qty_val = 0.0
+            qty_val = _nonnegative_float(entry.get("qty"), field="ledger entry quantity")
             if qty_val <= qty_tol:
                 continue
             entry_keys = self._extract_indicator_keys(entry)
@@ -344,10 +344,9 @@ def _symbol_side_has_other_positions(
             if indicator_norm and interval_key == interval_norm_key and ind_key == indicator_norm:
                 continue
             for meta in (bucket or {}).values():
-                try:
-                    qty_val = max(0.0, float((meta or {}).get("qty") or 0.0))
-                except Exception:
-                    qty_val = 0.0
+                if not isinstance(meta, dict):
+                    raise RuntimeError("trade-book entry metadata is not an object")
+                qty_val = _nonnegative_float(meta.get("qty"), field="trade-book quantity")
                 if qty_val > qty_tol:
                     return True
     return False
@@ -389,34 +388,28 @@ def _iter_indicator_entries(
         return []
     matches: list[tuple[tuple[str, str, str], dict]] = []
     for (leg_sym, leg_iv, leg_side), _ in list(self._leg_ledger.items()):
-        try:
-            if str(leg_sym or "").upper() != sym_norm:
-                continue
-            leg_tokens = self._tokenize_interval_label(leg_iv)
-            if target_tokens != {"-"} and leg_tokens.isdisjoint(target_tokens):
-                continue
-            leg_side_norm = _side_token(leg_side)
-            if leg_side_norm != side_norm:
-                continue
-            entries = self._leg_entries((leg_sym, leg_iv, leg_side))
-            if not entries:
-                continue
-            for entry in entries:
-                try:
-                    qty_val = max(0.0, float(entry.get("qty") or 0.0))
-                except Exception:
-                    qty_val = 0.0
-                if qty_val <= 0.0:
-                    continue
-                sig_tuple = self._normalize_signature_tuple(
-                    entry.get("trigger_signature") or entry.get("trigger_indicators")
-                )
-                if not sig_tuple:
-                    continue
-                if indicator_norm in sig_tuple:
-                    matches.append(((leg_sym, leg_iv, leg_side), entry))
-        except Exception:
+        if str(leg_sym or "").upper() != sym_norm:
             continue
+        leg_tokens = self._tokenize_interval_label(leg_iv)
+        if target_tokens != {"-"} and leg_tokens.isdisjoint(target_tokens):
+            continue
+        leg_side_norm = _side_token(leg_side)
+        if leg_side_norm != side_norm:
+            continue
+        entries = self._leg_entries((leg_sym, leg_iv, leg_side))
+        if not entries:
+            continue
+        for entry in entries:
+            qty_val = _nonnegative_float(entry.get("qty"), field="indicator ledger quantity")
+            if qty_val <= 0.0:
+                continue
+            sig_tuple = self._normalize_signature_tuple(
+                entry.get("trigger_signature") or entry.get("trigger_indicators")
+            )
+            if not sig_tuple:
+                continue
+            if indicator_norm in sig_tuple:
+                matches.append(((leg_sym, leg_iv, leg_side), entry))
     return matches
 
 
@@ -442,17 +435,11 @@ def _indicator_open_qty(
     if qty_from_book is not None and qty_from_book > 0.0:
         return qty_from_book
     total = 0.0
-    try:
-        for (_, leg_iv, _), entry in self._iter_indicator_entries(symbol, interval, indicator_lookup_key, side):
-            leg_tokens = self._tokenize_interval_label(leg_iv)
-            if target_tokens and target_tokens != {"-"} and leg_tokens.isdisjoint(target_tokens):
-                continue
-            try:
-                total += max(0.0, float(entry.get("qty") or 0.0))
-            except Exception:
-                continue
-    except Exception:
-        return 0.0
+    for (_, leg_iv, _), entry in self._iter_indicator_entries(symbol, interval, indicator_lookup_key, side):
+        leg_tokens = self._tokenize_interval_label(leg_iv)
+        if target_tokens and target_tokens != {"-"} and leg_tokens.isdisjoint(target_tokens):
+            continue
+        total += _nonnegative_float(entry.get("qty"), field="indicator open quantity")
     if qty_from_book is not None:
         return max(total, qty_from_book)
     return total
@@ -484,13 +471,13 @@ def _indicator_live_qty_total(
         return qty
     if not use_exchange_fallback:
         return 0.0
-    try:
-        desired_ps = None
-        if self.binance.get_futures_dual_side():
-            desired_ps = "LONG" if side.upper() == "BUY" else "SHORT"
-        qty = max(0.0, float(self._current_futures_position_qty(symbol, side, desired_ps) or 0.0))
-    except Exception:
-        qty = 0.0
+    desired_ps = None
+    if self.binance.get_futures_dual_side():
+        desired_ps = "LONG" if side.upper() == "BUY" else "SHORT"
+    position_qty = self._current_futures_position_qty(symbol, side, desired_ps)
+    if position_qty is None:
+        raise RuntimeError("exchange position quantity is unavailable")
+    qty = _nonnegative_float(position_qty, field="exchange position quantity")
     return qty
 
 

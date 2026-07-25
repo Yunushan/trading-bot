@@ -7,7 +7,9 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Mapping
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,7 +44,7 @@ SERVICE_CONFIG_ENV_PATH = "BOT_SERVICE_CONFIG_PATH"
 SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV = "BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS"
 SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV = "BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH"
 DEFAULT_SERVICE_CONFIG_PATH = Path("~/.trading-bot/service-config.json")
-SECRET_STORAGE_WARNING = (
+CREDENTIAL_STORAGE_WARNING = (
     "Secret values are redacted from this JSON config. Supply credentials through "
     "environment variables or OS credential storage."
 )
@@ -160,7 +162,7 @@ def service_config_secret_metadata(config: Mapping[str, object] | None) -> dict[
         "contains_secrets": bool(fields),
         "secret_fields": list(fields),
         "secret_storage": "redacted-json-config",
-        "secret_storage_warning": SECRET_STORAGE_WARNING if fields else "",
+        "secret_storage_warning": CREDENTIAL_STORAGE_WARNING if fields else "",
     }
 
 
@@ -335,13 +337,28 @@ def write_service_config_file(
     payload.update(secret_metadata)
     payload.update(credential_metadata)
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = resolved_path.with_name(f".{resolved_path.name}.tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    tmp_path.replace(resolved_path)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=resolved_path.parent,
+            prefix=f".{resolved_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            os.chmod(tmp_path, 0o600)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(resolved_path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            with suppress(OSError):
+                tmp_path.unlink()
     try:
         directory_fd = os.open(resolved_path.parent, os.O_RDONLY)
         try:
@@ -350,10 +367,6 @@ def write_service_config_file(
             os.close(directory_fd)
     except OSError:
         # Windows and some network filesystems do not support directory fsync.
-        pass
-    try:
-        os.chmod(resolved_path, 0o600)
-    except Exception:
         pass
     metadata = {
         "path": str(resolved_path),

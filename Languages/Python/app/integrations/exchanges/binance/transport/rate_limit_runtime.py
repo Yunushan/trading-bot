@@ -4,6 +4,7 @@ import re
 import time
 import types
 
+from ..runtime_diagnostics import report_runtime_fallback
 from .helpers import _SimpleRateLimiter
 
 
@@ -32,12 +33,14 @@ def _throttle_request(self, path: str | None) -> None:
         return
     try:
         weight = self._estimate_request_weight(path)
-    except Exception:
-        weight = 1.0
+    except Exception as exc:
+        report_runtime_fallback(self, f"Request weight estimation failed for {path}", exc)
+        weight = 10.0
     try:
         limiter.acquire(weight)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, f"Request limiter acquisition failed for {path}", exc, level="error")
+        raise RuntimeError("exchange request blocked because rate limiting failed") from exc
 
 
 def _environment_tag(mode_value: str | None) -> str:
@@ -74,7 +77,8 @@ def _acquire_rate_limiter(cls, key: str, settings: dict) -> _SimpleRateLimiter:
 def _ban_key(self) -> str:
     try:
         return getattr(self, "_limiter_key", None) or "global"
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Rate-limit key lookup failed", exc)
         return "global"
 
 
@@ -173,8 +177,8 @@ def _handle_potential_ban(self, exc) -> float | None:
         limiter = getattr(self, "_request_limiter", None)
         if limiter is not None:
             limiter.pause_for(remaining + 3.0)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Rate limiter pause failed after exchange ban", exc)
     return until
 
 
@@ -218,8 +222,8 @@ def _apply_http_backoff(
         limiter = getattr(self, "_request_limiter", None)
         if limiter is not None:
             limiter.pause_for(remaining + 3.0)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Rate limiter pause failed after HTTP backoff", exc)
     return until
 
 

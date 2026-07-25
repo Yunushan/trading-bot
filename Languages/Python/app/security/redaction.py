@@ -23,7 +23,7 @@ _SENSITIVE_KEY_PARTS = (
 )
 _SAFE_SENSITIVE_KEY_SUFFIXES = ("env", "environment", "present")
 
-_SECRET_WORD = (
+_SENSITIVE_WORD = (
     r"x-mbx-apikey|api[_-]?key|api[_-]?secret|llm[_-]?api[_-]?key|"
     r"access[_-]?token|refresh[_-]?token|token|secret|signature|password|passphrase|private[_-]?key"
 )
@@ -31,7 +31,7 @@ _AUTH_HEADER_RE = re.compile(
     r"(?i)(['\"]?\bauthorization\b['\"]?\s*[:=]\s*)(bearer\s+)?([^\s,;&}]+)"
 )
 _SECRET_ASSIGNMENT_RE = re.compile(
-    rf"(?i)(['\"]?\b(?:{_SECRET_WORD})\b['\"]?\s*[:=]\s*)(['\"]?)([^'\"\s,;&}}]+)(\2)"
+    rf"(?i)(['\"]?\b(?:{_SENSITIVE_WORD})\b['\"]?\s*[:=]\s*)(['\"]?)([^'\"\s,;&}}]+)(\2)"
 )
 _BARE_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 

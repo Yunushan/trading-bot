@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .close_execution import _pause_for_close_uncertainty, _safe_log
 from .strategy_close_opposite_common_runtime import _goal_met, _reduce_goal
 
 
@@ -35,15 +36,20 @@ def _close_symbol_level_positions(self, state: dict[str, object]) -> bool:
                     position_side_flag if dual else None,
                 )
                 if not success:
-                    self.log(f"{symbol}@{interval} close-short failed: {res}")
+                    _safe_log(self, f"{symbol}@{interval} close-short failed: {res}")
                     return False
-                payload = self._build_close_event_payload(symbol, interval, "SELL", qty, res)
-                self._notify_interval_closed(symbol, interval, "SELL", **payload)
                 try:
+                    payload = self._build_close_event_payload(symbol, interval, "SELL", qty, res)
+                    self._notify_interval_closed(symbol, interval, "SELL", **payload)
                     self._mark_guard_closed(symbol, interval, "SELL")
                     self._purge_indicator_tracking(symbol, interval, None, "SELL")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _pause_for_close_uncertainty(
+                        self,
+                        f"{symbol}@{interval} confirmed short close could not update local state: {exc}",
+                        reconciliation_required=True,
+                    )
+                    return False
                 state["closed_any"] = True
                 _reduce_goal(state, qty)
                 if _goal_met(state):
@@ -61,20 +67,29 @@ def _close_symbol_level_positions(self, state: dict[str, object]) -> bool:
                     position_side_flag if dual else None,
                 )
                 if not success:
-                    self.log(f"{symbol}@{interval} close-long failed: {res}")
+                    _safe_log(self, f"{symbol}@{interval} close-long failed: {res}")
                     return False
-                payload = self._build_close_event_payload(symbol, interval, "BUY", qty, res)
-                self._notify_interval_closed(symbol, interval, "BUY", **payload)
                 try:
+                    payload = self._build_close_event_payload(symbol, interval, "BUY", qty, res)
+                    self._notify_interval_closed(symbol, interval, "BUY", **payload)
                     self._mark_guard_closed(symbol, interval, "BUY")
                     self._purge_indicator_tracking(symbol, interval, None, "BUY")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _pause_for_close_uncertainty(
+                        self,
+                        f"{symbol}@{interval} confirmed long close could not update local state: {exc}",
+                        reconciliation_required=True,
+                    )
+                    return False
                 state["closed_any"] = True
                 _reduce_goal(state, qty)
                 if _goal_met(state):
                     break
         except Exception as exc:
-            self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
+            _pause_for_close_uncertainty(
+                self,
+                f"{symbol}@{interval} close-opposite execution failed: {exc}",
+                reconciliation_required=True,
+            )
             return False
     return True

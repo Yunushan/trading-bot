@@ -24,48 +24,16 @@ from app.core.backtest.models import BacktestRequest, IndicatorDefinition  # noq
 import pandas as pd  # noqa: E402
 
 
-RUST_OUTPUT = (
-    REPO_ROOT
-    / "experiments"
-    / "rust-shells"
-    / "crates"
-    / "core"
-    / "src"
-    / "generated_python_parity.rs"
-)
+RUST_OUTPUT = REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "generated_python_parity.rs"
 RUST_INDICATOR_REFERENCE_OUTPUT = (
-    REPO_ROOT
-    / "experiments"
-    / "rust-shells"
-    / "crates"
-    / "core"
-    / "src"
-    / "generated_python_indicator_reference.rs"
+    REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "generated_python_indicator_reference.rs"
 )
-CPP_OUTPUT = (
-    REPO_ROOT
-    / "experiments"
-    / "native-cpp"
-    / "src"
-    / "generated"
-    / "PythonParityContract.h"
-)
+CPP_OUTPUT = REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonParityContract.h"
 CPP_INDICATOR_REFERENCE_OUTPUT = (
-    REPO_ROOT
-    / "experiments"
-    / "native-cpp"
-    / "src"
-    / "generated"
-    / "PythonIndicatorReference.h"
+    REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonIndicatorReference.h"
 )
 TAURI_BROWSER_OUTPUT = (
-    REPO_ROOT
-    / "experiments"
-    / "rust-shells"
-    / "apps"
-    / "tauri-desktop"
-    / "ui"
-    / "generated-python-parity.js"
+    REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "generated-python-parity.js"
 )
 
 INDICATOR_REFERENCE_DECIMAL_PLACES = 12
@@ -119,10 +87,7 @@ def _cpp_string_chunks(value: object, chunk_size: int = 6000) -> str:
     text = str(value)
     if not text:
         return _cpp_string(text)
-    return "\n    ".join(
-        _cpp_string(text[offset : offset + chunk_size])
-        for offset in range(0, len(text), chunk_size)
-    )
+    return "\n    ".join(_cpp_string(text[offset : offset + chunk_size]) for offset in range(0, len(text), chunk_size))
 
 
 def _rust_array(name: str, values: list[str]) -> str:
@@ -135,6 +100,47 @@ def _rust_array(name: str, values: list[str]) -> str:
 def _cpp_array(name: str, values: list[str]) -> str:
     lines = [f"inline constexpr std::array<std::string_view, {len(values)}> {name} = {{"]
     lines.extend(f"    {_cpp_string(value)}," for value in values)
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _rust_broker_order_routing_backends(values: list[dict[str, object]]) -> str:
+    lines = ["pub const PYTHON_BROKER_ORDER_ROUTING_BACKENDS: &[(&str, &str, &str, bool)] = &["]
+    for value in values:
+        lines.append(
+            "    ("
+            f"{_rust_string(value['key'])}, {_rust_string(value['backend'])}, "
+            f"{_rust_string(value['market_scope'])}, "
+            f"{_rust_bool(value['forex_order_routing_supported'])}"
+            "),"
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _cpp_broker_order_routing_backends(values: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonBrokerOrderRoutingBackend {",
+        "    std::string_view broker;",
+        "    std::string_view key;",
+        "    std::string_view backend;",
+        "    std::string_view marketScope;",
+        "    bool forexOrderRoutingSupported;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonBrokerOrderRoutingBackend, "
+            f"{len(values)}> kPythonBrokerOrderRoutingBackends = {{"
+        ),
+    ]
+    for value in values:
+        lines.append(
+            "    PythonBrokerOrderRoutingBackend{"
+            f"{_cpp_string(value['broker'])}, {_cpp_string(value['key'])}, "
+            f"{_cpp_string(value['backend'])}, {_cpp_string(value['market_scope'])}, "
+            f"{_rust_bool(value['forex_order_routing_supported'])}"
+            "},"
+        )
     lines.append("};")
     return "\n".join(lines)
 
@@ -208,7 +214,14 @@ def _backtest_reference_cases(frame: pd.DataFrame) -> list[dict[str, object]]:
             "mdd_logic": "cumulative",
             "stop_loss": {"enabled": False, "mode": "percent", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
             "configs": {
-                "ma": {"enabled": True, "length": 3, "type": "SMA", "signal_mode": "price_cross", "buy_value": 0.0, "sell_value": 0.0},
+                "ma": {
+                    "enabled": True,
+                    "length": 3,
+                    "type": "SMA",
+                    "signal_mode": "price_cross",
+                    "buy_value": 0.0,
+                    "sell_value": 0.0,
+                },
             },
         },
         {
@@ -239,7 +252,14 @@ def _backtest_reference_cases(frame: pd.DataFrame) -> list[dict[str, object]]:
             "stop_loss": {"enabled": True, "mode": "both", "usdt": 30.0, "percent": 5.0, "scope": "cumulative"},
             "configs": {
                 "rsi": {"enabled": True, "length": 3, "buy_value": 45.0, "sell_value": 55.0},
-                "rvol": {"enabled": True, "length": 3, "signal_role": "filter", "filter_operator": "gte", "filter_value": 0.8, "buy_value": 0.8},
+                "rvol": {
+                    "enabled": True,
+                    "length": 3,
+                    "signal_role": "filter",
+                    "filter_operator": "gte",
+                    "filter_value": 0.8,
+                    "buy_value": 0.8,
+                },
             },
         },
     ]
@@ -317,7 +337,18 @@ def _indicator_reference_payload() -> dict[str, object]:
         "trix": {"enabled": True, "length": 3},
         "ppo": {"enabled": True, "fast": 2, "slow": 3, "signal": 2},
         "ao": {"enabled": True, "fast": 2, "slow": 3},
-        "kst": {"enabled": True, "roc1": 1, "roc2": 2, "roc3": 3, "roc4": 4, "sma1": 2, "sma2": 2, "sma3": 2, "sma4": 2, "signal": 2},
+        "kst": {
+            "enabled": True,
+            "roc1": 1,
+            "roc2": 2,
+            "roc3": 3,
+            "roc4": 4,
+            "sma1": 2,
+            "sma2": 2,
+            "sma3": 2,
+            "sma4": 2,
+            "signal": 2,
+        },
         "aroon": {"enabled": True, "length": 3},
         "chop": {"enabled": True, "length": 3},
         "atr": {"enabled": True, "length": 3},
@@ -335,10 +366,16 @@ def _indicator_reference_payload() -> dict[str, object]:
         "stochastic": {"enabled": True, "length": 3, "smooth_k": 2, "smooth_d": 2},
     }
     bb_upper, bb_mid, bb_lower = indicator_math.bollinger_bands(frame, length=3, std=2.0)
-    keltner_upper, keltner_mid, keltner_lower = indicator_math.keltner_channels(frame, length=3, atr_length=2, multiplier=2.0)
-    ichimoku_tenkan, ichimoku_kijun, ichimoku_span_a, ichimoku_span_b, ichimoku_chikou = indicator_math.ichimoku_cloud(frame, conversion_length=2, base_length=3, span_b_length=4, displacement=2)
+    keltner_upper, keltner_mid, keltner_lower = indicator_math.keltner_channels(
+        frame, length=3, atr_length=2, multiplier=2.0
+    )
+    ichimoku_tenkan, ichimoku_kijun, ichimoku_span_a, ichimoku_span_b, ichimoku_chikou = indicator_math.ichimoku_cloud(
+        frame, conversion_length=2, base_length=3, span_b_length=4, displacement=2
+    )
     ppo_line, ppo_signal, ppo_hist = indicator_math.ppo(frame["close"], fast=2, slow=3, signal=2)
-    kst_line, kst_signal, kst_hist = indicator_math.kst(frame["close"], roc1=1, roc2=2, roc3=3, roc4=4, sma1=2, sma2=2, sma3=2, sma4=2, signal=2)
+    kst_line, kst_signal, kst_hist = indicator_math.kst(
+        frame["close"], roc1=1, roc2=2, roc3=3, roc4=4, sma1=2, sma2=2, sma3=2, sma4=2, signal=2
+    )
     aroon_up, aroon_down, aroon = indicator_math.aroon(frame, length=3)
     stoch_rsi, stoch_rsi_d = indicator_math.stoch_rsi(frame["close"], length=3, smooth_k=2, smooth_d=2)
     macd_line, macd_signal, _macd_hist = indicator_math.macd(frame["close"], fast=2, slow=3, signal=2)
@@ -352,35 +389,61 @@ def _indicator_reference_payload() -> dict[str, object]:
         "donchian_low": donchian_low,
         "donchian": (donchian_high + donchian_low) / 2.0,
         "psar": indicator_math.parabolic_sar(frame, af=0.02, max_af=0.2),
-        "bb_upper": bb_upper, "bb_mid": bb_mid, "bb_lower": bb_lower,
+        "bb_upper": bb_upper,
+        "bb_mid": bb_mid,
+        "bb_lower": bb_lower,
         "bbw": indicator_math.bollinger_band_width(frame, length=3, std=2.0),
-        "keltner_upper": keltner_upper, "keltner_mid": keltner_mid, "keltner_lower": keltner_lower,
-        "ichimoku_tenkan": ichimoku_tenkan, "ichimoku_kijun": ichimoku_kijun, "ichimoku_span_a": ichimoku_span_a, "ichimoku_span_b": ichimoku_span_b, "ichimoku_chikou": ichimoku_chikou,
+        "keltner_upper": keltner_upper,
+        "keltner_mid": keltner_mid,
+        "keltner_lower": keltner_lower,
+        "ichimoku_tenkan": ichimoku_tenkan,
+        "ichimoku_kijun": ichimoku_kijun,
+        "ichimoku_span_a": ichimoku_span_a,
+        "ichimoku_span_b": ichimoku_span_b,
+        "ichimoku_chikou": ichimoku_chikou,
         "ichimoku": ichimoku_tenkan - ichimoku_kijun,
         "rsi": indicator_math.rsi(frame["close"], length=3),
-        "volume": frame["volume"], "obv": indicator_math.obv(frame), "rvol": indicator_math.relative_volume(frame, length=3),
-        "cmf": indicator_math.chaikin_money_flow(frame, length=3), "cci": indicator_math.cci(frame, length=3, constant=0.015),
-        "roc": indicator_math.roc(frame["close"], length=3), "trix": indicator_math.trix(frame["close"], length=3),
-        "ppo": ppo_line, "ppo_signal": ppo_signal, "ppo_hist": ppo_hist,
+        "volume": frame["volume"],
+        "obv": indicator_math.obv(frame),
+        "rvol": indicator_math.relative_volume(frame, length=3),
+        "cmf": indicator_math.chaikin_money_flow(frame, length=3),
+        "cci": indicator_math.cci(frame, length=3, constant=0.015),
+        "roc": indicator_math.roc(frame["close"], length=3),
+        "trix": indicator_math.trix(frame["close"], length=3),
+        "ppo": ppo_line,
+        "ppo_signal": ppo_signal,
+        "ppo_hist": ppo_hist,
         "ao": indicator_math.awesome_oscillator(frame, fast=2, slow=3),
-        "kst": kst_line, "kst_signal": kst_signal, "kst_hist": kst_hist,
-        "aroon_up": aroon_up, "aroon_down": aroon_down, "aroon": aroon,
+        "kst": kst_line,
+        "kst_signal": kst_signal,
+        "kst_hist": kst_hist,
+        "aroon_up": aroon_up,
+        "aroon_down": aroon_down,
+        "aroon": aroon,
         "chop": indicator_math.choppiness_index(frame, length=3),
-        "atr": indicator_math.atr(frame, length=3), "natr": indicator_math.natr(frame, length=3),
-        "vwap": indicator_math.vwap(frame, length=3), "mfi": indicator_math.mfi(frame, length=3),
-        "stoch_rsi": stoch_rsi, "stoch_rsi_k": stoch_rsi, "stoch_rsi_d": stoch_rsi_d,
+        "atr": indicator_math.atr(frame, length=3),
+        "natr": indicator_math.natr(frame, length=3),
+        "vwap": indicator_math.vwap(frame, length=3),
+        "mfi": indicator_math.mfi(frame, length=3),
+        "stoch_rsi": stoch_rsi,
+        "stoch_rsi_k": stoch_rsi,
+        "stoch_rsi_d": stoch_rsi_d,
         "willr": indicator_math.williams_r(frame, length=3),
-        "macd_line": macd_line, "macd_signal": macd_signal,
+        "macd_line": macd_line,
+        "macd_signal": macd_signal,
         "uo": indicator_math.ultimate_oscillator(frame, short=2, medium=3, long=4),
-        "adx": adx, "dmi_plus": dmi_plus, "dmi_minus": dmi_minus, "dmi": dmi_plus - dmi_minus,
+        "adx": adx,
+        "dmi_plus": dmi_plus,
+        "dmi_minus": dmi_minus,
+        "dmi": dmi_plus - dmi_minus,
         "supertrend": indicator_math.supertrend(frame, atr_period=2, multiplier=3.0),
         "ema": indicator_math.ema(frame["close"], 3),
-        "stochastic": stochastic, "stochastic_k": stochastic, "stochastic_d": stochastic_d,
+        "stochastic": stochastic,
+        "stochastic_k": stochastic,
+        "stochastic_d": stochastic_d,
     }
     declared_output_keys = {
-        output_key
-        for output_keys in INDICATOR_RUNTIME_OUTPUT_KEYS.values()
-        for output_key in output_keys
+        output_key for output_keys in INDICATOR_RUNTIME_OUTPUT_KEYS.values() for output_key in output_keys
     }
     expected_output_keys = set(expected)
     if declared_output_keys != expected_output_keys:
@@ -401,38 +464,42 @@ def _indicator_reference_payload() -> dict[str, object]:
 
 def render_rust_indicator_reference_module() -> str:
     payload = _contract_json(_indicator_reference_payload())
-    return "\n".join([
-        "// This file is generated from Python indicator implementations.",
-        "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
-        "#[rustfmt::skip]",
-        f"pub const PYTHON_INDICATOR_REFERENCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
-        "#[rustfmt::skip]",
-        f"pub const PYTHON_INDICATOR_REFERENCE_JSON: &str = {_rust_string(payload)};",
-        "",
-    ])
+    return "\n".join(
+        [
+            "// This file is generated from Python indicator implementations.",
+            "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+            "#[rustfmt::skip]",
+            f"pub const PYTHON_INDICATOR_REFERENCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
+            "#[rustfmt::skip]",
+            f"pub const PYTHON_INDICATOR_REFERENCE_JSON: &str = {_rust_string(payload)};",
+            "",
+        ]
+    )
 
 
 def render_cpp_indicator_reference_header() -> str:
     payload = _contract_json(_indicator_reference_payload())
-    return "\n".join([
-        "// This file is generated from Python indicator implementations.",
-        "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
-        "#pragma once",
-        "",
-        "#include <string_view>",
-        "",
-        "namespace PythonIndicatorReference {",
-        "",
-        (
-            "inline constexpr std::string_view kPythonSourceContractHash = "
-            f"{_cpp_string(native_python_source_contract_hash())};"
-        ),
-        "inline constexpr std::string_view kReferenceJson =",
-        f"    {_cpp_string_chunks(payload)};",
-        "",
-        "} // namespace PythonIndicatorReference",
-        "",
-    ])
+    return "\n".join(
+        [
+            "// This file is generated from Python indicator implementations.",
+            "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+            "#pragma once",
+            "",
+            "#include <string_view>",
+            "",
+            "namespace PythonIndicatorReference {",
+            "",
+            (
+                "inline constexpr std::string_view kPythonSourceContractHash = "
+                f"{_cpp_string(native_python_source_contract_hash())};"
+            ),
+            "inline constexpr std::string_view kReferenceJson =",
+            f"    {_cpp_string_chunks(payload)};",
+            "",
+            "} // namespace PythonIndicatorReference",
+            "",
+        ]
+    )
 
 
 def _domain_required_list(domain: dict[str, object], key: str) -> list[str]:
@@ -483,10 +550,7 @@ def _rust_parity_domains(domains: list[dict[str, object]]) -> str:
                 f"        python_surface: {_rust_string(domain['python_surface'])},",
                 f"        cpp_status: {_rust_string(_domain_cpp_status(domain))},",
                 f"        rust_status: {_rust_string(_domain_rust_status(domain))},",
-                (
-                    "        required_before_full_parity: "
-                    f"{_rust_string(_domain_required_before_full_parity(domain))},"
-                ),
+                (f"        required_before_full_parity: {_rust_string(_domain_required_before_full_parity(domain))},"),
                 f"        cpp_full_parity: {_rust_bool(domain['cpp_full_parity'])},",
                 f"        rust_full_parity: {_rust_bool(domain['rust_full_parity'])},",
                 "    },",
@@ -596,9 +660,7 @@ def _rust_indicator_catalog(indicators: list[dict[str, object]]) -> str:
         "pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[",
     ]
     for indicator in indicators:
-        runtime_output_keys = ", ".join(
-            _rust_string(str(key)) for key in indicator["runtime_output_keys"]
-        )
+        runtime_output_keys = ", ".join(_rust_string(str(key)) for key in indicator["runtime_output_keys"])
         lines.extend(
             [
                 "    PythonIndicator {",
@@ -821,9 +883,7 @@ def _cpp_indicator_catalog(indicators: list[dict[str, object]]) -> str:
         f"inline constexpr std::array<PythonIndicator, {len(indicators)}> kPythonIndicatorCatalog = {{",
     ]
     for indicator in indicators:
-        runtime_output_keys = ",".join(
-            str(key) for key in indicator["runtime_output_keys"]
-        )
+        runtime_output_keys = ",".join(str(key) for key in indicator["runtime_output_keys"])
         lines.append(
             "    PythonIndicator{"
             f"{_cpp_string(indicator['key'])}, "
@@ -849,9 +909,7 @@ def _cpp_connector_options(connectors: list[dict[str, object]]) -> str:
     ]
     for connector in connectors:
         lines.append(
-            "    PythonConnectorOption{"
-            f"{_cpp_string(connector['key'])}, {_cpp_string(connector['label'])}"
-            "},"
+            f"    PythonConnectorOption{{{_cpp_string(connector['key'])}, {_cpp_string(connector['label'])}}},"
         )
     lines.append("};")
     return "\n".join(lines)
@@ -961,11 +1019,7 @@ def _cpp_tradingview_interval_map(interval_map: dict[str, object]) -> str:
         ),
     ]
     for interval, code in interval_map.items():
-        lines.append(
-            "    PythonTradingViewInterval{"
-            f"{_cpp_string(interval)}, {_cpp_string(code)}"
-            "},"
-        )
+        lines.append(f"    PythonTradingViewInterval{{{_cpp_string(interval)}, {_cpp_string(code)}}},")
     lines.append("};")
     return "\n".join(lines)
 
@@ -979,20 +1033,11 @@ def render_rust_module() -> str:
         f"pub const PYTHON_SOURCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
         f"pub const CPP_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['cpp_contract_parity'])};",
         f"pub const RUST_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['rust_contract_parity'])};",
-        (
-            "pub const CPP_STANDALONE_RUNTIME_READY: bool = "
-            f"{_rust_bool(summary['cpp_standalone_runtime_ready'])};"
-        ),
-        (
-            "pub const RUST_STANDALONE_RUNTIME_READY: bool = "
-            f"{_rust_bool(summary['rust_standalone_runtime_ready'])};"
-        ),
+        (f"pub const CPP_STANDALONE_RUNTIME_READY: bool = {_rust_bool(summary['cpp_standalone_runtime_ready'])};"),
+        (f"pub const RUST_STANDALONE_RUNTIME_READY: bool = {_rust_bool(summary['rust_standalone_runtime_ready'])};"),
         f"pub const CPP_FULL_PARITY_READY: bool = {_rust_bool(summary['cpp_full_parity'])};",
         f"pub const RUST_FULL_PARITY_READY: bool = {_rust_bool(summary['rust_full_parity'])};",
-        (
-            "pub const PYTHON_ORDER_GUARD_BEHAVIOR_JSON: &str = "
-            f"{_rust_string(_contract_json(order_guard_behavior))};"
-        ),
+        (f"pub const PYTHON_ORDER_GUARD_BEHAVIOR_JSON: &str = {_rust_string(_contract_json(order_guard_behavior))};"),
         (
             "pub const PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES: bool = "
             f"{_rust_bool(order_guard_behavior['validate_intent_all_modes'])};"
@@ -1041,6 +1086,12 @@ def render_rust_module() -> str:
         _rust_array("PYTHON_CONNECTOR_KEYS", list(summary["connector_keys"])),
         "",
         _rust_connector_options(list(summary["connectors"])),
+        "",
+        _rust_array("PYTHON_SUPPORTED_BROKERS", list(summary["supported_brokers"])),
+        "",
+        _rust_array("PYTHON_SUPPORTED_FOREX_BROKERS", list(summary["supported_forex_brokers"])),
+        "",
+        _rust_broker_order_routing_backends(list(summary["broker_order_routing_backends"])),
         "",
         _rust_array("PYTHON_BACKTEST_INTERVALS", list(summary["intervals"])),
         "",
@@ -1161,6 +1212,12 @@ def render_cpp_header() -> str:
         "",
         _cpp_connector_options(list(summary["connectors"])),
         "",
+        _cpp_array("kPythonSupportedBrokers", list(summary["supported_brokers"])),
+        "",
+        _cpp_array("kPythonSupportedForexBrokers", list(summary["supported_forex_brokers"])),
+        "",
+        _cpp_broker_order_routing_backends(list(summary["broker_order_routing_backends"])),
+        "",
         _cpp_array("kPythonBacktestIntervals", list(summary["intervals"])),
         "",
         _cpp_tradingview_interval_map(dict(summary["tradingview_interval_map"])),
@@ -1190,26 +1247,19 @@ def render_cpp_header() -> str:
 def render_tauri_browser_contract() -> str:
     summary = native_python_source_contract_summary()
     service_routes = list(summary["service_routes"])
-    service_route_paths = {
-        str(route["name"]): str(route["path"])
-        for route in service_routes
-    }
+    service_route_paths = {str(route["name"]): str(route["path"]) for route in service_routes}
     service_route_methods = {
-        str(route["name"]): [str(method) for method in route["methods"]]
-        for route in service_routes
+        str(route["name"]): [str(method) for method in route["methods"]] for route in service_routes
     }
     service_route_schemas = list(summary["service_route_schemas"])
     service_route_query_fields = {
-        str(schema["name"]): [str(field) for field in schema["query_fields"]]
-        for schema in service_route_schemas
+        str(schema["name"]): [str(field) for field in schema["query_fields"]] for schema in service_route_schemas
     }
     service_route_request_fields = {
-        str(schema["name"]): [str(field) for field in schema["request_fields"]]
-        for schema in service_route_schemas
+        str(schema["name"]): [str(field) for field in schema["request_fields"]] for schema in service_route_schemas
     }
     service_route_response_fields = {
-        str(schema["name"]): [str(field) for field in schema["response_fields"]]
-        for schema in service_route_schemas
+        str(schema["name"]): [str(field) for field in schema["response_fields"]] for schema in service_route_schemas
     }
     payload = {
         "source": summary["source"],
@@ -1234,6 +1284,9 @@ def render_tauri_browser_contract() -> str:
         ],
         "indicatorKeys": list(summary["indicator_keys"]),
         "connectorOptions": list(summary["connectors"]),
+        "supportedBrokers": list(summary["supported_brokers"]),
+        "supportedForexBrokers": list(summary["supported_forex_brokers"]),
+        "brokerOrderRoutingBackends": list(summary["broker_order_routing_backends"]),
         "backtestIntervals": list(summary["intervals"]),
         "tradingviewIntervalMap": dict(summary["tradingview_interval_map"]),
         "defaultChartSymbols": list(summary["default_chart_symbols"]),

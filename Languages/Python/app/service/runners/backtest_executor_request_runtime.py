@@ -114,13 +114,14 @@ def coerce_datetime(value) -> datetime | None:  # noqa: ANN001
         parsed = None
         try:
             parsed = datetime.fromisoformat(text)
-        except Exception:
+        except ValueError:
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
                 try:
                     parsed = datetime.strptime(text, fmt)
+                except ValueError:
+                    parsed = None
+                if parsed is not None:
                     break
-                except Exception:
-                    continue
         if parsed is None:
             return None
     if parsed is None:

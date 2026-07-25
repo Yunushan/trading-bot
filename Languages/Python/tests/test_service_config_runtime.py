@@ -10,10 +10,27 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.service.runtime import TradingBotService  # noqa: E402
+from app.service import config_store  # noqa: E402
 from app.settings import ConfigValidationError  # noqa: E402
 
 
 class ServiceConfigRuntimeTests(unittest.TestCase):
+    def test_config_write_preserves_previous_file_when_private_mode_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            path.write_text("previous-config", encoding="utf-8")
+
+            with mock.patch.object(config_store.os, "chmod", side_effect=OSError("chmod denied")):
+                with self.assertRaisesRegex(OSError, "chmod denied"):
+                    config_store.write_service_config_file(
+                        {"symbols": ["BTCUSDT"]},
+                        path,
+                        allow_unsafe_path=True,
+                    )
+
+            self.assertEqual("previous-config", path.read_text(encoding="utf-8"))
+            self.assertEqual([], list(path.parent.glob(f".{path.name}.*.tmp")))
+
     def test_service_config_patch_round_trip(self):
         service = TradingBotService()
         initial_config = service.get_config_payload().to_dict()

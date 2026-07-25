@@ -4,6 +4,8 @@ import math
 import time
 from collections.abc import Mapping
 
+from ..runtime_diagnostics import report_runtime_fallback
+
 
 def _finite_float(value: object, default: float = 0.0) -> float:
     try:
@@ -11,6 +13,58 @@ def _finite_float(value: object, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if math.isfinite(parsed) else default
+
+
+def _finite_float_or_none(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _normalize_symbol_position_rows(
+    self,
+    rows: object,
+    symbol: str,
+    source: str,
+) -> tuple[list[dict], bool, str | None]:
+    if not isinstance(rows, (list, tuple)):
+        error = f"{source} returned an invalid position snapshot"
+        report_runtime_fallback(self, error)
+        return [], False, error
+
+    normalized: list[dict] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            error = f"{source} position row {index} is not an object"
+            report_runtime_fallback(self, error)
+            return [], False, error
+        row_symbol = str(row.get("symbol") or "").strip().upper()
+        if not row_symbol:
+            error = f"{source} position row {index} is missing symbol"
+            report_runtime_fallback(self, error)
+            return [], False, error
+        if row_symbol != symbol:
+            continue
+        amount = _finite_float_or_none(row.get("positionAmt"))
+        if amount is None:
+            error = f"{source} {symbol} positionAmt is not finite"
+            report_runtime_fallback(self, error)
+            return [], False, error
+        position_side = str(row.get("positionSide") or row.get("positionside") or "BOTH").strip().upper()
+        if position_side not in {"BOTH", "LONG", "SHORT"}:
+            error = f"{source} {symbol} positionSide is invalid"
+            report_runtime_fallback(self, error)
+            return [], False, error
+        normalized.append(
+            {
+                "symbol": row_symbol,
+                "positionAmt": amount,
+                "positionSide": position_side,
+            }
+        )
+    return normalized, True, None
 
 
 def _cancel_response_accepted(response: object) -> bool:
@@ -97,12 +151,21 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             ps_norm = None
         try:
             dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
-        except Exception:
-            dual = bool(ps_norm)
+        except Exception as exc:
+            report_runtime_fallback(self, "Exact futures close blocked because position mode is unknown", exc)
+            return {
+                "ok": False,
+                "error": "close blocked: futures position mode unavailable",
+                "symbol": sym,
+                "requested_qty": _finite_float(qty),
+                "position_side": ps_norm,
+                "side": side_up,
+            }
         try:
             filters = self.get_futures_symbol_filters(sym) or {}
             step = _finite_float(filters.get("stepSize"))
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, f"{sym} close quantity filters are unavailable", exc)
             step = 0.0
         qty_tol = 1e-12
 
@@ -118,20 +181,22 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             total = 0.0
             try:
                 rows = self.list_open_futures_positions(max_age=0.0, force_refresh=True)
-            except Exception:
+            except Exception as exc:
+                report_runtime_fallback(self, f"{sym} live closeable quantity snapshot failed", exc)
                 return 0.0, False
-            if not isinstance(rows, (list, tuple)):
+            normalized_rows, snapshot_known, _ = _normalize_symbol_position_rows(
+                self,
+                rows,
+                sym,
+                "Exact futures close",
+            )
+            if not snapshot_known:
                 return 0.0, False
-            for row in rows:
-                if str(row.get("symbol") or "").upper() != sym:
-                    continue
-                try:
-                    amt = _finite_float(row.get("positionAmt"))
-                except (AttributeError, TypeError, ValueError):
-                    amt = 0.0
+            for row in normalized_rows:
+                amt = row["positionAmt"]
                 if abs(amt) <= qty_tol:
                     continue
-                row_ps = _normalize_row_side(row.get("positionSide") or row.get("positionside"))
+                row_ps = _normalize_row_side(row.get("positionSide"))
                 include = False
                 if preferred_ps in ("LONG", "SHORT"):
                     if row_ps == preferred_ps:
@@ -167,13 +232,14 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
                 q_norm = _finite_float(text)
                 if q_norm > qty_tol:
                     return q_norm, text
-            except Exception:
-                pass
+            except Exception as exc:
+                report_runtime_fallback(self, f"{sym} step-aware close quantity formatting failed", exc)
             try:
                 text = self._format_quantity_for_order(qty_value, 0.0)
                 q_norm = _finite_float(text)
                 return q_norm, text
-            except Exception:
+            except Exception as exc:
+                report_runtime_fallback(self, f"{sym} fallback close quantity formatting failed", exc)
                 q_norm = max(0.0, _finite_float(qty_value))
                 return q_norm, f"{q_norm:.8f}"
 
@@ -240,27 +306,32 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
                 params["positionSide"] = ps_try
             else:
                 params["reduceOnly"] = True
-            try:
-                params.setdefault("newClientOrderId", f"close-{sym}-{int(time.time() * 1000)}-{attempt_idx}")
-            except Exception:
-                pass
+            params.setdefault("newClientOrderId", f"close-{sym}-{int(time.time() * 1000)}-{attempt_idx}")
             try:
                 info, via = self._futures_create_order_with_fallback(params)
             except Exception as exc:
                 errors.append(f"{ps_try or 'reduceOnly'}: {exc}")
                 continue
             fills_summary = {}
+            warnings: list[str] = []
             try:
                 fills_summary = self._summarize_futures_order_fills(sym, (info or {}).get("orderId"))
-            except Exception:
+            except Exception as exc:
+                warning = report_runtime_fallback(self, f"{sym} confirmed close fill summary failed", exc)
+                warnings.append(warning)
                 fills_summary = {}
             if isinstance(info, dict) and fills_summary:
                 try:
                     if not float(info.get("avgPrice") or 0.0) and float(fills_summary.get("avg_price") or 0.0):
                         info["avgPrice"] = fills_summary.get("avg_price")
-                except Exception:
-                    pass
-            self._invalidate_futures_positions_cache()
+                except Exception as exc:
+                    warning = report_runtime_fallback(self, f"{sym} confirmed close fill merge failed", exc)
+                    warnings.append(warning)
+            try:
+                self._invalidate_futures_positions_cache()
+            except Exception as exc:
+                warning = report_runtime_fallback(self, f"{sym} confirmed close cache invalidation failed", exc)
+                warnings.append(warning)
             res = {"ok": True, "info": info, "requested_qty": _finite_float(qty), "sent_qty": qty_send}
             if ps_try:
                 res["positionSide"] = ps_try
@@ -268,6 +339,9 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
                 res["via"] = via
             if fills_summary:
                 res["fills"] = fills_summary
+            if warnings:
+                res["warnings"] = warnings
+                res["reconciliation_required"] = True
             return res
         error_text = "; ".join(errors) if errors else "no close attempt matched open exposure"
         return {
@@ -279,6 +353,7 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             "side": side_up,
         }
     except Exception as exc:
+        report_runtime_fallback(self, "Exact futures close failed", exc, level="error")
         return {"ok": False, "error": str(exc)}
 
 
@@ -289,38 +364,44 @@ def close_futures_position(self, symbol: str):
         try:
             filters = self.get_futures_symbol_filters(sym) or {}
             step = _finite_float(filters.get("stepSize"))
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, f"{sym} close quantity filters are unavailable", exc)
             step = 0.0
         dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
         snapshot = self.list_open_futures_positions(max_age=0.0, force_refresh=True)
-        primary_snapshot_known = isinstance(snapshot, (list, tuple))
-        rows = list(snapshot) if primary_snapshot_known else []
+        rows, primary_snapshot_known, primary_snapshot_error = _normalize_symbol_position_rows(
+            self,
+            snapshot,
+            sym,
+            "Primary futures close",
+        )
         raw_snapshot_known = False
         if not rows:
             try:
-                raw_rows = self.client.futures_position_information(symbol=sym) or []
-                raw_snapshot_known = True
-            except Exception:
-                raw_rows = []
-            for raw in raw_rows:
-                try:
-                    if str(raw.get("symbol") or "").upper() != sym:
-                        continue
-                    rows.append(
-                        {
-                            "symbol": str(raw.get("symbol") or "").upper(),
-                            "positionAmt": _finite_float(raw.get("positionAmt")),
-                            "positionSide": str(raw.get("positionSide") or raw.get("positionside") or "BOTH").upper(),
-                        }
-                    )
-                except Exception:
-                    continue
+                raw_rows = self.client.futures_position_information(symbol=sym)
+                raw_rows_normalized, raw_snapshot_known, raw_snapshot_error = _normalize_symbol_position_rows(
+                    self,
+                    raw_rows,
+                    sym,
+                    "Raw futures close",
+                )
+                if raw_snapshot_known:
+                    rows = raw_rows_normalized
+            except Exception as exc:
+                raw_snapshot_error = report_runtime_fallback(self, f"{sym} raw close snapshot failed", exc)
         if not primary_snapshot_known and not raw_snapshot_known:
             return {
                 "ok": False,
                 "closed": 0,
                 "failed": 0,
-                "errors": ["close blocked: futures position snapshot unavailable"],
+                "errors": [
+                    "close blocked: futures position snapshot unavailable"
+                    + (
+                        f" ({raw_snapshot_error or primary_snapshot_error})"
+                        if raw_snapshot_error or primary_snapshot_error
+                        else ""
+                    )
+                ],
                 "remaining": 0,
                 "symbol": sym,
             }
@@ -352,36 +433,36 @@ def close_futures_position(self, symbol: str):
             known = False
             try:
                 snapshot = self.list_open_futures_positions(max_age=0.0, force_refresh=True)
-                if isinstance(snapshot, (list, tuple)):
-                    fresh_rows = list(snapshot)
-                    known = True
-                else:
-                    snapshot_error = "futures position snapshot unavailable"
+                fresh_rows, known, snapshot_error = _normalize_symbol_position_rows(
+                    self,
+                    snapshot,
+                    sym,
+                    "Close verification",
+                )
             except Exception as exc:
-                snapshot_error = str(exc)
+                snapshot_error = report_runtime_fallback(self, f"{sym} close verification snapshot failed", exc)
             if not fresh_rows:
                 try:
-                    raw_rows = self.client.futures_position_information(symbol=sym) or []
-                    known = True
-                    fresh_rows = []
-                    for raw in raw_rows:
-                        try:
-                            if str(raw.get("symbol") or "").upper() != sym:
-                                continue
-                            fresh_rows.append(
-                                {
-                                    "symbol": sym,
-                                    "positionAmt": _finite_float(raw.get("positionAmt")),
-                                    "positionSide": str(
-                                        raw.get("positionSide") or raw.get("positionside") or "BOTH"
-                                    ).upper(),
-                                }
-                            )
-                        except Exception:
-                            continue
+                    raw_rows = self.client.futures_position_information(symbol=sym)
+                    raw_fresh_rows, raw_known, raw_error = _normalize_symbol_position_rows(
+                        self,
+                        raw_rows,
+                        sym,
+                        "Raw close verification",
+                    )
+                    if raw_known:
+                        fresh_rows = raw_fresh_rows
+                        known = True
+                        snapshot_error = None
+                    elif not known:
+                        snapshot_error = raw_error
                 except Exception as exc:
                     if not known:
-                        snapshot_error = str(exc)
+                        snapshot_error = report_runtime_fallback(
+                            self,
+                            f"{sym} raw close verification failed",
+                            exc,
+                        )
             return fresh_rows, known, snapshot_error
 
         def _resolve_close(amt_val: float, raw_pos_side: object) -> tuple[str | None, str | None]:
@@ -410,11 +491,15 @@ def close_futures_position(self, symbol: str):
                 params["reduceOnly"] = True
             try:
                 self._futures_create_order_with_fallback(params)
-                self._invalidate_futures_positions_cache()
                 closed += 1
             except Exception as exc:
                 failed += 1
                 errors.append(str(exc))
+                continue
+            try:
+                self._invalidate_futures_positions_cache()
+            except Exception as exc:
+                errors.append(report_runtime_fallback(self, f"{sym} confirmed close cache invalidation failed", exc))
 
         remaining = []
         verification_known = False
@@ -424,13 +509,10 @@ def close_futures_position(self, symbol: str):
                 fresh_rows, verification_known, verification_error = _fresh_symbol_rows()
                 remaining = []
                 for fresh in fresh_rows:
-                    try:
-                        if str(fresh.get("symbol") or "").upper() != sym:
-                            continue
-                        if abs(_finite_float(fresh.get("positionAmt"))) > 1e-12:
-                            remaining.append(fresh)
-                    except Exception:
+                    if str(fresh.get("symbol") or "").upper() != sym:
                         continue
+                    if abs(_finite_float(fresh.get("positionAmt"))) > 1e-12:
+                        remaining.append(fresh)
                 if verification_known and not remaining:
                     break
                 if attempt < 2:
@@ -459,6 +541,7 @@ def close_futures_position(self, symbol: str):
             "remaining": len(remaining),
         }
     except Exception as exc:
+        report_runtime_fallback(self, "Futures symbol close failed", exc, level="error")
         return {"ok": False, "error": str(exc)}
 
 
@@ -472,21 +555,27 @@ def cancel_all_open_futures_orders(self) -> dict:
             results["ok"] = False
             results["errors"].append(f"open order snapshot: {exc}")
         symbols = set()
-        for order in orders:
-            try:
-                sym = str(order.get("symbol") or "").upper()
-            except Exception:
-                sym = ""
+        for index, order in enumerate(orders):
+            if not isinstance(order, Mapping):
+                results["ok"] = False
+                results["errors"].append(f"open order row {index} is malformed")
+                continue
+            sym = str(order.get("symbol") or "").upper()
             if sym:
                 symbols.add(sym)
         if not symbols:
             try:
-                positions = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+                positions = self.list_open_futures_positions(max_age=0.0, force_refresh=True)
+                if positions is None:
+                    raise RuntimeError("position snapshot unavailable")
                 for pos in positions:
+                    if not isinstance(pos, Mapping):
+                        raise RuntimeError("position snapshot contained a malformed row")
                     sym = str(pos.get("symbol") or "").upper()
                     if sym:
                         symbols.add(sym)
             except Exception as exc:
+                results["ok"] = False
                 results["errors"].append(f"position snapshot: {exc}")
         for sym in sorted(symbols):
             try:
@@ -500,6 +589,7 @@ def cancel_all_open_futures_orders(self) -> dict:
         if results["ok"]:
             results["errors"] = []
     except Exception as exc:
+        report_runtime_fallback(self, "Cancel-all futures orders failed", exc, level="error")
         return {"ok": False, "error": str(exc)}
     return results
 
@@ -514,10 +604,5 @@ def close_all_futures_positions(self):
             return delegated
         return [{"ok": False, "error": "canonical close-all runtime returned an invalid response"}]
     except Exception as exc:
-        try:
-            logger = getattr(self, "_log", None)
-            if callable(logger):
-                logger(f"Canonical close-all runtime failed: {exc}", lvl="error")
-        except Exception:
-            return [{"ok": False, "error": f"canonical close-all runtime failed: {exc}"}]
+        report_runtime_fallback(self, "Canonical close-all runtime failed", exc, level="error")
         return [{"ok": False, "error": f"canonical close-all runtime failed: {exc}"}]

@@ -66,10 +66,9 @@ class _PositionHarness:
 
 
 class BinanceFuturesPositionQuerySafetyTests(unittest.TestCase):
-    def test_query_skips_nonfinite_positions_and_normalizes_finite_risk_values(self):
+    def test_query_normalizes_finite_risk_values(self):
         client = _PositionClient(
             risk=[
-                {"symbol": "BTCUSDT", "positionAmt": "nan", "marginRatio": "10"},
                 {
                     "symbol": "ETHUSDT",
                     "positionAmt": "2",
@@ -145,6 +144,26 @@ class BinanceFuturesPositionQuerySafetyTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual([], harness.stored)
 
+    def test_query_returns_unknown_when_nonempty_snapshot_is_malformed(self):
+        client = _PositionClient(risk=[{"symbol": "BTCUSDT", "positionAmt": "nan"}])
+        harness = _PositionHarness(client)
+
+        result = positions_runtime.list_open_futures_positions(harness, force_refresh=True)
+
+        self.assertIsNone(result)
+        self.assertEqual([], harness.stored)
+
+    def test_query_uses_account_fallback_when_primary_snapshot_is_malformed(self):
+        client = _PositionClient(risk=[{"symbol": "BTCUSDT", "positionAmt": "not-a-number"}])
+        harness = _PositionHarness(
+            client,
+            account={"positions": [{"symbol": "BTCUSDT", "positionAmt": "0.5"}]},
+        )
+
+        result = positions_runtime.list_open_futures_positions(harness, force_refresh=True)
+
+        self.assertEqual(0.5, result[0]["positionAmt"])
+
     def test_query_discards_tiny_ghost_positions_like_native_clients(self):
         client = _PositionClient(
             risk=[
@@ -170,11 +189,10 @@ class BinanceFuturesPositionQuerySafetyTests(unittest.TestCase):
         self.assertEqual([4.0], harness.cached_args)
         self.assertEqual(0, client.risk_calls)
 
-    def test_net_position_rejects_nonfinite_amount_then_uses_risk_fallback(self):
+    def test_net_position_uses_risk_snapshot_when_information_endpoint_is_unavailable(self):
         client = _PositionClient(
             information=RuntimeError("information endpoint unavailable"),
             risk=[
-                {"symbol": "BTCUSDT", "positionAmt": "nan"},
                 {"symbol": "BTCUSDT", "positionAmt": "-0.75"},
             ],
         )
@@ -183,6 +201,14 @@ class BinanceFuturesPositionQuerySafetyTests(unittest.TestCase):
         result = positions_runtime.get_net_futures_position_amt(harness, "btcusdt")
 
         self.assertEqual(-0.75, result)
+
+    def test_net_position_returns_unknown_for_malformed_snapshot(self):
+        client = _PositionClient(risk=[{"symbol": "BTCUSDT", "positionAmt": "nan"}])
+        harness = _PositionHarness(client)
+
+        result = positions_runtime.get_net_futures_position_amt(harness, "btcusdt")
+
+        self.assertIsNone(result)
 
     def test_net_position_sums_hedge_rows_and_discards_tiny_residuals(self):
         client = _PositionClient(
@@ -198,6 +224,17 @@ class BinanceFuturesPositionQuerySafetyTests(unittest.TestCase):
 
         self.assertAlmostEqual(-0.15, result)
 
+    def test_net_position_returns_unknown_when_all_snapshot_sources_fail(self):
+        client = _PositionClient(
+            information=RuntimeError("information endpoint unavailable"),
+            risk=RuntimeError("risk endpoint unavailable"),
+        )
+        harness = _PositionHarness(client)
+
+        result = positions_runtime.get_net_futures_position_amt(harness, "btcusdt")
+
+        self.assertIsNone(result)
+
     def test_dual_side_result_is_cached_after_first_successful_read(self):
         client = _PositionClient(dual_side={"dualSidePosition": "true"})
         harness = _PositionHarness(client)
@@ -206,6 +243,15 @@ class BinanceFuturesPositionQuerySafetyTests(unittest.TestCase):
         client.dual_side = RuntimeError("must use cache")
         self.assertTrue(positions_runtime.get_futures_dual_side(harness))
         self.assertEqual(1, client.dual_calls)
+
+    def test_dual_side_query_raises_instead_of_assuming_one_way_when_unknown(self):
+        client = _PositionClient(dual_side=RuntimeError("position mode unavailable"))
+        harness = _PositionHarness(client)
+
+        with self.assertRaisesRegex(RuntimeError, "futures position mode unavailable"):
+            positions_runtime.get_futures_dual_side(harness)
+
+        self.assertIsNone(harness._futures_dual_side_cache)
 
 
 if __name__ == "__main__":

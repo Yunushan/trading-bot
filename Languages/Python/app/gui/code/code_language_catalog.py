@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
+from ...settings.exchange_support import METATRADER4_BRIDGE_BROKERS, METATRADER5_BROKERS
+
 _THIS_FILE = Path(__file__).resolve()
 
 for _parent in _THIS_FILE.parents:
@@ -107,7 +109,7 @@ STARTER_MARKET_OPTIONS = [
     {
         "key": "forex",
         "title": "Forex Exchange",
-        "subtitle": "OANDA, FXCM, IG order routing",
+        "subtitle": "REST, MT4 bridge, MetaTrader 5, and scoped provider APIs",
         "accent": "#93c5fd",
         "badge": "Evidence required",
     },
@@ -209,6 +211,47 @@ STARTER_FOREX_BROKERS = [
         "accent": "#f472b6",
         "badge": "order routing",
     },
+    {
+        "key": "Trading 212",
+        "title": "Trading 212",
+        "subtitle": "Public Invest/Stocks ISA equities API; forex/CFD API unavailable",
+        "accent": "#38bdf8",
+        "badge": "equities only",
+    },
+    {
+        "key": "moomoo",
+        "title": "moomoo",
+        "subtitle": "OpenD local/remote stocks, options, futures, funds, and supported crypto; no forex",
+        "accent": "#facc15",
+        "badge": "OpenD scoped",
+    },
+    {
+        "key": "CITIC Futures",
+        "title": "CITIC Futures",
+        "subtitle": "CTP local/remote futures and options routing; no forex claim",
+        "accent": "#ef4444",
+        "badge": "CTP scoped",
+    },
+    *[
+        {
+            "key": broker,
+            "title": broker,
+            "subtitle": "MetaTrader 4 local/remote EA bridge; live evidence required",
+            "accent": ("#22c55e", "#f59e0b", "#14b8a6")[index % 3],
+            "badge": "MT4 bridge",
+        }
+        for index, broker in enumerate(METATRADER4_BRIDGE_BROKERS)
+    ],
+    *[
+        {
+            "key": broker,
+            "title": broker,
+            "subtitle": "MetaTrader 5 order routing; live evidence required",
+            "accent": ("#22c55e", "#f59e0b", "#14b8a6", "#eab308", "#0ea5e9", "#f472b6")[index % 6],
+            "badge": "MT5 order routing",
+        }
+        for index, broker in enumerate(METATRADER5_BROKERS)
+    ],
 ]
 
 REQUIREMENTS_PATHS = [
@@ -226,8 +269,14 @@ DEFAULT_DEPENDENCY_VERSION_TARGETS = [
     {"label": "numpy", "package": "numpy"},
     {"label": "pandas", "package": "pandas"},
     {"label": "requests", "package": "requests"},
-    {"label": "binance-sdk-derivatives-trading-usds-futures", "package": "binance-sdk-derivatives-trading-usds-futures"},
-    {"label": "binance-sdk-derivatives-trading-coin-futures", "package": "binance-sdk-derivatives-trading-coin-futures"},
+    {
+        "label": "binance-sdk-derivatives-trading-usds-futures",
+        "package": "binance-sdk-derivatives-trading-usds-futures",
+    },
+    {
+        "label": "binance-sdk-derivatives-trading-coin-futures",
+        "package": "binance-sdk-derivatives-trading-coin-futures",
+    },
     {"label": "binance-sdk-spot", "package": "binance-sdk-spot"},
 ]
 

@@ -17,8 +17,9 @@ class CredentialStoreUnavailable(RuntimeError):
 _CRED_TYPE_GENERIC = 1
 _CRED_PERSIST_LOCAL_MACHINE = 2
 _KEYCHAIN_ACCOUNT = "trading-bot-service-config"
-_LINUX_SECRET_LABEL = "Trading Bot service configuration"
+_LINUX_CREDENTIAL_LABEL = "Trading Bot service configuration"
 _ERR_SEC_ITEM_NOT_FOUND = -25300
+_LINUX_SECRET_TOOL_OPERATIONS = frozenset({"clear", "lookup", "store"})
 
 
 def _platform_name() -> str:
@@ -41,9 +42,15 @@ def _target_name(scope: str, account: str) -> str:
 
 
 def _run_secret_command(command: list[str], *, input_value: str | None = None) -> subprocess.CompletedProcess[str]:
+    if len(command) < 2 or command[0] != "secret-tool" or command[1] not in _LINUX_SECRET_TOOL_OPERATIONS:
+        raise CredentialStoreUnavailable("Refusing an unexpected OS credential-store command.")
+    executable = shutil.which("secret-tool")
+    if not executable:
+        raise CredentialStoreUnavailable("Linux Secret Service command 'secret-tool' is unavailable.")
+    resolved_command = [str(executable), *command[1:]]
     try:
-        return subprocess.run(
-            command,
+        return subprocess.run(  # noqa: S603 - executable and operation are constrained above.
+            resolved_command,
             input=input_value,
             text=True,
             capture_output=True,
@@ -217,7 +224,16 @@ def put_secret(*, scope: str, account: str, value: str) -> None:
         return
     if backend == "linux-secret-service":
         result = _run_secret_command(
-            ["secret-tool", "store", "--label", _LINUX_SECRET_LABEL, "service", "trading-bot", "target", target],
+            [
+                "secret-tool",
+                "store",
+                "--label",
+                _LINUX_CREDENTIAL_LABEL,
+                "service",
+                "trading-bot",
+                "target",
+                target,
+            ],
             input_value=str(value),
         )
         if result.returncode:

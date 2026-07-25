@@ -13,9 +13,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _finite_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         candidate = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return candidate if math.isfinite(candidate) else None
 
@@ -63,6 +65,39 @@ def _validated_futures_order_filters(
     return step, min_qty, min_notional
 
 
+def _floor_to_step(value: object, step: object) -> float:
+    parsed_value = _finite_float(value)
+    if parsed_value is None:
+        return 0.0
+    parsed_step = _finite_float(step)
+    if parsed_step is None or parsed_step <= 0.0:
+        return parsed_value
+    return float(math.floor((parsed_value / parsed_step) + 1e-12) * parsed_step)
+
+
+def _ceil_to_step(value: object, step: object) -> float:
+    parsed_value = _finite_float(value)
+    if parsed_value is None:
+        return 0.0
+    parsed_step = _finite_float(step)
+    if parsed_step is None or parsed_step <= 0.0:
+        return parsed_value
+    return float(math.ceil((parsed_value / parsed_step) - 1e-12) * parsed_step)
+
+
+def _futures_account_type_error(self, symbol: str, *, mode: str | None = None) -> dict[str, object] | None:
+    if str(getattr(self, "account_type", "") or "").strip().upper() == "FUTURES":
+        return None
+    result: dict[str, object] = {
+        "ok": False,
+        "symbol": symbol,
+        "error": "Futures order called while account_type != FUTURES",
+    }
+    if mode:
+        result["mode"] = mode
+    return result
+
+
 def place_futures_market_order(
     self,
     symbol: str,
@@ -74,14 +109,17 @@ def place_futures_market_order(
     **kwargs,
 ):
     """Futures MARKET order with robust sizing and clear returns."""
-    assert self.account_type == "FUTURES", "Futures order called while account_type != FUTURES"
-
     sym = (symbol or "").upper()
+    account_type_error = _futures_account_type_error(self, sym)
+    if account_type_error is not None:
+        return account_type_error
     side_up = _normalize_futures_order_side(side)
     if side_up is None:
         return {"ok": False, "symbol": sym, "error": f"Unsupported futures order side: {side!r}"}
     requested_leverage = kwargs.get("leverage")
-    leverage_input = requested_leverage if requested_leverage is not None else getattr(self, "_futures_leverage", 1) or 1
+    leverage_input = (
+        requested_leverage if requested_leverage is not None else getattr(self, "_futures_leverage", 1) or 1
+    )
     lev = _normalize_futures_leverage(leverage_input)
     if lev is None:
         return {"ok": False, "symbol": sym, "error": f"Bad leverage: {leverage_input!r}"}
@@ -91,24 +129,6 @@ def place_futures_market_order(
         kwargs.get("margin_mode") or getattr(self, "_default_margin_mode", "ISOLATED"),
         lev,
     )
-
-    def _floor_to_step_local(val: float, step: float) -> float:
-        try:
-            if step <= 0:
-                return float(val)
-            q = int(round(float(val) / float(step)))
-            return float(q * float(step))
-        except Exception:
-            return float(val)
-
-    def _ceil_to_step_local(val: float, step: float) -> float:
-        try:
-            if step <= 0:
-                return float(val)
-            q = int(-(-float(val) // float(step)))
-            return float(q * float(step))
-        except Exception:
-            return float(val)
 
     px = _finite_float(price if price is not None else (self.get_last_price(sym) or 0.0))
     if px is None or px <= 0:
@@ -121,8 +141,14 @@ def place_futures_market_order(
 
     mode = "percent"
     pct = _finite_float(percent_balance) if percent_balance is not None else 0.0
-    if pct is None:
+    if percent_balance is not None and (pct is None or pct <= 0.0 or pct > 100.0):
         return {"ok": False, "symbol": sym, "error": f"Bad percent balance: {percent_balance!r}"}
+    if quantity is not None:
+        quantity_value = _finite_float(quantity)
+        if quantity_value is None or quantity_value <= 0.0:
+            return {"ok": False, "symbol": sym, "error": f"Bad quantity override: {quantity!r}"}
+    else:
+        quantity_value = None
     qty = 0.0
 
     if pct > 0.0:
@@ -173,8 +199,8 @@ def place_futures_market_order(
                 # diagnostic sink is unavailable.
                 LOGGER.debug("Could not record demo exposure lookup diagnostic", exc_info=True)
 
-        qty = _floor_to_step_local((margin_budget * lev) / px, step)
-        need_qty = max(min_qty, _ceil_to_step_local(min_notional / px, step))
+        qty = _floor_to_step((margin_budget * lev) / px, step)
+        need_qty = max(min_qty, _ceil_to_step(min_notional / px, step))
         if qty < need_qty:
             req_pct = self.required_percent_for_symbol(sym, lev)
             return {
@@ -197,16 +223,13 @@ def place_futures_market_order(
             }
         mode = "percent"
     elif quantity is not None:
-        qty_override = _finite_float(quantity)
-        if qty_override is None:
-            return {"ok": False, "error": f"Bad quantity override: {quantity!r}"}
-        qty = qty_override
-        qty = max(min_qty, _floor_to_step_local(qty, step))
+        qty = float(quantity_value)
+        qty = max(min_qty, _floor_to_step(qty, step))
         if qty * px < min_notional:
-            qty = max(qty, _ceil_to_step_local(min_notional / px, step))
+            qty = max(qty, _ceil_to_step(min_notional / px, step))
         mode = "quantity"
     else:
-        qty = max(min_qty, _ceil_to_step_local(min_notional / px, step))
+        qty = max(min_qty, _ceil_to_step(min_notional / px, step))
         mode = "fallback"
 
     if qty <= 0:
@@ -236,11 +259,10 @@ def place_futures_market_order(
             except Exception:
                 fills_summary = {}
         if isinstance(order, dict) and fills_summary:
-            try:
-                if not float(order.get("avgPrice") or 0.0) and float(fills_summary.get("avg_price") or 0.0):
-                    order["avgPrice"] = fills_summary.get("avg_price")
-            except Exception:
-                pass
+            order_average = _finite_float(order.get("avgPrice")) or 0.0
+            fills_average = _finite_float(fills_summary.get("avg_price")) or 0.0
+            if order_average <= 0.0 < fills_average:
+                order["avgPrice"] = fills_summary.get("avg_price")
         self._invalidate_futures_positions_cache()
         result = {
             "ok": True,
@@ -276,16 +298,6 @@ def place_futures_market_order(
         }
 
 
-def _floor_to_step(value: float, step: float) -> float:
-    try:
-        if step and step > 0:
-            n = int(float(value) / float(step) + 1e-12)
-            return float(n) * float(step)
-    except Exception:
-        pass
-    return float(value or 0.0)
-
-
 def _place_futures_market_order_STRICT(
     self,
     symbol: str,
@@ -298,11 +310,16 @@ def _place_futures_market_order_STRICT(
 ):
     """Strict futures order sizer that skips instead of auto-bumping."""
     sym = (symbol or "").upper()
+    account_type_error = _futures_account_type_error(self, sym, mode="strict")
+    if account_type_error is not None:
+        return account_type_error
     side_up = _normalize_futures_order_side(side)
     if side_up is None:
         return {"ok": False, "symbol": sym, "error": f"Unsupported futures order side: {side!r}", "mode": "strict"}
     requested_leverage = kwargs.get("leverage")
-    leverage_input = requested_leverage if requested_leverage is not None else getattr(self, "_default_leverage", 5) or 5
+    leverage_input = (
+        requested_leverage if requested_leverage is not None else getattr(self, "_default_leverage", 5) or 5
+    )
     lev_requested = _normalize_futures_leverage(leverage_input)
     if lev_requested is None:
         return {"ok": False, "symbol": sym, "error": f"Bad leverage: {leverage_input!r}", "mode": "strict"}
@@ -340,10 +357,10 @@ def _place_futures_market_order_STRICT(
     dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
 
     quantity_value = _finite_float(quantity) if quantity is not None else None
-    if quantity is not None and quantity_value is None:
+    if quantity is not None and (quantity_value is None or quantity_value <= 0.0):
         return {"ok": False, "symbol": sym, "error": f"Bad quantity override: {quantity!r}", "mode": "strict"}
     percent_value = _finite_float(percent_balance) if percent_balance is not None else None
-    if percent_balance is not None and percent_value is None:
+    if percent_balance is not None and (percent_value is None or percent_value <= 0.0 or percent_value > 100.0):
         return {"ok": False, "symbol": sym, "error": f"Bad percent balance: {percent_balance!r}", "mode": "strict"}
     qty = float(quantity_value or 0.0)
     mode = "quantity"
@@ -383,7 +400,12 @@ def _place_futures_market_order_STRICT(
 
     qty = _floor_to_step(qty, step)
     if qty <= 0:
-        return {"ok": False, "symbol": sym, "error": "qty<=0", "computed": {"qty": qty, "px": px, "step": step, "lev": lev}}
+        return {
+            "ok": False,
+            "symbol": sym,
+            "error": "qty<=0",
+            "computed": {"qty": qty, "px": px, "step": step, "lev": lev},
+        }
 
     qty_str = self._format_quantity_for_order(qty, step)
     params = dict(symbol=sym, side=side_up, type="MARKET", quantity=qty_str)
@@ -401,14 +423,27 @@ def _place_futures_market_order_STRICT(
         res = {
             "ok": True,
             "info": info,
-            "computed": {"qty": qty, "px": px, "step": step, "minQty": min_qty, "minNotional": min_notional, "lev": lev},
+            "computed": {
+                "qty": qty,
+                "px": px,
+                "step": step,
+                "minQty": min_qty,
+                "minNotional": min_notional,
+                "lev": lev,
+            },
             "mode": mode,
         }
         if via and via != "primary":
             res["via"] = via
         return res
     except Exception as exc:
-        return {"ok": False, "symbol": sym, "error": str(exc), "computed": {"qty": qty, "px": px, "step": step, "lev": lev}, "mode": mode}
+        return {
+            "ok": False,
+            "symbol": sym,
+            "error": str(exc),
+            "computed": {"qty": qty, "px": px, "step": step, "lev": lev},
+            "mode": mode,
+        }
 
 
 def _place_futures_market_order_FLEX(
@@ -423,11 +458,16 @@ def _place_futures_market_order_FLEX(
 ):
     """Flexible sizer that always tries to place the minimum legal order."""
     sym = (symbol or "").upper()
+    account_type_error = _futures_account_type_error(self, sym, mode="flex")
+    if account_type_error is not None:
+        return account_type_error
     side_up = _normalize_futures_order_side(side)
     if side_up is None:
         return {"ok": False, "symbol": sym, "error": f"Unsupported futures order side: {side!r}", "mode": "flex"}
     requested_leverage = kwargs.get("leverage")
-    leverage_input = requested_leverage if requested_leverage is not None else getattr(self, "_default_leverage", 5) or 5
+    leverage_input = (
+        requested_leverage if requested_leverage is not None else getattr(self, "_default_leverage", 5) or 5
+    )
     desired_requested = _normalize_futures_leverage(leverage_input)
     if desired_requested is None:
         return {"ok": False, "symbol": sym, "error": f"Bad leverage: {leverage_input!r}", "mode": "flex"}
@@ -437,10 +477,10 @@ def _place_futures_market_order_FLEX(
         return {"ok": False, "symbol": sym, "error": "No price available"}
 
     quantity_value = _finite_float(quantity) if quantity is not None else None
-    if quantity is not None and quantity_value is None:
+    if quantity is not None and (quantity_value is None or quantity_value <= 0.0):
         return {"ok": False, "symbol": sym, "error": f"Bad quantity override: {quantity!r}", "mode": "flex"}
     percent_value = _finite_float(percent_balance) if percent_balance is not None else None
-    if percent_balance is not None and percent_value is None:
+    if percent_balance is not None and (percent_value is None or percent_value <= 0.0 or percent_value > 100.0):
         return {"ok": False, "symbol": sym, "error": f"Bad percent balance: {percent_balance!r}", "mode": "flex"}
 
     desired_mm = kwargs.get("margin_mode") or getattr(self, "_default_margin_mode", "ISOLATED") or "ISOLATED"
@@ -459,25 +499,7 @@ def _place_futures_market_order_FLEX(
     if dual and not pos_side:
         pos_side = "SHORT" if side_up == "SELL" else "LONG"
 
-    def _floor_to_step_local(val: float, step_: float) -> float:
-        try:
-            if step_ <= 0:
-                return float(val)
-            import math
-            return math.floor(float(val) / float(step_)) * float(step_)
-        except Exception:
-            return float(val)
-
-    def _ceil_to_step_local(val: float, step_: float) -> float:
-        try:
-            if step_ <= 0:
-                return float(val)
-            import math
-            return math.ceil(float(val) / float(step_)) * float(step_)
-        except Exception:
-            return float(val)
-
-    min_qty_by_notional = _ceil_to_step_local(min_notional / px, step)
+    min_qty_by_notional = _ceil_to_step(min_notional / px, step)
     min_legal_qty = max(min_qty, min_qty_by_notional)
 
     lev = max(1, int(effective_lev))
@@ -485,19 +507,21 @@ def _place_futures_market_order_FLEX(
 
     mode = "quantity" if (quantity_value is not None and quantity_value > 0) else "percent"
     if quantity_value is not None and quantity_value > 0:
-        qty = _floor_to_step_local(quantity_value, step)
+        qty = _floor_to_step(quantity_value, step)
     else:
         pct = max(float(percent_value or 0.0), 0.0)
         avail = float(self.get_futures_balance_usdt() or 0.0)
         margin_budget = avail * (pct / 100.0)
         target_notional = margin_budget * max(lev, 1)
-        qty = _floor_to_step_local((target_notional / px) if px > 0 else 0.0, step)
+        qty = _floor_to_step((target_notional / px) if px > 0 else 0.0, step)
 
         if qty < min_legal_qty:
             required_notional = max(min_notional, min_qty * px, min_legal_qty * px)
             required_margin = required_notional / max(lev, 1)
             required_percent = (required_notional / max(avail * max(lev, 1), 1e-12)) * 100.0
-            max_auto_bump_percent = float(kwargs.get("max_auto_bump_percent", getattr(self, "_max_auto_bump_percent", 5.0)))
+            max_auto_bump_percent = float(
+                kwargs.get("max_auto_bump_percent", getattr(self, "_max_auto_bump_percent", 5.0))
+            )
             percent_multiplier = float(
                 kwargs.get("auto_bump_percent_multiplier", getattr(self, "_auto_bump_percent_multiplier", 10.0))
             )
@@ -534,7 +558,7 @@ def _place_futures_market_order_FLEX(
                             "step": step,
                             "minQty": min_qty,
                             "minNotional": min_notional,
-                            "need_qty": _ceil_to_step_local(required_notional / px, step),
+                            "need_qty": _ceil_to_step(required_notional / px, step),
                             "need_notional": required_notional,
                             "lev": lev,
                             "avail": avail,
@@ -544,7 +568,7 @@ def _place_futures_market_order_FLEX(
                         "required_percent": required_percent,
                         "mode": "percent(strict)",
                     }
-                qty = _ceil_to_step_local(required_notional / px, step)
+                qty = _ceil_to_step(required_notional / px, step)
                 mode = "percent(bumped_to_min)"
             else:
                 limit_pct = None if (allowed_percent == float("inf") or not within_margin) else allowed_percent
@@ -560,7 +584,7 @@ def _place_futures_market_order_FLEX(
                         "step": step,
                         "minQty": min_qty,
                         "minNotional": min_notional,
-                        "need_qty": _ceil_to_step_local(required_notional / px, step),
+                        "need_qty": _ceil_to_step(required_notional / px, step),
                         "need_notional": required_notional,
                         "lev": lev,
                         "avail": avail,
@@ -573,7 +597,7 @@ def _place_futures_market_order_FLEX(
                 }
 
     qty = max(qty, min_legal_qty)
-    qty = _floor_to_step_local(qty, step)
+    qty = _floor_to_step(qty, step)
     if qty <= 0 and not reduce_only:
         return {"ok": False, "symbol": sym, "error": "qty<=0 after sizing"}
 
@@ -590,14 +614,27 @@ def _place_futures_market_order_FLEX(
         res = {
             "ok": True,
             "info": order,
-            "computed": {"qty": qty, "px": px, "step": step, "minQty": min_qty, "minNotional": min_notional, "lev": lev},
+            "computed": {
+                "qty": qty,
+                "px": px,
+                "step": step,
+                "minQty": min_qty,
+                "minNotional": min_notional,
+                "lev": lev,
+            },
             "mode": mode,
         }
         if via and via != "primary":
             res["via"] = via
         return res
     except Exception as exc:
-        return {"ok": False, "symbol": sym, "error": str(exc), "computed": {"qty": qty, "px": px, "step": step, "lev": lev}, "mode": mode}
+        return {
+            "ok": False,
+            "symbol": sym,
+            "error": str(exc),
+            "computed": {"qty": qty, "px": px, "step": step, "lev": lev},
+            "mode": mode,
+        }
 
 
 def bind_binance_futures_orders(wrapper_cls, *, default_mode: str = "flex"):
@@ -609,6 +646,8 @@ def bind_binance_futures_orders(wrapper_cls, *, default_mode: str = "flex"):
     if mode == "base":
         wrapper_cls.place_futures_market_order = audit_order_method(place_futures_market_order, market="futures")
     elif mode == "strict":
-        wrapper_cls.place_futures_market_order = audit_order_method(_place_futures_market_order_STRICT, market="futures")
+        wrapper_cls.place_futures_market_order = audit_order_method(
+            _place_futures_market_order_STRICT, market="futures"
+        )
     else:
         wrapper_cls.place_futures_market_order = audit_order_method(_place_futures_market_order_FLEX, market="futures")

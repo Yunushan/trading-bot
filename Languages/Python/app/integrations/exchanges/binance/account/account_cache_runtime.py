@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import time
 
+from ..runtime_diagnostics import report_runtime_fallback
 from ..transport.helpers import _as_futures_account_dict, _as_futures_balance_entries
 
 
@@ -54,7 +55,8 @@ def _try_alt_futures_prefix_on_auth_error(self, path: str, *, list_mode: bool = 
         return None
     try:
         current_override = getattr(self, "_futures_api_prefix_override", None)
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures API prefix override read failed", exc)
         current_override = None
     if current_override == alt_prefix:
         return None
@@ -75,8 +77,8 @@ def _try_alt_futures_prefix_on_auth_error(self, path: str, *, list_mode: bool = 
         return data
     try:
         self._last_futures_http_error = err_snapshot
-    except Exception:
-        pass
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures authentication error restoration failed", exc)
     return None
 
 
@@ -111,7 +113,8 @@ def _get_futures_account_cached(self, max_age: float = 2.5, *, force_refresh: bo
                         acct_dict = _as_futures_account_dict(alt)
             if not acct_dict:
                 acct_dict = _as_futures_account_dict(self._fallback_futures_account())
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures account snapshot refresh failed", exc)
         acct_dict = {}
     with self._futures_account_cache_lock:
         if acct_dict:
@@ -154,7 +157,8 @@ def _get_futures_account_balance_cached(self, max_age: float = 2.5, *, force_ref
                         entries = list(_as_futures_balance_entries(alt))
             if not entries:
                 entries = self._fallback_futures_balance()
-    except Exception:
+    except Exception as exc:
+        report_runtime_fallback(self, "Futures balance snapshot refresh failed", exc)
         entries = []
     with self._futures_account_cache_lock:
         if entries:
@@ -173,13 +177,14 @@ def _spot_account_dict(self, *, force_refresh: bool = False) -> dict:
             ts = getattr(self, "_spot_acct_cache_ts", 0.0)
             if cache and (time.time() - ts) <= 2.0:
                 return cache
-        except Exception:
-            pass
+        except Exception as exc:
+            report_runtime_fallback(self, "Spot account cache read failed", exc)
     data = self._http_signed_spot("/v3/account")
     if not data:
         try:
             data = self.client.get_account()
-        except Exception:
+        except Exception as exc:
+            report_runtime_fallback(self, "Spot account SDK fallback failed", exc)
             data = {}
     if isinstance(data, dict):
         self._spot_acct_cache = data

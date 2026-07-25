@@ -4,6 +4,7 @@ import math
 from collections.abc import Iterable, Mapping
 
 from . import strategy_close_opposite_runtime
+from .close_execution import _pause_for_close_uncertainty, _safe_log
 
 try:
     from ....settings.live_safety import is_live_trading_mode
@@ -109,23 +110,48 @@ def _reconcile_liquidations(self, symbol: str) -> None:
                     entry,
                     leg_side_norm,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{symbol}@{key[1]} liquidation re-entry state cleanup failed: {exc}",
+                    reconciliation_required=True,
+                )
             try:
                 for indicator_key in self._extract_indicator_keys(entry):
                     self._record_indicator_close(symbol, key[1], indicator_key, leg_side_norm, entry.get("qty"))
-            except Exception:
-                pass
+            except Exception as exc:
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{symbol}@{key[1]} liquidation indicator close-state cleanup failed: {exc}",
+                    reconciliation_required=True,
+                )
             try:
                 self._queue_flip_on_close(key[1], leg_side_norm, entry, None)
-            except Exception:
-                pass
+            except Exception as exc:
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{symbol}@{key[1]} liquidation flip queue update failed: {exc}",
+                    reconciliation_required=True,
+                )
         for entry in entries:
-            for ind in self._extract_indicator_keys(entry):
+            try:
+                indicator_keys = self._extract_indicator_keys(entry)
+            except Exception as exc:
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{symbol}@{key[1]} liquidation indicator ownership lookup failed: {exc}",
+                    reconciliation_required=True,
+                )
+                continue
+            for ind in indicator_keys:
                 try:
                     self._purge_indicator_tracking(symbol, key[1], ind, leg_side_norm)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _pause_for_close_uncertainty(
+                        self,
+                        f"{symbol}@{key[1]} liquidation indicator tracking purge failed: {exc}",
+                        reconciliation_required=True,
+                    )
         self._remove_leg_entry(key, None)
         self._guard_mark_leg_closed(key)
 
@@ -183,8 +209,13 @@ def _merge_flip_requests_into_indicator_orders(
                 self._purge_indicator_tracking(
                     cw["symbol"], interval_current, indicator_key, side_value
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{interval_current or 'default'} pre-flip tracking purge failed: {exc}",
+                    reconciliation_required=True,
+                )
+                continue
         existing_req = existing_map.get((indicator_key, side_value))
         if existing_req is not None:
             if not existing_req.get("indicator_key"):
@@ -214,13 +245,11 @@ def _merge_flip_requests_into_indicator_orders(
             existing_req["trigger_actions"] = existing_actions
             continue
         if enforce_flip_signal_confirmation:
-            try:
-                self.log(
-                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} {side_value} "
-                    "flip request ignored (waiting for live indicator confirmation)."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} {side_value} "
+                "flip request ignored (waiting for live indicator confirmation).",
+            )
             continue
         allow_exchange_fallback = True
         try:
@@ -236,39 +265,60 @@ def _merge_flip_requests_into_indicator_orders(
                 strict_interval=True,
                 use_exchange_fallback=allow_exchange_fallback,
             )
-        except Exception:
-            live_qty = 0.0
+        except Exception as exc:
+            _pause_for_close_uncertainty(
+                self,
+                f"{cw['symbol']}@{interval_current or 'default'} flip ownership lookup failed: {exc}",
+                reconciliation_required=False,
+            )
+            continue
         if live_qty > qty_tol_indicator and allow_exchange_fallback:
             try:
                 desired_ps_check = None
                 if self.binance.get_futures_dual_side():
                     desired_ps_check = "LONG" if side_value == "BUY" else "SHORT"
-                exch_qty = max(
-                    0.0,
-                    float(
-                        self._current_futures_position_qty(
-                            cw["symbol"], side_value, desired_ps_check
-                        )
-                        or 0.0
-                    ),
+                exchange_qty_value = self._current_futures_position_qty(
+                    cw["symbol"], side_value, desired_ps_check
                 )
-            except Exception:
-                exch_qty = 0.0
+                if exchange_qty_value is None:
+                    raise RuntimeError("exchange position quantity is unavailable")
+                exch_qty = max(0.0, float(exchange_qty_value))
+                if not math.isfinite(exch_qty):
+                    raise ValueError("exchange position quantity is non-finite")
+            except Exception as exc:
+                _pause_for_close_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{interval_current or 'default'} flip exchange verification failed: {exc}",
+                    reconciliation_required=False,
+                )
+                continue
             tol_live = max(1e-9, exch_qty * 1e-6)
             if exch_qty <= tol_live:
                 try:
                     self._purge_indicator_tracking(
                         cw["symbol"], interval_current, indicator_key, side_value
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _pause_for_close_uncertainty(
+                        self,
+                        f"{cw['symbol']}@{interval_current or 'default'} stale flip tracking purge failed: {exc}",
+                        reconciliation_required=True,
+                    )
+                    continue
                 live_qty = 0.0
         if live_qty > qty_tol_indicator:
             continue
         try:
             flip_qty_val = float(req.get("qty") or 0.0)
-        except Exception:
-            flip_qty_val = 0.0
+            if not math.isfinite(flip_qty_val) or flip_qty_val < 0.0:
+                raise ValueError("flip quantity must be finite and nonnegative")
+        except (TypeError, ValueError, OverflowError) as exc:
+            _pause_for_close_uncertainty(
+                self,
+                f"{cw['symbol']}@{interval_current or 'default'} flip request quantity is invalid: {exc}",
+                reconciliation_required=True,
+            )
+            continue
         indicator_order_requests.append(
             {
                 "side": side_value,
@@ -291,5 +341,4 @@ def _merge_flip_requests_into_indicator_orders(
 def bind_strategy_position_flip_runtime(strategy_cls) -> None:
     strategy_cls._close_opposite_position = _close_opposite_position
     strategy_cls._merge_flip_requests_into_indicator_orders = _merge_flip_requests_into_indicator_orders
-
 

@@ -221,6 +221,7 @@ def _record_connector_order_block(
         "connector_state": connector_snapshot.get("state"),
     }
 
+    pause_error: Exception | None = None
     with lock:
         events = getattr(cls, "_CONNECTOR_ORDER_BLOCK_EVENTS", None)
         if not isinstance(events, list):
@@ -239,8 +240,28 @@ def _record_connector_order_block(
         cls._CONNECTOR_ORDER_CIRCUIT_OPEN = True
         try:
             cls._GLOBAL_PAUSE.set()
-        except Exception:
-            pass
+        except Exception as exc:
+            cls._CONNECTOR_ORDER_CIRCUIT_OPEN = False
+            pause_error = exc
+
+    if pause_error is not None:
+        strategy_order_error_logging.log_order_error(
+            self,
+            "connector health circuit breaker failed to pause trading",
+            cw=cw,
+            side=side,
+            account_type=account_type,
+            exc=pause_error,
+            extra={
+                "context_key": context_key,
+                "signature": signature,
+                "block_count": block_count,
+                "block_threshold": threshold,
+                "block_window_seconds": window_seconds,
+            },
+            level="error",
+        )
+        return False
 
     strategy_order_error_logging.log_order_error(
         self,
@@ -280,8 +301,17 @@ def _record_connector_order_block(
                     "connector_state": connector_snapshot.get("state"),
                 }
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            strategy_order_error_logging.log_order_error(
+                self,
+                "connector health circuit callback failed",
+                cw=cw,
+                side=side,
+                account_type=account_type,
+                exc=exc,
+                extra={"context_key": context_key, "signature": signature},
+                level="error",
+            )
     return True
 
 
@@ -428,8 +458,17 @@ def _submit_futures_signal_order(
         if guard_obj and hasattr(guard_obj, "end_open"):
             try:
                 guard_obj.end_open(cw["symbol"], cw.get("interval"), guard_side, False, context=context_key)
-            except Exception:
-                pass
+            except Exception as exc:
+                strategy_order_error_logging.log_order_error(
+                    self,
+                    "futures order guard release failed",
+                    cw=cw,
+                    side=side,
+                    account_type="FUTURES",
+                    exc=exc,
+                    extra={"context_key": context_key, "signature": signature},
+                    level="error" if _live_mode_for_order_guard(self, self.binance) else "warning",
+                )
 
     if callable(self.can_open_cb) and not allow_hedge_open:
         if not self.can_open_cb(cw["symbol"], cw.get("interval"), side, context_key):
@@ -458,8 +497,17 @@ def _submit_futures_signal_order(
                     invalidator = getattr(self.binance, "_invalidate_futures_positions_cache", None)
                     if callable(invalidator):
                         invalidator()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    strategy_order_error_logging.log_order_error(
+                        self,
+                        "futures position cache invalidation failed during flip refresh",
+                        cw=cw,
+                        side=side,
+                        account_type="FUTURES",
+                        exc=exc,
+                        extra={"context_key": context_key, "signature": signature},
+                        level="warning",
+                    )
                 try:
                     existing_positions = self.binance.list_open_futures_positions(
                         max_age=0.0,
@@ -594,8 +642,17 @@ def _submit_futures_signal_order(
         if guard_obj and hasattr(guard_obj, "end_open"):
             try:
                 guard_obj.end_open(cw["symbol"], cw.get("interval"), guard_side, False, context=context_key)
-            except Exception:
-                pass
+            except Exception as exc:
+                strategy_order_error_logging.log_order_error(
+                    self,
+                    "futures order guard release failed after stop request",
+                    cw=cw,
+                    side=side,
+                    account_type="FUTURES",
+                    exc=exc,
+                    extra={"context_key": context_key, "signature": signature},
+                    level="error",
+                )
         return {"ok": False, "symbol": cw["symbol"], "error": "stop_requested"}, False, True
 
     order_attempts = 0
@@ -655,11 +712,12 @@ def _submit_futures_signal_order(
                 break
             if order_success:
                 break
-            try:
-                err_text = order_res.get("error") or order_res
-                self.log(f"{cw['symbol']}@{cw.get('interval')} order error: {redact_text(err_text)}")
-            except Exception:
-                pass
+            err_text = order_res.get("error") or order_res
+            strategy_order_error_logging.safe_strategy_log(
+                self,
+                f"{cw['symbol']}@{cw.get('interval')} order error: {redact_text(err_text)}",
+                level="error",
+            )
             err_text = str(order_res.get("error") or "").lower()
             if order_attempts < 3 and any(token in err_text for token in rate_limit_tokens):
                 wait_time = min(5.0, backoff_base * order_attempts)
@@ -670,42 +728,57 @@ def _submit_futures_signal_order(
         if guard_obj and hasattr(guard_obj, "end_open"):
             try:
                 guard_obj.end_open(cw["symbol"], cw.get("interval"), guard_side, order_success, context=context_key)
-            except Exception:
-                pass
+            except Exception as exc:
+                strategy_order_error_logging.log_order_error(
+                    self,
+                    "futures order guard finalization failed",
+                    cw=cw,
+                    side=side,
+                    account_type="FUTURES",
+                    exc=exc,
+                    extra={
+                        "context_key": context_key,
+                        "signature": signature,
+                        "order_success": order_success,
+                    },
+                    level="error",
+                )
 
     if self.stopped():
         return order_res, order_success, True
     if order_success:
-        try:
-            via = order_res.get("via") or getattr(order_res.get("info", {}), "get", lambda *_: None)("via")
-            qty_dbg = order_res.get("computed", {}).get("qty") or order_res.get("info", {}).get("origQty")
-            self.log(f"{cw['symbol']}@{cw.get('interval')} order placed {side} qty={qty_dbg} via={via or 'primary'}")
-        except Exception:
-            pass
+        via = order_res.get("via") or getattr(order_res.get("info", {}), "get", lambda *_: None)("via")
+        computed = order_res.get("computed")
+        info = order_res.get("info")
+        qty_dbg = (computed.get("qty") if isinstance(computed, dict) else None) or (
+            info.get("origQty") if isinstance(info, dict) else None
+        )
+        strategy_order_error_logging.safe_strategy_log(
+            self,
+            f"{cw['symbol']}@{cw.get('interval')} order placed {side} qty={qty_dbg} via={via or 'primary'}",
+            level="info",
+        )
     else:
-        try:
-            strategy_order_error_logging.log_order_error(
-                self,
-                "futures order failed",
-                cw=cw,
-                side=side,
-                account_type="FUTURES",
-                exc=last_order_exc,
-                extra={
-                    "context_key": context_key,
-                    "signature": signature,
-                    "attempts": order_attempts,
-                    "price": price_for_order,
-                    "qty": qty_est,
-                    "leverage": lev,
-                    "reduce_only": reduce_only,
-                    "position_side": desired_ps,
-                    "order_result": order_res,
-                },
-                include_traceback=last_order_exc is not None,
-            )
-        except Exception:
-            pass
+        strategy_order_error_logging.log_order_error(
+            self,
+            "futures order failed",
+            cw=cw,
+            side=side,
+            account_type="FUTURES",
+            exc=last_order_exc,
+            extra={
+                "context_key": context_key,
+                "signature": signature,
+                "attempts": order_attempts,
+                "price": price_for_order,
+                "qty": qty_est,
+                "leverage": lev,
+                "reduce_only": reduce_only,
+                "position_side": desired_ps,
+                "order_result": order_res,
+            },
+            include_traceback=last_order_exc is not None,
+        )
     return order_res, order_success, False
 
 

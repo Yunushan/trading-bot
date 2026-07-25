@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-use crate::generated_python_parity::{PYTHON_CONNECTOR_OPTIONS, PythonConnectorOption};
+use crate::generated_python_parity::{
+    PYTHON_BROKER_ORDER_ROUTING_BACKENDS, PYTHON_CONNECTOR_OPTIONS, PYTHON_SUPPORTED_BROKERS,
+    PYTHON_SUPPORTED_FOREX_BROKERS, PythonConnectorOption,
+};
 use crate::order_audit::{redact_text, redact_value};
 
 pub const DEFAULT_CONNECTOR_BACKEND: &str = "binance-sdk-derivatives-trading-usds-futures";
@@ -32,13 +35,11 @@ pub const SUPPORTED_EXCHANGES: &[&str] = &[
     "Kraken",
     "Bitfinex",
 ];
-pub const SUPPORTED_FOREX_BROKERS: &[&str] = &["OANDA", "FXCM", "IG"];
-pub const BROKER_ORDER_ROUTING_BROKERS: &[&str] = SUPPORTED_FOREX_BROKERS;
-pub const BROKER_ORDER_ROUTING_BACKENDS: &[(&str, &str)] = &[
-    ("oanda", "oanda-rest"),
-    ("fxcm", "fxcmpy"),
-    ("ig", "ig-rest"),
-];
+pub const SUPPORTED_FOREX_BROKERS: &[&str] = PYTHON_SUPPORTED_FOREX_BROKERS;
+pub const SUPPORTED_BROKERS: &[&str] = PYTHON_SUPPORTED_BROKERS;
+pub const BROKER_ORDER_ROUTING_BROKERS: &[&str] = SUPPORTED_BROKERS;
+pub const BROKER_ORDER_ROUTING_BACKENDS: &[(&str, &str, &str, bool)] =
+    PYTHON_BROKER_ORDER_ROUTING_BACKENDS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExchangeSupportInput {
@@ -56,6 +57,8 @@ pub struct ExchangeSupportPayload {
     pub exchange_supported: bool,
     pub connector_backend_supported: bool,
     pub broker_supported: bool,
+    pub broker_market_scope: String,
+    pub forex_order_routing_supported: bool,
     pub market_data_supported: bool,
     pub account_snapshot_supported: bool,
     pub order_routing_supported: bool,
@@ -67,6 +70,7 @@ pub struct ExchangeSupportPayload {
     pub unsupported_reasons: Vec<String>,
     pub supported_exchanges: Vec<String>,
     pub supported_connector_backends: Vec<String>,
+    pub supported_brokers: Vec<String>,
     pub supported_forex_brokers: Vec<String>,
     pub ccxt_diagnostic_exchanges: Vec<String>,
     pub ccxt_order_routing_exchanges: Vec<String>,
@@ -192,7 +196,7 @@ pub fn build_exchange_support_payload(
         .iter()
         .any(|item| support_key(item) == support_key(&connector_backend));
     let broker_supported = selected_forex_broker.trim().is_empty()
-        || SUPPORTED_FOREX_BROKERS
+        || SUPPORTED_BROKERS
             .iter()
             .any(|item| support_key(item) == support_key(&selected_forex_broker));
     let backend_key = support_key(&connector_backend);
@@ -206,7 +210,7 @@ pub fn build_exchange_support_payload(
             .any(|item| support_key(item) == exchange_key);
     let expected_broker_backend = BROKER_ORDER_ROUTING_BACKENDS
         .iter()
-        .find_map(|(broker, backend)| {
+        .find_map(|(broker, backend, _, _)| {
             if *broker == broker_key {
                 Some(*backend)
             } else {
@@ -216,6 +220,17 @@ pub fn build_exchange_support_payload(
         .unwrap_or("");
     let uses_broker_order_routing =
         !expected_broker_backend.is_empty() && backend_key == expected_broker_backend;
+    let (broker_market_scope, broker_supports_forex) = BROKER_ORDER_ROUTING_BACKENDS
+        .iter()
+        .find_map(|(broker, _, market_scope, supports_forex)| {
+            if *broker == broker_key {
+                Some(((*market_scope).to_owned(), *supports_forex))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    let forex_order_routing_supported = uses_broker_order_routing && broker_supports_forex;
     let order_execution_exchange = exchange_key == "binance";
     let market_data_supported = connector_backend_supported
         && ((!uses_broker
@@ -247,7 +262,7 @@ pub fn build_exchange_support_payload(
     }
     if !broker_supported {
         unsupported_reasons.push(format!(
-            "Forex broker '{selected_forex_broker}' is not implemented by this runtime."
+            "Broker '{selected_forex_broker}' is not implemented by this runtime."
         ));
     }
     if uses_broker && broker_supported && connector_backend_supported && !uses_broker_order_routing
@@ -283,6 +298,11 @@ pub fn build_exchange_support_payload(
             ));
         }
     }
+    if uses_broker_order_routing && !forex_order_routing_supported {
+        capability_gaps.push(format!(
+            "Broker '{selected_forex_broker}' connector is scoped to {broker_market_scope}; forex/CFD order routing is not exposed or claimed by this connector."
+        ));
+    }
     let support_tier = if order_execution_supported {
         if live_evidence_required {
             "order-routing-evidence-required"
@@ -303,6 +323,8 @@ pub fn build_exchange_support_payload(
         exchange_supported,
         connector_backend_supported,
         broker_supported,
+        broker_market_scope,
+        forex_order_routing_supported,
         market_data_supported,
         account_snapshot_supported,
         order_routing_supported,
@@ -317,6 +339,10 @@ pub fn build_exchange_support_payload(
             .map(|item| (*item).to_owned())
             .collect(),
         supported_connector_backends: supported_backends,
+        supported_brokers: SUPPORTED_BROKERS
+            .iter()
+            .map(|item| (*item).to_owned())
+            .collect(),
         supported_forex_brokers: SUPPORTED_FOREX_BROKERS
             .iter()
             .map(|item| (*item).to_owned())
@@ -336,7 +362,7 @@ pub fn build_exchange_support_payload(
             .collect(),
         broker_order_routing_backends: BROKER_ORDER_ROUTING_BACKENDS
             .iter()
-            .map(|(broker, backend)| ((*broker).to_owned(), (*backend).to_owned()))
+            .map(|(broker, backend, _, _)| ((*broker).to_owned(), (*backend).to_owned()))
             .collect(),
     }
 }
@@ -679,6 +705,140 @@ mod tests {
         assert!(ig.order_routing_supported);
         assert!(ig.order_execution_supported);
         assert!(ig.live_evidence_required);
+
+        let mut mt5_broker_count = 0;
+        for broker in SUPPORTED_FOREX_BROKERS {
+            let backend = BROKER_ORDER_ROUTING_BACKENDS
+                .iter()
+                .find(|(key, _, _, _)| *key == support_key(broker))
+                .map(|(_, backend, _, _)| *backend)
+                .unwrap_or_default();
+            if backend != "metatrader5" {
+                continue;
+            }
+            mt5_broker_count += 1;
+            let mt5 = build_exchange_support_payload(
+                ExchangeSupportInput {
+                    selected_exchange: String::new(),
+                    connector_backend: "metatrader5".to_owned(),
+                    selected_forex_broker: (*broker).to_owned(),
+                },
+                None,
+            );
+            assert!(mt5.broker_supported, "{broker}");
+            assert!(mt5.order_routing_supported, "{broker}");
+            assert!(mt5.order_execution_supported, "{broker}");
+            assert!(mt5.live_evidence_required, "{broker}");
+        }
+        assert!(mt5_broker_count >= 34);
+
+        let mut mt4_broker_count = 0;
+        for broker in SUPPORTED_FOREX_BROKERS {
+            let backend = BROKER_ORDER_ROUTING_BACKENDS
+                .iter()
+                .find(|(key, _, _, _)| *key == support_key(broker))
+                .map(|(_, backend, _, _)| *backend)
+                .unwrap_or_default();
+            if backend != "metatrader4-bridge" {
+                continue;
+            }
+            mt4_broker_count += 1;
+            let mt4 = build_exchange_support_payload(
+                ExchangeSupportInput {
+                    selected_exchange: String::new(),
+                    connector_backend: "metatrader4-bridge".to_owned(),
+                    selected_forex_broker: (*broker).to_owned(),
+                },
+                None,
+            );
+            assert!(mt4.broker_supported, "{broker}");
+            assert!(mt4.order_routing_supported, "{broker}");
+            assert!(mt4.forex_order_routing_supported, "{broker}");
+            assert!(mt4.live_evidence_required, "{broker}");
+        }
+        assert_eq!(mt4_broker_count, 3);
+
+        let trading212 = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "trading212-public-api".to_owned(),
+                selected_forex_broker: "Trading 212".to_owned(),
+            },
+            None,
+        );
+        assert!(trading212.broker_supported);
+        assert!(trading212.order_routing_supported);
+        assert!(trading212.order_execution_supported);
+        assert!(!trading212.forex_order_routing_supported);
+        assert_eq!(
+            trading212.broker_market_scope,
+            "invest-and-stocks-isa-equities-only"
+        );
+        assert!(SUPPORTED_BROKERS.contains(&"Trading 212"));
+        assert!(!SUPPORTED_FOREX_BROKERS.contains(&"Trading 212"));
+
+        let moomoo = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "moomoo-opend".to_owned(),
+                selected_forex_broker: "moomoo".to_owned(),
+            },
+            None,
+        );
+        assert!(moomoo.broker_supported);
+        assert!(moomoo.order_routing_supported);
+        assert!(!moomoo.forex_order_routing_supported);
+        assert_eq!(
+            moomoo.broker_market_scope,
+            "stocks-etfs-options-futures-funds-and-supported-crypto"
+        );
+        assert!(SUPPORTED_BROKERS.contains(&"moomoo"));
+        assert!(!SUPPORTED_FOREX_BROKERS.contains(&"moomoo"));
+
+        let stonex = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "metatrader5".to_owned(),
+                selected_forex_broker: "StoneX".to_owned(),
+            },
+            None,
+        );
+        assert!(stonex.broker_supported);
+        assert!(stonex.order_routing_supported);
+        assert!(!stonex.forex_order_routing_supported);
+        assert_eq!(stonex.broker_market_scope, "futures-and-options-on-futures");
+        assert!(SUPPORTED_BROKERS.contains(&"StoneX"));
+        assert!(!SUPPORTED_FOREX_BROKERS.contains(&"StoneX"));
+
+        let ai_gold = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "metatrader5".to_owned(),
+                selected_forex_broker: "AI Gold Securities".to_owned(),
+            },
+            None,
+        );
+        assert!(ai_gold.broker_supported);
+        assert!(ai_gold.order_routing_supported);
+        assert!(!ai_gold.forex_order_routing_supported);
+        assert_eq!(ai_gold.broker_market_scope, "otc-commodity-derivatives");
+        assert!(SUPPORTED_BROKERS.contains(&"AI Gold Securities"));
+        assert!(!SUPPORTED_FOREX_BROKERS.contains(&"AI Gold Securities"));
+
+        let citic = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "citic-ctp".to_owned(),
+                selected_forex_broker: "CITIC Futures".to_owned(),
+            },
+            None,
+        );
+        assert!(citic.broker_supported);
+        assert!(citic.order_routing_supported);
+        assert!(!citic.forex_order_routing_supported);
+        assert_eq!(citic.broker_market_scope, "china-futures-and-options");
+        assert!(SUPPORTED_BROKERS.contains(&"CITIC Futures"));
+        assert!(!SUPPORTED_FOREX_BROKERS.contains(&"CITIC Futures"));
 
         let wrong_broker_backend = build_exchange_support_payload(
             ExchangeSupportInput {

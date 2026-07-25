@@ -32,7 +32,7 @@ def _cpp_source_fingerprint(path_value: str | None) -> str:
     if not resolved.is_file():
         return "Missing"
     try:
-        digest = hashlib.sha1(resolved.read_bytes()).hexdigest()[:8]
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()[:8]
     except Exception:
         return "Source"
     return f"src-{digest}"

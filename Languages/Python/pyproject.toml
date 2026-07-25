@@ -51,6 +51,15 @@ security = [
     "pip-audit==2.10.1",
     "truststore==0.10.4",
 ]
+metatrader5 = [
+    "MetaTrader5==5.0.5735; platform_system == 'Windows' and platform_machine == 'AMD64'",
+]
+citic-ctp = [
+    "openctp-ctp==6.7.11.0; platform_system == 'Windows' or platform_system == 'Linux'",
+]
+moomoo = [
+    "moomoo-api==10.9.6908",
+]
 windows-arm64 = [
     "PyQt6==6.11.0",
     "PyQt6-Qt6==6.11.0",
@@ -71,6 +80,7 @@ dev = [
 [project.scripts]
 trading-bot-cli = "app.service.product_main:main"
 trading-bot-desktop = "app.desktop.product_main:main"
+trading-bot-mt4-bridge = "app.integrations.brokers.metatrader4_bridge:main"
 trading-bot-service = "app.service.product_main:main"
 
 [project.urls]

@@ -1,25 +1,46 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
 from ...security.redaction import redact_value
 from ...settings.exchange_support import build_exchange_support_payload
+from ._order_validation import merge_extra_order_fields
+from ._transport_validation import clean_http_base_url
 
 
-def _clean_base_url(value: str) -> str:
-    text = str(value or "").strip().rstrip("/")
-    return text or "https://demo-api.ig.com/gateway/deal"
+_PROTECTED_ORDER_FIELDS = frozenset(
+    {
+        "currencyCode",
+        "dealReference",
+        "direction",
+        "epic",
+        "expiry",
+        "forceOpen",
+        "guaranteedStop",
+        "orderType",
+        "size",
+        "timeInForce",
+        "trailingStop",
+    }
+)
+
+
+_DEFAULT_BASE_URL = "https://demo-api.ig.com/gateway/deal"
 
 
 def _positive_float(value: object, *, field: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a positive number")
     try:
         parsed = float(value)
-    except Exception as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{field} must be a positive number") from exc
-    if parsed <= 0:
+    if not math.isfinite(parsed) or parsed <= 0:
         raise ValueError(f"{field} must be a positive number")
     return parsed
 
@@ -35,11 +56,11 @@ def _response_json(response: object) -> dict[str, object]:
     status_code = int(getattr(response, "status_code", 0) or 0)
     try:
         payload = response.json()
-    except Exception as exc:
+    except ValueError as exc:
         raise RuntimeError(f"IG response was not JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("IG response must be a JSON object")
-    if status_code >= 400:
+    if not 200 <= status_code < 300:
         raise RuntimeError(f"IG request failed with HTTP {status_code}: {redact_value(payload)}")
     return payload
 
@@ -54,14 +75,21 @@ class IgBrokerConnector:
         cst: str = "",
         security_token: str = "",
         account_id: str = "",
-        base_url: str = "https://demo-api.ig.com/gateway/deal",
+        base_url: str = _DEFAULT_BASE_URL,
+        allow_insecure_remote: bool = False,
         session: Any | None = None,
     ) -> None:
         self.api_key = str(api_key or "").strip()
         self.cst = str(cst or "").strip()
         self.security_token = str(security_token or "").strip()
         self.account_id = str(account_id or "").strip()
-        self.base_url = _clean_base_url(base_url)
+        self.allow_insecure_remote = bool(allow_insecure_remote)
+        self.base_url = clean_http_base_url(
+            base_url,
+            default=_DEFAULT_BASE_URL,
+            field_name="IG base_url",
+            allow_insecure_remote=self.allow_insecure_remote,
+        )
         self.session = session or requests.Session()
 
     def support_payload(self) -> dict[str, object]:
@@ -106,6 +134,7 @@ class IgBrokerConnector:
                 "selected_forex_broker": "IG",
                 "connector_backend": "ig-rest",
                 "base_url": self.base_url,
+                "insecure_remote_transport_allowed": self.allow_insecure_remote,
                 "account_id_present": bool(self.account_id),
                 "api_key_present": bool(self.api_key),
                 "cst_present": bool(self.cst),
@@ -116,7 +145,12 @@ class IgBrokerConnector:
 
     def fetch_account_snapshot(self) -> dict[str, object]:
         self._require_live_credentials()
-        response = self.session.get(self._path("/accounts"), headers=self._headers(version="1"), timeout=15)
+        response = self.session.get(
+            self._path("/accounts"),
+            headers=self._headers(version="1"),
+            timeout=15,
+            allow_redirects=False,
+        )
         payload = _response_json(response)
         return redact_value({**self.build_capability_snapshot(), "accounts": payload.get("accounts", payload)})
 
@@ -126,9 +160,10 @@ class IgBrokerConnector:
         if not clean_epic:
             raise ValueError("epic is required")
         response = self.session.get(
-            self._path(f"/markets/{clean_epic}"),
+            self._path(f"/markets/{quote(clean_epic, safe='')}"),
             headers=self._headers(version="3"),
             timeout=15,
+            allow_redirects=False,
         )
         payload = _response_json(response)
         return redact_value({**self.build_capability_snapshot(), "market": payload})
@@ -168,8 +203,12 @@ class IgBrokerConnector:
         }
         if deal_reference:
             request["dealReference"] = str(deal_reference).strip()
-        if isinstance(extra_order_fields, Mapping):
-            request.update(dict(extra_order_fields))
+        merge_extra_order_fields(
+            request,
+            extra_order_fields,
+            protected_fields=_PROTECTED_ORDER_FIELDS,
+            provider="IG",
+        )
         if dry_run:
             return redact_value(
                 {
@@ -187,6 +226,7 @@ class IgBrokerConnector:
             headers=self._headers(version="2"),
             json=request,
             timeout=15,
+            allow_redirects=False,
         )
         payload = _response_json(response)
         return redact_value(

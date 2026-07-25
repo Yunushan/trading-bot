@@ -6,6 +6,8 @@ import time
 
 from app.settings import is_live_trading_mode
 
+from .strategy_order_error_logging import pause_for_order_uncertainty, safe_strategy_log
+
 
 def _live_mode_for_signal_order_prepare(self) -> bool:  # noqa: ANN001
     config = getattr(self, "config", {}) or {}
@@ -158,10 +160,11 @@ def _build_signal_order_candidates(
             if not request_trigger_desc:
                 request_trigger_desc = str(trigger_desc or "")
             if self._symbol_signature_active(cw["symbol"], side_value, signature, cw.get("interval")):
-                try:
-                    self.log(f"{cw['symbol']}@{cw.get('interval')} {side_value} skipped: signature active on this bar.")
-                except Exception:
-                    pass
+                safe_strategy_log(
+                    self,
+                    f"{cw['symbol']}@{cw.get('interval')} {side_value} skipped: signature active on this bar.",
+                    level="warning",
+                )
                 continue
             if signature in seen_signatures:
                 continue
@@ -255,13 +258,37 @@ def _filter_signal_order_candidates(
         stop_cutoff = 0.0
         try:
             stop_cutoff = float(getattr(self, "_stop_time", 0.0) or 0.0)
-        except Exception:
-            stop_cutoff = 0.0
+        except (TypeError, ValueError, OverflowError) as exc:
+            pause_for_order_uncertainty(
+                self,
+                f"{cw['symbol']}@{cw.get('interval') or 'default'} stop cutoff is invalid: {exc}",
+                reconciliation_required=False,
+            )
+            return filtered_orders, positions_cache_snapshot, True
+        if not math.isfinite(stop_cutoff) or stop_cutoff < 0.0:
+            pause_for_order_uncertainty(
+                self,
+                f"{cw['symbol']}@{cw.get('interval') or 'default'} stop cutoff must be finite and nonnegative",
+                reconciliation_required=False,
+            )
+            return filtered_orders, positions_cache_snapshot, True
         if stop_cutoff > 0.0:
             try:
                 order_ts = float(order.get("timestamp") or 0.0)
-            except Exception:
-                order_ts = 0.0
+            except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{cw.get('interval') or 'default'} order timestamp is invalid: {exc}",
+                    reconciliation_required=False,
+                )
+                return filtered_orders, positions_cache_snapshot, True
+            if not math.isfinite(order_ts) or order_ts <= 0.0:
+                pause_for_order_uncertainty(
+                    self,
+                    f"{cw['symbol']}@{cw.get('interval') or 'default'} order timestamp is missing or non-finite after stop",
+                    reconciliation_required=False,
+                )
+                return filtered_orders, positions_cache_snapshot, True
             if order_ts > 0.0 and order_ts <= stop_cutoff:
                 continue
         side_upper = str(order.get("side") or "").upper()
@@ -314,10 +341,25 @@ def _filter_signal_order_candidates(
             if duplicate_active:
                 allow_order = False
             else:
+                existing_qty_invalid = False
                 try:
                     existing_qty = float(leg_dup.get("qty") or 0.0)
-                except Exception:
+                except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+                    pause_for_order_uncertainty(
+                        self,
+                        f"{cw['symbol']}@{cw.get('interval') or 'default'} duplicate ledger quantity is invalid: {exc}",
+                        reconciliation_required=True,
+                    )
+                    existing_qty_invalid = True
                     existing_qty = 0.0
+                if existing_qty_invalid or not math.isfinite(existing_qty) or existing_qty < 0.0:
+                    if not existing_qty_invalid:
+                        pause_for_order_uncertainty(
+                            self,
+                            f"{cw['symbol']}@{cw.get('interval') or 'default'} duplicate ledger quantity must be finite and nonnegative",
+                            reconciliation_required=True,
+                        )
+                    continue
                 signature_tracked_elsewhere = (
                     bool(active_signatures) and bool(signature) and signature not in active_signatures
                 )
@@ -382,12 +424,14 @@ def _filter_signal_order_candidates(
                                 try:
                                     self._remove_leg_entry(key_dup, None)
                                     self._guard_mark_leg_closed(key_dup)
-                                except Exception:
-                                    pass
-                                try:
                                     self._last_order_time.pop(key_dup, None)
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    pause_for_order_uncertainty(
+                                        self,
+                                        f"{cw['symbol']}@{cw.get('interval') or 'default'} flip duplicate cleanup failed: {exc}",
+                                        reconciliation_required=True,
+                                    )
+                                    allow_order = False
                             else:
                                 self.log(
                                     f"{cw['symbol']}@{cw.get('interval')} pending fill guard: suppressing duplicate {side_upper} open (last attempt {elapsed:.1f}s ago)."
@@ -397,12 +441,14 @@ def _filter_signal_order_candidates(
                             try:
                                 self._remove_leg_entry(key_dup, None)
                                 self._guard_mark_leg_closed(key_dup)
-                            except Exception:
-                                pass
-                            try:
                                 self._last_order_time.pop(key_dup, None)
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                pause_for_order_uncertainty(
+                                    self,
+                                    f"{cw['symbol']}@{cw.get('interval') or 'default'} stale duplicate cleanup failed: {exc}",
+                                    reconciliation_required=True,
+                                )
+                                allow_order = False
         if allow_order:
             filtered_orders.append(
                 {
@@ -460,12 +506,12 @@ def _prepare_signal_orders(
     if not cw.get("trade_on_signal", True):
         orders_to_execute = []
     if initial_orders_count > 0 and not orders_to_execute:
-        try:
-            self.log(
-                f"{cw['symbol']}@{cw.get('interval')} order candidates={initial_orders_count} but all were filtered (guards/duplicates)."
-            )
-        except Exception:
-            pass
+        safe_strategy_log(
+            self,
+            f"{cw['symbol']}@{cw.get('interval')} order candidates={initial_orders_count} "
+            "but all were filtered (guards/duplicates).",
+            level="warning",
+        )
     return orders_to_execute, positions_cache_snapshot, False
 
 

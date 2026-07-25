@@ -1,6 +1,30 @@
 from __future__ import annotations
 
+import logging
 import time
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _mark_ledger_reconciliation_required(self, operation: str, exc: Exception) -> None:
+    self._ledger_reconciliation_required = True
+    _LOGGER.error(
+        "Position ledger auxiliary synchronization failed during %s: %s",
+        operation,
+        exc,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    cls = type(self)
+    pause_event = getattr(cls, "_GLOBAL_PAUSE", None)
+    if pause_event is None:
+        cls._GLOBAL_PAUSE_FALLBACK = True
+        return
+    try:
+        pause_event.set()
+    except Exception:
+        cls._GLOBAL_PAUSE_FALLBACK = True
+        _LOGGER.exception("Global pause event failed after position ledger synchronization error")
 
 
 def _update_leg_snapshot(self, leg_key, leg: dict | None) -> None:
@@ -52,8 +76,8 @@ def _append_leg_entry(self, leg_key, entry: dict) -> None:
     try:
         signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
         self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, +1)
-    except Exception:
-        pass
+    except Exception as exc:
+        _mark_ledger_reconciliation_required(self, "append signature count", exc)
     indicator_keys: list[str] | None = None
     try:
         ledger_id = entry.get("ledger_id")
@@ -72,8 +96,9 @@ def _append_leg_entry(self, leg_key, entry: dict) -> None:
                     entry.get("qty"),
                     entry,
                 )
-    except Exception:
+    except Exception as exc:
         indicator_keys = None
+        _mark_ledger_reconciliation_required(self, "append indicator/trade-book index", exc)
     try:
         if indicator_keys:
             interval_norm = str(leg_key[1] or "").strip().lower() or "default"
@@ -88,13 +113,13 @@ def _append_leg_entry(self, leg_key, entry: dict) -> None:
                     "side": side_norm,
                     "ts": now_ts,
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        _mark_ledger_reconciliation_required(self, "append indicator last-action state", exc)
     try:
         if indicator_keys:
             self._resolve_indicator_conflicts(leg_key, indicator_keys, entry)
-    except Exception:
-        pass
+    except Exception as exc:
+        _mark_ledger_reconciliation_required(self, "append indicator conflict resolution", exc)
 
 
 def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
@@ -104,8 +129,8 @@ def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
             try:
                 signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
                 self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, -1)
-            except Exception:
-                pass
+            except Exception as exc:
+                _mark_ledger_reconciliation_required(self, "remove-all signature count", exc)
             try:
                 ledger = entry.get("ledger_id")
                 indicator_keys = self._extract_indicator_keys(entry)
@@ -114,8 +139,8 @@ def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
                         self._indicator_unregister_entry(leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger)
                         self._trade_book_remove_entry(leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger)
                     self._ledger_index.pop(ledger, None)
-            except Exception:
-                pass
+            except Exception as exc:
+                _mark_ledger_reconciliation_required(self, "remove-all indicator/trade-book index", exc)
         self._leg_ledger.pop(leg_key, None)
         self._last_order_time.pop(leg_key, None)
         return
@@ -129,8 +154,8 @@ def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
             try:
                 signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
                 self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, -1)
-            except Exception:
-                pass
+            except Exception as exc:
+                _mark_ledger_reconciliation_required(self, "remove-final signature count", exc)
             try:
                 indicator_keys = self._extract_indicator_keys(entry)
                 ledger_token = entry.get("ledger_id")
@@ -142,15 +167,15 @@ def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
                         self._trade_book_remove_entry(
                             leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_token
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                _mark_ledger_reconciliation_required(self, "remove-final indicator/trade-book index", exc)
         try:
             for entry in removed_entries:
                 ledger = entry.get("ledger_id")
                 if ledger:
                     self._ledger_index.pop(ledger, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _mark_ledger_reconciliation_required(self, "remove-final ledger index", exc)
         self._leg_ledger.pop(leg_key, None)
         self._last_order_time.pop(leg_key, None)
         return
@@ -160,8 +185,8 @@ def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
         try:
             signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
             self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, -1)
-        except Exception:
-            pass
+        except Exception as exc:
+            _mark_ledger_reconciliation_required(self, "remove-entry signature count", exc)
         try:
             indicator_keys = self._extract_indicator_keys(entry)
             ledger_token = entry.get("ledger_id")
@@ -173,14 +198,14 @@ def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
                     self._trade_book_remove_entry(
                         leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_token
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            _mark_ledger_reconciliation_required(self, "remove-entry indicator/trade-book index", exc)
         try:
             ledger = entry.get("ledger_id")
             if ledger:
                 self._ledger_index.pop(ledger, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _mark_ledger_reconciliation_required(self, "remove-entry ledger index", exc)
 
 
 def _decrement_leg_entry_qty(

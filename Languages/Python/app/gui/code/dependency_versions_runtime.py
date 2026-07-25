@@ -5,10 +5,10 @@ import importlib.metadata as importlib_metadata
 import json
 import re
 import types
-import urllib.request
 
 from PyQt6 import QtCore
 
+from ...security.network_url import open_validated_url
 from . import (
     dependency_versions_cpp_runtime,
     dependency_versions_cpp_setup_runtime,
@@ -284,8 +284,11 @@ def _http_get_text(url: str, timeout: float = 8.0) -> str | None:
         return None
     timeout_val = max(2.0, float(timeout or 8.0))
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
-        with urllib.request.urlopen(request, timeout=timeout_val) as response:
+        with open_validated_url(
+            url,
+            timeout=timeout_val,
+            headers={"User-Agent": "trading-bot-starter/1.0"},
+        ) as response:
             data = response.read()
         return data.decode("utf-8", errors="ignore")
     except Exception:

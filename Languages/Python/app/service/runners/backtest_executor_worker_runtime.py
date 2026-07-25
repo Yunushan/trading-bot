@@ -16,13 +16,11 @@ def run_backtest_thread(
 ) -> None:
     try:
         wrapper = adapter._wrapper_factory(**wrapper_kwargs)
-        try:
-            wrapper.indicator_source = (
-                "Binance spot" if str(summary.get("symbol_source") or "").lower().startswith("spot")
-                else "Binance futures"
-            )
-        except Exception:
-            pass
+        wrapper.indicator_source = (
+            "Binance spot"
+            if str(summary.get("symbol_source") or "").lower().startswith("spot")
+            else "Binance futures"
+        )
         engine = BacktestEngine(wrapper)
 
         def _progress(message: str) -> None:

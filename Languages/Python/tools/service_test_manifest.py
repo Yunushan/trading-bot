@@ -35,6 +35,10 @@ SERVICE_TESTS = (
         "lifecycle control, control-plane descriptors, runtime samples, and live preflight gates",
     ),
     ServiceTestEntry(
+        "tests.test_service_runner_hardening",
+        "runner shutdown, timestamp validation, and market-source fail-closed behavior",
+    ),
+    ServiceTestEntry(
         "tests.test_service_client_integration",
         "desktop service client selection and service terminal/LLM commands",
     ),

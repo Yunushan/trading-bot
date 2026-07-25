@@ -42,6 +42,12 @@ from .service.api_contract import (
 )
 from .settings.backtest import BacktestSettings
 from .settings.execution import ExecutionSettings
+from .settings.exchange_support import (
+    BROKER_MARKET_SCOPES,
+    BROKER_ORDER_ROUTING_BACKENDS,
+    SUPPORTED_BROKERS,
+    SUPPORTED_FOREX_BROKERS,
+)
 from .settings.indicators import (
     INDICATOR_CATALOG,
     build_backtest_indicator_defaults,
@@ -115,8 +121,12 @@ INDICATOR_RUNTIME_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
     "bbw": ("bbw",),
     "keltner": ("keltner_upper", "keltner_mid", "keltner_lower"),
     "ichimoku": (
-        "ichimoku_tenkan", "ichimoku_kijun", "ichimoku_span_a",
-        "ichimoku_span_b", "ichimoku_chikou", "ichimoku",
+        "ichimoku_tenkan",
+        "ichimoku_kijun",
+        "ichimoku_span_a",
+        "ichimoku_span_b",
+        "ichimoku_chikou",
+        "ichimoku",
     ),
     "rsi": ("rsi",),
     "volume": ("volume",),
@@ -163,10 +173,8 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="desktop_shell_and_tabs",
         title="Desktop shell and primary tabs",
         python_surface="Dashboard, Chart, Positions, Backtest, Liquidation Heatmap, Code Languages, startup composition, theme, and live tab wiring.",
-        cpp_required_before_full_parity=(
-        ),
-        rust_required_before_full_parity=(
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -192,10 +200,8 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="strategy_runtime",
         title="Strategy runtime and signal generation",
         python_surface="Indicator computation, strategy cycles, signal generation, live candle options, override tables, and worker lifecycle.",
-        cpp_required_before_full_parity=(
-        ),
-        rust_required_before_full_parity=(
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -328,17 +334,11 @@ def _llm_provider_payload() -> list[dict[str, object]]:
 
 
 def _label_map_payload(values: dict[str, str]) -> list[dict[str, str]]:
-    return [
-        {"key": str(key), "label": str(label)}
-        for key, label in values.items()
-    ]
+    return [{"key": str(key), "label": str(label)} for key, label in values.items()]
 
 
 def _choice_payload(values: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
-    return [
-        {"label": str(label), "key": str(key), "value": str(key)}
-        for label, key in values
-    ]
+    return [{"label": str(label), "key": str(key), "value": str(key)} for label, key in values]
 
 
 def _canonical_choice_payload(values: dict[str, str]) -> list[dict[str, str]]:
@@ -353,28 +353,18 @@ def _canonical_choice_payload(values: dict[str, str]) -> list[dict[str, str]]:
 
 
 def _fixed_choice_payload(values: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
-    return [
-        {"key": str(key), "value": str(key), "label": str(label)}
-        for key, label in values
-    ]
+    return [{"key": str(key), "value": str(key), "label": str(label)} for key, label in values]
 
 
 def _value_option_payload(values: tuple[str, ...] | list[str]) -> list[dict[str, str]]:
-    return [
-        {"key": str(value), "value": str(value), "label": str(value)}
-        for value in values
-    ]
+    return [{"key": str(value), "value": str(value), "label": str(value)} for value in values]
 
 
 def _exchange_payload() -> list[dict[str, object]]:
     return [
         {
             "key": str(option["key"]),
-            "label": (
-                f"{option['title']} ({option['badge']})"
-                if option.get("badge")
-                else str(option["title"])
-            ),
+            "label": (f"{option['title']} ({option['badge']})" if option.get("badge") else str(option["title"])),
             "title": str(option["title"]),
             "badge": str(option.get("badge") or ""),
             "disabled": bool(option.get("disabled", False)),
@@ -385,13 +375,17 @@ def _exchange_payload() -> list[dict[str, object]]:
 
 
 def native_python_source_contract_payload() -> dict[str, Any]:
-    route_methods = {
-        name: list(methods)
-        for name, methods in SERVICE_API_ROUTE_METHODS.items()
-    }
-    connector_options = [
-        {"label": label, "key": key}
-        for label, key in _connector_options()
+    route_methods = {name: list(methods) for name, methods in SERVICE_API_ROUTE_METHODS.items()}
+    connector_options = [{"label": label, "key": key} for label, key in _connector_options()]
+    broker_backends = [
+        {
+            "broker": broker,
+            "key": str(broker).strip().lower().replace("_", "-"),
+            "backend": BROKER_ORDER_ROUTING_BACKENDS[str(broker).strip().lower().replace("_", "-")],
+            "market_scope": BROKER_MARKET_SCOPES[str(broker).strip().lower().replace("_", "-")],
+            "forex_order_routing_supported": broker in SUPPORTED_FOREX_BROKERS,
+        }
+        for broker in SUPPORTED_BROKERS
     ]
     execution_defaults = ExecutionSettings()
     backtest_defaults = BacktestSettings()
@@ -462,9 +456,7 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "scan_scope_options": _canonical_choice_payload(_SCAN_SCOPE_CHOICES),
             "optimizer_mode_options": _canonical_choice_payload(_OPTIMIZER_MODE_CHOICES),
             "optimizer_metric_options": _canonical_choice_payload(_OPTIMIZER_METRIC_CHOICES),
-            "backtest_execution_backend_options": _canonical_choice_payload(
-                _BACKTEST_EXECUTION_BACKEND_CHOICES
-            ),
+            "backtest_execution_backend_options": _canonical_choice_payload(_BACKTEST_EXECUTION_BACKEND_CHOICES),
             "chart_view_options": _fixed_choice_payload(
                 (
                     ("tradingview", "TradingView"),
@@ -489,6 +481,11 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         "default_execution": execution_defaults.to_config_dict(),
         "default_backtest": backtest_defaults.to_config_dict(),
         "llm_providers": _llm_provider_payload(),
+        "exchange_support": {
+            "supported_brokers": list(SUPPORTED_BROKERS),
+            "supported_forex_brokers": list(SUPPORTED_FOREX_BROKERS),
+            "broker_order_routing_backends": broker_backends,
+        },
     }
 
 
@@ -542,6 +539,9 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "llm_providers": list(payload["llm_providers"]),
         "llm_provider_keys": [provider.key for provider in _PROVIDER_SPECS],
         "connector_keys": [key for _label, key in _connector_options()],
+        "supported_brokers": list(payload["exchange_support"]["supported_brokers"]),
+        "supported_forex_brokers": list(payload["exchange_support"]["supported_forex_brokers"]),
+        "broker_order_routing_backends": list(payload["exchange_support"]["broker_order_routing_backends"]),
         "intervals": list(BACKTEST_INTERVAL_ORDER),
         "tradingview_interval_map": dict(payload["ui_options"]["tradingview_interval_map"]),
         "default_chart_symbols": list(payload["ui_options"]["default_chart_symbols"]),
@@ -574,9 +574,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "scan_scope_options": list(payload["ui_options"]["scan_scope_options"]),
         "optimizer_mode_options": list(payload["ui_options"]["optimizer_mode_options"]),
         "optimizer_metric_options": list(payload["ui_options"]["optimizer_metric_options"]),
-        "backtest_execution_backend_options": list(
-            payload["ui_options"]["backtest_execution_backend_options"]
-        ),
+        "backtest_execution_backend_options": list(payload["ui_options"]["backtest_execution_backend_options"]),
         "chart_view_options": list(payload["ui_options"]["chart_view_options"]),
         "positions_view_options": list(payload["ui_options"]["positions_view_options"]),
         "chart_view_keys": list(payload["ui_options"]["chart_view_keys"]),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 
 from ...security.redaction import redact_value
@@ -18,7 +19,20 @@ def _load_ccxt():
 def _compact_ticker(payload: object) -> dict[str, object]:
     raw = dict(payload) if isinstance(payload, Mapping) else {}
     result: dict[str, object] = {}
-    for key in ("symbol", "timestamp", "datetime", "last", "bid", "ask", "open", "high", "low", "close", "baseVolume", "quoteVolume"):
+    for key in (
+        "symbol",
+        "timestamp",
+        "datetime",
+        "last",
+        "bid",
+        "ask",
+        "open",
+        "high",
+        "low",
+        "close",
+        "baseVolume",
+        "quoteVolume",
+    ):
         value = raw.get(key)
         if value not in (None, ""):
             result[key] = value
@@ -58,11 +72,13 @@ def _normalize_order_type(value: object) -> str:
 
 
 def _positive_float(value: object, *, field: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a positive number")
     try:
         parsed = float(value)
-    except Exception as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{field} must be a positive number") from exc
-    if parsed <= 0:
+    if not math.isfinite(parsed) or parsed <= 0:
         raise ValueError(f"{field} must be a positive number")
     return parsed
 
@@ -140,7 +156,9 @@ class CcxtDiagnosticsConnector:
 
     def _build_exchange(self) -> object:
         if not self.exchange_id:
-            raise ValueError(f"Exchange '{self.selected_exchange}' is not available through the ccxt connector adapter.")
+            raise ValueError(
+                f"Exchange '{self.selected_exchange}' is not available through the ccxt connector adapter."
+            )
         options = self._options()
         if self._exchange_factory is not None:
             exchange = self._exchange_factory(self.exchange_id, dict(options))

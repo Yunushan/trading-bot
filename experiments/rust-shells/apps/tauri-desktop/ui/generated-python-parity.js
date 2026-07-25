@@ -133,6 +133,323 @@
       "label": "Top 100, %2 per trade, isolated, %20 per trade SL"
     }
   ],
+  "brokerOrderRoutingBackends": [
+    {
+      "backend": "oanda-rest",
+      "broker": "OANDA",
+      "forex_order_routing_supported": true,
+      "key": "oanda",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "fxcmpy",
+      "broker": "FXCM",
+      "forex_order_routing_supported": true,
+      "key": "fxcm",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "ig-rest",
+      "broker": "IG",
+      "forex_order_routing_supported": true,
+      "key": "ig",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader4-bridge",
+      "broker": "Trade Nation",
+      "forex_order_routing_supported": true,
+      "key": "trade nation",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader4-bridge",
+      "broker": "FXTF",
+      "forex_order_routing_supported": true,
+      "key": "fxtf",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader4-bridge",
+      "broker": "FOREX EXCHANGE",
+      "forex_order_routing_supported": true,
+      "key": "forex exchange",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "AvaTrade",
+      "forex_order_routing_supported": true,
+      "key": "avatrade",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "EC Markets",
+      "forex_order_routing_supported": true,
+      "key": "ec markets",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "GTCFX",
+      "forex_order_routing_supported": true,
+      "key": "gtcfx",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Finalto",
+      "forex_order_routing_supported": true,
+      "key": "finalto",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "ATFX",
+      "forex_order_routing_supported": true,
+      "key": "atfx",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Vantage",
+      "forex_order_routing_supported": true,
+      "key": "vantage",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "STARTRADER",
+      "forex_order_routing_supported": true,
+      "key": "startrader",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "XM",
+      "forex_order_routing_supported": true,
+      "key": "xm",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "TMGM",
+      "forex_order_routing_supported": true,
+      "key": "tmgm",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Capital.com",
+      "forex_order_routing_supported": true,
+      "key": "capital.com",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "IC Markets Global",
+      "forex_order_routing_supported": true,
+      "key": "ic markets global",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Hantec Financial",
+      "forex_order_routing_supported": true,
+      "key": "hantec financial",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "GO Markets",
+      "forex_order_routing_supported": true,
+      "key": "go markets",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "VT Markets",
+      "forex_order_routing_supported": true,
+      "key": "vt markets",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Neex",
+      "forex_order_routing_supported": true,
+      "key": "neex",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "ACY Securities",
+      "forex_order_routing_supported": true,
+      "key": "acy securities",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Fortune Prime Global",
+      "forex_order_routing_supported": true,
+      "key": "fortune prime global",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "DecodeFX",
+      "forex_order_routing_supported": true,
+      "key": "decodefx",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "CPT Markets",
+      "forex_order_routing_supported": true,
+      "key": "cpt markets",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "PU Prime",
+      "forex_order_routing_supported": true,
+      "key": "pu prime",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "AIMS",
+      "forex_order_routing_supported": true,
+      "key": "aims",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "ETO Markets",
+      "forex_order_routing_supported": true,
+      "key": "eto markets",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "D Prime",
+      "forex_order_routing_supported": true,
+      "key": "d prime",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Fusion Markets",
+      "forex_order_routing_supported": true,
+      "key": "fusion markets",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Exness",
+      "forex_order_routing_supported": true,
+      "key": "exness",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Valetax",
+      "forex_order_routing_supported": true,
+      "key": "valetax",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "CXM",
+      "forex_order_routing_supported": true,
+      "key": "cxm",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "DBG Markets",
+      "forex_order_routing_supported": true,
+      "key": "dbg markets",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "FXT",
+      "forex_order_routing_supported": true,
+      "key": "fxt",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "Plotio",
+      "forex_order_routing_supported": true,
+      "key": "plotio",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "FOREX.com",
+      "forex_order_routing_supported": true,
+      "key": "forex.com",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "CMC Markets",
+      "forex_order_routing_supported": true,
+      "key": "cmc markets",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "StoneX",
+      "forex_order_routing_supported": false,
+      "key": "stonex",
+      "market_scope": "futures-and-options-on-futures"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "SBCFX",
+      "forex_order_routing_supported": true,
+      "key": "sbcfx",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "PhillipCapital (Phillip Nova)",
+      "forex_order_routing_supported": true,
+      "key": "phillipcapital (phillip nova)",
+      "market_scope": "forex-and-provider-configured-cfd-markets"
+    },
+    {
+      "backend": "metatrader5",
+      "broker": "AI Gold Securities",
+      "forex_order_routing_supported": false,
+      "key": "ai gold securities",
+      "market_scope": "otc-commodity-derivatives"
+    },
+    {
+      "backend": "citic-ctp",
+      "broker": "CITIC Futures",
+      "forex_order_routing_supported": false,
+      "key": "citic futures",
+      "market_scope": "china-futures-and-options"
+    },
+    {
+      "backend": "trading212-public-api",
+      "broker": "Trading 212",
+      "forex_order_routing_supported": false,
+      "key": "trading 212",
+      "market_scope": "invest-and-stocks-isa-equities-only"
+    },
+    {
+      "backend": "moomoo-opend",
+      "broker": "moomoo",
+      "forex_order_routing_supported": false,
+      "key": "moomoo",
+      "market_scope": "stocks-etfs-options-futures-funds-and-supported-crypto"
+    }
+  ],
   "chartMarketOptions": [
     "Futures",
     "Spot"
@@ -185,6 +502,11 @@
     "oanda-rest",
     "fxcmpy",
     "ig-rest",
+    "citic-ctp",
+    "metatrader4-bridge",
+    "metatrader5",
+    "trading212-public-api",
+    "moomoo-opend",
     "python-binance"
   ],
   "connectorOptions": [
@@ -221,11 +543,31 @@
       "label": "IG REST Trading API"
     },
     {
+      "key": "citic-ctp",
+      "label": "CITIC Futures CTP (Local/Remote TCP Front)"
+    },
+    {
+      "key": "metatrader4-bridge",
+      "label": "MetaTrader 4 Bridge (Local/Remote Expert Advisor)"
+    },
+    {
+      "key": "metatrader5",
+      "label": "MetaTrader 5 (Official Python Integration)"
+    },
+    {
+      "key": "trading212-public-api",
+      "label": "Trading 212 Public API (Invest/Stocks ISA equities)"
+    },
+    {
+      "key": "moomoo-opend",
+      "label": "moomoo OpenD (Local/Remote Gateway)"
+    },
+    {
       "key": "python-binance",
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "b0af6262c01805946fadb828dc34b5d3b64cd253b632d80f55a2efbb2ee7a2f8",
+  "contractHash": "9546bba4a302d02da8c361828a04bdaba7bef2572679c1d8a73da1eb4cc5aca3",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -5281,6 +5623,95 @@
       "key": "entire_account",
       "label": "Entire Account Stop Loss"
     }
+  ],
+  "supportedBrokers": [
+    "OANDA",
+    "FXCM",
+    "IG",
+    "Trade Nation",
+    "FXTF",
+    "FOREX EXCHANGE",
+    "AvaTrade",
+    "EC Markets",
+    "GTCFX",
+    "Finalto",
+    "ATFX",
+    "Vantage",
+    "STARTRADER",
+    "XM",
+    "TMGM",
+    "Capital.com",
+    "IC Markets Global",
+    "Hantec Financial",
+    "GO Markets",
+    "VT Markets",
+    "Neex",
+    "ACY Securities",
+    "Fortune Prime Global",
+    "DecodeFX",
+    "CPT Markets",
+    "PU Prime",
+    "AIMS",
+    "ETO Markets",
+    "D Prime",
+    "Fusion Markets",
+    "Exness",
+    "Valetax",
+    "CXM",
+    "DBG Markets",
+    "FXT",
+    "Plotio",
+    "FOREX.com",
+    "CMC Markets",
+    "StoneX",
+    "SBCFX",
+    "PhillipCapital (Phillip Nova)",
+    "AI Gold Securities",
+    "CITIC Futures",
+    "Trading 212",
+    "moomoo"
+  ],
+  "supportedForexBrokers": [
+    "OANDA",
+    "FXCM",
+    "IG",
+    "Trade Nation",
+    "FXTF",
+    "FOREX EXCHANGE",
+    "AvaTrade",
+    "EC Markets",
+    "GTCFX",
+    "Finalto",
+    "ATFX",
+    "Vantage",
+    "STARTRADER",
+    "XM",
+    "TMGM",
+    "Capital.com",
+    "IC Markets Global",
+    "Hantec Financial",
+    "GO Markets",
+    "VT Markets",
+    "Neex",
+    "ACY Securities",
+    "Fortune Prime Global",
+    "DecodeFX",
+    "CPT Markets",
+    "PU Prime",
+    "AIMS",
+    "ETO Markets",
+    "D Prime",
+    "Fusion Markets",
+    "Exness",
+    "Valetax",
+    "CXM",
+    "DBG Markets",
+    "FXT",
+    "Plotio",
+    "FOREX.com",
+    "CMC Markets",
+    "SBCFX",
+    "PhillipCapital (Phillip Nova)"
   ],
   "themeOptions": [
     {

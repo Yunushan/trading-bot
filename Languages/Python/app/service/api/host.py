@@ -43,6 +43,7 @@ class ServiceApiBackgroundHost:
         self._server = None
         self._thread = None
         self._startup_error: Exception | None = None
+        self._shutdown_error: Exception | None = None
         self._shutdown_requested = False
         self._lock = threading.RLock()
 
@@ -76,6 +77,7 @@ class ServiceApiBackgroundHost:
             "host_context": "desktop-embedded",
             "host_owner": "desktop-gui",
             "startup_error": str(self._startup_error) if self._startup_error else "",
+            "shutdown_error": str(self._shutdown_error) if self._shutdown_error else "",
         }
 
     def start(self, *, timeout_seconds: float = 5.0) -> bool:
@@ -83,6 +85,7 @@ class ServiceApiBackgroundHost:
             if self.is_running():
                 return True
             self._startup_error = None
+            self._shutdown_error = None
             self._shutdown_requested = False
             self._app = create_service_api_app(
                 service=self._service,
@@ -151,6 +154,7 @@ class ServiceApiBackgroundHost:
             server = self._server
             thread = self._thread
             self._shutdown_requested = True
+            self._shutdown_error = None
             if server is None and (thread is None or not thread.is_alive()):
                 self._server = None
                 self._thread = None
@@ -158,12 +162,13 @@ class ServiceApiBackgroundHost:
             if server is not None:
                 try:
                     server.should_exit = True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._shutdown_error = exc
                 try:
                     server.force_exit = True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if self._shutdown_error is None:
+                        self._shutdown_error = exc
         if thread is not None:
             thread.join(max(0.5, float(timeout_seconds)))
         with self._lock:

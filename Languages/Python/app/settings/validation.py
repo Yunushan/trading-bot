@@ -445,13 +445,14 @@ def _validate_datetime_text(
     parsed = None
     try:
         parsed = datetime.fromisoformat(candidate)
-    except Exception:
+    except ValueError:
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
             try:
                 parsed = datetime.strptime(text, fmt)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
                 break
-            except Exception:
-                continue
     if parsed is None:
         issues.append(ConfigValidationIssue(_field(prefix, key), "must be an ISO date or datetime"))
         return

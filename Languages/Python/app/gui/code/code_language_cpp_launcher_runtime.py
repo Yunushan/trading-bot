@@ -264,7 +264,9 @@ def launch_cpp_from_code_tab(
         apply_windows_startupinfo(popen_kwargs)
 
         def _spawn_cpp() -> subprocess.Popen:
-            return subprocess.Popen([str(exe_path)], **popen_kwargs)
+            return subprocess.Popen(  # noqa: S603 - executable is a verified build or release artifact.
+                [str(exe_path)], **popen_kwargs
+            )
 
         _progress("Launching C++ bot...")
         try:

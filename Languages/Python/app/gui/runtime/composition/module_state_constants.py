@@ -5,25 +5,79 @@ from pathlib import Path
 
 
 BINANCE_SUPPORTED_INTERVALS = {
-    "1m", "3m", "5m", "15m", "30m",
-    "1h", "2h", "4h", "6h", "8h", "12h",
-    "1d", "3d", "1w", "1M",
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+    "1M",
 }
 
 BINANCE_INTERVAL_LOWER = {
-    "1m", "3m", "5m", "15m", "30m",
-    "1h", "2h", "4h", "6h", "8h", "12h",
-    "1d", "3d", "1w",
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
 }
 
 BACKTEST_INTERVAL_ORDER = [
-    "1m", "3m", "5m", "10m", "15m", "20m", "30m",
-    "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
-    "1d", "2d", "3d", "4d", "5d", "6d",
-    "1w", "2w", "3w",
-    "1month", "2months", "3months", "6months",
-    "1mo", "2mo", "3mo", "6mo",
-    "1y", "2y",
+    "1m",
+    "3m",
+    "5m",
+    "10m",
+    "15m",
+    "20m",
+    "30m",
+    "1h",
+    "2h",
+    "3h",
+    "4h",
+    "5h",
+    "6h",
+    "7h",
+    "8h",
+    "9h",
+    "10h",
+    "11h",
+    "12h",
+    "1d",
+    "2d",
+    "3d",
+    "4d",
+    "5d",
+    "6d",
+    "1w",
+    "2w",
+    "3w",
+    "1month",
+    "2months",
+    "3months",
+    "6months",
+    "1mo",
+    "2mo",
+    "3mo",
+    "6mo",
+    "1y",
+    "2y",
 ]
 
 TRADINGVIEW_INTERVAL_MAP = {
@@ -125,8 +179,16 @@ CHART_INTERVAL_OPTIONS = list(BACKTEST_INTERVAL_ORDER)
 CHART_MARKET_OPTIONS = ["Futures", "Spot"]
 ACCOUNT_MODE_OPTIONS = ["Classic Trading", "Portfolio Margin"]
 DEFAULT_CHART_SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "TRXUSDT",
 ]
 SIDE_LABELS = {
     "BUY": "Buy (Long)",
@@ -150,7 +212,10 @@ DBG_BACKTEST_RUN = True
 
 def _connector_options() -> list[tuple[str, str]]:
     return [
-        ("Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)", "binance-sdk-derivatives-trading-usds-futures"),
+        (
+            "Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)",
+            "binance-sdk-derivatives-trading-usds-futures",
+        ),
         ("Binance SDK Derivatives Trading COIN-M Futures", "binance-sdk-derivatives-trading-coin-futures"),
         ("Binance SDK Spot (Official Recommended)", "binance-sdk-spot"),
         ("Binance Connector Python", "binance-connector"),
@@ -158,6 +223,11 @@ def _connector_options() -> list[tuple[str, str]]:
         ("OANDA REST-v20", "oanda-rest"),
         ("FXCM fxcmpy", "fxcmpy"),
         ("IG REST Trading API", "ig-rest"),
+        ("CITIC Futures CTP (Local/Remote TCP Front)", "citic-ctp"),
+        ("MetaTrader 4 Bridge (Local/Remote Expert Advisor)", "metatrader4-bridge"),
+        ("MetaTrader 5 (Official Python Integration)", "metatrader5"),
+        ("Trading 212 Public API (Invest/Stocks ISA equities)", "trading212-public-api"),
+        ("moomoo OpenD (Local/Remote Gateway)", "moomoo-opend"),
         ("python-binance (Community)", "python-binance"),
     ]
 

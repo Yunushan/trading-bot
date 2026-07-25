@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import math
 import threading
 import time
@@ -26,6 +27,30 @@ except ImportError:  # pragma: no cover - standalone execution fallback
     )
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
+def _safe_log(self, message: str, *, level: int = logging.WARNING) -> bool:
+    callback = getattr(self, "log", None)
+    if callable(callback):
+        try:
+            callback(message)
+            return True
+        except Exception:
+            _LOGGER.exception("Strategy log callback failed while reporting: %s", message)
+            return False
+    _LOGGER.log(level, message)
+    return False
+
+
+def _force_pause_fallback(cls, message: str) -> None:
+    cls._GLOBAL_PAUSE_FALLBACK = True
+    try:
+        cls._GLOBAL_PAUSE.set()
+    except Exception:
+        _LOGGER.exception("%s; the pause event could not be set", message)
+
+
 def stop(self):
     self._stop = True
     try:
@@ -36,16 +61,24 @@ def stop(self):
 
 def stopped(self):
     cls = type(self)
+    if bool(getattr(cls, "_GLOBAL_SHUTDOWN_FALLBACK", False)):
+        return True
+    if bool(getattr(cls, "_GLOBAL_PAUSE_FALLBACK", False)):
+        return True
     try:
         if cls._GLOBAL_SHUTDOWN.is_set():
             return True
     except Exception:
-        pass
+        cls._GLOBAL_SHUTDOWN_FALLBACK = True
+        _LOGGER.exception("Global shutdown state could not be read; stopping strategy fail-closed")
+        return True
     try:
         if cls._GLOBAL_PAUSE.is_set():
             return True
     except Exception:
-        pass
+        cls._GLOBAL_PAUSE_FALLBACK = True
+        _LOGGER.exception("Global pause state could not be read; stopping strategy fail-closed")
+        return True
     return self._stop
 
 
@@ -53,46 +86,64 @@ def request_shutdown(cls) -> None:
     try:
         cls._GLOBAL_SHUTDOWN.set()
     except Exception:
-        pass
+        cls._GLOBAL_SHUTDOWN_FALLBACK = True
+        _LOGGER.exception("Global shutdown event could not be set; using fail-closed fallback")
+    else:
+        cls._GLOBAL_SHUTDOWN_FALLBACK = False
 
 
 def pause_trading(cls) -> None:
     try:
         cls._GLOBAL_PAUSE.set()
     except Exception:
-        pass
+        cls._GLOBAL_PAUSE_FALLBACK = True
+        _LOGGER.exception("Global pause event could not be set; using fail-closed fallback")
+    else:
+        cls._GLOBAL_PAUSE_FALLBACK = False
 
 
 def resume_trading(cls) -> None:
     try:
-        if not cls._GLOBAL_SHUTDOWN.is_set():
-            cls._GLOBAL_PAUSE.clear()
-            lock = getattr(cls, "_CONNECTOR_ORDER_BLOCK_LOCK", None)
-            if lock is not None:
-                try:
-                    with lock:
-                        events = getattr(cls, "_CONNECTOR_ORDER_BLOCK_EVENTS", None)
-                        if isinstance(events, list):
-                            events.clear()
-                        cls._CONNECTOR_ORDER_CIRCUIT_OPEN = False
-                except Exception:
-                    pass
+        shutdown_requested = bool(cls._GLOBAL_SHUTDOWN.is_set()) or bool(
+            getattr(cls, "_GLOBAL_SHUTDOWN_FALLBACK", False)
+        )
     except Exception:
-        pass
+        cls._GLOBAL_SHUTDOWN_FALLBACK = True
+        _force_pause_fallback(cls, "Global shutdown state could not be read during resume")
+        _LOGGER.exception("Trading resume rejected because shutdown state is unavailable")
+        return
+    if shutdown_requested:
+        return
+
+    try:
+        lock = getattr(cls, "_CONNECTOR_ORDER_BLOCK_LOCK", None)
+        if lock is not None:
+            with lock:
+                events = getattr(cls, "_CONNECTOR_ORDER_BLOCK_EVENTS", None)
+                if isinstance(events, list):
+                    events.clear()
+                cls._CONNECTOR_ORDER_CIRCUIT_OPEN = False
+        cls._GLOBAL_PAUSE.clear()
+    except Exception:
+        _force_pause_fallback(cls, "Trading resume failed")
+        _LOGGER.exception("Trading remains paused because resume state could not be reset")
+        return
+    cls._GLOBAL_PAUSE_FALLBACK = False
 
 
 def stop_blocking(self, timeout: float | None = 3.0):
     """Signal stop and wait briefly for the thread to exit without hanging the UI."""
     try:
         self.stop()
-    except Exception:
-        pass
+    except Exception as exc:
+        self._stop = True
+        _safe_log(self, f"Strategy stop callback failed; forcing local stop: {exc}")
     thread = getattr(self, "_thread", None)
     if thread is not None:
         try:
             thread.join(timeout=timeout if timeout is not None else 0.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            _safe_log(self, f"Strategy thread join failed after stop request: {exc}")
 
 
 def is_alive(self):
@@ -108,8 +159,8 @@ def join(self, timeout=None):
         thread = getattr(self, "_thread", None)
         if thread and thread.is_alive():
             thread.join(timeout)
-    except Exception:
-        pass
+    except Exception as exc:
+        _safe_log(self, f"Strategy thread join failed: {exc}")
 
 
 def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
@@ -117,19 +168,17 @@ def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
         return
     self._emergency_close_triggered = True
     self._emergency_close_status = "requested"
-    try:
-        self.log(f"{sym}@{interval} connectivity lost ({reason}); scheduling emergency close of all positions.")
-    except Exception:
-        pass
+    _safe_log(self, f"{sym}@{interval} connectivity lost ({reason}); scheduling emergency close of all positions.")
     try:
         closer = getattr(self.binance, "trigger_emergency_close_all", None)
         if callable(closer):
             dispatch_result = closer(reason=f"{sym}@{interval}: {reason}", source="strategy")
             if isinstance(dispatch_result, dict) and dispatch_result.get("ok") is False:
                 self._emergency_close_status = "dispatch_failed"
-                self.log(
+                _safe_log(
+                    self,
                     f"{sym}@{interval} emergency close dispatch was rejected: "
-                    f"{dispatch_result.get('error') or dispatch_result}."
+                    f"{dispatch_result.get('error') or dispatch_result}.",
                 )
             else:
                 self._emergency_close_status = "dispatched"
@@ -153,30 +202,26 @@ def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
                     ]
                     if failures:
                         self._emergency_close_status = "completed_with_failures"
-                        self.log(
+                        _safe_log(
+                            self,
                             f"{sym}@{interval} emergency close completed with {len(failures)} failed leg(s)."
                         )
                     else:
                         self._emergency_close_status = "completed"
                 except Exception as exc:
                     self._emergency_close_status = "execution_failed"
-                    try:
-                        self.log(f"{sym}@{interval} emergency close execution failed: {exc}")
-                    except Exception:
-                        return
+                    _safe_log(self, f"{sym}@{interval} emergency close execution failed: {exc}")
 
             threading.Thread(target=_do_close, name=f"EmergencyClose-{sym}@{interval}", daemon=True).start()
     except Exception as exc:
         self._emergency_close_status = "dispatch_failed"
-        try:
-            self.log(f"{sym}@{interval} emergency close scheduling failed: {exc}")
-        except Exception:
-            pass
+        _safe_log(self, f"{sym}@{interval} emergency close scheduling failed: {exc}")
     finally:
         try:
             self.stop()
-        except Exception:
+        except Exception as exc:
             self._stop = True
+            _safe_log(self, f"Strategy stop failed after emergency-close request: {exc}")
 
 
 def _handle_network_outage(self, sym: str, interval: str, exc: Exception) -> float:
@@ -195,11 +240,11 @@ def _handle_network_outage(self, sym: str, interval: str, exc: Exception) -> flo
         emergency_requested = bool(getattr(shared, "_network_emergency_dispatched", False))
     if (now - getattr(self, "_last_network_log", 0.0)) >= 8.0:
         self._last_network_log = now
-        try:
-            note = "emergency close queued" if emergency_requested else "monitoring"
-            self.log(f"{sym}@{interval} network offline ({reason_txt}); {note}; retrying in {backoff:.0f}s.")
-        except Exception:
-            pass
+        note = "emergency close queued" if emergency_requested else "monitoring"
+        _safe_log(
+            self,
+            f"{sym}@{interval} network offline ({reason_txt}); {note}; retrying in {backoff:.0f}s.",
+        )
     if emergency_requested:
         self._trigger_emergency_close(sym, interval, reason_txt)
     return backoff
@@ -265,12 +310,10 @@ def _fetch_cycle_market_state(self, *, ctx: dict[str, object]) -> dict[str, obje
         self._reconcile_liquidations(cw["symbol"])
     except Exception as exc:
         if is_live_trading_mode(getattr(self.binance, "mode", "")):
-            try:
-                self.log(
-                    f"{cw['symbol']}@{cw['interval']} liquidation reconciliation failed; live cycle blocked: {exc}"
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"{cw['symbol']}@{cw['interval']} liquidation reconciliation failed; live cycle blocked: {exc}",
+            )
             return None
     if self.stopped():
         return None
@@ -338,7 +381,7 @@ def _log_cycle_signal_summary(self, *, ctx: dict[str, object], market_state: dic
         if cw["indicators"]["ma"]["enabled"] and "ma" in ind and not ind["ma"].isnull().all():
             thresholds.append(f"MA={float(ind['ma'].iloc[-1]):.8f}")
     except Exception:
-        pass
+        _LOGGER.debug("Unable to render strategy MA threshold", exc_info=True)
 
     ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     parts = [
@@ -352,14 +395,14 @@ def _log_cycle_signal_summary(self, *, ctx: dict[str, object], market_state: dic
     if thresholds:
         parts.append("Thresholds:" + ",".join(thresholds))
     parts.append("Details:" + trigger_desc)
-    self.log(" | ".join(parts))
+    _safe_log(self, " | ".join(parts), level=logging.INFO)
 
 
 def run_loop(self):
     cls = type(self)
     sym = self.config.get("symbol", "(unknown)")
     interval = self.config.get("interval", "(unknown)")
-    self.log(f"Loop start for {sym} @ {interval}.")
+    _safe_log(self, f"Loop start for {sym} @ {interval}.", level=logging.INFO)
     if self.loop_override:
         interval_seconds = max(1, int(self._interval_seconds(self.loop_override)))
     else:
@@ -388,17 +431,15 @@ def run_loop(self):
         except NetworkConnectivityError as exc:
             sleep_override = self._handle_network_outage(sym, interval, exc)
         except Exception as exc:
-            self.log(f"Error in {sym}@{interval} loop: {repr(exc)}")
-            try:
-                self.log(traceback.format_exc())
-            except Exception:
-                pass
+            _safe_log(self, f"Error in {sym}@{interval} loop: {repr(exc)}")
+            _safe_log(self, traceback.format_exc())
         finally:
             if got_gate:
                 try:
                     cls._RUN_GATE.release()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._stop = True
+                    _safe_log(self, f"Strategy run gate release failed; stopping fail-closed: {exc}")
         loop_elapsed = max(0.0, time.time() - loop_started)
         if sleep_override is None:
             sleep_remaining = max(0.0, interval_seconds - loop_elapsed)
@@ -411,7 +452,7 @@ def run_loop(self):
             chunk = min(0.5, sleep_remaining)
             time.sleep(chunk)
             sleep_remaining -= chunk
-    self.log(f"Loop stopped for {sym} @ {interval}.")
+    _safe_log(self, f"Loop stopped for {sym} @ {interval}.", level=logging.INFO)
 
 
 def set_guard(self, guard):

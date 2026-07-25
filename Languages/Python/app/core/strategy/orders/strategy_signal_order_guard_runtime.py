@@ -1,6 +1,34 @@
 from __future__ import annotations
 
+import logging
+import math
 import time
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _safe_log(self, message: str, *, level: int = logging.WARNING) -> bool:
+    callback = getattr(self, "log", None)
+    if callable(callback):
+        try:
+            callback(message)
+            return True
+        except Exception:
+            _LOGGER.exception("Signal order guard log callback failed while reporting: %s", message)
+            return False
+    _LOGGER.log(level, message)
+    return False
+
+
+def _guard_timestamp(value: object, *, fallback: float) -> tuple[float, bool]:
+    try:
+        timestamp = float(value or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        return fallback, False
+    if not math.isfinite(timestamp) or timestamp < 0.0:
+        return fallback, False
+    return timestamp, True
 
 
 def _compute_signal_order_guard_window(self, interval_value, signature_guard_key) -> float:
@@ -8,11 +36,13 @@ def _compute_signal_order_guard_window(self, interval_value, signature_guard_key
         interval_seconds = float(self._interval_to_seconds(str(interval_value or "1m")))
     except Exception:
         interval_seconds = 60.0
+        _LOGGER.debug("Unable to parse signal order guard interval; using 60 seconds", exc_info=True)
     fast_context = False
     try:
         fast_context = any(str(part or "").startswith("slot") for part in signature_guard_key)
     except Exception:
         fast_context = False
+        _LOGGER.debug("Unable to inspect signal order guard signature", exc_info=True)
     guard_window_base = max(8.0, min(45.0, interval_seconds * 1.5))
     if fast_context:
         return min(
@@ -26,22 +56,30 @@ def _reset_stale_signal_order_guard(self, *, symbol: str, interval_key: str, sid
     try:
         qty_tol_guard = 1e-9
         live_qty_sym = 0.0
+        live_qty_unknown = False
         sym_upper = str(symbol or "").upper()
         for (sym_l, _iv_l, _side_l), leg_state in list(self._leg_ledger.items()):
             if str(sym_l or "").upper() != sym_upper:
                 continue
             try:
-                live_qty_sym = max(live_qty_sym, float(leg_state.get("qty") or 0.0))
-            except Exception:
-                pass
+                leg_qty = float(leg_state.get("qty") or 0.0)
+                if not math.isfinite(leg_qty) or leg_qty < 0.0:
+                    raise ValueError("non-finite or negative ledger quantity")
+                live_qty_sym = max(live_qty_sym, leg_qty)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                live_qty_unknown = True
+                _LOGGER.warning(
+                    "Signal order guard retained stale state because %s ledger quantity is invalid",
+                    sym_upper,
+                    exc_info=True,
+                )
         guard_key_symbol = (symbol, interval_key, side)
         state = type(self)._SYMBOL_ORDER_STATE.get(guard_key_symbol)
         if isinstance(state, dict):
-            try:
-                last_ts_guard = float(state.get("last") or 0.0)
-            except Exception:
-                last_ts_guard = 0.0
+            now = time.time()
+            last_ts_guard, last_ts_valid = _guard_timestamp(state.get("last"), fallback=now)
             age_candidates = []
+            state_age_unknown = not last_ts_valid and state.get("last") not in (None, "", 0, 0.0)
             if last_ts_guard > 0.0:
                 age_candidates.append(last_ts_guard)
             for bucket_name in ("pending_map", "signatures"):
@@ -49,26 +87,32 @@ def _reset_stale_signal_order_guard(self, *, symbol: str, interval_key: str, sid
                 if not isinstance(bucket, dict):
                     continue
                 for ts in bucket.values():
-                    try:
-                        ts_value = float(ts or 0.0)
-                    except Exception:
-                        ts_value = 0.0
+                    ts_value, ts_valid = _guard_timestamp(ts, fallback=now)
+                    if not ts_valid:
+                        state_age_unknown = True
                     if ts_value > 0.0:
                         age_candidates.append(ts_value)
-            age = (time.time() - max(age_candidates)) if age_candidates else float("inf")
-            if live_qty_sym <= qty_tol_guard and age > guard_window * 2.0:
+            age = (now - max(age_candidates)) if age_candidates else float("inf")
+            if not live_qty_unknown and not state_age_unknown and live_qty_sym <= qty_tol_guard and age > guard_window * 2.0:
                 state["pending_map"] = {}
                 state["signatures"] = {}
                 state["last"] = 0.0
                 type(self)._SYMBOL_ORDER_STATE[guard_key_symbol] = state
-                try:
-                    self.log(
-                        f"{symbol}@{interval_key} symbol guard reset after {age:.1f}s stale and no live qty."
-                    )
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                _safe_log(
+                    self,
+                    f"{symbol}@{interval_key} symbol guard reset after {age:.1f}s stale and no live qty.",
+                    level=logging.INFO,
+                )
+            elif live_qty_unknown or state_age_unknown:
+                _safe_log(
+                    self,
+                    f"{symbol}@{interval_key} symbol guard retained because stale-state safety could not be proven.",
+                )
+    except Exception as exc:
+        _safe_log(
+            self,
+            f"{symbol}@{interval_key} symbol guard stale-state check failed; retaining guard state: {exc}",
+        )
 
 
 def _prepare_signal_order_guard(
@@ -110,15 +154,18 @@ def _prepare_signal_order_guard(
             )
         except Exception:
             indicator_guard_override = False
+            _safe_log(
+                self,
+                f"{cw['symbol']}@{interval_key} indicator exposure check failed; guard override disabled.",
+            )
 
     active_check_signature = signature if signature else tuple(sorted(trigger_labels or []))
     if self._symbol_signature_active(cw["symbol"], side, active_check_signature, cw.get("interval")):
-        try:
-            self.log(
-                f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (signature {signature_label} still open)."
-            )
-        except Exception:
-            pass
+        _safe_log(
+            self,
+            f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (signature {signature_label} still open).",
+            level=logging.INFO,
+        )
         return {
             "aborted": True,
             "indicator_tokens_for_guard": indicator_tokens_for_guard,
@@ -143,12 +190,12 @@ def _prepare_signal_order_guard(
                 type(self)._BAR_GLOBAL_SIGNATURES[bar_sig_key] = global_tracker
             global_sig_set = global_tracker.setdefault("signatures", set())
             if sig_sorted in global_sig_set and not flip_active:
-                try:
-                    self.log(
-                        f"{cw['symbol']}@{interval_key} global duplicate {side} suppressed (order already placed this bar)."
-                    )
-                except Exception:
-                    pass
+                _safe_log(
+                    self,
+                    f"{cw['symbol']}@{interval_key} global duplicate {side} suppressed "
+                    f"(order already placed this bar).",
+                    level=logging.INFO,
+                )
                 return {
                     "aborted": True,
                     "indicator_tokens_for_guard": indicator_tokens_for_guard,
@@ -170,12 +217,11 @@ def _prepare_signal_order_guard(
                     "guard_window": guard_window,
                     "guard_claimed": False,
                 }
-            try:
-                self.log(
-                    f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (order already placed this bar)."
-                )
-            except Exception:
-                pass
+            _safe_log(
+                self,
+                f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (order already placed this bar).",
+                level=logging.INFO,
+            )
             return {
                 "aborted": True,
                 "indicator_tokens_for_guard": indicator_tokens_for_guard,
@@ -195,41 +241,54 @@ def _prepare_signal_order_guard(
         entry_guard = type(self)._SYMBOL_ORDER_STATE.get(guard_key_symbol)
         if not isinstance(entry_guard, dict):
             entry_guard = {}
-        last_ts = float(entry_guard.get("last") or 0.0)
+        last_ts, last_ts_valid = _guard_timestamp(entry_guard.get("last"), fallback=now_guard)
+        if not last_ts_valid and entry_guard.get("last") not in (None, "", 0, 0.0):
+            _safe_log(
+                self,
+                f"{cw['symbol']}@{interval_key} invalid last-order timestamp retained as active guard state.",
+            )
         signatures_state = entry_guard.get("signatures")
         if not isinstance(signatures_state, dict):
             signatures_state = {}
         pending_map = entry_guard.get("pending_map")
         if not isinstance(pending_map, dict):
             pending_map = {}
-        try:
-            expired = [
-                sig
-                for sig, ts in list(signatures_state.items())
-                if now_guard - float(ts or 0.0) > guard_window
-            ]
-        except Exception:
-            expired = []
+        expired = []
+        for sig, ts in list(signatures_state.items()):
+            ts_value, ts_valid = _guard_timestamp(ts, fallback=now_guard)
+            if not ts_valid:
+                _safe_log(
+                    self,
+                    f"{cw['symbol']}@{interval_key} invalid signature timestamp retained fail-closed.",
+                )
+                continue
+            if now_guard - ts_value > guard_window:
+                expired.append(sig)
         for sig in expired:
             signatures_state.pop(sig, None)
-        pending_expired = [
-            sig
-            for sig, ts in list(pending_map.items())
-            if now_guard - float(ts or 0.0) > guard_window * 1.5
-        ]
+        pending_expired = []
+        for sig, ts in list(pending_map.items()):
+            ts_value, ts_valid = _guard_timestamp(ts, fallback=now_guard)
+            if not ts_valid:
+                _safe_log(
+                    self,
+                    f"{cw['symbol']}@{interval_key} invalid pending-order timestamp retained fail-closed.",
+                )
+                continue
+            if now_guard - ts_value > guard_window * 1.5:
+                pending_expired.append(sig)
         for sig in pending_expired:
             pending_map.pop(sig, None)
         entry_guard["signatures"] = signatures_state
         entry_guard["pending_map"] = pending_map
         if signature_guard_key in pending_map:
             if not indicator_guard_override:
-                try:
-                    self.log(
-                        f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
-                        f"(previous order still pending for {signature_label})."
-                    )
-                except Exception:
-                    pass
+                _safe_log(
+                    self,
+                    f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
+                    f"(previous order still pending for {signature_label}).",
+                    level=logging.INFO,
+                )
                 return {
                     "aborted": True,
                     "indicator_tokens_for_guard": indicator_tokens_for_guard,
@@ -242,14 +301,13 @@ def _prepare_signal_order_guard(
         if signature_guard_key in signatures_state:
             if elapsed_since_last < guard_window:
                 if not indicator_guard_override:
-                    try:
-                        remaining = guard_window - elapsed_since_last
-                        self.log(
-                            f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
-                            f"(trigger {signature_label} still within guard window, wait {remaining:.1f}s)."
-                        )
-                    except Exception:
-                        pass
+                    remaining = guard_window - elapsed_since_last
+                    _safe_log(
+                        self,
+                        f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
+                        f"(trigger {signature_label} still within guard window, wait {remaining:.1f}s).",
+                        level=logging.INFO,
+                    )
                     return {
                         "aborted": True,
                         "indicator_tokens_for_guard": indicator_tokens_for_guard,
@@ -261,14 +319,13 @@ def _prepare_signal_order_guard(
             signatures_state.pop(signature_guard_key, None)
         elif not signatures_state and elapsed_since_last < guard_window:
             if not indicator_guard_override:
-                try:
-                    remaining = guard_window - elapsed_since_last
-                    self.log(
-                        f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
-                        f"(last order {elapsed_since_last:.1f}s ago, wait {remaining:.1f}s)."
-                    )
-                except Exception:
-                    pass
+                remaining = guard_window - elapsed_since_last
+                _safe_log(
+                    self,
+                    f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
+                    f"(last order {elapsed_since_last:.1f}s ago, wait {remaining:.1f}s).",
+                    level=logging.INFO,
+                )
                 return {
                     "aborted": True,
                     "indicator_tokens_for_guard": indicator_tokens_for_guard,
@@ -286,14 +343,13 @@ def _prepare_signal_order_guard(
         guard_claimed = True
 
     if guard_override_used:
-        try:
-            indicator_label = (indicator_key_hint or signature_label).upper()
-            self.log(
-                f"{cw['symbol']}@{interval_key} guard override: forcing {side} for indicator {indicator_label} "
-                f"to flip opposite exposure."
-            )
-        except Exception:
-            pass
+        indicator_label = str(indicator_key_hint or signature_label).upper()
+        _safe_log(
+            self,
+            f"{cw['symbol']}@{interval_key} guard override: forcing {side} for indicator {indicator_label} "
+            f"to flip opposite exposure.",
+            level=logging.INFO,
+        )
 
     return {
         "aborted": False,
