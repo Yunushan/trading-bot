@@ -60,7 +60,7 @@ class StartupIconRuntimeTests(unittest.TestCase):
                 mock.patch.object(startup_icon_runtime, "_resolve_native_icon_path", return_value=icon),
                 mock.patch.object(startup_icon_runtime, "_native_icon_cache", {}),
                 mock.patch.object(startup_icon_runtime, "_native_icon_handles", []),
-                mock.patch.object(ctypes, "windll", SimpleNamespace(user32=user32)),
+                mock.patch.object(ctypes, "windll", SimpleNamespace(user32=user32), create=True),
             ):
                 window = _Window()
                 self.assertTrue(startup_icon_runtime._set_native_window_icon(window))
@@ -95,7 +95,7 @@ class StartupIconRuntimeTests(unittest.TestCase):
                 mock.patch.object(startup_icon_runtime, "_resolve_native_icon_path", return_value=icon),
                 mock.patch.object(startup_icon_runtime, "_native_icon_cache", {}),
                 mock.patch.object(startup_icon_runtime, "_native_icon_handles", []),
-                mock.patch.object(ctypes, "windll", SimpleNamespace(user32=user32)),
+                mock.patch.object(ctypes, "windll", SimpleNamespace(user32=user32), create=True),
             ):
                 first_window = _Window()
                 second_window = _Window()
@@ -132,7 +132,7 @@ class StartupIconRuntimeTests(unittest.TestCase):
                 mock.patch.object(startup_icon_runtime, "_resolve_native_icon_path", return_value=icon),
                 mock.patch.object(startup_icon_runtime, "_native_icon_cache", {}),
                 mock.patch.object(startup_icon_runtime, "_native_icon_handles", []),
-                mock.patch.object(ctypes, "windll", SimpleNamespace(user32=user32)),
+                mock.patch.object(ctypes, "windll", SimpleNamespace(user32=user32), create=True),
             ):
                 self.assertTrue(startup_icon_runtime._set_native_window_icon(_Window()))
                 self.assertEqual([101], startup_icon_runtime._native_icon_handles)
