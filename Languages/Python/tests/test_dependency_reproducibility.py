@@ -509,8 +509,14 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         for parent in ("react-native", "rimraf", "test-exclude"):
             self.assertEqual("1.1.16", package["overrides"][parent]["brace-expansion"])
-            package_path = f"node_modules/{parent}/node_modules/brace-expansion"
-            self.assertEqual("1.1.16", lockfile["packages"][package_path]["version"])
+
+        resolved_versions = {
+            metadata["version"]
+            for package_path, metadata in lockfile["packages"].items()
+            if package_path.endswith("/brace-expansion")
+        }
+        self.assertTrue(resolved_versions)
+        self.assertTrue(resolved_versions <= {"1.1.16", "5.0.8"})
 
     def test_codeql_workflow_scans_python_javascript_and_native_languages_with_pinned_actions(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")

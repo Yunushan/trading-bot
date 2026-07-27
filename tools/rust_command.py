@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 _SCHANNEL_REVOCATION_ERROR = "CRYPT_E_NO_REVOCATION_CHECK"
@@ -22,7 +22,7 @@ def is_schannel_revocation_failure(result: subprocess.CompletedProcess[str]) -> 
 
 
 def _wsl_path(wsl: str, path: Path, *, timeout: int) -> str:
-    windows_path = str(path).replace("\\", "/")
+    windows_path = str(PureWindowsPath(str(path))).replace("\\", "/")
     result = subprocess.run(
         [wsl, "--", "wslpath", "-a", "-u", windows_path],
         capture_output=True,

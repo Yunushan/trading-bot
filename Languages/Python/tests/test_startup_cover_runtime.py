@@ -74,7 +74,7 @@ class NativeStartupCoverTests(unittest.TestCase):
                 {"BOT_STARTUP_MASK_ENABLED": "1", "BOT_NATIVE_STARTUP_COVER_ENABLED": "1"},
                 clear=False,
             ),
-            mock.patch.object(ctypes, "windll", SimpleNamespace(user32=user32, gdi32=gdi32)),
+            mock.patch.object(ctypes, "windll", SimpleNamespace(user32=user32, gdi32=gdi32), create=True),
         ):
             cover = startup_cover_runtime._show_native_startup_cover()
 

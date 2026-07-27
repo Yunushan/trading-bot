@@ -216,7 +216,12 @@ class WindowsTaskbarSplitSmokeTest(unittest.TestCase):
         with (
             mock.patch.object(taskbar_shared_runtime.sys, "platform", "win32"),
             mock.patch.object(taskbar_shared_runtime, "_COM_INITIALISED", False),
-            mock.patch.object(taskbar_shared_runtime, "_ole32", SimpleNamespace(CoInitialize=initialize_success)),
+            mock.patch.object(
+                taskbar_shared_runtime,
+                "_ole32",
+                SimpleNamespace(CoInitialize=initialize_success),
+                create=True,
+            ),
         ):
             self.assertTrue(taskbar_shared_runtime.co_initialize_once())
             self.assertTrue(taskbar_shared_runtime.co_initialize_once())
@@ -229,6 +234,7 @@ class WindowsTaskbarSplitSmokeTest(unittest.TestCase):
                 taskbar_shared_runtime,
                 "_ole32",
                 SimpleNamespace(CoInitialize=lambda _value: 0x80010106),
+                create=True,
             ),
         ):
             self.assertTrue(taskbar_shared_runtime.co_initialize_once())
