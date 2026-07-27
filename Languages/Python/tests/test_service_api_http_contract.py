@@ -380,6 +380,8 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             token_file = Path(temporary_directory) / "service-api-token"
             token_file.write_text("file-token\n", encoding="utf-8")
+            if os.name == "posix":
+                token_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
             with mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True):
                 self.assertEqual("file-token", resolve_service_api_token())
                 self.assertTrue(auth_required())
