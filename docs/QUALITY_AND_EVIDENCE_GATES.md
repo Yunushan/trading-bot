@@ -303,9 +303,11 @@ diff whitespace.
   release promotion. Use `tools/write_rust_native_release_evidence.py` to create the Rust
   release artifact from real GitHub Rust release assets and passed
   release-platform evidence. The manual
-  `.github/workflows/release-platform-real-tests.yml` workflow defaults to
-  `target_id: all`, expands the checked-in 12-target release matrix into its
-  declared runners, and validates the combined
+  `.github/workflows/release-platform-real-tests.yml` workflow defaults to a
+  hosted-only `target_id: all` run, excluding self-hosted Windows targets to
+  avoid waiting on an unavailable runner. Set `include_self_hosted: true` for
+  the full checked-in 12-target release matrix; `require_all_evidence: true`
+  also requires that opt-in and validates the combined
   `release-platform-evidence-*` artifacts in the same run. A specific canonical
   target id is for focused recovery only; `runner_labels_json` can override the
   runner only for that one target. Each matrix job uploads

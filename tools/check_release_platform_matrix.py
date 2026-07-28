@@ -586,6 +586,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--emit-github-matrix", action="store_true", help="Print a GitHub Actions matrix JSON object.")
     parser.add_argument("--target-filter", default="", help="Only emit or validate targets whose id contains this text.")
     parser.add_argument(
+        "--exclude-self-hosted",
+        action="store_true",
+        help="Exclude targets assigned to self-hosted runners.",
+    )
+    parser.add_argument(
         "--runner-labels-json",
         default="",
         help="Override runner labels for one focused emitted target; accepts a JSON string array.",
@@ -607,6 +612,13 @@ def main(argv: list[str] | None = None) -> int:
     targets = platform_targets + browser_targets
     filtered_targets = _filter_targets(targets, target_filter=args.target_filter)
     target_filter_active = bool(str(args.target_filter).strip())
+    if args.exclude_self_hosted:
+        filtered_targets = [
+            target
+            for target in filtered_targets
+            if "self-hosted" not in {str(label).lower() for label in target["runner_labels"]}
+        ]
+    selection_active = target_filter_active or bool(args.exclude_self_hosted)
     if target_filter_active and not filtered_targets:
         issues.append(f"target-filter matched no targets: {args.target_filter}")
     filtered_targets, override_issues = _override_runner_labels(
@@ -642,9 +654,10 @@ def main(argv: list[str] | None = None) -> int:
         "ok": not issues,
         "platform_target_count": len(platform_targets),
         "browser_target_count": len(browser_targets),
-        "target_count": len(filtered_targets) if target_filter_active else len(targets),
+        "target_count": len(filtered_targets) if selection_active else len(targets),
         "total_target_count": len(targets),
         "target_filter": str(args.target_filter).strip(),
+        "exclude_self_hosted": bool(args.exclude_self_hosted),
         "issues": issues,
         "evidence_required": bool(args.require_evidence),
         "require_current_commit": bool(args.require_current_commit),

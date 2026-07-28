@@ -4,17 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       target_id:
-        description: "Target id from docs/release-platform-test-matrix.json, for example browser-edge-windows_11_x64, or all to execute every target in one evidence run."
+        description: "Target id from docs/release-platform-test-matrix.json, or all to execute the selected target set."
         required: false
         default: "all"
         type: string
+      include_self_hosted:
+        description: "Include self-hosted Windows 11 targets. Leave false for hosted-only diagnostics."
+        required: true
+        default: false
+        type: boolean
       runner_labels_json:
         description: "Optional JSON array override for one focused target, for example [\"self-hosted\",\"tb-release-platform\",\"windows-7-x64\"]."
         required: false
         default: ""
         type: string
       require_all_evidence:
-        description: "After this run, fail unless release-platform-evidence contains passed evidence for every matrix target."
+        description: "Require passed evidence for every target; this requires include_self_hosted=true."
         required: true
         type: boolean
         default: false
@@ -59,12 +64,21 @@ jobs:
         shell: bash
         env:
           TARGET_ID: ${{ inputs.target_id }}
+          INCLUDE_SELF_HOSTED: ${{ inputs.include_self_hosted }}
+          REQUIRE_ALL_EVIDENCE: ${{ inputs.require_all_evidence }}
           RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
         run: |
           set -euo pipefail
+          if [[ "$REQUIRE_ALL_EVIDENCE" == "true" && "$INCLUDE_SELF_HOSTED" != "true" ]]; then
+            echo "require_all_evidence=true requires include_self_hosted=true" >&2
+            exit 2
+          fi
           args=(--emit-github-matrix)
           if [[ "$TARGET_ID" != "all" ]]; then
             args+=(--target-filter "$TARGET_ID")
+          fi
+          if [[ "$INCLUDE_SELF_HOSTED" != "true" ]]; then
+            args+=(--exclude-self-hosted)
           fi
           if [[ -n "$RUNNER_LABELS_JSON" ]]; then
             args+=(--runner-labels-json "$RUNNER_LABELS_JSON")
@@ -278,7 +292,7 @@ jobs:
   full-evidence-gate:
     name: Full Evidence Gate
     needs: [prepare-targets, run-target]
-    if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}
+    if: ${{ inputs.require_all_evidence || (inputs.target_id == 'all' && inputs.include_self_hosted) }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
