@@ -62,7 +62,7 @@ A desktop-first trading workspace centered on the **PyQt6 Python app** in `Langu
 ## System requirements
 
 - **Python**: 3.10 – 3.14 (3.14 is the pinned local development version in `.python-version`).
-- **Node.js**: 24 for the thin web dashboard tests, pinned in `.node-version`.
+- **Node.js**: 26 for the thin web dashboard tests, pinned in `.node-version`.
 - **pip**: bundled with Python, used to install dependencies.
 - **Internet access**: required for supported exchange/broker REST or WebSocket APIs. Binance is the primary current live path.
 - **Operating system**:

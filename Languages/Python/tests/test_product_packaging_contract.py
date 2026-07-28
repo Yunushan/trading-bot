@@ -1339,7 +1339,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertIn("Web Dashboard Quality", workflow)
         self.assertIn("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38", workflow)
-        self.assertIn('node-version: "24"', workflow)
+        self.assertIn('node-version: "26"', workflow)
         self.assertIn("working-directory: apps/web-dashboard", workflow)
         self.assertIn("node --check modules/render.js", workflow)
         self.assertIn("npm test", workflow)
@@ -1735,9 +1735,10 @@ class ProductPackagingContractTests(unittest.TestCase):
         release_platform_workflow = (
             REPO_ROOT / ".github" / "workflows" / "release-platform-real-tests.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("qtwebengine qtwebsockets qtwebchannel", release_platform_workflow)
+        self.assertIn("qtwebengine qtwebsockets qtwebchannel qtpositioning", release_platform_workflow)
         self.assertIn("Qt6WebEngineWidgetsConfig.cmake", release_platform_workflow)
         self.assertIn("CMAKE_PREFIX_PATH", release_platform_workflow)
+        self.assertIn("check_release_runner_availability.py", release_platform_workflow)
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-freebsd.yml"])
         for workflow_name in ("release-linux-macos.yml", "release-freebsd.yml"):
             workflow = workflows[workflow_name]

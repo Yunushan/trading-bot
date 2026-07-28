@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "npm@11.6.2",
   "engines": {
-    "node": ">=24 <25"
+    "node": ">=26 <27"
   },
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {

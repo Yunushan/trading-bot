@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 EXPECTED_PACKAGE_MANAGER = "npm@11.6.2"
-EXPECTED_NODE_ENGINE = ">=24 <25"
+EXPECTED_NODE_ENGINE = ">=26 <27"
 CLIENTS = ("apps/web-dashboard", "apps/mobile-client")
 
 

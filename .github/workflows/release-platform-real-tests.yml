@@ -30,6 +30,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -46,6 +47,23 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
+
+      - name: Verify self-hosted release runners are available
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_ID: ${{ inputs.target_id }}
+          RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
+        run: |
+          set -euo pipefail
+          args=(--repository "${GITHUB_REPOSITORY}")
+          if [[ "$TARGET_ID" != "all" ]]; then
+            args+=(--target-filter "$TARGET_ID")
+          fi
+          if [[ -n "$RUNNER_LABELS_JSON" ]]; then
+            args+=(--runner-labels-json "$RUNNER_LABELS_JSON")
+          fi
+          python tools/check_release_runner_availability.py "${args[@]}"
 
       - name: Install native parity dependencies
         shell: bash
@@ -91,9 +109,9 @@ jobs:
 
       - name: Set up Node for browser contracts
         if: ${{ startsWith(matrix.target.target_id, 'browser-') }}
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "24"
+          node-version: "26"
 
       - name: Set up Rust for native release probes
         if: ${{ !startsWith(matrix.target.target_id, 'browser-') }}
@@ -187,7 +205,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python -m pip install 'aqtinstall==3.3.0'
-          python -m aqt install-qt --outputdir "$env:RUNNER_TEMP/qt" windows desktop 6.10.3 win64_msvc2022_64 -m qtwebengine qtwebsockets qtwebchannel
+          python -m aqt install-qt --outputdir "$env:RUNNER_TEMP/qt" windows desktop 6.10.3 win64_msvc2022_64 -m qtwebengine qtwebsockets qtwebchannel qtpositioning
           $qtConfig = Get-ChildItem -Path "$env:RUNNER_TEMP/qt" -Recurse -Filter Qt6Config.cmake | Select-Object -First 1
           if ($null -eq $qtConfig) { throw 'Qt6Config.cmake was not installed.' }
           $qt6Dir = $qtConfig.Directory.FullName
@@ -211,7 +229,7 @@ jobs:
             host=linux
             arch=linux_gcc_64
           fi
-          python -m aqt install-qt --outputdir "$RUNNER_TEMP/qt" "$host" desktop 6.10.3 "$arch" -m qtwebengine qtwebsockets qtwebchannel
+          python -m aqt install-qt --outputdir "$RUNNER_TEMP/qt" "$host" desktop 6.10.3 "$arch" -m qtwebengine qtwebsockets qtwebchannel qtpositioning
           qt_config="$(find "$RUNNER_TEMP/qt" -path '*/lib/cmake/Qt6/Qt6Config.cmake' -print -quit)"
           test -n "$qt_config"
           qt6_dir="$(dirname "$qt_config")"

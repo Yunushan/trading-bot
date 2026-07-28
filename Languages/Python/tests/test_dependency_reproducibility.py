@@ -441,7 +441,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
     def test_repo_declares_local_runtime_tool_versions(self):
         self.assertEqual("3.14", (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip())
-        self.assertEqual("24", (REPO_ROOT / ".node-version").read_text(encoding="utf-8").strip())
+        self.assertEqual("26", (REPO_ROOT / ".node-version").read_text(encoding="utf-8").strip())
         launcher = (PYTHON_ROOT / "Trading-Bot-Python.bat").read_text(encoding="utf-8")
         self.assertIn("python-3.14.5-amd64.exe", launcher)
         docs = (REPO_ROOT / "docs" / "DEPENDENCY_REPRODUCIBILITY.md").read_text(encoding="utf-8")
@@ -618,13 +618,13 @@ class DependencyReproducibilityTests(unittest.TestCase):
         module = _load_tool_version_module()
 
         python_fix = module._runtime_remediation("python", "3.14", "3.12.9")
-        node_fix = module._runtime_remediation("node", "24", "20.10.0")
+        node_fix = module._runtime_remediation("node", "26", "20.10.0")
 
         self.assertIn("Python 3.14", python_fix)
         self.assertIn("python tools/bootstrap_local_dev.py --python-command", python_fix)
         self.assertIn('Languages/Python[desktop,service,dev]', python_fix)
-        self.assertIn("Node.js 24", node_fix)
-        self.assertEqual("", module._runtime_remediation("node", "24", "24.1.0"))
+        self.assertIn("Node.js 26", node_fix)
+        self.assertEqual("", module._runtime_remediation("node", "26", "26.1.0"))
 
     def test_local_dev_bootstrap_plan_installs_python_surface_and_clients(self):
         module = _load_bootstrap_module()
@@ -1025,7 +1025,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
             with self.subTest(path=path):
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual("npm@11.6.2", payload["packageManager"])
-                self.assertEqual(">=24 <25", payload["engines"]["node"])
+                self.assertEqual(">=26 <27", payload["engines"]["node"])
 
         self.assertTrue((REPO_ROOT / "apps" / "web-dashboard" / "package-lock.json").is_file())
 

@@ -312,7 +312,7 @@ def _checks(
             "tauri ui behavior tests",
             (node, "experiments/rust-shells/apps/tauri-desktop/ui/tauri-ui-behavior.test.cjs"),
             root,
-            remediation="Install Node.js 24 before running Tauri UI behavior tests.",
+            remediation="Install Node.js 26 before running Tauri UI behavior tests.",
         ),
         Check(
             "native c++ build and tests",
