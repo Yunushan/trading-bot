@@ -23,8 +23,9 @@ CMakeFiles/
 Languages/C++/build-*/
 Languages/Rust/target/
 experiments/rust-shells/target/
-# Generated host-specific Tauri schema; desktop and Windows contract schemas are versioned.
+# Generated host-specific Tauri schemas; desktop and Windows contract schemas are versioned.
 experiments/rust-shells/apps/tauri-desktop/gen/schemas/linux-schema.json
+experiments/rust-shells/apps/tauri-desktop/gen/schemas/macOS-schema.json
 .trading_bot_allocations.json
 /Trading-Bot-*.exe
 /.tmp_pythonw_info.txt
