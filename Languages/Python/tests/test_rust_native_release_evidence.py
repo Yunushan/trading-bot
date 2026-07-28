@@ -5817,6 +5817,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         configure_command = run_step.call_args_list[0].args[1]
         self.assertIn("-DCMAKE_BUILD_TYPE=Release", configure_command)
+        commands = [call.args[1] for call in run_step.call_args_list]
+        self.assertTrue(any("native_order_safety_tests" in command for command in commands))
+        self.assertTrue(any("native_service_api_contract_tests" in command for command in commands))
 
     def test_native_cpp_serializes_windows_builds_to_avoid_pdb_contention(self):
         with (

@@ -203,6 +203,18 @@ def check_native_cpp(
                 env=_desktop_smoke_env(build_dir, config),
             )
         )
+    if not smoke_targets_only:
+        # CMake's default target does not reliably build CTest executables on every
+        # generator. Build them explicitly before invoking CTest.
+        for target in ("native_order_safety_tests", "native_service_api_contract_tests"):
+            steps.append(
+                _run_step(
+                    f"build {target}",
+                    [cmake, "--build", str(build_dir), "--config", config, "--target", target, *_cmake_build_parallel_args()],
+                    cwd=root,
+                    timeout=timeout,
+                )
+            )
     steps.append(_run_step("test", tests, cwd=root, timeout=timeout))
     ok = all(bool(step.get("ok")) for step in steps)
     report: dict[str, object] = {
