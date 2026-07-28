@@ -1,5 +1,5 @@
 name: Verify release platform evidence
-description: Require full current-source release-platform evidence before publishing tagged assets.
+description: Require declared current-source release-platform evidence before publishing tagged assets.
 
 inputs:
   tag:
@@ -30,8 +30,10 @@ runs:
         )
         source_revision="$(python tools/check_release_qa.py "${common_args[@]}" --print-source-revision)"
         evidence_run_id="$(python tools/check_release_qa.py "${common_args[@]}" --print-platform-evidence-run-id)"
+        evidence_scope="$(python tools/check_release_qa.py "${common_args[@]}" --print-platform-evidence-scope)"
         echo "source_revision=${source_revision}" >> "${GITHUB_OUTPUT}"
         echo "evidence_run_id=${evidence_run_id}" >> "${GITHUB_OUTPUT}"
+        echo "evidence_scope=${evidence_scope}" >> "${GITHUB_OUTPUT}"
 
     - name: Download release platform evidence
       uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -48,8 +50,13 @@ runs:
       run: |
         set -euo pipefail
         git checkout --detach "${{ steps.release_qa.outputs.source_revision }}"
-        python tools/check_release_platform_matrix.py \
+        args=(
           --require-evidence \
           --require-current-commit \
           --require-clean-source \
           --evidence-dir "${{ inputs.evidence_dir }}"
+        )
+        if [[ "${{ steps.release_qa.outputs.evidence_scope }}" == "hosted-only" ]]; then
+          args+=(--exclude-self-hosted)
+        fi
+        python tools/check_release_platform_matrix.py "${args[@]}"

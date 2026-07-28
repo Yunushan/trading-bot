@@ -36,6 +36,7 @@ def _approved_note(tag: str = "v1.2.3") -> str:
 - Operator: Release engineering
 - Outcome: approved
 - Release platform evidence run ID: 123456789
+- Release platform evidence scope: full
 
 - [x] Desktop visual flow: Passed with expected controls and error states.
 - [x] Service API flow: Passed health, authentication, and unavailable-service checks.
@@ -76,6 +77,22 @@ class ReleaseQaTests(unittest.TestCase):
                 require_platform_evidence_run=True,
             )
         self.assertIn("QA note Release platform evidence run ID must be a positive GitHub Actions run ID", issues)
+
+    def test_requires_a_known_platform_evidence_scope_when_requested(self):
+        checker = _load_checker()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / "v1.2.3.md"
+            note.write_text(
+                _approved_note().replace("- Release platform evidence scope: full", "- Release platform evidence scope: partial"),
+                encoding="utf-8",
+            )
+            issues = checker.validate_release_qa_note(
+                note,
+                tag="v1.2.3",
+                source_revision=REVISION,
+                require_platform_evidence_run=True,
+            )
+        self.assertIn("QA note Release platform evidence scope must be one of: full, hosted-only", issues)
 
     def test_release_qa_commit_mode_requires_a_current_revision(self):
         checker = _load_checker()
@@ -125,6 +142,8 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("--require-current-commit", action)
         self.assertIn("--require-clean-source", action)
         self.assertIn("--require-platform-evidence-run", action)
+        self.assertIn("--print-platform-evidence-scope", action)
+        self.assertIn("--exclude-self-hosted", action)
 
     def test_split_release_workflows_use_job_scoped_permissions(self):
         for workflow_name in ("release-windows.yml", "release-linux-macos.yml"):

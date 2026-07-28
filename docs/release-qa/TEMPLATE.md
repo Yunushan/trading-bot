@@ -5,7 +5,8 @@
 - Completed on: YYYY-MM-DD
 - Operator: Full name or accountable team
 - Outcome: approved
-- Release platform evidence run ID: Positive GitHub Actions run ID for the full release-platform test matrix
+- Release platform evidence run ID: Positive GitHub Actions run ID for the selected release-platform scope
+- Release platform evidence scope: full
 
 ## Completed Checks
 

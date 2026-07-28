@@ -29,13 +29,17 @@ Tauri is the only Rust desktop shell release target unless another Rust shell is
 Create a versioned QA note from `docs/release-qa/TEMPLATE.md` after committing
 the tested product changes. The note must use the future tag as its filename,
 record that tested product commit SHA, date, accountable operator, approved
-outcome, the positive GitHub Actions run ID for the full release-platform test
-matrix, and all four completed checks. The cited matrix run must have passed for
-the tested product commit. Commit only this QA note, then tag that metadata-only
-commit. Tagged Windows, Linux, macOS, and FreeBSD release workflows reject
-publication unless the note records the immediate parent revision, the tagged
-commit changes only that versioned note, and the cited evidence artifact passes
-the full matrix validation for that product commit.
+outcome, a release-platform evidence scope, the positive GitHub Actions run ID
+for that scope, and all four completed checks. The cited matrix run must have
+passed for the tested product commit. Use `full` for a standard release; it
+requires every declared target. Use `hosted-only` only for an explicitly labeled
+prerelease when self-hosted Windows evidence is intentionally unavailable; it
+requires every GitHub-hosted target and must not be presented as full Windows 11
+runtime coverage. Commit only this QA note, then tag that metadata-only commit.
+Tagged Windows, Linux, macOS, and FreeBSD release workflows reject publication
+unless the note records the immediate parent revision, the tagged commit changes
+only that versioned note, and the cited evidence artifact passes the selected
+scope validation for that product commit.
 
 Validate the note locally before tagging. Replace the SHA with the tested
 product commit, which will be the parent of the QA-note commit:

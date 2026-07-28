@@ -20,6 +20,7 @@ REQUIRED_SCENARIOS = (
 )
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 EVIDENCE_RUN_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
+EVIDENCE_SCOPES = ("full", "hosted-only")
 
 
 def _field(text: str, label: str) -> str:
@@ -66,6 +67,12 @@ def validate_release_qa_note(
         evidence_run_id = _field(text, "Release platform evidence run ID")
         if not EVIDENCE_RUN_ID_PATTERN.fullmatch(evidence_run_id):
             issues.append("QA note Release platform evidence run ID must be a positive GitHub Actions run ID")
+        evidence_scope = _field(text, "Release platform evidence scope")
+        if evidence_scope not in EVIDENCE_SCOPES:
+            issues.append(
+                "QA note Release platform evidence scope must be one of: "
+                + ", ".join(EVIDENCE_SCOPES)
+            )
 
     for scenario in REQUIRED_SCENARIOS:
         pattern = rf"(?mi)^-\s*\[x\]\s*{re.escape(scenario)}:\s*\S"
@@ -145,6 +152,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the validated release-platform evidence workflow run ID from the QA note.",
     )
+    output_group.add_argument(
+        "--print-platform-evidence-scope",
+        action="store_true",
+        help="Print the validated release-platform evidence scope from the QA note.",
+    )
     return parser
 
 
@@ -154,7 +166,11 @@ def main(argv: list[str] | None = None) -> int:
     revision = os.environ.get("GITHUB_SHA", "") if args.require_current_revision else ""
     if args.allow_release_qa_commit and not args.require_current_revision:
         parser.error("--allow-release-qa-commit requires --require-current-revision")
-    if (args.print_source_revision or args.print_platform_evidence_run_id) and not args.require_current_revision:
+    if (
+        args.print_source_revision
+        or args.print_platform_evidence_run_id
+        or args.print_platform_evidence_scope
+    ) and not args.require_current_revision:
         parser.error("print options require --require-current-revision")
     if args.require_current_revision and not REVISION_PATTERN.fullmatch(revision):
         print("error: GITHUB_SHA must contain the 40-character release commit SHA", file=sys.stderr)
@@ -179,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
         print(revision)
     elif args.print_platform_evidence_run_id:
         print(_field(args.note.read_text(encoding="utf-8"), "Release platform evidence run ID"))
+    elif args.print_platform_evidence_scope:
+        print(_field(args.note.read_text(encoding="utf-8"), "Release platform evidence scope"))
     else:
         print(f"release QA note approved: {args.note}")
     return 0
