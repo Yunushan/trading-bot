@@ -160,11 +160,6 @@ jobs:
             throw "aqt install failed after 3 attempts: $($Arguments -join ' ')"
           }
 
-          Install-AqtPackage @(
-            "install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_arm64_cross_compiled",
-            "--outputdir", $qtOutputDir, "--modules", "qtwebsockets", "qtwebchannel", "qtpositioning"
-          )
-
           $hostQmake = "C:/Qt/6.10.3/msvc2022_64/bin/qmake.exe"
           if (!(Test-Path $hostQmake)) {
             Install-AqtPackage @(
@@ -172,6 +167,11 @@ jobs:
               "--outputdir", $qtOutputDir, "--archives", "qtbase", "qttools"
             )
           }
+
+          Install-AqtPackage @(
+            "install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_arm64_cross_compiled",
+            "--outputdir", $qtOutputDir, "--modules", "qtwebsockets", "qtwebchannel", "qtpositioning"
+          )
 
           $qtArm64BinCandidates = @(
             "C:/Qt/6.10.3/msvc2022_arm64/bin",

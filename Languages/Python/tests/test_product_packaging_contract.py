@@ -1729,6 +1729,12 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("aqt install failed after 3 attempts", windows_release_workflow)
         self.assertIn("msvc2022_arm64(_cross_compiled)?", windows_release_workflow)
         self.assertNotIn('"qtpositioning", "--autodesktop"', windows_release_workflow)
+        self.assertLess(
+            windows_release_workflow.index('"install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_64"'),
+            windows_release_workflow.index(
+                '"install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_arm64_cross_compiled"'
+            ),
+        )
         native_cpp_cmake = (REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt").read_text(
             encoding="utf-8"
         )
