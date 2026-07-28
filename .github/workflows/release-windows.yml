@@ -71,7 +71,7 @@ jobs:
             python_requirements: Languages/Python/requirements.windows-arm64.txt
             msvc_arch: ""
             vcpkg_triplet: arm64-windows
-            qt_arch: win64_msvc2022_arm64_cross_compiled
+            qt_arch: win64_msvc2022_arm64
             qt_modules: qtwebsockets qtwebchannel qtpositioning
             cmake_arch: ARM64
             require_webengine: OFF
@@ -160,33 +160,16 @@ jobs:
             throw "aqt install failed after 3 attempts: $($Arguments -join ' ')"
           }
 
-          $hostQmake = "C:/Qt/6.10.3/msvc2022_64/bin/qmake.exe"
-          if (!(Test-Path $hostQmake)) {
-            Install-AqtPackage @(
-              "install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_64",
-              "--outputdir", $qtOutputDir, "--archives", "qtbase", "qttools"
-            )
-          }
-
           Install-AqtPackage @(
-            "install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_arm64_cross_compiled",
+            "install-qt", "windows_arm64", "desktop", "6.10.3", "win64_msvc2022_arm64",
             "--outputdir", $qtOutputDir, "--modules", "qtwebsockets", "qtwebchannel", "qtpositioning"
           )
 
-          $qtArm64BinCandidates = @(
-            "C:/Qt/6.10.3/msvc2022_arm64/bin",
-            "C:/Qt/6.10.3/msvc2022_arm64_cross_compiled/bin"
-          )
-          $qtHostBin = "C:/Qt/6.10.3/msvc2022_64/bin"
-
-          foreach ($qtArm64Bin in $qtArm64BinCandidates) {
-            if (Test-Path $qtArm64Bin) {
-              $qtArm64Bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            }
+          $qtArm64Bin = "C:/Qt/6.10.3/msvc2022_arm64/bin"
+          if (!(Test-Path $qtArm64Bin)) {
+            throw "Native ARM64 Qt bin directory was not installed at $qtArm64Bin."
           }
-          if (Test-Path $qtHostBin) {
-            $qtHostBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
+          $qtArm64Bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Resolve Qt CMake path
         shell: pwsh
@@ -199,10 +182,6 @@ jobs:
               throw "Qt6Config.cmake was not found in the installed ARM64 kit under C:/Qt/6.10.3."
             }
             $qtPrefix = Split-Path (Split-Path (Split-Path (Split-Path $qtConfig.FullName -Parent) -Parent) -Parent) -Parent
-            $qtHostPath = "C:/Qt/6.10.3/msvc2022_64"
-            if (Test-Path (Join-Path $qtHostPath "bin/qmake.exe")) {
-              "QT_HOST_PATH=$qtHostPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            }
           } else {
             $qmake = Get-Command qmake -ErrorAction SilentlyContinue
             if (-not $qmake) {
@@ -645,6 +624,12 @@ jobs:
           }
           if ($tauriAssets.Count -ne 1) {
             throw "Expected exactly one packaged Tauri asset; found $($tauriAssets.Count)."
+          }
+          # Tauri regenerates these tracked platform schemas while compiling the desktop binary.
+          # Restore the checked-in contract before the strict source-cleanliness evidence gate.
+          git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not restore generated Tauri schemas before package smoke evidence."
           }
           $rustArchitecture = if ("${{ matrix.id }}" -eq "windows-arm64") { "arm64" } else { "x64" }
           $rustSmokeEvidence = "release/rust-package-smoke-${{ matrix.id }}.json"

@@ -1727,14 +1727,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         windows_release_workflow = workflows["release-windows.yml"]
         self.assertIn("function Install-AqtPackage", windows_release_workflow)
         self.assertIn("aqt install failed after 3 attempts", windows_release_workflow)
-        self.assertIn("msvc2022_arm64(_cross_compiled)?", windows_release_workflow)
+        self.assertIn("win64_msvc2022_arm64", windows_release_workflow)
+        self.assertIn('"install-qt", "windows_arm64", "desktop", "6.10.3"', windows_release_workflow)
+        self.assertNotIn("win64_msvc2022_arm64_cross_compiled", windows_release_workflow)
         self.assertNotIn('"qtpositioning", "--autodesktop"', windows_release_workflow)
-        self.assertLess(
-            windows_release_workflow.index('"install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_64"'),
-            windows_release_workflow.index(
-                '"install-qt", "windows", "desktop", "6.10.3", "win64_msvc2022_arm64_cross_compiled"'
-            ),
-        )
+        self.assertIn("git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas", windows_release_workflow)
         native_cpp_cmake = (REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt").read_text(
             encoding="utf-8"
         )
