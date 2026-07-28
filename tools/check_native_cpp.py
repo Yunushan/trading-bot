@@ -79,6 +79,8 @@ def _cmake_build_parallel_args() -> list[str]:
 def _desktop_executable_path(build_dir: Path, config: str) -> Path:
     if sys.platform == "win32":
         return build_dir / config / "Trading-Bot-C++.exe"
+    if sys.platform == "darwin":
+        return build_dir / "Trading-Bot-C++.app" / "Contents" / "MacOS" / "Trading-Bot-C++"
     return build_dir / "Trading-Bot-C++"
 
 

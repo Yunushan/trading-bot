@@ -5801,6 +5801,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             environment = native_cpp._desktop_smoke_env(REPO_ROOT / "missing-build", "Release")
         self.assertNotIn("QT_QPA_PLATFORM", environment)
 
+    def test_native_cpp_uses_the_macos_app_bundle_executable(self):
+        build_dir = REPO_ROOT / "build" / "test-native-macos"
+        with patch.object(native_cpp.sys, "platform", "darwin"):
+            executable = native_cpp._desktop_executable_path(build_dir, "Release")
+
+        self.assertEqual(
+            build_dir / "Trading-Bot-C++.app" / "Contents" / "MacOS" / "Trading-Bot-C++",
+            executable,
+        )
+
     def test_native_cpp_uses_requested_release_build_type_with_single_config_generators(self):
         with (
             patch.object(native_cpp.sys, "platform", "linux"),
