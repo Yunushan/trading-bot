@@ -176,7 +176,7 @@ jobs:
         run: |
           if ("${{ matrix.id }}" -eq "windows-arm64") {
             $qtConfigCandidates = Get-ChildItem -Path "C:/Qt/6.10.3" -Recurse -Filter "Qt6Config.cmake" -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match "msvc2022_arm64(_cross_compiled)?[\\/]lib[\\/]cmake[\\/]Qt6[\\/]Qt6Config\\.cmake$" }
+              Where-Object { $_.FullName -match "msvc2022_arm64[\\/]lib[\\/]cmake[\\/]Qt6[\\/]Qt6Config\.cmake$" }
             $qtConfig = $qtConfigCandidates | Select-Object -First 1
             if ($null -eq $qtConfig) {
               throw "Qt6Config.cmake was not found in the installed ARM64 kit under C:/Qt/6.10.3."

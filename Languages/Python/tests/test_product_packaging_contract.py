@@ -1730,6 +1730,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("win64_msvc2022_arm64", windows_release_workflow)
         self.assertIn('"install-qt", "windows_arm64", "desktop", "6.10.3"', windows_release_workflow)
         self.assertNotIn("win64_msvc2022_arm64_cross_compiled", windows_release_workflow)
+        self.assertIn('Qt6Config\\.cmake$', windows_release_workflow)
+        self.assertNotIn('Qt6Config\\\\.cmake$', windows_release_workflow)
         self.assertNotIn('"qtpositioning", "--autodesktop"', windows_release_workflow)
         self.assertIn("git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas", windows_release_workflow)
         native_cpp_cmake = (REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt").read_text(
