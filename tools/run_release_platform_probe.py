@@ -65,8 +65,13 @@ DEFAULT_DESKTOP_RELEASE_SMOKE_COMMAND = (
     "--config",
     "Release",
     "--timeout",
-    "600",
+    "1200",
 )
+
+# A cold Qt/WebEngine build on GitHub's ARM macOS runner can legitimately take
+# longer than ten minutes. Keep a finite outer budget while allowing the
+# dedicated desktop executable build to finish before smoke verification.
+DEFAULT_DESKTOP_RELEASE_SMOKE_TIMEOUT = 2400
 
 
 def _repo_root() -> Path:
@@ -569,7 +574,12 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
             DEFAULT_DESKTOP_RELEASE_SMOKE_COMMAND
         )
         results.append(
-            _run_command("desktop-release-smoke", command, cwd=root, timeout=900)
+            _run_command(
+                "desktop-release-smoke",
+                command,
+                cwd=root,
+                timeout=DEFAULT_DESKTOP_RELEASE_SMOKE_TIMEOUT,
+            )
         )
 
     if "native-build-smoke" in suites:

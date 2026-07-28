@@ -5691,11 +5691,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 "--config",
                 "Release",
                 "--timeout",
-                "600",
+                "1200",
             ],
             run_command.call_args.args[1],
         )
-        self.assertEqual(900, run_command.call_args.kwargs["timeout"])
+        self.assertEqual(
+            release_platform_probe.DEFAULT_DESKTOP_RELEASE_SMOKE_TIMEOUT,
+            run_command.call_args.kwargs["timeout"],
+        )
 
     def test_release_platform_probe_builds_and_smokes_both_required_rust_binaries(self):
         target = {
@@ -5820,6 +5823,28 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         commands = [call.args[1] for call in run_step.call_args_list]
         self.assertTrue(any("native_order_safety_tests" in command for command in commands))
         self.assertTrue(any("native_service_api_contract_tests" in command for command in commands))
+
+    def test_native_cpp_builds_the_desktop_target_before_running_the_desktop_smoke(self):
+        with (
+            patch.object(native_cpp.sys, "platform", "darwin"),
+            patch.object(native_cpp.shutil, "which", side_effect=["cmake", "ctest"]),
+            patch.object(native_cpp, "_run_step", return_value={"ok": True}) as run_step,
+        ):
+            report = native_cpp.check_native_cpp(
+                build_dir=REPO_ROOT / "build" / "test-native-desktop",
+                config="Release",
+                require_webengine=True,
+                enable_qt_deploy_script=None,
+                smoke_targets_only=False,
+                qt_version=None,
+                timeout=1200,
+            )
+
+        self.assertTrue(report["ok"])
+        desktop_build = run_step.call_args_list[1].args[1]
+        self.assertIn("--target", desktop_build)
+        self.assertIn("binance_backtest_tab", desktop_build)
+        self.assertEqual("desktop release smoke", run_step.call_args_list[2].args[0])
 
     def test_native_cpp_serializes_windows_builds_to_avoid_pdb_contention(self):
         with (

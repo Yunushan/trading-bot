@@ -188,8 +188,17 @@ def check_native_cpp(
     else:
         steps.append(
             _run_step(
-                "build",
-                [cmake, "--build", str(build_dir), "--config", config, *_cmake_build_parallel_args()],
+                "build desktop executable",
+                [
+                    cmake,
+                    "--build",
+                    str(build_dir),
+                    "--config",
+                    config,
+                    "--target",
+                    "binance_backtest_tab",
+                    *_cmake_build_parallel_args(),
+                ],
                 cwd=root,
                 timeout=timeout,
             )
