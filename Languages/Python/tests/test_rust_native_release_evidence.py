@@ -22,7 +22,6 @@ from tools import check_rust_native_evidence_workflows as evidence_workflows  # 
 from tools import check_generated_evidence_source_control as evidence_source_control  # noqa: E402
 from tools import check_native_cpp as native_cpp  # noqa: E402
 from tools import check_release_platform_matrix as release_platform_matrix  # noqa: E402
-from tools import check_release_runner_availability as runner_availability  # noqa: E402
 from tools import check_release_assets as release_assets  # noqa: E402
 from tools import import_rust_native_evidence_artifacts as evidence_importer  # noqa: E402
 from tools import run_release_platform_probe as release_platform_probe  # noqa: E402
@@ -5543,35 +5542,6 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         for target in browser_targets:
             self.assertEqual(expected_kinds[target["host"]], target["runner_kind"])
             self.assertEqual(expected_labels[target["host"]], target["runner_labels"])
-
-    def test_release_runner_preflight_requires_an_idle_matching_self_hosted_runner(self):
-        required = {"self-hosted", "windows", "x64", "tb-release-platform", "windows-11-x64"}
-        targets = [("windows-11-x64", required)]
-        offline_runner = {
-            "status": "offline",
-            "busy": False,
-            "labels": [{"name": label} for label in required],
-        }
-        busy_runner = {
-            "status": "online",
-            "busy": True,
-            "labels": [{"name": label} for label in required],
-        }
-        ready_runner = {
-            "status": "online",
-            "busy": False,
-            "labels": [{"name": label} for label in required],
-        }
-
-        self.assertEqual(targets, runner_availability.unavailable_targets(targets, [offline_runner]))
-        self.assertEqual(targets, runner_availability.unavailable_targets(targets, [busy_runner]))
-        self.assertEqual([], runner_availability.unavailable_targets(targets, [ready_runner]))
-
-    def test_release_runner_preflight_explains_denied_runner_inventory_access(self):
-        denied = urllib.error.HTTPError("https://api.github.com", 403, "Forbidden", {}, None)
-        with patch.object(runner_availability.urllib.request, "urlopen", side_effect=denied):
-            with self.assertRaisesRegex(RuntimeError, "RELEASE_RUNNER_STATUS_TOKEN"):
-                runner_availability._list_runners("owner/repository", "token")
 
     def test_release_platform_probe_local_browser_batch_writes_per_target_outputs(self):
         targets = [

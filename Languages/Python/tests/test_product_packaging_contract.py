@@ -1738,7 +1738,6 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("qtwebengine qtwebsockets qtwebchannel qtpositioning", release_platform_workflow)
         self.assertIn("Qt6WebEngineWidgetsConfig.cmake", release_platform_workflow)
         self.assertIn("CMAKE_PREFIX_PATH", release_platform_workflow)
-        self.assertIn("check_release_runner_availability.py", release_platform_workflow)
         self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-freebsd.yml"])
         for workflow_name in ("release-linux-macos.yml", "release-freebsd.yml"):
             workflow = workflows[workflow_name]

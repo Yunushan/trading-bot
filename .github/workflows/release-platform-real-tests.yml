@@ -30,7 +30,6 @@ on:
         type: string
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
@@ -47,23 +46,6 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
-
-      - name: Verify self-hosted release runners are available
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_RUNNER_STATUS_TOKEN || github.token }}
-          TARGET_ID: ${{ inputs.target_id }}
-          RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
-        run: |
-          set -euo pipefail
-          args=(--repository "${GITHUB_REPOSITORY}")
-          if [[ "$TARGET_ID" != "all" ]]; then
-            args+=(--target-filter "$TARGET_ID")
-          fi
-          if [[ -n "$RUNNER_LABELS_JSON" ]]; then
-            args+=(--runner-labels-json "$RUNNER_LABELS_JSON")
-          fi
-          python tools/check_release_runner_availability.py "${args[@]}"
 
       - name: Install native parity dependencies
         shell: bash
