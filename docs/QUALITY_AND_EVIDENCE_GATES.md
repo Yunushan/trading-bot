@@ -317,7 +317,12 @@ diff whitespace.
   their matching GitHub-hosted runner labels. Configure the Windows runner with
   `pwsh -File tools/Setup-Windows11ReleaseRunner.ps1 -RepositoryUrl https://github.com/<owner>/<repo> -RegistrationToken <short-lived-token> -InstallService`;
   the helper validates the host, uses only the required custom labels, and
-  refuses to overwrite an existing runner directory. Operators can also run the
+  refuses to overwrite an existing runner directory. Set the
+  `RELEASE_RUNNER_STATUS_TOKEN` Actions secret to a fine-grained token limited
+  to this repository with **Administration: read** so the release workflow can
+  fail before scheduling its matrix when no matching self-hosted runner is
+  online and idle; the built-in workflow token cannot read that inventory.
+  Operators can also run the
   manual `.github/workflows/rust-native-release-evidence.yml` workflow with a
   release tag and a platform-evidence Actions run id; it downloads
   `release-platform-evidence-*` artifacts after the native source-sync audit

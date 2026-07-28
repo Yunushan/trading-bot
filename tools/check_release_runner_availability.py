@@ -62,7 +62,15 @@ def _list_runners(repository: str, token: str) -> list[dict[str, Any]]:
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.load(response)
-    except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as error:
+    except urllib.error.HTTPError as error:
+        if error.code == 403:
+            raise RuntimeError(
+                "GitHub denied access to the self-hosted runner inventory; configure "
+                "the RELEASE_RUNNER_STATUS_TOKEN secret with Administration: read access "
+                "for this repository"
+            ) from error
+        raise RuntimeError(f"could not query self-hosted runners: {error}") from error
+    except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError(f"could not query self-hosted runners: {error}") from error
     runners = payload.get("runners") if isinstance(payload, dict) else None
     if not isinstance(runners, list):

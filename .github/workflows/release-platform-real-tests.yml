@@ -51,7 +51,7 @@ jobs:
       - name: Verify self-hosted release runners are available
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_RUNNER_STATUS_TOKEN || github.token }}
           TARGET_ID: ${{ inputs.target_id }}
           RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
         run: |

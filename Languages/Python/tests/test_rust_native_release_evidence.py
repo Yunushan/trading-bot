@@ -5567,6 +5567,12 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(targets, runner_availability.unavailable_targets(targets, [busy_runner]))
         self.assertEqual([], runner_availability.unavailable_targets(targets, [ready_runner]))
 
+    def test_release_runner_preflight_explains_denied_runner_inventory_access(self):
+        denied = urllib.error.HTTPError("https://api.github.com", 403, "Forbidden", {}, None)
+        with patch.object(runner_availability.urllib.request, "urlopen", side_effect=denied):
+            with self.assertRaisesRegex(RuntimeError, "RELEASE_RUNNER_STATUS_TOKEN"):
+                runner_availability._list_runners("owner/repository", "token")
+
     def test_release_platform_probe_local_browser_batch_writes_per_target_outputs(self):
         targets = [
             {"id": "browser-chrome-windows_11_x64", "kind": "browser", "browser": "chrome"},
