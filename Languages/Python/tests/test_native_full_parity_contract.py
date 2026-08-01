@@ -893,6 +893,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("rust-native-release-evidence.yml", rust_evidence_workflow_checker)
         self.assertIn("rust-native-promotion-audit.yml", rust_evidence_workflow_checker)
         self.assertIn("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", rust_evidence_workflow_checker)
+        self.assertIn("actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97", rust_evidence_workflow_checker)
         self.assertIn('python-version: "3.14"', rust_evidence_workflow_checker)
         self.assertIn("--require-current-commit", rust_evidence_workflow_checker)
         self.assertIn("--require-clean-source", rust_evidence_workflow_checker)
@@ -966,7 +967,15 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("payload prerequisites.", rust_live_smoke_preflight_checker)
         self.assertIn("artifact_writes", rust_live_smoke_preflight_checker)
         self.assertIn("workflow_dispatch", rust_live_smoke_workflow)
-        self.assertIn("uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", rust_live_smoke_workflow)
+        self.assertTrue(
+            any(
+                action in rust_live_smoke_workflow
+                for action in (
+                    "uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+                    "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+                )
+            )
+        )
         self.assertIn('python-version: "3.14"', rust_live_smoke_workflow)
         self.assertIn("Validate signed smoke inputs", rust_live_smoke_workflow)
         self.assertIn("symbol input is required for Rust native live smoke evidence.", rust_live_smoke_workflow)
@@ -986,7 +995,15 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("if-no-files-found: warn", rust_live_smoke_workflow)
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", rust_live_smoke_workflow)
         self.assertIn("workflow_dispatch", rust_release_evidence_workflow)
-        self.assertIn("uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", rust_release_evidence_workflow)
+        self.assertTrue(
+            any(
+                action in rust_release_evidence_workflow
+                for action in (
+                    "uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+                    "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+                )
+            )
+        )
         self.assertIn('python-version: "3.14"', rust_release_evidence_workflow)
         self.assertIn("Validate release evidence inputs", rust_release_evidence_workflow)
         self.assertIn(

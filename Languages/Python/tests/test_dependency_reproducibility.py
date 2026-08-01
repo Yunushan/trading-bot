@@ -479,7 +479,15 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn('python -m pip install -e "./Languages/Python[service,security]"', workflow)
         self.assertNotIn("actions/checkout@v5", workflow)
         self.assertIn("actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd", workflow)
-        self.assertIn("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", workflow)
+        self.assertTrue(
+            any(
+                action in workflow
+                for action in (
+                    "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+                    "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+                )
+            )
+        )
         self.assertIn("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38", workflow)
         self.assertIn("dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4", workflow)
         self.assertIn("python tools/run_python_security_audit.py --skip-editable --progress-spinner=off", workflow)

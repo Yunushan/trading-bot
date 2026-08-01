@@ -122,6 +122,9 @@ def run_backtest_thread(
             f"Backtest session completed with {len(run_records)} run(s)"
             f" and {len(error_records)} error(s)."
         )
+        # A completed session must not advertise a stale resume checkpoint.  The
+        # snapshot is observable from another thread as soon as it is persisted.
+        adapter._clear_optimizer_checkpoint()
         finish_snapshots(
             adapter,
             session_id=session_id,
@@ -135,7 +138,6 @@ def run_backtest_thread(
             progress_percent=100.0,
             action="complete",
         )
-        adapter._clear_optimizer_checkpoint()
         adapter._runtime.record_log_event(message, source="service-backtest-executor", level="info")
     except Exception as exc:
         if str(exc).lower().startswith("backtest_cancelled"):

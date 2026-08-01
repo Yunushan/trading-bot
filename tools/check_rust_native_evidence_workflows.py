@@ -38,7 +38,12 @@ NATIVE_PARITY_DEPENDENCY_FRAGMENTS = (
     "Install native parity dependencies",
     'python -m pip install -e "./Languages/Python"',
 )
-PYTHON_SETUP_ACTION = "uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
+# Both immutable revisions are approved while the repository transitions from
+# setup-python v6 to v7 through the Dependabot update.
+PYTHON_SETUP_ACTIONS = (
+    "uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+    "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+)
 
 
 def _repo_root() -> Path:
@@ -49,8 +54,15 @@ def _read(root: Path, relative: str) -> str:
     return (root / relative).read_text(encoding="utf-8")
 
 
-def _missing_fragments(text: str, fragments: tuple[str, ...]) -> list[str]:
-    return [fragment for fragment in fragments if fragment not in text]
+def _missing_fragments(text: str, fragments: tuple[str | tuple[str, ...], ...]) -> list[str]:
+    missing: list[str] = []
+    for fragment in fragments:
+        if isinstance(fragment, tuple):
+            if not any(candidate in text for candidate in fragment):
+                missing.append("one of: " + ", ".join(fragment))
+        elif fragment not in text:
+            missing.append(fragment)
+    return missing
 
 
 def _ordered(text: str, fragments: tuple[str, ...]) -> list[str]:
@@ -84,7 +96,7 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
         (
             "workflow_dispatch:",
             "contents: read",
-            PYTHON_SETUP_ACTION,
+            PYTHON_SETUP_ACTIONS,
             'python-version: "3.14"',
             *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}",
@@ -228,7 +240,7 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             "strategy:",
             "fromJson(needs.prepare-targets.outputs.targets).include",
             "matrix.target.target_id",
-            PYTHON_SETUP_ACTION,
+            PYTHON_SETUP_ACTIONS,
             'python-version: "3.14"',
             "Set up Node for browser contracts",
             "Install browser contract dependencies",
@@ -309,7 +321,7 @@ def _check_release_evidence(root: Path) -> dict[str, Any]:
             "workflow_dispatch:",
             "actions: read",
             "contents: read",
-            PYTHON_SETUP_ACTION,
+            PYTHON_SETUP_ACTIONS,
             'python-version: "3.14"',
             *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "platform_evidence_run_id",
@@ -383,7 +395,7 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
             "LIVE_SMOKE_RUN_ID: ${{ inputs.live_smoke_run_id }}",
             "RELEASE_EVIDENCE_RUN_ID: ${{ inputs.release_evidence_run_id }}",
             "RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}",
-            PYTHON_SETUP_ACTION,
+            PYTHON_SETUP_ACTIONS,
             'python-version: "3.14"',
             *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "Validate promotion audit inputs",

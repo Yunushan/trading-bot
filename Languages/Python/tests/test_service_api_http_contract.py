@@ -75,14 +75,18 @@ class ServiceApiHttpContractTests(unittest.TestCase):
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_app_exposes_expected_routes(self):
         app = create_service_api_app()
-        paths = {route.path for route in app.router.routes}
+        paths: set[str] = set()
         schema_paths = set(app.openapi()["paths"])
         route_methods_by_path: dict[str, set[str]] = {}
         for route in app.router.routes:
+            path = getattr(route, "path", None)
+            if not isinstance(path, str):
+                continue
+            paths.add(path)
             methods = getattr(route, "methods", None)
             if not methods:
                 continue
-            route_methods_by_path.setdefault(route.path, set()).update(
+            route_methods_by_path.setdefault(path, set()).update(
                 method for method in methods if method not in {"HEAD", "OPTIONS"}
             )
         self.assertIn("/", paths)
