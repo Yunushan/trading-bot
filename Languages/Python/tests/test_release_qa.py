@@ -116,11 +116,12 @@ class ReleaseQaTests(unittest.TestCase):
                 self.assertIn("Validate tagged release QA sign-off", workflow)
                 self.assertIn("if: github.ref_type == 'tag'", workflow)
                 self.assertIn("tools/check_release_qa.py", workflow)
+                self.assertIn("tools/check_release_version.py", workflow)
                 self.assertIn("docs/release-qa/${{ github.ref_name }}.md", workflow)
                 self.assertIn("--require-current-revision", workflow)
                 self.assertIn("--allow-release-qa-commit", workflow)
                 self.assertIn("--require-platform-evidence-run", workflow)
-                self.assertIn("fetch-depth: 2", workflow)
+                self.assertIn("fetch-depth: 0", workflow)
 
     def test_tagged_release_workflows_trigger_on_version_tags(self):
         for workflow_name in RELEASE_WORKFLOWS:

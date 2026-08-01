@@ -92,7 +92,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
-          fetch-depth: 2
+          # The QA note may name a tested revision older than the tagged metadata commit.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -114,6 +115,11 @@ jobs:
             --require-current-revision `
             --allow-release-qa-commit `
             --require-platform-evidence-run
+
+      - name: Validate tagged release metadata versions
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: python tools/check_release_version.py --tag "${{ github.ref_name }}"
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -141,13 +147,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          python -m pip install --upgrade aqtinstall
-          $qtOutputDir = "C:/Qt"
+          python -m pip install "aqtinstall==3.3.0"
+          $qtOutputDir = Join-Path $env:RUNNER_TEMP "qt"
 
           function Install-AqtPackage {
             param([string[]]$Arguments)
 
             for ($attempt = 1; $attempt -le 3; $attempt++) {
+              if (Test-Path $qtOutputDir) {
+                Remove-Item -Recurse -Force $qtOutputDir
+              }
               & python -m aqt @Arguments
               if ($LASTEXITCODE -eq 0) {
                 return
@@ -162,10 +171,10 @@ jobs:
 
           Install-AqtPackage @(
             "install-qt", "windows_arm64", "desktop", "6.10.3", "win64_msvc2022_arm64",
-            "--outputdir", $qtOutputDir, "--modules", "qtwebsockets", "qtwebchannel", "qtpositioning"
+            "--outputdir", $qtOutputDir, "--modules", "qtwebsockets", "qtwebchannel", "qtpositioning", "--autodesktop"
           )
 
-          $qtArm64Bin = "C:/Qt/6.10.3/msvc2022_arm64/bin"
+          $qtArm64Bin = Join-Path $qtOutputDir "6.10.3/msvc2022_arm64/bin"
           if (!(Test-Path $qtArm64Bin)) {
             throw "Native ARM64 Qt bin directory was not installed at $qtArm64Bin."
           }
@@ -175,11 +184,11 @@ jobs:
         shell: pwsh
         run: |
           if ("${{ matrix.id }}" -eq "windows-arm64") {
-            $qtConfigCandidates = Get-ChildItem -Path "C:/Qt/6.10.3" -Recurse -Filter "Qt6Config.cmake" -ErrorAction SilentlyContinue |
+            $qtConfigCandidates = Get-ChildItem -Path (Join-Path $env:RUNNER_TEMP "qt/6.10.3") -Recurse -Filter "Qt6Config.cmake" -ErrorAction SilentlyContinue |
               Where-Object { $_.FullName -match "msvc2022_arm64[\\/]lib[\\/]cmake[\\/]Qt6[\\/]Qt6Config\.cmake$" }
             $qtConfig = $qtConfigCandidates | Select-Object -First 1
             if ($null -eq $qtConfig) {
-              throw "Qt6Config.cmake was not found in the installed ARM64 kit under C:/Qt/6.10.3."
+              throw "Qt6Config.cmake was not found in the installed ARM64 kit under $env:RUNNER_TEMP/qt/6.10.3."
             }
             $qtPrefix = Split-Path (Split-Path (Split-Path (Split-Path $qtConfig.FullName -Parent) -Parent) -Parent) -Parent
           } else {
@@ -725,7 +734,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Verify required release platform evidence
         uses: ./.github/actions/verify-release-platform-evidence

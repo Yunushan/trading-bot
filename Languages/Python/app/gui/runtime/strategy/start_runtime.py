@@ -51,10 +51,25 @@ def start_strategy(
             coerce_bool=coerce_bool,
         )
         try:
-            strategy_engine_cls.resume_trading()
+            if strategy_engine_cls.resume_trading() is False:
+                self.log("Strategy start blocked: trading could not be resumed safely.")
+                self._service_mark_start_failed(
+                    reason="Trading could not be resumed safely.",
+                    source="desktop-start",
+                )
+                return
+        except Exception as exc:
+            self.log(f"Strategy start blocked: trading resume failed ({exc}).")
+            self._service_mark_start_failed(
+                reason=f"Trading resume failed: {exc}",
+                source="desktop-start",
+            )
+            return
+
+        try:
             self._reset_service_connector_order_circuit_breaker(source="desktop-start")
-        except Exception:
-            pass
+        except Exception as exc:
+            self.log(f"Service circuit-breaker reset could not be synchronized ({exc}).")
         started = _start_strategy_engines(
             self,
             combos=start_context.combos,

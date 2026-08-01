@@ -3814,14 +3814,14 @@ dependencies = [
 
 [[package]]
 name = "trading-bot-contracts"
-version = "0.1.0"
+version = "1.0.35"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "trading-bot-core"
-version = "0.1.0"
+version = "1.0.35"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -3834,7 +3834,7 @@ dependencies = [
 
 [[package]]
 name = "trading-bot-rust"
-version = "0.1.0"
+version = "1.0.35"
 dependencies = [
  "serde_json",
  "trading-bot-core",
@@ -3842,7 +3842,7 @@ dependencies = [
 
 [[package]]
 name = "trading-bot-tauri-desktop"
-version = "0.1.0"
+version = "1.0.35"
 dependencies = [
  "reqwest 0.12.28",
  "serde",

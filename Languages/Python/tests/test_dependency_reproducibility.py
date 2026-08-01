@@ -656,6 +656,8 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("python tools/bootstrap_local_dev.py --python-command", python_fix)
         self.assertIn('Languages/Python[desktop,service,dev]', python_fix)
         self.assertIn("Node.js 26", node_fix)
+        self.assertIn("OpenJS.NodeJS --exact", node_fix)
+        self.assertNotIn("OpenJS.NodeJS.LTS", node_fix)
         self.assertEqual("", module._runtime_remediation("node", "26", "26.1.0"))
 
     def test_local_dev_bootstrap_plan_installs_python_surface_and_clients(self):

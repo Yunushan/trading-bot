@@ -111,14 +111,14 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         StrategyEngine.pause_trading()
         self.assertTrue(engine.stopped())
 
-        StrategyEngine.resume_trading()
+        self.assertTrue(StrategyEngine.resume_trading())
         self.assertFalse(engine.stopped())
         self.assertEqual([], StrategyEngine._CONNECTOR_ORDER_BLOCK_EVENTS)
         self.assertFalse(StrategyEngine._CONNECTOR_ORDER_CIRCUIT_OPEN)
 
         StrategyEngine.pause_trading()
         StrategyEngine.request_shutdown()
-        StrategyEngine.resume_trading()
+        self.assertFalse(StrategyEngine.resume_trading())
         self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
         self.assertTrue(engine.stopped())
 

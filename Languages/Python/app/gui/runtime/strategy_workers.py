@@ -26,30 +26,42 @@ class StopWorker(QThread):
             if self.close_only:
                 return True
             threads = self.strategy_threads or {}
+            failures: list[str] = []
+
+            def record_failure(action: str, exc: Exception) -> None:
+                message = f"{action}: {exc}"
+                failures.append(message)
+                self.log_signal.emit(message)
+
             try:
                 guard = getattr(self, "guard", None)
                 if guard and hasattr(guard, "pause_new"):
                     guard.pause_new()
-            except Exception:
-                pass
+            except Exception as exc:
+                record_failure("Could not pause the order guard", exc)
             for key, t in list(threads.items()):
                 try:
                     if hasattr(t, "stop_blocking"):
                         t.stop_blocking(timeout=2.5)
                     elif hasattr(t, "stop"):
                         t.stop()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    record_failure(f"Could not stop strategy loop {key}", exc)
             for key, t in list(threads.items()):
                 try:
                     if hasattr(t, "join"):
                         t.join(timeout=2.0)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    record_failure(f"Could not join strategy loop {key}", exc)
             try:
                 threads.clear()
-            except Exception:
-                pass
+            except Exception as exc:
+                record_failure("Could not clear strategy loop state", exc)
+            if failures:
+                self.log_signal.emit(
+                    f"Strategy loops received stop requests with {len(failures)} cleanup failure(s)."
+                )
+                return False
             self.log_signal.emit("All strategy loops signaled to stop.")
             return True
         except Exception as e:
@@ -92,13 +104,16 @@ class StopWorker(QThread):
         ok = True
         try:
             self.progress_signal.emit("Stopping strategy loops..." if not self.close_only else "Close-only mode...")
-            ok = ok and self._stop_threads()
+            stop_ok = self._stop_threads()
+            ok = stop_ok and ok
             if self.binance_wrapper:
                 acct = str(getattr(self.binance_wrapper, "account_type", "")).upper()
                 if acct == "FUTURES":
-                    ok = ok and self._close_futures()
+                    close_ok = self._close_futures()
+                    ok = close_ok and ok
                 elif acct == "SPOT":
-                    ok = ok and self._close_spot()
+                    close_ok = self._close_spot()
+                    ok = close_ok and ok
                 else:
                     self.log_signal.emit(f"Unknown account type for close-all: {acct}")
             self.progress_signal.emit("Stop completed." if not self.close_only else "Close-only completed.")
@@ -165,9 +180,16 @@ class StartWorker(QThread):
             try:
                 from app.core.strategy import StrategyEngine as _StrategyEngine
 
-                _StrategyEngine.resume_trading()
-            except Exception:
-                pass
+                if _StrategyEngine.resume_trading() is False:
+                    self.log_signal.emit("Strategy start blocked: trading could not be resumed safely.")
+                    self.progress_signal.emit("Strategy start blocked by the global trading pause.")
+                    ok = False
+                    return
+            except Exception as exc:
+                self.log_signal.emit(f"Strategy start blocked: trading resume failed ({exc}).")
+                self.progress_signal.emit("Strategy start blocked by the global trading pause.")
+                ok = False
+                return
             try:
                 self.progress_signal.emit("Reconciling with exchange...")
                 if hasattr(self.guard, "attach_wrapper"):

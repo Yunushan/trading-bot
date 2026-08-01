@@ -965,6 +965,7 @@ def run_service_api_server(
     api_token: str | None = None,
     config_path: str | Path | None = None,
     load_persisted_config: bool = False,
+    load_persisted_config_if_present: bool = False,
 ) -> None:
     _require_fastapi()
     resolved_token = resolve_service_api_token(api_token)
@@ -981,6 +982,7 @@ def run_service_api_server(
     service_instance = service or TradingBotService(
         config_path=config_path,
         load_persisted_config=load_persisted_config,
+        load_persisted_config_if_present=load_persisted_config_if_present,
     )
     app = create_service_api_app(
         service=service_instance,

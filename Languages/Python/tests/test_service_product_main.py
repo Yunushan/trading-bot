@@ -203,7 +203,7 @@ class ServiceProductMainTests(unittest.TestCase):
                 "test-token",
                 "--config-path",
                 "service.json",
-                "--load-config",
+                "--load-config-if-present",
             )
         self.assertEqual(0, returncode)
         self.assertEqual("", stdout)
@@ -213,7 +213,8 @@ class ServiceProductMainTests(unittest.TestCase):
             port=8123,
             api_token="test-token",
             config_path="service.json",
-            load_persisted_config=True,
+            load_persisted_config=False,
+            load_persisted_config_if_present=True,
         )
 
         with patch.object(product_main, "run_service_api_server", side_effect=ValueError("unsafe bind")):
@@ -306,16 +307,18 @@ class ServiceProductMainTests(unittest.TestCase):
             product_main._remote_json_request("https://service.example.com", "api/v1/status")
 
     def test_remote_json_request_converts_http_error_to_redacted_runtime_error(self):
+        error_body = io.BytesIO(b'{"detail":"missing token"}')
         error = HTTPError(
             "http://127.0.0.1:8000/api/v1/status",
             401,
             "Unauthorized",
             hdrs=None,
-            fp=io.BytesIO(b'{"detail":"missing token"}'),
+            fp=error_body,
         )
         with patch.object(product_main, "open_validated_url", side_effect=error):
             with self.assertRaisesRegex(RuntimeError, "401 Unauthorized"):
                 product_main._remote_json_request("http://127.0.0.1:8000", "/api/v1/status")
+        self.assertTrue(error_body.closed)
 
 
 if __name__ == "__main__":

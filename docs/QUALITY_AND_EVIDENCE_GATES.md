@@ -12,6 +12,7 @@ Run the combined gate from the repository root before publishing changes:
 python tools/clean_workspace_artifacts.py --apply
 python tools/verify_all.py
 python tools/audit_workspace_hygiene.py --json
+python tools/check_critical_coverage.py
 ```
 
 `tools/verify_all.py` is the canonical local gate. It checks declared Python and
@@ -29,7 +30,7 @@ diff whitespace.
 | 1. Runtime versions | Python and Node match `.python-version` and `.node-version`. | `tools/check_local_tool_versions.py --json` passes. |
 | 2. Workspace hygiene | Generated artifacts do not pollute source audits. | `tools/audit_workspace_hygiene.py --json` reports zero noisy artifacts after cleanup. |
 | 3. Python dependency health | Python desktop, service, and dev dependencies install under the declared runtime. | `python -m pip install -e "Languages/Python[desktop,service,dev]"` completes. |
-| 4. Python tests and coverage | Full Python tests pass and total coverage does not fall below the configured 40% floor. | `python -m pytest Languages/Python/tests -q` passes with `--cov-fail-under=40`. |
+| 4. Python tests and coverage | Full Python tests pass, total coverage does not fall below the configured 46% floor, and strategy, position, Binance-order, service-runner, and safety-settings packages meet their critical-path minimums. | `python -m pytest Languages/Python/tests -q` passes with `--cov-fail-under=46`, then `python tools/check_critical_coverage.py` passes. |
 | 5. Python lint/type contracts | Ruff and mypy pass for the reviewed typed surface. | `tools/verify_all.py` Python lint and type checks pass. |
 | 6. Service API contracts | Service schema and HTTP contract tests stay in sync with the UI/client assumptions. | `Languages/Python/tools/check_service_api_contracts.py` and service tests pass. |
 | 7. Backtest optimizer guardrails | Large searches show estimated runtime, keep bounded result rows, require user confirmation for very large interactive runs, and reject invalid OHLCV/timestamp data before simulation. | Optimizer and data-quality unit tests plus UI execution helpers pass. |

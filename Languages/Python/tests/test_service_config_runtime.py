@@ -147,6 +147,21 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
             self.assertEqual(3.25, payload["position_pct"])
             self.assertFalse(reloaded.get_config_persistence_status()["dirty"])
 
+    def test_optional_persisted_config_load_preserves_first_start_and_restores_saved_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            first_start = TradingBotService(config_path=path, load_persisted_config_if_present=True)
+            self.assertFalse(first_start.get_config_persistence_status()["exists"])
+            self.assertEqual(["BTCUSDT"], first_start.get_config_payload().to_dict()["symbols"])
+
+            first_start.update_config({"symbols": ["ETHUSDT"], "intervals": ["15m"]})
+            first_start.save_config(source="unit-test")
+
+            restored = TradingBotService(config_path=path, load_persisted_config_if_present=True)
+            self.assertEqual(["ETHUSDT"], restored.get_config_payload().to_dict()["symbols"])
+            self.assertEqual(["15m"], restored.get_config_payload().to_dict()["intervals"])
+            self.assertFalse(restored.get_config_persistence_status()["dirty"])
+
     def test_service_config_load_rejects_invalid_file_without_replacing_current_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "service-config.json"

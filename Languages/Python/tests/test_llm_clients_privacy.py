@@ -89,6 +89,7 @@ class LLMClientPrivacyTests(unittest.TestCase):
                 "llm_provider": "open-source",
                 "llm_model": "RWKV/rwkv-6-world",
                 "llm_base_url": "https://llm.example.com/v1",
+                "llm_allow_public_network": True,
             },
             prompt="Explain risk.",
             context={
@@ -107,6 +108,18 @@ class LLMClientPrivacyTests(unittest.TestCase):
         self.assertNotIn("exchange-key", body_text)
         self.assertNotIn("exchange-secret", body_text)
         self.assertNotIn("should-not-leave-private-runtime", body_text)
+
+    def test_public_llm_endpoint_requires_explicit_network_consent(self):
+        with self.assertRaisesRegex(ValueError, "Public local/custom LLM endpoints are disabled"):
+            build_llm_chat_request(
+                {
+                    "llm_provider": "open-source",
+                    "llm_model": "RWKV/rwkv-6-world",
+                    "llm_base_url": "https://llm.example.com/v1",
+                    "llm_allow_public_network": False,
+                },
+                prompt="Explain risk.",
+            )
 
     def test_current_cloud_reasoning_options_use_provider_specific_request_fields(self):
         openai_request = build_llm_chat_request(

@@ -92,6 +92,7 @@ class TradingBotService:
         *,
         config_path: str | Path | None = None,
         load_persisted_config: bool = False,
+        load_persisted_config_if_present: bool = False,
     ) -> None:
         self._config_persistence_path = resolve_service_config_path(config_path)
         self._config_persistence_trusted_path = config_path is not None
@@ -100,24 +101,31 @@ class TradingBotService:
         self._config_persistence_migrated_from_format_version = None
         self._config_persistence_dirty = bool(config)
         runtime_config = config
-        if load_persisted_config:
+        if load_persisted_config or load_persisted_config_if_present:
             if not self._config_persistence_trusted_path:
                 ensure_service_config_path_allowed(self._config_persistence_path, allow_unsafe_path=False)
-            loaded_config, metadata = load_service_config_file(self._config_persistence_path)
-            loaded_config = restore_service_config_credentials(
-                loaded_config,
-                path=self._config_persistence_path,
-                metadata=metadata,
-            )
-            self._config_persistence_loaded_at = str(metadata.get("loaded_at") or "")
-            self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
-            self._config_persistence_migrated_from_format_version = metadata.get("migrated_from_format_version")
-            runtime_config = loaded_config
-            if isinstance(config, dict):
-                runtime_config = merge_service_config(loaded_config, config)
-                self._config_persistence_dirty = True
-            else:
-                self._config_persistence_dirty = False
+            try:
+                loaded_config, metadata = load_service_config_file(self._config_persistence_path)
+            except FileNotFoundError:
+                if not load_persisted_config_if_present:
+                    raise
+                loaded_config = None
+                metadata = {}
+            if loaded_config is not None:
+                loaded_config = restore_service_config_credentials(
+                    loaded_config,
+                    path=self._config_persistence_path,
+                    metadata=metadata,
+                )
+                self._config_persistence_loaded_at = str(metadata.get("loaded_at") or "")
+                self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
+                self._config_persistence_migrated_from_format_version = metadata.get("migrated_from_format_version")
+                runtime_config = loaded_config
+                if isinstance(config, dict):
+                    runtime_config = merge_service_config(loaded_config, config)
+                    self._config_persistence_dirty = True
+                else:
+                    self._config_persistence_dirty = False
         self._runtime = BotRuntimeCoordinator(config=runtime_config)
         self._local_execution_adapter: LocalServiceExecutionAdapter | None = None
         self._backtest_execution_adapter: ServiceBacktestExecutionAdapter | None = None

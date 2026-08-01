@@ -85,7 +85,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
-          fetch-depth: 2
+          # The QA note may name a tested revision older than the tagged metadata commit.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -107,6 +108,11 @@ jobs:
             --require-current-revision \
             --allow-release-qa-commit \
             --require-platform-evidence-run
+
+      - name: Validate tagged release metadata versions
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: python tools/check_release_version.py --tag "${{ github.ref_name }}"
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -249,7 +255,11 @@ jobs:
             exit 1
           fi
           cpp_bin="${app_bundle}/Contents/MacOS/Trading-Bot-C++"
-          if ! otool -l "${cpp_bin}" | grep -Fq "@executable_path/../Frameworks"; then
+          embedded_rpath="@executable_path/../Frameworks"
+          if ! otool -l "${cpp_bin}" | grep -A2 -F "cmd LC_RPATH" | grep -Fq "path ${embedded_rpath}"; then
+            install_name_tool -add_rpath "${embedded_rpath}" "${cpp_bin}"
+          fi
+          if ! otool -l "${cpp_bin}" | grep -A2 -F "cmd LC_RPATH" | grep -Fq "path ${embedded_rpath}"; then
             echo "macOS app binary is missing the embedded-framework LC_RPATH." >&2
             exit 1
           fi
@@ -264,6 +274,10 @@ jobs:
             echo "Packaged Tauri executable not found or not executable at ${tauri_bin}" >&2
             exit 1
           fi
+          # Tauri regenerates these tracked platform schemas while compiling the
+          # desktop binary. Restore the checked-in contract before requiring a
+          # clean source tree for signed package smoke evidence.
+          git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas
           python tools/write_rust_package_smoke_evidence.py \
             --rust-cli "${rust_bin}" \
             --tauri-desktop "${tauri_bin}" \
@@ -345,7 +359,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Verify required release platform evidence
         uses: ./.github/actions/verify-release-platform-evidence

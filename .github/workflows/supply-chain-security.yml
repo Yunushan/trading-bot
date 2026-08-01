@@ -136,12 +136,38 @@ jobs:
           done
 
       - name: Audit service container image
+        id: trivy
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: trading-bot-service:supply-chain
-          format: table
+          format: json
+          output: trivy-service-results.json
           exit-code: "1"
           vuln-type: os,library
           severity: HIGH,CRITICAL
           scanners: vuln
+
+      - name: Summarize container findings
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/summarize_trivy_report.py trivy-service-results.json
+
+      - name: Upload container vulnerability report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: container-vulnerability-report
+          path: trivy-service-results.json
+          if-no-files-found: warn
+
+      - name: Enforce container vulnerability policy
+        if: steps.trivy.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Container image contains HIGH or CRITICAL vulnerabilities. See container-vulnerability-report." >&2
+          exit 1

@@ -71,6 +71,8 @@ HARDENING_ARTICLES: tuple[Article, ...] = (
                 min_value_regex=(r"--cov-fail-under=(\d+)", 38),
             ),
             Evidence("Languages/Python/tools/run_python_tests.py", ("pytest", "run_pytest_suite")),
+            Evidence("tools/check_critical_coverage.py", ("CRITICAL_PACKAGE_MINIMUMS", "core.strategy", "service.runners")),
+            Evidence(".github/workflows/ci.yml", ("Check critical execution coverage", "check_critical_coverage.py")),
         ),
     ),
     Article(

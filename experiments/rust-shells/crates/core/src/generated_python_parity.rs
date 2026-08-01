@@ -5,7 +5,7 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "9546bba4a302d02da8c361828a04bdaba7bef2572679c1d8a73da1eb4cc5aca3";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "c6a4f93010c6d8b9452a7ed8309663c10c51269dfe8f9aabc249f2152058a40a";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -1869,11 +1869,6 @@ pub const PYTHON_INDICATOR_SOURCE_OPTIONS: &[PythonUiOption] = &[
     PythonUiOption {
         key: "Binance futures",
         label: "Binance futures",
-        disabled: false,
-    },
-    PythonUiOption {
-        key: "Bybit",
-        label: "Bybit",
         disabled: false,
     },
 ];

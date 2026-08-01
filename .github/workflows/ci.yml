@@ -289,6 +289,13 @@ jobs:
           set -euo pipefail
           python tools/run_python_tests.py --runner pytest
 
+      - name: Check critical execution coverage
+        shell: bash
+        working-directory: Languages/Python
+        run: |
+          set -euo pipefail
+          python ../../tools/check_critical_coverage.py --coverage-file coverage.xml
+
   python-version-compatibility:
     name: Python 3.10-3.14 Compatibility (${{ matrix.python-version }})
     runs-on: ubuntu-24.04

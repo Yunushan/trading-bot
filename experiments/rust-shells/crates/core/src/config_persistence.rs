@@ -2468,7 +2468,7 @@ mod tests {
             "tif": "ioc",
             "position_pct": "2.5",
             "connector_backend": "CCXT (Unified)",
-            "indicator_source": "bybit",
+            "indicator_source": "binance futures",
             "theme": "green",
             "design": "workstation",
             "selected_exchange": "kucoin",
@@ -2540,7 +2540,7 @@ mod tests {
         assert_eq!(validated["order_type"], "LIMIT");
         assert_eq!(validated["tif"], "IOC");
         assert_eq!(validated["connector_backend"], "ccxt");
-        assert_eq!(validated["indicator_source"], "Bybit");
+        assert_eq!(validated["indicator_source"], "Binance futures");
         assert_eq!(validated["theme"], "Green");
         assert_eq!(validated["design"], "Workstation");
         assert_eq!(validated["selected_exchange"], "KuCoin");

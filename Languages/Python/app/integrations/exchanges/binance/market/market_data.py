@@ -59,7 +59,6 @@ SUPPORTED_LIVE_KLINE_SOURCES = frozenset(
         "binance spot",
         "binance_spot",
         "spot",
-        "bybit",
     }
 )
 
@@ -69,7 +68,7 @@ def _require_supported_live_kline_source(source: str) -> None:
         return
     raise NotImplementedError(
         f"Indicator source '{source or 'unknown'}' is not implemented for live klines. "
-        "Choose Binance spot, Binance futures, or Bybit."
+        "Choose Binance spot or Binance futures."
     )
 
 
@@ -179,18 +178,6 @@ def get_klines(self, symbol, interval, limit=500):
                     method = getattr(client, "get_klines", None)
             elif source in ("binance spot", "binance_spot", "spot"):
                 method = getattr(client, "get_klines", None) or getattr(client, "klines", None)
-            elif source == "bybit":
-                bybit_interval = self._bybit_interval(interval)
-                url = "https://api.bybit.com/v5/market/kline"
-                bybit_params = {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit}
-                resp = requests.get(url, params=bybit_params, timeout=10)
-                resp.raise_for_status()
-                payload = resp.json() or {}
-                data = (payload.get("result", {}) or {}).get("list", []) or []
-                data = sorted(data, key=lambda item: int(item[0]))
-                raw = [[int(item[0]), item[1], item[2], item[3], item[4], item[5], 0, 0, 0, 0, 0, 0] for item in data]
-            elif source in ("tradingview", "trading view"):
-                raise NotImplementedError("TradingView data source is not implemented in this build.")
             else:
                 if acct == "FUTURES":
                     method = getattr(client, "futures_klines", None)
@@ -200,7 +187,7 @@ def get_klines(self, symbol, interval, limit=500):
                     method = getattr(client, "get_klines", None) or getattr(client, "klines", None)
             if raw is None and method is not None:
                 raw = method(**params)
-            elif raw is None and source not in ("bybit", "tradingview", "trading view"):
+            elif raw is None:
                 raise AttributeError("Connector does not provide a klines method")
             break
         except (BinanceAPIException, OfficialConnectorError, CcxtConnectorError) as exc:

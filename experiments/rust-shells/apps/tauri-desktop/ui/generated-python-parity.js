@@ -567,7 +567,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "9546bba4a302d02da8c361828a04bdaba7bef2572679c1d8a73da1eb4cc5aca3",
+  "contractHash": "c6a4f93010c6d8b9452a7ed8309663c10c51269dfe8f9aabc249f2152058a40a",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -1464,11 +1464,6 @@
       "key": "Binance futures",
       "label": "Binance futures",
       "value": "Binance futures"
-    },
-    {
-      "key": "Bybit",
-      "label": "Bybit",
-      "value": "Bybit"
     }
   ],
   "leadTraderOptions": [

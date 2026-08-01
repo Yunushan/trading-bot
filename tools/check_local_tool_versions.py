@@ -107,7 +107,7 @@ def _runtime_remediation(
         if sys.platform == "win32":
             windows_hint = (
                 " On Windows, use: "
-                "winget install --id OpenJS.NodeJS.LTS --exact --source winget "
+                "winget install --id OpenJS.NodeJS --exact --source winget "
                 "--accept-source-agreements --accept-package-agreements."
             )
         return (

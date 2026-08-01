@@ -683,7 +683,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("--mount=type=secret,id=pip_ca,required=false", dockerfile)
         self.assertIn("PIP_CERT=/run/secrets/pip_ca", dockerfile)
         self.assertIn('python -m pip install --upgrade "pip==26.1.2"', dockerfile)
+        self.assertIn("install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot", dockerfile)
+        self.assertIn("COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot", dockerfile)
+        self.assertIn("HOME=/home/nonroot", dockerfile)
         self.assertIn('ENTRYPOINT ["/opt/venv/bin/python"]', dockerfile)
+        self.assertIn('"--load-config-if-present"', dockerfile)
         self.assertIn('CMD ["apps/service-api/main.py"', dockerfile)
         self.assertIn("USER 65532", dockerfile)
         self.assertIn("apk add --no-cache build-base linux-headers", dockerfile)
@@ -699,12 +703,19 @@ class ProductPackagingContractTests(unittest.TestCase):
         compose = (REPO_ROOT / "docker" / "compose.yaml").read_text(encoding="utf-8")
         self.assertIn('"127.0.0.1:8000:8000"', compose)
         self.assertIn('BOT_SERVICE_API_TRUST_LOOPBACK_PROXY: "1"', compose)
-        self.assertIn('user: "10001:10001"', compose)
+        self.assertIn('user: "65532:65532"', compose)
         self.assertIn("read_only: true", compose)
         self.assertIn("no-new-privileges:true", compose)
         self.assertIn("cap_drop:", compose)
         self.assertIn("- ALL", compose)
-        self.assertIn("trading-bot-service-data:/home/tradingbot/.trading-bot", compose)
+        self.assertIn("trading-bot-service-data:/home/nonroot/.trading-bot", compose)
+        docker_readme = (REPO_ROOT / "docker" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("`65532` user", docker_readme)
+        self.assertIn("`/home/nonroot/.trading-bot`", docker_readme)
+        self.assertIn(
+            "safe defaults on its first run",
+            " ".join(docker_readme.split()),
+        )
         dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
         self.assertIn("# Allowlist only the runtime files", dockerignore)
         self.assertIn("!Languages/Python/app/**", dockerignore)
@@ -1749,9 +1760,19 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("-DTB_ENABLE_QT_DEPLOY_SCRIPT=OFF", macos_release_workflow)
         self.assertIn("QtConcurrent.framework", macos_release_workflow)
         self.assertIn("embedded-framework LC_RPATH", macos_release_workflow)
+        self.assertIn("install_name_tool -add_rpath", macos_release_workflow)
+        self.assertIn(
+            "git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas",
+            macos_release_workflow,
+        )
+        self.assertIn('grep -A2 -F "cmd LC_RPATH"', macos_release_workflow)
         self.assertNotIn("mapfile -t artifacts", macos_release_workflow)
         self.assertIn("while IFS= read -r artifact", macos_release_workflow)
         self.assertIn('artifacts+=("${artifact}")', macos_release_workflow)
+        freebsd_release_workflow = workflows["release-freebsd.yml"]
+        self.assertNotIn("mapfile -t artifacts", freebsd_release_workflow)
+        self.assertIn("while IFS= read -r artifact", freebsd_release_workflow)
+        self.assertIn('artifacts+=("${artifact}")', freebsd_release_workflow)
         self.assertLess(
             macos_release_workflow.index("Deploy macOS Qt frameworks"),
             macos_release_workflow.index("Smoke packaged native binaries"),
@@ -1759,16 +1780,21 @@ class ProductPackagingContractTests(unittest.TestCase):
         windows_release_workflow = workflows["release-windows.yml"]
         self.assertIn("function Install-AqtPackage", windows_release_workflow)
         self.assertIn("aqt install failed after 3 attempts", windows_release_workflow)
+        self.assertIn('"aqtinstall==3.3.0"', windows_release_workflow)
         self.assertIn("win64_msvc2022_arm64", windows_release_workflow)
         self.assertIn('"install-qt", "windows_arm64", "desktop", "6.10.3"', windows_release_workflow)
+        self.assertIn('"--autodesktop"', windows_release_workflow)
+        self.assertIn("Join-Path $env:RUNNER_TEMP \"qt\"", windows_release_workflow)
         self.assertNotIn("win64_msvc2022_arm64_cross_compiled", windows_release_workflow)
         self.assertIn('Qt6Config\\.cmake$', windows_release_workflow)
         self.assertNotIn('Qt6Config\\\\.cmake$', windows_release_workflow)
-        self.assertNotIn('"qtpositioning", "--autodesktop"', windows_release_workflow)
         self.assertIn("git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas", windows_release_workflow)
         native_cpp_cmake = (REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt").read_text(
             encoding="utf-8"
         )
+        self.assertIn('BUILD_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
+        self.assertIn('INSTALL_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
+        self.assertIn("BUILD_WITH_INSTALL_RPATH TRUE", native_cpp_cmake)
         self.assertIn('INSTALL_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
         self.assertIn("find_package(Qt6WebEngineWidgets", native_cpp_cmake)
         self.assertIn('HINTS "${Qt6_DIR}/.."', native_cpp_cmake)

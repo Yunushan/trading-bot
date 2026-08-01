@@ -102,7 +102,7 @@ def pause_trading(cls) -> None:
         cls._GLOBAL_PAUSE_FALLBACK = False
 
 
-def resume_trading(cls) -> None:
+def resume_trading(cls) -> bool:
     try:
         shutdown_requested = bool(cls._GLOBAL_SHUTDOWN.is_set()) or bool(
             getattr(cls, "_GLOBAL_SHUTDOWN_FALLBACK", False)
@@ -111,9 +111,10 @@ def resume_trading(cls) -> None:
         cls._GLOBAL_SHUTDOWN_FALLBACK = True
         _force_pause_fallback(cls, "Global shutdown state could not be read during resume")
         _LOGGER.exception("Trading resume rejected because shutdown state is unavailable")
-        return
+        return False
     if shutdown_requested:
-        return
+        _LOGGER.warning("Trading resume rejected because shutdown was requested")
+        return False
 
     try:
         lock = getattr(cls, "_CONNECTOR_ORDER_BLOCK_LOCK", None)
@@ -127,8 +128,9 @@ def resume_trading(cls) -> None:
     except Exception:
         _force_pause_fallback(cls, "Trading resume failed")
         _LOGGER.exception("Trading remains paused because resume state could not be reset")
-        return
+        return False
     cls._GLOBAL_PAUSE_FALLBACK = False
+    return True
 
 
 def stop_blocking(self, timeout: float | None = 3.0):

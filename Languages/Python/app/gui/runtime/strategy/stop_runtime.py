@@ -12,29 +12,38 @@ def stop_strategy_sync(
 ) -> dict:
     """Synchronous helper to stop engines and optionally close all positions."""
     result: dict = {"ok": True}
+
+    def _record_warning(action: str, exc: Exception) -> None:
+        message = f"{action}: {exc}"
+        result.setdefault("warnings", []).append(message)
+        try:
+            self.log(message)
+        except Exception:
+            pass
+
     try:
         try:
             self._service_request_stop(
                 close_positions=close_positions,
                 source="desktop-stop",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_warning("Service stop request failed", exc)
         try:
             self._is_stopping_engines = True
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_warning("Could not mark strategy engines as stopping", exc)
         try:
             if strategy_engine_cls is not None:
                 strategy_engine_cls.pause_trading()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_warning("Could not pause new strategy entries", exc)
         try:
             guard_obj = getattr(self, "guard", None)
             if guard_obj and hasattr(guard_obj, "pause_new"):
                 guard_obj.pause_new()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_warning("Could not pause the order guard", exc)
         engines = {}
         if hasattr(self, "strategy_engines") and isinstance(self.strategy_engines, dict):
             engines = dict(self.strategy_engines)
@@ -46,15 +55,16 @@ def stop_strategy_sync(
                 try:
                     if hasattr(eng, "stop"):
                         eng.stop()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_warning("Could not stop a strategy engine", exc)
             for _, eng in engines.items():
                 try:
                     remaining = max(0.0, stop_deadline - time.time())
                     if remaining <= 0.0:
                         break
                     eng.join(timeout=min(0.25, remaining))
-                except Exception:
+                except Exception as exc:
+                    _record_warning("Could not join a strategy engine", exc)
                     continue
             still_alive: list[str] = []
             for key, eng in engines.items():
@@ -66,12 +76,12 @@ def stop_strategy_sync(
                     still_alive.append(str(key))
             try:
                 self.strategy_engines.clear()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_warning("Could not clear strategy engine state", exc)
             try:
                 self._engine_indicator_map.clear()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_warning("Could not clear strategy indicator state", exc)
             if still_alive:
                 self.log(
                     f"Signaled loops to stop but {len(still_alive)} engine(s) are still shutting down: {', '.join(still_alive)}"
@@ -106,8 +116,8 @@ def stop_strategy_sync(
                     if acct_text.startswith("FUT") and self.shared_binance is not None:
                         cancel_res = self.shared_binance.cancel_all_open_futures_orders()
                         result["cancel_open_orders_after_close"] = cancel_res
-                except Exception:
-                    pass
+                except Exception as cancel_exc:
+                    _record_warning("Post-close cancellation of open orders failed", cancel_exc)
             except Exception as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
@@ -145,6 +155,11 @@ def stop_strategy_async(
         if not res.get("ok", True):
             try:
                 self.log(f"Stop warning: {res.get('error')}")
+            except Exception:
+                pass
+        for warning in res.get("warnings", []):
+            try:
+                self.log(f"Stop warning: {warning}")
             except Exception:
                 pass
         close_details = res.get("close_all_result", None)

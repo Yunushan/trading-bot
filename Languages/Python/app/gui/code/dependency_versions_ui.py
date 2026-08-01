@@ -466,14 +466,19 @@ def _run_python_package_install(
     line_queue: queue.Queue[str | None] = queue.Queue()
 
     def _reader() -> None:
+        stream = proc.stdout
         try:
-            stream = proc.stdout
             if stream is not None:
                 for line in stream:
                     line_queue.put(str(line or ""))
         except Exception as exc:
             line_queue.put(str(exc))
         finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
             line_queue.put(None)
 
     reader = threading.Thread(target=_reader, name="dependency-pip-output", daemon=True)
@@ -517,6 +522,7 @@ def _run_python_package_install(
             proc.wait(timeout=5.0)
         except Exception as exc:
             output_lines.append(f"Timed-out command did not exit cleanly: {type(exc).__name__}: {exc}")
+        reader.join(timeout=5.0)
         return False, "\n".join([f"Command timed out after {timeout:.0f} seconds.", *output_lines]).strip()
 
     return_code = proc.poll()
@@ -525,6 +531,7 @@ def _run_python_package_install(
             return_code = proc.wait(timeout=1.0)
         except Exception:
             return_code = 1
+    reader.join(timeout=1.0)
     return return_code == 0, "\n".join(output_lines).strip()
 
 

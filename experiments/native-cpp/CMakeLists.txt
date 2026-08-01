@@ -305,11 +305,15 @@ endif()
 if (APPLE)
     # Keep the installed app self-contained. macdeployqt copies frameworks into this
     # location and resolves @rpath references through the executable's bundle path.
+    # Set the path at build time too: macdeployqt rewrites framework install names,
+    # but cannot make a binary discover frameworks when CMake stripped LC_RPATH.
     set_target_properties(
         binance_backtest_tab
         PROPERTIES
             MACOSX_BUNDLE TRUE
+            BUILD_RPATH "@executable_path/../Frameworks"
             INSTALL_RPATH "@executable_path/../Frameworks"
+            BUILD_WITH_INSTALL_RPATH TRUE
     )
 endif()
 

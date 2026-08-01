@@ -25,7 +25,10 @@ RUN --mount=type=secret,id=pip_ca,required=false,target=/run/secrets/pip_ca \
     apk add --no-cache build-base linux-headers \
     && python -m venv "$VIRTUAL_ENV" \
     && python -m pip install --upgrade "pip==26.1.2" \
-    && pip install /build/Languages/Python[service]
+    && pip install /build/Languages/Python[service] \
+    && install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot \
+    && touch /home/nonroot/.trading-bot/.keep \
+    && chown 65532:65532 /home/nonroot/.trading-bot/.keep
 
 FROM cgr.dev/chainguard/python:latest@sha256:71cda8424b96989702cdfe23d806e059845965e96a1b08da4d39cc0f1cb946a0
 
@@ -38,6 +41,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
+COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot /home/nonroot/.trading-bot
 COPY --chown=65532:65532 apps/service-api /app/apps/service-api
 COPY --chown=65532:65532 apps/web-dashboard /app/apps/web-dashboard
 COPY --chown=65532:65532 Languages/Python/app /app/Languages/Python/app
@@ -48,4 +52,4 @@ EXPOSE 8000
 USER 65532
 
 ENTRYPOINT ["/opt/venv/bin/python"]
-CMD ["apps/service-api/main.py", "--serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["apps/service-api/main.py", "--serve", "--host", "0.0.0.0", "--port", "8000", "--load-config-if-present"]

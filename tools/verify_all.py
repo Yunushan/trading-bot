@@ -341,6 +341,14 @@ def _checks(
         )
         checks.append(
             Check(
+                "critical Python execution coverage",
+                (python, "tools/check_critical_coverage.py"),
+                root,
+                remediation="Run the full Python test suite to refresh Languages/Python/coverage.xml, then add tests for any undercovered critical package.",
+            )
+        )
+        checks.append(
+            Check(
                 "python source compile",
                 (
                     python,

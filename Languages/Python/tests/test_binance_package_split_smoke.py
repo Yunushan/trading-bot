@@ -224,6 +224,18 @@ class _FuturesAuditWrapper:
         self._test_order_state_dir = tempfile.TemporaryDirectory()
         self._configure_order_audit(path=Path(self._test_order_state_dir.name) / "futures-orders.jsonl")
 
+    def close(self):
+        directory = getattr(self, "_test_order_state_dir", None)
+        if directory is not None:
+            directory.cleanup()
+            self._test_order_state_dir = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def _log(self, message, lvl="info"):
         self.warned.append((lvl, message))
 

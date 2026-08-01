@@ -70,12 +70,14 @@ variables.
 
 ## Runtime hardening
 
-The checked-in Compose service runs as an unprivileged `tradingbot` user with a
+The checked-in Compose service runs as the image's unprivileged `65532` user with a
 read-only container filesystem, no Linux capabilities, and `no-new-privileges`.
 Its only persistent writable location is the named
-`trading-bot-service-data` volume at `/home/tradingbot/.trading-bot`; `/tmp` is
-an in-memory temporary filesystem. Do not add broad host-path mounts or remove
-these restrictions unless the deployment has a reviewed operational reason.
+`trading-bot-service-data` volume at `/home/nonroot/.trading-bot`; the service
+loads a saved configuration from that volume when it exists and uses safe defaults
+on its first run. `/tmp` is an in-memory temporary filesystem. Do not add broad
+host-path mounts or remove these restrictions unless the deployment has a reviewed
+operational reason.
 
 ## What is included
 

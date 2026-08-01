@@ -11,7 +11,7 @@ services:
       BOT_SERVICE_API_TOKEN: ${BOT_SERVICE_API_TOKEN:?Set BOT_SERVICE_API_TOKEN before exposing the service API}
       # The Docker port is explicitly published only on host loopback above.
       BOT_SERVICE_API_TRUST_LOOPBACK_PROXY: "1"
-    user: "10001:10001"
+    user: "65532:65532"
     read_only: true
     tmpfs:
       - /tmp:mode=1777
@@ -20,7 +20,7 @@ services:
     cap_drop:
       - ALL
     volumes:
-      - trading-bot-service-data:/home/tradingbot/.trading-bot
+      - trading-bot-service-data:/home/nonroot/.trading-bot
     healthcheck:
       test:
         [

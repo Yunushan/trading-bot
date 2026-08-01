@@ -78,7 +78,6 @@ THEME_OPTIONS = ("Light", "Dark", "Blue", "Yellow", "Green", "Red")
 INDICATOR_SOURCE_OPTIONS = (
     "Binance spot",
     "Binance futures",
-    "Bybit",
 )
 LLM_USE_FOR_OPTIONS = (
     ("Advisory", "advisory"),

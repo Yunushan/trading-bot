@@ -189,7 +189,13 @@ def build_llm_chat_request(
     base_url = str(payload["base_url"])
     model = str(payload["model"])
     reasoning_effort = _reasoning_effort(payload)
-    public_network = bool(payload.get("allow_public_network")) or _base_url_uses_public_network(base_url)
+    allow_public_network = bool(payload.get("allow_public_network"))
+    base_url_uses_public_network = _base_url_uses_public_network(base_url)
+    if mode != "cloud" and base_url_uses_public_network and not allow_public_network:
+        raise ValueError(
+            "Public local/custom LLM endpoints are disabled. Enable the public network endpoint control before using this base URL."
+        )
+    public_network = allow_public_network or base_url_uses_public_network
     context_for_request = _context_for_provider(
         context,
         mode=mode,

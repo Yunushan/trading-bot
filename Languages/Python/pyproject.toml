@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trading-bot-python"
-version = "0.1.0"
+version = "1.0.35"
 description = "Desktop-first Python workspace for the Trading Bot project."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -110,7 +110,7 @@ addopts = [
     "--cov=trading_core",
     "--cov-report=term-missing:skip-covered",
     "--cov-report=xml",
-    "--cov-fail-under=40",
+    "--cov-fail-under=46",
 ]
 filterwarnings = [
     # Temporary quarantine for third-party websocket deprecations until the connector stack is upgraded.

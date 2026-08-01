@@ -99,6 +99,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         help="Load durable service config before serving or applying local CLI patches.",
     )
     parser.add_argument(
+        "--load-config-if-present",
+        action="store_true",
+        help="Load durable service config when present; start with defaults on a first run.",
+    )
+    parser.add_argument(
         "--save-config",
         action="store_true",
         help="Persist the current local service config after applying CLI or terminal changes.",
@@ -152,7 +157,10 @@ def _remote_json_request(base_url: str, path: str, *, api_token: str = "", paylo
         ) as response:
             raw = response.read().decode("utf-8")
     except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
+        try:
+            detail = exc.read().decode("utf-8", errors="ignore")
+        finally:
+            exc.close()
         raise RuntimeError(f"{exc.code} {exc.reason}: {detail}") from exc
     return json.loads(raw) if raw else None
 
@@ -173,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
                 api_token=args.api_token,
                 config_path=args.config_path or None,
                 load_persisted_config=args.load_config,
+                load_persisted_config_if_present=args.load_config_if_present,
             )
         except (ConfigValidationError, FileNotFoundError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
@@ -199,7 +208,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         service = TradingBotService(
             config_path=args.config_path or None,
-            load_persisted_config=args.load_config,
+            load_persisted_config=bool(args.load_config or args.load_config_if_present),
+            load_persisted_config_if_present=args.load_config_if_present,
         )
     except (ConfigValidationError, FileNotFoundError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

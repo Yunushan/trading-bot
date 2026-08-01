@@ -24,7 +24,7 @@ class MarketSourceCapabilitiesTests(unittest.TestCase):
     def test_indicator_source_catalog_only_lists_implemented_live_sources(self):
         self.assertEqual(
             INDICATOR_SOURCE_OPTIONS,
-            ("Binance spot", "Binance futures", "Bybit"),
+            ("Binance spot", "Binance futures"),
         )
 
     def test_unsupported_live_source_is_rejected_before_any_client_fallback(self):
@@ -32,8 +32,12 @@ class MarketSourceCapabilitiesTests(unittest.TestCase):
             get_klines(_UnsupportedSourceWrapper(), "BTCUSDT", "1h")
 
     def test_supported_sources_are_accepted_by_transport_guard(self):
-        for source in ("", "binance futures", "binance spot", "bybit"):
+        for source in ("", "binance futures", "binance spot"):
             _require_supported_live_kline_source(source)
+
+    def test_incomplete_bybit_indicator_source_is_rejected_before_any_network_call(self):
+        with self.assertRaisesRegex(NotImplementedError, "bybit"):
+            _require_supported_live_kline_source("bybit")
 
 
 if __name__ == "__main__":
