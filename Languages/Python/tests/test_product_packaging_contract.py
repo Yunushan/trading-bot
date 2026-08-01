@@ -1338,7 +1338,15 @@ class ProductPackagingContractTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("Web Dashboard Quality", workflow)
-        self.assertIn("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38", workflow)
+        self.assertTrue(
+            any(
+                action in workflow
+                for action in (
+                    "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+                    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                )
+            )
+        )
         self.assertIn('node-version: "26"', workflow)
         self.assertIn("working-directory: apps/web-dashboard", workflow)
         self.assertIn("node --check modules/render.js", workflow)
@@ -1622,9 +1630,25 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertNotIn("actions/upload-artifact@v6", combined)
         self.assertNotIn("softprops/action-gh-release@v2", combined)
 
-        self.assertIn("TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c", workflows["release-windows.yml"])
-        self.assertIn("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131", workflows["release-windows.yml"])
-        self.assertIn("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131", workflows["release-linux-macos.yml"])
+        self.assertTrue(
+            any(
+                action in workflows["release-windows.yml"]
+                for action in (
+                    "TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c",
+                    "TheMrMilchmann/setup-msvc-dev@368ef7d1ee4d1171b31d4a7f67f4d954f903f5a9",
+                )
+            )
+        )
+        for workflow_name in ("release-windows.yml", "release-linux-macos.yml"):
+            self.assertTrue(
+                any(
+                    action in workflows[workflow_name]
+                    for action in (
+                        "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131",
+                        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                    )
+                )
+            )
         for workflow in workflows.values():
             self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
             self.assertIn("softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228", workflow)
@@ -1638,7 +1662,15 @@ class ProductPackagingContractTests(unittest.TestCase):
         for workflow_path in workflows:
             workflow = workflow_path.read_text(encoding="utf-8")
             self.assertIn("anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610", workflow)
-            self.assertIn("actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6", workflow)
+            self.assertTrue(
+                any(
+                    action in workflow
+                    for action in (
+                        "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6",
+                        "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
+                    )
+                )
+            )
             self.assertIn("attestations: write", workflow)
             self.assertIn("id-token: write", workflow)
             expected_sbom_name = (

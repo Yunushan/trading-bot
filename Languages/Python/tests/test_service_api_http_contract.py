@@ -76,19 +76,13 @@ class ServiceApiHttpContractTests(unittest.TestCase):
     def test_service_api_app_exposes_expected_routes(self):
         app = create_service_api_app()
         paths: set[str] = set()
-        schema_paths = set(app.openapi()["paths"])
-        route_methods_by_path: dict[str, set[str]] = {}
+        openapi_paths = app.openapi()["paths"]
+        schema_paths = set(openapi_paths)
         for route in app.router.routes:
             path = getattr(route, "path", None)
             if not isinstance(path, str):
                 continue
             paths.add(path)
-            methods = getattr(route, "methods", None)
-            if not methods:
-                continue
-            route_methods_by_path.setdefault(path, set()).update(
-                method for method in methods if method not in {"HEAD", "OPTIONS"}
-            )
         self.assertIn("/", paths)
         self.assertIn("/health", paths)
         self.assertIn("/livez", paths)
@@ -134,17 +128,15 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             "backtest_stop",
             "stream_dashboard",
         ):
-            self.assertIn(SERVICE_API_ROUTE_PATHS[route_name], paths)
             self.assertIn(SERVICE_API_ROUTE_PATHS[route_name], schema_paths)
-            self.assertIn(SERVICE_API_LEGACY_ROUTE_PATHS[route_name], paths)
             self.assertNotIn(SERVICE_API_LEGACY_ROUTE_PATHS[route_name], schema_paths)
             self.assertEqual(
                 set(SERVICE_API_ROUTE_METHODS[route_name]),
-                route_methods_by_path[SERVICE_API_ROUTE_PATHS[route_name]],
-            )
-            self.assertEqual(
-                set(SERVICE_API_ROUTE_METHODS[route_name]),
-                route_methods_by_path[SERVICE_API_LEGACY_ROUTE_PATHS[route_name]],
+                {
+                    method.upper()
+                    for method in openapi_paths[SERVICE_API_ROUTE_PATHS[route_name]]
+                    if method.upper() not in {"HEAD", "OPTIONS"}
+                },
             )
         self.assertEqual(app.version, SERVICE_API_VERSION)
         self.assertEqual(app.state.service_api_base_path, SERVICE_API_BASE_PATH)

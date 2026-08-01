@@ -478,7 +478,15 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         self.assertIn('python -m pip install -e "./Languages/Python[service,security]"', workflow)
         self.assertNotIn("actions/checkout@v5", workflow)
-        self.assertIn("actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd", workflow)
+        self.assertTrue(
+            any(
+                action in workflow
+                for action in (
+                    "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
+                    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                )
+            )
+        )
         self.assertTrue(
             any(
                 action in workflow
@@ -488,7 +496,15 @@ class DependencyReproducibilityTests(unittest.TestCase):
                 )
             )
         )
-        self.assertIn("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38", workflow)
+        self.assertTrue(
+            any(
+                action in workflow
+                for action in (
+                    "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+                    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                )
+            )
+        )
         self.assertIn("dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4", workflow)
         self.assertIn("python tools/run_python_security_audit.py --skip-editable --progress-spinner=off", workflow)
         self.assertIn("npm audit --omit=dev --audit-level=high", workflow)
@@ -536,8 +552,16 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("- language: rust", workflow)
         self.assertIn("build-mode: ${{ matrix.build-mode }}", workflow)
         self.assertEqual(4, workflow.count("build-mode: none"))
-        self.assertIn("github/codeql-action/init@e0647621c2984b5ed2f768cb892365bf2a616ad1", workflow)
-        self.assertIn("github/codeql-action/analyze@e0647621c2984b5ed2f768cb892365bf2a616ad1", workflow)
+        for action_name in ("init", "analyze"):
+            self.assertTrue(
+                any(
+                    f"github/codeql-action/{action_name}@{digest}" in workflow
+                    for digest in (
+                        "e0647621c2984b5ed2f768cb892365bf2a616ad1",
+                        "e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81",
+                    )
+                )
+            )
 
     def test_rust_live_evidence_commands_use_the_workspace_lockfile(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "rust-native-live-smoke.yml").read_text(
