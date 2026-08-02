@@ -334,6 +334,7 @@ jobs:
             "talib:$env:VCPKG_DEFAULT_TRIPLET",
             "cpr:$env:VCPKG_DEFAULT_TRIPLET",
             "curl[tool,ssl]:$env:VCPKG_DEFAULT_TRIPLET",
+            "openssl:$env:VCPKG_DEFAULT_TRIPLET",
             "vulkan-headers:$env:VCPKG_DEFAULT_TRIPLET"
           )
 
@@ -371,6 +372,16 @@ jobs:
             $env:YARL_NO_EXTENSIONS = "1"
             $env:FROZENLIST_NO_EXTENSIONS = "1"
             $env:PROPCACHE_NO_EXTENSIONS = "1"
+            $opensslRoot = Join-Path $env:TB_VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET"
+            $opensslLibDir = Join-Path $opensslRoot "lib"
+            $opensslIncludeDir = Join-Path $opensslRoot "include"
+            if (!(Test-Path (Join-Path $opensslLibDir "libssl.lib")) -or !(Test-Path $opensslIncludeDir)) {
+              throw "OpenSSL was not installed for $env:VCPKG_DEFAULT_TRIPLET under $opensslRoot."
+            }
+            $env:OPENSSL_DIR = $opensslRoot
+            $env:OPENSSL_LIB_DIR = $opensslLibDir
+            $env:OPENSSL_INCLUDE_DIR = $opensslIncludeDir
+            Write-Host "Using vcpkg OpenSSL for ARM64 Python builds: $opensslRoot"
           }
           python -m pip install --prefer-binary -r $requirementsFile
           Pop-Location
