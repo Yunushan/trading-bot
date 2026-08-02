@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -33,10 +34,23 @@ def build_coverage_report(coverage_file: Path) -> dict[str, object]:
             "packages": {},
         }
 
-    rates = {
-        str(package.get("name") or ""): float(package.get("line-rate") or 0.0)
-        for package in root.findall(".//package")
-    }
+    try:
+        rates: dict[str, float] = {}
+        for package in root.findall(".//package"):
+            name = str(package.get("name") or "")
+            rate = float(package.get("line-rate") or 0.0)
+            if not math.isfinite(rate) or not 0.0 <= rate <= 1.0:
+                raise ValueError(
+                    f"line-rate for {name or '<unnamed package>'!r} must be finite and between 0 and 1"
+                )
+            rates[name] = rate
+    except (TypeError, ValueError) as exc:
+        return {
+            "ok": False,
+            "coverage_file": str(coverage_file),
+            "error": f"invalid package line-rate: {exc}",
+            "packages": {},
+        }
     packages: dict[str, dict[str, object]] = {}
     for name, minimum in CRITICAL_PACKAGE_MINIMUMS.items():
         actual = rates.get(name)

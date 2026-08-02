@@ -155,10 +155,6 @@ def _futures_create_order_with_fallback(self, params: dict):
         if success_val is False:
             msg = order_obj.get("msg") or order_obj.get("message") or "order rejected"
             raise RuntimeError(f"order rejected: {msg}")
-        status = str(order_obj.get("status") or "").upper()
-        if status in {"REJECTED", "EXPIRED", "CANCELED"}:
-            msg = order_obj.get("msg") or order_obj.get("message") or status.lower()
-            raise RuntimeError(f"order rejected (status={status}): {msg}")
         data_obj = order_obj.get("data")
         if isinstance(data_obj, dict):
             if _is_binance_error_payload(data_obj):
@@ -168,6 +164,12 @@ def _futures_create_order_with_fallback(self, params: dict):
             if _order_has_id(data_obj):
                 order_obj.clear()
                 order_obj.update(data_obj)
+        status = str(order_obj.get("status") or "").upper()
+        if not status:
+            _raise_from_last_error("order rejected: response has no explicit order status")
+        if status in {"REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "CANCELED"}:
+            msg = order_obj.get("msg") or order_obj.get("message") or status.lower()
+            raise RuntimeError(f"order rejected (status={status}): {msg}")
         if not _order_has_id(order_obj):
             _raise_from_last_error("order rejected: response has no order identifier")
 

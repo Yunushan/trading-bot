@@ -152,7 +152,7 @@ class _SpotSizingClient:
         self.orders.append(dict(kwargs))
         if self.response is not _DEFAULT_SPOT_ORDER_RESPONSE:
             return self.response
-        return {"orderId": 1, **kwargs}
+        return {"orderId": 1, "status": "FILLED", **kwargs}
 
 
 class _SpotSizingWrapper:
@@ -637,6 +637,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             ({"success": False, "message": "denied"}, "denied"),
             ({"status": "REJECTED", "message": "denied"}, "status=REJECTED"),
             ({"status": "NEW"}, "no order identifier"),
+            ({"orderId": 7}, "no explicit order status"),
             ("accepted", "malformed response"),
         )
         for response, message in cases:
@@ -687,8 +688,9 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             (None, "empty response"),
             ("accepted", "malformed response"),
             ([{"status": "NEW"}], "malformed response"),
-            ({}, "response has no order identifier"),
+            ({}, "response has no explicit order status"),
             ({"status": "NEW"}, "response has no order identifier"),
+            ({"orderId": 7}, "response has no explicit order status"),
         )
         for response, message in cases:
             with self.subTest(response=response):
@@ -755,6 +757,28 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
                 {"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
             )
             self.assertEqual(2, len(wrapper.client.orders))
+
+    def test_order_intent_reconciliation_requires_explicit_exchange_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wrapper = _FuturesAuditWrapper(fail=True)
+            wrapper._configure_order_audit(path=Path(tmp) / "futures-ambiguous-status.jsonl")
+            with self.assertRaisesRegex(RuntimeError, "exchange rejected"):
+                wrapper._futures_create_order_with_fallback(
+                    {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
+                )
+
+            client_order_id = wrapper.get_order_intent_status()["unresolved_client_order_ids"][0]
+            wrapper._query_order_intent_exchange = lambda _record: {
+                "orderId": 101,
+                "clientOrderId": client_order_id,
+            }
+
+            reconciled = wrapper.reconcile_order_intent(client_order_id)
+
+            self.assertFalse(reconciled["reconciled"])
+            self.assertEqual("unknown", reconciled["state"])
+            self.assertIn("explicit order status", reconciled["error"])
+            self.assertEqual(1, wrapper.get_order_intent_status()["unresolved_count"])
 
     def test_live_futures_submit_guard_blocks_unconfirmed_submit_before_client_call(self):
         with tempfile.TemporaryDirectory() as tmp:

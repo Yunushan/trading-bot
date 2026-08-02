@@ -289,8 +289,8 @@ python tools/bootstrap_local_dev.py --python-command "python" --dry-run
 python tools/bootstrap_local_dev.py --python-command "python"
 ```
 
-The `dev` extra includes test-only tools such as the FastAPI `TestClient`
-transport dependency used by service API contract tests. The `requirements*.txt`
+The `dev` extra includes the bounded `httpx` FastAPI `TestClient` transport
+dependency used by service API contract tests. The `requirements*.txt`
 files below are lightweight runtime shims for launching specific app surfaces.
 
 ### Windows

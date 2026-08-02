@@ -159,6 +159,30 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         self.assertFalse(module._check_ok_from_output(check=check, returncode=1, stdout='{"ok": true}'))
 
+    def test_verify_all_exposes_rust_promotion_state_separately_from_audit_health(self):
+        module = _load_verify_all_module()
+        check = module.Check("rust native runtime promotion audit", (sys.executable,), REPO_ROOT)
+        completed = module.subprocess.CompletedProcess(
+            list(check.command),
+            0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "promotion_ready": False,
+                    "completion_claim": {"status": "denied", "can_claim": False},
+                }
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            result = module._run_check(check, verbose=False)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["promotion_ready"])
+        self.assertEqual("denied", result["completion_claim_status"])
+        self.assertFalse(result["completion_claim_can_claim"])
+
     def test_verify_all_downgrades_only_dirty_source_promotion_import_failure(self):
         module = _load_verify_all_module()
         check = module.Check(

@@ -98,27 +98,28 @@ def finish_snapshots(
             "The latest service-owned backtest session has finished.",
         ),
     )
-    adapter._runtime.set_backtest_snapshot(
-        build_backtest_snapshot(
-            session_id=session_id,
-            state=state,
-            status_message=message,
-            symbols=summary.get("symbols"),
-            intervals=summary.get("intervals"),
-            indicator_keys=summary.get("indicator_keys"),
-            logic=str(summary.get("logic") or ""),
-            symbol_source=str(summary.get("symbol_source") or ""),
-            capital=float(summary.get("capital") or 0.0),
-            run_count=len(run_records or []),
-            error_count=len(error_records or []),
-            cancelled=cancelled,
-            started_at=started_at,
-            completed_at=updated_at,
-            updated_at=updated_at,
-            source="service-backtest-executor",
-            runs=run_payload,
-            top_runs=run_payload[:5],
-            errors=error_payload,
-        )
+    final_snapshot = build_backtest_snapshot(
+        session_id=session_id,
+        state=state,
+        status_message=message,
+        symbols=summary.get("symbols"),
+        intervals=summary.get("intervals"),
+        indicator_keys=summary.get("indicator_keys"),
+        logic=str(summary.get("logic") or ""),
+        symbol_source=str(summary.get("symbol_source") or ""),
+        capital=float(summary.get("capital") or 0.0),
+        run_count=len(run_records or []),
+        error_count=len(error_records or []),
+        cancelled=cancelled,
+        started_at=started_at,
+        completed_at=updated_at,
+        updated_at=updated_at,
+        source="service-backtest-executor",
+        runs=run_payload,
+        top_runs=run_payload[:5],
+        errors=error_payload,
     )
-    adapter._persist_backtest_snapshot()
+    # Publish a terminal state only after its durable snapshot is complete.
+    # This prevents temporary-directory cleanup from racing a daemon worker.
+    adapter._persist_backtest_snapshot(final_snapshot)
+    adapter._runtime.set_backtest_snapshot(final_snapshot)

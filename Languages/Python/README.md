@@ -86,8 +86,8 @@ python -m pip install -e ".[desktop,service,dev]"
 python tools/run_python_tests.py
 ```
 
-The `dev` extra includes test-only tools such as the FastAPI `TestClient`
-transport dependency used by service API contract tests. Use the
+The `dev` extra includes the bounded `httpx` FastAPI `TestClient` transport
+dependency used by service API contract tests. Use the
 `requirements*.txt` shims below when you only need a runtime install for one app
 surface.
 

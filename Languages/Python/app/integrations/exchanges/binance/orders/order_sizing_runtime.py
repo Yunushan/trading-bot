@@ -50,6 +50,8 @@ def _validated_spot_order_response(response: object) -> dict:
     if isinstance(nested, Mapping) and nested:
         payload = dict(nested)
     status = str(payload.get("status") or "").upper()
+    if not status:
+        raise RuntimeError("spot order rejected: response has no explicit order status")
     if status in {"REJECTED", "EXPIRED", "CANCELED"}:
         message = payload.get("msg") or payload.get("message") or status.lower()
         raise RuntimeError(f"spot order rejected (status={status}): {message}")

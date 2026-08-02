@@ -6,6 +6,7 @@ from unittest import mock
 
 from app.service.api.host import ServiceApiBackgroundHost
 from app.service.runners import backtest_executor_worker_runtime, bot_runtime_state
+from app.service.runners.backtest_executor_snapshot_runtime import finish_snapshots
 from app.service.runners.backtest_executor_request_runtime import coerce_datetime
 
 
@@ -36,6 +37,40 @@ class _BrokenShutdownServer:
 
 
 class ServiceRunnerHardeningTests(unittest.TestCase):
+    def test_terminal_backtest_snapshot_is_persisted_before_publication(self):
+        events: list[tuple[str, object]] = []
+        runtime = mock.MagicMock()
+        runtime.set_backtest_snapshot.side_effect = lambda snapshot: events.append(("publish", snapshot))
+        adapter = mock.MagicMock()
+        adapter._runtime = runtime
+        adapter._progress_tick_count = 4
+        adapter._persist_backtest_snapshot.side_effect = lambda snapshot: events.append(("persist", snapshot))
+
+        finish_snapshots(
+            adapter,
+            session_id="session-1",
+            started_at="2026-01-01T00:00:00+00:00",
+            summary={
+                "estimated_run_count": 1,
+                "symbols": ["BTCUSDT"],
+                "intervals": ["1h"],
+                "indicator_keys": ["rsi"],
+                "logic": "AND",
+                "symbol_source": "Binance futures",
+                "capital": 1000.0,
+            },
+            state="completed",
+            message="Backtest session completed.",
+            cancelled=False,
+            run_records=[],
+            error_records=[],
+            progress_percent=100.0,
+        )
+
+        self.assertEqual(["persist", "publish"], [event[0] for event in events])
+        self.assertIs(events[0][1], events[1][1])
+        self.assertEqual("completed", events[0][1].state)
+
     def test_background_host_exposes_shutdown_flag_failures(self):
         host = ServiceApiBackgroundHost()
         host._server = _BrokenShutdownServer()

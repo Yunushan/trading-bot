@@ -126,11 +126,12 @@ class ServiceBacktestExecutionAdapter:
         summary["resume_prior_errors"] = list(checkpoint.get("previous_errors") or [])
         return engine_request, wrapper_kwargs, summary
 
-    def _persist_backtest_snapshot(self) -> None:
+    def _persist_backtest_snapshot(self, snapshot=None) -> None:  # noqa: ANN001
         if self._snapshot_path is None:
             return
         try:
-            write_backtest_snapshot_file(self._runtime.get_backtest_snapshot(), path=self._snapshot_path)
+            snapshot_to_write = snapshot if snapshot is not None else self._runtime.get_backtest_snapshot()
+            write_backtest_snapshot_file(snapshot_to_write, path=self._snapshot_path)
         except OSError as exc:
             self._runtime.record_log_event(
                 f"Could not persist the latest backtest snapshot: {exc}",

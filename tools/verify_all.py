@@ -384,6 +384,26 @@ def _load_json_object(text: str) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _rust_promotion_status(check_name: str, stdout: str) -> dict[str, object]:
+    """Expose strict Rust promotion state separately from normal audit health."""
+    if check_name != "rust native runtime promotion audit":
+        return {}
+    payload = _load_json_object(stdout)
+    promotion_ready = payload.get("promotion_ready")
+    completion_claim = payload.get("completion_claim")
+    status: dict[str, object] = {}
+    if isinstance(promotion_ready, bool):
+        status["promotion_ready"] = promotion_ready
+    if isinstance(completion_claim, dict):
+        claim_status = completion_claim.get("status")
+        claim_can_be_made = completion_claim.get("can_claim")
+        if isinstance(claim_status, str):
+            status["completion_claim_status"] = claim_status
+        if isinstance(claim_can_be_made, bool):
+            status["completion_claim_can_claim"] = claim_can_be_made
+    return status
+
+
 def _runtime_remediation(stdout: str) -> str:
     payload = _load_json_object(stdout)
     remediations = payload.get("remediations")
@@ -570,6 +590,7 @@ def _run_check(check: Check, *, verbose: bool) -> dict[str, object]:
     }
     if check.name in {"rust workspace check", "rust core tests"}:
         payload["execution_environment"] = execution_environment
+    payload.update(_rust_promotion_status(check.name, stdout))
     if advisory_reason:
         payload["advisory_reason"] = advisory_reason
     remediation = _remediation_for(check, returncode=result.returncode, stdout=stdout, stderr=stderr)
@@ -634,6 +655,21 @@ def main(argv: list[str] | None = None) -> int:
         "remediations": _collect_remediations(results),
         "skipped_checks": skipped_checks,
     }
+    rust_promotion_result = next(
+        (
+            item
+            for item in results
+            if item.get("name") == "rust native runtime promotion audit"
+        ),
+        None,
+    )
+    if rust_promotion_result is not None:
+        report["rust_native_runtime_promotion"] = {
+            "audit_ok": bool(rust_promotion_result.get("ok")),
+            "promotion_ready": rust_promotion_result.get("promotion_ready"),
+            "completion_claim_status": rust_promotion_result.get("completion_claim_status"),
+            "completion_claim_can_claim": rust_promotion_result.get("completion_claim_can_claim"),
+        }
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
@@ -660,6 +696,10 @@ def main(argv: list[str] | None = None) -> int:
             print("Explicitly skipped checks:")
             for item in report["skipped_checks"]:
                 print(f"- {item['name']}: {item['reason']}")
+        rust_promotion = report.get("rust_native_runtime_promotion")
+        if isinstance(rust_promotion, dict):
+            state = "ready" if rust_promotion.get("promotion_ready") else "not ready"
+            print(f"Rust native runtime promotion: {state}")
     return 0 if ok else 1
 
 

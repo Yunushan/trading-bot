@@ -103,16 +103,14 @@ def _runtime_remediation(
             f"(current Python is {actual})."
         )
     if name == "node":
-        windows_hint = ""
-        if sys.platform == "win32":
-            windows_hint = (
-                " On Windows, use: "
-                "winget install --id OpenJS.NodeJS --exact --source winget "
-                "--accept-source-agreements --accept-package-agreements."
-            )
+        install_hint = (
+            " Install Node.js from the platform package manager; on Windows, use: "
+            "winget install --id OpenJS.NodeJS --exact --source winget "
+            "--accept-source-agreements --accept-package-agreements."
+        )
         return (
             f"Install Node.js {expected} before running web/mobile client checks "
-            f"(current Node.js is {actual}).{windows_hint}"
+            f"(current Node.js is {actual}).{install_hint}"
         )
     return f"Install {name} {expected} before running local verification (current {name} is {actual})."
 

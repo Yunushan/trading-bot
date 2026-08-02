@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 
 from . import strategy_indicator_order_build_runtime
@@ -182,6 +183,8 @@ def _collect_indicator_order_requests(
     qty_tol_indicator = 1e-9
     try:
         tol_cfg = float(cw.get("indicator_qty_tolerance") or cw.get("qty_tolerance") or 0.0)
+        if not math.isfinite(tol_cfg):
+            raise ValueError("indicator quantity tolerance must be finite")
         if tol_cfg > 0.0:
             qty_tol_indicator = max(qty_tol_indicator, tol_cfg)
     except (TypeError, ValueError, OverflowError) as exc:

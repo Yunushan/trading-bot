@@ -123,6 +123,12 @@ diff whitespace.
   contract parity. This claim is intentionally separate from runtime
   completion; source synchronization does not prove standalone trading execution
   readiness.
+  `tools/verify_all.py --json` mirrors this distinction in its
+  `rust_native_runtime_promotion` object: `audit_ok` reports whether the
+  consistency audit completed, while `promotion_ready` and
+  `completion_claim_status` report whether strict production promotion is
+  actually approved. Consumers must use `promotion_ready`, not only the
+  aggregate `ok` field, when deciding whether the Rust runtime can ship.
   The audit emits a `promotion_model` object with the current phase, failed
   requirement ids, command hints, and the exact evidence directories ignored for
   tracked source cleanliness. It also emits an explicit `completion_claim`

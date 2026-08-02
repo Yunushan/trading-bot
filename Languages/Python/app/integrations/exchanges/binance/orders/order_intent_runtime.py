@@ -263,7 +263,7 @@ def reconcile_order_intent(self, client_order_id: str) -> dict[str, object]:
         }
     exchange_status = str(result.get("status") or "").strip().upper()
     exchange_order_id = _exchange_order_id(result)
-    if not exchange_status and not exchange_order_id:
+    if not exchange_status:
         updated = _update_order_intent_by_id(
             self,
             client_order_id,
@@ -275,7 +275,7 @@ def reconcile_order_intent(self, client_order_id: str) -> dict[str, object]:
             "client_order_id": client_order_id,
             "state": str((updated or record).get("state") or current_state),
             "reconciled": False,
-            "error": "Exchange did not confirm the order.",
+            "error": "Exchange did not provide an explicit order status.",
         }
     resolved_state = "rejected" if exchange_status in _REJECTED_STATES else "accepted"
     updated = _update_order_intent_by_id(
