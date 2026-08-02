@@ -112,6 +112,14 @@ def _qt_bin_from_cmake_cache(build_dir: Path) -> Path | None:
     return qt_bin if qt_bin.is_dir() else None
 
 
+def _qt_lib_from_cmake_cache(build_dir: Path) -> Path | None:
+    qt_bin = _qt_bin_from_cmake_cache(build_dir)
+    if qt_bin is None:
+        return None
+    qt_lib = qt_bin.parent / "lib"
+    return qt_lib if qt_lib.is_dir() else None
+
+
 def _desktop_smoke_env(build_dir: Path, config: str) -> dict[str, str]:
     env = os.environ.copy()
     paths: list[str] = []
@@ -123,6 +131,15 @@ def _desktop_smoke_env(build_dir: Path, config: str) -> dict[str, str]:
         paths.append(str(qt_bin))
     if paths:
         env["PATH"] = os.pathsep.join([*paths, env.get("PATH", "")])
+    if sys.platform == "darwin":
+        # The CMake app bundle is smoke-tested before macdeployqt packages it.
+        # Qt's macOS frameworks therefore remain in the selected kit's lib
+        # directory and must be discoverable through @rpath at launch time.
+        qt_lib = _qt_lib_from_cmake_cache(build_dir)
+        if qt_lib is not None:
+            for variable in ("DYLD_FRAMEWORK_PATH", "DYLD_LIBRARY_PATH"):
+                existing = env.get(variable, "")
+                env[variable] = os.pathsep.join(filter(None, (str(qt_lib), existing)))
     # QApplication needs a display backend even though --smoke never shows a window.
     # Hosted Linux/macOS release runners are headless, so prefer Qt's offscreen plugin.
     if sys.platform != "win32":

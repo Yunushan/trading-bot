@@ -5801,6 +5801,28 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             environment = native_cpp._desktop_smoke_env(REPO_ROOT / "missing-build", "Release")
         self.assertNotIn("QT_QPA_PLATFORM", environment)
 
+    def test_native_cpp_macos_smoke_exposes_qt_framework_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            build_dir = Path(temp_dir) / "build"
+            qt_lib = Path(temp_dir) / "qt" / "6.10.3" / "macos" / "lib"
+            (qt_lib / "cmake" / "Qt6").mkdir(parents=True)
+            (qt_lib.parent / "bin").mkdir()
+            (build_dir / "CMakeCache.txt").parent.mkdir(parents=True)
+            (build_dir / "CMakeCache.txt").write_text(
+                f"Qt6_DIR:PATH={qt_lib / 'cmake' / 'Qt6'}\n",
+                encoding="utf-8",
+            )
+
+            with (
+                patch.dict(native_cpp.os.environ, {}, clear=True),
+                patch.object(native_cpp.sys, "platform", "darwin"),
+            ):
+                environment = native_cpp._desktop_smoke_env(build_dir, "Release")
+
+        self.assertEqual(str(qt_lib), environment["DYLD_FRAMEWORK_PATH"])
+        self.assertEqual(str(qt_lib), environment["DYLD_LIBRARY_PATH"])
+        self.assertEqual("offscreen", environment["QT_QPA_PLATFORM"])
+
     def test_native_cpp_uses_the_macos_app_bundle_executable(self):
         build_dir = REPO_ROOT / "build" / "test-native-macos"
         with patch.object(native_cpp.sys, "platform", "darwin"):
