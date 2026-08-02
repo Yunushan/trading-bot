@@ -1,6 +1,6 @@
 [package]
 name = "trading-bot-tauri-desktop"
-version = "1.0.35"
+version = "1.0.36"
 edition = "2024"
 publish = false
 build = "build.rs"
