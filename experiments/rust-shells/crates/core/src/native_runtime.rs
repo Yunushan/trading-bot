@@ -6,7 +6,8 @@ use serde_json::Value;
 
 use crate::account::{
     BinanceAccountSnapshot, BinanceFuturesMarginMode, BinanceFuturesMultiAssetsMode,
-    BinanceFuturesPosition, BinanceFuturesPositionMode, normalize_futures_margin_type,
+    BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceFuturesSymbolSettings,
+    normalize_futures_margin_type,
 };
 use crate::native_indicators::{
     compute_configured_indicator_series, default_runtime_indicator_configs,
@@ -717,6 +718,26 @@ impl NativeRuntimeLoop {
         exchange_position_mode: Option<&BinanceFuturesPositionMode>,
         exchange_multi_assets_mode: Option<&BinanceFuturesMultiAssetsMode>,
     ) -> NativeRuntimeReadOnlyAccountBootstrapSnapshot {
+        self.bootstrap_read_only_account_with_symbol_settings(
+            balance,
+            positions,
+            exchange_position_mode,
+            exchange_multi_assets_mode,
+            None,
+        )
+    }
+
+    /// Bind account state and an optional flat-symbol settings row to the same safety
+    /// preflight used by the native runtime. The settings row is read-only metadata; it
+    /// never enables order submission and ambiguous values remain blocked by reconciliation.
+    pub fn bootstrap_read_only_account_with_symbol_settings(
+        &self,
+        balance: &BinanceAccountSnapshot,
+        positions: &[BinanceFuturesPosition],
+        exchange_position_mode: Option<&BinanceFuturesPositionMode>,
+        exchange_multi_assets_mode: Option<&BinanceFuturesMultiAssetsMode>,
+        symbol_settings: Option<&BinanceFuturesSymbolSettings>,
+    ) -> NativeRuntimeReadOnlyAccountBootstrapSnapshot {
         let configured_symbol = self.config.symbol.trim().to_ascii_uppercase();
         let matching_positions: Vec<&BinanceFuturesPosition> = positions
             .iter()
@@ -749,6 +770,24 @@ impl NativeRuntimeLoop {
                 if !leverages.contains(&leverage) {
                     leverages.push(leverage);
                 }
+            }
+        }
+        if margin_modes.is_empty() {
+            if let Some(margin_mode) = symbol_settings
+                .filter(|settings| settings.symbol.eq_ignore_ascii_case(&configured_symbol))
+                .and_then(|settings| settings.margin_type.as_deref())
+                .and_then(|margin_type| normalize_futures_margin_type(margin_type).ok())
+            {
+                margin_modes.push(margin_mode);
+            }
+        }
+        if leverages.is_empty() {
+            if let Some(leverage) = symbol_settings
+                .filter(|settings| settings.symbol.eq_ignore_ascii_case(&configured_symbol))
+                .and_then(|settings| settings.leverage)
+                .filter(|leverage| (1..=125).contains(leverage))
+            {
+                leverages.push(leverage);
             }
         }
         let exchange_margin_mode = (margin_modes.len() == 1).then(|| BinanceFuturesMarginMode {
@@ -1900,7 +1939,7 @@ fn guarded_execution_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::account::BinanceFuturesPosition;
+    use crate::account::{BinanceFuturesPosition, BinanceFuturesSymbolSettings};
     use crate::order_audit::{ConnectorOrderCircuitBreakerConfig, OrderAuditConfig};
     use crate::order_guard::OrderSymbolFilters;
     use crate::position_close::BinanceFuturesCloseMethod;
@@ -2924,6 +2963,35 @@ mod tests {
                 .status_message
                 .contains("safe but not signal-ready")
         );
+        assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_read_only_account_bootstrap_uses_flat_symbol_settings() {
+        let runtime = loop_under_test();
+        let balance = BinanceAccountSnapshot {
+            asset: "USDT".to_owned(),
+            usdt_balance: 1_000.0,
+            total_usdt_balance: 1_000.0,
+            available_usdt_balance: 900.0,
+        };
+        let settings = BinanceFuturesSymbolSettings {
+            symbol: "BTCUSDT".to_owned(),
+            margin_type: Some("ISOLATED".to_owned()),
+            leverage: Some(5),
+        };
+
+        let snapshot = runtime.bootstrap_read_only_account_with_symbol_settings(
+            &balance,
+            &[],
+            Some(&position_mode(true)),
+            Some(&multi_assets_mode(false)),
+            Some(&settings),
+        );
+
+        assert!(!snapshot.configured_symbol_position_found);
+        assert_eq!(snapshot.configured_symbol_open_position_amt, 0.0);
+        assert!(snapshot.signal_evaluation_allowed);
         assert!(!snapshot.trading_execution_supported);
     }
 

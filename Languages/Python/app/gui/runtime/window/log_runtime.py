@@ -4,6 +4,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from PyQt6 import QtCore
+from app.security.redaction import redact_text
 
 
 def _gui_setup_log_buffer(self):
@@ -15,12 +16,13 @@ def _gui_setup_log_buffer(self):
 
 
 def _gui_buffer_log(self, msg: str):
+    safe_message = redact_text(msg)
     try:
-        self._log_buf.append(msg)
+        self._log_buf.append(safe_message)
     except Exception:
         pass
     try:
-        self._service_record_log_event(str(msg), source="desktop-log", level="info")
+        self._service_record_log_event(safe_message, source="desktop-log", level="info")
     except Exception:
         pass
 

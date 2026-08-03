@@ -8,8 +8,9 @@ use std::{
 };
 use trading_bot_core::{
     account::{
-        BinanceAccountSnapshot, BinanceApiCredentials, BinanceFuturesMultiAssetsMode,
-        BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceSignedRestClient,
+        BinanceAccountSnapshot, BinanceApiCredentials, BinanceFuturesAccountReadSnapshot,
+        BinanceFuturesMultiAssetsMode, BinanceFuturesPositionMode,
+        BinanceSignedRestClient,
     },
     app_banner, cpp_entire_python_app_contract_parity_ready, cpp_entire_python_app_parity_ready,
     market_data::{
@@ -415,6 +416,9 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
         multi_assets_margin: account_evidence.multi_assets_margin,
         balance_asset: account_evidence.balance_asset,
         positions_count: account_evidence.positions_count,
+        symbol_settings_observed: account_evidence.symbol_settings_observed,
+        symbol_margin_mode: account_evidence.symbol_margin_mode,
+        symbol_leverage: account_evidence.symbol_leverage,
         native_runtime_preflight_message: account_evidence.native_runtime_preflight_message,
         native_runtime_signal_evaluation_allowed: account_evidence
             .native_runtime_signal_evaluation_allowed,
@@ -462,6 +466,9 @@ struct LiveSmokeEvidence {
     multi_assets_margin: bool,
     balance_asset: String,
     positions_count: usize,
+    symbol_settings_observed: bool,
+    symbol_margin_mode: Option<String>,
+    symbol_leverage: Option<i64>,
     native_runtime_preflight_message: String,
     native_runtime_signal_evaluation_allowed: bool,
     native_runtime_trading_execution_supported: bool,
@@ -477,6 +484,9 @@ struct AccountSmokeEvidence {
     multi_assets_margin: bool,
     balance_asset: String,
     positions_count: usize,
+    symbol_settings_observed: bool,
+    symbol_margin_mode: Option<String>,
+    symbol_leverage: Option<i64>,
     native_runtime_preflight_message: String,
     native_runtime_signal_evaluation_allowed: bool,
     native_runtime_trading_execution_supported: bool,
@@ -722,10 +732,11 @@ trait AccountSmokeClient {
         &self,
         credentials: &BinanceApiCredentials,
     ) -> Result<BinanceAccountSnapshot, Box<dyn std::error::Error>>;
-    fn fetch_open_futures_positions(
+    fn fetch_futures_account_read_snapshot(
         &self,
         credentials: &BinanceApiCredentials,
-    ) -> Result<Vec<BinanceFuturesPosition>, Box<dyn std::error::Error>>;
+        symbol: &str,
+    ) -> Result<BinanceFuturesAccountReadSnapshot, Box<dyn std::error::Error>>;
 }
 
 impl AccountSmokeClient for BinanceSignedRestClient {
@@ -770,11 +781,12 @@ impl AccountSmokeClient for BinanceSignedRestClient {
         Ok(self.fetch_usdt_balance(credentials)?)
     }
 
-    fn fetch_open_futures_positions(
+    fn fetch_futures_account_read_snapshot(
         &self,
         credentials: &BinanceApiCredentials,
-    ) -> Result<Vec<BinanceFuturesPosition>, Box<dyn std::error::Error>> {
-        Ok(self.fetch_open_futures_positions(credentials)?)
+        symbol: &str,
+    ) -> Result<BinanceFuturesAccountReadSnapshot, Box<dyn std::error::Error>> {
+        Ok(self.fetch_futures_account_read_snapshot(credentials, symbol)?)
     }
 }
 
@@ -834,7 +846,9 @@ fn collect_account_smoke_evidence<C: AccountSmokeClient + ?Sized>(
         "USDT balance fetched: asset={} totals redacted from smoke output",
         balance.asset
     );
-    let positions = account_client.fetch_open_futures_positions(credentials)?;
+    let account_read = account_client.fetch_futures_account_read_snapshot(credentials, symbol)?;
+    let positions = account_read.positions;
+    let symbol_settings = account_read.symbol_settings;
     println!("open futures positions fetched: {}", positions.len());
     let runtime = NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
         symbol: symbol.trim().to_ascii_uppercase(),
@@ -845,11 +859,12 @@ fn collect_account_smoke_evidence<C: AccountSmokeClient + ?Sized>(
         multi_assets_mode: multi_assets_mode.multi_assets_margin,
         ..NativeRuntimeLoopConfig::default()
     });
-    let native_runtime = runtime.bootstrap_read_only_account(
+    let native_runtime = runtime.bootstrap_read_only_account_with_symbol_settings(
         &balance,
         &positions,
         Some(&position_mode),
         Some(&multi_assets_mode),
+        symbol_settings.as_ref(),
     );
     println!(
         "native runtime read-only account bootstrap: signal_evaluation_allowed={}",
@@ -874,6 +889,13 @@ fn collect_account_smoke_evidence<C: AccountSmokeClient + ?Sized>(
         multi_assets_margin: multi_assets_mode.multi_assets_margin,
         balance_asset: balance.asset,
         positions_count: positions.len(),
+        symbol_settings_observed: symbol_settings.is_some(),
+        symbol_margin_mode: symbol_settings
+            .as_ref()
+            .and_then(|settings| settings.margin_type.clone()),
+        symbol_leverage: symbol_settings
+            .as_ref()
+            .and_then(|settings| settings.leverage),
         native_runtime_preflight_message: native_runtime.account_preflight.status_message,
         native_runtime_signal_evaluation_allowed: native_runtime.signal_evaluation_allowed,
         native_runtime_trading_execution_supported: native_runtime.trading_execution_supported,
@@ -1051,6 +1073,13 @@ fn write_live_smoke_evidence(
                 "name": "fetch_open_futures_positions",
                 "status": "passed",
                 "observed_count": evidence.positions_count
+            },
+            {
+                "name": "fetch_futures_symbol_settings",
+                "status": "passed",
+                "observed": evidence.symbol_settings_observed,
+                "margin_type": evidence.symbol_margin_mode,
+                "leverage": evidence.symbol_leverage
             },
             {
                 "name": "native_runtime_read_only_account_bootstrap",
@@ -1809,16 +1838,20 @@ mod tests {
             })
         }
 
-        fn fetch_open_futures_positions(
+        fn fetch_futures_account_read_snapshot(
             &self,
             _credentials: &BinanceApiCredentials,
-        ) -> Result<Vec<BinanceFuturesPosition>, Box<dyn std::error::Error>> {
-            Ok(vec![BinanceFuturesPosition {
-                symbol: "BTCUSDT".to_owned(),
-                position_side: "LONG".to_owned(),
-                position_amt: 0.01,
-                ..Default::default()
-            }])
+            _symbol: &str,
+        ) -> Result<BinanceFuturesAccountReadSnapshot, Box<dyn std::error::Error>> {
+            Ok(BinanceFuturesAccountReadSnapshot {
+                positions: vec![BinanceFuturesPosition {
+                    symbol: "BTCUSDT".to_owned(),
+                    position_side: "LONG".to_owned(),
+                    position_amt: 0.01,
+                    ..Default::default()
+                }],
+                symbol_settings: None,
+            })
         }
     }
 

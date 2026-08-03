@@ -116,25 +116,25 @@ def _format_context(context: Mapping[str, Any]) -> str:
 
 
 def safe_strategy_log(strategy, message: str, *, level: str = "error") -> None:
+    safe_message = redact_text(message)
     log_fn = getattr(strategy, "log", None)
     if not callable(log_fn):
-        _LOGGER.log(getattr(logging, level.upper(), logging.ERROR), "%s", message)
+        _LOGGER.log(getattr(logging, level.upper(), logging.ERROR), "%s", safe_message)
         return
     try:
-        log_fn(message, lvl=level)
+        log_fn(safe_message, lvl=level)
         return
-    except TypeError as first_exc:
-        signature_error = first_exc
+    except TypeError:
+        pass
     except Exception:
-        _LOGGER.exception("Strategy log callback failed while reporting: %s", message)
+        _LOGGER.error("Strategy log callback failed while reporting: %s", safe_message)
         return
     try:
-        log_fn(message)
+        log_fn(safe_message)
     except Exception:
-        _LOGGER.exception(
+        _LOGGER.error(
             "Strategy log callback failed with and without a level argument while reporting: %s",
-            message,
-            exc_info=(type(signature_error), signature_error, signature_error.__traceback__),
+            safe_message,
         )
 
 

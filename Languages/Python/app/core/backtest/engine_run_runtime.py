@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
+from ...security.redaction import redact_text
 from ...settings.risk import coerce_bool, normalize_stop_loss_dict
 from .data_quality import validate_backtest_frame
 from .engine_data_runtime import slice_work_frame
@@ -474,7 +475,7 @@ def run_backtest(
                     "backtest_cancelled"
                 ):
                     raise
-                errors.append({"symbol": symbol, "interval": interval, "error": str(exc)})
+                errors.append({"symbol": symbol, "interval": interval, "error": redact_text(exc)})
             completed_combo_count = combo_index + 1
     except _OptimizerTimeBudgetExhausted:
         budget_exhausted = True

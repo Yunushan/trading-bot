@@ -10,6 +10,7 @@ from collections.abc import Mapping
 import requests
 
 from ..runtime_diagnostics import report_runtime_fallback
+from app.security.redaction import redact_text
 
 
 def _exchange_mutation_accepted(result: object, *, leverage: int | None = None) -> bool:
@@ -83,7 +84,7 @@ def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: in
         if target in types:
             current = target
     except Exception as exc:
-        self._log(f"margin probe failed for {sym}: {type(exc).__name__}: {exc}", lvl="warn")
+        self._log(f"margin probe failed for {sym}: {type(exc).__name__}: {redact_text(exc)}", lvl="warn")
         raise RuntimeError(f"unable to verify futures exposure for {sym}; margin change blocked") from exc
 
     if (current or "").upper() == target:
@@ -113,7 +114,10 @@ def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: in
             assume_ok = True
             self._log(f"change_margin_type({sym}->{target}) says already correct (-4046).", lvl="warn")
         else:
-            self._log(f"change_margin_type({sym}->{target}) raised {type(exc).__name__}: {exc}", lvl="warn")
+            self._log(
+                f"change_margin_type({sym}->{target}) raised {type(exc).__name__}: {redact_text(exc)}",
+                lvl="warn",
+            )
 
     try:
         pins2 = self.client.futures_position_information(symbol=sym)

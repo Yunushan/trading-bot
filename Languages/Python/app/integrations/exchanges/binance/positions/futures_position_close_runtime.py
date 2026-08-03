@@ -5,6 +5,7 @@ import time
 from collections.abc import Mapping
 
 from ..runtime_diagnostics import report_runtime_fallback
+from app.security.redaction import redact_text
 
 
 def _finite_float(value: object, default: float = 0.0) -> float:
@@ -310,7 +311,7 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             try:
                 info, via = self._futures_create_order_with_fallback(params)
             except Exception as exc:
-                errors.append(f"{ps_try or 'reduceOnly'}: {exc}")
+                errors.append(f"{ps_try or 'reduceOnly'}: {redact_text(exc)}")
                 continue
             fills_summary = {}
             warnings: list[str] = []
@@ -354,7 +355,7 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
         }
     except Exception as exc:
         report_runtime_fallback(self, "Exact futures close failed", exc, level="error")
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": redact_text(exc)}
 
 
 def close_futures_position(self, symbol: str):
@@ -494,7 +495,7 @@ def close_futures_position(self, symbol: str):
                 closed += 1
             except Exception as exc:
                 failed += 1
-                errors.append(str(exc))
+                errors.append(redact_text(exc))
                 continue
             try:
                 self._invalidate_futures_positions_cache()
@@ -542,7 +543,7 @@ def close_futures_position(self, symbol: str):
         }
     except Exception as exc:
         report_runtime_fallback(self, "Futures symbol close failed", exc, level="error")
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": redact_text(exc)}
 
 
 def cancel_all_open_futures_orders(self) -> dict:
@@ -553,7 +554,7 @@ def cancel_all_open_futures_orders(self) -> dict:
             orders = self.client.futures_get_open_orders() or []
         except Exception as exc:
             results["ok"] = False
-            results["errors"].append(f"open order snapshot: {exc}")
+            results["errors"].append(f"open order snapshot: {redact_text(exc)}")
         symbols = set()
         for index, order in enumerate(orders):
             if not isinstance(order, Mapping):
@@ -576,7 +577,7 @@ def cancel_all_open_futures_orders(self) -> dict:
                         symbols.add(sym)
             except Exception as exc:
                 results["ok"] = False
-                results["errors"].append(f"position snapshot: {exc}")
+                results["errors"].append(f"position snapshot: {redact_text(exc)}")
         for sym in sorted(symbols):
             try:
                 response = self.client.futures_cancel_all_open_orders(symbol=sym)
@@ -585,12 +586,12 @@ def cancel_all_open_futures_orders(self) -> dict:
                 results["canceled_symbols"] += 1
             except Exception as exc:
                 results["ok"] = False
-                results["errors"].append(f"{sym}: {exc}")
+                results["errors"].append(f"{sym}: {redact_text(exc)}")
         if results["ok"]:
             results["errors"] = []
     except Exception as exc:
         report_runtime_fallback(self, "Cancel-all futures orders failed", exc, level="error")
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": redact_text(exc)}
     return results
 
 
@@ -605,4 +606,4 @@ def close_all_futures_positions(self):
         return [{"ok": False, "error": "canonical close-all runtime returned an invalid response"}]
     except Exception as exc:
         report_runtime_fallback(self, "Canonical close-all runtime failed", exc, level="error")
-        return [{"ok": False, "error": f"canonical close-all runtime failed: {exc}"}]
+        return [{"ok": False, "error": f"canonical close-all runtime failed: {redact_text(exc)}"}]

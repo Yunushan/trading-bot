@@ -7,6 +7,8 @@ import time
 from collections.abc import Mapping
 from typing import Any, Dict, List
 
+from app.security.redaction import redact_text
+
 getcontext().prec = 28
 
 
@@ -28,7 +30,7 @@ def _cancel_response_accepted(response: object) -> bool:
 
 
 def _record_close_all_exception(binance, context: str, exc: BaseException) -> None:
-    message = str(exc).replace("\n", " ")
+    message = redact_text(exc).replace("\n", " ")
     try:
         logger = getattr(binance, "_log", None)
     except Exception:
@@ -416,7 +418,7 @@ def _cleanup_zero_qty_negative_margin_position(binance, row: Dict[str, Any], dua
             "symbol": sym,
             "positionSide": pos_side,
             "amount": amount_str,
-            "error": str(exc),
+            "error": redact_text(exc),
             "method": "positionMargin",
             "reason": "zero-qty-negative-isolated-margin",
         }

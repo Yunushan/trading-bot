@@ -42,7 +42,7 @@
       "id": "rust-native-live-account-read-smoke",
       "category": "live_smoke",
       "title": "Rust native live account read smoke",
-      "description": "Fetch real signed Binance futures position mode, multi-assets mode, USDT balance, and open-position snapshots through the Rust native signed REST client without placing or changing orders.",
+      "description": "Fetch real signed Binance futures position mode, multi-assets mode, USDT balance, open-position snapshots, and configured-symbol margin/leverage settings through the Rust native signed REST client without placing or changing orders.",
       "evidence_required_before_runtime_ready": true,
       "command": "TRADING_BOT_RUST_LIVE_SMOKE=1 BINANCE_API_KEY=... BINANCE_API_SECRET=... BINANCE_TESTNET=true cargo run -p trading-bot-rust -- --native-live-smoke",
       "required_artifact_fields": [

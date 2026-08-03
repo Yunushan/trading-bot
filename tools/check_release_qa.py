@@ -20,6 +20,9 @@ REQUIRED_SCENARIOS = (
 )
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 EVIDENCE_RUN_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
+EVIDENCE_RUN_URL_PATTERN = re.compile(
+    r"^https://github\.com/[^/\s]+/[^/\s]+/actions/runs/([1-9][0-9]*)/?$"
+)
 EVIDENCE_SCOPES = ("full", "hosted-only")
 
 
@@ -67,6 +70,16 @@ def validate_release_qa_note(
         evidence_run_id = _field(text, "Release platform evidence run ID")
         if not EVIDENCE_RUN_ID_PATTERN.fullmatch(evidence_run_id):
             issues.append("QA note Release platform evidence run ID must be a positive GitHub Actions run ID")
+        evidence_run_url = _field(text, "Release platform evidence run URL")
+        evidence_url_match = EVIDENCE_RUN_URL_PATTERN.fullmatch(evidence_run_url)
+        if not evidence_url_match:
+            issues.append(
+                "QA note Release platform evidence run URL must be a GitHub Actions run URL"
+            )
+        elif evidence_run_id and evidence_url_match.group(1) != evidence_run_id:
+            issues.append(
+                "QA note Release platform evidence run URL must reference the recorded run ID"
+            )
         evidence_scope = _field(text, "Release platform evidence scope")
         if evidence_scope not in EVIDENCE_SCOPES:
             issues.append(

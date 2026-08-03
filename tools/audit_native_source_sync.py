@@ -263,6 +263,8 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "pub struct BinanceSignedRestClient",
                 "pub fn fetch_usdt_balance(",
                 "pub fn fetch_open_futures_positions(",
+                "pub fn fetch_futures_account_read_snapshot(",
+                "pub fn parse_futures_symbol_settings(",
                 "pub(crate) fn futures_v1_path",
                 "PREFERRED_FUTURES_COLLATERAL_ASSETS",
                 "parsed.is_finite().then_some(parsed)",

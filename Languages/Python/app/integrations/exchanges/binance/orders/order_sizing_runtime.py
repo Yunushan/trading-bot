@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from .order_audit_runtime import audit_order_method
 from .order_fallback_runtime import _ensure_binance_client_order_id
 from ..transport.helpers import _is_binance_error_payload
+from app.security.redaction import redact_text
 
 
 def _finite_float(value: object) -> float | None:
@@ -123,7 +124,7 @@ def place_spot_market_order(
     except Exception as exc:
         return {
             "ok": False,
-            "error": f"spot symbol filters unavailable for {sym}: {exc}",
+            "error": f"spot symbol filters unavailable for {sym}: {redact_text(exc)}",
             "computed": {
                 "qty": qty,
                 "price": px,
@@ -194,7 +195,7 @@ def place_spot_market_order(
             mark_unknown(params, error=exc)
         return {
             "ok": False,
-            "error": str(exc),
+            "error": redact_text(exc),
             "computed": {
                 "qty": qty,
                 "price": px,
@@ -256,7 +257,7 @@ def adjust_qty_to_filters_spot(self, symbol: str, qty: float, est_price: float):
     try:
         filters = self.get_spot_symbol_filters(symbol)
     except Exception as exc:
-        return 0.0, f"filters_error:{exc}"
+        return 0.0, f"filters_error:{redact_text(exc)}"
 
     if not isinstance(filters, Mapping):
         return 0.0, "filters_error: invalid response"
@@ -309,7 +310,7 @@ def adjust_qty_to_filters_futures(self, symbol: str, qty: float, price: float | 
     try:
         filters = self.get_futures_symbol_filters(symbol)
     except Exception as exc:
-        return 0.0, f"filters_error:{exc}"
+        return 0.0, f"filters_error:{redact_text(exc)}"
     if not isinstance(filters, Mapping):
         return 0.0, "filters_error: invalid response"
     normalized_qty = _finite_float(qty)

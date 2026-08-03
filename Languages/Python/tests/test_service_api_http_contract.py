@@ -305,6 +305,38 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         pull_mock.assert_called_once_with("http://127.0.0.1:11434/v1", "qwen3:8b")
         delete_mock.assert_called_once_with("http://127.0.0.1:11434/v1", "qwen3:8b")
 
+    @unittest.skipUnless(
+        FASTAPI_TESTCLIENT_AVAILABLE,
+        "FastAPI TestClient optional dependencies are not installed",
+    )
+    def test_service_api_redacts_local_model_errors(self):
+        app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+        client = _create_test_client(app)
+        headers = {"Authorization": "Bearer token-123"}
+        secret_error = RuntimeError("api_secret=unit-api-secret signature=unit-signature")
+
+        with (
+            mock.patch("app.service.api.app.pull_ollama_model", side_effect=secret_error),
+            mock.patch("app.service.api.app.delete_ollama_model", side_effect=secret_error),
+        ):
+            pull_response = client.post(
+                SERVICE_API_ROUTE_PATHS["llm_local_model_pull"],
+                headers=headers,
+                json={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
+            )
+            delete_response = client.post(
+                SERVICE_API_ROUTE_PATHS["llm_local_model_delete"],
+                headers=headers,
+                json={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
+            )
+
+        for response in (pull_response, delete_response):
+            self.assertEqual(400, response.status_code)
+            detail = response.json()["detail"]
+            self.assertIn("<redacted>", detail)
+            self.assertNotIn("unit-api-secret", detail)
+            self.assertNotIn("unit-signature", detail)
+
     def test_service_api_auth_helpers(self):
         self.assertFalse(auth_required(""))
         self.assertTrue(validate_bearer_token(None, ""))

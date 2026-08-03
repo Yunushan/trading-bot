@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.settings.live_safety import LiveTradingSafetyError
+from app.security.redaction import redact_text
 
 
 _INTENT_LOCK = threading.Lock()
@@ -37,7 +38,7 @@ def _read_ledger(path: Path) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        raise LiveTradingSafetyError(f"Order intent ledger cannot be read: {exc}") from exc
+        raise LiveTradingSafetyError(f"Order intent ledger cannot be read: {redact_text(exc)}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("intents"), dict):
         raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
     return payload
@@ -238,14 +239,14 @@ def reconcile_order_intent(self, client_order_id: str) -> dict[str, object]:
             self,
             client_order_id,
             state=current_state,
-            last_reconciliation_error=str(exc),
+            last_reconciliation_error=redact_text(exc),
             last_reconciliation_at=_now(),
         )
         return {
             "client_order_id": client_order_id,
             "state": str((updated or record).get("state") or current_state),
             "reconciled": False,
-            "error": str(exc),
+            "error": redact_text(exc),
         }
     if not isinstance(result, Mapping):
         updated = _update_order_intent_by_id(

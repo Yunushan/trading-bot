@@ -10,6 +10,7 @@ import traceback
 try:
     from ....integrations.exchanges.binance import NetworkConnectivityError
     from ....settings.live_safety import is_live_trading_mode
+    from ....security.redaction import redact_text
     from ....config import (
         STOP_LOSS_MODE_ORDER,
         STOP_LOSS_SCOPE_OPTIONS,
@@ -19,6 +20,7 @@ try:
 except ImportError:  # pragma: no cover - standalone execution fallback
     from binance_wrapper import NetworkConnectivityError
     from settings.live_safety import is_live_trading_mode
+    from security.redaction import redact_text
     from config import (
         STOP_LOSS_MODE_ORDER,
         STOP_LOSS_SCOPE_OPTIONS,
@@ -31,15 +33,16 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _safe_log(self, message: str, *, level: int = logging.WARNING) -> bool:
+    safe_message = redact_text(message)
     callback = getattr(self, "log", None)
     if callable(callback):
         try:
-            callback(message)
+            callback(safe_message)
             return True
         except Exception:
-            _LOGGER.exception("Strategy log callback failed while reporting: %s", message)
+            _LOGGER.error("Strategy log callback failed while reporting: %s", safe_message)
             return False
-    _LOGGER.log(level, message)
+    _LOGGER.log(level, "%s", safe_message)
     return False
 
 

@@ -19,6 +19,7 @@ if __package__ in (None, ""):
     from app.service.runtime import TradingBotService
     from app.service.schemas.control import make_start_request, make_stop_request
     from app.security.network_url import open_validated_url, validate_http_url
+    from app.security.redaction import redact_text
     from app.settings import ConfigValidationError
 else:
     from .api import run_service_api_server
@@ -26,6 +27,7 @@ else:
     from .runtime import TradingBotService
     from .schemas.control import make_start_request, make_stop_request
     from ..security.network_url import open_validated_url, validate_http_url
+    from ..security.redaction import redact_text
     from ..settings import ConfigValidationError
 
 
@@ -184,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
                 load_persisted_config_if_present=args.load_config_if_present,
             )
         except (ConfigValidationError, FileNotFoundError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
+            print(redact_text(exc), file=sys.stderr)
             return 2
         return 0
 
@@ -197,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
                 payload={"command": args.terminal, "source": "service-cli-remote"},
             )
         except Exception as exc:
-            print(str(exc), file=sys.stderr)
+            print(redact_text(exc), file=sys.stderr)
             return 1
         if args.json:
             print(json.dumps(remote_result, indent=2, sort_keys=True))
@@ -212,14 +214,14 @@ def main(argv: list[str] | None = None) -> int:
             load_persisted_config_if_present=args.load_config_if_present,
         )
     except (ConfigValidationError, FileNotFoundError, ValueError) as exc:
-        print(str(exc), file=sys.stderr)
+        print(redact_text(exc), file=sys.stderr)
         return 2
     service.enable_local_executor()
     if args.config_patch:
         try:
             config_patch = json.loads(args.config_patch)
         except Exception as exc:
-            print(f"Invalid --config-patch JSON: {exc}", file=sys.stderr)
+            print(f"Invalid --config-patch JSON: {redact_text(exc)}", file=sys.stderr)
             return 2
         if not isinstance(config_patch, dict):
             print("--config-patch expects a JSON object.", file=sys.stderr)
@@ -227,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             service.update_config(config_patch)
         except ConfigValidationError as exc:
-            print(str(exc), file=sys.stderr)
+            print(redact_text(exc), file=sys.stderr)
             return 2
     descriptor = service.describe_runtime()
     status = service.get_status()
@@ -263,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             config_persistence_result = service.save_config(source="service-cli")
         except (ConfigValidationError, OSError) as exc:
-            print(str(exc), file=sys.stderr)
+            print(redact_text(exc), file=sys.stderr)
             return 2
     config_summary = service.get_config_summary()
     if args.json:

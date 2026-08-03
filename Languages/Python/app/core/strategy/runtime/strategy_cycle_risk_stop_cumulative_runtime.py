@@ -4,6 +4,7 @@ import logging
 import math
 import time
 
+from ....security.redaction import redact_text
 from .strategy_cycle_risk_stop_context_runtime import _reconciled_close_qty
 
 
@@ -11,15 +12,16 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _safe_log(self, message: str, *, level: int = logging.WARNING) -> bool:
+    safe_message = redact_text(message)
     callback = getattr(self, "log", None)
     if callable(callback):
         try:
-            callback(message)
+            callback(safe_message)
             return True
         except Exception:
-            _LOGGER.exception("Cumulative stop-loss log callback failed while reporting: %s", message)
+            _LOGGER.error("Cumulative stop-loss log callback failed while reporting: %s", safe_message)
             return False
-    _LOGGER.log(level, message)
+    _LOGGER.log(level, "%s", safe_message)
     return False
 
 

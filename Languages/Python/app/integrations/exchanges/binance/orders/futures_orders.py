@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from app.settings.live_safety import is_live_trading_mode
 from app.settings.risk import coerce_bool
+from app.security.redaction import redact_text
 
 from .order_audit_runtime import audit_order_method
 
@@ -137,7 +138,7 @@ def place_futures_market_order(
     try:
         step, min_qty, min_notional = _validated_futures_order_filters(self, sym)
     except Exception as exc:
-        return {"ok": False, "symbol": sym, "error": f"futures symbol filters unavailable: {exc}"}
+        return {"ok": False, "symbol": sym, "error": f"futures symbol filters unavailable: {redact_text(exc)}"}
 
     mode = "percent"
     pct = _finite_float(percent_balance) if percent_balance is not None else 0.0
@@ -191,7 +192,8 @@ def place_futures_market_order(
                 }
             try:
                 self._log(
-                    f"Futures exposure lookup failed; sizing from available balance only: {type(exc).__name__}: {exc}",
+                    "Futures exposure lookup failed; sizing from available balance only: "
+                    f"{type(exc).__name__}: {redact_text(exc)}",
                     lvl="warn",
                 )
             except Exception:
@@ -285,7 +287,7 @@ def place_futures_market_order(
     except Exception as exc:
         return {
             "ok": False,
-            "error": str(exc),
+            "error": redact_text(exc),
             "computed": {
                 "qty": qty,
                 "px": px,
@@ -330,14 +332,14 @@ def _place_futures_market_order_STRICT(
             lev_requested,
         )
     except Exception as exc:
-        self._log(f"BLOCK strict path: {type(exc).__name__}: {exc}", lvl="error")
-        return {"ok": False, "error": str(exc), "mode": "strict"}
+        self._log(f"BLOCK strict path: {type(exc).__name__}: {redact_text(exc)}", lvl="error")
+        return {"ok": False, "error": redact_text(exc), "mode": "strict"}
 
     ensure_err = None
     try:
         self.ensure_futures_settings(sym, leverage=lev_requested, margin_mode=kwargs.get("margin_mode"))
     except Exception as exc:
-        ensure_err = str(exc)
+        ensure_err = redact_text(exc)
     if ensure_err:
         return {"ok": False, "symbol": sym, "error": ensure_err}
 
@@ -352,7 +354,12 @@ def _place_futures_market_order_STRICT(
             allow_step_size_alias=True,
         )
     except Exception as exc:
-        return {"ok": False, "symbol": sym, "error": f"futures symbol filters unavailable: {exc}", "mode": "strict"}
+        return {
+            "ok": False,
+            "symbol": sym,
+            "error": f"futures symbol filters unavailable: {redact_text(exc)}",
+            "mode": "strict",
+        }
 
     dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
 
@@ -440,7 +447,7 @@ def _place_futures_market_order_STRICT(
         return {
             "ok": False,
             "symbol": sym,
-            "error": str(exc),
+            "error": redact_text(exc),
             "computed": {"qty": qty, "px": px, "step": step, "lev": lev},
             "mode": mode,
         }
@@ -488,12 +495,22 @@ def _place_futures_market_order_FLEX(
     try:
         self._ensure_margin_and_leverage_or_block(sym, desired_mm, desired_requested)
     except Exception as exc:
-        return {"ok": False, "symbol": sym, "error": f"enforce_settings_failed: {exc}", "mode": "flex"}
+        return {
+            "ok": False,
+            "symbol": sym,
+            "error": f"enforce_settings_failed: {redact_text(exc)}",
+            "mode": "flex",
+        }
 
     try:
         step, min_qty, min_notional = _validated_futures_order_filters(self, sym)
     except Exception as exc:
-        return {"ok": False, "symbol": sym, "error": f"futures symbol filters unavailable: {exc}", "mode": "flex"}
+        return {
+            "ok": False,
+            "symbol": sym,
+            "error": f"futures symbol filters unavailable: {redact_text(exc)}",
+            "mode": "flex",
+        }
 
     dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
     if dual and not pos_side:
@@ -631,7 +648,7 @@ def _place_futures_market_order_FLEX(
         return {
             "ok": False,
             "symbol": sym,
-            "error": str(exc),
+            "error": redact_text(exc),
             "computed": {"qty": qty, "px": px, "step": step, "lev": lev},
             "mode": mode,
         }

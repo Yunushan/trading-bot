@@ -7,6 +7,8 @@ import subprocess
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from app.security.redaction import redact_text
+
 try:
     import requests as _requests
 except ImportError:  # pragma: no cover - exercised by lean CI smoke environments
@@ -285,7 +287,7 @@ def get_local_model_status(
             installed=False,
             can_download=kind == "ollama",
             can_start=can_start,
-            error=str(exc),
+            error=redact_text(exc),
             storage_hint=OLLAMA_MODEL_STORAGE_HINT if kind == "ollama" else "",
             storage_paths=ollama_model_storage_paths() if kind == "ollama" else (),
             estimated_size_label=estimate_ollama_model_size_label(clean_model) if kind == "ollama" else "",
@@ -331,7 +333,12 @@ def start_ollama_server(
     try:
         popen([executable, "serve"], **kwargs)
     except Exception as exc:
-        return LocalModelServerStartResult(started=False, server_kind=kind, executable=executable, error=str(exc))
+        return LocalModelServerStartResult(
+            started=False,
+            server_kind=kind,
+            executable=executable,
+            error=redact_text(exc),
+        )
 
     return LocalModelServerStartResult(started=True, server_kind=kind, executable=executable)
 

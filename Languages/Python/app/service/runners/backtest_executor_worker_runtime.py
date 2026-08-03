@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ...core.backtest import BacktestEngine
 from ...core.backtest.optimizer_limits_runtime import MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
+from ...security.redaction import redact_text
 from .backtest_executor_request_runtime import clean_text, rank_optimizer_runs, run_to_mapping
 from .backtest_executor_snapshot_runtime import finish_snapshots, set_running_snapshots
 
@@ -167,11 +168,15 @@ def run_backtest_thread(
             message=message,
             cancelled=False,
             run_records=[],
-            error_records=[{"error": str(exc)}],
+            error_records=[{"error": redact_text(exc)}],
             progress_percent=None,
             action="failed",
         )
-        adapter._runtime.record_log_event(message, source="service-backtest-executor", level="error")
+        adapter._runtime.record_log_event(
+            redact_text(message),
+            source="service-backtest-executor",
+            level="error",
+        )
     finally:
         next_session_id = adapter._start_next_queued_backtest()
         if next_session_id:

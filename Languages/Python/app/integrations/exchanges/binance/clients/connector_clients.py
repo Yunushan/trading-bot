@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import re
 
+from app.security.redaction import redact_text
+
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CONNECTOR_BACKEND = "binance-sdk-derivatives-trading-usds-futures"
@@ -256,7 +258,7 @@ def _wrap_ccxt_exception(exc: Exception) -> CcxtConnectorError:
     return CcxtConnectorError(
         code=code,
         status_code=status,
-        message=message,
+        message=redact_text(message),
         response=response,
     )
 

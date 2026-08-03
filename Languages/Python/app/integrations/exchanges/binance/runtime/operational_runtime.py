@@ -7,6 +7,7 @@ import time
 import requests
 
 from ..runtime_diagnostics import report_runtime_fallback
+from app.security.redaction import redact_text
 
 
 def close_all_spot_positions(self):
@@ -93,7 +94,7 @@ def close_all_spot_positions(self):
             computed_qty = trade.get("computed", {}).get("qty", qty_adj)
             results.append({"symbol": symbol, "qty": computed_qty, "ok": True, "res": trade})
         except Exception as exc:
-            results.append({"symbol": symbol, "qty": qty, "ok": False, "error": str(exc)})
+            results.append({"symbol": symbol, "qty": qty, "ok": False, "error": redact_text(exc)})
     return results
 
 
@@ -106,8 +107,8 @@ def trigger_emergency_close_all(
     initial_delay: float = 5.0,
 ) -> bool:
     meta = {
-        "reason": reason or "",
-        "source": source or "",
+        "reason": redact_text(reason or ""),
+        "source": redact_text(source or ""),
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
     with self._emergency_closer_lock:
@@ -153,15 +154,24 @@ def trigger_emergency_close_all(
                     self._log(f"Emergency close-all attempt {attempt} had partial failures; retrying...", lvl="error")
                 except requests.exceptions.RequestException as exc:
                     last_error = exc
-                    self._log(f"Emergency close-all attempt {attempt} failed (network): {exc}", lvl="error")
+                    self._log(
+                        f"Emergency close-all attempt {attempt} failed (network): {redact_text(exc)}",
+                        lvl="error",
+                    )
                 except Exception as exc:
                     last_error = exc
-                    self._log(f"Emergency close-all attempt {attempt} failed: {exc}", lvl="error")
+                    self._log(
+                        f"Emergency close-all attempt {attempt} failed: {redact_text(exc)}",
+                        lvl="error",
+                    )
                 time.sleep(min(90.0, base_delay * (attempt + 1)))
 
             if not success:
                 if last_error:
-                    self._log(f"Emergency close-all aborted after {attempt} attempts: {last_error}", lvl="error")
+                    self._log(
+                        f"Emergency close-all aborted after {attempt} attempts: {redact_text(last_error)}",
+                        lvl="error",
+                    )
                 else:
                     self._log(f"Emergency close-all aborted after {attempt} attempts without success.", lvl="error")
 
@@ -172,7 +182,7 @@ def trigger_emergency_close_all(
                 info["completed_at"] = datetime.now(timezone.utc).isoformat()
                 info["success"] = bool(success)
                 if last_error:
-                    info["error"] = str(last_error)
+                    info["error"] = redact_text(last_error)
                 self._emergency_close_info = info
             try:
                 self._network_emergency_dispatched = False

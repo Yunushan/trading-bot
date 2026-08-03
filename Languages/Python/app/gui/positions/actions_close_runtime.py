@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt6 import QtWidgets
 
+from app.security.redaction import redact_text
+
 
 def make_close_btn(
     self,
@@ -78,7 +80,7 @@ def close_position_single(
         from app.gui.runtime.background_workers import CallWorker as _CallWorker
     except Exception as exc:
         try:
-            self.log(f"Close {symbol} setup error: {exc}")
+            self.log(f"Close {symbol} setup error: {redact_text(exc)}")
         except Exception:
             pass
         return
@@ -110,7 +112,7 @@ def close_position_single(
             )
         except Exception as exc:
             try:
-                self.log(f"Close {symbol} setup error: {exc}")
+                self.log(f"Close {symbol} setup error: {redact_text(exc)}")
             except Exception:
                 pass
             return
@@ -132,9 +134,13 @@ def close_position_single(
             except Exception as exc:
                 if isinstance(result_payload, dict):
                     enriched = dict(result_payload)
-                    enriched.setdefault("lookup_error", str(exc))
+                    enriched.setdefault("lookup_error", redact_text(exc))
                     return enriched
-                return {"ok": False, "error": f"{result_payload!r}", "lookup_error": str(exc)}
+                return {
+                    "ok": False,
+                    "error": redact_text(repr(result_payload)),
+                    "lookup_error": redact_text(exc),
+                }
             has_target_leg = False
             for row in rows:
                 try:
@@ -180,7 +186,7 @@ def close_position_single(
                 try:
                     fallback_res = bw.close_futures_position(symbol)
                 except Exception as exc:
-                    fallback_res = {"ok": False, "error": str(exc)}
+                    fallback_res = {"ok": False, "error": redact_text(exc)}
                 if isinstance(fallback_res, dict) and fallback_res.get("ok"):
                     fallback_res.setdefault("fallback_from", "close_futures_leg_exact")
                     if isinstance(primary_res, dict) and primary_res.get("error"):

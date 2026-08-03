@@ -6,6 +6,7 @@
 - Operator: Full name or accountable team
 - Outcome: approved
 - Release platform evidence run ID: Positive GitHub Actions run ID for the selected release-platform scope
+- Release platform evidence run URL: Full GitHub Actions URL for the same run ID
 - Release platform evidence scope: full
 
 ## Completed Checks

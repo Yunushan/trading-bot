@@ -4,15 +4,18 @@ from datetime import datetime
 import logging
 import time
 
+from ....security.redaction import redact_text
+
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def _safe_runtime_log(self, message: str) -> None:
+    safe_message = redact_text(message)
     try:
-        self.log(message)
+        self.log(safe_message)
     except Exception:
-        _LOGGER.exception("Strategy runtime log callback failed while reporting: %s", message)
+        _LOGGER.error("Strategy runtime log callback failed while reporting: %s", safe_message)
 
 
 def _notify_interval_closed(self, symbol: str, interval: str, position_side: str, **extra):

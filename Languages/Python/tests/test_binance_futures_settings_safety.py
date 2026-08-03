@@ -135,6 +135,21 @@ class BinanceFuturesSettingsSafetyTests(unittest.TestCase):
         self.assertEqual([], client.cancel_calls)
         self.assertEqual([], client.leverage_changes)
 
+    def test_strict_margin_probe_log_redacts_credentials(self):
+        client = _FuturesSettingsClient()
+        client.futures_position_information = lambda **_kwargs: (
+            (_ for _ in ()).throw(RuntimeError("apiKey=unit-api-secret signature=unit-signature"))
+        )
+        wrapper = _FuturesSettingsWrapper(client)
+
+        with self.assertRaisesRegex(RuntimeError, "unable to verify futures exposure"):
+            wrapper._ensure_symbol_margin("BTCUSDT", "CROSSED", 10)
+
+        messages = " ".join(message for _level, message in wrapper.logs)
+        self.assertIn("<redacted>", messages)
+        self.assertNotIn("unit-api-secret", messages)
+        self.assertNotIn("unit-signature", messages)
+
     def test_strict_margin_helper_blocks_when_open_order_cancellation_fails(self):
         client = _FuturesSettingsClient(
             position_rows=[{"symbol": "BTCUSDT", "marginType": "ISOLATED", "positionAmt": "0"}],

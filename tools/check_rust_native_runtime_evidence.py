@@ -89,6 +89,7 @@ EXPECTED_LIVE_SMOKE_SUITE_RESULTS: dict[str, set[str]] = {
         "fetch_futures_multi_assets_mode",
         "fetch_usdt_balance",
         "fetch_open_futures_positions",
+        "fetch_futures_symbol_settings",
         "native_runtime_read_only_account_bootstrap",
     },
 }
@@ -682,6 +683,22 @@ def _validate_live_smoke_suite_evidence(
         positions_row = rows_by_name.get("fetch_open_futures_positions")
         if positions_row is not None and not isinstance(positions_row.get("observed_count"), int):
             issues.append(f"{artifact_path} suite_results[fetch_open_futures_positions].observed_count must be an integer")
+        settings_row = rows_by_name.get("fetch_futures_symbol_settings")
+        if settings_row is not None:
+            if settings_row.get("observed") is not True:
+                issues.append(
+                    f"{artifact_path} suite_results[fetch_futures_symbol_settings].observed must be true"
+                )
+            margin_type = settings_row.get("margin_type")
+            if not isinstance(margin_type, str) or not margin_type.strip():
+                issues.append(
+                    f"{artifact_path} suite_results[fetch_futures_symbol_settings].margin_type is required"
+                )
+            leverage = settings_row.get("leverage")
+            if isinstance(leverage, bool) or not isinstance(leverage, int) or not 1 <= leverage <= 125:
+                issues.append(
+                    f"{artifact_path} suite_results[fetch_futures_symbol_settings].leverage must be an integer from 1 to 125"
+                )
         bootstrap_row = rows_by_name.get("native_runtime_read_only_account_bootstrap")
         if bootstrap_row is not None:
             if not isinstance(bootstrap_row.get("signal_evaluation_allowed"), bool):

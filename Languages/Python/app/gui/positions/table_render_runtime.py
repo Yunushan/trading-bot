@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from PyQt6 import QtCore
 
+from app.security.redaction import redact_text
+
 from . import (
     table_render_prepare_runtime,
     table_render_rows_runtime,
@@ -150,7 +152,7 @@ def _mw_render_positions_table(self):
             pass
     except Exception as exc:
         try:
-            self.log(f"Positions table update failed: {exc}")
+            self.log(f"Positions table update failed: {redact_text(exc)}")
         except Exception:
             pass
     finally:

@@ -95,6 +95,7 @@ from app.integrations.exchanges.binance.transport.helpers import (
     _coerce_interval_seconds as new_coerce_interval_seconds,
 )
 from app.integrations.exchanges.binance.transport import http_request_runtime as http_request_runtime_module
+from app.integrations.exchanges.binance.transport import http_diagnostic_runtime as http_diagnostic_runtime_module
 from app.integrations.exchanges.binance.transport.http_runtime import bind_binance_http_runtime as new_bind_http
 from app.integrations.exchanges.binance.transport.rate_limit_runtime import (
     bind_binance_rate_limit_runtime as new_bind_rate_limit,
@@ -175,6 +176,15 @@ class _SpotSizingWrapper:
     def get_spot_symbol_filters(self, _symbol):
         return dict(self._filters)
 
+    def get_connector_health_snapshot(self):
+        credentials_present = bool(
+            getattr(self, "api_key", None) and getattr(self, "api_secret", None)
+        )
+        return {
+            "health": "ok" if credentials_present else "unknown",
+            "state": "ready" if credentials_present else "missing_credentials",
+        }
+
 
 class _FuturesFillSummaryClient:
     def __init__(self, responses):
@@ -214,6 +224,12 @@ class _FuturesAuditClient:
         return {"orderId": 99, "status": "FILLED", **kwargs}
 
 
+class _SecretFailureFuturesAuditClient(_FuturesAuditClient):
+    def futures_create_order(self, **kwargs):
+        self.orders.append(dict(kwargs))
+        raise RuntimeError("api_secret=unit-api-secret signature=unit-signature")
+
+
 class _FuturesAuditWrapper:
     def __init__(self, *, fail=False):
         self.mode = "Live"
@@ -241,6 +257,15 @@ class _FuturesAuditWrapper:
 
     def _testnet_order_fallback_client(self):
         return None
+
+    def get_connector_health_snapshot(self):
+        credentials_present = bool(
+            getattr(self, "api_key", None) and getattr(self, "api_secret", None)
+        )
+        return {
+            "health": "ok" if credentials_present else "unknown",
+            "state": "ready" if credentials_present else "missing_credentials",
+        }
 
 
 class _GuardedFuturesAuditWrapper(_FuturesAuditWrapper):
@@ -683,6 +708,22 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             self.assertEqual(["exchange_order_request", "exchange_order_error"], [row["event"] for row in rows])
             self.assertIn("exchange rejected", rows[1]["error"])
 
+    def test_futures_order_failure_redacts_exchange_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wrapper = _FuturesAuditWrapper()
+            wrapper.client = _SecretFailureFuturesAuditClient()
+            wrapper._configure_order_audit(path=Path(tmp) / "futures-secret-error.jsonl")
+
+            with self.assertRaises(RuntimeError) as raised:
+                wrapper._futures_create_order_with_fallback(
+                    {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"}
+                )
+
+            message = str(raised.exception)
+            self.assertIn("<redacted>", message)
+            self.assertNotIn("unit-api-secret", message)
+            self.assertNotIn("unit-signature", message)
+
     def test_futures_exchange_submit_rejects_malformed_or_unidentified_acknowledgements(self):
         cases = (
             (None, "empty response"),
@@ -995,6 +1036,45 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         wrapper.get_futures_symbol_filters = fail_filters
 
         with self.assertRaisesRegex(LiveTradingSafetyError, "symbol filters unavailable"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.10"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_redacts_policy_error(self):
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config=_live_ack_config())
+
+        with mock.patch(
+            "app.integrations.exchanges.binance.orders.order_submit_guard_runtime.validate_live_trading_safety",
+            side_effect=LiveTradingSafetyError("api_secret=unit-api-secret signature=unit-signature"),
+        ):
+            with self.assertRaises(LiveTradingSafetyError) as context:
+                wrapper._futures_create_order_with_fallback(
+                    {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.10"}
+                )
+
+        self.assertIn("<redacted>", str(context.exception))
+        self.assertNotIn("unit-api-secret", str(context.exception))
+        self.assertNotIn("unit-signature", str(context.exception))
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_blocks_missing_connector_health_snapshot(self):
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config=_live_ack_config())
+        wrapper.get_connector_health_snapshot = None
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "connector health snapshot unavailable"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.10"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_blocks_malformed_connector_health_snapshot(self):
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config=_live_ack_config())
+        wrapper.get_connector_health_snapshot = lambda: {"health": "ok"}
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "connector health snapshot missing state"):
             wrapper._futures_create_order_with_fallback(
                 {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.10"}
             )
@@ -1543,6 +1623,22 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         self.assertIn("<redacted>", error["message"])
         self.assertNotIn("leaked", error["message"])
         self.assertNotIn("unit-api-secret", error["message"])
+
+    def test_testnet_key_probe_redacts_request_exception(self):
+        wrapper = _DirectFuturesHttpWrapper()
+
+        with mock.patch.object(
+            http_diagnostic_runtime_module.requests,
+            "request",
+            side_effect=RuntimeError("api_secret=unit-api-secret signature=unit-signature"),
+        ):
+            result = wrapper._probe_testnet_key_acceptance()
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("<redacted>", result["spot_msg"])
+        self.assertIn("<redacted>", result["futures_msg"])
+        self.assertNotIn("unit-api-secret", result["spot_msg"])
+        self.assertNotIn("unit-signature", result["futures_msg"])
 
     def test_signed_spot_http_failure_records_connector_health_error(self):
         wrapper = _DirectFuturesHttpWrapper()

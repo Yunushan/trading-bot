@@ -115,16 +115,78 @@ class RuntimeExceptionDiagnosticHelperTests(unittest.TestCase):
                 self.messages.append(f"{lvl}:{message}")
 
         wrapper = _Wrapper()
-        close_all_runtime._record_close_all_exception(wrapper, "close_context", RuntimeError("close failed"))
+        close_all_runtime._record_close_all_exception(
+            wrapper,
+            "close_context",
+            RuntimeError("close failed api_secret=unit-api-secret signature=unit-signature"),
+        )
         http_diagnostic_runtime._record_http_diagnostic_exception(
             wrapper,
             "http_context",
-            RuntimeError("http failed"),
+            RuntimeError("http failed api_secret=unit-api-secret signature=unit-signature"),
         )
 
         joined = "\n".join(wrapper.messages)
         self.assertIn("context=close_context", joined)
         self.assertIn("context=http_context", joined)
+        self.assertIn("<redacted>", joined)
+        self.assertNotIn("unit-api-secret", joined)
+        self.assertNotIn("unit-signature", joined)
+
+    def test_strategy_order_logger_redacts_callback_messages(self):
+        from app.core.strategy.orders.strategy_order_error_logging import safe_strategy_log
+
+        class _Strategy:
+            def __init__(self):
+                self.messages: list[str] = []
+
+            def log(self, message, lvl="info"):
+                self.messages.append(f"{lvl}:{message}")
+
+        strategy = _Strategy()
+        safe_strategy_log(
+            strategy,
+            "order failed api_secret=unit-api-secret signature=unit-signature authorization=Bearer unit-token",
+        )
+
+        self.assertEqual(1, len(strategy.messages))
+        self.assertIn("<redacted>", strategy.messages[0])
+        self.assertNotIn("unit-api-secret", strategy.messages[0])
+        self.assertNotIn("unit-signature", strategy.messages[0])
+        self.assertNotIn("unit-token", strategy.messages[0])
+
+    def test_gui_and_wrapper_log_boundaries_redact_messages(self):
+        from collections import deque
+
+        from app.gui.runtime.window import log_runtime
+        from app.integrations.exchanges.binance.wrapper import BinanceWrapper
+
+        class _Window:
+            def __init__(self):
+                self._log_buf = deque(maxlen=8)
+                self.events: list[str] = []
+
+            def _service_record_log_event(self, message, **_kwargs):
+                self.events.append(str(message))
+
+        window = _Window()
+        message = "desktop failure api_secret=unit-api-secret authorization=Bearer unit-token"
+        log_runtime._gui_buffer_log(window, message)
+
+        self.assertIn("<redacted>", window._log_buf[0])
+        self.assertIn("<redacted>", window.events[0])
+        self.assertNotIn("unit-api-secret", window._log_buf[0])
+        self.assertNotIn("unit-token", window.events[0])
+
+        logger = mock.Mock()
+        wrapper = object.__new__(BinanceWrapper)
+        wrapper.logger = logger
+        wrapper._log(message, lvl="error")
+
+        logged_message = logger.error.call_args.args[0]
+        self.assertIn("<redacted>", logged_message)
+        self.assertNotIn("unit-api-secret", logged_message)
+        self.assertNotIn("unit-token", logged_message)
 
 
 if __name__ == "__main__":

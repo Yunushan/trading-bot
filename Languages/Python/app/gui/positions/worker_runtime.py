@@ -6,6 +6,7 @@ import time
 from PyQt6 import QtCore
 
 from app.integrations.exchanges.binance import BinanceWrapper, normalize_margin_ratio
+from app.security.redaction import redact_text
 
 from ..runtime.account import margin_runtime
 from ..shared import helper_runtime
@@ -273,7 +274,7 @@ class _PositionsWorker(QtCore.QObject):
                 except Exception as exc:
                     if time.time() - self._last_err_ts > 5:
                         self._last_err_ts = time.time()
-                        self.error.emit(f"Positions error: {exc}")
+                        self.error.emit(f"Positions error: {redact_text(exc)}")
                     return
                 for p in positions:
                     try:
@@ -308,7 +309,7 @@ class _PositionsWorker(QtCore.QObject):
                 try:
                     balances = self._wrapper.get_balances() or []
                 except Exception as exc:
-                    self.error.emit(f"Spot balances error: {exc}")
+                    self.error.emit(f"Spot balances error: {redact_text(exc)}")
                     return
                 base = "USDT"
                 for b in balances:

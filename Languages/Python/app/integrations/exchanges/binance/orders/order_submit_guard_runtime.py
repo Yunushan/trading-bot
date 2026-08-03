@@ -7,6 +7,7 @@ from typing import Any
 from trading_core.orders import order_submit_intent_from_params, validate_order_submit_intent
 
 from app.native_parity import ORDER_GUARD_BEHAVIOR
+from app.security.redaction import redact_text
 from app.settings.live_safety import (
     LiveTradingSafetyError,
     is_live_trading_mode,
@@ -70,15 +71,19 @@ def _policy_applies_to_mode(rule: str, *, live_mode: bool) -> bool:
 def _order_health_errors(self) -> list[str]:
     getter = getattr(self, "get_connector_health_snapshot", None)
     if not callable(getter):
-        return []
+        return ["connector health snapshot unavailable"]
     try:
         snapshot = getter()
     except Exception as exc:
-        return [f"connector health snapshot unavailable: {exc}"]
+        return [f"connector health snapshot unavailable: {redact_text(exc)}"]
     if not isinstance(snapshot, Mapping):
-        return []
+        return ["connector health snapshot invalid"]
     state = str(snapshot.get("state") or "").strip().lower()
     health = str(snapshot.get("health") or "").strip().lower()
+    if not state:
+        return ["connector health snapshot missing state"]
+    if not health:
+        return ["connector health snapshot missing health"]
     if state and state != "ready":
         return [f"connector health is {health or 'unknown'} / {state}"]
     if health and health not in {"ok", "unknown"}:
@@ -103,7 +108,9 @@ def _order_filter_errors(self, market_text: str, order_params: Mapping[str, Any]
     try:
         filters = getter(symbol) or {}
     except Exception as exc:
-        return [f"{market_text} symbol filters unavailable for {symbol}: {exc}"]
+        return [
+            f"{market_text} symbol filters unavailable for {symbol}: {redact_text(exc)}"
+        ]
     if not isinstance(filters, Mapping):
         return [f"{market_text} symbol filters invalid for {symbol}"]
 
@@ -204,7 +211,7 @@ def _guard_live_order_submit(
                 config=cfg,
             )
         except LiveTradingSafetyError as exc:
-            errors.append(str(exc))
+            errors.append(redact_text(exc))
 
     if _policy_applies_to_mode("validate_audit_enabled_all_modes", live_mode=live_mode):
         if not bool(getattr(self, "_order_audit_enabled", True)):
@@ -246,7 +253,7 @@ def _guard_live_order_submit(
         except Exception as exc:
             logger = getattr(self, "_log", None)
             if callable(logger):
-                logger(f"Live order block audit write failed: {exc}", lvl="error")
+                logger(f"Live order block audit write failed: {redact_text(exc)}", lvl="error")
     label = "Live order" if live_mode else "Order"
     raise LiveTradingSafetyError(f"{label} submit blocked by {source}: {'; '.join(errors)}.")
 

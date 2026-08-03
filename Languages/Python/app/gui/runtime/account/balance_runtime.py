@@ -9,11 +9,13 @@ from pathlib import Path
 
 from PyQt6 import QtCore
 
+from app.security.redaction import redact_text
+
 _NORMALIZE_CONNECTOR_BACKEND = None
 
 
 def _record_balance_runtime_exception(self, context: str, exc: BaseException) -> None:  # noqa: ANN001
-    message = str(exc).replace("\n", " ")
+    message = redact_text(exc).replace("\n", " ")
     entry = f"balance runtime suppressed exception context={context} error={type(exc).__name__}: {message}"
     fallback_needed = True
     try:
@@ -199,7 +201,7 @@ def update_balance_label(self):
                 available_balance_value = bal
             return {"total": total_balance_value, "available": available_balance_value, "bal": bal, "wrapper": wrapper}
         except Exception as exc:
-            return {"error": str(exc), "wrapper": wrapper}
+            return {"error": redact_text(exc), "wrapper": wrapper}
 
     def _done(res, err):
         if getattr(self, "_balance_refresh_token", None) != refresh_token:

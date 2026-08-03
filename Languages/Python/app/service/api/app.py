@@ -47,6 +47,7 @@ if __package__ in (None, ""):
         start_ollama_server,
     )
     from app.settings import ConfigValidationError
+    from app.security.redaction import redact_text
 else:
     from ..api_contract import (
         SERVICE_API_BASE_PATH,
@@ -79,6 +80,7 @@ else:
         start_ollama_server,
     )
     from ...settings import ConfigValidationError
+    from ...security.redaction import redact_text
 
 try:
     from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
@@ -689,11 +691,11 @@ def create_service_api_app(
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
         except PermissionError as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=redact_text(exc)) from exc
         except OSError as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(exc),
+                detail=redact_text(exc),
             ) from exc
 
     @api_router.post("/config/load", dependencies=[Depends(_require_write_api_auth)])
@@ -707,13 +709,13 @@ def create_service_api_app(
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
         except PermissionError as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=redact_text(exc)) from exc
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=redact_text(exc)) from exc
         except (json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
+                detail=redact_text(exc),
             ) from exc
 
     @api_router.put("/runtime/state", dependencies=[Depends(_require_write_api_auth)])
@@ -874,7 +876,10 @@ def create_service_api_app(
     def start_llm_local_model_server(payload: LLMLocalModelRequest):
         result = asdict(start_ollama_server(payload.base_url))
         if not result.get("started"):
-            raise HTTPException(status_code=400, detail=result.get("error") or "Could not start local model server.")
+            raise HTTPException(
+                status_code=400,
+                detail=redact_text(result.get("error") or "Could not start local model server."),
+            )
         return result
 
     @api_router.post("/llm/local-model/pull", dependencies=[Depends(_require_write_api_auth)])
@@ -882,7 +887,7 @@ def create_service_api_app(
         try:
             pull_ollama_model(payload.base_url, payload.model)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
         return {
             "ok": True,
             "action": "pull",
@@ -895,7 +900,7 @@ def create_service_api_app(
         try:
             delete_ollama_model(payload.base_url, payload.model)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
         return {
             "ok": True,
             "action": "delete",

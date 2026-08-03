@@ -4,6 +4,8 @@ import copy
 
 from PyQt6 import QtCore
 
+from app.security.redaction import redact_text
+
 from .actions_context_runtime import get_save_position_allocations
 
 
@@ -12,7 +14,7 @@ def _identity_token(value) -> str:
 
 
 def _record_positions_action_exception(self, context: str, exc: BaseException) -> None:
-    message = str(exc).replace("\n", " ")
+    message = redact_text(exc).replace("\n", " ")
     entry = f"positions action suppressed exception context={context} error={type(exc).__name__}: {message}"
     try:
         logger = getattr(self, "_chart_debug_log", None)

@@ -88,6 +88,19 @@ pub struct BinanceFuturesMarginMode {
     pub margin_type: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceFuturesSymbolSettings {
+    pub symbol: String,
+    pub margin_type: Option<String>,
+    pub leverage: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceFuturesAccountReadSnapshot {
+    pub positions: Vec<BinanceFuturesPosition>,
+    pub symbol_settings: Option<BinanceFuturesSymbolSettings>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinanceFuturesLeverageChange {
     pub symbol: String,
@@ -258,19 +271,46 @@ impl BinanceSignedRestClient {
         credentials: &BinanceApiCredentials,
     ) -> Result<Vec<BinanceFuturesPosition>> {
         self.require_market(BinanceMarket::Futures)?;
+        let (risk_payload, account_payload) = self.fetch_futures_position_payloads(credentials)?;
+        parse_open_futures_positions(&risk_payload, account_payload.as_ref())
+    }
+
+    pub fn fetch_futures_account_read_snapshot(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: &str,
+    ) -> Result<BinanceFuturesAccountReadSnapshot> {
+        self.require_market(BinanceMarket::Futures)?;
+        let (risk_payload, account_payload) = self.fetch_futures_position_payloads(credentials)?;
+        let account_payload_ref = account_payload.as_ref();
+        let positions = parse_open_futures_positions(&risk_payload, account_payload_ref)?;
+        let symbol_settings =
+            parse_futures_symbol_settings(&risk_payload, account_payload_ref, symbol)?;
+        Ok(BinanceFuturesAccountReadSnapshot {
+            positions,
+            symbol_settings,
+        })
+    }
+
+    fn fetch_futures_position_payloads(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<(Value, Option<Value>)> {
         let risk_payload = self.signed_get_json(
             "/fapi/v2/positionRisk",
             credentials,
             &[],
             current_timestamp_ms()?,
         )?;
-        let account_payload = self.signed_get_json(
-            "/fapi/v2/account",
-            credentials,
-            &[],
-            current_timestamp_ms()?,
-        );
-        parse_open_futures_positions(&risk_payload, account_payload.as_ref().ok())
+        let account_payload = self
+            .signed_get_json(
+                "/fapi/v2/account",
+                credentials,
+                &[],
+                current_timestamp_ms()?,
+            )
+            .ok();
+        Ok((risk_payload, account_payload))
     }
 
     pub fn fetch_futures_position_mode(
@@ -1080,6 +1120,88 @@ pub fn parse_open_futures_positions(
     Ok(positions)
 }
 
+/// Parse the exchange settings for one configured symbol without treating a zero-size
+/// position row as an open position. Binance returns margin type and leverage on those rows,
+/// which is required to reconcile a flat account before read-only signal evaluation.
+pub fn parse_futures_symbol_settings(
+    position_risk_payload: &Value,
+    account_payload: Option<&Value>,
+    symbol: &str,
+) -> Result<Option<BinanceFuturesSymbolSettings>> {
+    ensure_not_binance_error(position_risk_payload)?;
+    if let Some(account) = account_payload {
+        ensure_not_binance_error(account)?;
+    }
+    let configured_symbol = normalize_required_symbol(symbol)?;
+    let risk_rows = position_risk_payload
+        .as_array()
+        .ok_or_else(|| anyhow!("positionRisk response must be an array"))?;
+    let account_rows = account_payload
+        .and_then(Value::as_object)
+        .and_then(|account| account.get("positions"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+
+    let mut observed = false;
+    let mut margin_types = Vec::new();
+    let mut leverages = Vec::new();
+    for row in risk_rows.iter().chain(account_rows) {
+        let Some(row) = row.as_object() else {
+            continue;
+        };
+        let row_symbol = row
+            .get("symbol")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_uppercase();
+        if row_symbol != configured_symbol {
+            continue;
+        }
+        observed = true;
+        if let Some(margin_type) = row
+            .get("marginType")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            let margin_type = normalize_futures_margin_type(margin_type)?;
+            if !margin_types.contains(&margin_type) {
+                margin_types.push(margin_type);
+            }
+        }
+        if let Some(leverage) = first_f64(row, &["leverage"])
+            .filter(|value| value.is_finite() && *value >= 1.0 && *value <= 125.0)
+        {
+            let leverage = leverage.round() as i64;
+            if !leverages.contains(&leverage) {
+                leverages.push(leverage);
+            }
+        }
+    }
+
+    if !observed {
+        return Ok(None);
+    }
+    if margin_types.len() > 1 {
+        bail!(
+            "conflicting futures margin settings observed for {configured_symbol}: {}",
+            margin_types.join(", ")
+        );
+    }
+    if leverages.len() > 1 {
+        bail!(
+            "conflicting futures leverage settings observed for {configured_symbol}: {:?}",
+            leverages
+        );
+    }
+    Ok(Some(BinanceFuturesSymbolSettings {
+        symbol: configured_symbol,
+        margin_type: margin_types.into_iter().next(),
+        leverage: leverages.into_iter().next(),
+    }))
+}
+
 fn complete_position_derived_fields(position: &mut BinanceFuturesPosition) {
     if position.notional <= 0.0
         && position.mark_price.is_finite()
@@ -1747,6 +1869,63 @@ mod tests {
         assert_eq!(position.margin_ratio, position.margin_ratio_calc);
         assert_eq!(position.margin_type, "isolated");
         assert_eq!(position.update_time_ms, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn parses_flat_symbol_settings_without_promoting_zero_position_to_open() {
+        let risk_payload = json!([
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0",
+                "marginType": "isolated",
+                "leverage": "5"
+            },
+            {
+                "symbol": "ETHUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0",
+                "marginType": "cross",
+                "leverage": "20"
+            }
+        ]);
+        let positions = parse_open_futures_positions(&risk_payload, None).expect("open positions");
+        assert!(positions.is_empty());
+
+        let settings = parse_futures_symbol_settings(&risk_payload, None, "btcusdt")
+            .expect("flat symbol settings")
+            .expect("BTCUSDT settings");
+        assert_eq!(settings.symbol, "BTCUSDT");
+        assert_eq!(settings.margin_type.as_deref(), Some("ISOLATED"));
+        assert_eq!(settings.leverage, Some(5));
+    }
+
+    #[test]
+    fn flat_symbol_settings_reject_conflicting_exchange_rows() {
+        let risk_payload = json!([
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "LONG",
+                "positionAmt": "0",
+                "marginType": "isolated",
+                "leverage": "5"
+            },
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "SHORT",
+                "positionAmt": "0",
+                "marginType": "cross",
+                "leverage": "5"
+            }
+        ]);
+
+        let error = parse_futures_symbol_settings(&risk_payload, None, "BTCUSDT")
+            .expect_err("conflicting settings must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting futures margin settings")
+        );
     }
 
     #[test]

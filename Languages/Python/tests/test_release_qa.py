@@ -36,6 +36,7 @@ def _approved_note(tag: str = "v1.2.3") -> str:
 - Operator: Release engineering
 - Outcome: approved
 - Release platform evidence run ID: 123456789
+- Release platform evidence run URL: https://github.com/example/trading-bot/actions/runs/123456789
 - Release platform evidence scope: full
 
 - [x] Desktop visual flow: Passed with expected controls and error states.
@@ -93,6 +94,50 @@ class ReleaseQaTests(unittest.TestCase):
                 require_platform_evidence_run=True,
             )
         self.assertIn("QA note Release platform evidence scope must be one of: full, hosted-only", issues)
+
+    def test_requires_platform_evidence_url_to_match_run_id(self):
+        checker = _load_checker()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / "v1.2.3.md"
+            note.write_text(
+                _approved_note().replace(
+                    "actions/runs/123456789",
+                    "actions/runs/987654321",
+                ),
+                encoding="utf-8",
+            )
+            issues = checker.validate_release_qa_note(
+                note,
+                tag="v1.2.3",
+                source_revision=REVISION,
+                require_platform_evidence_run=True,
+            )
+        self.assertIn(
+            "QA note Release platform evidence run URL must reference the recorded run ID",
+            issues,
+        )
+
+    def test_requires_platform_evidence_url_when_requested(self):
+        checker = _load_checker()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / "v1.2.3.md"
+            note.write_text(
+                _approved_note().replace(
+                    "- Release platform evidence run URL: https://github.com/example/trading-bot/actions/runs/123456789\n",
+                    "",
+                ),
+                encoding="utf-8",
+            )
+            issues = checker.validate_release_qa_note(
+                note,
+                tag="v1.2.3",
+                source_revision=REVISION,
+                require_platform_evidence_run=True,
+            )
+        self.assertIn(
+            "QA note Release platform evidence run URL must be a GitHub Actions run URL",
+            issues,
+        )
 
     def test_release_qa_commit_mode_requires_a_current_revision(self):
         checker = _load_checker()

@@ -6,6 +6,7 @@ import types
 
 from ..runtime_diagnostics import report_runtime_fallback
 from .helpers import _SimpleRateLimiter
+from app.security.redaction import redact_text
 
 
 def _estimate_request_weight(path: str | None) -> float:
@@ -99,7 +100,7 @@ def _install_request_throttler(self) -> None:
         client._request = types.MethodType(throttled, client)
         client._bw_throttled = True
     except Exception as exc:
-        self._log(f"Failed to attach rate limiter: {exc}", lvl="warn")
+        self._log(f"Failed to attach rate limiter: {redact_text(exc)}", lvl="warn")
 
 
 def _register_ban_until(self, until_epoch: float | None) -> None:

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from binance.client import Client
 from app.settings.live_safety import LiveTradingSafetyError
+from app.security.redaction import redact_text
 
 from ..clients.connector_clients import _normalize_connector_choice
 from ..transport.helpers import _is_binance_error_payload, _requests_timeout
@@ -126,7 +127,7 @@ def _futures_create_order_with_fallback(self, params: dict):
                 except Exception:
                     err = None
                 if isinstance(err, dict):
-                    err_msg = str(err.get("message") or "").strip()
+                    err_msg = redact_text(err.get("message") or "").strip()
                     err_code = err.get("code")
                     if err_msg:
                         if err_code is None:
@@ -143,23 +144,23 @@ def _futures_create_order_with_fallback(self, params: dict):
         err_obj = order_obj.get("error")
         if isinstance(err_obj, dict) and _is_binance_error_payload(err_obj):
             code = err_obj.get("code")
-            msg = err_obj.get("msg") or err_obj.get("message") or "order rejected"
+            msg = redact_text(err_obj.get("msg") or err_obj.get("message") or "order rejected")
             raise RuntimeError(f"order rejected (code={code}): {msg}")
         if _is_binance_error_payload(order_obj):
             code = order_obj.get("code")
-            msg = order_obj.get("msg") or order_obj.get("message") or "order rejected"
+            msg = redact_text(order_obj.get("msg") or order_obj.get("message") or "order rejected")
             raise RuntimeError(f"order rejected (code={code}): {msg}")
         success_val = order_obj.get("success")
         if isinstance(success_val, str):
             success_val = success_val.strip().lower() in ("true", "1", "yes")
         if success_val is False:
-            msg = order_obj.get("msg") or order_obj.get("message") or "order rejected"
+            msg = redact_text(order_obj.get("msg") or order_obj.get("message") or "order rejected")
             raise RuntimeError(f"order rejected: {msg}")
         data_obj = order_obj.get("data")
         if isinstance(data_obj, dict):
             if _is_binance_error_payload(data_obj):
                 code = data_obj.get("code")
-                msg = data_obj.get("msg") or data_obj.get("message") or "order rejected"
+                msg = redact_text(data_obj.get("msg") or data_obj.get("message") or "order rejected")
                 raise RuntimeError(f"order rejected (code={code}): {msg}")
             if _order_has_id(data_obj):
                 order_obj.clear()
@@ -168,7 +169,7 @@ def _futures_create_order_with_fallback(self, params: dict):
         if not status:
             _raise_from_last_error("order rejected: response has no explicit order status")
         if status in {"REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "CANCELED"}:
-            msg = order_obj.get("msg") or order_obj.get("message") or status.lower()
+            msg = redact_text(order_obj.get("msg") or order_obj.get("message") or status.lower())
             raise RuntimeError(f"order rejected (status={status}): {msg}")
         if not _order_has_id(order_obj):
             _raise_from_last_error("order rejected: response has no order identifier")
@@ -252,11 +253,11 @@ def _futures_create_order_with_fallback(self, params: dict):
                         rest_err = alt_exc
                         _audit("exchange_order_error", order_params=params, error=alt_exc, via="fallback-rest-alt")
 
-        msg = str(primary_err)
+        msg = redact_text(primary_err)
         if fb_err is not None:
-            msg += f"; fallback failed: {fb_err}"
+            msg += f"; fallback failed: {redact_text(fb_err)}"
         if rest_err is not None:
-            msg += f"; rest fallback failed: {rest_err}"
+            msg += f"; rest fallback failed: {redact_text(rest_err)}"
         if callable(mark_unknown) and intent_started:
             mark_unknown(params, error=msg)
         raise RuntimeError(msg) from (rest_err or fb_err or primary_err)

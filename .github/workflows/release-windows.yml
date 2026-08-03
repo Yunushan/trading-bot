@@ -171,12 +171,25 @@ jobs:
 
           Install-AqtPackage @(
             "install-qt", "windows_arm64", "desktop", "6.10.3", "win64_msvc2022_arm64",
-            "--outputdir", $qtOutputDir, "--modules", "qtwebsockets", "qtwebchannel", "qtpositioning", "--autodesktop"
+            "--outputdir", $qtOutputDir, "--modules", "qtwebsockets", "qtwebchannel", "qtpositioning"
           )
 
+          # ARM64 kits are consumed through CMake. Do not require qmake or the
+          # host-desktop auto-install path, which is not published consistently
+          # for the Windows ARM64 kit.
           $qtArm64Bin = Join-Path $qtOutputDir "6.10.3/msvc2022_arm64/bin"
+          $qtArm64Cmake = Join-Path $qtOutputDir "6.10.3/msvc2022_arm64/lib/cmake/Qt6/Qt6Config.cmake"
           if (!(Test-Path $qtArm64Bin)) {
             throw "Native ARM64 Qt bin directory was not installed at $qtArm64Bin."
+          }
+          if (!(Test-Path $qtArm64Cmake)) {
+            throw "Native ARM64 Qt CMake package was not installed at $qtArm64Cmake."
+          }
+          foreach ($module in @("Qt6WebSocketsConfig.cmake", "Qt6WebChannelConfig.cmake", "Qt6PositioningConfig.cmake")) {
+            $moduleConfig = Join-Path $qtOutputDir "6.10.3/msvc2022_arm64/lib/cmake/$($module -replace 'Config\.cmake$','')/$module"
+            if (!(Test-Path $moduleConfig)) {
+              throw "Native ARM64 Qt module package was not installed at $moduleConfig."
+            }
           }
           $qtArm64Bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 

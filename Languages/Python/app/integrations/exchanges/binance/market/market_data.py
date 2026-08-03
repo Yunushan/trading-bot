@@ -9,6 +9,7 @@ from binance.exceptions import BinanceAPIException
 
 from ..clients.connector_clients import CcxtConnectorError, OfficialConnectorError
 from ..transport.helpers import _coerce_interval_seconds
+from app.security.redaction import redact_text
 
 FUTURES_NATIVE_INTERVALS = {
     "1m",
@@ -162,7 +163,11 @@ def get_klines(self, symbol, interval, limit=500):
                         raw = self._fetch_futures_klines_rest(params, live=True)
                     except Exception as exc:
                         try:
-                            self._log(f"Live futures klines fetch failed for {symbol}@{interval}: {exc}; falling back to testnet", lvl="warn")
+                            self._log(
+                                f"Live futures klines fetch failed for {symbol}@{interval}: {redact_text(exc)}; "
+                                "falling back to testnet",
+                                lvl="warn",
+                            )
                         except Exception:
                             pass
                         raw = None
@@ -324,7 +329,11 @@ def _get_klines_range_native(self, symbol: str, interval: str, start_dt, end_dt,
                             raw = self._fetch_futures_klines_rest(params, live=True)
                         except Exception as exc:
                             try:
-                                self._log(f"Live futures klines range failed for {symbol}@{interval}: {exc}; falling back to testnet", lvl="warn")
+                                self._log(
+                                    f"Live futures klines range failed for {symbol}@{interval}: {redact_text(exc)}; "
+                                    "falling back to testnet",
+                                    lvl="warn",
+                                )
                             except Exception:
                                 pass
                             raw = None

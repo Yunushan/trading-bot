@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.security.redaction import redact_text
+
 _RESOLVE_TRIGGER_INDICATORS = None
 _CLOSED_HISTORY_MAX = None
 _STOP_STRATEGY_SYNC = None
@@ -13,7 +15,7 @@ _DEFAULT_MAX_CLOSED_HISTORY = 200
 
 
 def _record_positions_tracking_exception(self, context: str, exc: BaseException) -> None:  # noqa: ANN001
-    message = str(exc).replace("\n", " ")
+    message = redact_text(exc).replace("\n", " ")
     entry = f"positions tracking suppressed exception context={context} error={type(exc).__name__}: {message}"
     fallback_needed = True
     try:
@@ -369,7 +371,7 @@ def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = Fa
                             results.append(
                                 {
                                     "ok": False,
-                                    "error": f"close verification unavailable: {type(exc).__name__}: {exc}",
+                                    "error": f"close verification unavailable: {type(exc).__name__}: {redact_text(exc)}",
                                 }
                             )
                             break

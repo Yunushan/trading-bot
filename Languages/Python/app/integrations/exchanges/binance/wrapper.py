@@ -6,6 +6,7 @@ from decimal import getcontext
 from binance.client import Client
 from ....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
 from ....settings.live_safety import validate_live_trading_safety
+from app.security.redaction import redact_text
 from .account import bind_binance_account_data
 from .clients import (
     CcxtBinanceAdapter,
@@ -101,17 +102,18 @@ class BinanceWrapper:
         Lightweight logger shim used by helper methods.
         Falls back to print if no .logger attribute is present.
         """
+        safe_message = redact_text(msg)
         try:
             lg = getattr(self, "logger", None)
             if lg is not None and hasattr(lg, lvl):
-                getattr(lg, lvl)(msg)
+                getattr(lg, lvl)(safe_message)
             elif lg is not None and hasattr(lg, "info"):
-                lg.info(msg)
+                lg.info(safe_message)
             else:
-                print(f"[BinanceWrapper][{lvl}] {msg}")
+                print(f"[BinanceWrapper][{lvl}] {safe_message}")
         except Exception:
             try:
-                print(f"[BinanceWrapper][{lvl}] {msg}")
+                print(f"[BinanceWrapper][{lvl}] {safe_message}")
             except Exception:
                 pass
     def _build_client(self):
@@ -120,7 +122,10 @@ class BinanceWrapper:
             try:
                 return OfficialConnectorAdapter(self.api_key, self.api_secret, mode=self.mode)
             except Exception as exc:
-                self._log(f"Official connector unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._log(
+                    f"Official connector unavailable ({redact_text(exc)}); falling back to python-binance.",
+                    lvl="warn",
+                )
                 self._connector_backend = "python-binance"
         if backend == "ccxt":
             try:
@@ -131,25 +136,37 @@ class BinanceWrapper:
                     account_type=self.account_type,
                 )
             except Exception as exc:
-                self._log(f"ccxt connector unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._log(
+                    f"ccxt connector unavailable ({redact_text(exc)}); falling back to python-binance.",
+                    lvl="warn",
+                )
                 self._connector_backend = "python-binance"
         if backend == "binance-sdk-derivatives-trading-usds-futures":
             try:
                 return BinanceSDKUsdsFuturesClient(self.api_key, self.api_secret, mode=self.mode)
             except Exception as exc:
-                self._log(f"USDⓈ futures SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._log(
+                    f"USDⓈ futures SDK unavailable ({redact_text(exc)}); falling back to python-binance.",
+                    lvl="warn",
+                )
                 self._connector_backend = "python-binance"
         elif backend == "binance-sdk-derivatives-trading-coin-futures":
             try:
                 return BinanceSDKCoinFuturesClient(self.api_key, self.api_secret, mode=self.mode)
             except Exception as exc:
-                self._log(f"COIN-M futures SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._log(
+                    f"COIN-M futures SDK unavailable ({redact_text(exc)}); falling back to python-binance.",
+                    lvl="warn",
+                )
                 self._connector_backend = "python-binance"
         elif backend == "binance-sdk-spot":
             try:
                 return BinanceSDKSpotClient(self.api_key, self.api_secret, mode=self.mode)
             except Exception as exc:
-                self._log(f"Spot SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._log(
+                    f"Spot SDK unavailable ({redact_text(exc)}); falling back to python-binance.",
+                    lvl="warn",
+                )
                 self._connector_backend = "python-binance"
         requests_params = {"timeout": _requests_timeout()}
         try:

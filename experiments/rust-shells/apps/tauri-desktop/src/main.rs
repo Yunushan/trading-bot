@@ -13,7 +13,8 @@ use tauri::{AppHandle, Manager, State};
 use trading_bot_core::{
     account::{
         BinanceAccountSnapshot, BinanceApiCredentials, BinanceFuturesMultiAssetsMode,
-        BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceSignedRestClient,
+        BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceFuturesSymbolSettings,
+        BinanceSignedRestClient,
     },
     app_banner,
     config_persistence::{
@@ -140,6 +141,7 @@ struct NativeRuntimeAccountBootstrapState {
     status_message: String,
     balance: BinanceAccountSnapshot,
     positions: Vec<BinanceFuturesPosition>,
+    symbol_settings: Option<BinanceFuturesSymbolSettings>,
     position_mode: BinanceFuturesPositionMode,
     multi_assets_mode: BinanceFuturesMultiAssetsMode,
 }
@@ -156,6 +158,9 @@ struct NativeRuntimeAccountPollResponse {
     open_positions_count: usize,
     configured_symbol_position_found: bool,
     configured_symbol_open_position_amt: f64,
+    symbol_settings_observed: bool,
+    symbol_margin_mode: Option<String>,
+    symbol_leverage: Option<i64>,
     position_mode: String,
     multi_assets_mode: bool,
     signal_evaluation_allowed: bool,
@@ -211,6 +216,9 @@ impl NativeRuntimeAccountPollResponse {
             open_positions_count: 0,
             configured_symbol_position_found: false,
             configured_symbol_open_position_amt: 0.0,
+            symbol_settings_observed: false,
+            symbol_margin_mode: None,
+            symbol_leverage: None,
             position_mode: String::new(),
             multi_assets_mode: false,
             signal_evaluation_allowed: false,
@@ -676,13 +684,16 @@ impl NativeRuntimeState {
                 return NativeRuntimeAccountPollResponse::error(error.to_string());
             }
         };
-        let positions = match client.fetch_open_futures_positions(&credentials) {
-            Ok(value) => value,
-            Err(error) => {
-                self.clear_account_bootstrap(&spec);
-                return NativeRuntimeAccountPollResponse::error(error.to_string());
-            }
-        };
+        let account_read =
+            match client.fetch_futures_account_read_snapshot(&credentials, &spec.symbol) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.clear_account_bootstrap(&spec);
+                    return NativeRuntimeAccountPollResponse::error(error.to_string());
+                }
+            };
+        let positions = account_read.positions;
+        let symbol_settings = account_read.symbol_settings;
 
         let mut managed = match self.inner.lock() {
             Ok(value) => value,
@@ -705,11 +716,12 @@ impl NativeRuntimeState {
                 "Native Rust runtime state is unavailable.",
             );
         };
-        let snapshot = runtime.bootstrap_read_only_account(
+        let snapshot = runtime.bootstrap_read_only_account_with_symbol_settings(
             &balance,
             &positions,
             Some(&position_mode),
             Some(&multi_assets_mode),
+            symbol_settings.as_ref(),
         );
         let total_balance = balance.total_usdt_balance;
         let available_balance = balance.available_usdt_balance;
@@ -721,6 +733,7 @@ impl NativeRuntimeState {
             status_message: snapshot.status_message.clone(),
             balance,
             positions,
+            symbol_settings: symbol_settings.clone(),
             position_mode,
             multi_assets_mode,
         });
@@ -735,6 +748,13 @@ impl NativeRuntimeState {
             open_positions_count: snapshot.open_positions_count,
             configured_symbol_position_found: snapshot.configured_symbol_position_found,
             configured_symbol_open_position_amt: snapshot.configured_symbol_open_position_amt,
+            symbol_settings_observed: symbol_settings.is_some(),
+            symbol_margin_mode: symbol_settings
+                .as_ref()
+                .and_then(|settings| settings.margin_type.clone()),
+            symbol_leverage: symbol_settings
+                .as_ref()
+                .and_then(|settings| settings.leverage),
             position_mode: position_mode_label,
             multi_assets_mode: multi_assets_enabled,
             signal_evaluation_allowed: snapshot.signal_evaluation_allowed,
@@ -871,11 +891,12 @@ impl NativeRuntimeState {
         configure_native_runtime_order_engine(engine, config, now_ms);
         engine.api_key = api_key;
         engine.api_secret = api_secret;
-        let account_snapshot = runtime.bootstrap_read_only_account(
+        let account_snapshot = runtime.bootstrap_read_only_account_with_symbol_settings(
             &account_bootstrap.balance,
             &account_bootstrap.positions,
             Some(&account_bootstrap.position_mode),
             Some(&account_bootstrap.multi_assets_mode),
+            account_bootstrap.symbol_settings.as_ref(),
         );
         let execution_input = NativeRuntimeGuardedExecutionCycleInput {
             market_cycle: market_input,
@@ -2708,6 +2729,7 @@ mod tests {
                 available_usdt_balance: 100.0,
             },
             positions: Vec::new(),
+            symbol_settings: None,
             position_mode: BinanceFuturesPositionMode {
                 dual_side_position: true,
                 position_mode: "Hedge".to_owned(),

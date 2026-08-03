@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt6 import QtCore
 
 from app.integrations.exchanges.binance import BinanceWrapper
+from app.security.redaction import redact_text
 
 _CONNECTOR_OPTIONS = ()
 _DEFAULT_CONNECTOR_BACKEND = ""
@@ -12,7 +13,7 @@ _SIDE_LABELS = {}
 
 
 def _record_account_runtime_exception(self, context: str, exc: BaseException) -> None:
-    message = str(exc).replace("\n", " ")
+    message = redact_text(exc).replace("\n", " ")
     entry = f"account runtime suppressed exception context={context} error={type(exc).__name__}: {message}"
     try:
         logger = getattr(self, "_chart_debug_log", None)

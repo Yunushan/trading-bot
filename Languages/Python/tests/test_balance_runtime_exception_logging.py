@@ -44,6 +44,26 @@ class BalanceRuntimeExceptionLoggingTests(unittest.TestCase):
         self.assertIn("RuntimeError", window.messages[0])
         self.assertIn("first line second line", window.messages[0])
 
+    def test_record_balance_runtime_exception_redacts_credentials(self):
+        class _Window:
+            def __init__(self):
+                self.messages: list[str] = []
+
+            def _chart_debug_log(self, message):
+                self.messages.append(str(message))
+
+        window = _Window()
+        _record_balance_runtime_exception(
+            window,
+            "unit_context",
+            RuntimeError("apiKey=unit-api-secret signature=unit-signature"),
+        )
+
+        self.assertEqual(1, len(window.messages))
+        self.assertIn("<redacted>", window.messages[0])
+        self.assertNotIn("unit-api-secret", window.messages[0])
+        self.assertNotIn("unit-signature", window.messages[0])
+
     def test_record_balance_runtime_exception_falls_back_to_temp_debug_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.dict(os.environ, {"TEMP": tmp}):

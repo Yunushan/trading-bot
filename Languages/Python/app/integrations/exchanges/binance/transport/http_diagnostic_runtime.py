@@ -11,7 +11,7 @@ from .http_base_runtime import _is_testnet_mode
 
 
 def _record_http_diagnostic_exception(self, context: str, exc: BaseException) -> None:
-    message = str(exc).replace("\n", " ")
+    message = redact_text(exc).replace("\n", " ")
     try:
         logger = getattr(self, "_log", None)
     except Exception:
@@ -245,7 +245,7 @@ def _probe_testnet_key_acceptance(self) -> dict | None:
                 msg = (resp.text or "").strip() or f"http_status:{resp.status_code}"
             return False, int(resp.status_code), code, msg
         except Exception as exc:
-            return False, None, None, str(exc)
+            return False, None, None, redact_text(exc)
 
     spot_ok = False
     futures_ok = False

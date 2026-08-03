@@ -111,6 +111,13 @@ def _account_smoke_suite_results() -> list[dict[str, object]]:
         },
         {"name": "fetch_open_futures_positions", "status": "passed", "observed_count": 0},
         {
+            "name": "fetch_futures_symbol_settings",
+            "status": "passed",
+            "observed": True,
+            "margin_type": "ISOLATED",
+            "leverage": 20,
+        },
+        {
             "name": "native_runtime_read_only_account_bootstrap",
             "status": "passed",
             "signal_evaluation_allowed": False,
