@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-import re
-
-
-_INTERVAL_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)?\s*$")
-_UPPERCASE_MONTH_RE = re.compile(r"^\s*(\d+)\s*M\s*$")
-_MONTH_ALIAS_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(mo|mon|mons|month|months)\s*$", re.IGNORECASE)
 _UNIT_ALIASES = {
     "": "m",
     "s": "s",
@@ -78,26 +72,46 @@ def _format_amount(amount: float) -> str:
     return str(amount).rstrip("0").rstrip(".")
 
 
+def _split_numeric_unit(raw: str) -> tuple[str, str] | None:
+    """Parse a bounded numeric interval without backtracking regexes."""
+    text = raw.strip()
+    index = 0
+    while index < len(text) and text[index].isdigit():
+        index += 1
+    if index == 0:
+        return None
+    if index < len(text) and text[index] == ".":
+        index += 1
+        fraction_start = index
+        while index < len(text) and text[index].isdigit():
+            index += 1
+        if index == fraction_start:
+            return None
+    amount_raw = text[:index]
+    unit_raw = text[index:].strip()
+    if unit_raw and not unit_raw.isalpha():
+        return None
+    return amount_raw, unit_raw
+
+
 def normalize_backtest_interval(value: str | None) -> str:
     if value is None:
         return ""
     raw = str(value).strip()
     if not raw:
         return ""
-    month_match = _UPPERCASE_MONTH_RE.fullmatch(raw)
-    if month_match:
-        return f"{int(month_match.group(1))}mo"
-    month_alias_match = _MONTH_ALIAS_RE.fullmatch(raw)
-    if month_alias_match:
+    numeric_unit = _split_numeric_unit(raw)
+    if numeric_unit is None:
+        return raw.lower()
+    amount_raw, unit_raw = numeric_unit
+    if unit_raw == "M" and amount_raw.isdigit():
+        return f"{int(amount_raw)}mo"
+    if unit_raw.strip().lower() in {"mo", "mon", "mons", "month", "months"}:
         try:
-            amount = float(month_alias_match.group(1))
+            amount = float(amount_raw)
         except Exception:
             return raw.lower()
         return f"{_format_amount(amount)}mo"
-    match = _INTERVAL_RE.fullmatch(raw)
-    if not match:
-        return raw.lower()
-    amount_raw, unit_raw = match.groups()
     unit_norm = _UNIT_ALIASES.get(str(unit_raw or "").strip().lower())
     if unit_norm is None:
         return raw.lower()

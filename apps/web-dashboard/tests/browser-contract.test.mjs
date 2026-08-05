@@ -243,12 +243,11 @@ try {
   if (stateModule.state.baseUrl !== "http://127.0.0.1:8000") {
     throw new Error("Stored base URL did not load");
   }
-  const sessionPayload = JSON.parse(sessionStorage.getItem(stateModule.TOKEN_SESSION_STORAGE_KEY) || "{}");
   const persistedPayload = JSON.parse(localStorage.getItem(stateModule.PERSISTED_STORAGE_KEY) || "{}");
-  if (sessionPayload.token !== "legacy-token" || "token" in persistedPayload) {
-    throw new Error("Token did not migrate to session storage");
+  if ("token" in persistedPayload || sessionStorage.getItem("trading-bot-service-dashboard-session") !== null) {
+    throw new Error("Token was persisted in browser storage");
   }
-  record("session-scoped token storage");
+  record("memory-only token storage");
 
   stateModule.elements.baseUrl.value = "http://localhost:8000/";
   stateModule.elements.apiToken.value = "session-token";
@@ -332,7 +331,7 @@ async function serveDashboard() {
       response.end(body);
     } catch (error) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-      response.end(String(error?.message || error));
+      response.end("not found");
     }
   });
   await new Promise((resolve, reject) => {

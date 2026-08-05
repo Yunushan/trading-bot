@@ -948,7 +948,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertIn("request-start-button", test_script)
         self.assertIn("preflight-remediation-list", test_script)
-        self.assertIn("dashboard token migrates out of localStorage into sessionStorage", auth_test_script)
+        self.assertIn("dashboard token is never restored from browser storage", auth_test_script)
         self.assertIn("dashboard stream helper sends auth header without query token", auth_test_script)
         self.assertIn("serviceApiRoute", service_contract_test_script)
         self.assertIn("Unknown service API route", service_contract_test_script)
@@ -1317,6 +1317,12 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("--no-enable-qt-deploy-script", workflow)
         self.assertIn("--smoke-targets-only", workflow)
         self.assertIn("--qt-version 6.4.0", workflow)
+        self.assertIn("web-dashboard-browser-contract:", workflow)
+        self.assertIn("npm ci --ignore-scripts", workflow)
+        self.assertIn("playwright install --with-deps firefox", workflow)
+        self.assertIn("--browser=firefox", workflow)
+        self.assertIn("npm ci --omit=dev --ignore-scripts", workflow)
+        self.assertIn("CTest did not discover any tests.", native_cpp_checker)
         self.assertIn('"--no-require-webengine"', verify_all)
         self.assertIn('"--no-enable-qt-deploy-script"', verify_all)
         self.assertIn('"--smoke-targets-only"', verify_all)
@@ -1465,6 +1471,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("numpy==2.4.4; python_version >= '3.11'", runtime_dependencies)
         self.assertIn("pandas==2.3.2; python_version < '3.11'", runtime_dependencies)
         self.assertIn("pandas==3.0.2; python_version >= '3.11'", runtime_dependencies)
+        self.assertIn("aiohttp==3.14.3", runtime_dependencies)
         self.assertNotIn("numpy==2.4.4", runtime_dependencies)
         self.assertNotIn("pandas==3.0.2", runtime_dependencies)
 
@@ -1485,7 +1492,9 @@ class ProductPackagingContractTests(unittest.TestCase):
 
         windows_arm64_dependencies = optional_dependencies["windows-arm64"]
         self.assertNotIn("aiohttp==0.13.1", windows_arm64_dependencies)
-        self.assertIn("aiohttp>=3.9,<4", windows_arm64_dependencies)
+        self.assertIn("aiohttp>=3.14.3,<4", windows_arm64_dependencies)
+
+        self.assertIn("cryptography==50.0.0", optional_dependencies["service"])
 
         self.assertEqual(
             ["pip-audit==2.10.1", "truststore==0.10.4"],
@@ -1584,7 +1593,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("tools/run_release_platform_probe.py", real_test_workflow)
         self.assertIn("include_self_hosted:", real_test_workflow)
         self.assertIn("--exclude-self-hosted", real_test_workflow)
-        self.assertIn("require_all_evidence=true requires include_self_hosted=true", real_test_workflow)
+        self.assertIn("Require passed evidence for every selected target", real_test_workflow)
+        self.assertNotIn("require_all_evidence=true requires include_self_hosted=true", real_test_workflow)
         self.assertIn("Set up Rust for native release probes", real_test_workflow)
         self.assertIn("Cache Rust dependencies for native release probes", real_test_workflow)
         self.assertIn("Install Linux Rust desktop dependencies", real_test_workflow)

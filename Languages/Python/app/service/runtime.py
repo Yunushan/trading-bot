@@ -105,7 +105,10 @@ class TradingBotService:
             if not self._config_persistence_trusted_path:
                 ensure_service_config_path_allowed(self._config_persistence_path, allow_unsafe_path=False)
             try:
-                loaded_config, metadata = load_service_config_file(self._config_persistence_path)
+                loaded_config, metadata = load_service_config_file(
+                    self._config_persistence_path,
+                    allow_unsafe_path=self._config_persistence_trusted_path,
+                )
             except FileNotFoundError:
                 if not load_persisted_config_if_present:
                     raise
@@ -187,7 +190,10 @@ class TradingBotService:
         return payload
 
     def get_config_persistence_status(self) -> dict[str, object]:
-        status = service_config_file_status(self._config_persistence_path)
+        status = service_config_file_status(
+            self._config_persistence_path,
+            allow_unsafe_path=self._config_persistence_trusted_path,
+        )
         status.update(
             {
                 "loaded": bool(self._config_persistence_loaded_at),
@@ -235,7 +241,13 @@ class TradingBotService:
     ) -> dict[str, object]:
         if path not in (None, "") and not allow_unsafe_path:
             ensure_service_config_path_allowed(path, allow_unsafe_path=False)
-        config, metadata = load_service_config_file(path or self._config_persistence_path)
+        config, metadata = load_service_config_file(
+            path or self._config_persistence_path,
+            allow_unsafe_path=bool(
+                allow_unsafe_path
+                or (path in (None, "") and self._config_persistence_trusted_path)
+            ),
+        )
         config = restore_service_config_credentials(
             config,
             path=metadata["path"],

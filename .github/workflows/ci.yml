@@ -379,12 +379,50 @@ jobs:
           set -euo pipefail
           python3 tools/check_local_tool_versions.py --strict --skip-python
 
+      - name: Install dashboard dependencies from lockfile
+        shell: bash
+        working-directory: apps/web-dashboard
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+
       - name: Run dashboard behavior tests
         shell: bash
         working-directory: apps/web-dashboard
         run: |
           set -euo pipefail
           npm test
+
+  web-dashboard-browser-contract:
+    name: Web Dashboard Browser Contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+
+      - name: Install dashboard dependencies from lockfile
+        shell: bash
+        working-directory: apps/web-dashboard
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+
+      - name: Install Playwright Firefox
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --prefix apps/web-dashboard playwright install --with-deps firefox
+
+      - name: Run Firefox browser contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix apps/web-dashboard run test:browser -- --browser=firefox
 
   mobile-client-quality:
     name: Mobile Client Quality
@@ -403,6 +441,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/check_local_tool_versions.py --strict --skip-python
+
+      - name: Install mobile production dependencies from lockfile
+        shell: bash
+        working-directory: apps/mobile-client
+        run: |
+          set -euo pipefail
+          npm ci --omit=dev --ignore-scripts
 
       - name: Run mobile client contract tests
         shell: bash

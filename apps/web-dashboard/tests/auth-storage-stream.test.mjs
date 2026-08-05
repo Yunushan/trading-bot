@@ -51,7 +51,6 @@ globalThis.sessionStorage = makeStorage();
 
 const {
   PERSISTED_STORAGE_KEY,
-  TOKEN_SESSION_STORAGE_KEY,
   elements,
   readStoredConfig,
   state,
@@ -68,7 +67,7 @@ async function test(name, callback) {
   console.log(`ok - ${name}`);
 }
 
-await test("dashboard token migrates out of localStorage into sessionStorage", async () => {
+await test("dashboard token is never restored from browser storage", async () => {
   localStorage.clear();
   sessionStorage.clear();
   localStorage.setItem(
@@ -82,16 +81,14 @@ await test("dashboard token migrates out of localStorage into sessionStorage", a
   readStoredConfig();
 
   assert.equal(state.baseUrl, "http://127.0.0.1:8000");
-  assert.equal(state.token, "legacy-token");
+  assert.equal(state.token, "");
   assert.deepEqual(JSON.parse(localStorage.getItem(PERSISTED_STORAGE_KEY)), {
     baseUrl: "http://127.0.0.1:8000",
   });
-  assert.deepEqual(JSON.parse(sessionStorage.getItem(TOKEN_SESSION_STORAGE_KEY)), {
-    token: "legacy-token",
-  });
+  assert.equal(sessionStorage.getItem("trading-bot-service-dashboard-session"), null);
 });
 
-await test("dashboard token writes stay session-scoped", async () => {
+await test("dashboard token writes stay memory-only", async () => {
   localStorage.clear();
   sessionStorage.clear();
   state.baseUrl = "http://localhost:8000";
@@ -102,9 +99,7 @@ await test("dashboard token writes stay session-scoped", async () => {
   assert.deepEqual(JSON.parse(localStorage.getItem(PERSISTED_STORAGE_KEY)), {
     baseUrl: "http://localhost:8000",
   });
-  assert.deepEqual(JSON.parse(sessionStorage.getItem(TOKEN_SESSION_STORAGE_KEY)), {
-    token: "session-token",
-  });
+  assert.equal(sessionStorage.getItem("trading-bot-service-dashboard-session"), null);
 });
 
 await test("dashboard stream helper sends auth header without query token", async () => {

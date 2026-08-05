@@ -31,6 +31,34 @@ else:
     from ..settings import ConfigValidationError
 
 
+def _build_cli_safe_llm_config_payload(payload: dict[str, object] | None) -> dict[str, object]:
+    """Expose operational LLM settings without printing credential lookup metadata."""
+    source = payload if isinstance(payload, dict) else {}
+    safe_fields = (
+        "enabled",
+        "provider",
+        "provider_label",
+        "mode",
+        "protocol",
+        "catalog_revision",
+        "catalog_path",
+        "custom_models_env",
+        "custom_models_path_env",
+        "model",
+        "base_url",
+        "api_key_present",
+        "use_for",
+        "allow_public_network",
+        "reasoning_effort",
+        "default_reasoning_effort",
+        "reasoning_efforts",
+        "model_suggestions",
+        "notes",
+        "execution_policy",
+    )
+    return {key: source[key] for key in safe_fields if key in source}
+
+
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trading-bot-service",
@@ -293,7 +321,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(service.get_llm_provider_catalog(), indent=2, sort_keys=True))
         return 0
     if args.llm_config:
-        print(json.dumps(service.get_llm_config_payload(), indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                _build_cli_safe_llm_config_payload(service.get_llm_config_payload()),
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
 
     if args.status:

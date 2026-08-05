@@ -160,3 +160,84 @@ jobs:
           name: rust-native-live-smoke-evidence-plan
           path: ${{ inputs.evidence_dir }}/rust-native-runtime-evidence-plan.md
           if-no-files-found: warn
+
+  public-market-data-smoke:
+    name: Public Market Data Smoke
+    runs-on: ubuntu-24.04
+    env:
+      BINANCE_LIVE_SMOKE_INTERVAL: ${{ inputs.interval }}
+      BINANCE_LIVE_SMOKE_SYMBOL: ${{ inputs.symbol }}
+      BINANCE_TESTNET: "${{ inputs.binance_testnet }}"
+      RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}/market
+      TRADING_BOT_RUST_MARKET_SMOKE: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install native parity dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python"
+
+      - name: Install Rust native smoke dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            experiments/rust-shells -> target
+
+      - name: Audit native source sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/native-source-sync
+          python tools/audit_native_source_sync.py --json --output artifacts/native-source-sync/native-source-sync-audit.json
+
+      - name: Validate Rust native live-smoke preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_rust_native_live_smoke_preflight.py --json --timeout 180
+
+      - name: Run public read-only market-data smoke
+        shell: bash
+        working-directory: experiments/rust-shells
+        run: |
+          set -euo pipefail
+          cargo run --locked -p trading-bot-rust -- --native-live-market-smoke-preflight
+          cargo run --locked -p trading-bot-rust -- --native-live-market-smoke
+
+      - name: Validate market-data smoke evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_rust_native_runtime_evidence.py \
+            --require-evidence \
+            --require-current-commit \
+            --require-clean-source \
+            --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --only rust-native-live-market-data-smoke
+
+      - name: Upload public market-data smoke evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-native-public-market-smoke-evidence
+          path: ${{ inputs.evidence_dir }}/market/rust-native-live-market-data-smoke.json
+          if-no-files-found: error

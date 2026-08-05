@@ -71,6 +71,67 @@ def _cmake_generator_args() -> list[str]:
     return []
 
 
+def _path_contains_command(command: str, path_value: str) -> bool:
+    """Return whether a command exists in a PATH value without changing the process environment."""
+    command_path = Path(command)
+    names = [command_path.name]
+    if sys.platform == "win32" and command_path.suffix.lower() != ".exe":
+        names.append(f"{command_path.name}.exe")
+    for directory in filter(None, path_value.split(os.pathsep)):
+        candidate_dir = Path(directory)
+        if any((candidate_dir / name).is_file() for name in names):
+            return True
+    return False
+
+
+def _visual_studio_environment() -> dict[str, str]:
+    """Import a 64-bit MSVC environment for direct Windows native checks when needed."""
+    environment = os.environ.copy()
+    if sys.platform != "win32" or _path_contains_command("cl.exe", environment.get("PATH", "")):
+        return environment
+
+    roots = {
+        value
+        for value in (
+            os.environ.get("ProgramFiles(x86)", ""),
+            os.environ.get("ProgramFiles", ""),
+        )
+        if value
+    }
+    candidates: list[Path] = []
+    for root in sorted(roots):
+        visual_studio_root = Path(root) / "Microsoft Visual Studio"
+        if not visual_studio_root.is_dir():
+            continue
+        candidates.extend(visual_studio_root.glob("*/*/VC/Auxiliary/Build/vcvars64.bat"))
+
+    for script in sorted(set(candidates), key=lambda path: str(path), reverse=True):
+        command = f'call "{script}" amd64 >nul 2>&1 && set'
+        try:
+            result = subprocess.run(
+                ["cmd.exe", "/d", "/s", "/c", command],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+
+        imported = environment.copy()
+        for line in result.stdout.splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key:
+                imported[key] = value
+        if _path_contains_command("cl.exe", imported.get("PATH", "")):
+            return imported
+    return environment
+
+
 def _cmake_build_parallel_args() -> list[str]:
     # MSVC can contend on a target PDB during cold Qt smoke builds.
     return ["--parallel", "1"] if sys.platform == "win32" else ["--parallel"]
@@ -120,8 +181,13 @@ def _qt_lib_from_cmake_cache(build_dir: Path) -> Path | None:
     return qt_lib if qt_lib.is_dir() else None
 
 
-def _desktop_smoke_env(build_dir: Path, config: str) -> dict[str, str]:
-    env = os.environ.copy()
+def _desktop_smoke_env(
+    build_dir: Path,
+    config: str,
+    *,
+    base_environment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    env = (base_environment if base_environment is not None else os.environ).copy()
     paths: list[str] = []
     executable_dir = _desktop_executable_path(build_dir, config).parent
     if executable_dir.is_dir():
@@ -158,8 +224,9 @@ def check_native_cpp(
     timeout: int,
 ) -> dict[str, object]:
     root = _repo_root()
-    cmake = shutil.which("cmake")
-    ctest = shutil.which("ctest")
+    build_environment = _visual_studio_environment()
+    cmake = shutil.which("cmake", path=build_environment.get("PATH"))
+    ctest = shutil.which("ctest", path=build_environment.get("PATH"))
     if not cmake:
         return {
             "ok": False,
@@ -193,7 +260,7 @@ def check_native_cpp(
         configure.append(f"-DCMAKE_BUILD_TYPE={config}")
     tests = [ctest, "--test-dir", str(build_dir), "-C", config, "--output-on-failure"]
 
-    steps = [_run_step("configure", configure, cwd=root, timeout=timeout)]
+    steps = [_run_step("configure", configure, cwd=root, timeout=timeout, env=build_environment)]
     if smoke_targets_only:
         for target in ("native_order_safety_tests", "native_service_api_contract_tests"):
             steps.append(
@@ -202,6 +269,7 @@ def check_native_cpp(
                     [cmake, "--build", str(build_dir), "--config", config, "--target", target, *_cmake_build_parallel_args()],
                     cwd=root,
                     timeout=timeout,
+                    env=build_environment,
                 )
             )
     else:
@@ -220,6 +288,7 @@ def check_native_cpp(
                 ],
                 cwd=root,
                 timeout=timeout,
+                env=build_environment,
             )
         )
         steps.append(
@@ -228,7 +297,7 @@ def check_native_cpp(
                 [str(_desktop_executable_path(build_dir, config)), "--smoke"],
                 cwd=root,
                 timeout=min(timeout, 60),
-                env=_desktop_smoke_env(build_dir, config),
+                env=_desktop_smoke_env(build_dir, config, base_environment=build_environment),
             )
         )
     if not smoke_targets_only:
@@ -241,9 +310,27 @@ def check_native_cpp(
                     [cmake, "--build", str(build_dir), "--config", config, "--target", target, *_cmake_build_parallel_args()],
                     cwd=root,
                     timeout=timeout,
+                    env=build_environment,
                 )
             )
-    steps.append(_run_step("test", tests, cwd=root, timeout=timeout))
+    test_step = _run_step("test", tests, cwd=root, timeout=timeout, env=build_environment)
+    test_output = "\n".join(
+        str(test_step.get(key) or "")
+        for key in ("stdout", "stderr")
+    )
+    if test_step.get("ok") and "No tests were found" in test_output:
+        test_step = dict(test_step)
+        test_step["ok"] = False
+        test_step["failure_reason"] = "CTest did not discover any tests."
+        test_step["stderr"] = "\n".join(
+            part
+            for part in (
+                str(test_step.get("stderr") or "").strip(),
+                "CTest did not discover any tests.",
+            )
+            if part
+        )
+    steps.append(test_step)
     ok = all(bool(step.get("ok")) for step in steps)
     report: dict[str, object] = {
         "ok": ok,

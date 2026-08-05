@@ -91,7 +91,8 @@ def load_config(self):
         fn, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Config", "", "JSON Files (*.json)")
         if not fn:
             return
-        cfg, _metadata = load_service_config_file(fn)
+        # The native file picker is an explicit user trust boundary.
+        cfg, _metadata = load_service_config_file(fn, allow_unsafe_path=True)
         if isinstance(cfg, dict):
             self.config.update(cfg)
         self.config["stop_loss"] = _normalize_stop_loss(self.config.get("stop_loss"))

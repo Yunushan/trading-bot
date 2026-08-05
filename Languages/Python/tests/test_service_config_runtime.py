@@ -337,6 +337,17 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
             saved = service.save_config(path=path, source="unit-test", allow_unsafe_path=True)
             self.assertEqual(str(path.resolve()), saved["path"])
 
+            with self.assertRaises(PermissionError):
+                config_store.load_service_config_file(path)
+            with self.assertRaises(PermissionError):
+                config_store.service_config_file_status(path)
+            loaded_direct, direct_metadata = config_store.load_service_config_file(
+                path,
+                allow_unsafe_path=True,
+            )
+            self.assertEqual(["ETHUSDT"], loaded_direct["symbols"])
+            self.assertEqual(str(path.resolve()), direct_metadata["path"])
+
             reloader = TradingBotService()
             with self.assertRaises(PermissionError):
                 reloader.load_config(path=path, source="unit-test")

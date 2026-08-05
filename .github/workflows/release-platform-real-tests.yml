@@ -19,7 +19,7 @@ on:
         default: ""
         type: string
       require_all_evidence:
-        description: "Require passed evidence for every target; this requires include_self_hosted=true."
+        description: "Require passed evidence for every selected target; set include_self_hosted=true to include Windows 11 self-hosted targets."
         required: true
         type: boolean
         default: false
@@ -65,14 +65,9 @@ jobs:
         env:
           TARGET_ID: ${{ inputs.target_id }}
           INCLUDE_SELF_HOSTED: ${{ inputs.include_self_hosted }}
-          REQUIRE_ALL_EVIDENCE: ${{ inputs.require_all_evidence }}
           RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
         run: |
           set -euo pipefail
-          if [[ "$REQUIRE_ALL_EVIDENCE" == "true" && "$INCLUDE_SELF_HOSTED" != "true" ]]; then
-            echo "require_all_evidence=true requires include_self_hosted=true" >&2
-            exit 2
-          fi
           args=(--emit-github-matrix)
           if [[ "$TARGET_ID" != "all" ]]; then
             args+=(--target-filter "$TARGET_ID")
@@ -290,9 +285,9 @@ jobs:
           if-no-files-found: warn
 
   full-evidence-gate:
-    name: Full Evidence Gate
+    name: Evidence Gate (selected scope)
     needs: [prepare-targets, run-target]
-    if: ${{ inputs.require_all_evidence || (inputs.target_id == 'all' && inputs.include_self_hosted) }}
+    if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -319,10 +314,17 @@ jobs:
 
       - name: Require passed evidence for every target
         shell: bash
+        env:
+          INCLUDE_SELF_HOSTED: ${{ inputs.include_self_hosted }}
         run: |
           set -euo pipefail
-          python tools/check_release_platform_matrix.py \
-            --require-evidence \
-            --require-current-commit \
-            --require-clean-source \
+          args=(
+            --require-evidence
+            --require-current-commit
+            --require-clean-source
             --evidence-dir release-platform-evidence
+          )
+          if [[ "${INCLUDE_SELF_HOSTED}" != "true" ]]; then
+            args+=(--exclude-self-hosted)
+          fi
+          python tools/check_release_platform_matrix.py "${args[@]}"

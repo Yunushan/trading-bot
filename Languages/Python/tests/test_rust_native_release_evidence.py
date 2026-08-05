@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -200,6 +201,29 @@ def _valid_source_sync_audit_payload(contract_hash: str = PYTHON_SOURCE_CONTRACT
 
 
 class RustNativeReleaseEvidenceTests(unittest.TestCase):
+    def test_readiness_cli_json_redacts_credential_presence_metadata(self):
+        payload = runtime_readiness._redact_cli_json_value(
+            {
+                "ok": False,
+                "live_smoke_prerequisites": {
+                    "binance_api_key_present": True,
+                    "binance_api_secret_present": False,
+                },
+                "artifact_status": [
+                    {"github_token_present": True, "status": "missing"},
+                ],
+            }
+        )
+
+        self.assertEqual(
+            {
+                "ok": False,
+                "live_smoke_prerequisites": {},
+                "artifact_status": [{"status": "missing"}],
+            },
+            payload,
+        )
+
     def test_evidence_workflow_checker_covers_ci_gate(self):
         result = evidence_workflows.check_workflows(REPO_ROOT)
         self.assertTrue(result["ok"], result["issues"])
@@ -223,6 +247,12 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("--require-native-source-sync", release_platform_workflow_text)
+        self.assertIn("Evidence Gate (selected scope)", release_platform_workflow_text)
+        self.assertIn("args+=(--exclude-self-hosted)", release_platform_workflow_text)
+        self.assertIn(
+            "if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}",
+            release_platform_workflow_text,
+        )
         for workflow_name in (
             "ci_rust_native_gate",
             "live_smoke",
@@ -5863,6 +5893,38 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(any("native_order_safety_tests" in command for command in commands))
         self.assertTrue(any("native_service_api_contract_tests" in command for command in commands))
 
+    def test_native_cpp_rejects_ctest_when_no_tests_are_discovered(self):
+        def run_step(name, command, *, cwd, timeout, env=None):
+            if name == "test":
+                return {
+                    "name": name,
+                    "command": " ".join(command),
+                    "ok": True,
+                    "returncode": 0,
+                    "stdout": "Test project\nNo tests were found!!!",
+                    "stderr": "",
+                }
+            return {"name": name, "command": " ".join(command), "ok": True}
+
+        with (
+            patch.object(native_cpp.sys, "platform", "linux"),
+            patch.object(native_cpp.shutil, "which", side_effect=["cmake", "ctest"]),
+            patch.object(native_cpp, "_run_step", side_effect=run_step),
+        ):
+            report = native_cpp.check_native_cpp(
+                build_dir=REPO_ROOT / "build" / "test-native-empty-ctest",
+                config="Debug",
+                require_webengine=False,
+                enable_qt_deploy_script=False,
+                smoke_targets_only=True,
+                qt_version="6.4.0",
+                timeout=30,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["steps"][-1]["ok"])
+        self.assertEqual("CTest did not discover any tests.", report["steps"][-1]["failure_reason"])
+
     def test_native_cpp_builds_the_desktop_target_before_running_the_desktop_smoke(self):
         with (
             patch.object(native_cpp.sys, "platform", "darwin"),
@@ -5888,6 +5950,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
     def test_native_cpp_serializes_windows_builds_to_avoid_pdb_contention(self):
         with (
             patch.object(native_cpp.sys, "platform", "win32"),
+            patch.object(native_cpp, "_visual_studio_environment", return_value=os.environ.copy()),
             patch.object(native_cpp.shutil, "which", side_effect=["cmake", "ctest"]),
             patch.object(native_cpp, "_run_step", return_value={"ok": True}) as run_step,
         ):
@@ -5904,6 +5967,48 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         for call in run_step.call_args_list[1:3]:
             self.assertEqual(["--parallel", "1"], call.args[1][-2:])
+
+    def test_native_cpp_imports_visual_studio_environment_for_direct_windows_checks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            program_files = Path(temp_dir)
+            script = (
+                program_files
+                / "Microsoft Visual Studio"
+                / "18"
+                / "BuildTools"
+                / "VC"
+                / "Auxiliary"
+                / "Build"
+                / "vcvars64.bat"
+            )
+            compiler_dir = Path(temp_dir) / "msvc" / "bin"
+            compiler_dir.mkdir(parents=True)
+            (compiler_dir / "cl.exe").write_text("", encoding="ascii")
+            script.parent.mkdir(parents=True)
+            script.write_text("@echo off\n", encoding="ascii")
+
+            with (
+                patch.object(native_cpp.sys, "platform", "win32"),
+                patch.dict(
+                    native_cpp.os.environ,
+                    {"PATH": str(Path(temp_dir) / "system"), "ProgramFiles(x86)": str(program_files)},
+                    clear=True,
+                ),
+                patch.object(
+                    native_cpp.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=[],
+                        returncode=0,
+                        stdout=f"PATH={compiler_dir}\nVCToolsInstallDir={temp_dir}\\\n",
+                        stderr="",
+                    ),
+                ) as run,
+            ):
+                environment = native_cpp._visual_studio_environment()
+
+        self.assertEqual(str(compiler_dir), environment["PATH"])
+        run.assert_called_once()
 
     def test_release_platform_cli_target_filter_limits_evidence_validation(self):
         payload = {

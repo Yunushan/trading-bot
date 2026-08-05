@@ -308,11 +308,20 @@ class ServiceOperationalRuntimeTests(unittest.TestCase):
 
         self.assertFalse(reset["active"])
         self.assertEqual("closed", reset["state"])
-        self.assertEqual("ok", operational_after_reset["health"])
+        self.assertEqual("warning", operational_after_reset["health"])
         self.assertFalse(operational_after_reset["connector_order_circuit_breaker"]["active"])
+        self.assertTrue(operational_after_reset["connector_order_circuit_breaker"]["recovery_pending"])
         self.assertTrue(any("circuit breaker paused" in item["message"] for item in logs))
         self.assertTrue(any("circuit breaker reset" in item["message"] for item in logs))
-        self.assertTrue(all(item["level"] == "info" for item in logs))
+        self.assertTrue(all(item["level"] in {"info", "warning"} for item in logs))
+
+        service.set_exchange_connector_snapshot(
+            {"health": "ok", "state": "ready"},
+            source="unit-test-revalidated",
+        )
+        recovered = service.get_operational_snapshot()
+        self.assertEqual("ok", recovered["health"])
+        self.assertFalse(recovered["connector_order_circuit_breaker"]["recovery_pending"])
 
     def test_service_connector_order_circuit_incidents_are_persisted_to_jsonl(self):
         with tempfile.TemporaryDirectory() as tmpdir:

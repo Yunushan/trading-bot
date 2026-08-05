@@ -9,8 +9,7 @@ use std::{
 use trading_bot_core::{
     account::{
         BinanceAccountSnapshot, BinanceApiCredentials, BinanceFuturesAccountReadSnapshot,
-        BinanceFuturesMultiAssetsMode, BinanceFuturesPositionMode,
-        BinanceSignedRestClient,
+        BinanceFuturesMultiAssetsMode, BinanceFuturesPositionMode, BinanceSignedRestClient,
     },
     app_banner, cpp_entire_python_app_contract_parity_ready, cpp_entire_python_app_parity_ready,
     market_data::{
@@ -1689,6 +1688,7 @@ fn binance_market_label(market: BinanceMarket) -> &'static str {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use trading_bot_core::account::BinanceFuturesPosition;
 
     struct FakeMarketSmokeClient {
         symbol_failures_remaining: Cell<usize>,

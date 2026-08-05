@@ -31,7 +31,7 @@ SUPPORTED_PYTHON_CLASSIFIERS = {
 }
 
 WINDOWS_ARM64_ALLOWLIST = {
-    "aiohttp": "aiohttp>=3.9,<4",
+    "aiohttp": "aiohttp>=3.14.3,<4",
 }
 
 DEV_DEPENDENCY_NAMES = {

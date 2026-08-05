@@ -184,11 +184,15 @@ export const elements = {
 export function readStoredConfig() {
   try {
     const persisted = readStorageJson(globalThis.localStorage, STORAGE_KEY);
-    const session = readStorageJson(globalThis.sessionStorage, SESSION_STORAGE_KEY);
     state.baseUrl = String(persisted.baseUrl || "").trim();
-    state.token = String(session.token || persisted.token || "").trim();
+    state.token = "";
+    // Remove tokens written by older versions without reading them back into JS.
+    globalThis.sessionStorage?.removeItem?.(SESSION_STORAGE_KEY);
     if (persisted.token) {
-      writeStoredConfig();
+      globalThis.localStorage?.setItem?.(
+        STORAGE_KEY,
+        JSON.stringify({ baseUrl: state.baseUrl }),
+      );
     }
   } catch {
     state.baseUrl = "";
@@ -204,12 +208,7 @@ export function writeStoredConfig() {
         baseUrl: state.baseUrl,
       }),
     );
-    globalThis.sessionStorage?.setItem?.(
-      SESSION_STORAGE_KEY,
-      JSON.stringify({
-        token: state.token,
-      }),
-    );
+    globalThis.sessionStorage?.removeItem?.(SESSION_STORAGE_KEY);
   } catch {
     // Browser-side persistence is only a convenience.
   }

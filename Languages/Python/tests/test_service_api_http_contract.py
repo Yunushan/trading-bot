@@ -542,7 +542,11 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             unsafe_path_response = client.post(
                 f"{SERVICE_API_BASE_PATH}/config/save",
                 headers=headers,
-                json={"path": str(Path(tmp) / "manual-service-config.json"), "source": "api-smoke"},
+                json={
+                    "path": str(Path(tmp) / "manual-service-config.json"),
+                    "source": "api-smoke",
+                    "allow_unsafe_path": True,
+                },
             )
             self.assertEqual(403, unsafe_path_response.status_code)
 

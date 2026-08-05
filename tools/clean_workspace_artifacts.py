@@ -6,10 +6,14 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
-from audit_workspace_hygiene import is_noisy_ignored_path
-from check_rust_native_runtime_evidence import (
+# Cleanup must not recreate the bytecode directories it is removing.
+sys.dont_write_bytecode = True
+
+from audit_workspace_hygiene import is_noisy_ignored_path  # noqa: E402
+from check_rust_native_runtime_evidence import (  # noqa: E402
     REQUIRED_REQUIREMENTS,
     _current_git_commit,
     native_python_source_contract_hash,

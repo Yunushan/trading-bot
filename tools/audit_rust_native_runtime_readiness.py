@@ -2296,6 +2296,37 @@ def audit(
     }
 
 
+_CLI_REDACTED_KEYS = frozenset(
+    {
+        "api_key_present",
+        "api_secret_present",
+        "binance_api_key_present",
+        "binance_api_secret_present",
+        "github_token_present",
+    }
+)
+
+
+def _redact_cli_json_value(value: object) -> object:
+    """Keep credential-presence metadata in internal evidence, never in CLI JSON."""
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_cli_json_value(item)
+            for key, item in value.items()
+            if str(key) not in _CLI_REDACTED_KEYS
+        }
+    if isinstance(value, list):
+        return [_redact_cli_json_value(item) for item in value]
+    return value
+
+
+def _print_cli_json(result: dict[str, Any]) -> None:
+    payload = _redact_cli_json_value(result)
+    if isinstance(payload, dict):
+        payload["credential_presence_fields_redacted"] = True
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST_PATH), help="Rust runtime evidence manifest path.")
@@ -2335,7 +2366,7 @@ def main(argv: list[str] | None = None) -> int:
             result["issues"].extend(str(issue) for issue in plan_guard["issues"])
             result["evidence_plan_write_guard"] = plan_guard
             if args.json:
-                print(json.dumps(result, indent=2, sort_keys=True))
+                _print_cli_json(result)
             else:
                 print("Rust native runtime promotion audit: evidence plan write blocked")
                 for issue in plan_guard["issues"]:
@@ -2345,7 +2376,7 @@ def main(argv: list[str] | None = None) -> int:
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_text(_render_evidence_collection_markdown(result), encoding="utf-8")
     if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
+        _print_cli_json(result)
     else:
         state = "ready" if result["promotion_ready"] else "not ready"
         print(f"Rust native runtime promotion audit: {state}")

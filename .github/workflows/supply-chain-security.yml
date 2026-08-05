@@ -80,7 +80,7 @@ jobs:
         working-directory: ${{ matrix.client }}
         run: |
           set -euo pipefail
-          npm ci --omit=dev
+          npm ci --omit=dev --ignore-scripts
 
       - name: Audit production Node dependencies
         shell: bash

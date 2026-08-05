@@ -248,6 +248,22 @@ class BotRuntimeStateMixin:
                 snapshot=payload,
                 source=source,
             )
+            if (
+                bool(self._connector_order_circuit_breaker_snapshot.get("recovery_pending"))
+                and str(self._exchange_connector_snapshot.get("health") or "").strip().lower() == "ok"
+            ):
+                self._connector_order_circuit_breaker_snapshot = (
+                    self._build_connector_order_circuit_breaker_snapshot_unlocked(
+                        {
+                            **self._connector_order_circuit_breaker_snapshot,
+                            "recovery_pending": False,
+                            "recovery_pending_reason": "",
+                        },
+                        source=str(
+                            self._connector_order_circuit_breaker_snapshot.get("source") or source or "service"
+                        ),
+                    )
+                )
             return copy.deepcopy(self._exchange_connector_snapshot)
 
     def get_exchange_connector_snapshot(self) -> dict[str, object]:
@@ -308,6 +324,8 @@ class BotRuntimeStateMixin:
             "reset_blocked": bool(raw.get("reset_blocked", False)),
             "reset_blocked_reason": str(raw.get("reset_blocked_reason") or "").strip(),
             "reset_blocked_at": str(raw.get("reset_blocked_at") or ""),
+            "recovery_pending": bool(raw.get("recovery_pending", False)),
+            "recovery_pending_reason": str(raw.get("recovery_pending_reason") or "").strip(),
             "last_event": raw.get("last_event") if isinstance(raw.get("last_event"), dict) else None,
             "generated_at": self._now_iso(),
         }
@@ -320,6 +338,7 @@ class BotRuntimeStateMixin:
             "block_threshold",
             "block_window_seconds",
             "source",
+            "recovery_pending",
             "generated_at",
         }
         redacted = redact_value(payload)
@@ -473,13 +492,12 @@ class BotRuntimeStateMixin:
                         total_read += 1
                         try:
                             decoded = json.loads(text)
-                        except Exception as exc:
+                        except Exception:
                             decoded = {
                                 "event": "connector_order_circuit_log_parse_error",
                                 "action": "parse_error",
                                 "line_number": line_number,
-                                "message": f"Could not parse incident log line: {redact_text(str(exc))}",
-                                "raw": redact_text(text[:500]),
+                                "message": "Could not parse incident log line.",
                             }
                             parse_errors.append(copy.deepcopy(decoded))
                         if not isinstance(decoded, dict):
@@ -488,7 +506,7 @@ class BotRuntimeStateMixin:
                                 "action": "parse_error",
                                 "line_number": line_number,
                                 "message": "Incident log line was not a JSON object.",
-                                "value": redact_value(decoded),
+                                "value_type": type(decoded).__name__,
                             }
                             parse_errors.append(copy.deepcopy(decoded))
                         events.append(redact_value(decoded))
@@ -600,6 +618,12 @@ class BotRuntimeStateMixin:
                 "reset_blocked": False,
                 "reset_blocked_reason": "",
                 "reset_blocked_at": "",
+                "recovery_pending": bool(previous.get("active") or previous.get("reset_blocked")),
+                "recovery_pending_reason": (
+                    "Connector health must be revalidated after circuit-breaker reset."
+                    if bool(previous.get("active") or previous.get("reset_blocked"))
+                    else ""
+                ),
                 "source": source,
             }
             self._connector_order_circuit_breaker_snapshot = (
@@ -821,6 +845,7 @@ class BotRuntimeStateMixin:
             source=str(self._connector_order_circuit_breaker_snapshot.get("source") or "service"),
         )
         connector_order_circuit_active = bool(connector_order_circuit.get("active"))
+        connector_order_circuit_recovery_pending = bool(connector_order_circuit.get("recovery_pending"))
         if connector_health in {"warning", "error"}:
             if isinstance(connector_attention, list) and connector_attention:
                 attention.append(f"Exchange connector {connector_state}: {connector_attention[0]}")
@@ -832,6 +857,13 @@ class BotRuntimeStateMixin:
                 or "Connector order circuit breaker paused trading."
             )
             attention.append(circuit_message)
+        if connector_order_circuit_recovery_pending:
+            attention.append(
+                str(
+                    connector_order_circuit.get("recovery_pending_reason")
+                    or "Connector health must be revalidated after circuit-breaker reset."
+                )
+            )
 
         execution_state = str(self._execution_state or "").strip().lower()
         execution_heartbeat_required = execution_state == "running"
@@ -947,6 +979,8 @@ class BotRuntimeStateMixin:
             health = "error"
         if connector_order_circuit_active:
             health = "error"
+        if connector_order_circuit_recovery_pending and health != "error":
+            health = "warning"
         if connector_health == "error":
             health = "error"
         elif health != "error" and (warning_events or not audit_enabled):
@@ -978,6 +1012,8 @@ class BotRuntimeStateMixin:
             issues: list[str] = []
             if health == "error":
                 issues.append("operational health is error")
+            if connector_order_circuit_recovery_pending:
+                issues.append("connector order circuit breaker recovery is pending")
             if stale_labels:
                 issues.append("critical snapshots are stale: " + ", ".join(stale_labels))
             return issues

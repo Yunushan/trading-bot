@@ -686,7 +686,9 @@ def create_service_api_app(
             return _service().save_config(
                 path=payload.path,
                 source=payload.source,
-                allow_unsafe_path=payload.allow_unsafe_path,
+                allow_unsafe_path=bool(
+                    payload.allow_unsafe_path and _env_flag(SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV, False)
+                ),
             )
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
@@ -704,7 +706,9 @@ def create_service_api_app(
             return _service().load_config(
                 path=payload.path,
                 source=payload.source,
-                allow_unsafe_path=payload.allow_unsafe_path,
+                allow_unsafe_path=bool(
+                    payload.allow_unsafe_path and _env_flag(SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV, False)
+                ),
             )
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)

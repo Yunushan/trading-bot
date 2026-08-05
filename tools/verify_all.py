@@ -10,6 +10,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+# Keep the aggregate verifier itself from creating workspace noise during a clean run.
+if __name__ == "__main__":
+    sys.dont_write_bytecode = True
+
 try:
     from rust_command import run_cargo_with_secure_wsl_fallback
 except ModuleNotFoundError:  # pragma: no cover - exercised by package imports
@@ -78,6 +82,7 @@ def _checks(
     *,
     skip_slow: bool,
     skip_promotion_evidence: bool = False,
+    native_cpp_build_dir: Path | None = None,
 ) -> list[Check]:
     python = _python()
     cargo = _command_path("cargo")
@@ -97,6 +102,8 @@ def _checks(
             "--timeout",
             "900",
         )
+    if native_cpp_build_dir is not None:
+        native_cpp_command += ("--build-dir", str(native_cpp_build_dir))
     checks = [
         Check(
             "tool versions",
@@ -632,14 +639,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verbose", action="store_true", help="Keep full stdout/stderr in JSON output.")
     args = parser.parse_args(argv)
     root = _repo_root()
-    results = [
-        _run_check(check, verbose=args.verbose)
-        for check in _checks(
-            root,
-            skip_slow=args.skip_slow,
-            skip_promotion_evidence=args.skip_promotion_evidence,
-        )
-    ]
+    with tempfile.TemporaryDirectory(prefix="trading-bot-native-cpp-") as native_cpp_dir:
+        results = [
+            _run_check(check, verbose=args.verbose)
+            for check in _checks(
+                root,
+                skip_slow=args.skip_slow,
+                skip_promotion_evidence=args.skip_promotion_evidence,
+                native_cpp_build_dir=Path(native_cpp_dir),
+            )
+        ]
     ok = _report_ok(results)
     skipped_checks = []
     if args.skip_promotion_evidence:

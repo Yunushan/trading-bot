@@ -76,6 +76,19 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("--locked", full_checks["rust core tests"].command)
         self.assertNotIn("compileall", " ".join(" ".join(check.command) for check in module._checks(REPO_ROOT, skip_slow=False)))
 
+        fresh_checks = {
+            check.name: check
+            for check in module._checks(
+                REPO_ROOT,
+                skip_slow=True,
+                native_cpp_build_dir=Path("build") / "fresh-native-cpp",
+            )
+        }
+        self.assertEqual(
+            ("--build-dir", str(Path("build") / "fresh-native-cpp")),
+            fresh_checks["native c++ build and tests"].command[-2:],
+        )
+
     def test_verify_all_can_explicitly_skip_external_promotion_evidence(self):
         module = _load_verify_all_module()
 
@@ -564,7 +577,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
             if package_path.endswith("/brace-expansion")
         }
         self.assertTrue(resolved_versions)
-        self.assertTrue(resolved_versions <= {"1.1.16", "5.0.8"})
+        self.assertIn("5.0.9", resolved_versions)
+        self.assertNotIn("5.0.8", resolved_versions)
+        self.assertTrue(resolved_versions <= {"1.1.16", "5.0.9"})
 
     def test_codeql_workflow_scans_python_javascript_and_native_languages_with_pinned_actions(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")

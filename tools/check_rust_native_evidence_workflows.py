@@ -148,6 +148,34 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
             ),
         )
     )
+    issues.extend(
+        _missing_fragments(
+            text,
+            (
+                "public-market-data-smoke:",
+                "name: Public Market Data Smoke",
+                'TRADING_BOT_RUST_MARKET_SMOKE: "1"',
+                "RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}/market",
+                "cargo run --locked -p trading-bot-rust -- --native-live-market-smoke-preflight",
+                "cargo run --locked -p trading-bot-rust -- --native-live-market-smoke",
+                "--only rust-native-live-market-data-smoke",
+                "name: rust-native-public-market-smoke-evidence",
+                "${{ inputs.evidence_dir }}/market/rust-native-live-market-data-smoke.json",
+            ),
+        )
+    )
+    issues.extend(
+        _ordered(
+            text,
+            (
+                "public-market-data-smoke:",
+                "Install native parity dependencies",
+                "Run public read-only market-data smoke",
+                "Validate market-data smoke evidence",
+                "Upload public market-data smoke evidence",
+            ),
+        )
+    )
     return _workflow_result("live_smoke", path, issues)
 
 
@@ -236,6 +264,9 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             "prepare-targets:",
             "Resolve Release Target Matrix",
             "Emit selected target matrix",
+            "Evidence Gate (selected scope)",
+            "INCLUDE_SELF_HOSTED: ${{ inputs.include_self_hosted }}",
+            "args+=(--exclude-self-hosted)",
             "--emit-github-matrix",
             "strategy:",
             "fromJson(needs.prepare-targets.outputs.targets).include",
@@ -270,7 +301,7 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             "Upload target evidence\n        if: ${{ always() }}",
             "name: release-platform-evidence-${{ matrix.target.target_id }}",
             "if-no-files-found: warn",
-            "Full Evidence Gate",
+            "Evidence Gate (selected scope)",
             "pattern: release-platform-evidence-*",
             "merge-multiple: true",
             "Require passed evidence for every target",

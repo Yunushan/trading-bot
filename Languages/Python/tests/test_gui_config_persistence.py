@@ -74,6 +74,7 @@ class GuiConfigPersistenceTests(unittest.TestCase):
             with mock.patch.object(config_runtime.QtWidgets, "QFileDialog", _SaveDialog):
                 config_runtime.save_config(window)
 
+            self.assertTrue(export_path.is_file(), window.logs)
             payload = json.loads(export_path.read_text(encoding="utf-8"))
             self.assertEqual("trading-bot-service-config", payload["kind"])
             self.assertTrue(payload["contains_secrets"])

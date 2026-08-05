@@ -112,6 +112,8 @@ class ServiceProductMainTests(unittest.TestCase):
                 self.assertEqual("", stderr)
                 json.loads(stdout)
                 self.assertNotIn("api_key_value", stdout.lower())
+                if args == ("--llm-config",):
+                    self.assertNotIn("api_key_env", stdout.lower())
 
     def test_terminal_log_and_control_modes_return_operator_results(self):
         cases = (

@@ -200,11 +200,28 @@ def _persist_credentials(config: Mapping[str, object], *, path: Path) -> dict[st
     if backend == "unavailable":
         return {"credential_store": "unavailable", "credential_store_available": False}
     scope = _credential_scope(path)
-    for field, value in values.items():
-        put_secret(scope=scope, account=field, value=value)
+    stored_fields: list[str] = []
+    try:
+        for field, value in values.items():
+            put_secret(scope=scope, account=field, value=value)
+            stored_fields.append(field)
+    except (CredentialStoreUnavailable, OSError, ValueError):
+        # A desktop export must remain usable when the host credential service is
+        # unavailable; the JSON payload is already redacted and never carries the
+        # secret values themselves.
+        for field in stored_fields:
+            with suppress(CredentialStoreUnavailable, OSError, ValueError):
+                delete_secret(scope=scope, account=field)
+        return {
+            "credential_store": "unavailable",
+            "credential_store_available": False,
+            "credential_store_fields": [],
+            "credential_store_warning": "OS credential storage was unavailable; secret values were redacted.",
+        }
     if previous_backend == backend:
         for field in previous_fields.difference(values):
-            delete_secret(scope=scope, account=field)
+            with suppress(CredentialStoreUnavailable, OSError, ValueError):
+                delete_secret(scope=scope, account=field)
     return {"credential_store": backend, "credential_store_available": True, "credential_store_fields": sorted(values)}
 
 
@@ -291,8 +308,12 @@ def _coerce_loaded_config(raw_payload: object, *, path: Path) -> tuple[dict[str,
     return validate_runtime_config(merged_config), metadata
 
 
-def load_service_config_file(path: str | Path | None = None) -> tuple[dict[str, object], dict[str, object]]:
-    resolved_path = resolve_service_config_path(path)
+def load_service_config_file(
+    path: str | Path | None = None,
+    *,
+    allow_unsafe_path: bool = False,
+) -> tuple[dict[str, object], dict[str, object]]:
+    resolved_path = ensure_service_config_path_allowed(path, allow_unsafe_path=allow_unsafe_path)
     if not resolved_path.is_file():
         raise FileNotFoundError(f"Service config file not found: {resolved_path}")
 
@@ -381,8 +402,12 @@ def write_service_config_file(
     return metadata
 
 
-def service_config_file_status(path: str | Path | None = None) -> dict[str, object]:
-    resolved_path = resolve_service_config_path(path)
+def service_config_file_status(
+    path: str | Path | None = None,
+    *,
+    allow_unsafe_path: bool = False,
+) -> dict[str, object]:
+    resolved_path = ensure_service_config_path_allowed(path, allow_unsafe_path=allow_unsafe_path)
     exists = resolved_path.is_file()
     modified_at = ""
     secret_metadata: dict[str, object] = {}
