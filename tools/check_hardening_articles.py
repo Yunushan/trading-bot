@@ -200,6 +200,14 @@ HARDENING_ARTICLES: tuple[Article, ...] = (
             Evidence("Languages/Python/tests/test_runtime_exception_diagnostic_helpers.py", ("diagnostic",)),
             Evidence("experiments/rust-shells/crates/core/src/diagnostics.rs", ("Diagnostic",)),
             Evidence("docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md", ("freshness", "heartbeat")),
+            Evidence(
+                "docs/operational-readiness-policy.json",
+                ("service_level_objectives", "recovery_objectives", "production-service-slo-window"),
+            ),
+            Evidence(
+                "tools/run_service_sustained_probe.py",
+                ("read_only", "order_submission_attempted", "production_slo_proven"),
+            ),
         ),
     ),
     Article(

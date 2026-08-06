@@ -14,7 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-try:
+if __package__:
+    from .audit_native_source_sync import (
+        REQUIRED_CONSUMER_SURFACE_NAMES,
+        REQUIRED_GENERATED_ARTIFACT_NAMES,
+    )
+    from .check_generated_evidence_source_control import generated_evidence_write_guard
+    from .check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _target_evidence_issues, _validate_matrix
+    from . import check_rust_native_runtime_evidence as runtime_evidence
+else:  # pragma: no cover - exercised by the direct script entry point
     from audit_native_source_sync import (
         REQUIRED_CONSUMER_SURFACE_NAMES,
         REQUIRED_GENERATED_ARTIFACT_NAMES,
@@ -22,14 +30,6 @@ try:
     from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _target_evidence_issues, _validate_matrix
     import check_rust_native_runtime_evidence as runtime_evidence
-except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
-    from tools.audit_native_source_sync import (
-        REQUIRED_CONSUMER_SURFACE_NAMES,
-        REQUIRED_GENERATED_ARTIFACT_NAMES,
-    )
-    from tools.check_generated_evidence_source_control import generated_evidence_write_guard
-    from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _target_evidence_issues, _validate_matrix
-    from tools import check_rust_native_runtime_evidence as runtime_evidence
 
 
 DEFAULT_RUNTIME_EVIDENCE_DIR = Path("artifacts/rust-native-runtime-evidence")

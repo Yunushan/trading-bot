@@ -58,6 +58,12 @@ dependency used by the route-level contract tests. The focused service test runn
 contracts, config/runtime persistence, operational health, lifecycle controls,
 desktop integration boundaries, and background-hosted backtest HTTP routes.
 
+Release deployments must set `TRADING_BOT_BUILD_COMMIT` to the full Git commit
+being deployed. The service exposes only a validated hexadecimal commit value
+as `build_commit` in `/readyz` and API metadata. The sustained production probe
+uses this value to reject stale or mismatched deployments; arbitrary environment
+text is never reflected.
+
 Focused service test map:
 
 | Module | Use when checking |
@@ -365,15 +371,20 @@ Write/control routes:
 write a file unless you explicitly save.
 
 The durable service config file defaults to `~/.trading-bot/service-config.json`.
-Override it with `BOT_SERVICE_CONFIG_PATH`, `--config-path`, or the optional
-`path` field on the save/load API request body. Explicit save/load API paths are
-blocked outside the safe config directory unless the trusted local caller sends
-`allow_unsafe_path: true` or sets `BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH=1`.
+Override it on the service host with `BOT_SERVICE_CONFIG_PATH`, `--config-path`,
+or a trusted desktop-host setting. Remote save/load requests always use that
+server-configured path; request-body `path` and `allow_unsafe_path` values are
+rejected. `BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH=1` applies only to trusted local
+service-host callers and never restores remote path selection.
 Save responses include `contains_secrets`, `secret_fields`, and
 `secret_storage_warning` metadata so clients can warn before persisting
 plain-JSON credentials. Inline secret values are redacted from saved config
-files by default; set `BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS=1` only when you
-explicitly want plain-JSON secret persistence.
+files. The legacy `BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS` setting is reported
+for migration visibility but does not enable plain-JSON secret persistence.
+Remote config replacement, patch, LLM config, and terminal commands cannot set
+credential fields or audit/incident-log filesystem paths; configure those
+values on the service host through environment variables or OS credential
+storage.
 
 When an operating-system credential store is available, service secrets use the
 native platform API (Windows Credential Manager, macOS Keychain, or Linux Secret

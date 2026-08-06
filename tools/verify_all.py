@@ -180,6 +180,33 @@ def _checks(
             remediation=_python_install_remediation("service"),
         ),
         Check(
+            "operational readiness policy",
+            (python, "tools/check_operational_readiness.py", "--schema-only"),
+            root,
+            remediation="Keep docs/operational-readiness-policy.json aligned with the SLO, recovery, and evidence contracts.",
+        ),
+        Check(
+            "service API quick readiness probe",
+            (python, "tools/run_service_sustained_probe.py", "--profile", "quick"),
+            root,
+            remediation=_python_install_remediation("service,dev"),
+        ),
+        Check(
+            "operational recovery drill",
+            (python, "tools/run_operational_recovery_drill.py"),
+            root,
+            remediation=_python_install_remediation("service,dev"),
+        ),
+        Check(
+            "incident and order audit continuity drill",
+            (python, "tools/run_incident_audit_continuity_drill.py"),
+            root,
+            remediation=(
+                "Keep incident and order-audit JSONL rotation, redaction, "
+                "and restart read-back operational."
+            ),
+        ),
+        Check(
             "python version support",
             (python, "tools/check_python_version_support.py", "--current"),
             root,

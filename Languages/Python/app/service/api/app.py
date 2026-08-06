@@ -8,6 +8,7 @@ import asyncio
 from dataclasses import asdict
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -38,6 +39,7 @@ if __package__ in (None, ""):
     from app.service.config_store import (
         SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV,
         SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
+        remote_service_config_protected_fields,
     )
     from app.service.runtime import TradingBotService
     from app.integrations.llm.local_models import (
@@ -47,7 +49,6 @@ if __package__ in (None, ""):
         start_ollama_server,
     )
     from app.settings import ConfigValidationError
-    from app.security.redaction import redact_text
 else:
     from ..api_contract import (
         SERVICE_API_BASE_PATH,
@@ -71,6 +72,7 @@ else:
     from ..config_store import (
         SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV,
         SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
+        remote_service_config_protected_fields,
     )
     from ..runtime import TradingBotService
     from ...integrations.llm.local_models import (
@@ -80,7 +82,6 @@ else:
         start_ollama_server,
     )
     from ...settings import ConfigValidationError
-    from ...security.redaction import redact_text
 
 try:
     from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
@@ -105,6 +106,7 @@ _HTTP_413_CONTENT_TOO_LARGE = (
 SERVICE_API_MAX_REQUEST_BYTES_ENV = "BOT_SERVICE_API_MAX_REQUEST_BYTES"
 SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE"
 SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS"
+SERVICE_BUILD_COMMIT_ENV = "TRADING_BOT_BUILD_COMMIT"
 DEFAULT_SERVICE_API_MAX_REQUEST_BYTES = 1_048_576
 DEFAULT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS = 10_000
 SERVICE_API_SENSITIVE_RESPONSE_HEADERS = {
@@ -113,6 +115,11 @@ SERVICE_API_SENSITIVE_RESPONSE_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
 }
+
+
+def _service_build_commit() -> str:
+    candidate = str(os.environ.get(SERVICE_BUILD_COMMIT_ENV) or "").strip().lower()
+    return candidate if re.fullmatch(r"[0-9a-f]{7,64}", candidate) else ""
 
 
 def _require_fastapi() -> None:
@@ -296,6 +303,7 @@ def create_service_api_app(
             "dashboard_stream_path": app.state.service_api_stream_path,
             "host_context": app.state.service_api_host_context,
             "host_owner": app.state.service_api_host_owner,
+            "build_commit": _service_build_commit(),
             "auth_required": auth_required(app.state.api_token),
             "write_auth_required": _write_auth_required(),
             "web_ui_available": app.state.web_ui_available,
@@ -330,6 +338,7 @@ def create_service_api_app(
             "service_name": service_name,
             "host_context": app.state.service_api_host_context,
             "host_owner": app.state.service_api_host_owner,
+            "build_commit": _service_build_commit(),
         }
 
     def _build_dashboard_payload(*, log_limit: int = 30, incident_limit: int = 20) -> dict[str, object]:
@@ -548,7 +557,8 @@ def create_service_api_app(
             )
         if unsafe_config_paths:
             warnings.append(
-                f"{SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV}=1 allows config save/load outside the safe config directory."
+                f"{SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV}=1 allows trusted local service-host callers to use "
+                "config paths outside the safe config directory; remote API callers remain restricted."
             )
         return {
             "unsafe_flags_active": bool(warnings),
@@ -556,6 +566,7 @@ def create_service_api_app(
             "inline_config_secrets_allowed": False,
             "legacy_inline_config_secrets_requested": legacy_inline_config_secrets_requested,
             "unsafe_config_paths_allowed": unsafe_config_paths,
+            "remote_unsafe_config_paths_allowed": False,
             "env_vars": {
                 "allow_unauthenticated_writes": SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV,
                 "allow_inline_config_secrets": SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV,
@@ -593,6 +604,26 @@ def create_service_api_app(
             status_code=_HTTP_422_UNPROCESSABLE_CONTENT,
             detail=exc.to_dict(),
         ) from exc
+
+    def _require_remote_config_fields_allowed(config: object) -> None:
+        protected_fields = remote_service_config_protected_fields(config)
+        if not protected_fields:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Remote configuration cannot set credential or filesystem-path fields. "
+                "Configure those values on the service host."
+            ),
+        )
+
+    def _require_server_configured_persistence_path(payload: ConfigPersistenceRequest) -> None:
+        if payload.path in (None, "") and not payload.allow_unsafe_path:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Remote configuration persistence is limited to the server-configured path.",
+        )
 
     if web_ui_available:
         app.mount(SERVICE_API_UI_PATH, StaticFiles(directory=str(web_client_dir), html=True), name="web-ui")
@@ -663,6 +694,7 @@ def create_service_api_app(
 
     @api_router.put("/config", dependencies=[Depends(_require_write_api_auth)])
     def replace_config(payload: ConfigReplaceRequest):
+        _require_remote_config_fields_allowed(payload.config)
         try:
             _service().replace_config(payload.config)
         except ConfigValidationError as exc:
@@ -671,6 +703,7 @@ def create_service_api_app(
 
     @api_router.patch("/config", dependencies=[Depends(_require_write_api_auth)])
     def update_config(payload: ConfigReplaceRequest):
+        _require_remote_config_fields_allowed(payload.config)
         try:
             return _service().update_config(payload.config).to_dict()
         except ConfigValidationError as exc:
@@ -682,44 +715,49 @@ def create_service_api_app(
 
     @api_router.post("/config/save", dependencies=[Depends(_require_write_api_auth)])
     def save_config(payload: ConfigPersistenceRequest):
+        _require_server_configured_persistence_path(payload)
         try:
             return _service().save_config(
-                path=payload.path,
                 source=payload.source,
-                allow_unsafe_path=bool(
-                    payload.allow_unsafe_path and _env_flag(SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV, False)
-                ),
+                allow_unsafe_path=False,
             )
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
         except PermissionError as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=redact_text(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The server-configured service config path is not writable.",
+            ) from exc
         except OSError as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=redact_text(exc),
+                detail="The service config could not be saved.",
             ) from exc
 
     @api_router.post("/config/load", dependencies=[Depends(_require_write_api_auth)])
     def load_config(payload: ConfigPersistenceRequest):
+        _require_server_configured_persistence_path(payload)
         try:
             return _service().load_config(
-                path=payload.path,
                 source=payload.source,
-                allow_unsafe_path=bool(
-                    payload.allow_unsafe_path and _env_flag(SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV, False)
-                ),
+                allow_unsafe_path=False,
             )
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
         except PermissionError as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=redact_text(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The server-configured service config path is not readable.",
+            ) from exc
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=redact_text(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="The server-configured service config file was not found.",
+            ) from exc
         except (json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=redact_text(exc),
+                detail="The service config file could not be loaded.",
             ) from exc
 
     @api_router.put("/runtime/state", dependencies=[Depends(_require_write_api_auth)])
@@ -854,7 +892,11 @@ def create_service_api_app(
 
     @api_router.post("/terminal/run", dependencies=[Depends(_require_write_api_auth)])
     def run_terminal_command(payload: TerminalCommandRequest):
-        result = _service().run_terminal_command(payload.command, source=payload.source)
+        result = _service().run_terminal_command(
+            payload.command,
+            source=payload.source,
+            remote=True,
+        )
         return result.to_dict()
 
     @api_router.get("/llm/providers")
@@ -867,6 +909,7 @@ def create_service_api_app(
 
     @api_router.patch("/llm/config", dependencies=[Depends(_require_write_api_auth)])
     def update_llm_config(payload: LLMConfigPatchRequest):
+        _require_remote_config_fields_allowed(payload.config)
         try:
             return _service().update_llm_config(payload.config)
         except ConfigValidationError as exc:
@@ -882,7 +925,7 @@ def create_service_api_app(
         if not result.get("started"):
             raise HTTPException(
                 status_code=400,
-                detail=redact_text(result.get("error") or "Could not start local model server."),
+                detail="Could not start the local model server.",
             )
         return result
 
@@ -891,7 +934,7 @@ def create_service_api_app(
         try:
             pull_ollama_model(payload.base_url, payload.model)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
+            raise HTTPException(status_code=400, detail="Could not download the local model.") from exc
         return {
             "ok": True,
             "action": "pull",
@@ -904,7 +947,7 @@ def create_service_api_app(
         try:
             delete_ollama_model(payload.base_url, payload.model)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
+            raise HTTPException(status_code=400, detail="Could not remove the local model.") from exc
         return {
             "ok": True,
             "action": "delete",

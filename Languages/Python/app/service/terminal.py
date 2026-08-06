@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 from app.security.redaction import redact_text, redact_value
+from app.service.config_store import remote_service_config_protected_fields
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,11 +126,25 @@ def _parse_pairs(args: list[str]) -> dict[str, object]:
     return patch
 
 
+def _remote_config_rejection(command: str, source: str) -> ServiceTerminalCommandResult:
+    return _result(
+        accepted=False,
+        command=command,
+        output=(
+            "Remote terminal configuration cannot set credential or filesystem-path fields. "
+            "Configure those values on the service host."
+        ),
+        source=source,
+        exit_code=2,
+    )
+
+
 def run_service_terminal_command(
     service,
     command: str,
     *,
     source: str = "terminal",
+    remote: bool = False,
 ) -> ServiceTerminalCommandResult:
     argv = _split_command(command)
     if not argv:
@@ -204,16 +219,36 @@ def run_service_terminal_command(
                 result = service.get_config_persistence_status()
             elif action == "set":
                 patch = _parse_pairs(args[1:])
+                if remote and remote_service_config_protected_fields(patch):
+                    return _remote_config_rejection(command, source)
                 result = service.update_config(patch).to_dict()
             elif action == "patch":
                 raw_json = " ".join(args[1:]).strip()
                 patch = json.loads(raw_json) if raw_json else {}
                 if not isinstance(patch, dict):
                     raise ValueError("config patch expects a JSON object.")
+                if remote and remote_service_config_protected_fields(patch):
+                    return _remote_config_rejection(command, source)
                 result = service.update_config(patch).to_dict()
             elif action == "save":
+                if remote and len(args) > 1:
+                    return _result(
+                        accepted=False,
+                        command=command,
+                        output="Remote config persistence is limited to the server-configured path.",
+                        source=source,
+                        exit_code=2,
+                    )
                 result = service.save_config(path=args[1] if len(args) > 1 else None, source=source)
             elif action == "load":
+                if remote and len(args) > 1:
+                    return _result(
+                        accepted=False,
+                        command=command,
+                        output="Remote config persistence is limited to the server-configured path.",
+                        source=source,
+                        exit_code=2,
+                    )
                 result = service.load_config(path=args[1] if len(args) > 1 else None, source=source)
             else:
                 return _result(
@@ -234,7 +269,10 @@ def run_service_terminal_command(
             elif action == "config":
                 result = service.get_llm_config_payload()
             elif action == "set":
-                result = service.update_llm_config(_parse_pairs(args[1:]))
+                patch = _parse_pairs(args[1:])
+                if remote and remote_service_config_protected_fields(patch):
+                    return _remote_config_rejection(command, source)
+                result = service.update_llm_config(patch)
             elif action == "prompt":
                 send = "--send" in args
                 prompt_parts = [item for item in args[1:] if item != "--send"]
@@ -259,7 +297,8 @@ def run_service_terminal_command(
                 accepted_key="ok" if action == "prompt" else "accepted",
             )
     except Exception as exc:
-        return _result(accepted=False, command=command, output=str(exc), source=source, exit_code=1)
+        output = "Command failed." if remote else str(exc)
+        return _result(accepted=False, command=command, output=output, source=source, exit_code=1)
 
     return _result(
         accepted=False,

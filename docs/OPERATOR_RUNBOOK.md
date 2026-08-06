@@ -38,6 +38,12 @@ Use a bearer token for any exposed or write-capable API session. These flags are
 If any unsafe write/config escape hatch is active, treat the service as unsafe
 for normal operation.
 
+`BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH` affects only trusted callers running on
+the service host. Remote API save/load requests always use the server-configured
+path and reject request-selected paths, even when this flag is active. Remote
+config and terminal routes also reject credential and audit/incident-log path
+fields; provision those values on the host.
+
 These values are operational exposure limits, not unsafe bypasses:
 
 - `BOT_SERVICE_API_MAX_REQUEST_BYTES`
@@ -45,6 +51,34 @@ These values are operational exposure limits, not unsafe bypasses:
 
 Review request-size and write-rate-limit values before exposing the service
 beyond loopback.
+
+## Operational Readiness
+
+The source of truth for SLOs, RTO/RPO targets, probe thresholds, and required
+promotion evidence is `docs/operational-readiness-policy.json`. Run the local
+regression checks before every release candidate:
+
+```bash
+python tools/check_operational_readiness.py --schema-only
+python tools/run_service_sustained_probe.py --profile quick
+python tools/run_operational_recovery_drill.py
+python tools/run_incident_audit_continuity_drill.py
+```
+
+These checks are read-only with respect to trading and cannot submit orders.
+The quick probe is not production evidence. A production promotion also
+requires a passing 30-minute sustained probe against an external HTTPS service
+running the exact candidate commit, a real rolling 30-day telemetry
+window, config/restart recovery evidence, and incident/audit continuity
+evidence from the same clean candidate commit. Validate that evidence with:
+
+```bash
+python tools/check_operational_readiness.py --require-evidence --require-current-commit --require-clean-source --json
+```
+
+Missing evidence is a failed promotion gate, not an assumed pass. See
+`docs/SERVICE_LEVEL_OBJECTIVES.md` and `docs/DISASTER_RECOVERY.md` for the
+collection boundaries and operator drills.
 
 ## Release Smoke
 

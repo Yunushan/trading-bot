@@ -442,8 +442,8 @@ class BotRuntimeStateMixin:
             )
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
-        except Exception as exc:
-            error_message = redact_text(str(exc))
+        except Exception:
+            error_message = "Incident log could not be written."
             self._connector_order_circuit_incident_log_last_write_error = {
                 "ts": self._now_iso(),
                 "message": error_message,
@@ -452,7 +452,7 @@ class BotRuntimeStateMixin:
             if not bool(getattr(self, "_connector_order_circuit_incident_log_warned", False)):
                 self._connector_order_circuit_incident_log_warned = True
                 self.record_log_event(
-                    f"Connector order circuit incident log write failed: {error_message}",
+                    "Connector order circuit incident log write failed.",
                     source="connector-order-circuit",
                     level="warning",
                 )
@@ -479,7 +479,7 @@ class BotRuntimeStateMixin:
             jsonl_backup_path(path, index) for index in range(backup_count, 0, -1)
         ] + [path]
         exists = any(candidate_path.is_file() for candidate_path in candidate_paths)
-        error_message = ""
+        read_failed = False
         for candidate_path in candidate_paths:
             if not candidate_path.is_file():
                 continue
@@ -510,8 +510,8 @@ class BotRuntimeStateMixin:
                             }
                             parse_errors.append(copy.deepcopy(decoded))
                         events.append(redact_value(decoded))
-            except Exception as exc:
-                error_message = redact_text(str(exc))
+            except Exception:
+                read_failed = True
                 break
         payload = {
             "path": effective_path,
@@ -526,7 +526,7 @@ class BotRuntimeStateMixin:
             "events": list(events),
             "parse_errors": parse_errors,
             "last_event": events[-1] if events else None,
-            "error": error_message,
+            "error": "Incident log could not be read." if read_failed else "",
         }
         required_fields = {"path", "path_source", "configured_path", "limit", "events", "parse_errors"}
         redacted = redact_value(payload)

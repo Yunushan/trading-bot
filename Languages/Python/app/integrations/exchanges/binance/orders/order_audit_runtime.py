@@ -167,19 +167,19 @@ def _audit_order_event(
         self._order_audit_last_write_ok_at = datetime.now(timezone.utc).isoformat()
     except Exception as exc:
         self._order_audit_last_write_error = {
-            "message": redact_text(str(exc)),
+            "message": "Order audit log could not be written.",
+            "error_type": type(exc).__name__,
             "path": redact_text(str(path)),
         }
         self._order_audit_last_write_error_at = datetime.now(timezone.utc).isoformat()
         if not getattr(self, "_order_audit_warned", False):
             self._order_audit_warned = True
             try:
-                self._log(f"Order audit write failed: {redact_text(str(exc))}", lvl="warn")
+                self._log("Order audit write failed.", lvl="warn")
             except Exception:
                 LOGGER.warning(
-                    "Order audit write failed and the wrapper logger was unavailable: %s",
-                    redact_text(str(exc)),
-                    exc_info=True,
+                    "Order audit write failed and the wrapper logger was unavailable (%s).",
+                    type(exc).__name__,
                 )
 
 

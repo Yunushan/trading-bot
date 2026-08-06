@@ -457,6 +457,31 @@ diff whitespace.
 - Clean generated build, coverage, cache, and target directories after local
   verification unless they are the artifact being reviewed.
 
+## Operational readiness gate
+
+`docs/operational-readiness-policy.json` is the machine-readable contract for
+service SLOs, recovery objectives, local probe thresholds, and production
+evidence. CI and `tools/verify_all.py` validate the schema, run a read-only quick
+service probe, execute the deterministic config/restart recovery drill, and
+exercise incident plus order-audit rotation, redaction, corruption tolerance,
+and restart read-back. These local checks never submit orders.
+
+Use `python tools/run_service_sustained_probe.py --profile sustained --base-url https://service.example.test --output service-api-sustained-runtime.json --json`
+to collect the minimum 30-minute endurance artifact from a clean candidate
+commit. The deployed service must expose that same commit through
+`TRADING_BOT_BUILD_COMMIT`; only an external HTTPS transport can produce
+promotion-eligible sustained evidence. Production promotion additionally requires a real rolling 30-day
+telemetry artifact, config/restart recovery evidence, and incident/audit
+continuity evidence. Validate the complete set with
+`python tools/check_operational_readiness.py --require-evidence --require-current-commit --require-clean-source --json`.
+The strict gate rejects missing, stale, wrong-commit, dirty-source, unsafe, or
+threshold-violating evidence; a schema-only or quick-probe pass cannot be
+reported as production readiness.
+
+Generated operational-readiness JSON belongs under
+`artifacts/operational-readiness/` and is ignored by Git. Do not commit or
+hand-edit evidence to satisfy promotion.
+
 ## Manual QA checklist
 
 Use this checklist before a release or before promoting an experimental target:

@@ -201,6 +201,9 @@ def _valid_source_sync_audit_payload(contract_hash: str = PYTHON_SOURCE_CONTRACT
 
 
 class RustNativeReleaseEvidenceTests(unittest.TestCase):
+    def test_importer_uses_canonical_runtime_evidence_module(self):
+        self.assertIs(evidence_importer.runtime_evidence, runtime_evidence)
+
     def test_readiness_cli_json_redacts_credential_presence_metadata(self):
         payload = runtime_readiness._redact_cli_json_value(
             {

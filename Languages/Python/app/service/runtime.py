@@ -314,8 +314,14 @@ class TradingBotService:
         command: str,
         *,
         source: str = "service-terminal",
+        remote: bool = False,
     ) -> ServiceTerminalCommandResult:
-        return run_service_terminal_command(self, command, source=source)
+        return run_service_terminal_command(
+            self,
+            command,
+            source=source,
+            remote=remote,
+        )
 
     def set_account_snapshot(self, **kwargs) -> ServiceAccountSnapshot:
         return self._runtime.set_account_snapshot(**kwargs)

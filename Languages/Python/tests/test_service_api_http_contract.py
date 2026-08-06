@@ -166,13 +166,19 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         client = _create_test_client(app)
 
         liveness = client.get("/livez")
-        readiness = client.get("/readyz")
+        with mock.patch.dict(
+            os.environ,
+            {"TRADING_BOT_BUILD_COMMIT": "a" * 40},
+            clear=False,
+        ):
+            readiness = client.get("/readyz")
 
         self.assertEqual(200, liveness.status_code)
         self.assertEqual({"status": "ok"}, liveness.json())
         self.assertEqual(200, readiness.status_code)
         self.assertEqual("ready", readiness.json()["status"])
         self.assertEqual("trading-bot-service", readiness.json()["service_name"])
+        self.assertEqual("a" * 40, readiness.json()["build_commit"])
 
         with mock.patch.object(app.state.service, "describe_runtime", side_effect=RuntimeError("boom")):
             not_ready = client.get("/readyz")
@@ -333,7 +339,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         for response in (pull_response, delete_response):
             self.assertEqual(400, response.status_code)
             detail = response.json()["detail"]
-            self.assertIn("<redacted>", detail)
+            self.assertIn(detail, {"Could not download the local model.", "Could not remove the local model."})
             self.assertNotIn("unit-api-secret", detail)
             self.assertNotIn("unit-signature", detail)
 
@@ -539,16 +545,30 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertFalse(save_response.json()["dirty"])
 
-            unsafe_path_response = client.post(
-                f"{SERVICE_API_BASE_PATH}/config/save",
-                headers=headers,
-                json={
-                    "path": str(Path(tmp) / "manual-service-config.json"),
-                    "source": "api-smoke",
-                    "allow_unsafe_path": True,
-                },
-            )
-            self.assertEqual(403, unsafe_path_response.status_code)
+            manual_path = Path(tmp) / "manual-service-config.json"
+            with mock.patch.dict(os.environ, {"BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH": "1"}, clear=False):
+                unsafe_save_response = client.post(
+                    f"{SERVICE_API_BASE_PATH}/config/save",
+                    headers=headers,
+                    json={
+                        "path": str(manual_path),
+                        "source": "api-smoke",
+                        "allow_unsafe_path": True,
+                    },
+                )
+                unsafe_load_response = client.post(
+                    f"{SERVICE_API_BASE_PATH}/config/load",
+                    headers=headers,
+                    json={
+                        "path": str(manual_path),
+                        "source": "api-smoke",
+                        "allow_unsafe_path": True,
+                    },
+                )
+            for response in (unsafe_save_response, unsafe_load_response):
+                self.assertEqual(403, response.status_code)
+                self.assertIn("server-configured path", response.json()["detail"])
+            self.assertFalse(manual_path.exists())
 
             client.patch(
                 f"{SERVICE_API_BASE_PATH}/config",
@@ -565,6 +585,101 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             payload = load_response.json()
             self.assertEqual("Dark", payload["config"]["theme"])
             self.assertFalse(payload["persistence"]["dirty"])
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_rejects_remote_credentials_and_log_paths(self):
+        service = TradingBotService()
+        app = create_service_api_app(service=service, api_token="token-123")
+        client = _create_test_client(app)
+        headers = {"Authorization": "Bearer token-123"}
+        requests = (
+            (
+                "patch",
+                f"{SERVICE_API_BASE_PATH}/config",
+                {"config": {"api_key": "remote-api-key"}},
+                "remote-api-key",
+            ),
+            (
+                "put",
+                f"{SERVICE_API_BASE_PATH}/config",
+                {"config": {"api_secret": "remote-api-secret"}},
+                "remote-api-secret",
+            ),
+            (
+                "patch",
+                f"{SERVICE_API_BASE_PATH}/config",
+                {"config": {"order_audit_log_path": "C:/remote/order-audit.jsonl"}},
+                "C:/remote/order-audit.jsonl",
+            ),
+            (
+                "patch",
+                f"{SERVICE_API_BASE_PATH}/config",
+                {
+                    "config": {
+                        "runtime": {
+                            "connector_order_circuit_incident_log_path": "C:/remote/incidents.jsonl"
+                        }
+                    }
+                },
+                "C:/remote/incidents.jsonl",
+            ),
+            (
+                "patch",
+                f"{SERVICE_API_BASE_PATH}/llm/config",
+                {"config": {"llm_api_key": "remote-llm-key"}},
+                "remote-llm-key",
+            ),
+        )
+
+        for method, route, payload, protected_value in requests:
+            with self.subTest(method=method, route=route, protected_value=protected_value):
+                response = client.request(method, route, headers=headers, json=payload)
+                self.assertEqual(403, response.status_code)
+                self.assertIn("service host", response.json()["detail"])
+                self.assertNotIn(protected_value, json.dumps(service.config, sort_keys=True))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_remote_terminal_restricts_sensitive_config_mutations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            configured_path = Path(tmp) / "configured-service.json"
+            manual_path = Path(tmp) / "remote-selected.json"
+            service = TradingBotService(config_path=configured_path)
+            app = create_service_api_app(service=service, api_token="token-123")
+            client = _create_test_client(app)
+            headers = {"Authorization": "Bearer token-123"}
+            commands = (
+                f'config save "{manual_path.as_posix()}"',
+                "config set api_secret=remote-terminal-secret",
+                "config set order_audit_log_path=C:/remote/terminal-audit.jsonl",
+                "llm set llm_api_key=remote-terminal-llm-secret",
+            )
+
+            with mock.patch.dict(os.environ, {"BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH": "1"}, clear=False):
+                for command in commands:
+                    with self.subTest(command=command):
+                        response = client.post(
+                            f"{SERVICE_API_BASE_PATH}/terminal/run",
+                            headers=headers,
+                            json={"command": command, "source": "api-test"},
+                        )
+                        self.assertEqual(200, response.status_code)
+                        self.assertFalse(response.json()["accepted"])
+                        self.assertEqual(2, response.json()["exit_code"])
+
+                configured_save = client.post(
+                    f"{SERVICE_API_BASE_PATH}/terminal/run",
+                    headers=headers,
+                    json={"command": "config save", "source": "api-test"},
+                )
+
+            self.assertEqual(200, configured_save.status_code)
+            self.assertTrue(configured_save.json()["accepted"])
+            self.assertTrue(configured_path.is_file())
+            self.assertFalse(manual_path.exists())
+            rendered_config = json.dumps(service.config, sort_keys=True)
+            self.assertNotIn("remote-terminal-secret", rendered_config)
+            self.assertNotIn("remote-terminal-llm-secret", rendered_config)
+            self.assertNotIn("C:/remote/terminal-audit.jsonl", rendered_config)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_desktop_embedded_service_api_write_routes_require_token(self):
@@ -632,6 +747,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertFalse(security["inline_config_secrets_allowed"])
         self.assertTrue(security["legacy_inline_config_secrets_requested"])
         self.assertTrue(security["unsafe_config_paths_allowed"])
+        self.assertFalse(security["remote_unsafe_config_paths_allowed"])
         self.assertIn("BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES", " ".join(security["warnings"]))
         self.assertEqual("BOT_SERVICE_API_MAX_REQUEST_BYTES", service_api["limits"]["env_vars"]["max_request_bytes"])
 

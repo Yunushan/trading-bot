@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "no_assumed_passes": true,
+    "production_promotion_requires_current_commit": true,
+    "production_promotion_requires_clean_source": true,
+    "production_promotion_requires_all_evidence": true,
+    "read_only_service_probe": true,
+    "order_submission_forbidden": true,
+    "secrets_must_be_redacted": true,
+    "evidence_artifact_dir": "artifacts/operational-readiness"
+  },
+  "service_level_objectives": [
+    {
+      "id": "service-api-availability",
+      "metric": "successful_request_ratio",
+      "comparison": "gte",
+      "target": 0.999,
+      "window": "rolling-30-days",
+      "owner": "runtime",
+      "evidence_id": "production-service-slo-window"
+    },
+    {
+      "id": "service-api-error-rate",
+      "metric": "failed_request_ratio",
+      "comparison": "lte",
+      "target": 0.001,
+      "window": "rolling-30-days",
+      "owner": "runtime",
+      "evidence_id": "production-service-slo-window"
+    },
+    {
+      "id": "service-api-read-latency-p95",
+      "metric": "read_latency_p95_ms",
+      "comparison": "lte",
+      "target": 500.0,
+      "window": "rolling-30-days",
+      "owner": "runtime",
+      "evidence_id": "production-service-slo-window"
+    },
+    {
+      "id": "operational-snapshot-freshness",
+      "metric": "operational_snapshot_age_seconds",
+      "comparison": "lte",
+      "target": 120.0,
+      "window": "continuous",
+      "owner": "runtime",
+      "evidence_id": "production-service-slo-window"
+    }
+  ],
+  "recovery_objectives": [
+    {
+      "id": "service-config-recovery",
+      "asset": "service configuration without credentials",
+      "rto_seconds": 900,
+      "rpo_seconds": 86400,
+      "owner": "operator",
+      "evidence_id": "service-config-backup-restore"
+    },
+    {
+      "id": "service-process-recovery",
+      "asset": "service process and read-only API",
+      "rto_seconds": 300,
+      "rpo_seconds": 300,
+      "owner": "runtime",
+      "evidence_id": "service-config-backup-restore"
+    },
+    {
+      "id": "incident-audit-continuity",
+      "asset": "connector incidents and order audit trail",
+      "rto_seconds": 1800,
+      "rpo_seconds": 300,
+      "owner": "operator",
+      "evidence_id": "incident-audit-continuity"
+    }
+  ],
+  "probe_profiles": {
+    "quick": {
+      "promotion_eligible": false,
+      "cycles": 10,
+      "minimum_duration_seconds": 0,
+      "minimum_requests": 60,
+      "cycle_interval_seconds": 0,
+      "max_error_rate": 0.0,
+      "max_p95_ms": 500.0,
+      "endpoints": [
+        "/livez",
+        "/readyz",
+        "/api/v1/runtime",
+        "/api/v1/status",
+        "/api/v1/metrics",
+        "/api/v1/runtime/operational-preflight"
+      ]
+    },
+    "sustained": {
+      "promotion_eligible": true,
+      "cycles": 1,
+      "minimum_duration_seconds": 1800,
+      "minimum_requests": 18000,
+      "cycle_interval_seconds": 0.25,
+      "max_error_rate": 0.001,
+      "max_p95_ms": 500.0,
+      "endpoints": [
+        "/livez",
+        "/readyz",
+        "/api/v1/runtime",
+        "/api/v1/status",
+        "/api/v1/metrics",
+        "/api/v1/runtime/operational-preflight"
+      ]
+    }
+  },
+  "required_evidence": [
+    {
+      "id": "service-api-sustained-runtime",
+      "kind": "sustained-runtime",
+      "filename": "service-api-sustained-runtime.json",
+      "maximum_age_hours": 168,
+      "required_for_production": true,
+      "required_fields": [
+        "evidence_id",
+        "status",
+        "generated_at",
+        "commit",
+        "deployed_commit",
+        "source_tree_clean",
+        "policy_sha256",
+        "secrets_redacted",
+        "read_only",
+        "order_submission_attempted",
+        "promotion_eligible",
+        "evidence_scope",
+        "environment",
+        "duration_seconds",
+        "request_count",
+        "error_rate",
+        "latency_ms",
+        "operational_snapshot_max_age_seconds",
+        "suite_results"
+      ]
+    },
+    {
+      "id": "production-service-slo-window",
+      "kind": "production-telemetry",
+      "filename": "production-service-slo-window.json",
+      "maximum_age_hours": 48,
+      "required_for_production": true,
+      "required_fields": [
+        "evidence_id",
+        "status",
+        "generated_at",
+        "commit",
+        "source_tree_clean",
+        "policy_sha256",
+        "secrets_redacted",
+        "read_only",
+        "order_submission_attempted",
+        "promotion_eligible",
+        "window_start",
+        "window_end",
+        "successful_request_ratio",
+        "failed_request_ratio",
+        "read_latency_p95_ms",
+        "operational_snapshot_age_seconds",
+        "suite_results"
+      ]
+    },
+    {
+      "id": "service-config-backup-restore",
+      "kind": "recovery-drill",
+      "filename": "service-config-backup-restore.json",
+      "maximum_age_hours": 720,
+      "required_for_production": true,
+      "required_fields": [
+        "evidence_id",
+        "status",
+        "generated_at",
+        "commit",
+        "source_tree_clean",
+        "policy_sha256",
+        "secrets_redacted",
+        "read_only",
+        "order_submission_attempted",
+        "promotion_eligible",
+        "recovery_time_seconds",
+        "recovery_point_seconds",
+        "suite_results"
+      ]
+    },
+    {
+      "id": "incident-audit-continuity",
+      "kind": "recovery-drill",
+      "filename": "incident-audit-continuity.json",
+      "maximum_age_hours": 720,
+      "required_for_production": true,
+      "required_fields": [
+        "evidence_id",
+        "status",
+        "generated_at",
+        "commit",
+        "source_tree_clean",
+        "policy_sha256",
+        "secrets_redacted",
+        "read_only",
+        "order_submission_attempted",
+        "promotion_eligible",
+        "recovery_time_seconds",
+        "recovery_point_seconds",
+        "suite_results"
+      ]
+    }
+  ]
+}

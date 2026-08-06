@@ -44,10 +44,37 @@ SERVICE_CONFIG_ENV_PATH = "BOT_SERVICE_CONFIG_PATH"
 SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV = "BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS"
 SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV = "BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH"
 DEFAULT_SERVICE_CONFIG_PATH = Path("~/.trading-bot/service-config.json")
+REMOTE_SERVICE_CONFIG_PROTECTED_FIELDS = frozenset(
+    {
+        "api_key",
+        "api_secret",
+        "llm_api_key",
+        "order_audit_log_path",
+        "connector_order_circuit_incident_log_path",
+    }
+)
 CREDENTIAL_STORAGE_WARNING = (
     "Secret values are redacted from this JSON config. Supply credentials through "
     "environment variables or OS credential storage."
 )
+
+
+def remote_service_config_protected_fields(payload: object) -> tuple[str, ...]:
+    found: set[str] = set()
+
+    def visit(value: object) -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                normalized = str(key or "").strip().lower().replace("-", "_")
+                if normalized in REMOTE_SERVICE_CONFIG_PROTECTED_FIELDS:
+                    found.add(normalized)
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return tuple(sorted(found))
 _SECRET_KEY_TOKENS = (
     "api_key",
     "api_secret",
@@ -94,11 +121,7 @@ def resolve_service_config_path(path: str | Path | None = None) -> Path:
     raw_path = path
     if raw_path in (None, ""):
         raw_path = os.environ.get(SERVICE_CONFIG_ENV_PATH) or DEFAULT_SERVICE_CONFIG_PATH
-    resolved = Path(raw_path).expanduser()
-    try:
-        return resolved.resolve()
-    except Exception:
-        return resolved
+    return Path(raw_path).expanduser().resolve(strict=False)
 
 
 def service_config_safe_root() -> Path:

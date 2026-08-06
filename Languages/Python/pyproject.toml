@@ -30,7 +30,7 @@ dependencies = [
     "pandas==2.3.2; python_version < '3.11'",
     "pandas==3.0.2; python_version >= '3.11'",
     "requests==2.34.2",
-    "aiohttp==3.14.3",
+    "aiohttp==3.14.1",
     "binance-sdk-derivatives-trading-usds-futures==15.0.0",
     "binance-sdk-derivatives-trading-coin-futures==10.0.0",
     "binance-sdk-spot==10.0.0",
@@ -43,7 +43,7 @@ desktop = [
     "PyQt6-WebEngine==6.11.0",
 ]
 service = [
-    "cryptography==50.0.0",
+    "cryptography==49.0.0",
     "fastapi==0.140.13",
     "starlette==1.3.1",
     "uvicorn==0.52.0",
@@ -65,7 +65,7 @@ windows-arm64 = [
     "PyQt6==6.11.0",
     "PyQt6-Qt6==6.11.0",
     "PyQt6-WebEngine==6.11.0",
-    "aiohttp>=3.14.3,<4",
+    "aiohttp>=3.14.1,<4",
 ]
 dev = [
     "httpx>=0.27,<1",

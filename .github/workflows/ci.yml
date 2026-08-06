@@ -230,6 +230,30 @@ jobs:
           python tools/run_service_tests.py --check-docs
           python tools/run_service_tests.py
 
+      - name: Check operational readiness policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_operational_readiness.py --schema-only
+
+      - name: Run read-only service readiness probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/run_service_sustained_probe.py --profile quick
+
+      - name: Run operational recovery drill
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/run_operational_recovery_drill.py
+
+      - name: Run incident and order audit continuity drill
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/run_incident_audit_continuity_drill.py
+
       - name: Type-check configured Python targets
         shell: bash
         working-directory: Languages/Python

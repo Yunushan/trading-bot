@@ -1536,11 +1536,16 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
 
             self.assertEqual("write_failed", audit_status["state"])
             self.assertFalse(audit_status["write_ok"])
-            self.assertIn("disk full", audit_status["last_write_error"]["message"])
+            self.assertEqual(
+                "Order audit log could not be written.",
+                audit_status["last_write_error"]["message"],
+            )
+            self.assertEqual("OSError", audit_status["last_write_error"]["error_type"])
             self.assertEqual("warning", connector_status["health"])
             self.assertEqual("order_audit_write_failed", connector_status["state"])
             self.assertEqual("write_failed", connector_status["order_audit"]["state"])
-            self.assertIn("<redacted>", rendered_status)
+            self.assertNotIn("disk full", rendered_status)
+            self.assertNotIn("api_secret", rendered_status)
             self.assertNotIn("leaked", rendered_status)
 
             wrapper._audit_order_event(

@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
@@ -407,6 +408,26 @@ class ServiceOperationalRuntimeTests(unittest.TestCase):
             self.assertIn("<redacted>", rendered_tail)
             self.assertNotIn("leaked", rendered_tail)
 
+    def test_service_connector_order_circuit_incident_read_failure_hides_exception_details(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            incident_path = Path(tmpdir) / "connector-order-circuit.jsonl"
+            incident_path.write_text("{}\n", encoding="utf-8")
+            service = TradingBotService(
+                config={"connector_order_circuit_incident_log_path": str(incident_path)}
+            )
+
+            with patch.object(
+                Path,
+                "open",
+                side_effect=OSError("read failed api_secret=leaked"),
+            ):
+                result = service.get_connector_order_circuit_incidents(limit=3)
+
+            rendered_result = json.dumps(result, sort_keys=True)
+            self.assertEqual("Incident log could not be read.", result["error"])
+            self.assertNotIn("api_secret", rendered_result)
+            self.assertNotIn("leaked", rendered_result)
+
     def test_service_connector_order_circuit_incident_log_rotates_when_size_limit_is_exceeded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             incident_path = Path(tmpdir) / "connector-order-circuit.jsonl"
@@ -517,9 +538,13 @@ class ServiceOperationalRuntimeTests(unittest.TestCase):
             self.assertEqual("warning", status["operational_health"])
             self.assertFalse(operational["connector_order_circuit_breaker"]["active"])
             self.assertFalse(incident_log["write_ok"])
-            self.assertIn("disk full", incident_log["last_write_error"]["message"])
+            self.assertEqual(
+                "Incident log could not be written.",
+                incident_log["last_write_error"]["message"],
+            )
             self.assertTrue(any("incident log write failed" in item for item in operational["attention"]))
-            self.assertIn("<redacted>", rendered)
+            self.assertNotIn("disk full", rendered)
+            self.assertNotIn("api_secret", rendered)
             self.assertNotIn("leaked", rendered)
 
             service.set_connector_order_circuit_breaker_snapshot(

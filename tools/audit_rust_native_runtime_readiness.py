@@ -177,7 +177,10 @@ def _contains_all(source: str, needles: tuple[str, ...]) -> list[str]:
 
 
 def _env_present(name: str) -> bool:
-    return bool(str(os.environ.get(name) or "").strip())
+    # Readiness reports only whether the process received a variable. The
+    # execution preflight validates its value without propagating credentials
+    # into generated evidence or CLI output.
+    return name in os.environ
 
 
 def _missing_named_prerequisites(checks: list[tuple[str, bool]]) -> list[str]:
