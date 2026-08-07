@@ -15,7 +15,11 @@ from hashlib import sha256
 import json
 from typing import Any
 
-from .gui.code.code_language_catalog import EXCHANGE_PATHS, STARTER_CRYPTO_EXCHANGES
+from .gui.code.code_language_catalog import (
+    EXCHANGE_PATHS,
+    STARTER_CRYPTO_EXCHANGES,
+    _rust_dependency_targets_for_config,
+)
 from .gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
 from .gui.runtime.composition.module_state_constants import (
     ACCOUNT_MODE_OPTIONS,
@@ -373,6 +377,31 @@ def _exchange_payload() -> list[dict[str, object]]:
     ]
 
 
+def _rust_environment_dependency_payload() -> list[dict[str, str]]:
+    targets = _rust_dependency_targets_for_config({"selected_rust_framework": "Tauri"})
+    payload: list[dict[str, str]] = []
+    for target in targets:
+        kind = str(target.get("custom") or "").strip()
+        path = str(target.get("path") or "").strip()
+        if kind == "rust_rustc":
+            key = "rustc"
+        elif kind == "rust_cargo":
+            key = "cargo"
+        else:
+            key = path
+        payload.append(
+            {
+                "key": key,
+                "label": str(target.get("label") or key).strip(),
+                "kind": kind,
+                "path": path,
+                "latest": str(target.get("latest") or "").strip(),
+                "usage": str(target.get("usage") or "").strip(),
+            }
+        )
+    return payload
+
+
 def native_python_source_contract_payload() -> dict[str, Any]:
     route_methods = {name: list(methods) for name, methods in SERVICE_API_ROUTE_METHODS.items()}
     connector_options = [{"label": label, "key": key} for label, key in _connector_options()]
@@ -470,6 +499,7 @@ def native_python_source_contract_payload() -> dict[str, Any]:
                 )
             ),
             "chart_view_keys": list(dict.fromkeys(_CHART_VIEW_MODE_CHOICES.values())),
+            "rust_environment_dependencies": _rust_environment_dependency_payload(),
             "connectors": connector_options,
             "backtest_templates": [
                 {"key": key, "label": str(definition.get("label", key))}
@@ -577,6 +607,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "chart_view_options": list(payload["ui_options"]["chart_view_options"]),
         "positions_view_options": list(payload["ui_options"]["positions_view_options"]),
         "chart_view_keys": list(payload["ui_options"]["chart_view_keys"]),
+        "rust_environment_dependencies": list(payload["ui_options"]["rust_environment_dependencies"]),
         "backtest_templates": list(payload["ui_options"]["backtest_templates"]),
         "default_execution": dict(payload["default_execution"]),
         "default_backtest": dict(payload["default_backtest"]),

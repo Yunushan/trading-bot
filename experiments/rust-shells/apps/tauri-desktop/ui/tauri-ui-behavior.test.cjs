@@ -10,13 +10,21 @@ const {
   describeLocalModelStatus,
   describeOperationalPreflight,
   describeOrderCircuit,
+  dashboardPayloadFromStreamEvent,
+  dashboardStreamReconnectDelay,
+  environmentSelectionCountText,
+  environmentUpdateScope,
   formatLlmPromptResult,
   formatServiceLogLine,
   formatServiceLogs,
+  formatTerminalResult,
   formatPreflightLabel,
   importBacktestRowsToDashboard,
   mergeUniqueLines,
+  normalizeEnvironmentVersionRows,
+  normalizePositionCloseSide,
   normalizeOverrideRow,
+  optionsMatchingKeys,
   overrideImportKey,
   preflightFreshnessAges,
   serviceLogItemsFromPayload,
@@ -24,6 +32,141 @@ const {
   preflightStartDetail,
   selectBacktestScanBest
 } = behavior;
+
+assert.equal(normalizePositionCloseSide("long"), "L");
+assert.equal(normalizePositionCloseSide("BUY"), "L");
+assert.equal(normalizePositionCloseSide("short"), "S");
+assert.equal(normalizePositionCloseSide("sell"), "S");
+assert.equal(normalizePositionCloseSide("both"), "");
+assert.equal(dashboardStreamReconnectDelay(0), 1000);
+assert.equal(dashboardStreamReconnectDelay(4), 16000);
+assert.equal(dashboardStreamReconnectDelay(20), 30000);
+assert.deepEqual(
+  dashboardPayloadFromStreamEvent({ payload: { generation: 7, payload: { runtime: { state: "running" } } } }),
+  { generation: 7, payload: { runtime: { state: "running" } } }
+);
+assert.equal(dashboardPayloadFromStreamEvent({ payload: { generation: 7, payload: [] } }), null);
+assert.deepEqual(
+  optionsMatchingKeys(
+    [
+      { key: "original", label: "Original" },
+      { key: "tradingview", label: "TradingView" },
+      { key: "unknown", label: "Unknown" }
+    ],
+    ["tradingview", "original", "missing", "tradingview"]
+  ),
+  [
+    { key: "tradingview", label: "TradingView" },
+    { key: "original", label: "Original" }
+  ]
+);
+
+const fs = require("node:fs");
+const path = require("node:path");
+const indexHtml = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+const inlineScripts = [...indexHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)];
+assert.ok(inlineScripts.length > 0, "Tauri index should contain an inline application script");
+for (const [, source] of inlineScripts) new Function(source);
+for (const requiredPositionCloseFragment of [
+  "routePaths.position_close",
+  '"position_close"',
+  "confirm_close: true",
+  'source: "tauri-desktop-positions"'
+]) assert.ok(indexHtml.includes(requiredPositionCloseFragment), `missing guarded position-close fragment: ${requiredPositionCloseFragment}`);
+assert.ok(!indexHtml.includes("POSITION_SINGLE_CLOSE_UNAVAILABLE"), "obsolete disabled position-close placeholder remains");
+for (const requiredTerminalFragment of [
+  "service-terminal-command",
+  "service-terminal-run-btn",
+  '"terminal_run"',
+  'source: "tauri-desktop-terminal"'
+]) assert.ok(indexHtml.includes(requiredTerminalFragment), `missing controlled-terminal fragment: ${requiredTerminalFragment}`);
+for (const requiredEnvironmentFragment of [
+  "environment-versions-table",
+  "environment-update-selected-btn",
+  "pythonParityContract.rustEnvironmentDependencies",
+  'invoke("environment_versions"',
+  'invoke("update_rust_environment"'
+]) assert.ok(indexHtml.includes(requiredEnvironmentFragment), `missing Rust environment fragment: ${requiredEnvironmentFragment}`);
+for (const requiredStreamFragment of [
+  "service-stream-status-text",
+  'listen("service-dashboard"',
+  'listen("service-dashboard-stream-status"',
+  'invoke("start_service_dashboard_stream"',
+  'invoke("stop_service_dashboard_stream"',
+  "dashboardPayloadFromStreamEvent",
+  "applyDashboardPayload",
+  "hydrateControls: false"
+]) assert.ok(indexHtml.includes(requiredStreamFragment), `missing dashboard stream fragment: ${requiredStreamFragment}`);
+for (const requiredPythonConfigParityFragment of [
+  'id="config-lookback"',
+  'id="config-order-type"',
+  'id="backtest-execution-backend"',
+  'id="backtest-fee-bps"',
+  'id="backtest-slippage-bps"',
+  'id="backtest-scan-auto-apply"',
+  'id="operational-live-start-gate-enabled"',
+  'id="operational-live-order-gate-enabled"',
+  "pythonParityContract.orderTypeOptions",
+  "pythonParityContract.backtestExecutionBackendOptions",
+  "pythonParityContract.chartViewKeys",
+  "const buildBacktestConfigPatch",
+  "backtest: buildBacktestConfigPatch()",
+  'hydrateBacktestControls(result.config?.backtest)'
+]) assert.ok(
+  indexHtml.includes(requiredPythonConfigParityFragment),
+  `missing Python config parity fragment: ${requiredPythonConfigParityFragment}`
+);
+
+const environmentCatalog = [
+  { key: "rustc", label: "rustc", kind: "rust_rustc", latest: "Install rustup" },
+  {
+    key: "experiments/rust-shells/Cargo.toml",
+    label: "Trading Bot Rust workspace",
+    kind: "rust_file_version",
+    path: "experiments/rust-shells/Cargo.toml",
+    usage: "Active"
+  }
+];
+const environmentRows = normalizeEnvironmentVersionRows(environmentCatalog, [
+  { key: "rustc", installed: "1.89.0", latest: "1.89.0", usage: "Active", usage_change_counter: 2 },
+  { key: "experiments/rust-shells/Cargo.toml", installed: "1.0.36", latest: "1.0.36", usage: "Active" }
+]);
+assert.deepEqual(environmentRows, [
+  {
+    key: "rustc",
+    label: "rustc",
+    kind: "rust_rustc",
+    path: "",
+    installed: "1.89.0",
+    latest: "1.89.0",
+    usage: "Active",
+    usageChangeCounter: 2,
+    selectable: true
+  },
+  {
+    key: "experiments/rust-shells/Cargo.toml",
+    label: "Trading Bot Rust workspace",
+    kind: "rust_file_version",
+    path: "experiments/rust-shells/Cargo.toml",
+    installed: "1.0.36",
+    latest: "1.0.36",
+    usage: "Active",
+    usageChangeCounter: 0,
+    selectable: true
+  }
+]);
+assert.deepEqual(environmentUpdateScope(environmentRows, ["rustc"]), {
+  updateToolchain: true,
+  updateWorkspace: false,
+  selectedCount: 1
+});
+assert.deepEqual(environmentUpdateScope(environmentRows, environmentRows.map((row) => row.key)), {
+  updateToolchain: true,
+  updateWorkspace: true,
+  selectedCount: 2
+});
+assert.equal(environmentSelectionCountText(2), "2 selected");
+assert.equal(environmentSelectionCountText(2, true), "Updating Rust dependencies...");
 
 assert.deepEqual(backtestRunsFromPayload({ top_runs: [{ symbol: "BTCUSDT" }] }), [{ symbol: "BTCUSDT" }]);
 assert.deepEqual(backtestRunsFromPayload({ results: [{ symbol: "ETHUSDT" }] }), [{ symbol: "ETHUSDT" }]);
@@ -233,6 +376,25 @@ assert.equal(
   "raw line\n[INFO] service: ready"
 );
 assert.equal(formatServiceLogs({ items: [] }), "No service logs returned.");
+const terminalAcceptedResult = formatTerminalResult({
+  accepted: true,
+  command: "status",
+  exit_code: 0,
+  output: "runtime ready",
+  source: "tauri-desktop-terminal",
+  created_at: "2026-08-07T12:00:00Z"
+});
+assert.match(terminalAcceptedResult, /Command accepted \(exit 0\)/);
+assert.match(terminalAcceptedResult, /Command: status/);
+assert.match(terminalAcceptedResult, /runtime ready/);
+const terminalRejectedResult = formatTerminalResult({
+  accepted: false,
+  command: "unknown",
+  exit_code: 2,
+  error: "Unsupported command"
+});
+assert.match(terminalRejectedResult, /Command rejected \(exit 2\)/);
+assert.match(terminalRejectedResult, /Unsupported command/);
 const llmDryRunResult = formatLlmPromptResult({
   ok: true,
   dry_run: true,

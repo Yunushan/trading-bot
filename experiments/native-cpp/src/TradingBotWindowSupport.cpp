@@ -197,6 +197,15 @@ QString parityString(std::string_view value) {
     return QString::fromUtf8(value.data(), static_cast<int>(value.size()));
 }
 
+QJsonObject parityJsonObject(std::string_view value) {
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(parityString(value).toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return {};
+    }
+    return document.object();
+}
+
 QVector<ConnectorOption> pythonConnectorOptions() {
     QVector<ConnectorOption> options;
     options.reserve(static_cast<int>(PythonParityContract::kPythonConnectorOptions.size()));
@@ -694,6 +703,14 @@ QStringList pythonSourceDefaultBacktestSymbols() {
 
 QStringList pythonSourceDefaultBacktestIntervals() {
     return parityStringList(PythonParityContract::kPythonDefaultBacktestIntervals);
+}
+
+QJsonObject pythonSourceDefaultExecutionConfig() {
+    return parityJsonObject(PythonParityContract::kPythonDefaultExecutionJson);
+}
+
+QJsonObject pythonSourceDefaultBacktestConfig() {
+    return parityJsonObject(PythonParityContract::kPythonDefaultBacktestJson);
 }
 
 QStringList pythonSourceChartMarketOptions() {

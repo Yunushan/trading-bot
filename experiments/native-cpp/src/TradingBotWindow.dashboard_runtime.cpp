@@ -286,6 +286,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     const QString signalFeedKey = normalizedSignalFeedKey(signalFeedText);
     const bool websocketFeedRequested = signalFeedKey == QStringLiteral("websocket");
     const bool useWebSocketFeed = websocketFeedRequested && qtWebSocketsRuntimeAvailable();
+    const int lookback = dashboardLookbackSpin_ ? dashboardLookbackSpin_->value() : 200;
     const QString defaultConnectorText = dashboardConnectorCombo_
         ? dashboardConnectorCombo_->currentText().trimmed()
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
@@ -471,7 +472,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         }
     }
     const auto ensureSignalStreamForKey =
-        [this, useWebSocketFeed, isTestnet]
+        [this, useWebSocketFeed, isTestnet, lookback]
         (const QString &signalKey,
          const QString &symbol,
          const QString &requestInterval,
@@ -487,7 +488,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 requestInterval,
                 signalUsesFutures,
                 isTestnet && signalUsesFutures,
-                240,
+                lookback,
                 10000,
                 baseUrl);
             if (seed.ok && !seed.candles.isEmpty()) {
@@ -513,7 +514,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         auto *client = new BinanceWsClient(this);
         const QString symbolKey = symbol.trimmed().toUpper();
         const QString intervalKey = requestInterval.trimmed().toLower();
-        connect(client, &BinanceWsClient::kline, this, [this, signalKey, symbolKey, intervalKey](
+        connect(client, &BinanceWsClient::kline, this, [this, signalKey, symbolKey, intervalKey, lookback](
                                                         const QString &streamSymbol,
                                                         const QString &streamInterval,
                                                         qint64 openTimeMs,
@@ -539,8 +540,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 cache.last() = candle;
             } else {
                 cache.push_back(candle);
-                if (cache.size() > 240) {
-                    cache.remove(0, cache.size() - 240);
+                if (cache.size() > lookback) {
+                    cache.remove(0, cache.size() - lookback);
                 }
             }
             dashboardRuntimeSignalLastClosed_[signalKey] = isClosed;
@@ -848,7 +849,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 requestInterval,
                 indicatorUsesBinanceFutures,
                 isTestnet && indicatorUsesBinanceFutures,
-                240,
+                lookback,
                 10000,
                 rowConnectorCfg.baseUrl);
             if (!candles.ok || candles.candles.isEmpty()) {
@@ -1724,5 +1725,4 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     flushPendingPositionsView();
     refreshPositionsSummaryLabels();
 }
-
 

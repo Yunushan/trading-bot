@@ -1,6 +1,7 @@
 use trading_bot_contracts::AppIdentity;
 
 pub mod account;
+pub mod backtest_runtime;
 pub mod chart_heatmap;
 pub mod config_persistence;
 pub mod desktop_shell;
@@ -27,8 +28,9 @@ pub mod streams;
 pub use generated_python_parity::{
     PythonConnectorOption as NativePythonConnectorOption, PythonIndicator as NativePythonIndicator,
     PythonLlmProvider as NativePythonLlmProvider,
-    PythonParityDomain as NativePythonAppParityDomain, PythonServiceRoute as ServiceApiRoute,
-    PythonServiceRouteSchema as ServiceApiRouteSchema,
+    PythonParityDomain as NativePythonAppParityDomain,
+    PythonRustEnvironmentDependency as NativePythonRustEnvironmentDependency,
+    PythonServiceRoute as ServiceApiRoute, PythonServiceRouteSchema as ServiceApiRouteSchema,
     PythonTradingViewInterval as NativePythonTradingViewInterval,
     PythonUiOption as NativePythonUiOption,
 };
@@ -87,6 +89,11 @@ pub fn python_source_connector_keys() -> &'static [&'static str] {
 
 pub fn python_source_connector_options() -> &'static [NativePythonConnectorOption] {
     generated_python_parity::PYTHON_CONNECTOR_OPTIONS
+}
+
+pub fn python_source_rust_environment_dependencies()
+-> &'static [NativePythonRustEnvironmentDependency] {
+    generated_python_parity::PYTHON_RUST_ENVIRONMENT_DEPENDENCIES
 }
 
 pub fn python_source_backtest_intervals() -> &'static [&'static str] {
@@ -375,7 +382,7 @@ pub fn rust_shell_framework_parity() -> &'static [RustShellFrameworkParity] {
     &[RustShellFrameworkParity {
         framework: "Tauri",
         status: "Operational Service API client",
-        detail: "Runs the only user-selectable Rust desktop shell with live Python Service API start/stop, dashboard/config hydration, backtest scanner, dashboard import, logs, LLM advisory prompts, and local LLM model lifecycle controls; trading execution still belongs to Python.",
+        detail: "Runs the only user-selectable Rust desktop shell with live Python Service API start/stop, authenticated dashboard SSE hydration with reconnect/snapshot fallback, config hydration, backtest scanner, dashboard import, logs, LLM advisory prompts, and local LLM model lifecycle controls; trading execution still belongs to Python.",
     }]
 }
 

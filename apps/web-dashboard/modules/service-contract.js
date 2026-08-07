@@ -18,6 +18,7 @@ export const SERVICE_API_ROUTE_SUFFIXES = Object.freeze({
   operational_preflight: "/runtime/operational-preflight",
   control_start: "/control/start",
   control_stop: "/control/stop",
+  position_close: "/positions/close",
   control_start_failed: "/control/start-failed",
   connector_order_circuit_breaker: "/runtime/connector-order-circuit-breaker",
   connector_order_circuit_breaker_reset: "/runtime/connector-order-circuit-breaker/reset",

@@ -38,6 +38,7 @@ def bind_main_window_desktop_service_bridge(
     )
     main_window_cls._service_request_start = service_bridge_control_runtime._service_request_start
     main_window_cls._service_request_stop = service_bridge_control_runtime._service_request_stop
+    main_window_cls._service_request_position_close = service_bridge_control_runtime._service_request_position_close
     main_window_cls._service_mark_start_failed = service_bridge_control_runtime._service_mark_start_failed
     main_window_cls._service_record_log_event = service_bridge_control_runtime._service_record_log_event
     main_window_cls._service_submit_backtest = service_bridge_control_runtime._service_submit_backtest

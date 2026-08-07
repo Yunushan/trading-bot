@@ -30,7 +30,12 @@ if __package__ in (None, ""):
     from app.service.schemas.account import ServiceAccountSnapshot
     from app.service.schemas.backtest import ServiceBacktestCommandResult, ServiceBacktestSnapshot
     from app.service.schemas.config import ServiceConfigSummary, ServiceEditableConfig
-    from app.service.schemas.control import BotControlRequest, BotControlResult
+    from app.service.schemas.control import (
+        BotControlRequest,
+        BotControlResult,
+        PositionCloseRequest,
+        PositionCloseResult,
+    )
     from app.service.schemas.execution import ServiceExecutionSnapshot
     from app.service.schemas.logs import ServiceLogEvent
     from app.service.schemas.positions import ServicePortfolioSnapshot
@@ -57,7 +62,7 @@ else:
     from .schemas.account import ServiceAccountSnapshot
     from .schemas.backtest import ServiceBacktestCommandResult, ServiceBacktestSnapshot
     from .schemas.config import ServiceConfigSummary, ServiceEditableConfig
-    from .schemas.control import BotControlRequest, BotControlResult
+    from .schemas.control import BotControlRequest, BotControlResult, PositionCloseRequest, PositionCloseResult
     from .schemas.execution import ServiceExecutionSnapshot
     from .schemas.logs import ServiceLogEvent
     from .schemas.positions import ServicePortfolioSnapshot
@@ -411,6 +416,13 @@ class TradingBotService:
             close_positions=close_positions,
             source=source,
         )
+
+    def request_position_close(
+        self,
+        request: PositionCloseRequest | None = None,
+        **kwargs,
+    ) -> PositionCloseResult:
+        return self._runtime.request_position_close(request, **kwargs)
 
     def mark_start_failed(self, *, reason: str = "", source: str = "service") -> BotControlResult:
         return self._runtime.mark_start_failed(reason=reason, source=source)

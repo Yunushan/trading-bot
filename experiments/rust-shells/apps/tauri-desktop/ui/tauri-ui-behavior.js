@@ -37,11 +37,29 @@
     return result;
   };
 
+  const optionsMatchingKeys = (options, keys) => {
+    const optionsByKey = new Map(
+      (Array.isArray(options) ? options : [])
+        .map((option) => [String(option?.key ?? option?.value ?? "").trim(), option])
+        .filter(([key]) => key)
+    );
+    return uniqueValues(Array.isArray(keys) ? keys : [])
+      .map((key) => optionsByKey.get(key))
+      .filter(Boolean);
+  };
+
   const mergeUniqueLines = (currentText, additions) => uniqueValues(linesFromText(currentText), additions);
 
   const normalizeIndicatorList = (value) => {
     if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
     return linesFromText(value);
+  };
+
+  const normalizePositionCloseSide = (value) => {
+    const side = String(value || "").trim().toUpperCase();
+    if (["B", "BUY", "L", "LONG"].includes(side)) return "L";
+    if (["S", "SELL", "SHORT"].includes(side)) return "S";
+    return "";
   };
 
   const backtestMetadataKeys = [
@@ -454,6 +472,85 @@
     return items.length ? items.map(formatServiceLogLine).join("\n") : emptyText;
   };
 
+  const normalizeEnvironmentVersionRows = (catalog, observedRows) => {
+    const observedByKey = new Map(
+      (Array.isArray(observedRows) ? observedRows : [])
+        .map((row) => [String(row?.key || "").trim(), row])
+        .filter(([key]) => key)
+    );
+    return (Array.isArray(catalog) ? catalog : []).map((target) => {
+      const key = String(target?.key || "").trim();
+      const observed = observedByKey.get(key) || {};
+      return {
+        key,
+        label: String(observed.label || target?.label || key).trim(),
+        kind: String(observed.kind || target?.kind || "").trim(),
+        path: String(observed.path || target?.path || "").trim(),
+        installed: String(observed.installed || "Not installed").trim(),
+        latest: String(observed.latest || target?.latest || "Unknown").trim(),
+        usage: String(observed.usage || target?.usage || "Passive").trim(),
+        usageChangeCounter: Number.isFinite(Number(observed.usage_change_counter ?? observed.usageChangeCounter))
+          ? Number(observed.usage_change_counter ?? observed.usageChangeCounter)
+          : 0,
+        selectable: observed.selectable !== false
+      };
+    }).filter((row) => row.key && row.label);
+  };
+
+  const environmentUpdateScope = (rows, selectedKeys) => {
+    const selected = new Set((Array.isArray(selectedKeys) ? selectedKeys : []).map(String));
+    let updateToolchain = false;
+    let updateWorkspace = false;
+    let selectedCount = 0;
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (!selected.has(String(row?.key || ""))) continue;
+      selectedCount += 1;
+      const kind = String(row?.kind || "").trim().toLowerCase();
+      if (kind === "rust_rustc" || kind === "rust_cargo") updateToolchain = true;
+      if (kind === "rust_file_version") updateWorkspace = true;
+    }
+    return { updateToolchain, updateWorkspace, selectedCount };
+  };
+
+  const environmentSelectionCountText = (count, busy = false) => busy
+    ? "Updating Rust dependencies..."
+    : `${Math.max(0, Number.isFinite(Number(count)) ? Math.trunc(Number(count)) : 0)} selected`;
+
+  const dashboardStreamReconnectDelay = (attempt, baseDelayMs = 1000, maxDelayMs = 30000) => {
+    const normalizedAttempt = Math.max(0, Math.trunc(Number(attempt) || 0));
+    const base = Math.max(250, Math.trunc(Number(baseDelayMs) || 1000));
+    const maximum = Math.max(base, Math.trunc(Number(maxDelayMs) || 30000));
+    return Math.min(maximum, base * (2 ** Math.min(normalizedAttempt, 16)));
+  };
+
+  const dashboardPayloadFromStreamEvent = (event) => {
+    const envelope = event && typeof event === "object" && event.payload && typeof event.payload === "object"
+      ? event.payload
+      : event;
+    const payload = envelope && typeof envelope === "object" ? envelope.payload : null;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const generation = Number(envelope.generation);
+    return {
+      generation: Number.isFinite(generation) ? generation : 0,
+      payload
+    };
+  };
+
+  const formatTerminalResult = (result) => {
+    const payload = result && typeof result === "object" ? result : {};
+    const accepted = Boolean(payload.accepted);
+    const exitCode = Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : (accepted ? 0 : 1);
+    const lines = [`Command ${accepted ? "accepted" : "rejected"} (exit ${exitCode}).`];
+    const command = String(payload.command || "").trim();
+    const source = String(payload.source || "").trim();
+    const createdAt = String(payload.created_at || "").trim();
+    if (command) lines.push(`Command: ${command}`);
+    if (source) lines.push(`Source: ${source}`);
+    if (createdAt) lines.push(`Created: ${createdAt}`);
+    lines.push("", String(payload.output || payload.error || "No output returned."));
+    return lines.join("\n");
+  };
+
   const formatJsonBlock = (value) => {
     try {
       return JSON.stringify(value, null, 2);
@@ -503,12 +600,20 @@
     localModelStorageText,
     mergeUniqueLines,
     normalizeIndicatorList,
+    normalizePositionCloseSide,
     normalizeOverrideRow,
     numericRunValue,
+    optionsMatchingKeys,
     overrideImportKey,
     formatServiceLogLine,
     formatServiceLogs,
+    formatTerminalResult,
     formatLlmPromptResult,
+    dashboardPayloadFromStreamEvent,
+    dashboardStreamReconnectDelay,
+    environmentSelectionCountText,
+    environmentUpdateScope,
+    normalizeEnvironmentVersionRows,
     preflightCriticalLabels,
     preflightDetail,
     preflightFreshnessAges,

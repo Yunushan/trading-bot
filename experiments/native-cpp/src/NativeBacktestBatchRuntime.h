@@ -2,6 +2,7 @@
 
 #include "NativeBacktestRuntime.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QStringList>
 #include <QVector>
@@ -42,6 +43,7 @@ struct BatchRequest {
     QString endDisplay;
     QString loopIntervalOverride;
     QString connectorBackend;
+    QJsonArray pairOverrides;
 };
 
 struct Score {
@@ -60,6 +62,8 @@ qint64 estimateRunCount(
     qsizetype symbolCount,
     qsizetype intervalCount,
     qsizetype indicatorGroupCount);
+
+qint64 estimateRunCount(const BatchRequest &request);
 
 Score optimizerScore(
     const NativeBacktestRuntime::Result &result,

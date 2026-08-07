@@ -8,10 +8,12 @@
 #include <QDateTime>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
 #include <QMap>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSet>
 #include <QTableWidget>
@@ -142,6 +144,20 @@ double sumSnapshotActivePnl(const BinanceRestClient::FuturesPositionsResult &sna
     return activePnl;
 }
 
+QString canonicalPositionSideKey(const QString &value) {
+    const QString side = value.trimmed().toUpper();
+    const bool isLong = side == QStringLiteral("L")
+        || side == QStringLiteral("LONG")
+        || side == QStringLiteral("BUY");
+    const bool isShort = side == QStringLiteral("S")
+        || side == QStringLiteral("SHORT")
+        || side == QStringLiteral("SELL");
+    if (isLong == isShort) {
+        return {};
+    }
+    return isLong ? QStringLiteral("L") : QStringLiteral("S");
+}
+
 } // namespace
 
 QWidget *TradingBotWindow::createPositionsTab() {
@@ -162,6 +178,7 @@ QWidget *TradingBotWindow::createPositionsTab() {
     ctrlLayout->setSpacing(8);
 
     auto *refreshPosBtn = new QPushButton("Refresh Positions", page);
+    auto *closeSelectedBtn = new QPushButton("Market Close Selected", page);
     auto *closeAllBtn = new QPushButton("Market Close ALL Positions", page);
     auto *positionsViewLabel = new QLabel("Positions View:", page);
     auto *positionsViewCombo = new QComboBox(page);
@@ -183,6 +200,7 @@ QWidget *TradingBotWindow::createPositionsTab() {
     positionsAutoColumnWidthCheck_ = autoColumnWidthCheck;
 
     ctrlLayout->addWidget(refreshPosBtn);
+    ctrlLayout->addWidget(closeSelectedBtn);
     ctrlLayout->addWidget(closeAllBtn);
     ctrlLayout->addWidget(positionsViewLabel);
     ctrlLayout->addWidget(positionsViewCombo);
@@ -406,6 +424,249 @@ QWidget *TradingBotWindow::createPositionsTab() {
                 .arg(liveSymbols.size())
                 .arg(closedCount));
         applyPositionsViewMode();
+    });
+    connect(closeSelectedBtn, &QPushButton::clicked, this, [=]() {
+        QSet<int> selectedRows;
+        for (QTableWidgetItem *item : table->selectedItems()) {
+            if (item && !table->isRowHidden(item->row())) {
+                selectedRows.insert(item->row());
+            }
+        }
+        if (selectedRows.isEmpty() && table->currentRow() >= 0 && !table->isRowHidden(table->currentRow())) {
+            selectedRows.insert(table->currentRow());
+        }
+        if (selectedRows.size() != 1) {
+            updateStatusMessage("Select exactly one visible position row to market close.");
+            return;
+        }
+
+        const int selectedRow = *selectedRows.cbegin();
+        const auto cellText = [table](int row, int col, bool raw = false) -> QString {
+            const QTableWidgetItem *item = table->item(row, col);
+            if (!item) {
+                return {};
+            }
+            if (raw) {
+                const QVariant rawValue = item->data(Qt::UserRole);
+                if (rawValue.isValid()) {
+                    return rawValue.toString();
+                }
+            }
+            return item->text();
+        };
+        const auto setCellText = [table](int row, int col, const QString &text) {
+            QTableWidgetItem *item = table->item(row, col);
+            if (!item) {
+                item = new QTableWidgetItem();
+                table->setItem(row, col, item);
+            }
+            item->setText(text);
+            item->setData(Qt::UserRole, text);
+        };
+
+        const QString symbol = cellText(selectedRow, 0).trimmed().toUpper();
+        const QString sideKey = canonicalPositionSideKey(cellText(selectedRow, 12));
+        const QString status = cellText(selectedRow, 16).trimmed().toUpper();
+        const QString interval = positionsCumulativeView_
+            ? QString()
+            : cellText(selectedRow, 8, true).trimmed();
+        bool quantityOk = false;
+        double quantity = table->item(selectedRow, 6)
+            ? table->item(selectedRow, 6)->data(kTableCellNumericRole).toDouble(&quantityOk)
+            : 0.0;
+        if (!quantityOk || !qIsFinite(quantity)) {
+            quantity = TradingBotWindowSupport::firstNumberInText(cellText(selectedRow, 6), &quantityOk);
+        }
+        if (symbol.isEmpty() || sideKey.isEmpty() || !quantityOk || !qIsFinite(quantity) || quantity <= 0.0
+            || status == QStringLiteral("CLOSED") || status == QStringLiteral("CLOSING")) {
+            updateStatusMessage("Selected row is not a valid open directional futures position.");
+            return;
+        }
+
+        const QString sideLabel = sideKey == QStringLiteral("L") ? QStringLiteral("long") : QStringLiteral("short");
+        const auto confirmation = QMessageBox::question(
+            this,
+            QStringLiteral("Confirm Market Close"),
+            QStringLiteral("Market close %1 %2 position (%3)?")
+                .arg(symbol, sideLabel, QString::number(quantity, 'g', 12)),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (confirmation != QMessageBox::Yes) {
+            return;
+        }
+
+        const auto removeMatchingRuntimePositions = [this, &symbol, &sideKey, &interval]() {
+            const QList<QString> keys = dashboardRuntimeOpenPositions_.keys();
+            for (const QString &runtimeKey : keys) {
+                const RuntimePosition position = dashboardRuntimeOpenPositions_.value(runtimeKey);
+                if (runtimeKey.section('|', 0, 0).trimmed().toUpper() != symbol
+                    || canonicalPositionSideKey(position.side) != sideKey
+                    || (!interval.isEmpty() && position.interval.trimmed().compare(interval, Qt::CaseInsensitive) != 0)) {
+                    continue;
+                }
+                dashboardRuntimeOpenPositions_.remove(runtimeKey);
+                dashboardRuntimeLastEvalMs_.remove(runtimeKey);
+                dashboardRuntimeEntryRetryAfterMs_.remove(runtimeKey);
+                dashboardRuntimeOpenQtyCaps_.remove(runtimeKey);
+            }
+        };
+        const auto markSelectedClosed = [&]() {
+            const QString closeTime = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+            for (int row = 0; row < table->rowCount(); ++row) {
+                const bool selectedMatch = row == selectedRow;
+                const bool cumulativeMatch = positionsCumulativeView_
+                    && cellText(row, 0, true).trimmed().toUpper() == symbol
+                    && canonicalPositionSideKey(cellText(row, 12, true)) == sideKey;
+                if (!selectedMatch && !cumulativeMatch) {
+                    continue;
+                }
+                setCellText(row, 14, closeTime);
+                setCellText(row, 16, QStringLiteral("CLOSED"));
+            }
+            removeMatchingRuntimePositions();
+            applyPositionsViewMode();
+        };
+
+        const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+        if (TradingBotWindowSupport::isPaperTradingModeLabel(mode)) {
+            markSelectedClosed();
+            updateStatusMessage(QStringLiteral("Closed selected local paper position: %1 %2.").arg(symbol, sideLabel));
+            return;
+        }
+
+        const QString exchange = TradingBotWindowSupport::selectedDashboardExchange(dashboardExchangeCombo_);
+        if (!TradingBotWindowSupport::exchangeUsesBinanceApi(exchange)) {
+            QJsonObject targetIdentity;
+            if (!positionsCumulativeView_ && table->item(selectedRow, 0)) {
+                bool sequenceOk = false;
+                const qint64 sequence = table->item(selectedRow, 0)->data(kPositionsRowSequenceRole).toLongLong(&sequenceOk);
+                if (sequenceOk && sequence > 0) {
+                    targetIdentity.insert(QStringLiteral("row_sequence"), sequence);
+                }
+            }
+            const QJsonObject body{
+                {QStringLiteral("symbol"), symbol},
+                {QStringLiteral("side_key"), sideKey},
+                {QStringLiteral("interval"), interval},
+                {QStringLiteral("quantity"), quantity},
+                {QStringLiteral("target_identity"), targetIdentity},
+                {QStringLiteral("confirm_close"), true},
+                {QStringLiteral("source"), QStringLiteral("cpp-desktop-positions")},
+            };
+            const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+                QStringLiteral("POST"),
+                QStringLiteral("position_close"),
+                body,
+                45000);
+            const QJsonObject response = result.document.isObject() ? result.document.object() : QJsonObject();
+            if (!result.ok || !response.value(QStringLiteral("accepted")).toBool(false)) {
+                const QString detail = !result.error.trimmed().isEmpty()
+                    ? result.error.trimmed()
+                    : response.value(QStringLiteral("status_message")).toString(QStringLiteral("request rejected"));
+                updateStatusMessage(QStringLiteral("Selected position close rejected: %1").arg(detail));
+                return;
+            }
+            setCellText(selectedRow, 16, QStringLiteral("CLOSING"));
+            updateStatusMessage(QStringLiteral("Selected position close accepted by Python runtime: %1 %2.")
+                                    .arg(symbol, sideLabel));
+            return;
+        }
+
+        const bool futuresMode = dashboardAccountTypeCombo_
+            ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+            : true;
+        if (!futuresMode) {
+            updateStatusMessage("Selected position close currently supports Futures account only.");
+            return;
+        }
+        const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
+        const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
+        if (apiKey.isEmpty() || apiSecret.isEmpty()) {
+            updateStatusMessage("Selected position close skipped: missing API credentials.");
+            return;
+        }
+        const bool isTestnet = dashboardModeCombo_
+            ? TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText())
+            : false;
+        const QString connectorText = dashboardConnectorCombo_
+            ? dashboardConnectorCombo_->currentText().trimmed()
+            : TradingBotWindowSupport::connectorLabelForKey(
+                  TradingBotWindowSupport::recommendedConnectorKey(true));
+        const auto connectorCfg = TradingBotWindowSupport::resolveConnectorConfig(connectorText, true);
+        if (!connectorCfg.ok()) {
+            updateStatusMessage(QStringLiteral("Selected position close connector error: %1").arg(connectorCfg.error));
+            return;
+        }
+        const auto livePositions = BinanceRestClient::fetchOpenFuturesPositions(
+            apiKey,
+            apiSecret,
+            isTestnet,
+            10000,
+            connectorCfg.baseUrl);
+        if (!livePositions.ok) {
+            updateStatusMessage(QStringLiteral("Selected position close failed to load live positions: %1")
+                                    .arg(livePositions.error));
+            return;
+        }
+
+        const BinanceRestClient::FuturesPosition *liveMatch = nullptr;
+        for (const auto &position : livePositions.positions) {
+            if (position.symbol.trimmed().toUpper() != symbol
+                || !qIsFinite(position.positionAmt)
+                || std::fabs(position.positionAmt) <= 1e-10) {
+                continue;
+            }
+            const QString positionSide = position.positionSide.trimmed().toUpper();
+            const bool matchesLong = sideKey == QStringLiteral("L")
+                && (positionSide == QStringLiteral("LONG")
+                    || ((positionSide.isEmpty() || positionSide == QStringLiteral("BOTH")) && position.positionAmt > 0.0));
+            const bool matchesShort = sideKey == QStringLiteral("S")
+                && (positionSide == QStringLiteral("SHORT")
+                    || ((positionSide.isEmpty() || positionSide == QStringLiteral("BOTH")) && position.positionAmt < 0.0));
+            if (matchesLong || matchesShort) {
+                liveMatch = &position;
+                break;
+            }
+        }
+        if (!liveMatch) {
+            markSelectedClosed();
+            updateStatusMessage(QStringLiteral("Selected position was already flat on Binance: %1 %2.")
+                                    .arg(symbol, sideLabel));
+            return;
+        }
+
+        const double closeQuantity = std::min(quantity, std::fabs(liveMatch->positionAmt));
+        const QString closeSide = sideKey == QStringLiteral("L") ? QStringLiteral("SELL") : QStringLiteral("BUY");
+        const QString livePositionSide = liveMatch->positionSide.trimmed().toUpper();
+        const QString positionSide = livePositionSide == QStringLiteral("LONG")
+                || livePositionSide == QStringLiteral("SHORT")
+            ? livePositionSide
+            : QString();
+        const double referencePrice = qIsFinite(liveMatch->markPrice) && liveMatch->markPrice > 0.0
+            ? liveMatch->markPrice
+            : (qIsFinite(liveMatch->entryPrice) ? liveMatch->entryPrice : 0.0);
+        const auto order = TradingBotWindowDashboardRuntime::placeFuturesCloseOrderWithFallback(
+            apiKey,
+            apiSecret,
+            symbol,
+            closeSide,
+            closeQuantity,
+            isTestnet,
+            true,
+            positionSide,
+            10000,
+            connectorCfg.baseUrl,
+            referencePrice);
+        if (!order.ok) {
+            updateStatusMessage(QStringLiteral("Selected position close failed for %1: %2").arg(symbol, order.error));
+            return;
+        }
+        markSelectedClosed();
+        updateStatusMessage(QStringLiteral("Selected position market close succeeded: %1 %2, qty=%3, order=%4.")
+                                .arg(symbol,
+                                     sideLabel,
+                                     QString::number(closeQuantity, 'g', 12),
+                                     order.orderId.trimmed().isEmpty() ? QStringLiteral("accepted") : order.orderId));
     });
     connect(closeAllBtn, &QPushButton::clicked, this, [=]() {
         const int localRowCount = table->rowCount();

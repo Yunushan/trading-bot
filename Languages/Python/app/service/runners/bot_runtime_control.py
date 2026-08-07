@@ -15,7 +15,11 @@ if __package__ in (None, ""):
     from app.service.schemas.control import (
         BotControlRequest,
         BotControlResult,
+        PositionCloseRequest,
+        PositionCloseResult,
         make_control_result,
+        make_position_close_request,
+        make_position_close_result,
         make_start_request,
         make_stop_request,
     )
@@ -29,7 +33,11 @@ else:
     from ..schemas.control import (
         BotControlRequest,
         BotControlResult,
+        PositionCloseRequest,
+        PositionCloseResult,
         make_control_result,
+        make_position_close_request,
+        make_position_close_result,
         make_start_request,
         make_stop_request,
     )
@@ -41,7 +49,7 @@ else:
 
 class BotRuntimeControlMixin:
     _lock: object
-    _control_request_handler: Callable[[BotControlRequest], object] | None
+    _control_request_handler: Callable[[BotControlRequest | PositionCloseRequest], object] | None
 
     @staticmethod
     def _combine_start_guard_level(*levels: str) -> str:
@@ -219,7 +227,7 @@ class BotRuntimeControlMixin:
 
     def set_control_request_handler(
         self,
-        handler: Callable[[BotControlRequest], object] | None = None,
+        handler: Callable[[BotControlRequest | PositionCloseRequest], object] | None = None,
         *,
         mode: str | None = None,
         owner: str | None = None,
@@ -292,13 +300,16 @@ class BotRuntimeControlMixin:
                     notes=("Execution state is idle until a service-owned or delegated executor attaches.",),
                 )
 
-    def _dispatch_control_request(self, control_request: BotControlRequest) -> tuple[bool | None, str]:
+    def _dispatch_control_request(
+        self,
+        control_request: BotControlRequest | PositionCloseRequest,
+    ) -> tuple[bool | None, str]:
         with self._lock:
             handler = self._control_request_handler
         if not callable(handler):
             return None, ""
         source_text = str(control_request.source or "").strip().lower()
-        if source_text.startswith("desktop"):
+        if control_request.action in {"start", "stop"} and source_text.startswith("desktop"):
             return None, ""
         try:
             response = handler(control_request)
@@ -471,6 +482,37 @@ class BotRuntimeControlMixin:
                 close_positions_requested=self._close_positions_requested,
                 accepted=accepted,
             )
+
+    def request_position_close(
+        self,
+        request: PositionCloseRequest | None = None,
+        **kwargs,
+    ) -> PositionCloseResult:
+        close_request = (
+            request
+            if isinstance(request, PositionCloseRequest)
+            else make_position_close_request(**kwargs)
+        )
+        with self._lock:
+            handler = self._control_request_handler
+            trading_supported = self._control_plane_trading_execution_supported
+        if not callable(handler) or not trading_supported:
+            message = "The active control plane does not own trading execution; position close was rejected."
+            self.record_log_event(message, source="service-control-plane", level="warning")
+            return make_position_close_result(close_request, accepted=False, status_message=message)
+
+        dispatch_accepted, dispatch_message = self._dispatch_control_request(close_request)
+        accepted = dispatch_accepted is True
+        if accepted:
+            message = dispatch_message or "Position close request was accepted by the trading runtime."
+        else:
+            message = dispatch_message or "Position close request could not be dispatched."
+        self.record_log_event(
+            message,
+            source="service-control-plane",
+            level="info" if accepted else "warning",
+        )
+        return make_position_close_result(close_request, accepted=accepted, status_message=message)
 
     def mark_start_failed(self, *, reason: str = "", source: str = "service") -> BotControlResult:
         with self._lock:

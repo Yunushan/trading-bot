@@ -1,6 +1,7 @@
 #include "TradingBotWindow.h"
 #include "BinanceRestClient.h"
 #include "BinanceWsClient.h"
+#include "TradingBotWindowSupport.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -2659,6 +2660,84 @@ QWidget *TradingBotWindow::createCodeTab() {
         runCppDependencyUpdate(false);
     });
     layout->addWidget(table);
+
+    auto *terminalTitle = new QLabel("Controlled Terminal", container);
+    terminalTitle->setStyleSheet(QString("font-size: 14px; font-weight: 700; color: %1;").arg(textColor));
+    layout->addWidget(terminalTitle);
+
+    auto *terminalRow = new QHBoxLayout();
+    terminalRow->setContentsMargins(0, 0, 0, 0);
+    auto *terminalCommandInput = new QLineEdit(container);
+    terminalCommandInput->setPlaceholderText("Command");
+    terminalCommandInput->setText("help");
+    auto *terminalRunButton = new QPushButton("Run", container);
+    terminalRunButton->setCursor(Qt::PointingHandCursor);
+    auto *terminalClearButton = new QPushButton("Clear", container);
+    terminalClearButton->setCursor(Qt::PointingHandCursor);
+    terminalRow->addWidget(terminalCommandInput, 1);
+    terminalRow->addWidget(terminalRunButton);
+    terminalRow->addWidget(terminalClearButton);
+    layout->addLayout(terminalRow);
+
+    auto *terminalOutput = new QTextEdit(container);
+    terminalOutput->setReadOnly(true);
+    terminalOutput->setMinimumHeight(170);
+    terminalOutput->setPlainText("Ready.");
+    layout->addWidget(terminalOutput);
+
+    auto runControlledTerminal = [this, terminalCommandInput, terminalRunButton, terminalOutput]() {
+        const QString command = terminalCommandInput->text().trimmed();
+        if (command.isEmpty()) {
+            terminalOutput->setPlainText(QStringLiteral("No command provided."));
+            updateStatusMessage(QStringLiteral("Controlled terminal command is empty."));
+            return;
+        }
+
+        terminalRunButton->setEnabled(false);
+        terminalOutput->setPlainText(QStringLiteral("Running..."));
+        const QJsonObject body{
+            {QStringLiteral("command"), command},
+            {QStringLiteral("source"), QStringLiteral("cpp-desktop-terminal")},
+        };
+        const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("POST"),
+            QStringLiteral("terminal_run"),
+            body,
+            45000);
+
+        if (!result.ok) {
+            const QString detail = result.error.trimmed().isEmpty()
+                ? QStringLiteral("Python Service API terminal request failed.")
+                : result.error.trimmed();
+            terminalOutput->setPlainText(detail);
+            updateStatusMessage(QStringLiteral("Controlled terminal failed: %1").arg(detail));
+            terminalRunButton->setEnabled(true);
+            return;
+        }
+
+        const QJsonObject response = result.document.isObject() ? result.document.object() : QJsonObject();
+        const bool accepted = response.value(QStringLiteral("accepted")).toBool(false);
+        const int exitCode = response.value(QStringLiteral("exit_code")).toInt(accepted ? 0 : 1);
+        QString output = response.value(QStringLiteral("output")).toString().trimmed();
+        if (output.isEmpty()) {
+            output = QStringLiteral("No output returned.");
+        }
+        terminalOutput->setPlainText(
+            QStringLiteral("Command %1 (exit %2).\n\n%3")
+                .arg(accepted ? QStringLiteral("accepted") : QStringLiteral("rejected"))
+                .arg(exitCode)
+                .arg(output));
+        updateStatusMessage(
+            QStringLiteral("Controlled terminal command %1 by Python runtime (exit %2).")
+                .arg(accepted ? QStringLiteral("accepted") : QStringLiteral("rejected"))
+                .arg(exitCode));
+        terminalRunButton->setEnabled(true);
+    };
+    connect(terminalRunButton, &QPushButton::clicked, this, runControlledTerminal);
+    connect(terminalCommandInput, &QLineEdit::returnPressed, this, runControlledTerminal);
+    connect(terminalClearButton, &QPushButton::clicked, this, [terminalOutput]() {
+        terminalOutput->clear();
+    });
 
     auto *statusRow = new QHBoxLayout();
     codePnlActiveLabel_ = new QLabel("Total PNL Active Positions: --", container);

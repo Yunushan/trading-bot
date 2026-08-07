@@ -125,6 +125,11 @@ class EmbeddedDesktopServiceClient:
             )
         )
 
+    def request_position_close(self, **kwargs) -> dict | None:
+        if self._service is None:
+            return None
+        return _maybe_to_dict(self._service.request_position_close(**kwargs))
+
     def mark_start_failed(self, *, reason: str = "", source: str = "desktop-start") -> dict | None:
         if self._service is None:
             return None
@@ -352,6 +357,31 @@ class RemoteDesktopServiceClient:
             service_api_route("control_stop"),
             payload={
                 "close_positions": bool(close_positions),
+                "source": source,
+            },
+        )
+
+    def request_position_close(
+        self,
+        *,
+        symbol: str,
+        side_key: str,
+        interval: str = "",
+        quantity: float,
+        target_identity: dict | None = None,
+        confirm_close: bool = False,
+        source: str = "desktop-positions",
+    ) -> dict | None:
+        return self._request(
+            "POST",
+            service_api_route("position_close"),
+            payload={
+                "symbol": symbol,
+                "side_key": side_key,
+                "interval": interval,
+                "quantity": quantity,
+                "target_identity": dict(target_identity or {}),
+                "confirm_close": bool(confirm_close),
                 "source": source,
             },
         )

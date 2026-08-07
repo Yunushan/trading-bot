@@ -4,12 +4,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, State};
 use trading_bot_core::{
     account::{
         BinanceAccountSnapshot, BinanceApiCredentials, BinanceFuturesMultiAssetsMode,
@@ -33,7 +37,7 @@ use trading_bot_core::{
     order_audit::{ConnectorOrderCircuitBreakerConfig, OrderAuditConfig},
     order_guard::{LiveTradingSafetyConfig, OrderSymbolFilters},
     orders::BinanceFuturesSymbolFilters,
-    python_source_contract_hash,
+    python_source_contract_hash, python_source_rust_environment_dependencies,
     runtime_order_engine::RuntimeOrderEngine,
     rust_trading_execution_supported, service_api_route_path, service_api_route_supports_method,
     service_api_route_supports_query_field, service_api_route_supports_request_field,
@@ -54,6 +58,31 @@ struct ServiceApiProxyResponse {
     path: String,
     payload: Value,
     error: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ServiceDashboardStreamResponse {
+    ok: bool,
+    active: bool,
+    generation: u64,
+    route_name: String,
+    path: String,
+    interval_ms: u64,
+    error: String,
+}
+
+struct ServiceDashboardStreamState {
+    next_generation: AtomicU64,
+    active_generation: Arc<AtomicU64>,
+}
+
+impl Default for ServiceDashboardStreamState {
+    fn default() -> Self {
+        Self {
+            next_generation: AtomicU64::new(0),
+            active_generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1644,6 +1673,59 @@ struct DesktopLanguageLaunchResponse {
     error: String,
 }
 
+#[derive(Debug, Serialize)]
+struct EnvironmentDependencyVersionRow {
+    key: String,
+    label: String,
+    kind: String,
+    path: String,
+    installed: String,
+    latest: String,
+    usage: String,
+    usage_change_counter: u64,
+    selectable: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct EnvironmentVersionsResponse {
+    ok: bool,
+    rows: Vec<EnvironmentDependencyVersionRow>,
+    message: String,
+    error: String,
+}
+
+impl EnvironmentVersionsResponse {
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            rows: Vec::new(),
+            message: String::new(),
+            error: error.into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RustEnvironmentUpdateResponse {
+    ok: bool,
+    updated_toolchain: bool,
+    updated_workspace: bool,
+    message: String,
+    error: String,
+}
+
+impl RustEnvironmentUpdateResponse {
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            updated_toolchain: false,
+            updated_workspace: false,
+            message: String::new(),
+            error: error.into(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeRuntimeCandleInput {
@@ -1735,6 +1817,129 @@ fn response_error(
         path: path.to_string(),
         payload: json!({}),
         error: error.into(),
+    }
+}
+
+fn drain_sse_frames(buffer: &mut String) -> Vec<String> {
+    if buffer.contains("\r\n") {
+        *buffer = buffer.replace("\r\n", "\n");
+    }
+    let mut frames = Vec::new();
+    while let Some(boundary) = buffer.find("\n\n") {
+        let frame = buffer[..boundary].to_string();
+        buffer.drain(..boundary + 2);
+        if !frame.trim().is_empty() {
+            frames.push(frame);
+        }
+    }
+    frames
+}
+
+fn dashboard_payload_from_sse_frame(frame: &str) -> Result<Option<Value>, String> {
+    let mut event_name = "message";
+    let mut data_lines = Vec::new();
+    for raw_line in frame.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if line.starts_with(':') {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("event:") {
+            event_name = value.trim();
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data_lines.push(value.strip_prefix(' ').unwrap_or(value));
+        }
+    }
+    if event_name != "dashboard" || data_lines.is_empty() {
+        return Ok(None);
+    }
+    let payload = serde_json::from_str::<Value>(&data_lines.join("\n"))
+        .map_err(|exc| format!("Dashboard stream returned invalid JSON: {exc}"))?;
+    if !payload.is_object() {
+        return Err("Dashboard stream payload must be a JSON object.".to_string());
+    }
+    Ok(Some(payload))
+}
+
+fn emit_dashboard_stream_status(
+    app: &AppHandle,
+    generation: u64,
+    active: bool,
+    ok: bool,
+    message: &str,
+    error: &str,
+) {
+    let _ = app.emit(
+        "service-dashboard-stream-status",
+        json!({
+            "generation": generation,
+            "active": active,
+            "ok": ok,
+            "message": message,
+            "error": error,
+        }),
+    );
+}
+
+async fn run_service_dashboard_stream(
+    app: AppHandle,
+    active_generation: Arc<AtomicU64>,
+    generation: u64,
+    url: String,
+    api_token: String,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|exc| format!("Could not create dashboard stream client: {exc}"))?;
+    let mut request = client.get(url).header("Accept", "text/event-stream");
+    if !api_token.trim().is_empty() {
+        request = request.bearer_auth(api_token.trim());
+    }
+    let mut response = request
+        .send()
+        .await
+        .map_err(|exc| format!("Dashboard stream connection failed: {exc}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Dashboard stream returned HTTP {}.",
+            response.status().as_u16()
+        ));
+    }
+    emit_dashboard_stream_status(
+        &app,
+        generation,
+        true,
+        true,
+        "Dashboard stream connected.",
+        "",
+    );
+
+    let mut buffer = String::new();
+    loop {
+        if active_generation.load(Ordering::Acquire) != generation {
+            return Ok(());
+        }
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|exc| format!("Dashboard stream read failed: {exc}"))?;
+        let Some(chunk) = chunk else {
+            return Err("Dashboard stream ended unexpectedly.".to_string());
+        };
+        let text = std::str::from_utf8(&chunk)
+            .map_err(|_| "Dashboard stream returned non-UTF-8 data.".to_string())?;
+        buffer.push_str(text);
+        for frame in drain_sse_frames(&mut buffer) {
+            if let Some(payload) = dashboard_payload_from_sse_frame(&frame)? {
+                let _ = app.emit(
+                    "service-dashboard",
+                    json!({
+                        "generation": generation,
+                        "payload": payload,
+                    }),
+                );
+            }
+        }
     }
 }
 
@@ -2038,6 +2243,368 @@ fn prepend_process_path(command: &mut Command, directory: &Path) {
     command.env("PATH", path);
 }
 
+fn rust_toolchain_bin_dir() -> Option<PathBuf> {
+    if let Some(cargo_home) = env::var_os("CARGO_HOME")
+        && !cargo_home.is_empty()
+    {
+        return Some(PathBuf::from(cargo_home).join("bin"));
+    }
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .filter(|value| !value.is_empty())
+        .map(|value| PathBuf::from(value).join(".cargo").join("bin"))
+}
+
+fn find_rust_tool(base_name: &str) -> Option<PathBuf> {
+    let mut directories = env::var_os("PATH")
+        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if let Some(cargo_bin) = rust_toolchain_bin_dir()
+        && !directories.iter().any(|directory| directory == &cargo_bin)
+    {
+        directories.insert(0, cargo_bin);
+    }
+    for directory in directories {
+        for executable_name in executable_names(base_name) {
+            let candidate = directory.join(executable_name);
+            if candidate.is_file() {
+                return candidate.canonicalize().ok().or(Some(candidate));
+            }
+        }
+    }
+    None
+}
+
+fn configure_rust_command(command: &mut Command, working_directory: &Path) {
+    command.current_dir(working_directory).stdin(Stdio::null());
+    if let Some(cargo_bin) = rust_toolchain_bin_dir()
+        && cargo_bin.is_dir()
+    {
+        prepend_process_path(command, &cargo_bin);
+    }
+    apply_no_console_flag(command);
+}
+
+fn child_output_text(child: &mut Child) -> String {
+    let mut output = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_string(&mut output);
+    }
+    if let Some(mut stderr) = child.stderr.take() {
+        let mut error_output = String::new();
+        let _ = stderr.read_to_string(&mut error_output);
+        if !error_output.trim().is_empty() {
+            if !output.trim().is_empty() {
+                output.push('\n');
+            }
+            output.push_str(&error_output);
+        }
+    }
+    output.trim().to_owned()
+}
+
+fn run_small_rust_tool(
+    executable: &Path,
+    arguments: &[&str],
+    working_directory: &Path,
+    timeout: Duration,
+) -> Result<String, String> {
+    let mut command = Command::new(executable);
+    command
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_rust_command(&mut command, working_directory);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start {}: {error}", executable.display()))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = child_output_text(&mut child);
+                if status.success() {
+                    return Ok(output);
+                }
+                let code = status
+                    .code()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned());
+                return Err(format!(
+                    "{} exited with code {code}: {}",
+                    executable.display(),
+                    output
+                ));
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{} timed out.", executable.display()));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect {}: {error}",
+                    executable.display()
+                ));
+            }
+        }
+    }
+}
+
+fn run_rust_update_process(
+    executable: &Path,
+    arguments: &[&str],
+    working_directory: &Path,
+    timeout: Duration,
+) -> Result<(), String> {
+    let mut command = Command::new(executable);
+    command
+        .args(arguments)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_rust_command(&mut command, working_directory);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start {}: {error}", executable.display()))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                let code = status
+                    .code()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned());
+                return Err(format!("{} exited with code {code}.", executable.display()));
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{} timed out.", executable.display()));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect {}: {error}",
+                    executable.display()
+                ));
+            }
+        }
+    }
+}
+
+fn extract_semver_from_tool_output(output: &str) -> Option<String> {
+    output.split_whitespace().find_map(|token| {
+        let candidate = token.trim_matches(|character: char| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+'))
+        });
+        let core = candidate.split(['-', '+']).next().unwrap_or_default();
+        let parts = core.split('.').collect::<Vec<_>>();
+        (parts.len() == 3
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())))
+        .then(|| core.to_owned())
+    })
+}
+
+fn cargo_package_version_from_text(text: &str) -> Option<String> {
+    let mut section = String::new();
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line.trim_matches(['[', ']']).trim().to_ascii_lowercase();
+            continue;
+        }
+        if section != "package" {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("version") {
+            let raw_value = value.trim();
+            let version = raw_value
+                .strip_prefix('"')
+                .and_then(|quoted| quoted.split('"').next())
+                .unwrap_or(raw_value)
+                .trim();
+            if !version.is_empty() {
+                return Some(version.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn generated_manifest_path(repo_root: &Path, relative_path: &str) -> Option<PathBuf> {
+    let path = Path::new(relative_path);
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(repo_root.join(path))
+}
+
+fn rust_tool_version(base_name: &str, repo_root: &Path) -> Option<String> {
+    let executable = find_rust_tool(base_name)?;
+    run_small_rust_tool(
+        &executable,
+        &["--version"],
+        repo_root,
+        Duration::from_secs(4),
+    )
+    .ok()
+    .and_then(|output| extract_semver_from_tool_output(&output))
+}
+
+fn environment_dependency_rows(repo_root: &Path) -> Vec<EnvironmentDependencyVersionRow> {
+    let rustc_version = rust_tool_version("rustc", repo_root);
+    let cargo_version = rust_tool_version("cargo", repo_root);
+    python_source_rust_environment_dependencies()
+        .iter()
+        .map(|dependency| {
+            let manifest = generated_manifest_path(repo_root, dependency.path);
+            let installed = match dependency.kind {
+                "rust_rustc" => rustc_version
+                    .clone()
+                    .unwrap_or_else(|| "Not installed".to_owned()),
+                "rust_cargo" => cargo_version
+                    .clone()
+                    .unwrap_or_else(|| "Not installed".to_owned()),
+                "rust_file_version" => manifest
+                    .as_ref()
+                    .filter(|path| path.is_file())
+                    .map(|path| {
+                        std::fs::read_to_string(path)
+                            .ok()
+                            .and_then(|text| cargo_package_version_from_text(&text))
+                            .unwrap_or_else(|| "Scaffolded".to_owned())
+                    })
+                    .unwrap_or_else(|| "Not installed".to_owned()),
+                _ => "Unknown".to_owned(),
+            };
+            let installed_marker = !matches!(installed.as_str(), "Not installed" | "Unknown");
+            let latest = if installed_marker {
+                installed.clone()
+            } else if dependency.latest.is_empty() {
+                "Unknown".to_owned()
+            } else {
+                dependency.latest.to_owned()
+            };
+            let usage = if installed_marker {
+                "Active"
+            } else {
+                "Passive"
+            }
+            .to_owned();
+            EnvironmentDependencyVersionRow {
+                key: dependency.key.to_owned(),
+                label: dependency.label.to_owned(),
+                kind: dependency.kind.to_owned(),
+                path: dependency.path.to_owned(),
+                installed,
+                latest,
+                usage,
+                usage_change_counter: 0,
+                selectable: true,
+            }
+        })
+        .collect()
+}
+
+fn validate_rust_environment_update_scope(
+    update_toolchain: bool,
+    update_workspace: bool,
+) -> Result<(), String> {
+    if update_toolchain || update_workspace {
+        Ok(())
+    } else {
+        Err("No Rust update targets were selected.".to_owned())
+    }
+}
+
+fn update_rust_environment_worker(
+    repo_root: &Path,
+    update_toolchain: bool,
+    update_workspace: bool,
+) -> RustEnvironmentUpdateResponse {
+    if let Err(error) = validate_rust_environment_update_scope(update_toolchain, update_workspace) {
+        return RustEnvironmentUpdateResponse::error(error);
+    }
+    let mut messages = Vec::new();
+    let mut updated_toolchain = false;
+    let mut updated_workspace = false;
+    let update_timeout = Duration::from_secs(15 * 60);
+
+    if update_toolchain {
+        let Some(rustup) = find_rust_tool("rustup") else {
+            return RustEnvironmentUpdateResponse::error(
+                "rustup was not found. Install the Rust toolchain before using Update Selected or Update All.",
+            );
+        };
+        if let Err(error) = run_rust_update_process(&rustup, &["update"], repo_root, update_timeout)
+        {
+            return RustEnvironmentUpdateResponse::error(format!(
+                "Rust toolchain refresh failed: {error}"
+            ));
+        }
+        updated_toolchain = true;
+        messages.push("Rust toolchain refreshed.".to_owned());
+    }
+
+    if update_workspace {
+        let Some(cargo) = find_rust_tool("cargo") else {
+            return RustEnvironmentUpdateResponse::error(
+                "cargo was not found. Install the Rust toolchain before updating the workspace.",
+            );
+        };
+        let workspace_manifest = repo_root
+            .join("experiments")
+            .join("rust-shells")
+            .join("Cargo.toml");
+        if !workspace_manifest.is_file() {
+            return RustEnvironmentUpdateResponse::error(format!(
+                "Rust workspace manifest was not found at {}.",
+                workspace_manifest.display()
+            ));
+        }
+        let manifest_text = workspace_manifest.to_string_lossy().to_string();
+        if let Err(error) = run_rust_update_process(
+            &cargo,
+            &["update", "--manifest-path", &manifest_text],
+            workspace_manifest.parent().unwrap_or(repo_root),
+            update_timeout,
+        ) {
+            return RustEnvironmentUpdateResponse::error(format!(
+                "Rust workspace lockfile refresh failed: {error}"
+            ));
+        }
+        updated_workspace = true;
+        messages.push("Rust workspace lockfile refreshed.".to_owned());
+        messages.push(
+            "Workspace rows show local Cargo.toml versions, so those version numbers may stay the same."
+                .to_owned(),
+        );
+    }
+
+    RustEnvironmentUpdateResponse {
+        ok: true,
+        updated_toolchain,
+        updated_workspace,
+        message: messages.join("\n"),
+        error: String::new(),
+    }
+}
+
 fn spawn_desktop_process(
     language: &str,
     path: &Path,
@@ -2189,6 +2756,138 @@ fn load_native_runtime_config() -> NativeConfigPersistenceResponse {
             error: String::new(),
         },
         Err(error) => NativeConfigPersistenceResponse::error(error),
+    }
+}
+
+#[tauri::command]
+fn start_service_dashboard_stream(
+    app: AppHandle,
+    state: State<'_, ServiceDashboardStreamState>,
+    base_url: String,
+    api_token: String,
+    allow_public_network_endpoint: bool,
+    log_limit: u64,
+    incident_limit: u64,
+    interval_ms: u64,
+) -> ServiceDashboardStreamResponse {
+    const ROUTE_NAME: &str = "stream_dashboard";
+    let route_path = service_api_route_path(ROUTE_NAME).unwrap_or_default();
+    let error_response = |error: String| ServiceDashboardStreamResponse {
+        ok: false,
+        active: false,
+        generation: 0,
+        route_name: ROUTE_NAME.to_string(),
+        path: route_path.to_string(),
+        interval_ms: interval_ms.max(250),
+        error,
+    };
+    if let Err(error) =
+        validate_service_api_endpoint_access(&base_url, &api_token, allow_public_network_endpoint)
+    {
+        return error_response(error);
+    }
+    let interval_ms = interval_ms.clamp(250, 60_000);
+    let query = BTreeMap::from([
+        ("log_limit".to_string(), log_limit.clamp(1, 500).to_string()),
+        (
+            "incident_limit".to_string(),
+            incident_limit.clamp(1, 500).to_string(),
+        ),
+        ("interval_ms".to_string(), interval_ms.to_string()),
+    ]);
+    if let Err(error) = validate_service_api_method(ROUTE_NAME, "GET") {
+        return error_response(error);
+    }
+    if let Err(error) = validate_service_api_fields(ROUTE_NAME, "GET", None, Some(&query)) {
+        return error_response(error);
+    }
+    let (url, route_path) = match build_service_url(
+        &base_url,
+        ROUTE_NAME,
+        Some(&query),
+        allow_public_network_endpoint,
+    ) {
+        Ok(value) => value,
+        Err(error) => return error_response(error),
+    };
+
+    let generation = state.next_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    state.active_generation.store(generation, Ordering::Release);
+    let active_generation = Arc::clone(&state.active_generation);
+    let task_active_generation = Arc::clone(&active_generation);
+    let task_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = run_service_dashboard_stream(
+            task_app.clone(),
+            Arc::clone(&task_active_generation),
+            generation,
+            url,
+            api_token,
+        )
+        .await;
+        if task_active_generation
+            .compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            match result {
+                Ok(()) => emit_dashboard_stream_status(
+                    &task_app,
+                    generation,
+                    false,
+                    true,
+                    "Dashboard stream stopped.",
+                    "",
+                ),
+                Err(error) => emit_dashboard_stream_status(
+                    &task_app,
+                    generation,
+                    false,
+                    false,
+                    "Dashboard stream disconnected.",
+                    &error,
+                ),
+            }
+        }
+    });
+
+    ServiceDashboardStreamResponse {
+        ok: true,
+        active: true,
+        generation,
+        route_name: ROUTE_NAME.to_string(),
+        path: route_path,
+        interval_ms,
+        error: String::new(),
+    }
+}
+
+#[tauri::command]
+fn stop_service_dashboard_stream(
+    app: AppHandle,
+    state: State<'_, ServiceDashboardStreamState>,
+) -> ServiceDashboardStreamResponse {
+    const ROUTE_NAME: &str = "stream_dashboard";
+    let generation = state.active_generation.swap(0, Ordering::AcqRel);
+    if generation != 0 {
+        emit_dashboard_stream_status(
+            &app,
+            generation,
+            false,
+            true,
+            "Dashboard stream stopped.",
+            "",
+        );
+    }
+    ServiceDashboardStreamResponse {
+        ok: true,
+        active: false,
+        generation,
+        route_name: ROUTE_NAME.to_string(),
+        path: service_api_route_path(ROUTE_NAME)
+            .unwrap_or_default()
+            .to_string(),
+        interval_ms: 0,
+        error: String::new(),
     }
 }
 
@@ -2424,6 +3123,51 @@ fn stop_native_runtime(
     now_ms: i64,
 ) -> NativeRuntimeControlResponse {
     state.stop_with_close_request(close_positions, config, api_key, api_secret, now_ms)
+}
+
+#[tauri::command]
+async fn environment_versions(app: AppHandle) -> EnvironmentVersionsResponse {
+    let Some(repo_root) = find_repo_root(&app) else {
+        return EnvironmentVersionsResponse::error(
+            "Could not locate the trading-bot repository from the Tauri shell.",
+        );
+    };
+    match tauri::async_runtime::spawn_blocking(move || environment_dependency_rows(&repo_root))
+        .await
+    {
+        Ok(rows) => EnvironmentVersionsResponse {
+            ok: true,
+            message: format!("Checked {} Rust environment dependencies.", rows.len()),
+            rows,
+            error: String::new(),
+        },
+        Err(error) => EnvironmentVersionsResponse::error(format!(
+            "Rust environment version check failed: {error}"
+        )),
+    }
+}
+
+#[tauri::command]
+async fn update_rust_environment(
+    app: AppHandle,
+    update_toolchain: bool,
+    update_workspace: bool,
+) -> RustEnvironmentUpdateResponse {
+    let Some(repo_root) = find_repo_root(&app) else {
+        return RustEnvironmentUpdateResponse::error(
+            "Could not locate the trading-bot repository from the Tauri shell.",
+        );
+    };
+    match tauri::async_runtime::spawn_blocking(move || {
+        update_rust_environment_worker(&repo_root, update_toolchain, update_workspace)
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => RustEnvironmentUpdateResponse::error(format!(
+            "Rust environment update task failed: {error}"
+        )),
+    }
 }
 
 #[tauri::command]
@@ -2681,6 +3425,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(ServiceProcessState::default())
+        .manage(ServiceDashboardStreamState::default())
         .manage(NativeRuntimeState::default())
         .invoke_handler(tauri::generate_handler![
             launch_desktop_language,
@@ -2692,8 +3437,12 @@ fn main() {
             native_runtime_status,
             set_native_runtime_paused,
             stop_native_runtime,
+            environment_versions,
+            update_rust_environment,
             save_native_runtime_config,
             load_native_runtime_config,
+            start_service_dashboard_stream,
+            stop_service_dashboard_stream,
             service_api_request,
             service_process_status,
             start_service_api,
@@ -2712,6 +3461,73 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_tool_versions_extract_semver_without_build_metadata() {
+        assert_eq!(
+            extract_semver_from_tool_output("rustc 1.89.0 (29483883e 2025-08-04)"),
+            Some("1.89.0".to_owned())
+        );
+        assert_eq!(
+            extract_semver_from_tool_output("cargo 1.90.0-nightly (abc123 2025-08-04)"),
+            Some("1.90.0".to_owned())
+        );
+        assert_eq!(extract_semver_from_tool_output("not installed"), None);
+    }
+
+    #[test]
+    fn environment_manifest_parser_reads_only_package_version() {
+        let manifest = r#"
+            [workspace.package]
+            version = "9.9.9"
+
+            [package]
+            name = "trading-bot-tauri-desktop"
+            version = "1.0.36"
+        "#;
+        assert_eq!(
+            cargo_package_version_from_text(manifest),
+            Some("1.0.36".to_owned())
+        );
+    }
+
+    #[test]
+    fn environment_manifest_paths_remain_repository_relative() {
+        let repo = Path::new("repo");
+        assert_eq!(
+            generated_manifest_path(repo, "experiments/rust-shells/Cargo.toml"),
+            Some(repo.join("experiments/rust-shells/Cargo.toml"))
+        );
+        assert_eq!(generated_manifest_path(repo, "../outside/Cargo.toml"), None);
+        assert_eq!(generated_manifest_path(repo, "/outside/Cargo.toml"), None);
+    }
+
+    #[test]
+    fn environment_update_requires_a_selected_fixed_scope() {
+        assert!(validate_rust_environment_update_scope(true, false).is_ok());
+        assert!(validate_rust_environment_update_scope(false, true).is_ok());
+        assert!(validate_rust_environment_update_scope(true, true).is_ok());
+        assert_eq!(
+            validate_rust_environment_update_scope(false, false),
+            Err("No Rust update targets were selected.".to_owned())
+        );
+        assert_eq!(python_source_rust_environment_dependencies().len(), 6);
+    }
+
+    #[test]
+    fn environment_versions_probe_the_real_checked_out_workspace() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../..")
+            .canonicalize()
+            .expect("repository root should resolve from the Tauri manifest");
+        let rows = environment_dependency_rows(&repo_root);
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0].key, "rustc");
+        assert_eq!(rows[1].key, "cargo");
+        assert!(rows.iter().all(|row| row.installed != "Not installed"));
+        assert!(rows.iter().all(|row| row.usage == "Active"));
+        assert!(rows.iter().all(|row| row.selectable));
+    }
 
     fn account_bootstrap(
         refreshed_at_ms: i64,
@@ -3104,6 +3920,56 @@ mod tests {
             )
             .unwrap_err()
             .contains("request field unexpected")
+        );
+        assert_eq!(
+            validate_service_api_method("stream_dashboard", "get"),
+            Ok("GET".to_owned())
+        );
+        assert!(
+            validate_service_api_fields(
+                "stream_dashboard",
+                "GET",
+                None,
+                Some(&BTreeMap::from([
+                    ("log_limit".to_owned(), "30".to_owned()),
+                    ("incident_limit".to_owned(), "20".to_owned()),
+                    ("interval_ms".to_owned(), "1000".to_owned()),
+                ])),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn dashboard_sse_parser_handles_fragmented_and_crlf_frames() {
+        let mut buffer = "event: dashboard\r\ndata: {\"runtime\":".to_owned();
+        assert!(drain_sse_frames(&mut buffer).is_empty());
+        buffer.push_str("{\"state\":\"running\"}}\r\n\r\n");
+        let frames = drain_sse_frames(&mut buffer);
+        assert_eq!(frames.len(), 1);
+        assert!(buffer.is_empty());
+        let payload = dashboard_payload_from_sse_frame(&frames[0])
+            .expect("valid dashboard event")
+            .expect("dashboard payload");
+        assert_eq!(payload["runtime"]["state"], "running");
+    }
+
+    #[test]
+    fn dashboard_sse_parser_ignores_other_events_and_rejects_invalid_payloads() {
+        assert!(
+            dashboard_payload_from_sse_frame("event: keepalive\ndata: {}")
+                .expect("ignored event")
+                .is_none()
+        );
+        assert!(
+            dashboard_payload_from_sse_frame("event: dashboard\ndata: []")
+                .unwrap_err()
+                .contains("JSON object")
+        );
+        assert!(
+            dashboard_payload_from_sse_frame("event: dashboard\ndata: not-json")
+                .unwrap_err()
+                .contains("invalid JSON")
         );
     }
 }

@@ -92,6 +92,8 @@ QStringList pythonSourceDefaultExecutionSymbols();
 QStringList pythonSourceDefaultExecutionIntervals();
 QStringList pythonSourceDefaultBacktestSymbols();
 QStringList pythonSourceDefaultBacktestIntervals();
+QJsonObject pythonSourceDefaultExecutionConfig();
+QJsonObject pythonSourceDefaultBacktestConfig();
 QStringList pythonSourceChartMarketOptions();
 QStringList pythonSourceAccountModeOptions();
 QStringList pythonSourceDashboardLoopChoiceKeys();

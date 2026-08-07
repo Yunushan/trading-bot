@@ -12,6 +12,7 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from app.service.api_contract import SERVICE_API_ROUTE_PATHS  # noqa: E402
 from app.service.runtime import TradingBotService  # noqa: E402
+from app.service.schemas.control import make_position_close_request  # noqa: E402
 
 REPO_ROOT = PYTHON_ROOT.parents[1]
 
@@ -169,6 +170,86 @@ class ServiceLifecycleRuntimeTests(unittest.TestCase):
 
         service.request_start(requested_job_count=1, source="desktop-start")
         self.assertEqual(len(dispatched), 1)
+
+    def test_position_close_request_normalizes_and_redacts_identity(self):
+        request = make_position_close_request(
+            symbol=" btcusdt ",
+            side_key="long",
+            interval="1m",
+            quantity="0.25",
+            target_identity={"trade_id": "trade-a", "api_secret": "unit-secret"},
+            confirm_close=True,
+            source="native-client",
+        )
+
+        self.assertEqual("position_close", request.action)
+        self.assertEqual("BTCUSDT", request.symbol)
+        self.assertEqual("L", request.side_key)
+        self.assertEqual(0.25, request.quantity)
+        self.assertEqual("trade-a", request.target_identity["trade_id"])
+        self.assertEqual("<redacted>", request.target_identity["api_secret"])
+        self.assertNotIn("unit-secret", json.dumps(request.to_dict()))
+
+        with self.assertRaisesRegex(ValueError, "confirm_close=true"):
+            make_position_close_request(symbol="BTCUSDT", side_key="L", quantity=0.25)
+        with self.assertRaisesRegex(ValueError, "long or short"):
+            make_position_close_request(
+                symbol="BTCUSDT",
+                side_key="BOTH",
+                quantity=0.25,
+                confirm_close=True,
+            )
+        with self.assertRaisesRegex(ValueError, "finite positive"):
+            make_position_close_request(
+                symbol="BTCUSDT",
+                side_key="L",
+                quantity=float("nan"),
+                confirm_close=True,
+            )
+
+    def test_position_close_dispatches_only_to_trading_capable_control_plane(self):
+        service = TradingBotService()
+        rejected = service.request_position_close(
+            symbol="BTCUSDT",
+            side_key="L",
+            quantity=0.25,
+            confirm_close=True,
+            source="tauri-desktop-positions",
+        ).to_dict()
+        self.assertFalse(rejected["accepted"])
+        self.assertIn("does not own trading execution", rejected["status_message"])
+
+        dispatched: list[dict[str, object]] = []
+
+        def _handler(request):
+            dispatched.append(request.to_dict())
+            return {"accepted": True, "message": "Queued on desktop GUI thread."}
+
+        service.set_control_request_handler(
+            _handler,
+            mode="desktop-gui-dispatch",
+            owner="desktop-gui",
+            start_supported=True,
+            stop_supported=True,
+            execution_scope="desktop-trading-runtime",
+            trading_execution_supported=True,
+        )
+        accepted = service.request_position_close(
+            symbol="ethusdt",
+            side_key="sell",
+            interval="5m",
+            quantity=1.5,
+            target_identity={"slot_id": "slot-a"},
+            confirm_close=True,
+            source="cpp-desktop-positions",
+        ).to_dict()
+
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual("ETHUSDT", accepted["symbol"])
+        self.assertEqual("S", accepted["side_key"])
+        self.assertEqual("position_close", dispatched[0]["action"])
+        self.assertTrue(dispatched[0]["confirm_close"])
+        self.assertEqual({"slot_id": "slot-a"}, dispatched[0]["target_identity"])
 
     def test_service_control_plane_descriptor_contract_for_runtime_modes(self):
         service = TradingBotService()

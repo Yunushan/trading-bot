@@ -333,6 +333,8 @@
               <label>Mode:<select id="config-mode"></select></label>
               <label>Theme:<select id="config-theme"></select></label>
               <label>Design:<select id="config-design"></select></label>
+              <label>Lookback Candles:<input id="config-lookback" type="number" min="1" max="1000000" step="1" value="200"></label>
+              <label>Order Type:<select id="config-order-type"></select></label>
               <label>Account Type:<select id="config-account-type"></select></label>
               <label>Account Mode:<select id="config-account-mode"></select></label>
               <label>Connector:<select id="config-connector"></select></label>
@@ -357,6 +359,8 @@
               <div class="checks">
                 <label><input id="live-trading-enabled" type="checkbox"> Enable live trading safeguards</label>
                 <label><input id="live-allow-auto-bump-to-min-order" type="checkbox"> Allow auto-bump to exchange minimum</label>
+                <label><input id="operational-live-start-gate-enabled" type="checkbox" checked> Enforce live start preflight</label>
+                <label><input id="operational-live-order-gate-enabled" type="checkbox" checked> Enforce live order preflight</label>
               </div>
               <div class="grid-3">
                 <label>Acknowledgement:<input id="live-trading-acknowledgement" autocomplete="off" placeholder="I_UNDERSTAND_LIVE_TRADING_RISK"></label>
@@ -365,6 +369,10 @@
                 <label>Max Session Orders:<input id="live-trading-max-session-orders" type="number" min="1" max="100000" step="1" value="100"></label>
                 <label>Auto-bump Max %:<input id="max-auto-bump-percent" type="number" min="0" max="100" step="0.01" value="5.00"></label>
                 <label>Auto-bump Multiplier:<input id="auto-bump-percent-multiplier" type="number" min="0" max="1000" step="0.01" value="10.00"></label>
+                <label>Connector Snapshot Max Age (s):<input id="operational-connector-stale-seconds" type="number" min="0" max="86400" step="0.1" value="120"></label>
+                <label>Execution Heartbeat Max Age (s):<input id="operational-execution-stale-seconds" type="number" min="0" max="86400" step="0.1" value="10"></label>
+                <label>Account Snapshot Max Age (s):<input id="operational-account-stale-seconds" type="number" min="0" max="86400" step="0.1" value="300"></label>
+                <label>Portfolio Snapshot Max Age (s):<input id="operational-portfolio-stale-seconds" type="number" min="0" max="86400" step="0.1" value="300"></label>
               </div>
             </fieldset>
             <fieldset id="order-safety-observability-controls">
@@ -498,6 +506,7 @@
             </div>
             <div class="actions"><button class="action primary" id="service-connect-btn" type="button">Start / Connect API</button><button class="action danger" id="service-stop-btn" type="button">Stop API</button><button class="action" id="open-service-dashboard-btn" type="button">Open Dashboard</button></div>
             <p class="muted" id="service-status-text">Service API: off</p>
+            <p class="muted" id="service-stream-status-text" aria-live="polite">Dashboard stream: off</p>
             <p class="muted" id="service-preflight-text">Preflight: unknown</p>
             <div class="grid-3">
               <label>Preflight Start:<output id="service-preflight-start">-</output></label>
@@ -582,6 +591,7 @@
             <div class="grid-2">
               <label>Start Date/Time:<input id="backtest-start-date" type="datetime-local"></label>
               <label>End Date/Time:<input id="backtest-end-date" type="datetime-local"></label>
+              <label>Execution Backend:<select id="backtest-execution-backend"></select></label>
               <label>Signal Logic:<select id="backtest-logic"></select></label>
               <label>MDD Logic:<select id="backtest-mdd-logic"></select></label>
               <label>Margin Capital:<input id="backtest-capital" type="number" min="1" value="1000"></label>
@@ -606,6 +616,9 @@
               <label>Max Combo:<input id="backtest-optimizer-combo-size" type="number" min="1" max="5" value="2"></label>
               <label>Min Trades:<input id="backtest-optimizer-min-trades" type="number" min="0" value="1"></label>
               <label>Max Time:<input id="backtest-optimizer-max-duration" type="number" min="60" max="604800" step="60" value="14400"></label>
+              <label>Fee (bps):<input id="backtest-fee-bps" type="number" min="0" max="10000" step="0.01" value="5"></label>
+              <label>Slippage (bps):<input id="backtest-slippage-bps" type="number" min="0" max="10000" step="0.01" value="2"></label>
+              <label class="checks"><input id="backtest-scan-auto-apply" type="checkbox"> Auto-apply scanner results</label>
               <label class="checks"><input id="backtest-queue-if-busy" type="checkbox"> Queue if another backtest is running</label>
               <label>Max MDD Scanner:<span class="grid-2"><input id="backtest-scan-top-n" type="number" value="200"><input id="backtest-scan-mdd-limit" type="number" value="10.00"></span></label>
             </div>
@@ -693,7 +706,7 @@
                 <tr><td>order_execution_and_risk</td><td>Order sizing, submit guards, audit, preflight, circuit breaker, and shutdown risk</td><td>Complete in generated Python parity matrix for this domain</td><td>Complete in generated Python parity matrix for this domain via signed order/filter, submit guard, deterministic dry-run, audit/circuit persistence, runtime-owned order engine, stop-loss close fallback, close-opposite reconciliation, shutdown guard tests, and native runtime stop/idle wiring</td><td>Broader native Rust trading remains disabled until other runtime domains are complete</td></tr>
                 <tr><td>backtest_engine</td><td>Backtest engine, optimizer, scanner, dashboard import, and provenance</td><td>Complete in generated Python parity matrix with mirrored request shape, run/stop bridge, scanner polling, dashboard import, and provenance coverage</td><td>Complete in generated Python parity matrix by delegating canonical backtest execution to the Python Service API</td><td>Complete for this domain</td></tr>
                 <tr><td>charts_and_heatmaps</td><td>TradingView, lightweight charts, fallbacks, browser guards, and heatmap panels</td><td>Complete in generated Python parity matrix with chart state, interval alias, asset fallback, safe-mode guard, and heatmap provider tests</td><td>Complete in generated Python parity matrix with chart state, lightweight payload, asset fallback, safe-mode guard, and heatmap provider helpers</td><td>Complete for this domain</td></tr>
-                <tr><td>logs_terminal_diagnostics</td><td>Service logs, terminal route, diagnostics, redaction, and test runner surfaces</td><td>Complete in generated Python parity matrix with service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests</td><td>Complete in generated Python parity matrix with service log schemas, terminal_run delegation boundaries, and diagnostic redaction tests</td><td>Complete for this domain</td></tr>
+                <tr><td>logs_terminal_diagnostics</td><td>Service logs, terminal route, diagnostics, redaction, and test runner surfaces</td><td>Complete in generated Python parity matrix with a controlled terminal UI, service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests</td><td>Complete in generated Python parity matrix with a controlled terminal UI, terminal_run delegation, service log schemas, and diagnostic redaction tests</td><td>Complete for this domain</td></tr>
                 <tr><td>llm_advisory</td><td>Provider catalog, advisory prompts, privacy flags, and local model lifecycle</td><td>Complete in generated Python parity matrix with prompt payload, result redaction, output-policy, and local model route/status tests</td><td>Complete in generated Python parity matrix with provider config, advisory boundary, cloud context redaction, local model route/status, and output-policy tests</td><td>Complete for this domain</td></tr>
                 <tr><td>startup_packaging_platform</td><td>Entrypoints, startup suppression, taskbar metadata, packaging, and release smoke</td><td>Complete in generated Python parity matrix with canonical entrypoint, AppUserModelID/icon, suppression env, and release smoke contract tests</td><td>Complete in generated Python parity matrix with Python entrypoint, Tauri metadata, suppression env, and release smoke contract tests</td><td>Complete for this domain</td></tr>
               </tbody>
@@ -701,9 +714,32 @@
           </div>
         </section>
         <section class="panel">
+          <h3>Controlled Terminal</h3>
+          <div class="actions">
+            <input id="service-terminal-command" value="help" placeholder="Command">
+            <button class="action primary" id="service-terminal-run-btn" type="button">Run</button>
+            <button class="action" id="service-terminal-clear-btn" type="button">Clear</button>
+          </div>
+          <pre class="log-output" id="service-terminal-output" aria-live="polite">Ready.</pre>
+        </section>
+        <section class="panel">
           <h3>Environment Versions</h3>
-          <div class="section-head"><span class="muted">0 selected</span><div class="actions"><button class="action" type="button">Update Selected</button><button class="action" type="button">Update All</button><button class="action" type="button">Check Versions</button><button class="action" type="button">Refresh Env Versions</button></div></div>
-          <div class="table-wrap" data-columns="Select|Dependency|Installed|Latest|Usage|Usage Change Counter"></div>
+          <div class="section-head">
+            <span class="muted" id="environment-selection-count">0 selected</span>
+            <div class="actions">
+              <button class="action" id="environment-update-selected-btn" type="button" disabled>Update Selected</button>
+              <button class="action" id="environment-update-all-btn" type="button">Update All</button>
+              <button class="action" id="environment-check-btn" type="button">Check Versions</button>
+              <button class="action" id="environment-refresh-btn" type="button">Refresh Env Versions</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="environment-versions-table">
+              <thead><tr><th>Select</th><th>Dependency</th><th>Installed</th><th>Latest</th><th>Usage</th><th>Usage Change Counter</th></tr></thead>
+              <tbody><tr><td colspan="6">Checking Rust environment...</td></tr></tbody>
+            </table>
+          </div>
+          <pre class="log-output" id="environment-version-output" aria-live="polite">Ready.</pre>
         </section>
       </article>
     </section>
@@ -732,6 +768,16 @@
       (pythonParityContract.connectorOptions || []).map((item) => ({
         key: String(item.key || ""),
         label: String(item.label || item.key || "")
+      })).filter((item) => item.key && item.label)
+    );
+    const rustEnvironmentDependencies = Object.freeze(
+      (pythonParityContract.rustEnvironmentDependencies || []).map((item) => ({
+        key: String(item.key || "").trim(),
+        label: String(item.label || item.key || "").trim(),
+        kind: String(item.kind || "").trim(),
+        path: String(item.path || "").trim(),
+        latest: String(item.latest || "").trim(),
+        usage: String(item.usage || "").trim()
       })).filter((item) => item.key && item.label)
     );
     const llmProviders = Object.freeze(
@@ -786,6 +832,8 @@
     const positionModeOptions = optionArray(pythonParityContract.positionModeOptions);
     const assetsModeOptions = optionArray(pythonParityContract.assetsModeOptions);
     const timeInForceOptions = optionArray(pythonParityContract.timeInForceOptions);
+    const orderTypeOptions = optionArray(pythonParityContract.orderTypeOptions);
+    const backtestExecutionBackendOptions = optionArray(pythonParityContract.backtestExecutionBackendOptions);
     const signalLogicOptions = optionArray(pythonParityContract.signalLogicOptions);
     const mddLogicOptions = optionArray(pythonParityContract.mddLogicOptions);
     const stopLossModeOptions = optionArray(pythonParityContract.stopLossModes);
@@ -793,7 +841,13 @@
     const scanScopeOptions = optionArray(pythonParityContract.scanScopeOptions);
     const optimizerModeOptions = optionArray(pythonParityContract.optimizerModeOptions);
     const optimizerMetricOptions = optionArray(pythonParityContract.optimizerMetricOptions);
-    const chartViewOptions = optionArray(pythonParityContract.chartViewOptions);
+    const chartViewKeys = textArray(pythonParityContract.chartViewKeys);
+    const chartViewOptionCatalog = optionArray(pythonParityContract.chartViewOptions);
+    const chartViewOptions = Object.freeze(chartViewKeys.length
+      ? (tauriUiBehavior.optionsMatchingKeys
+        ? tauriUiBehavior.optionsMatchingKeys(chartViewOptionCatalog, chartViewKeys)
+        : chartViewOptionCatalog.filter((option) => chartViewKeys.includes(option.key)))
+      : chartViewOptionCatalog);
     const positionsViewOptions = optionArray(pythonParityContract.positionsViewOptions);
     const chartIntervalMap = Object.freeze(Object.fromEntries(
       Object.entries(pythonParityContract.tradingviewIntervalMap || {})
@@ -933,6 +987,16 @@
       document.getElementById("config-time-in-force"),
       timeInForceOptions,
       defaultExecution.tif || timeInForceOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("config-order-type"),
+      orderTypeOptions,
+      defaultExecution.order_type || orderTypeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-execution-backend"),
+      backtestExecutionBackendOptions,
+      defaultBacktest.execution_backend || backtestExecutionBackendOptions[0]?.key
     );
     populateOptions(
       document.getElementById("backtest-account-mode"),
@@ -1152,6 +1216,7 @@
     $("backtest-optimizer-mode")?.addEventListener("change", syncBacktestOptimizerMode);
     syncBacktestOptimizerMode();
     const invoke = window.__TAURI__?.core?.invoke;
+    const listen = window.__TAURI__?.event?.listen;
     const routePaths = Object.freeze({ ...(pythonParityContract.serviceRoutePaths || {}) });
     const routeMethods = Object.freeze({ ...(pythonParityContract.serviceRouteMethods || {}) });
     const linesFrom = (value) => String(value || "").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
@@ -1161,7 +1226,7 @@
     };
     const setChecked = (id, value) => {
       const el = $(id);
-      if (el) el.checked = Boolean(value);
+      if (el && value !== undefined && value !== null) el.checked = Boolean(value);
     };
     const setValue = (id, value) => {
       const el = $(id);
@@ -1410,10 +1475,37 @@
         .map((item) => item.dataset.indicatorKey || indicatorKeyFor(item.dataset.indicatorName))
         .filter(Boolean);
     };
+    const indicatorConfigState = { runtime: {}, backtest: {} };
+    const cloneIndicatorConfig = (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return { enabled: Boolean(value) };
+      return JSON.parse(JSON.stringify(value));
+    };
+    const indicatorInputsForKind = (kind) => {
+      const container = kind === "backtest" ? "backtest-indicators" : "dashboard-indicators";
+      return [...document.querySelectorAll(`#${container} input[data-indicator-key]`)];
+    };
+    const hydrateIndicatorControlsForKind = (kind, indicators) => {
+      if (!indicators || typeof indicators !== "object" || Array.isArray(indicators)) return;
+      const state = {};
+      for (const [key, value] of Object.entries(indicators)) state[key] = cloneIndicatorConfig(value);
+      indicatorConfigState[kind] = state;
+      for (const input of indicatorInputsForKind(kind)) {
+        const key = input.dataset.indicatorKey || indicatorKeyFor(input.dataset.indicatorName);
+        if (!Object.prototype.hasOwnProperty.call(state, key)) continue;
+        input.checked = Boolean(state[key]?.enabled);
+      }
+    };
     const selectedIndicatorsConfigForKind = (kind) => {
       const config = {};
-      for (const key of selectedIndicatorKeysForKind(kind)) {
-        config[key] = { enabled: true };
+      const state = indicatorConfigState[kind] || {};
+      for (const input of indicatorInputsForKind(kind)) {
+        const key = input.dataset.indicatorKey || indicatorKeyFor(input.dataset.indicatorName);
+        const hasExistingConfig = Object.prototype.hasOwnProperty.call(state, key);
+        if (!hasExistingConfig && !input.checked) continue;
+        config[key] = {
+          ...(hasExistingConfig ? cloneIndicatorConfig(state[key]) : {}),
+          enabled: Boolean(input.checked)
+        };
       }
       return config;
     };
@@ -1892,14 +1984,35 @@
       }
     };
     let lastPositionRows = [];
+    let lastRenderedPositionRows = [];
     let positionCloseAllSupported = false;
+    let positionSingleCloseSupported = false;
     const POSITION_CLOSE_ALL_UNAVAILABLE = "A trading-capable Python runtime is required before market close-all is available.";
-    const POSITION_SINGLE_CLOSE_UNAVAILABLE = "Per-position market close is unavailable until the Python Service API provides a dedicated guarded close route.";
+    const normalizePositionCloseSide = tauriUiBehavior.normalizePositionCloseSide || ((value) => {
+      const side = String(value || "").trim().toUpperCase();
+      if (["B", "BUY", "L", "LONG"].includes(side)) return "L";
+      if (["S", "SELL", "SHORT"].includes(side)) return "S";
+      return "";
+    });
+    const positionRowCloseReady = (row) => {
+      const quantity = Number(row?.quantity);
+      const status = String(row?.status || "").trim().toUpperCase();
+      return Boolean(
+        row
+        && String(row.symbol || "").trim()
+        && String(row.symbol || "").trim().toUpperCase() !== "UNKNOWN"
+        && normalizePositionCloseSide(row.side)
+        && Number.isFinite(quantity)
+        && quantity > 0
+        && !["CLOSED", "CLOSING", "INACTIVE"].includes(status)
+      );
+    };
     const syncPositionCloseAvailability = (runtime) => {
       const controlPlane = runtime?.control_plane && typeof runtime.control_plane === "object"
         ? runtime.control_plane
         : {};
       positionCloseAllSupported = Boolean(controlPlane.trading_execution_supported && controlPlane.stop_supported);
+      positionSingleCloseSupported = Boolean(controlPlane.trading_execution_supported && routePaths.position_close);
       const closeAll = $("market-close-all-positions-btn");
       if (closeAll) {
         closeAll.disabled = !positionCloseAllSupported;
@@ -1908,8 +2021,13 @@
           : POSITION_CLOSE_ALL_UNAVAILABLE;
       }
       for (const button of document.querySelectorAll(".position-close-row-btn")) {
-        button.disabled = true;
-        button.title = POSITION_SINGLE_CLOSE_UNAVAILABLE;
+        const index = Number(button.dataset.positionIndex);
+        const row = Number.isInteger(index) ? lastRenderedPositionRows[index] : null;
+        const ready = positionSingleCloseSupported && positionRowCloseReady(row);
+        button.disabled = !ready;
+        button.title = ready
+          ? "Market close this position through the active Python trading runtime."
+          : "A trading-capable Python runtime and a valid open directional position are required.";
       }
     };
     const positionsViewMode = () => selectedValue("positions-view-select") || "cumulative";
@@ -1921,6 +2039,14 @@
     };
     const normalizePositionRow = (row) => {
       const data = row?.data && typeof row.data === "object" ? row.data : {};
+      const sourceIdentity = row?.target_identity ?? data.target_identity;
+      const targetIdentity = sourceIdentity && typeof sourceIdentity === "object" && !Array.isArray(sourceIdentity)
+        ? { ...sourceIdentity }
+        : {};
+      for (const identityKey of ["trade_id", "slot_id", "position_id", "allocation_id"]) {
+        const value = row?.[identityKey] ?? data?.[identityKey];
+        if (value !== undefined && value !== null && value !== "") targetIdentity[identityKey] = value;
+      }
       return {
         symbol: row?.symbol || data.symbol || "Unknown",
         size_usdt: row?.size_usdt ?? row?.notional ?? data.size_usdt ?? data.value,
@@ -1939,7 +2065,8 @@
         open_time: row?.open_time ?? data.open_time,
         close_time: row?.close_time ?? data.close_time,
         stop_loss: row?.stop_loss ?? (row?.stop_loss_enabled ? "Enabled" : "--"),
-        status: row?.status ?? "Active"
+        status: row?.status ?? "Active",
+        target_identity: targetIdentity
       };
     };
     const normalizePositionRows = (portfolio) => {
@@ -1955,7 +2082,8 @@
       const buckets = new Map();
       for (const row of rows) {
         const key = `${row.symbol || "Unknown"}|${row.side || ""}`;
-        const item = buckets.get(key) || { ...row, size_usdt: 0, margin_usdt: 0, quantity: 0, pnl_value: 0, intervals: new Set(), indicators: new Set() };
+        const item = buckets.get(key) || { ...row, size_usdt: 0, margin_usdt: 0, quantity: 0, pnl_value: 0, intervals: new Set(), indicators: new Set(), row_count: 0 };
+        item.row_count += 1;
         item.size_usdt = Number(item.size_usdt || 0) + Number(row.size_usdt || 0);
         item.margin_usdt = Number(item.margin_usdt || 0) + Number(row.margin_usdt || 0);
         item.quantity = Number(item.quantity || 0) + Number(row.quantity || 0);
@@ -1971,7 +2099,8 @@
       return [...buckets.values()].map((row) => ({
         ...row,
         interval: [...row.intervals].join(", ") || row.interval,
-        indicator: [...row.indicators].join(", ") || row.indicator
+        indicator: [...row.indicators].join(", ") || row.indicator,
+        target_identity: row.row_count === 1 ? row.target_identity : {}
       }));
     };
     const renderPositionsTableRows = (rows = lastPositionRows) => {
@@ -1981,12 +2110,17 @@
       if (!body) return;
       const sourceRows = Array.isArray(rows) ? rows : [];
       const displayRows = positionsViewMode() === "cumulative" ? collapsePositionRows(sourceRows) : sourceRows;
+      lastRenderedPositionRows = displayRows;
       if (!displayRows.length) {
         const columns = wrap.dataset.columns.split("|");
         body.innerHTML = `<tr>${columns.map(() => "<td>--</td>").join("")}</tr>`;
         return;
       }
       body.innerHTML = displayRows.map((row, index) => {
+        const closeReady = positionSingleCloseSupported && positionRowCloseReady(row);
+        const closeTitle = closeReady
+          ? "Market close this position through the active Python trading runtime."
+          : "A trading-capable Python runtime and a valid open directional position are required.";
         const pnl = row.pnl_value !== undefined && row.pnl_value !== null
           ? `${formatNumber(row.pnl_value, 2)} (${formatNumber(row.roi_percent, 2)}%)`
           : "--";
@@ -2008,7 +2142,7 @@
           row.close_time || "--",
           row.stop_loss || "--",
           row.status || "--",
-          `<button class="action danger position-close-row-btn" data-symbol="${escapeHtml(row.symbol)}" type="button" disabled title="${POSITION_SINGLE_CLOSE_UNAVAILABLE}">Close</button>`
+          `<button class="action danger position-close-row-btn" data-position-index="${index}" data-symbol="${escapeHtml(row.symbol)}" type="button" ${closeReady ? "" : "disabled"} title="${escapeHtml(closeTitle)}">Close</button>`
         ];
         return `<tr data-position-index="${index}">${values.map((value, col) => `<td>${col === 17 ? value : escapeHtml(value)}</td>`).join("")}</tr>`;
       }).join("");
@@ -2412,10 +2546,13 @@
     };
     const ensureServiceApi = async () => {
       const result = await startServiceApi();
-      return Boolean(result.ok || result.healthy);
+      const available = Boolean(result.ok || result.healthy);
+      if (available) await startDashboardStream();
+      return available;
     };
     const stopServiceApi = async () => {
       if (!invoke) return;
+      await stopDashboardStream();
       try {
         const result = await invoke("stop_service_api", {
           host: $("service-host")?.value || "127.0.0.1",
@@ -2439,6 +2576,154 @@
         appendLog(`[api] ${label}: failed - ${result.error || `HTTP ${result.status}`}`);
       }
       return result;
+    };
+    const runServiceTerminal = async () => {
+      const input = $("service-terminal-command");
+      const output = $("service-terminal-output");
+      const runButton = $("service-terminal-run-btn");
+      const command = String(input?.value || "").trim();
+      if (!command) {
+        if (output) output.textContent = "No command provided.";
+        return;
+      }
+      if (!(await ensureServiceApi())) return;
+      if (runButton) runButton.disabled = true;
+      if (output) output.textContent = "Running...";
+      try {
+        const result = await requestAndReport("Run terminal command", "terminal_run", "POST", {
+          command,
+          source: "tauri-desktop-terminal"
+        });
+        const payload = result.ok
+          ? result.payload
+          : { accepted: false, command, exit_code: result.status || 1, output: result.error || "Request failed." };
+        if (output) {
+          output.textContent = tauriUiBehavior.formatTerminalResult
+            ? tauriUiBehavior.formatTerminalResult(payload)
+            : String(payload.output || "No output returned.");
+        }
+      } finally {
+        if (runButton) runButton.disabled = false;
+      }
+    };
+    let environmentVersionRows = [];
+    const environmentUsageByKey = new Map();
+    const environmentUsageCounterByKey = new Map();
+    const selectedEnvironmentKeys = () => [...document.querySelectorAll(".environment-version-select:checked")]
+      .map((input) => String(input.dataset.environmentKey || ""))
+      .filter(Boolean);
+    const syncEnvironmentVersionActions = (busy = false) => {
+      const selectedCount = selectedEnvironmentKeys().length;
+      setText(
+        "environment-selection-count",
+        tauriUiBehavior.environmentSelectionCountText
+          ? tauriUiBehavior.environmentSelectionCountText(selectedCount, busy)
+          : (busy ? "Updating Rust dependencies..." : `${selectedCount} selected`)
+      );
+      const selectedButton = $("environment-update-selected-btn");
+      const allButton = $("environment-update-all-btn");
+      const checkButton = $("environment-check-btn");
+      const refreshButton = $("environment-refresh-btn");
+      if (selectedButton) selectedButton.disabled = busy || selectedCount === 0;
+      if (allButton) allButton.disabled = busy || environmentVersionRows.length === 0;
+      if (checkButton) checkButton.disabled = busy;
+      if (refreshButton) refreshButton.disabled = busy;
+      for (const input of document.querySelectorAll(".environment-version-select")) input.disabled = busy;
+    };
+    const renderEnvironmentVersionRows = (rows, selectedKeys = []) => {
+      const body = $("environment-versions-table")?.querySelector("tbody");
+      if (!body) return;
+      const selected = new Set(selectedKeys);
+      environmentVersionRows = rows.map((row) => {
+        const previousUsage = environmentUsageByKey.get(row.key);
+        let counter = environmentUsageCounterByKey.get(row.key) ?? Number(row.usageChangeCounter || 0);
+        if (previousUsage !== undefined && previousUsage !== row.usage) counter += 1;
+        environmentUsageByKey.set(row.key, row.usage);
+        environmentUsageCounterByKey.set(row.key, counter);
+        return { ...row, usageChangeCounter: counter };
+      });
+      body.innerHTML = environmentVersionRows.length
+        ? environmentVersionRows.map((row) => `<tr>
+            <td><input class="environment-version-select" type="checkbox" data-environment-key="${escapeHtml(row.key)}" ${selected.has(row.key) ? "checked" : ""} ${row.selectable === false ? "disabled" : ""}></td>
+            <td title="${escapeHtml(row.path || row.kind)}">${escapeHtml(row.label)}</td>
+            <td>${escapeHtml(row.installed)}</td>
+            <td>${escapeHtml(row.latest)}</td>
+            <td>${escapeHtml(row.usage)}</td>
+            <td>${escapeHtml(row.usageChangeCounter)}</td>
+          </tr>`).join("")
+        : '<tr><td colspan="6">No Python-declared Rust environment dependencies were returned.</td></tr>';
+      syncEnvironmentVersionActions(false);
+    };
+    const refreshEnvironmentVersions = async (label = "Check Rust environment versions") => {
+      const output = $("environment-version-output");
+      const selectedKeys = selectedEnvironmentKeys();
+      if (typeof invoke !== "function") {
+        if (output) output.textContent = "Tauri backend is unavailable; run this page inside the desktop shell.";
+        return { ok: false, rows: [], error: "Tauri backend unavailable" };
+      }
+      syncEnvironmentVersionActions(true);
+      if (output) output.textContent = `${label}...`;
+      try {
+        const result = await invoke("environment_versions");
+        if (!result?.ok) {
+          if (output) output.textContent = result?.error || "Rust environment version check failed.";
+          appendLog(`[environment] ${result?.error || "Rust environment version check failed."}`);
+          return result;
+        }
+        const rows = tauriUiBehavior.normalizeEnvironmentVersionRows
+          ? tauriUiBehavior.normalizeEnvironmentVersionRows(rustEnvironmentDependencies, result.rows)
+          : result.rows;
+        renderEnvironmentVersionRows(rows, selectedKeys);
+        if (output) output.textContent = result.message || `Checked ${rows.length} Rust environment dependencies.`;
+        appendLog(`[environment] ${result.message || "Rust environment versions checked."}`);
+        return result;
+      } catch (error) {
+        const message = error?.message || String(error);
+        if (output) output.textContent = `Rust environment version check failed: ${message}`;
+        appendLog(`[environment] Version check failed: ${message}`);
+        return { ok: false, rows: [], error: message };
+      } finally {
+        syncEnvironmentVersionActions(false);
+      }
+    };
+    const updateRustEnvironment = async (allRows = false) => {
+      const output = $("environment-version-output");
+      const selectedKeys = allRows
+        ? environmentVersionRows.map((row) => row.key)
+        : selectedEnvironmentKeys();
+      const scope = tauriUiBehavior.environmentUpdateScope
+        ? tauriUiBehavior.environmentUpdateScope(environmentVersionRows, selectedKeys)
+        : { updateToolchain: false, updateWorkspace: false, selectedCount: 0 };
+      if (!scope.updateToolchain && !scope.updateWorkspace) {
+        if (output) output.textContent = "No Rust update targets were selected.";
+        return;
+      }
+      if (typeof invoke !== "function") {
+        if (output) output.textContent = "Tauri backend is unavailable; Rust dependencies cannot be updated.";
+        return;
+      }
+      syncEnvironmentVersionActions(true);
+      if (output) output.textContent = `Updating ${scope.selectedCount} selected Rust environment row(s)...`;
+      try {
+        const result = await invoke("update_rust_environment", {
+          updateToolchain: scope.updateToolchain,
+          updateWorkspace: scope.updateWorkspace
+        });
+        if (!result?.ok) {
+          if (output) output.textContent = result?.error || "Rust environment update failed.";
+          appendLog(`[environment] Update failed: ${result?.error || "unknown error"}`);
+          return;
+        }
+        if (output) output.textContent = result.message || "Rust environment update finished.";
+        appendLog(`[environment] ${result.message || "Rust environment update finished."}`);
+        await refreshEnvironmentVersions("Refreshing Rust environment versions");
+      } catch (error) {
+        const message = error?.message || String(error);
+        if (output) output.textContent = `Rust environment update failed: ${message}`;
+        appendLog(`[environment] Update failed: ${message}`);
+      } finally {
+        syncEnvironmentVersionActions(false);
+      }
     };
     const refreshOperationalPreflight = async () => {
       const result = await requestAndReport("Recheck preflight", "operational_preflight");
@@ -2573,6 +2858,8 @@
       setSelect("config-account-mode", config.account_mode);
       setSelect("config-connector", config.connector_backend);
       setSelect("exchange-select", config.selected_exchange);
+      setValue("config-lookback", config.lookback);
+      setSelect("config-order-type", config.order_type);
       setValue("config-leverage", config.leverage);
       setSelect("config-margin-mode", config.margin_mode);
       setSelect("config-position-mode", config.position_mode);
@@ -2587,6 +2874,34 @@
       setValue("live-trading-max-position-pct", config.live_trading_max_position_pct);
       setValue("live-trading-max-session-orders", config.live_trading_max_session_orders);
       setChecked("live-allow-auto-bump-to-min-order", config.live_allow_auto_bump_to_min_order);
+      setChecked(
+        "operational-live-start-gate-enabled",
+        config.operational_live_start_gate_enabled ?? defaultExecution.operational_live_start_gate_enabled
+      );
+      setChecked(
+        "operational-live-order-gate-enabled",
+        config.operational_live_order_gate_enabled ?? defaultExecution.operational_live_order_gate_enabled
+      );
+      setValue(
+        "operational-connector-stale-seconds",
+        config.operational_connector_snapshot_stale_seconds
+          ?? defaultExecution.operational_connector_snapshot_stale_seconds
+      );
+      setValue(
+        "operational-execution-stale-seconds",
+        config.operational_execution_heartbeat_stale_seconds
+          ?? defaultExecution.operational_execution_heartbeat_stale_seconds
+      );
+      setValue(
+        "operational-account-stale-seconds",
+        config.operational_account_snapshot_stale_seconds
+          ?? defaultExecution.operational_account_snapshot_stale_seconds
+      );
+      setValue(
+        "operational-portfolio-stale-seconds",
+        config.operational_portfolio_snapshot_stale_seconds
+          ?? defaultExecution.operational_portfolio_snapshot_stale_seconds
+      );
       setValue("max-auto-bump-percent", config.max_auto_bump_percent ?? 5);
       setValue("auto-bump-percent-multiplier", config.auto_bump_percent_multiplier ?? 10);
       setChecked("order-audit-enabled", config.order_audit_enabled ?? true);
@@ -2613,6 +2928,7 @@
       setChecked("close-on-window-close", config.close_on_exit);
       setChecked("positions-auto-row-height", config.positions_auto_resize_rows ?? true);
       setChecked("positions-auto-column-width", config.positions_auto_resize_columns ?? true);
+      hydrateIndicatorControlsForKind("runtime", config.indicators);
       syncPositionsTableOptions();
       if (Array.isArray(config.runtime_symbol_interval_pairs)) {
         runtimeOverrideRows = config.runtime_symbol_interval_pairs.map(normalizeOverrideRow).filter((row) => row.symbol && row.interval);
@@ -2647,6 +2963,7 @@
       if (!backtest || typeof backtest !== "object") return;
       setValue("backtest-symbols-input", Array.isArray(backtest.symbols) ? backtest.symbols.join("\n") : "");
       setValue("backtest-intervals-input", Array.isArray(backtest.intervals) ? backtest.intervals.join("\n") : "");
+      setSelect("backtest-execution-backend", backtest.execution_backend);
       setSelect("backtest-logic", backtest.logic);
       setValue("backtest-capital", backtest.capital);
       setValue("backtest-start-date", backtest.start_date);
@@ -2671,11 +2988,15 @@
       setSelect("backtest-scan-scope", backtest.scan_scope);
       setValue("backtest-scan-top-n", backtest.scan_top_n);
       setValue("backtest-scan-mdd-limit", backtest.scan_mdd_limit);
+      setChecked("backtest-scan-auto-apply", backtest.scan_auto_apply);
       setSelect("backtest-optimizer-mode", backtest.optimizer_mode);
       setSelect("backtest-optimizer-metric", backtest.optimizer_metric);
       setValue("backtest-optimizer-combo-size", backtest.optimizer_combo_size);
       setValue("backtest-optimizer-min-trades", backtest.optimizer_min_trades);
       setValue("backtest-optimizer-max-duration", backtest.optimizer_max_duration_seconds);
+      setValue("backtest-fee-bps", backtest.fee_bps);
+      setValue("backtest-slippage-bps", backtest.slippage_bps);
+      hydrateIndicatorControlsForKind("backtest", backtest.indicators);
       syncBacktestOptimizerMode();
       if (backtest.template && typeof backtest.template === "object") {
         setChecked("backtest-template-enabled", backtest.template.enabled);
@@ -2686,9 +3007,11 @@
         renderOverrideRows("backtest");
       }
     };
-    const hydrateFromDashboard = (payload) => {
-      hydrateConfigControls(payload?.config);
-      hydrateBacktestControls(payload?.backtest);
+    const hydrateFromDashboard = (payload, { hydrateControls = true } = {}) => {
+      if (hydrateControls) {
+        hydrateConfigControls(payload?.config);
+        hydrateBacktestControls(payload?.backtest);
+      }
       syncPositionCloseAvailability(payload?.runtime);
       if (payload?.config_persistence) renderConfigPersistence(payload.config_persistence);
       if (payload?.account) renderAccountSnapshot(payload.account);
@@ -2723,15 +3046,18 @@
         return `<tr>${columns.map((_, index) => `<td>${values[index] ?? "--"}</td>`).join("")}</tr>`;
       }).join("");
     };
+    const applyDashboardPayload = (payload, { hydrateControls = true } = {}) => {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+      setStatusSnapshot(payload);
+      hydrateFromDashboard(payload, { hydrateControls });
+      const logs = Array.isArray(payload.logs) ? payload.logs : payload.logs?.items;
+      if (Array.isArray(logs) && logs.length) renderServiceLogs(logs);
+      return true;
+    };
     const refreshDashboard = async () => {
       const result = await requestAndReport("Refresh dashboard", "dashboard", "GET", null, { log_limit: "30", incident_limit: "20" });
       if (!result.ok) return result;
-      setStatusSnapshot(result.payload);
-      hydrateFromDashboard(result.payload);
-      const logs = Array.isArray(result.payload?.logs) ? result.payload.logs : result.payload?.logs?.items;
-      if (Array.isArray(logs) && logs.length) {
-        renderServiceLogs(logs);
-      }
+      applyDashboardPayload(result.payload);
       return result;
     };
     const refreshServiceLogs = async () => {
@@ -2748,6 +3074,176 @@
       await refreshOperationalPreflight();
       return result;
     };
+    let dashboardStreamDesired = false;
+    let dashboardStreamActive = false;
+    let dashboardStreamGeneration = 0;
+    let dashboardStreamReconnectAttempt = 0;
+    let dashboardStreamReconnectTimer = null;
+    let dashboardStreamEventUnlisten = null;
+    let dashboardStreamStatusUnlisten = null;
+    const setDashboardStreamStatus = (message, tone = "neutral") => {
+      const target = $("service-stream-status-text");
+      if (!target) return;
+      target.textContent = message;
+      applyTone(target, tone);
+    };
+    const clearDashboardStreamReconnect = () => {
+      if (dashboardStreamReconnectTimer !== null) {
+        window.clearTimeout(dashboardStreamReconnectTimer);
+        dashboardStreamReconnectTimer = null;
+      }
+    };
+    const scheduleDashboardStreamReconnect = () => {
+      if (!dashboardStreamDesired || dashboardStreamReconnectTimer !== null) return;
+      const delay = tauriUiBehavior.dashboardStreamReconnectDelay
+        ? tauriUiBehavior.dashboardStreamReconnectDelay(dashboardStreamReconnectAttempt)
+        : Math.min(30000, 1000 * (2 ** Math.min(dashboardStreamReconnectAttempt, 5)));
+      setDashboardStreamStatus(`Dashboard stream: reconnecting in ${Math.ceil(delay / 1000)}s`, "warn");
+      dashboardStreamReconnectTimer = window.setTimeout(async () => {
+        dashboardStreamReconnectTimer = null;
+        await startDashboardStream({ force: true });
+      }, delay);
+    };
+    const stopDashboardStream = async ({ disableReconnect = true } = {}) => {
+      if (disableReconnect) dashboardStreamDesired = false;
+      dashboardStreamActive = false;
+      dashboardStreamGeneration = 0;
+      clearDashboardStreamReconnect();
+      if (invoke) {
+        try {
+          await invoke("stop_service_dashboard_stream");
+        } catch (error) {
+          appendLog(`[stream] Stop failed - ${error}`);
+        }
+      }
+      setDashboardStreamStatus("Dashboard stream: off", "neutral");
+    };
+    const startDashboardStream = async ({ force = false } = {}) => {
+      dashboardStreamDesired = true;
+      clearDashboardStreamReconnect();
+      if (dashboardStreamActive && !force) return true;
+      if (!invoke || typeof listen !== "function") {
+        setDashboardStreamStatus("Dashboard stream: snapshot fallback", "warn");
+        return false;
+      }
+      if (force && dashboardStreamActive) {
+        try {
+          await invoke("stop_service_dashboard_stream");
+        } catch (_error) {
+          // The replacement generation cancels an older stream even if this best-effort stop fails.
+        }
+      }
+      setDashboardStreamStatus("Dashboard stream: connecting", "warn");
+      try {
+        const result = await invoke("start_service_dashboard_stream", {
+          baseUrl: serviceBaseUrl(),
+          apiToken: $("service-token")?.value || "",
+          allowPublicNetworkEndpoint: false,
+          logLimit: 30,
+          incidentLimit: 20,
+          intervalMs: 1000
+        });
+        if (!result?.ok) {
+          dashboardStreamActive = false;
+          dashboardStreamReconnectAttempt += 1;
+          setDashboardStreamStatus(`Dashboard stream: ${result?.error || "connection failed"}`, "bad");
+          scheduleDashboardStreamReconnect();
+          return false;
+        }
+        dashboardStreamActive = Boolean(result.active);
+        dashboardStreamGeneration = Number(result.generation) || 0;
+        setDashboardStreamStatus("Dashboard stream: connecting", "warn");
+        return true;
+      } catch (error) {
+        dashboardStreamActive = false;
+        dashboardStreamReconnectAttempt += 1;
+        setDashboardStreamStatus(`Dashboard stream: ${error}`, "bad");
+        scheduleDashboardStreamReconnect();
+        return false;
+      }
+    };
+    const handleDashboardStreamEvent = (event) => {
+      const envelope = tauriUiBehavior.dashboardPayloadFromStreamEvent
+        ? tauriUiBehavior.dashboardPayloadFromStreamEvent(event)
+        : event?.payload;
+      if (!envelope) return;
+      if (dashboardStreamGeneration && envelope.generation !== dashboardStreamGeneration) return;
+      dashboardStreamGeneration = envelope.generation;
+      dashboardStreamActive = true;
+      dashboardStreamReconnectAttempt = 0;
+      clearDashboardStreamReconnect();
+      if (applyDashboardPayload(envelope.payload, { hydrateControls: false })) {
+        setDashboardStreamStatus("Dashboard stream: live", "good");
+      }
+    };
+    const handleDashboardStreamStatus = async (event) => {
+      const status = event?.payload && typeof event.payload === "object" ? event.payload : {};
+      const generation = Number(status.generation) || 0;
+      if (dashboardStreamGeneration && generation && generation !== dashboardStreamGeneration) return;
+      if (generation) dashboardStreamGeneration = generation;
+      dashboardStreamActive = Boolean(status.active);
+      if (dashboardStreamActive && status.ok) {
+        dashboardStreamReconnectAttempt = 0;
+        setDashboardStreamStatus("Dashboard stream: live", "good");
+        return;
+      }
+      if (!dashboardStreamDesired) {
+        setDashboardStreamStatus("Dashboard stream: off", "neutral");
+        return;
+      }
+      dashboardStreamReconnectAttempt += 1;
+      const detail = String(status.error || status.message || "disconnected");
+      setDashboardStreamStatus(`Dashboard stream: ${detail}`, status.ok ? "warn" : "bad");
+      await refreshDashboard();
+      scheduleDashboardStreamReconnect();
+    };
+    const initializeDashboardStreamEvents = async () => {
+      if (typeof listen !== "function") {
+        setDashboardStreamStatus("Dashboard stream: snapshot fallback", "warn");
+        return;
+      }
+      dashboardStreamEventUnlisten = await listen("service-dashboard", handleDashboardStreamEvent);
+      dashboardStreamStatusUnlisten = await listen("service-dashboard-stream-status", handleDashboardStreamStatus);
+    };
+    const buildBacktestConfigPatch = () => ({
+      symbols: linesFrom($("backtest-symbols-input")?.value),
+      intervals: linesFrom($("backtest-intervals-input")?.value),
+      execution_backend: selectedValue("backtest-execution-backend") || defaultBacktest.execution_backend || "local",
+      capital: numberFrom("backtest-capital", defaultBacktest.capital ?? 1000),
+      logic: selectedValue("backtest-logic") || defaultBacktest.logic || "AND",
+      symbol_source: selectedValue("backtest-symbol-source") || defaultBacktest.symbol_source || "Futures",
+      start_date: $("backtest-start-date")?.value || null,
+      end_date: $("backtest-end-date")?.value || null,
+      position_pct: numberFrom("backtest-position-pct", defaultBacktest.position_pct ?? 2),
+      side: selectedValue("backtest-side") || defaultBacktest.side || "BOTH",
+      margin_mode: selectedValue("backtest-margin-mode") || defaultBacktest.margin_mode || "Isolated",
+      position_mode: selectedValue("backtest-position-mode") || defaultBacktest.position_mode || "Hedge",
+      assets_mode: selectedValue("backtest-assets-mode") || defaultBacktest.assets_mode || "Single-Asset",
+      account_mode: selectedValue("backtest-account-mode") || defaultBacktest.account_mode || "Classic Trading",
+      connector_backend: selectedValue("backtest-connector") || defaultBacktest.connector_backend,
+      leverage: numberFrom("backtest-leverage", defaultBacktest.leverage ?? 20),
+      mdd_logic: selectedValue("backtest-mdd-logic") || defaultBacktest.mdd_logic,
+      scan_scope: selectedValue("backtest-scan-scope") || defaultBacktest.scan_scope || "selected",
+      scan_top_n: numberFrom("backtest-scan-top-n", defaultBacktest.scan_top_n ?? 200),
+      scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", defaultBacktest.scan_mdd_limit ?? 10),
+      scan_auto_apply: Boolean($("backtest-scan-auto-apply")?.checked),
+      optimizer_mode: selectedValue("backtest-optimizer-mode") || defaultBacktest.optimizer_mode || "current",
+      optimizer_metric: selectedValue("backtest-optimizer-metric") || defaultBacktest.optimizer_metric || "roi_percent",
+      optimizer_combo_size: numberFrom("backtest-optimizer-combo-size", defaultBacktest.optimizer_combo_size ?? 2),
+      optimizer_min_trades: numberFrom("backtest-optimizer-min-trades", defaultBacktest.optimizer_min_trades ?? 1),
+      optimizer_max_duration_seconds: numberFrom(
+        "backtest-optimizer-max-duration",
+        defaultBacktest.optimizer_max_duration_seconds ?? 14400
+      ),
+      fee_bps: numberFrom("backtest-fee-bps", defaultBacktest.fee_bps ?? 5),
+      slippage_bps: numberFrom("backtest-slippage-bps", defaultBacktest.slippage_bps ?? 2),
+      template: {
+        enabled: Boolean($("backtest-template-enabled")?.checked),
+        name: selectedValue("backtest-template-name") || null
+      },
+      indicators: selectedIndicatorsConfigForKind("backtest"),
+      stop_loss: stopLossPatchForKind("backtest")
+    });
     const buildRuntimeConfigPatch = () => {
       const patch = {
         mode: selectedText("config-mode"),
@@ -2760,6 +3256,7 @@
         selected_exchange: selectedText("exchange-select"),
         theme: selectedText("config-theme"),
         design: selectedText("config-design"),
+        lookback: numberFrom("config-lookback", defaultExecution.lookback ?? 200),
         leverage: numberFrom("config-leverage", 1),
         tif: selectedValue("config-time-in-force"),
         gtd_minutes: numberFrom("config-gtd-minutes", 30),
@@ -2770,6 +3267,24 @@
         live_trading_max_position_pct: numberFrom("live-trading-max-position-pct", 10),
         live_trading_max_session_orders: numberFrom("live-trading-max-session-orders", 100),
         live_allow_auto_bump_to_min_order: Boolean($("live-allow-auto-bump-to-min-order")?.checked),
+        operational_connector_snapshot_stale_seconds: numberFrom(
+          "operational-connector-stale-seconds",
+          defaultExecution.operational_connector_snapshot_stale_seconds ?? 120
+        ),
+        operational_execution_heartbeat_stale_seconds: numberFrom(
+          "operational-execution-stale-seconds",
+          defaultExecution.operational_execution_heartbeat_stale_seconds ?? 10
+        ),
+        operational_account_snapshot_stale_seconds: numberFrom(
+          "operational-account-stale-seconds",
+          defaultExecution.operational_account_snapshot_stale_seconds ?? 300
+        ),
+        operational_portfolio_snapshot_stale_seconds: numberFrom(
+          "operational-portfolio-stale-seconds",
+          defaultExecution.operational_portfolio_snapshot_stale_seconds ?? 300
+        ),
+        operational_live_start_gate_enabled: Boolean($("operational-live-start-gate-enabled")?.checked),
+        operational_live_order_gate_enabled: Boolean($("operational-live-order-gate-enabled")?.checked),
         max_auto_bump_percent: numberFrom("max-auto-bump-percent", 5),
         auto_bump_percent_multiplier: numberFrom("auto-bump-percent-multiplier", 10),
         order_audit_enabled: Boolean($("order-audit-enabled")?.checked),
@@ -2788,8 +3303,10 @@
         positions_auto_resize_columns: Boolean($("positions-auto-column-width")?.checked),
         runtime_symbol_interval_pairs: runtimeOverrideRows,
         backtest_symbol_interval_pairs: backtestOverrideRows,
+        backtest: buildBacktestConfigPatch(),
         position_pct: numberFrom("position-pct-input", 2),
         side: selectedValue("strategy-side") || "BOTH",
+        order_type: selectedValue("config-order-type") || defaultExecution.order_type || "MARKET",
         loop_interval_override: selectedValue("loop-interval-select"),
         lead_trader_enabled: Boolean($("lead-trader-enabled")?.checked),
         lead_trader_profile: selectedValue("lead-trader-profile"),
@@ -3142,6 +3659,24 @@
       updateStartButtonFromPreflight(latestOperationalPreflight);
     });
     $("service-stop-btn")?.addEventListener("click", stopServiceApi);
+    $("service-terminal-run-btn")?.addEventListener("click", runServiceTerminal);
+    $("service-terminal-clear-btn")?.addEventListener("click", () => {
+      const output = $("service-terminal-output");
+      if (output) output.textContent = "";
+    });
+    $("service-terminal-command")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runServiceTerminal();
+      }
+    });
+    $("environment-versions-table")?.addEventListener("change", (event) => {
+      if (event.target.matches(".environment-version-select")) syncEnvironmentVersionActions(false);
+    });
+    $("environment-update-selected-btn")?.addEventListener("click", () => updateRustEnvironment(false));
+    $("environment-update-all-btn")?.addEventListener("click", () => updateRustEnvironment(true));
+    $("environment-check-btn")?.addEventListener("click", () => refreshEnvironmentVersions("Checking Rust environment versions"));
+    $("environment-refresh-btn")?.addEventListener("click", () => refreshEnvironmentVersions("Refreshing Rust environment versions"));
     $("service-preflight-btn")?.addEventListener("click", async () => {
       await refreshOperationalPreflight();
       await refreshConnectorCircuit();
@@ -3340,6 +3875,7 @@
             return;
           }
           hydrateConfigControls(result.config);
+          hydrateBacktestControls(result.config?.backtest);
           renderConfigPersistence(result.persistence);
           appendLog(`[native] Complete local config loaded: ${result.persistence?.path || "default native path"}.`);
           return;
@@ -3353,7 +3889,10 @@
       if (!(await ensureServiceApi())) return;
       const result = await requestAndReport("Load config", "config_load", "POST", { source: "tauri-desktop" });
       if (result.ok) {
-        if (result.payload?.config) hydrateConfigControls(result.payload.config);
+        if (result.payload?.config) {
+          hydrateConfigControls(result.payload.config);
+          hydrateBacktestControls(result.payload.config.backtest);
+        }
         if (result.payload?.persistence) renderConfigPersistence(result.payload.persistence);
         await refreshDashboard();
       }
@@ -3390,11 +3929,40 @@
     for (const positionsOptionId of ["positions-auto-row-height", "positions-auto-column-width"]) {
       $(positionsOptionId)?.addEventListener("change", syncPositionsTableOptions);
     }
-    $("positions-table")?.addEventListener("click", (event) => {
+    $("positions-table")?.addEventListener("click", async (event) => {
       const closeButton = event.target.closest(".position-close-row-btn");
       if (closeButton) {
         event.stopPropagation();
-        appendLog(`[positions] Per-row close for ${closeButton.dataset.symbol || "position"} is unavailable: ${POSITION_SINGLE_CLOSE_UNAVAILABLE}`);
+        const index = Number(closeButton.dataset.positionIndex);
+        const position = Number.isInteger(index) ? lastRenderedPositionRows[index] : null;
+        if (!positionSingleCloseSupported || !positionRowCloseReady(position)) {
+          appendLog(`[positions] Per-row close for ${closeButton.dataset.symbol || "position"} is unavailable or invalid.`);
+          return;
+        }
+        const symbol = String(position.symbol || "").trim().toUpperCase();
+        const sideKey = normalizePositionCloseSide(position.side);
+        const quantity = Number(position.quantity);
+        if (!window.confirm(`Market close ${symbol} ${sideKey === "L" ? "long" : "short"} position (${formatNumber(quantity, 8)})?`)) return;
+        if (!(await ensureServiceApi())) return;
+        closeButton.disabled = true;
+        const result = await requestAndReport("Market close position", "position_close", "POST", {
+          symbol,
+          side_key: sideKey,
+          interval: String(position.interval || "").trim(),
+          quantity,
+          target_identity: position.target_identity && typeof position.target_identity === "object"
+            ? position.target_identity
+            : {},
+          confirm_close: true,
+          source: "tauri-desktop-positions"
+        });
+        if (result.ok && result.payload?.accepted !== false) {
+          appendLog(`[positions] Position close accepted for ${symbol}.`);
+          await refreshPositions();
+        } else {
+          appendLog(`[positions] Position close rejected for ${symbol}: ${result.payload?.status_message || result.error || `HTTP ${result.status}`}`);
+          closeButton.disabled = false;
+        }
         return;
       }
       const row = event.target.closest("tbody tr[data-position-index]");
@@ -3477,10 +4045,31 @@
       setText("backtest-scan-status-text", "Backtest cancellation requested...");
       await requestAndReport("Stop backtest", "backtest_stop", "POST", { source: "tauri-desktop" });
     });
+    hydrateConfigControls(defaultExecution);
+    hydrateBacktestControls(defaultBacktest);
     syncPositionsTableOptions();
     renderOverrideRows("runtime");
     renderOverrideRows("backtest");
     renderChartState();
+    serviceEnabled.addEventListener("change", () => {
+      if (!serviceEnabled.checked) void stopDashboardStream();
+    });
+    for (const id of ["service-host", "service-port", "service-token"]) {
+      $(id)?.addEventListener("change", () => {
+        if (dashboardStreamDesired) void startDashboardStream({ force: true });
+      });
+    }
+    window.addEventListener("beforeunload", () => {
+      dashboardStreamDesired = false;
+      clearDashboardStreamReconnect();
+      if (typeof dashboardStreamEventUnlisten === "function") dashboardStreamEventUnlisten();
+      if (typeof dashboardStreamStatusUnlisten === "function") dashboardStreamStatusUnlisten();
+      if (invoke) void invoke("stop_service_dashboard_stream");
+    });
+    initializeDashboardStreamEvents().catch((error) => {
+      setDashboardStreamStatus(`Dashboard stream: ${error}`, "bad");
+    });
+    refreshEnvironmentVersions("Checking Rust environment versions");
   </script>
 </body>
 </html>

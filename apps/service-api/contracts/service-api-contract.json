@@ -25,6 +25,7 @@
     "operational_preflight": "/runtime/operational-preflight",
     "control_start": "/control/start",
     "control_stop": "/control/stop",
+    "position_close": "/positions/close",
     "control_start_failed": "/control/start-failed",
     "connector_order_circuit_breaker": "/runtime/connector-order-circuit-breaker",
     "connector_order_circuit_breaker_reset": "/runtime/connector-order-circuit-breaker/reset",
@@ -61,6 +62,7 @@
     "operational_preflight": "/api/v1/runtime/operational-preflight",
     "control_start": "/api/v1/control/start",
     "control_stop": "/api/v1/control/stop",
+    "position_close": "/api/v1/positions/close",
     "control_start_failed": "/api/v1/control/start-failed",
     "connector_order_circuit_breaker": "/api/v1/runtime/connector-order-circuit-breaker",
     "connector_order_circuit_breaker_reset": "/api/v1/runtime/connector-order-circuit-breaker/reset",
@@ -97,6 +99,7 @@
     "operational_preflight": "/api/runtime/operational-preflight",
     "control_start": "/api/control/start",
     "control_stop": "/api/control/stop",
+    "position_close": "/api/positions/close",
     "control_start_failed": "/api/control/start-failed",
     "connector_order_circuit_breaker": "/api/runtime/connector-order-circuit-breaker",
     "connector_order_circuit_breaker_reset": "/api/runtime/connector-order-circuit-breaker/reset",
@@ -163,6 +166,9 @@
       "POST"
     ],
     "control_stop": [
+      "POST"
+    ],
+    "position_close": [
       "POST"
     ],
     "control_start_failed": [
@@ -547,6 +553,30 @@
         "active_engine_count",
         "requested_job_count",
         "close_positions_requested",
+        "source",
+        "status_message",
+        "generated_at"
+      ]
+    },
+    "position_close": {
+      "query_fields": [],
+      "request_fields": [
+        "symbol",
+        "side_key",
+        "interval",
+        "quantity",
+        "target_identity",
+        "confirm_close",
+        "source"
+      ],
+      "response_fields": [
+        "accepted",
+        "action",
+        "symbol",
+        "side_key",
+        "interval",
+        "quantity",
+        "target_identity",
         "source",
         "status_message",
         "generated_at"

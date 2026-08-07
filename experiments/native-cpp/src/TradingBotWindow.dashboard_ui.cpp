@@ -106,6 +106,7 @@ void TradingBotWindow::registerDashboardRuntimeLockWidget(QWidget *widget) {
 void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxLayout *root) {
     auto *accountBox = new QGroupBox("Account & Status", page);
     auto *accountGrid = new QGridLayout(accountBox);
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
     accountGrid->setHorizontalSpacing(10);
     accountGrid->setVerticalSpacing(8);
     accountGrid->setContentsMargins(12, 12, 12, 12);
@@ -506,6 +507,73 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     dashboardConnectorOrderIncidentBackupCountSpin_ = incidentBackupCountSpin;
     registerDashboardRuntimeLockWidget(incidentBackupCountSpin);
     addPair(8, col, "Incident backups:", incidentBackupCountSpin);
+
+    col = 0;
+    auto *lookbackSpin = new QSpinBox(accountBox);
+    lookbackSpin->setRange(1, 1'000'000);
+    lookbackSpin->setValue(executionDefaults.value(QStringLiteral("lookback")).toInt(200));
+    lookbackSpin->setToolTip("Number of candles loaded for each native C++ strategy evaluation.");
+    dashboardLookbackSpin_ = lookbackSpin;
+    registerDashboardRuntimeLockWidget(lookbackSpin);
+    addPair(9, col, "Lookback bars:", lookbackSpin);
+
+    auto *orderTypeCombo = new QComboBox(accountBox);
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        orderTypeCombo,
+        TradingBotWindowSupport::pythonSourceOrderTypeOptionKeys(),
+        TradingBotWindowSupport::pythonSourceOrderTypeOptionLabels(),
+        {},
+        executionDefaults.value(QStringLiteral("order_type")).toString(QStringLiteral("MARKET")));
+    orderTypeCombo->setToolTip("Persisted Python order preference. The current Python and C++ strategy entry runtimes submit market orders.");
+    dashboardOrderTypeCombo_ = orderTypeCombo;
+    registerDashboardRuntimeLockWidget(orderTypeCombo);
+    addPair(9, col, "Order type:", orderTypeCombo);
+
+    auto createFreshnessSpin = [accountBox](double value) {
+        auto *spin = new QDoubleSpinBox(accountBox);
+        spin->setRange(1.0, 24.0 * 60.0 * 60.0);
+        spin->setDecimals(1);
+        spin->setSuffix(" s");
+        spin->setValue(value);
+        return spin;
+    };
+    auto *connectorStaleSpin = createFreshnessSpin(
+        executionDefaults.value(QStringLiteral("operational_connector_snapshot_stale_seconds")).toDouble(120.0));
+    dashboardOperationalConnectorStaleSpin_ = connectorStaleSpin;
+    registerDashboardRuntimeLockWidget(connectorStaleSpin);
+    addPair(9, col, "Connector stale:", connectorStaleSpin);
+
+    auto *executionStaleSpin = createFreshnessSpin(
+        executionDefaults.value(QStringLiteral("operational_execution_heartbeat_stale_seconds")).toDouble(10.0));
+    dashboardOperationalExecutionStaleSpin_ = executionStaleSpin;
+    registerDashboardRuntimeLockWidget(executionStaleSpin);
+    addPair(9, col, "Execution stale:", executionStaleSpin);
+
+    auto *accountStaleSpin = createFreshnessSpin(
+        executionDefaults.value(QStringLiteral("operational_account_snapshot_stale_seconds")).toDouble(300.0));
+    dashboardOperationalAccountStaleSpin_ = accountStaleSpin;
+    registerDashboardRuntimeLockWidget(accountStaleSpin);
+    addPair(9, col, "Account stale:", accountStaleSpin);
+
+    auto *portfolioStaleSpin = createFreshnessSpin(
+        executionDefaults.value(QStringLiteral("operational_portfolio_snapshot_stale_seconds")).toDouble(300.0));
+    dashboardOperationalPortfolioStaleSpin_ = portfolioStaleSpin;
+    registerDashboardRuntimeLockWidget(portfolioStaleSpin);
+    addPair(9, col, "Portfolio stale:", portfolioStaleSpin);
+
+    auto *liveStartGateCheck = new QCheckBox("Require operational start gate", accountBox);
+    liveStartGateCheck->setChecked(
+        executionDefaults.value(QStringLiteral("operational_live_start_gate_enabled")).toBool(true));
+    dashboardOperationalLiveStartGateCheck_ = liveStartGateCheck;
+    registerDashboardRuntimeLockWidget(liveStartGateCheck);
+    accountGrid->addWidget(liveStartGateCheck, 10, 0, 1, 4);
+
+    auto *liveOrderGateCheck = new QCheckBox("Require operational order gate", accountBox);
+    liveOrderGateCheck->setChecked(
+        executionDefaults.value(QStringLiteral("operational_live_order_gate_enabled")).toBool(true));
+    dashboardOperationalLiveOrderGateCheck_ = liveOrderGateCheck;
+    registerDashboardRuntimeLockWidget(liveOrderGateCheck);
+    accountGrid->addWidget(liveOrderGateCheck, 10, 4, 1, 4);
 
     for (int stretchCol : {1, 2, 4, 6, 8, 10, 12}) {
         accountGrid->setColumnStretch(stretchCol, 1);

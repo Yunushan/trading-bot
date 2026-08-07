@@ -5,7 +5,7 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "c6a4f93010c6d8b9452a7ed8309663c10c51269dfe8f9aabc249f2152058a40a";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "2dd75cf66238467ff5e800c729a5eb626fccbac11a012ca88ddcc20e96a050ad";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -190,6 +190,7 @@ pub const PYTHON_PARITY_DOMAINS: &[PythonParityDomain] = &[
     "operational_preflight",
     "control_start",
     "control_stop",
+    "position_close",
     "control_start_failed",
     "connector_order_circuit_breaker",
     "connector_order_circuit_breaker_reset",
@@ -291,6 +292,11 @@ pub const PYTHON_SERVICE_ROUTES: &[PythonServiceRoute] = &[
     PythonServiceRoute {
         name: "control_stop",
         path: "/api/v1/control/stop",
+        methods: &["POST"],
+    },
+    PythonServiceRoute {
+        name: "position_close",
+        path: "/api/v1/positions/close",
         methods: &["POST"],
     },
     PythonServiceRoute {
@@ -487,6 +493,12 @@ pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[
         query_fields: &[],
         request_fields: &["close_positions", "source"],
         response_fields: &["accepted", "action", "lifecycle_phase", "runtime_active", "active_engine_count", "requested_job_count", "close_positions_requested", "source", "status_message", "generated_at"],
+    },
+    PythonServiceRouteSchema {
+        name: "position_close",
+        query_fields: &[],
+        request_fields: &["symbol", "side_key", "interval", "quantity", "target_identity", "confirm_close", "source"],
+        response_fields: &["accepted", "action", "symbol", "side_key", "interval", "quantity", "target_identity", "source", "status_message", "generated_at"],
     },
     PythonServiceRouteSchema {
         name: "control_start_failed",
@@ -1246,6 +1258,66 @@ pub const PYTHON_CONNECTOR_OPTIONS: &[PythonConnectorOption] = &[
     PythonConnectorOption {
         key: "python-binance",
         label: "python-binance (Community)",
+    },
+];
+
+    pub struct PythonRustEnvironmentDependency {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub kind: &'static str,
+    pub path: &'static str,
+    pub latest: &'static str,
+    pub usage: &'static str,
+}
+
+pub const PYTHON_RUST_ENVIRONMENT_DEPENDENCIES: &[PythonRustEnvironmentDependency] = &[
+    PythonRustEnvironmentDependency {
+        key: "rustc",
+        label: "rustc",
+        kind: "rust_rustc",
+        path: "",
+        latest: "Install rustup",
+        usage: "",
+    },
+    PythonRustEnvironmentDependency {
+        key: "cargo",
+        label: "cargo",
+        kind: "rust_cargo",
+        path: "",
+        latest: "Install rustup",
+        usage: "",
+    },
+    PythonRustEnvironmentDependency {
+        key: "experiments/rust-shells/Cargo.toml",
+        label: "Trading Bot Rust workspace",
+        kind: "rust_file_version",
+        path: "experiments/rust-shells/Cargo.toml",
+        latest: "",
+        usage: "Active",
+    },
+    PythonRustEnvironmentDependency {
+        key: "experiments/rust-shells/crates/core/Cargo.toml",
+        label: "trading-bot-core",
+        kind: "rust_file_version",
+        path: "experiments/rust-shells/crates/core/Cargo.toml",
+        latest: "",
+        usage: "Active",
+    },
+    PythonRustEnvironmentDependency {
+        key: "experiments/rust-shells/crates/contracts/Cargo.toml",
+        label: "trading-bot-contracts",
+        kind: "rust_file_version",
+        path: "experiments/rust-shells/crates/contracts/Cargo.toml",
+        latest: "",
+        usage: "Active",
+    },
+    PythonRustEnvironmentDependency {
+        key: "experiments/rust-shells/apps/tauri-desktop/Cargo.toml",
+        label: "Tauri (Primary)",
+        kind: "rust_file_version",
+        path: "experiments/rust-shells/apps/tauri-desktop/Cargo.toml",
+        latest: "",
+        usage: "Active",
     },
 ];
 

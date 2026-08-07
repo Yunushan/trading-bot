@@ -24,7 +24,7 @@ below are satisfied.
 | --- | --- | --- |
 | Shared contracts crate | Active foundation | Common types and workspace contracts |
 | Shared core crate | Active foundation | Intended home for reusable Rust-side business logic |
-| Tauri desktop shell | Operational client with guarded native runtime | The only user-selectable Rust desktop shell; manages the Python Service API and wires guarded native market/account/order cycles, while live submission remains promotion-gated |
+| Tauri desktop shell | Operational client with guarded native runtime | The only user-selectable Rust desktop shell; manages the Python Service API, consumes its authenticated dashboard SSE stream with reconnect/snapshot fallback, and wires guarded native market/account/order cycles, while live submission remains promotion-gated |
 
 For this project, use `Tauri` for Rust desktop work because it is the only Rust shell with an interactive Service API client and managed local Python Service API flow.
 

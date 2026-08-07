@@ -51,6 +51,8 @@ int main(int argc, char **argv) {
     };
 
     const QStringList routes = TradingBotWindowSupport::pythonSourceServiceRouteNames();
+    check(routes.size() == 35,
+          QStringLiteral("generated Python Service API contract should expose all 35 routes"));
     check(contains(routes, QStringLiteral("dashboard")),
           QStringLiteral("generated route names should include dashboard"));
     check(contains(routes, QStringLiteral("config")),

@@ -42,7 +42,7 @@ platform/installer/credential-gated evidence.
 | Order execution and risk | Complete native Binance USD-M Futures order audit, preflight, circuit breaker, exchange filters, signed market/limit submission, retry/fallback, close/stop/shutdown guards, and risk behavior | Complete for the implemented Binance Futures scope; other venues remain gated |
 | Backtest engine | Native C++ historical simulator and batch optimizer are the default local backend, with generated Python indicator defaults, paginated Binance candle loading, cancellation, bounded ranking, dashboard import, and a Python Service API compatibility backend | Complete for the implemented Binance backtest domain; live-trading ownership remains separate |
 | Charts and heatmaps | Complete chart state payloads, TradingView interval aliases, lightweight asset fallbacks, safe-mode guards, and liquidation provider catalog tests | Complete for this domain |
-| Logs, terminal, diagnostics | Complete service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests | Complete for this domain |
+| Logs, terminal, diagnostics | Complete controlled terminal UI delegated to the Python Service API, service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests | Complete for this domain |
 | LLM advisory | Complete prompt/config/local-model service route payloads, result redaction, output-policy checks, and local model status tests | Complete for this domain |
 | Startup, packaging, platform | Complete canonical entrypoint contracts, startup suppression flags, AppUserModelID/icon metadata, and release smoke contract tests | Complete for this domain |
 

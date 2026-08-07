@@ -567,7 +567,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "c6a4f93010c6d8b9452a7ed8309663c10c51269dfe8f9aabc249f2152058a40a",
+  "contractHash": "2dd75cf66238467ff5e800c729a5eb626fccbac11a012ca88ddcc20e96a050ad",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -3847,6 +3847,56 @@
     }
   ],
   "rustContractParityReady": true,
+  "rustEnvironmentDependencies": [
+    {
+      "key": "rustc",
+      "kind": "rust_rustc",
+      "label": "rustc",
+      "latest": "Install rustup",
+      "path": "",
+      "usage": ""
+    },
+    {
+      "key": "cargo",
+      "kind": "rust_cargo",
+      "label": "cargo",
+      "latest": "Install rustup",
+      "path": "",
+      "usage": ""
+    },
+    {
+      "key": "experiments/rust-shells/Cargo.toml",
+      "kind": "rust_file_version",
+      "label": "Trading Bot Rust workspace",
+      "latest": "",
+      "path": "experiments/rust-shells/Cargo.toml",
+      "usage": "Active"
+    },
+    {
+      "key": "experiments/rust-shells/crates/core/Cargo.toml",
+      "kind": "rust_file_version",
+      "label": "trading-bot-core",
+      "latest": "",
+      "path": "experiments/rust-shells/crates/core/Cargo.toml",
+      "usage": "Active"
+    },
+    {
+      "key": "experiments/rust-shells/crates/contracts/Cargo.toml",
+      "kind": "rust_file_version",
+      "label": "trading-bot-contracts",
+      "latest": "",
+      "path": "experiments/rust-shells/crates/contracts/Cargo.toml",
+      "usage": "Active"
+    },
+    {
+      "key": "experiments/rust-shells/apps/tauri-desktop/Cargo.toml",
+      "kind": "rust_file_version",
+      "label": "Tauri (Primary)",
+      "latest": "",
+      "path": "experiments/rust-shells/apps/tauri-desktop/Cargo.toml",
+      "usage": "Active"
+    }
+  ],
   "rustFullParityReady": false,
   "rustStandaloneRuntimeReady": false,
   "scanScopeOptions": [
@@ -3963,6 +4013,9 @@
       "GET",
       "PUT"
     ],
+    "position_close": [
+      "POST"
+    ],
     "runtime": [
       "GET"
     ],
@@ -3995,6 +4048,7 @@
     "operational_preflight",
     "control_start",
     "control_stop",
+    "position_close",
     "control_start_failed",
     "connector_order_circuit_breaker",
     "connector_order_circuit_breaker_reset",
@@ -4045,6 +4099,7 @@
     "metrics": "/api/v1/metrics",
     "operational_preflight": "/api/v1/runtime/operational-preflight",
     "portfolio": "/api/v1/portfolio",
+    "position_close": "/api/v1/positions/close",
     "runtime": "/api/v1/runtime",
     "runtime_state": "/api/v1/runtime/state",
     "status": "/api/v1/status",
@@ -4091,6 +4146,7 @@
     "metrics": [],
     "operational_preflight": [],
     "portfolio": [],
+    "position_close": [],
     "runtime": [],
     "runtime_state": [],
     "status": [],
@@ -4203,6 +4259,15 @@
       "closed_margin",
       "total_balance",
       "available_balance",
+      "source"
+    ],
+    "position_close": [
+      "symbol",
+      "side_key",
+      "interval",
+      "quantity",
+      "target_identity",
+      "confirm_close",
       "source"
     ],
     "runtime": [],
@@ -4560,6 +4625,18 @@
       "available_balance",
       "positions",
       "source",
+      "generated_at"
+    ],
+    "position_close": [
+      "accepted",
+      "action",
+      "symbol",
+      "side_key",
+      "interval",
+      "quantity",
+      "target_identity",
+      "source",
+      "status_message",
       "generated_at"
     ],
     "runtime": [
@@ -4965,6 +5042,31 @@
         "active_engine_count",
         "requested_job_count",
         "close_positions_requested",
+        "source",
+        "status_message",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "position_close",
+      "query_fields": [],
+      "request_fields": [
+        "symbol",
+        "side_key",
+        "interval",
+        "quantity",
+        "target_identity",
+        "confirm_close",
+        "source"
+      ],
+      "response_fields": [
+        "accepted",
+        "action",
+        "symbol",
+        "side_key",
+        "interval",
+        "quantity",
+        "target_identity",
         "source",
         "status_message",
         "generated_at"
@@ -5418,6 +5520,13 @@
       ],
       "name": "control_stop",
       "path": "/api/v1/control/stop"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "position_close",
+      "path": "/api/v1/positions/close"
     },
     {
       "methods": [

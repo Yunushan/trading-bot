@@ -357,12 +357,19 @@ Write/control routes:
 
 - `POST /api/v1/control/start`
 - `POST /api/v1/control/stop`
+- `POST /api/v1/positions/close`
 - `PATCH /api/v1/config`
 - `POST /api/v1/config/save`
 - `POST /api/v1/config/load`
 - `PUT /api/v1/runtime/state`
 - `POST /api/v1/backtest/run`
 - `POST /api/v1/backtest/stop`
+
+`POST /api/v1/positions/close` is available only through a control plane that
+declares real trading execution ownership, such as the desktop-hosted Python
+runtime. It requires bearer authentication, `confirm_close: true`, a validated
+futures side, and a finite positive quantity. The standalone lifecycle
+heartbeat rejects the request without attempting an order.
 
 ## Service config persistence
 

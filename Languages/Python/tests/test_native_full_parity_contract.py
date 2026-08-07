@@ -15,6 +15,8 @@ from app.service.api_contract import (  # noqa: E402
     SERVICE_API_ROUTE_SUFFIXES,
     SERVICE_BACKTEST_RUN_REQUEST_FIELDS,
 )
+from app.settings.backtest import BacktestSettings  # noqa: E402
+from app.settings.execution import ExecutionSettings  # noqa: E402
 
 
 def _read(path: Path) -> str:
@@ -197,10 +199,13 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("Rust contract/catalog parity ready: true", tauri_html)
         self.assertIn("Full standalone runtime parity ready: false", tauri_html)
         self.assertIn("POSITION_CLOSE_ALL_UNAVAILABLE", tauri_html)
-        self.assertIn("POSITION_SINGLE_CLOSE_UNAVAILABLE", tauri_html)
+        self.assertNotIn("POSITION_SINGLE_CLOSE_UNAVAILABLE", tauri_html)
+        self.assertIn("positionSingleCloseSupported", tauri_html)
+        self.assertIn("routePaths.position_close", tauri_html)
+        self.assertIn('"position_close"', tauri_html)
+        self.assertIn("confirm_close: true", tauri_html)
         self.assertIn("syncPositionCloseAvailability(payload?.runtime)", tauri_html)
         self.assertIn("controlPlane.trading_execution_supported && controlPlane.stop_supported", tauri_html)
-        self.assertIn("Per-position market close is unavailable until the Python Service API provides a dedicated guarded close route.", tauri_html)
         self.assertNotIn("use Market Close ALL Positions in this shell", tauri_html)
         self.assertIn("Python App Contract Parity Audit", tauri_html)
         self.assertIn("native_python_app_contract_parity_ready() == true", rust_readme)
@@ -1262,6 +1267,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("rust_config_persistence_uses_python_source_options", native_source_sync_audit)
         self.assertIn("cpp_native_strategy_runtime_uses_python_source_options", native_source_sync_audit)
         self.assertIn("tauri_browser_service_api_uses_python_source_routes", native_source_sync_audit)
+        self.assertIn("tauri_dashboard_stream_backend_uses_python_source_route", native_source_sync_audit)
+        self.assertIn("tauri_dashboard_stream_browser_bridge", native_source_sync_audit)
         self.assertIn("extracted_service_route_names", native_source_sync_audit)
         self.assertIn("unknown_service_routes", native_source_sync_audit)
         self.assertIn("CPP_SERVICE_API_ROUTE_RE", native_source_sync_audit)
@@ -1512,6 +1519,155 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn('const snapshot = await pollBacktestUntilIdle("Run backtest")', tauri_html)
         self.assertIn('setText("backtest-scan-status-text", "Backtest cancellation requested...")', tauri_html)
 
+    def test_tauri_persists_and_hydrates_complete_python_execution_and_backtest_settings(self):
+        tauri_html = _read(REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html")
+        runtime_builder = _section(
+            tauri_html,
+            "const buildRuntimeConfigPatch = () => {",
+            "const buildNativeRuntimeConfig = () => {",
+        )
+        backtest_builder = _section(
+            tauri_html,
+            "const buildBacktestConfigPatch = () => ({",
+            "const buildRuntimeConfigPatch = () => {",
+        )
+
+        for field in ExecutionSettings().to_config_dict():
+            self.assertRegex(
+                runtime_builder,
+                rf"\b{re.escape(field)}\s*:",
+                f"Tauri runtime config persistence is missing Python ExecutionSettings field {field!r}",
+            )
+        for field in BacktestSettings().to_config_dict():
+            self.assertRegex(
+                backtest_builder,
+                rf"\b{re.escape(field)}\s*:",
+                f"Tauri backtest config persistence is missing Python BacktestSettings field {field!r}",
+            )
+
+        for control_id in (
+            "config-lookback",
+            "config-order-type",
+            "operational-connector-stale-seconds",
+            "operational-execution-stale-seconds",
+            "operational-account-stale-seconds",
+            "operational-portfolio-stale-seconds",
+            "operational-live-start-gate-enabled",
+            "operational-live-order-gate-enabled",
+            "backtest-execution-backend",
+            "backtest-fee-bps",
+            "backtest-slippage-bps",
+            "backtest-scan-auto-apply",
+        ):
+            self.assertIn(f'id="{control_id}"', tauri_html)
+
+        for generated_property in (
+            "pythonParityContract.orderTypeOptions",
+            "pythonParityContract.backtestExecutionBackendOptions",
+            "pythonParityContract.chartViewKeys",
+        ):
+            self.assertIn(generated_property, tauri_html)
+        self.assertIn("backtest: buildBacktestConfigPatch()", runtime_builder)
+        self.assertIn('hydrateIndicatorControlsForKind("runtime", config.indicators)', tauri_html)
+        self.assertIn('hydrateIndicatorControlsForKind("backtest", backtest.indicators)', tauri_html)
+        self.assertIn("hydrateBacktestControls(result.config?.backtest)", tauri_html)
+
+    def test_cpp_persists_and_hydrates_complete_python_execution_and_backtest_settings(self):
+        cpp_root = REPO_ROOT / "experiments" / "native-cpp" / "src"
+        window_header = _read(cpp_root / "TradingBotWindow.h")
+        support_header = _read(cpp_root / "TradingBotWindowSupport.h")
+        support_source = _read(cpp_root / "TradingBotWindowSupport.cpp")
+        dashboard_ui = _read(cpp_root / "TradingBotWindow.dashboard_ui.cpp")
+        dashboard_overrides = _read(cpp_root / "TradingBotWindow.dashboard_overrides.cpp")
+        dashboard_runtime = _read(cpp_root / "TradingBotWindow.dashboard_runtime.cpp")
+        backtest_source = _read(cpp_root / "TradingBotWindow.backtest.cpp")
+        backtest_batch_header = _read(cpp_root / "NativeBacktestBatchRuntime.h")
+        backtest_batch_source = _read(cpp_root / "NativeBacktestBatchRuntime.cpp")
+        generated = _read(cpp_root / "generated" / "PythonParityContract.h")
+
+        runtime_builder = _section(
+            dashboard_overrides,
+            "QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {",
+            "bool TradingBotWindow::hydrateDashboardServiceConfig",
+        )
+        backtest_builder = _section(
+            backtest_source,
+            "QJsonObject TradingBotWindow::buildBacktestServiceConfig() const {",
+            "bool TradingBotWindow::hydrateBacktestServiceConfig",
+        )
+        backtest_request = _section(
+            backtest_source,
+            "void TradingBotWindow::startBacktest(bool optimizerRequested) {",
+            "void TradingBotWindow::resumeBacktestCheckpoint()",
+        )
+
+        for field in ExecutionSettings().to_config_dict():
+            self.assertIn(
+                f'QStringLiteral("{field}")',
+                runtime_builder,
+                f"C++ runtime config persistence is missing Python ExecutionSettings field {field!r}",
+            )
+        for field in BacktestSettings().to_config_dict():
+            self.assertIn(
+                f'QStringLiteral("{field}")',
+                backtest_builder,
+                f"C++ backtest config persistence is missing Python BacktestSettings field {field!r}",
+            )
+        for field in SERVICE_BACKTEST_RUN_REQUEST_FIELDS:
+            self.assertIn(
+                f'QStringLiteral("{field}")',
+                backtest_request,
+                f"C++ backtest request is missing canonical Python field {field!r}",
+            )
+
+        for member in (
+            "dashboardLookbackSpin_",
+            "dashboardOrderTypeCombo_",
+            "dashboardOperationalConnectorStaleSpin_",
+            "dashboardOperationalExecutionStaleSpin_",
+            "dashboardOperationalAccountStaleSpin_",
+            "dashboardOperationalPortfolioStaleSpin_",
+            "dashboardOperationalLiveStartGateCheck_",
+            "dashboardOperationalLiveOrderGateCheck_",
+            "backtestExecutionBackendCombo_",
+            "backtestFeeBpsSpin_",
+            "backtestSlippageBpsSpin_",
+            "backtestScanAutoApplyCheck_",
+            "backtestTemplateEnabledCheck_",
+            "backtestTemplateCombo_",
+        ):
+            self.assertIn(member, window_header)
+            self.assertTrue(member in dashboard_ui or member in backtest_source)
+
+        self.assertIn("kPythonDefaultExecutionJson", generated)
+        self.assertIn("kPythonDefaultBacktestJson", generated)
+        self.assertIn("pythonSourceDefaultExecutionConfig", support_header)
+        self.assertIn("pythonSourceDefaultBacktestConfig", support_header)
+        self.assertIn("PythonParityContract::kPythonDefaultExecutionJson", support_source)
+        self.assertIn("PythonParityContract::kPythonDefaultBacktestJson", support_source)
+        self.assertIn('config.insert(QStringLiteral("backtest"), buildBacktestServiceConfig())', runtime_builder)
+        self.assertIn("hydrateBacktestServiceConfig", dashboard_overrides)
+        self.assertIn("hydrateBacktestSymbolIntervalPairs", dashboard_overrides)
+        self.assertIn('params.remove(QStringLiteral("enabled"))', dashboard_overrides)
+        self.assertIn("buildBacktestSymbolIntervalPairs()", backtest_request)
+        self.assertIn("batchRequest.pairOverrides = pairOverrides", backtest_request)
+        self.assertIn("estimateRunCount(batchRequest)", backtest_request)
+        self.assertIn("runTemplate.feeBps", backtest_request)
+        self.assertIn("runTemplate.slippageBps", backtest_request)
+        self.assertIn("QJsonArray pairOverrides", backtest_batch_header)
+        self.assertIn("estimateRunCount(const BatchRequest &request)", backtest_batch_header)
+        for fragment in (
+            "buildOverridePlans",
+            "mergedPairControls",
+            "resolveIndicatorBundle",
+            "applyPairControls",
+            "strategyControls(runTemplate)",
+            "candleCache",
+        ):
+            self.assertIn(fragment, backtest_batch_source)
+        self.assertIn("const int lookback = dashboardLookbackSpin_", dashboard_runtime)
+        self.assertNotIn("cache.size() > 240", dashboard_runtime)
+
     def test_rust_route_catalog_matches_python_service_contract(self):
         rust_root = REPO_ROOT / "experiments" / "rust-shells"
         core = _read(rust_root / "crates" / "core" / "src" / "lib.rs")
@@ -1544,6 +1700,37 @@ class NativeFullParityContractTests(unittest.TestCase):
             for field_group in SERVICE_API_ROUTE_SCHEMAS[route_name].values():
                 for field in field_group:
                     self.assertIn(f'"{field}"', tauri_generated)
+
+    def test_native_backtest_engines_are_guarded_by_python_reference(self):
+        rust_core = REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src"
+        cpp_root = REPO_ROOT / "experiments" / "native-cpp"
+        rust_lib = _read(rust_core / "lib.rs")
+        rust_backtest = _read(rust_core / "backtest_runtime.rs")
+        cpp_backtest = _read(cpp_root / "src" / "NativeBacktestRuntime.cpp")
+        cpp_tests = _read(cpp_root / "tests" / "NativeOrderSafetyTests.cpp")
+
+        self.assertIn("pub mod backtest_runtime", rust_lib)
+        for fragment in (
+            "PYTHON_INDICATOR_REFERENCE_JSON",
+            "compute_configured_indicator_series",
+            "pub fn run_native_backtest(",
+            "pub fn run_native_backtest_with_cancel",
+            'combine_signals(&sell_arrays, size, "OR")',
+            "realized_pnl - trade.entry_fee",
+            "native_backtest_matches_every_generated_python_reference_case",
+        ):
+            self.assertIn(fragment, rust_backtest)
+
+        self.assertIn('combine(sellArrays, QStringLiteral("OR"))', cpp_backtest)
+        self.assertIn("*realizedPnl - trade.entryFee", cpp_backtest)
+        for metric in (
+            "max_drawdown_result_value",
+            "fee_bps",
+            "slippage_bps",
+            "fees_paid",
+            "indicator_keys",
+        ):
+            self.assertIn(f'QStringLiteral("{metric}")', cpp_tests)
 
     def test_cpp_full_parity_boundary_is_explicit(self):
         cpp_root = REPO_ROOT / "experiments" / "native-cpp"
@@ -2096,6 +2283,102 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("POST /api/v1/terminal/run", native_service_api_tests)
         self.assertIn("requested_job_count", native_service_api_tests)
         self.assertIn("exchange_support", native_service_api_tests)
+
+    def test_native_desktops_expose_controlled_python_terminal(self):
+        cpp_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.cpp")
+        tauri_root = REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui"
+        tauri_html = _read(tauri_root / "index.html")
+        tauri_behavior = _read(tauri_root / "tauri-ui-behavior.js")
+        tauri_behavior_tests = _read(tauri_root / "tauri-ui-behavior.test.cjs")
+
+        for fragment in (
+            "Controlled Terminal",
+            "TradingBotWindowSupport::serviceApiRequestJson",
+            'QStringLiteral("terminal_run")',
+            'QStringLiteral("cpp-desktop-terminal")',
+        ):
+            self.assertIn(fragment, cpp_source)
+        for fragment in (
+            'id="service-terminal-command"',
+            'id="service-terminal-run-btn"',
+            'id="service-terminal-output"',
+            '"terminal_run"',
+            'source: "tauri-desktop-terminal"',
+        ):
+            self.assertIn(fragment, tauri_html)
+        self.assertIn("formatTerminalResult", tauri_behavior)
+        self.assertIn("Command accepted", tauri_behavior_tests)
+
+    def test_tauri_environment_versions_use_python_source_catalog_and_fixed_native_commands(self):
+        rust_root = REPO_ROOT / "experiments" / "rust-shells"
+        core = _read(rust_root / "crates" / "core" / "src" / "lib.rs")
+        generated = _read(rust_root / "crates" / "core" / "src" / "generated_python_parity.rs")
+        tauri_root = rust_root / "apps" / "tauri-desktop"
+        tauri_main = _read(tauri_root / "src" / "main.rs")
+        tauri_html = _read(tauri_root / "ui" / "index.html")
+        tauri_behavior = _read(tauri_root / "ui" / "tauri-ui-behavior.js")
+        tauri_behavior_tests = _read(tauri_root / "ui" / "tauri-ui-behavior.test.cjs")
+
+        self.assertIn("pub struct PythonRustEnvironmentDependency", generated)
+        self.assertIn("PYTHON_RUST_ENVIRONMENT_DEPENDENCIES", generated)
+        self.assertIn("python_source_rust_environment_dependencies", core)
+        for fragment in (
+            "fn environment_dependency_rows",
+            "fn environment_versions",
+            "fn update_rust_environment",
+            "validate_rust_environment_update_scope",
+            'find_rust_tool("rustup")',
+            'find_rust_tool("cargo")',
+            'join("Cargo.toml")',
+        ):
+            self.assertIn(fragment, tauri_main)
+        self.assertNotIn("Command::new(update_command)", tauri_main)
+        for fragment in (
+            'id="environment-versions-table"',
+            'id="environment-update-selected-btn"',
+            'id="environment-update-all-btn"',
+            "pythonParityContract.rustEnvironmentDependencies",
+            'invoke("environment_versions"',
+            'invoke("update_rust_environment"',
+        ):
+            self.assertIn(fragment, tauri_html)
+        self.assertIn("normalizeEnvironmentVersionRows", tauri_behavior)
+        self.assertIn("environmentUpdateScope", tauri_behavior)
+        self.assertIn("Rust environment fragment", tauri_behavior_tests)
+
+    def test_tauri_dashboard_uses_authenticated_python_source_sse_stream(self):
+        tauri_root = REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop"
+        tauri_main = _read(tauri_root / "src" / "main.rs")
+        tauri_html = _read(tauri_root / "ui" / "index.html")
+        tauri_behavior = _read(tauri_root / "ui" / "tauri-ui-behavior.js")
+        tauri_behavior_tests = _read(tauri_root / "ui" / "tauri-ui-behavior.test.cjs")
+
+        for fragment in (
+            'const ROUTE_NAME: &str = "stream_dashboard"',
+            "fn run_service_dashboard_stream",
+            "fn start_service_dashboard_stream",
+            "fn stop_service_dashboard_stream",
+            'header("Accept", "text/event-stream")',
+            "bearer_auth(api_token.trim())",
+            '"service-dashboard"',
+            '"service-dashboard-stream-status"',
+            ".manage(ServiceDashboardStreamState::default())",
+        ):
+            self.assertIn(fragment, tauri_main)
+        for fragment in (
+            'id="service-stream-status-text"',
+            'listen("service-dashboard"',
+            'listen("service-dashboard-stream-status"',
+            'invoke("start_service_dashboard_stream"',
+            'invoke("stop_service_dashboard_stream"',
+            "applyDashboardPayload",
+            "scheduleDashboardStreamReconnect",
+            "hydrateControls: false",
+        ):
+            self.assertIn(fragment, tauri_html)
+        self.assertIn("dashboardPayloadFromStreamEvent", tauri_behavior)
+        self.assertIn("dashboardStreamReconnectDelay", tauri_behavior)
+        self.assertIn("missing dashboard stream fragment", tauri_behavior_tests)
 
 
 if __name__ == "__main__":

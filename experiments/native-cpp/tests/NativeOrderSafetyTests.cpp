@@ -224,6 +224,9 @@ int main(int argc, char **argv) {
             QStringLiteral("position_pct"),
             QStringLiteral("stop_loss_usdt"),
             QStringLiteral("stop_loss_percent"),
+            QStringLiteral("fee_bps"),
+            QStringLiteral("slippage_bps"),
+            QStringLiteral("fees_paid"),
         };
         const QJsonObject actualJson = actual.toJson();
         for (const QString &key : numericKeys) {
@@ -255,6 +258,10 @@ int main(int argc, char **argv) {
         }
         check(actual.stopLossEnabled == expected.value(QStringLiteral("stop_loss_enabled")).toBool(),
               QStringLiteral("native C++ backtest stop-loss enabled state should match Python for %1")
+                  .arg(caseName));
+        check(actualJson.value(QStringLiteral("indicator_keys")).toArray()
+                  == expected.value(QStringLiteral("indicator_keys")).toArray(),
+              QStringLiteral("native C++ backtest indicator keys should match Python for %1")
                   .arg(caseName));
     }
 
@@ -387,6 +394,69 @@ int main(int argc, char **argv) {
     check(batchSnapshot.value(QStringLiteral("top_run")).toObject().value(QStringLiteral("source")).toString()
               == QStringLiteral("native-cpp-backtest"),
           QStringLiteral("native batch backtest should identify its native C++ source"));
+
+    NativeBacktestBatchRuntime::BatchRequest overrideBatchRequest = batchRequest;
+    overrideBatchRequest.indicatorConfigs = optimizerConfigs;
+    overrideBatchRequest.optimizerMode = QStringLiteral("combinations");
+    overrideBatchRequest.optimizerComboSize = 2;
+    const QJsonObject pairStopLoss{
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("mode"), QStringLiteral("percent")},
+        {QStringLiteral("percent"), 2.5},
+        {QStringLiteral("scope"), QStringLiteral("per_trade")},
+    };
+    const QJsonObject pairControls{
+        {QStringLiteral("logic"), QStringLiteral("AND")},
+        {QStringLiteral("capital"), 500.0},
+        {QStringLiteral("side"), QStringLiteral("SELL")},
+        {QStringLiteral("position_pct"), 25.0},
+        {QStringLiteral("position_pct_units"), QStringLiteral("percent")},
+        {QStringLiteral("leverage"), 4.0},
+        {QStringLiteral("stop_loss"), pairStopLoss},
+    };
+    const QJsonObject pairOverride{
+        {QStringLiteral("symbol"), QStringLiteral("BTCUSDT")},
+        {QStringLiteral("interval"), QStringLiteral("1m")},
+        {QStringLiteral("indicators"), QJsonArray{QStringLiteral("rsi")}},
+        {QStringLiteral("strategy_controls"), pairControls},
+        {QStringLiteral("loop_interval_override"), QStringLiteral("5m")},
+        {QStringLiteral("connector_backend"), QStringLiteral("binance-rest")},
+    };
+    overrideBatchRequest.pairOverrides = QJsonArray{pairOverride, pairOverride};
+    check(NativeBacktestBatchRuntime::estimateRunCount(overrideBatchRequest) == 1,
+          QStringLiteral("native pair overrides should replace the Cartesian optimizer plan and deduplicate like Python"));
+    int pairOverrideLoads = 0;
+    const QJsonObject overrideBatchSnapshot = NativeBacktestBatchRuntime::runBatch(
+        overrideBatchRequest,
+        [&indicatorCandles, &pairOverrideLoads](
+            const QString &,
+            const QString &,
+            const NativeBacktestBatchRuntime::StopCallback &) {
+            ++pairOverrideLoads;
+            return NativeBacktestBatchRuntime::CandleLoadResult{true, indicatorCandles, {}};
+        });
+    check(overrideBatchSnapshot.value(QStringLiteral("state")).toString() == QStringLiteral("completed")
+              && overrideBatchSnapshot.value(QStringLiteral("processed_count")).toInt() == 1,
+          QStringLiteral("native pair override batch should execute the explicit override exactly once"));
+    check(pairOverrideLoads == 1,
+          QStringLiteral("native pair override batch should reuse candle data for duplicate pair plans"));
+    const QJsonObject overrideTopRun = overrideBatchSnapshot.value(QStringLiteral("top_run")).toObject();
+    const QJsonArray overrideIndicatorKeys = overrideTopRun.value(QStringLiteral("indicator_keys")).toArray();
+    check(overrideIndicatorKeys.contains(QStringLiteral("rsi"))
+              && overrideIndicatorKeys.contains(QStringLiteral("volume"))
+              && !overrideIndicatorKeys.contains(QStringLiteral("macd")),
+          QStringLiteral("native pair override should select requested signals and retain global filters like Python"));
+    check(overrideTopRun.value(QStringLiteral("side")).toString() == QStringLiteral("SELL")
+              && std::abs(overrideTopRun.value(QStringLiteral("capital")).toDouble() - 500.0) < 1e-12
+              && std::abs(overrideTopRun.value(QStringLiteral("leverage")).toDouble() - 4.0) < 1e-12,
+          QStringLiteral("native pair override should apply side, capital, and leverage controls"));
+    check(overrideTopRun.value(QStringLiteral("stop_loss_enabled")).toBool(false)
+              && overrideTopRun.value(QStringLiteral("stop_loss_mode")).toString() == QStringLiteral("percent")
+              && std::abs(overrideTopRun.value(QStringLiteral("stop_loss_percent")).toDouble() - 2.5) < 1e-12,
+          QStringLiteral("native pair override should apply nested stop-loss controls"));
+    check(overrideTopRun.value(QStringLiteral("loop_interval_override")).toString() == QStringLiteral("5m")
+              && overrideTopRun.value(QStringLiteral("connector_backend")).toString() == QStringLiteral("binance-rest"),
+          QStringLiteral("native pair override should preserve pair-specific execution metadata"));
 
     NativeOrderSafety::LiveOrderGuardInput paperInvalidOrder;
     paperInvalidOrder.mode = QStringLiteral("Demo/Testnet");

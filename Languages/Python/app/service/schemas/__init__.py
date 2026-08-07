@@ -17,7 +17,17 @@ from .backtest import (
     make_backtest_command_result,
 )
 from .config import ServiceConfigSummary, build_config_summary
-from .control import BotControlRequest, BotControlResult, make_control_result, make_start_request, make_stop_request
+from .control import (
+    BotControlRequest,
+    BotControlResult,
+    PositionCloseRequest,
+    PositionCloseResult,
+    make_control_result,
+    make_position_close_request,
+    make_position_close_result,
+    make_start_request,
+    make_stop_request,
+)
 from .execution import ServiceExecutionSnapshot, build_execution_snapshot
 from .logs import ServiceLogEvent, make_log_event
 from .positions import ServicePortfolioSnapshot, ServicePositionSnapshot, build_portfolio_snapshot, build_position_snapshot
@@ -28,6 +38,8 @@ __all__ = [
     "BotStatusSnapshot",
     "BotControlRequest",
     "BotControlResult",
+    "PositionCloseRequest",
+    "PositionCloseResult",
     "ServiceAccountSnapshot",
     "ServiceBacktestCommandResult",
     "ServiceBacktestErrorRecord",
@@ -48,6 +60,8 @@ __all__ = [
     "build_execution_snapshot",
     "make_backtest_command_result",
     "make_control_result",
+    "make_position_close_request",
+    "make_position_close_result",
     "make_log_event",
     "build_portfolio_snapshot",
     "build_position_snapshot",

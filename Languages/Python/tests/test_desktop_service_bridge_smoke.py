@@ -21,6 +21,7 @@ class _FakeDesktopClient:
         self.backtest_request = None
         self.backtest_source = ""
         self.backtest_snapshot = {"state": "idle", "run_count": 0}
+        self.position_close_request = None
 
     def replace_config(self, config):
         self.config = config
@@ -57,6 +58,14 @@ class _FakeDesktopClient:
         self.start_result["requested_job_count"] = requested_job_count
         self.start_result["source"] = source
         return self.start_result
+
+    def request_position_close(self, **kwargs):
+        self.position_close_request = dict(kwargs)
+        return {
+            "accepted": True,
+            "action": "position_close",
+            "symbol": str(kwargs.get("symbol") or "").upper(),
+        }
 
     def submit_backtest(self, request=None, *, source="desktop-backtest"):
         self.backtest_request = dict(request or {})
@@ -100,6 +109,7 @@ class DesktopServiceBridgeSmokeTests(unittest.TestCase):
             "_reset_service_connector_order_circuit_breaker",
             "_service_request_start",
             "_service_request_stop",
+            "_service_request_position_close",
             "_service_mark_start_failed",
             "_service_record_log_event",
             "_service_submit_backtest",
@@ -127,6 +137,19 @@ class DesktopServiceBridgeSmokeTests(unittest.TestCase):
         self.assertEqual(window._desktop_service_client.config, {"demo": True})
         self.assertEqual(window._get_service_operational_preflight()["state"], "ok")
         self.assertTrue(window._service_request_start(requested_job_count=2)["accepted"])
+        position_close_result = window._service_request_position_close(
+            symbol="BTCUSDT",
+            side_key="L",
+            interval="1m",
+            quantity=0.25,
+            target_identity={"trade_id": "trade-a"},
+        )
+        self.assertTrue(position_close_result["accepted"])
+        self.assertTrue(window._desktop_service_client.position_close_request["confirm_close"])
+        self.assertEqual(
+            "trade-a",
+            window._desktop_service_client.position_close_request["target_identity"]["trade_id"],
+        )
         backtest_result = window._service_submit_backtest(
             {"symbols": ["BTCUSDT"], "optimizer_mode": "pairs"},
             source="desktop-test",

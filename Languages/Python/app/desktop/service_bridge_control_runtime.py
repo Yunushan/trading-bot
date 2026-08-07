@@ -51,7 +51,7 @@ def _coerce_service_control_payload(request) -> dict[str, object]:  # noqa: ANN0
 def _queue_service_control_request(self, request) -> dict[str, object]:  # noqa: ANN001
     payload = _coerce_service_control_payload(request)
     action = str(payload.get("action") or "").strip().lower()
-    if action not in {"start", "stop"}:
+    if action not in {"start", "stop", "position_close"}:
         return {"accepted": False, "message": f"Unsupported control action: {action or 'unknown'}."}
     if bool(getattr(self, "_force_close", False)) or bool(getattr(self, "_close_in_progress", False)):
         return {"accepted": False, "message": "Desktop window is closing; control request rejected."}
@@ -70,7 +70,7 @@ def _queue_service_control_request(self, request) -> dict[str, object]:  # noqa:
     request_source = str(payload.get("source") or "service-api").strip() or "service-api"
     return {
         "accepted": True,
-        "message": f"{action.title()} request forwarded to the desktop GUI from {request_source}.",
+        "message": f"{action.replace('_', ' ').title()} request forwarded to the desktop GUI from {request_source}.",
     }
 
 
@@ -79,6 +79,28 @@ def _handle_service_control_request(self, payload: dict | None) -> None:
     control_payload = payload if isinstance(payload, dict) else {}
     action = str(control_payload.get("action") or "").strip().lower()
     source = str(control_payload.get("source") or "service-api").strip() or "service-api"
+
+    if action == "position_close":
+        symbol = str(control_payload.get("symbol") or "").strip().upper()
+        side_key = str(control_payload.get("side_key") or "").strip().upper()
+        interval = str(control_payload.get("interval") or "").strip()
+        quantity = control_payload.get("quantity")
+        target_identity = control_payload.get("target_identity")
+        if not bool(control_payload.get("confirm_close")):
+            _service_bridge_log(self, f"Service API position close rejected for {symbol}: confirmation missing.")
+            return
+        _service_bridge_log(self, f"Service API position close accepted for {symbol} {side_key} ({source}).")
+        try:
+            self._close_position_single(
+                symbol,
+                side_key,
+                interval or None,
+                quantity,
+                dict(target_identity) if isinstance(target_identity, dict) else None,
+            )
+        except Exception as exc:
+            _service_bridge_log(self, f"Service API position close dispatch failed for {symbol}: {exc}")
+        return
 
     if action == "start":
         if bool(getattr(self, "_is_stopping_engines", False)):
@@ -167,6 +189,35 @@ def _service_request_stop(self, *, close_positions: bool = False, source: str = 
         client.request_stop(close_positions=close_positions, source=source)
     except Exception:
         pass
+
+
+def _service_request_position_close(
+    self,
+    *,
+    symbol: str,
+    side_key: str,
+    interval: str = "",
+    quantity: float,
+    target_identity: dict | None = None,
+    source: str = "desktop-positions",
+) -> dict | None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return None
+    try:
+        result = client.request_position_close(
+            symbol=symbol,
+            side_key=side_key,
+            interval=interval,
+            quantity=quantity,
+            target_identity=dict(target_identity or {}),
+            confirm_close=True,
+            source=source,
+        )
+        payload = _coerce_service_control_payload(result)
+        return payload if payload else None
+    except Exception:
+        return None
 
 
 def _service_mark_start_failed(self, *, reason: str = "", source: str = "desktop-start") -> None:

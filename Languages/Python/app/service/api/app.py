@@ -87,7 +87,7 @@ try:
     from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
     from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 
     FASTAPI_AVAILABLE = True
     _FASTAPI_IMPORT_ERROR = None
@@ -152,6 +152,16 @@ if FASTAPI_AVAILABLE:
 
     class StopControlRequest(BaseModel):
         close_positions: bool = False
+        source: str = "api"
+
+
+    class PositionCloseRequest(BaseModel):
+        symbol: str
+        side_key: str
+        interval: str = ""
+        quantity: float
+        target_identity: dict[str, object] = Field(default_factory=dict)
+        confirm_close: bool = False
         source: str = "api"
 
 
@@ -787,6 +797,22 @@ def create_service_api_app(
             close_positions=payload.close_positions,
             source=payload.source,
         )
+        return result.to_dict()
+
+    @api_router.post("/positions/close", dependencies=[Depends(_require_write_api_auth)])
+    def request_position_close(payload: PositionCloseRequest):
+        try:
+            result = _service().request_position_close(
+                symbol=payload.symbol,
+                side_key=payload.side_key,
+                interval=payload.interval,
+                quantity=payload.quantity,
+                target_identity=payload.target_identity,
+                confirm_close=payload.confirm_close,
+                source=payload.source,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return result.to_dict()
 
     @api_router.post("/backtest/run", dependencies=[Depends(_require_write_api_auth)])

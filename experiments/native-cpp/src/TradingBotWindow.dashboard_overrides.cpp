@@ -610,8 +610,11 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     }
     config.insert(QStringLiteral("symbols"), symbols);
     config.insert(QStringLiteral("intervals"), intervals);
+    config.insert(QStringLiteral("lookback"), dashboardLookbackSpin_ ? dashboardLookbackSpin_->value() : 200);
     config.insert(QStringLiteral("runtime_symbol_interval_pairs"), dashboardOverrideRows(dashboardOverridesTable_));
+    config.insert(QStringLiteral("backtest_symbol_interval_pairs"), buildBacktestSymbolIntervalPairs());
     config.insert(QStringLiteral("position_pct"), dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : 2.0);
+    config.insert(QStringLiteral("order_type"), comboDataOrText(dashboardOrderTypeCombo_, QStringLiteral("MARKET")));
     config.insert(QStringLiteral("live_trading_enabled"), dashboardLiveTradingEnabledCheck_ && dashboardLiveTradingEnabledCheck_->isChecked());
     config.insert(
         QStringLiteral("live_trading_acknowledgement"),
@@ -662,6 +665,24 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     config.insert(
         QStringLiteral("connector_order_circuit_incident_log_backup_count"),
         dashboardConnectorOrderIncidentBackupCountSpin_ ? dashboardConnectorOrderIncidentBackupCountSpin_->value() : 1);
+    config.insert(
+        QStringLiteral("operational_connector_snapshot_stale_seconds"),
+        dashboardOperationalConnectorStaleSpin_ ? dashboardOperationalConnectorStaleSpin_->value() : 120.0);
+    config.insert(
+        QStringLiteral("operational_execution_heartbeat_stale_seconds"),
+        dashboardOperationalExecutionStaleSpin_ ? dashboardOperationalExecutionStaleSpin_->value() : 10.0);
+    config.insert(
+        QStringLiteral("operational_account_snapshot_stale_seconds"),
+        dashboardOperationalAccountStaleSpin_ ? dashboardOperationalAccountStaleSpin_->value() : 300.0);
+    config.insert(
+        QStringLiteral("operational_portfolio_snapshot_stale_seconds"),
+        dashboardOperationalPortfolioStaleSpin_ ? dashboardOperationalPortfolioStaleSpin_->value() : 300.0);
+    config.insert(
+        QStringLiteral("operational_live_start_gate_enabled"),
+        dashboardOperationalLiveStartGateCheck_ && dashboardOperationalLiveStartGateCheck_->isChecked());
+    config.insert(
+        QStringLiteral("operational_live_order_gate_enabled"),
+        dashboardOperationalLiveOrderGateCheck_ && dashboardOperationalLiveOrderGateCheck_->isChecked());
     config.insert(QStringLiteral("side"), comboDataOrText(dashboardSideCombo_, QStringLiteral("BOTH")));
     config.insert(QStringLiteral("loop_interval_override"), comboDataOrText(dashboardLoopOverrideCombo_, QStringLiteral("1m")));
     config.insert(QStringLiteral("lead_trader_enabled"), dashboardLeadTraderEnableCheck_ && dashboardLeadTraderEnableCheck_->isChecked());
@@ -693,6 +714,7 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     stopLoss.insert(QStringLiteral("percent"), dashboardStopLossPercentSpin_ ? dashboardStopLossPercentSpin_->value() : 0.0);
     config.insert(QStringLiteral("stop_loss"), stopLoss);
     config.insert(QStringLiteral("indicators"), dashboardIndicatorConfig(dashboardIndicatorChecks_, dashboardIndicatorParams_));
+    config.insert(QStringLiteral("backtest"), buildBacktestServiceConfig());
 
     config.insert(QStringLiteral("llm_enabled"), dashboardLlmEnableCheck_ && dashboardLlmEnableCheck_->isChecked());
     config.insert(QStringLiteral("llm_provider"), llmProviderKey(dashboardLlmProviderCombo_));
@@ -738,12 +760,16 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
     setComboValue(dashboardThemeCombo_, config.value(QStringLiteral("theme")));
     setComboValue(dashboardIndicatorSourceCombo_, config.value(QStringLiteral("indicator_source")));
     setComboValue(dashboardTimeInForceCombo_, config.value(QStringLiteral("tif")));
+    setComboValue(dashboardOrderTypeCombo_, config.value(QStringLiteral("order_type")));
     setComboValue(dashboardSideCombo_, config.value(QStringLiteral("side")));
     setComboValue(dashboardLoopOverrideCombo_, config.value(QStringLiteral("loop_interval_override")));
     setComboValue(dashboardLeadTraderCombo_, config.value(QStringLiteral("lead_trader_profile")));
 
     if (dashboardLeverageSpin_ && config.contains(QStringLiteral("leverage"))) {
         dashboardLeverageSpin_->setValue(config.value(QStringLiteral("leverage")).toInt(dashboardLeverageSpin_->value()));
+    }
+    if (dashboardLookbackSpin_ && config.contains(QStringLiteral("lookback"))) {
+        dashboardLookbackSpin_->setValue(config.value(QStringLiteral("lookback")).toInt(dashboardLookbackSpin_->value()));
     }
     if (dashboardGtdMinutesSpin_ && config.contains(QStringLiteral("gtd_minutes"))) {
         dashboardGtdMinutesSpin_->setValue(config.value(QStringLiteral("gtd_minutes")).toInt(dashboardGtdMinutesSpin_->value()));
@@ -833,6 +859,40 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
             config.value(QStringLiteral("connector_order_circuit_incident_log_backup_count")).toInt(
                 dashboardConnectorOrderIncidentBackupCountSpin_->value()));
     }
+    if (dashboardOperationalConnectorStaleSpin_
+        && config.contains(QStringLiteral("operational_connector_snapshot_stale_seconds"))) {
+        dashboardOperationalConnectorStaleSpin_->setValue(
+            config.value(QStringLiteral("operational_connector_snapshot_stale_seconds")).toDouble(
+                dashboardOperationalConnectorStaleSpin_->value()));
+    }
+    if (dashboardOperationalExecutionStaleSpin_
+        && config.contains(QStringLiteral("operational_execution_heartbeat_stale_seconds"))) {
+        dashboardOperationalExecutionStaleSpin_->setValue(
+            config.value(QStringLiteral("operational_execution_heartbeat_stale_seconds")).toDouble(
+                dashboardOperationalExecutionStaleSpin_->value()));
+    }
+    if (dashboardOperationalAccountStaleSpin_
+        && config.contains(QStringLiteral("operational_account_snapshot_stale_seconds"))) {
+        dashboardOperationalAccountStaleSpin_->setValue(
+            config.value(QStringLiteral("operational_account_snapshot_stale_seconds")).toDouble(
+                dashboardOperationalAccountStaleSpin_->value()));
+    }
+    if (dashboardOperationalPortfolioStaleSpin_
+        && config.contains(QStringLiteral("operational_portfolio_snapshot_stale_seconds"))) {
+        dashboardOperationalPortfolioStaleSpin_->setValue(
+            config.value(QStringLiteral("operational_portfolio_snapshot_stale_seconds")).toDouble(
+                dashboardOperationalPortfolioStaleSpin_->value()));
+    }
+    if (dashboardOperationalLiveStartGateCheck_
+        && config.contains(QStringLiteral("operational_live_start_gate_enabled"))) {
+        dashboardOperationalLiveStartGateCheck_->setChecked(
+            config.value(QStringLiteral("operational_live_start_gate_enabled")).toBool(true));
+    }
+    if (dashboardOperationalLiveOrderGateCheck_
+        && config.contains(QStringLiteral("operational_live_order_gate_enabled"))) {
+        dashboardOperationalLiveOrderGateCheck_->setChecked(
+            config.value(QStringLiteral("operational_live_order_gate_enabled")).toBool(true));
+    }
     if (dashboardLeadTraderEnableCheck_ && config.contains(QStringLiteral("lead_trader_enabled"))) {
         dashboardLeadTraderEnableCheck_->setChecked(config.value(QStringLiteral("lead_trader_enabled")).toBool(false));
     }
@@ -858,6 +918,9 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
 
     selectListValues(dashboardSymbolList_, config.value(QStringLiteral("symbols")).toArray(), true);
     selectListValues(dashboardIntervalList_, config.value(QStringLiteral("intervals")).toArray(), false);
+    if (config.value(QStringLiteral("backtest_symbol_interval_pairs")).isArray()) {
+        hydrateBacktestSymbolIntervalPairs(config.value(QStringLiteral("backtest_symbol_interval_pairs")).toArray());
+    }
 
     const QJsonObject stopLoss = config.value(QStringLiteral("stop_loss")).toObject();
     if (!stopLoss.isEmpty()) {
@@ -884,7 +947,12 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
         if (indicator.contains(QStringLiteral("enabled"))) {
             check->setChecked(indicator.value(QStringLiteral("enabled")).toBool(check->isChecked()));
         }
+        QJsonObject params = indicator;
+        params.remove(QStringLiteral("enabled"));
+        dashboardIndicatorParams_.insert(it.key(), params.toVariantMap());
     }
+
+    hydrateBacktestServiceConfig(config.value(QStringLiteral("backtest")).toObject());
 
     if (dashboardOverridesTable_) {
         dashboardOverridesTable_->setRowCount(0);

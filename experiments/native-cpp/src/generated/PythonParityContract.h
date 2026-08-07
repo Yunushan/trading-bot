@@ -9,13 +9,15 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "c6a4f93010c6d8b9452a7ed8309663c10c51269dfe8f9aabc249f2152058a40a";
+inline constexpr std::string_view kPythonSourceContractHash = "2dd75cf66238467ff5e800c729a5eb626fccbac11a012ca88ddcc20e96a050ad";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
 inline constexpr bool kRustStandaloneRuntimeReady = false;
 inline constexpr bool kCppFullParityReady = false;
 inline constexpr bool kRustFullParityReady = false;
+inline constexpr std::string_view kPythonDefaultExecutionJson = "{\"account_mode\":\"Classic Trading\",\"account_type\":\"Futures\",\"assets_mode\":\"Single-Asset\",\"backtest_symbol_interval_pairs\":[],\"connector_order_block_circuit_breaker_enabled\":true,\"connector_order_block_pause_threshold\":2,\"connector_order_block_window_seconds\":60.0,\"connector_order_circuit_incident_log_backup_count\":1,\"connector_order_circuit_incident_log_max_bytes\":2097152,\"connector_order_circuit_incident_log_path\":\"\",\"gtd_minutes\":30,\"intervals\":[\"1m\"],\"lead_trader_enabled\":false,\"lead_trader_profile\":null,\"leverage\":1,\"live_allow_auto_bump_to_min_order\":false,\"live_trading_acknowledgement\":\"\",\"live_trading_enabled\":false,\"live_trading_max_leverage\":20,\"live_trading_max_position_pct\":10.0,\"live_trading_max_session_orders\":100,\"lookback\":200,\"loop_interval_override\":\"1m\",\"margin_mode\":\"Isolated\",\"mode\":\"Demo/Testnet\",\"operational_account_snapshot_stale_seconds\":300.0,\"operational_connector_snapshot_stale_seconds\":120.0,\"operational_execution_heartbeat_stale_seconds\":10.0,\"operational_live_order_gate_enabled\":true,\"operational_live_start_gate_enabled\":true,\"operational_portfolio_snapshot_stale_seconds\":300.0,\"order_audit_backup_count\":1,\"order_audit_enabled\":true,\"order_audit_log_path\":\"\",\"order_audit_max_bytes\":10485760,\"order_type\":\"MARKET\",\"position_mode\":\"Hedge\",\"position_pct\":2.0,\"runtime_symbol_interval_pairs\":[],\"side\":\"BOTH\",\"symbols\":[\"BTCUSDT\"],\"tif\":\"GTC\"}";
+inline constexpr std::string_view kPythonDefaultBacktestJson = "{\"account_mode\":\"Classic Trading\",\"assets_mode\":\"Single-Asset\",\"capital\":1000.0,\"connector_backend\":\"binance-sdk-derivatives-trading-usds-futures\",\"end_date\":null,\"execution_backend\":\"local\",\"fee_bps\":5.0,\"indicators\":{\"adx\":{\"buy_value\":20,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_role\":\"filter\"},\"ao\":{\"buy_value\":0,\"enabled\":false,\"fast\":5,\"sell_value\":0,\"slow\":34},\"aroon\":{\"buy_value\":50,\"enabled\":false,\"length\":25,\"sell_value\":-50},\"atr\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_mode\":\"percent_of_close\",\"signal_role\":\"filter\"},\"bb\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\",\"std\":2},\"bbw\":{\"buy_value\":5.0,\"enabled\":false,\"length\":20,\"sell_value\":2.0,\"std\":2},\"cci\":{\"buy_value\":-100,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":100},\"chop\":{\"buy_value\":38.2,\"enabled\":false,\"length\":14,\"sell_value\":61.8},\"cmf\":{\"buy_value\":0.05,\"enabled\":false,\"length\":20,\"sell_value\":-0.05},\"dmi\":{\"buy_value\":0,\"enabled\":false,\"length\":14,\"sell_value\":0},\"donchian\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"ema\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"ichimoku\":{\"base_length\":26,\"buy_value\":0,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":0,\"span_b_length\":52},\"keltner\":{\"atr_length\":10,\"buy_value\":0,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"kst\":{\"buy_value\":0,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":0,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15},\"ma\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\",\"type\":\"SMA\"},\"macd\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"mfi\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80},\"natr\":{\"buy_value\":2.0,\"enabled\":false,\"length\":14,\"sell_value\":1.0},\"obv\":{\"buy_value\":0,\"enabled\":false,\"length\":3,\"sell_value\":0,\"signal_mode\":\"slope\"},\"ppo\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"psar\":{\"af\":0.02,\"buy_value\":0,\"enabled\":false,\"max_af\":0.2,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"roc\":{\"buy_value\":0,\"enabled\":false,\"length\":12,\"sell_value\":0},\"rsi\":{\"buy_value\":30,\"enabled\":true,\"length\":14,\"sell_value\":70},\"rvol\":{\"buy_value\":1.5,\"enabled\":false,\"length\":20,\"sell_value\":0.75},\"stoch_rsi\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"stochastic\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"supertrend\":{\"atr_period\":10,\"buy_value\":0,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"trix\":{\"buy_value\":0,\"enabled\":false,\"length\":15,\"sell_value\":0},\"uo\":{\"buy_value\":30,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":70,\"short\":7},\"volume\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":20,\"sell_value\":null,\"signal_mode\":\"relative_to_sma\",\"signal_role\":\"filter\"},\"vwap\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"willr\":{\"buy_value\":-80,\"enabled\":false,\"length\":14,\"sell_value\":-20}},\"intervals\":[\"1h\"],\"leverage\":20,\"logic\":\"AND\",\"margin_mode\":\"Isolated\",\"mdd_logic\":\"per_trade\",\"optimizer_combo_size\":2,\"optimizer_max_duration_seconds\":14400,\"optimizer_metric\":\"roi_percent\",\"optimizer_min_trades\":1,\"optimizer_mode\":\"current\",\"position_mode\":\"Hedge\",\"position_pct\":2.0,\"scan_auto_apply\":false,\"scan_mdd_limit\":10.0,\"scan_scope\":\"selected\",\"scan_top_n\":200,\"side\":\"BOTH\",\"slippage_bps\":2.0,\"start_date\":null,\"stop_loss\":{\"enabled\":false,\"mode\":\"usdt\",\"percent\":0.0,\"scope\":\"per_trade\",\"usdt\":0.0},\"symbol_source\":\"Futures\",\"symbols\":[\"BTCUSDT\"],\"template\":{\"enabled\":false,\"name\":null}}";
 inline constexpr std::string_view kPythonOrderGuardBehaviorJson = "{\"live_only_requirements\":[\"credentials\",\"live_acknowledgement\",\"session_order_cap\",\"session_order_count_increment\"],\"validate_audit_enabled_all_modes\":true,\"validate_audit_writable_all_modes\":true,\"validate_connector_health_all_modes\":true,\"validate_exchange_filters_all_modes\":true,\"validate_intent_all_modes\":true}";
 inline constexpr bool kPythonOrderGuardValidateIntentAllModes = true;
 inline constexpr bool kPythonOrderGuardValidateExchangeFiltersAllModes = true;
@@ -70,7 +72,7 @@ inline constexpr std::array<std::string_view, 12> kPythonParityDomainKeys = {
     "startup_packaging_platform",
 };
 
-inline constexpr std::array<std::string_view, 34> kPythonServiceRouteNames = {
+inline constexpr std::array<std::string_view, 35> kPythonServiceRouteNames = {
     "runtime",
     "dashboard",
     "status",
@@ -86,6 +88,7 @@ inline constexpr std::array<std::string_view, 34> kPythonServiceRouteNames = {
     "operational_preflight",
     "control_start",
     "control_stop",
+    "position_close",
     "control_start_failed",
     "connector_order_circuit_breaker",
     "connector_order_circuit_breaker_reset",
@@ -113,7 +116,7 @@ struct PythonServiceRoute {
     std::string_view methods;
 };
 
-inline constexpr std::array<PythonServiceRoute, 34> kPythonServiceRoutes = {
+inline constexpr std::array<PythonServiceRoute, 35> kPythonServiceRoutes = {
     PythonServiceRoute{"runtime", "/api/v1/runtime", "GET"},
     PythonServiceRoute{"dashboard", "/api/v1/dashboard", "GET"},
     PythonServiceRoute{"status", "/api/v1/status", "GET"},
@@ -129,6 +132,7 @@ inline constexpr std::array<PythonServiceRoute, 34> kPythonServiceRoutes = {
     PythonServiceRoute{"operational_preflight", "/api/v1/runtime/operational-preflight", "GET"},
     PythonServiceRoute{"control_start", "/api/v1/control/start", "POST"},
     PythonServiceRoute{"control_stop", "/api/v1/control/stop", "POST"},
+    PythonServiceRoute{"position_close", "/api/v1/positions/close", "POST"},
     PythonServiceRoute{"control_start_failed", "/api/v1/control/start-failed", "POST"},
     PythonServiceRoute{"connector_order_circuit_breaker", "/api/v1/runtime/connector-order-circuit-breaker", "GET,PUT"},
     PythonServiceRoute{"connector_order_circuit_breaker_reset", "/api/v1/runtime/connector-order-circuit-breaker/reset", "POST"},
@@ -157,7 +161,7 @@ struct PythonServiceRouteSchema {
     std::string_view responseFields;
 };
 
-inline constexpr std::array<PythonServiceRouteSchema, 34> kPythonServiceRouteSchemas = {
+inline constexpr std::array<PythonServiceRouteSchema, 35> kPythonServiceRouteSchemas = {
     PythonServiceRouteSchema{"runtime", "", "", "service_name,phase,python_entrypoint,desktop_entrypoint,repo_root,platform,python_version,capabilities,control_plane,notes"},
     PythonServiceRouteSchema{"dashboard", "log_limit,incident_limit", "", "runtime,status,operational,config,config_summary,execution,backtest,account,portfolio,logs,service_api,connector_order_circuit_incidents"},
     PythonServiceRouteSchema{"status", "", "", "state,lifecycle_phase,requested_action,close_positions_requested,status_message,last_transition_at,service_mode,generated_at,api_enabled,docker_required,runtime_source,active_engine_count,account_type,mode,selected_exchange,connector_backend,connector_health,exchange_connector,operational_health,operational,notes"},
@@ -173,6 +177,7 @@ inline constexpr std::array<PythonServiceRouteSchema, 34> kPythonServiceRouteSch
     PythonServiceRouteSchema{"operational_preflight", "", "", "state,message,mode,live_mode,generated_at,start,orders,freshness,critical_stale,reasons"},
     PythonServiceRouteSchema{"control_start", "", "requested_job_count,source", "accepted,action,lifecycle_phase,runtime_active,active_engine_count,requested_job_count,close_positions_requested,source,status_message,generated_at"},
     PythonServiceRouteSchema{"control_stop", "", "close_positions,source", "accepted,action,lifecycle_phase,runtime_active,active_engine_count,requested_job_count,close_positions_requested,source,status_message,generated_at"},
+    PythonServiceRouteSchema{"position_close", "", "symbol,side_key,interval,quantity,target_identity,confirm_close,source", "accepted,action,symbol,side_key,interval,quantity,target_identity,source,status_message,generated_at"},
     PythonServiceRouteSchema{"control_start_failed", "", "reason,source", "accepted,action,lifecycle_phase,runtime_active,active_engine_count,requested_job_count,close_positions_requested,source,status_message,generated_at"},
     PythonServiceRouteSchema{"connector_order_circuit_breaker", "", "snapshot,source,force", "active,state,reason,message,block_count,block_threshold,block_window_seconds,source,generated_at"},
     PythonServiceRouteSchema{"connector_order_circuit_breaker_reset", "", "snapshot,source,force", "active,state,source,generated_at"},
@@ -399,6 +404,24 @@ inline constexpr std::array<PythonConnectorOption, 14> kPythonConnectorOptions =
     PythonConnectorOption{"trading212-public-api", "Trading 212 Public API (Invest/Stocks ISA equities)"},
     PythonConnectorOption{"moomoo-opend", "moomoo OpenD (Local/Remote Gateway)"},
     PythonConnectorOption{"python-binance", "python-binance (Community)"},
+};
+
+struct PythonRustEnvironmentDependency {
+    std::string_view key;
+    std::string_view label;
+    std::string_view kind;
+    std::string_view path;
+    std::string_view latest;
+    std::string_view usage;
+};
+
+inline constexpr std::array<PythonRustEnvironmentDependency, 6> kPythonRustEnvironmentDependencies = {
+    PythonRustEnvironmentDependency{"rustc", "rustc", "rust_rustc", "", "Install rustup", ""},
+    PythonRustEnvironmentDependency{"cargo", "cargo", "rust_cargo", "", "Install rustup", ""},
+    PythonRustEnvironmentDependency{"experiments/rust-shells/Cargo.toml", "Trading Bot Rust workspace", "rust_file_version", "experiments/rust-shells/Cargo.toml", "", "Active"},
+    PythonRustEnvironmentDependency{"experiments/rust-shells/crates/core/Cargo.toml", "trading-bot-core", "rust_file_version", "experiments/rust-shells/crates/core/Cargo.toml", "", "Active"},
+    PythonRustEnvironmentDependency{"experiments/rust-shells/crates/contracts/Cargo.toml", "trading-bot-contracts", "rust_file_version", "experiments/rust-shells/crates/contracts/Cargo.toml", "", "Active"},
+    PythonRustEnvironmentDependency{"experiments/rust-shells/apps/tauri-desktop/Cargo.toml", "Tauri (Primary)", "rust_file_version", "experiments/rust-shells/apps/tauri-desktop/Cargo.toml", "", "Active"},
 };
 
 inline constexpr std::array<std::string_view, 45> kPythonSupportedBrokers = {

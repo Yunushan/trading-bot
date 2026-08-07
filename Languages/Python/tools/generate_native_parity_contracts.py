@@ -699,6 +699,36 @@ def _rust_connector_options(connectors: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _rust_environment_dependencies(dependencies: list[dict[str, object]]) -> str:
+    lines = [
+        "pub struct PythonRustEnvironmentDependency {",
+        "    pub key: &'static str,",
+        "    pub label: &'static str,",
+        "    pub kind: &'static str,",
+        "    pub path: &'static str,",
+        "    pub latest: &'static str,",
+        "    pub usage: &'static str,",
+        "}",
+        "",
+        "pub const PYTHON_RUST_ENVIRONMENT_DEPENDENCIES: &[PythonRustEnvironmentDependency] = &[",
+    ]
+    for dependency in dependencies:
+        lines.extend(
+            [
+                "    PythonRustEnvironmentDependency {",
+                f"        key: {_rust_string(dependency['key'])},",
+                f"        label: {_rust_string(dependency['label'])},",
+                f"        kind: {_rust_string(dependency['kind'])},",
+                f"        path: {_rust_string(dependency['path'])},",
+                f"        latest: {_rust_string(dependency['latest'])},",
+                f"        usage: {_rust_string(dependency['usage'])},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
 def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
     lines = [
         "pub struct PythonLlmProvider {",
@@ -1006,6 +1036,34 @@ def _cpp_ui_option_catalogs(summary: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _cpp_environment_dependencies(dependencies: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonRustEnvironmentDependency {",
+        "    std::string_view key;",
+        "    std::string_view label;",
+        "    std::string_view kind;",
+        "    std::string_view path;",
+        "    std::string_view latest;",
+        "    std::string_view usage;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonRustEnvironmentDependency, "
+            f"{len(dependencies)}> kPythonRustEnvironmentDependencies = {{"
+        ),
+    ]
+    for dependency in dependencies:
+        lines.append(
+            "    PythonRustEnvironmentDependency{"
+            f"{_cpp_string(dependency['key'])}, {_cpp_string(dependency['label'])}, "
+            f"{_cpp_string(dependency['kind'])}, {_cpp_string(dependency['path'])}, "
+            f"{_cpp_string(dependency['latest'])}, {_cpp_string(dependency['usage'])}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
 def _cpp_tradingview_interval_map(interval_map: dict[str, object]) -> str:
     lines = [
         "struct PythonTradingViewInterval {",
@@ -1087,6 +1145,8 @@ def render_rust_module() -> str:
         "",
         _rust_connector_options(list(summary["connectors"])),
         "",
+        _rust_environment_dependencies(list(summary["rust_environment_dependencies"])),
+        "",
         _rust_array("PYTHON_SUPPORTED_BROKERS", list(summary["supported_brokers"])),
         "",
         _rust_array("PYTHON_SUPPORTED_FOREX_BROKERS", list(summary["supported_forex_brokers"])),
@@ -1160,6 +1220,14 @@ def render_cpp_header() -> str:
         f"inline constexpr bool kCppFullParityReady = {str(bool(summary['cpp_full_parity'])).lower()};",
         f"inline constexpr bool kRustFullParityReady = {str(bool(summary['rust_full_parity'])).lower()};",
         (
+            "inline constexpr std::string_view kPythonDefaultExecutionJson = "
+            f"{_cpp_string(_contract_json(dict(summary['default_execution'])))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonDefaultBacktestJson = "
+            f"{_cpp_string(_contract_json(dict(summary['default_backtest'])))};"
+        ),
+        (
             "inline constexpr std::string_view kPythonOrderGuardBehaviorJson = "
             f"{_cpp_string(_contract_json(order_guard_behavior))};"
         ),
@@ -1211,6 +1279,8 @@ def render_cpp_header() -> str:
         _cpp_array("kPythonConnectorKeys", list(summary["connector_keys"])),
         "",
         _cpp_connector_options(list(summary["connectors"])),
+        "",
+        _cpp_environment_dependencies(list(summary["rust_environment_dependencies"])),
         "",
         _cpp_array("kPythonSupportedBrokers", list(summary["supported_brokers"])),
         "",
@@ -1324,6 +1394,7 @@ def render_tauri_browser_contract() -> str:
         "chartViewOptions": list(summary["chart_view_options"]),
         "positionsViewOptions": list(summary["positions_view_options"]),
         "chartViewKeys": list(summary["chart_view_keys"]),
+        "rustEnvironmentDependencies": list(summary["rust_environment_dependencies"]),
         "defaultExecution": dict(summary["default_execution"]),
         "defaultBacktest": dict(summary["default_backtest"]),
         "backtestRunRequestFields": list(summary["backtest_run_request_fields"]),

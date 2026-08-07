@@ -5,6 +5,7 @@
 
 #include <QMainWindow>
 #include <QFutureWatcher>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QMap>
@@ -97,7 +98,11 @@ private:
     void saveDashboardConfig();
     void loadDashboardConfig();
     QJsonObject buildDashboardServiceConfigPatch() const;
+    QJsonObject buildBacktestServiceConfig() const;
+    QJsonArray buildBacktestSymbolIntervalPairs() const;
     bool hydrateDashboardServiceConfig(const QJsonObject &config);
+    bool hydrateBacktestServiceConfig(const QJsonObject &config);
+    void hydrateBacktestSymbolIntervalPairs(const QJsonArray &pairs);
     bool saveDashboardServiceConfig();
     bool loadDashboardServiceConfig();
     void saveDashboardLocalOverrideConfig();
@@ -164,6 +169,11 @@ private:
     QComboBox *backtestAssetsModeCombo_;
     QComboBox *backtestAccountModeCombo_;
     QComboBox *backtestExecutionBackendCombo_ = nullptr;
+    QDoubleSpinBox *backtestFeeBpsSpin_ = nullptr;
+    QDoubleSpinBox *backtestSlippageBpsSpin_ = nullptr;
+    QCheckBox *backtestScanAutoApplyCheck_ = nullptr;
+    QCheckBox *backtestTemplateEnabledCheck_ = nullptr;
+    QComboBox *backtestTemplateCombo_ = nullptr;
     QComboBox *backtestScanScopeCombo_;
     QSpinBox *backtestScanTopNSpin_;
     QDoubleSpinBox *backtestScanMddSpin_;
@@ -212,6 +222,14 @@ private:
     QComboBox *dashboardAssetsModeCombo_ = nullptr;
     QComboBox *dashboardTimeInForceCombo_ = nullptr;
     QSpinBox *dashboardGtdMinutesSpin_ = nullptr;
+    QSpinBox *dashboardLookbackSpin_ = nullptr;
+    QComboBox *dashboardOrderTypeCombo_ = nullptr;
+    QDoubleSpinBox *dashboardOperationalConnectorStaleSpin_ = nullptr;
+    QDoubleSpinBox *dashboardOperationalExecutionStaleSpin_ = nullptr;
+    QDoubleSpinBox *dashboardOperationalAccountStaleSpin_ = nullptr;
+    QDoubleSpinBox *dashboardOperationalPortfolioStaleSpin_ = nullptr;
+    QCheckBox *dashboardOperationalLiveStartGateCheck_ = nullptr;
+    QCheckBox *dashboardOperationalLiveOrderGateCheck_ = nullptr;
     QCheckBox *dashboardLlmEnableCheck_ = nullptr;
     QComboBox *dashboardLlmProviderCombo_ = nullptr;
     QComboBox *dashboardLlmModelCombo_ = nullptr;

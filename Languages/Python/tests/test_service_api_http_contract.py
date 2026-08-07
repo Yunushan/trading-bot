@@ -123,6 +123,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             "operational_preflight",
             "control_start",
             "control_stop",
+            "position_close",
             "control_start_failed",
             "backtest_run",
             "backtest_stop",
@@ -156,6 +157,71 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertFalse(
             app.state.service.describe_runtime().to_dict()["control_plane"]["trading_execution_supported"]
         )
+
+    @unittest.skipUnless(
+        FASTAPI_TESTCLIENT_AVAILABLE,
+        "FastAPI TestClient optional dependencies are not installed",
+    )
+    def test_guarded_position_close_route_dispatches_only_to_trading_runtime(self):
+        service = TradingBotService()
+        dispatched: list[dict[str, object]] = []
+
+        def _handler(request):
+            dispatched.append(request.to_dict())
+            return {"accepted": True, "message": "Queued on desktop GUI thread."}
+
+        service.set_control_request_handler(
+            _handler,
+            mode="desktop-gui-dispatch",
+            owner="desktop-gui",
+            start_supported=True,
+            stop_supported=True,
+            execution_scope="desktop-trading-runtime",
+            trading_execution_supported=True,
+        )
+        app = create_service_api_app(service=service, api_token="token-123", host_context="desktop-embedded")
+        client = _create_test_client(app)
+        payload = {
+            "symbol": "btcusdt",
+            "side_key": "long",
+            "interval": "1m",
+            "quantity": 0.125,
+            "target_identity": {"trade_id": "trade-a"},
+            "confirm_close": True,
+            "source": "tauri-desktop-positions",
+        }
+
+        unauthorized = client.post(SERVICE_API_ROUTE_PATHS["position_close"], json=payload)
+        self.assertEqual(401, unauthorized.status_code)
+
+        response = client.post(
+            SERVICE_API_ROUTE_PATHS["position_close"],
+            headers={"Authorization": "Bearer token-123"},
+            json=payload,
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()["accepted"])
+        self.assertEqual("BTCUSDT", response.json()["symbol"])
+        self.assertEqual("L", response.json()["side_key"])
+        self.assertEqual("position_close", dispatched[0]["action"])
+
+        missing_confirmation = client.post(
+            SERVICE_API_ROUTE_PATHS["position_close"],
+            headers={"Authorization": "Bearer token-123"},
+            json={**payload, "confirm_close": False},
+        )
+        self.assertEqual(422, missing_confirmation.status_code)
+        self.assertIn("confirm_close=true", missing_confirmation.json()["detail"])
+
+        standalone = create_service_api_app(service=TradingBotService(), api_token="token-123")
+        standalone_response = _create_test_client(standalone).post(
+            SERVICE_API_ROUTE_PATHS["position_close"],
+            headers={"Authorization": "Bearer token-123"},
+            json=payload,
+        )
+        self.assertEqual(200, standalone_response.status_code)
+        self.assertFalse(standalone_response.json()["accepted"])
+        self.assertIn("does not own trading execution", standalone_response.json()["status_message"])
 
     @unittest.skipUnless(
         FASTAPI_TESTCLIENT_AVAILABLE,

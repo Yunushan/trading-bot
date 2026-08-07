@@ -442,21 +442,23 @@ Result run(
     QVector<bool> rawBuy(size, false);
     QVector<bool> rawSell(size, false);
     QVector<bool> entryFilter(size, true);
-    const auto combine = [&result, size](const QVector<const QVector<bool> *> &arrays) {
+    const auto combine = [size](
+                             const QVector<const QVector<bool> *> &arrays,
+                             const QString &logic) {
         QVector<bool> output(size, false);
         if (arrays.isEmpty()) return output;
         for (int index = 0; index < size; ++index) {
-            bool value = result.logic == QStringLiteral("AND");
+            bool value = logic == QStringLiteral("AND");
             for (const QVector<bool> *array : arrays) {
-                if (result.logic == QStringLiteral("AND")) value = value && array->value(index, false);
+                if (logic == QStringLiteral("AND")) value = value && array->value(index, false);
                 else value = value || array->value(index, false);
             }
             output[index] = value;
         }
         return output;
     };
-    rawBuy = combine(buyArrays);
-    rawSell = combine(sellArrays);
+    rawBuy = combine(buyArrays, result.logic);
+    rawSell = combine(sellArrays, QStringLiteral("OR"));
     for (int index = 0; index < size; ++index) {
         for (const QVector<bool> *array : filterArrays) entryFilter[index] = entryFilter[index] && array->value(index, false);
     }
@@ -525,10 +527,11 @@ Result run(
         double lossPct = 0.0;
         if (trade.units > 0.0 && trade.entryPrice > 0.0) {
             const double exit = exitPrice.value_or(trade.entryPrice);
-            const double pnl = realizedPnl.value_or(
-                trade.direction == QStringLiteral("LONG")
+            const double pnl = realizedPnl
+                ? *realizedPnl - trade.entryFee
+                : (trade.direction == QStringLiteral("LONG")
                     ? (exit - trade.entryPrice) * trade.units
-                    : (trade.entryPrice - exit) * trade.units) - trade.entryFee;
+                    : (trade.entryPrice - exit) * trade.units);
             if (pnl < 0.0) {
                 lossValue = std::abs(pnl);
                 if (trade.notional > 0.0) lossPct = lossValue / trade.notional * 100.0;
