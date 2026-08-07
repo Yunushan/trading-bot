@@ -5,7 +5,7 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "2dd75cf66238467ff5e800c729a5eb626fccbac11a012ca88ddcc20e96a050ad";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "c73831bf45a1968e990d925281d98842e750607fd9457e42f1e5ccec212413b7";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -179,6 +179,7 @@ pub const PYTHON_PARITY_DOMAINS: &[PythonParityDomain] = &[
     "dashboard",
     "status",
     "metrics",
+    "prometheus_metrics",
     "execution",
     "backtest",
     "config_summary",
@@ -237,6 +238,11 @@ pub const PYTHON_SERVICE_ROUTES: &[PythonServiceRoute] = &[
     PythonServiceRoute {
         name: "metrics",
         path: "/api/v1/metrics",
+        methods: &["GET"],
+    },
+    PythonServiceRoute {
+        name: "prometheus_metrics",
+        path: "/api/v1/metrics/prometheus",
         methods: &["GET"],
     },
     PythonServiceRoute {
@@ -427,6 +433,12 @@ pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[
         query_fields: &[],
         request_fields: &[],
         response_fields: &["generated_at", "operational_health", "connector_health", "connector_state", "runtime_active", "active_engine_count", "log_warning_count", "log_error_count", "connector_order_circuit_open", "unresolved_order_intent_count"],
+    },
+    PythonServiceRouteSchema {
+        name: "prometheus_metrics",
+        query_fields: &[],
+        request_fields: &[],
+        response_fields: &[],
     },
     PythonServiceRouteSchema {
         name: "execution",

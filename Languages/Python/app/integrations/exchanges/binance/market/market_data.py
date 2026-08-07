@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 import time
 
 import pandas as pd
@@ -124,9 +124,7 @@ def get_klines(self, symbol, interval, limit=500):
         raise RuntimeError(f"binance_rest_banned:{ban_remaining:.0f}s")
 
     if custom_interval_requested:
-        end_dt = pd.Timestamp.utcnow()
-        if end_dt.tzinfo is not None:
-            end_dt = end_dt.tz_localize(None)
+        end_dt = pd.Timestamp.now(tz="UTC").tz_localize(None)
         span_seconds = _coerce_interval_seconds(interval_key or interval) * max(int(limit or 1), 1)
         start_dt = end_dt - pd.Timedelta(seconds=span_seconds * 2)
         fetch_limit = max(int(limit or 1) * 2, int(limit or 1))
@@ -273,6 +271,24 @@ def _interval_seconds_to_freq(seconds: float) -> str:
     if seconds % 60 == 0:
         return f"{int(seconds // 60)}min"
     return f"{int(seconds)}S"
+
+
+def _coerce_range_datetime(value, field_name: str) -> pd.Timestamp:
+    try:
+        if isinstance(value, str):
+            parsed = pd.to_datetime(value)
+        elif isinstance(value, datetime):
+            parsed = pd.Timestamp(value)
+        else:
+            parsed = pd.to_datetime(int(value), unit="ms")
+        timestamp = pd.Timestamp(parsed)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Invalid {field_name}: {value}") from exc
+    if pd.isna(timestamp):
+        raise ValueError(f"Invalid {field_name}: {value}")
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert("UTC").tz_localize(None)
+    return timestamp
 
 
 def _get_klines_range_native(self, symbol: str, interval: str, start_dt, end_dt, limit: int, acct: str, source: str):
@@ -461,33 +477,8 @@ def get_klines_range(self, symbol, interval, start_time, end_time, limit=1000):
     Fetch historical klines between start_time and end_time (inclusive) and return a DataFrame.
     start_time/end_time may be datetime, int milliseconds, or string accepted by pandas.to_datetime.
     """
-    try:
-        if isinstance(start_time, str):
-            start_dt = pd.to_datetime(start_time)
-        elif isinstance(start_time, datetime):
-            start_dt = start_time
-        else:
-            start_dt = pd.to_datetime(int(start_time), unit="ms")
-    except Exception as exc:
-        raise ValueError(f"Invalid start_time: {start_time}") from exc
-    if isinstance(start_dt, pd.Timestamp) and start_dt.tzinfo is not None:
-        start_dt = start_dt.tz_localize(None)
-    elif getattr(start_dt, "tzinfo", None) is not None:
-        start_dt = start_dt.astimezone(timezone.utc).replace(tzinfo=None)
-
-    try:
-        if isinstance(end_time, str):
-            end_dt = pd.to_datetime(end_time)
-        elif isinstance(end_time, datetime):
-            end_dt = end_time
-        else:
-            end_dt = pd.to_datetime(int(end_time), unit="ms")
-    except Exception as exc:
-        raise ValueError(f"Invalid end_time: {end_time}") from exc
-    if isinstance(end_dt, pd.Timestamp) and end_dt.tzinfo is not None:
-        end_dt = end_dt.tz_localize(None)
-    elif getattr(end_dt, "tzinfo", None) is not None:
-        end_dt = end_dt.astimezone(timezone.utc).replace(tzinfo=None)
+    start_dt = _coerce_range_datetime(start_time, "start_time")
+    end_dt = _coerce_range_datetime(end_time, "end_time")
 
     if end_dt <= start_dt:
         raise ValueError("end_time must be greater than start_time")

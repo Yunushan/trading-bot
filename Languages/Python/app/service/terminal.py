@@ -97,8 +97,8 @@ def _help_text() -> str:
             "  config persistence",
             "  config set key=value [key=value...]",
             "  config patch {json-object}",
-            "  config save [path]",
-            "  config load [path]",
+            "  config save",
+            "  config load",
             "  llm providers",
             "  llm config",
             "  llm set key=value [key=value...]",
@@ -231,25 +231,25 @@ def run_service_terminal_command(
                     return _remote_config_rejection(command, source)
                 result = service.update_config(patch).to_dict()
             elif action == "save":
-                if remote and len(args) > 1:
+                if len(args) > 1:
                     return _result(
                         accepted=False,
                         command=command,
-                        output="Remote config persistence is limited to the server-configured path.",
+                        output="Terminal config persistence is limited to the service host's configured path.",
                         source=source,
                         exit_code=2,
                     )
-                result = service.save_config(path=args[1] if len(args) > 1 else None, source=source)
+                result = service.save_config(path=None, source=source)
             elif action == "load":
-                if remote and len(args) > 1:
+                if len(args) > 1:
                     return _result(
                         accepted=False,
                         command=command,
-                        output="Remote config persistence is limited to the server-configured path.",
+                        output="Terminal config persistence is limited to the service host's configured path.",
                         source=source,
                         exit_code=2,
                     )
-                result = service.load_config(path=args[1] if len(args) > 1 else None, source=source)
+                result = service.load_config(path=None, source=source)
             else:
                 return _result(
                     accepted=False,

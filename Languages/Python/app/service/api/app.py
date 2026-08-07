@@ -41,6 +41,13 @@ if __package__ in (None, ""):
         SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
         remote_service_config_protected_fields,
     )
+    from app.service.api.metrics import (
+        PROMETHEUS_CONTENT_TYPE,
+        REQUEST_ID_HEADER,
+        ServiceApiMetricsRegistry,
+        resolve_request_id,
+        resolve_route_template,
+    )
     from app.service.runtime import TradingBotService
     from app.integrations.llm.local_models import (
         delete_ollama_model,
@@ -74,6 +81,13 @@ else:
         SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
         remote_service_config_protected_fields,
     )
+    from .metrics import (
+        PROMETHEUS_CONTENT_TYPE,
+        REQUEST_ID_HEADER,
+        ServiceApiMetricsRegistry,
+        resolve_request_id,
+        resolve_route_template,
+    )
     from ..runtime import TradingBotService
     from ...integrations.llm.local_models import (
         delete_ollama_model,
@@ -84,7 +98,7 @@ else:
     from ...settings import ConfigValidationError
 
 try:
-    from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
+    from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
     from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
@@ -296,6 +310,7 @@ def create_service_api_app(
     app.state.service_api_legacy_base_path = SERVICE_API_LEGACY_BASE_PATH
     app.state.service_api_stream_path = SERVICE_API_STREAM_DASHBOARD_PATH
     app.state.service_api_rate_limit_windows = {}
+    app.state.service_api_metrics = ServiceApiMetricsRegistry()
 
     def _service() -> TradingBotService:
         return app.state.service
@@ -556,6 +571,30 @@ def create_service_api_app(
 
         return _apply_service_api_response_headers(await call_next(request), path=request.url.path)
 
+    @app.middleware("http")
+    async def _instrument_service_api_request(request: Request, call_next):
+        request_id = resolve_request_id(request.headers.get(REQUEST_ID_HEADER))
+        started_at = time.perf_counter()
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        app.state.service_api_metrics.request_started()
+        try:
+            response = await call_next(request)
+            status_code = int(response.status_code)
+            response.headers.setdefault(REQUEST_ID_HEADER, request_id)
+            return response
+        finally:
+            route = request.scope.get("route")
+            app.state.service_api_metrics.request_finished(
+                method=request.method,
+                route=resolve_route_template(
+                    getattr(route, "path", None),
+                    request.scope.get("path"),
+                    api_prefixes=(SERVICE_API_BASE_PATH, SERVICE_API_LEGACY_BASE_PATH),
+                ),
+                status_code=status_code,
+                duration_seconds=max(0.0, time.perf_counter() - started_at),
+            )
+
     def _unsafe_runtime_flags() -> dict[str, object]:
         unauthenticated_writes = _env_flag(SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV, False)
         legacy_inline_config_secrets_requested = _env_flag(SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV, False)
@@ -685,6 +724,18 @@ def create_service_api_app(
     @api_router.get("/metrics")
     def get_operational_metrics():
         return _service().get_operational_metrics()
+
+    @api_router.get("/metrics/prometheus", response_class=Response)
+    def get_prometheus_metrics():
+        return Response(
+            content=app.state.service_api_metrics.render_prometheus(
+                operational_metrics=_service().get_operational_metrics(),
+                operational_preflight=_service().get_operational_preflight(),
+                service_version=app.state.service_api_version,
+                build_commit=_service_build_commit(),
+            ),
+            media_type=PROMETHEUS_CONTENT_TYPE,
+        )
 
     @api_router.get("/execution")
     def get_execution_snapshot():
@@ -941,7 +992,7 @@ def create_service_api_app(
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
 
-    @public_api_router.get("/llm/local-model/status")
+    @api_router.get("/llm/local-model/status")
     def get_llm_local_model_status(base_url: str = "http://127.0.0.1:11434/v1", model: str = ""):
         return asdict(get_local_model_status(base_url, model))
 

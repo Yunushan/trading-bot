@@ -121,7 +121,8 @@ def resolve_service_config_path(path: str | Path | None = None) -> Path:
     raw_path = path
     if raw_path in (None, ""):
         raw_path = os.environ.get(SERVICE_CONFIG_ENV_PATH) or DEFAULT_SERVICE_CONFIG_PATH
-    return Path(raw_path).expanduser().resolve(strict=False)
+    expanded_path = os.path.expanduser(os.fspath(raw_path))
+    return Path(os.path.realpath(os.path.abspath(expanded_path)))
 
 
 def service_config_safe_root() -> Path:
@@ -130,9 +131,10 @@ def service_config_safe_root() -> Path:
 
 def _is_relative_to(child: Path, parent: Path) -> bool:
     try:
-        child.resolve().relative_to(parent.resolve())
-        return True
-    except Exception:
+        child_path = os.path.normcase(os.path.realpath(os.fspath(child)))
+        parent_path = os.path.normcase(os.path.realpath(os.fspath(parent)))
+        return os.path.commonpath((child_path, parent_path)) == parent_path
+    except (OSError, ValueError):
         return False
 
 

@@ -69,6 +69,7 @@ Focused service test map:
 | Module | Use when checking |
 | --- | --- |
 | `tests.test_service_api_http_contract` | HTTP route contracts, auth behavior, SSE auth, and runtime/dashboard responses |
+| `tests.test_service_api_metrics` | Prometheus export, bounded request labels, correlation IDs, and alert-rule contracts |
 | `tests.test_service_schema_contracts` | service response schema builders, payload normalization, and secret redaction contracts |
 | `tests.test_service_config_runtime` | service config validation and durable config persistence |
 | `tests.test_service_operational_runtime` | operational health snapshots, connector incidents, JSONL rotation, and redaction |
@@ -335,6 +336,8 @@ Core routes:
 - `GET /api/v1/runtime`
 - `GET /api/v1/runtime/operational-preflight`
 - `GET /api/v1/status`
+- `GET /api/v1/metrics`
+- `GET /api/v1/metrics/prometheus`
 - `GET /api/v1/config`
 - `GET /api/v1/config-summary`
 - `GET /api/v1/config/persistence`
@@ -343,6 +346,28 @@ Core routes:
 - `GET /api/v1/logs`
 - `GET /api/v1/execution`
 - `GET /api/v1/backtest`
+
+### Metrics and request correlation
+
+`GET /api/v1/metrics` remains the JSON operational snapshot used by first-party
+clients. `GET /api/v1/metrics/prometheus` is the authenticated Prometheus 0.0.4
+exposition endpoint for production monitoring. It exports bounded route-template
+labels, status codes, request counters, request-duration histograms, process
+uptime, runtime/engine state, connector circuit state, unresolved order intents,
+preflight state, and per-component operational snapshot age/staleness.
+
+The Prometheus endpoint follows the same bearer-token rules as other read API
+routes. Configure a scraper with an authorization credential file or an
+organization-managed secret; never put the token in a URL or checked-in config.
+Every HTTP response also includes `X-Request-ID`. A caller-provided ID is echoed
+only when it matches the bounded safe format; otherwise the service generates an
+opaque ID. Request IDs and query values are deliberately excluded from metric
+labels to prevent secret disclosure and unbounded cardinality.
+
+The checked-in Prometheus alert rules are
+`docker/monitoring/prometheus-alerts.json`. JSON is valid YAML for Prometheus
+`rule_files`, and keeping this file strict JSON allows repository tests to parse
+and validate its SLO thresholds without another YAML parser dependency.
 
 Streaming:
 

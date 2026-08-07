@@ -581,6 +581,14 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertNotIn("5.0.8", resolved_versions)
         self.assertTrue(resolved_versions <= {"1.1.16", "5.0.9"})
 
+    def test_mobile_production_lockfile_overrides_js_yaml_security_fix(self):
+        mobile_root = REPO_ROOT / "apps" / "mobile-client"
+        package = json.loads((mobile_root / "package.json").read_text(encoding="utf-8"))
+        lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
+
+        self.assertEqual("4.3.1", package["overrides"]["@expo/xcpretty"]["js-yaml"])
+        self.assertEqual("4.3.1", lockfile["packages"]["node_modules/js-yaml"]["version"])
+
     def test_codeql_workflow_scans_python_javascript_and_native_languages_with_pinned_actions(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
 

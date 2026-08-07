@@ -62,6 +62,7 @@ class BotRuntimeStateMixin:
     _DEFAULT_EXECUTION_HEARTBEAT_STALE_SECONDS = 10.0
     _DEFAULT_ACCOUNT_SNAPSHOT_STALE_SECONDS = 300.0
     _DEFAULT_PORTFOLIO_SNAPSHOT_STALE_SECONDS = 300.0
+    _MAX_FUTURE_SNAPSHOT_SKEW_SECONDS = 5.0
 
     @property
     def config(self) -> dict:
@@ -101,10 +102,7 @@ class BotRuntimeStateMixin:
             self._connector_order_circuit_breaker_snapshot = (
                 self._build_connector_order_circuit_breaker_snapshot_unlocked(
                     self._connector_order_circuit_breaker_snapshot,
-                    source=str(
-                        self._connector_order_circuit_breaker_snapshot.get("source")
-                        or "service-config"
-                    ),
+                    source=str(self._connector_order_circuit_breaker_snapshot.get("source") or "service-config"),
                 )
             )
 
@@ -259,9 +257,7 @@ class BotRuntimeStateMixin:
                             "recovery_pending": False,
                             "recovery_pending_reason": "",
                         },
-                        source=str(
-                            self._connector_order_circuit_breaker_snapshot.get("source") or source or "service"
-                        ),
+                        source=str(self._connector_order_circuit_breaker_snapshot.get("source") or source or "service"),
                     )
                 )
             return copy.deepcopy(self._exchange_connector_snapshot)
@@ -294,9 +290,7 @@ class BotRuntimeStateMixin:
             window_seconds = max(
                 1.0,
                 float(
-                    raw.get("block_window_seconds")
-                    or self._config.get("connector_order_block_window_seconds")
-                    or 60.0
+                    raw.get("block_window_seconds") or self._config.get("connector_order_block_window_seconds") or 60.0
                 ),
             )
         except Exception:
@@ -343,9 +337,7 @@ class BotRuntimeStateMixin:
         }
         redacted = redact_value(payload)
         return {
-            key: value
-            for key, value in redacted.items()
-            if key in required_fields or value not in (None, "", {}, [])
+            key: value for key, value in redacted.items() if key in required_fields or value not in (None, "", {}, [])
         }
 
     def _connector_order_circuit_reset_block_reason_unlocked(self) -> str:
@@ -463,9 +455,7 @@ class BotRuntimeStateMixin:
 
     def get_connector_order_circuit_incidents(self, *, limit: int = 20) -> dict[str, object]:
         with self._lock:
-            effective_path, path_source, configured_path = (
-                self._connector_order_circuit_incident_log_info_unlocked()
-            )
+            effective_path, path_source, configured_path = self._connector_order_circuit_incident_log_info_unlocked()
         try:
             max_items = max(1, min(200, int(limit or 20)))
         except Exception:
@@ -475,9 +465,7 @@ class BotRuntimeStateMixin:
         parse_errors: list[dict[str, object]] = []
         total_read = 0
         backup_count = self._connector_order_circuit_incident_log_backup_count_unlocked()
-        candidate_paths = [
-            jsonl_backup_path(path, index) for index in range(backup_count, 0, -1)
-        ] + [path]
+        candidate_paths = [jsonl_backup_path(path, index) for index in range(backup_count, 0, -1)] + [path]
         exists = any(candidate_path.is_file() for candidate_path in candidate_paths)
         read_failed = False
         for candidate_path in candidate_paths:
@@ -530,11 +518,7 @@ class BotRuntimeStateMixin:
         }
         required_fields = {"path", "path_source", "configured_path", "limit", "events", "parse_errors"}
         redacted = redact_value(payload)
-        return {
-            key: value
-            for key, value in redacted.items()
-            if key in required_fields or value not in ("", None)
-        }
+        return {key: value for key, value in redacted.items() if key in required_fields or value not in ("", None)}
 
     def set_connector_order_circuit_breaker_snapshot(
         self,
@@ -710,7 +694,7 @@ class BotRuntimeStateMixin:
         except ValueError:
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            return None
         try:
             epoch = parsed.timestamp()
         except (OSError, OverflowError, ValueError):
@@ -730,8 +714,13 @@ class BotRuntimeStateMixin:
         source: object = "",
     ) -> dict[str, object]:
         epoch = cls._timestamp_epoch(timestamp)
-        age_seconds = None if epoch is None else max(0.0, now_epoch - epoch)
-        stale = bool(should_warn) and (age_seconds is None or age_seconds > max_age_seconds)
+        delta_seconds = None if epoch is None else now_epoch - epoch
+        future_skew_seconds = None if delta_seconds is None else max(0.0, -delta_seconds)
+        future_timestamp = bool(
+            future_skew_seconds is not None and future_skew_seconds > cls._MAX_FUTURE_SNAPSHOT_SKEW_SECONDS
+        )
+        age_seconds = None if delta_seconds is None else max(0.0, delta_seconds)
+        stale = future_timestamp or (bool(should_warn) and (age_seconds is None or age_seconds > max_age_seconds))
         payload: dict[str, object] = {
             "stale": stale,
             "max_age_seconds": float(max_age_seconds),
@@ -740,6 +729,8 @@ class BotRuntimeStateMixin:
             payload[timestamp_field] = str(timestamp)
         if age_seconds is not None:
             payload["age_seconds"] = round(age_seconds, 3)
+        if future_timestamp and future_skew_seconds is not None:
+            payload["clock_skew_seconds"] = round(future_skew_seconds, 3)
         if state not in (None, ""):
             payload["state"] = str(state)
         if source not in (None, ""):
@@ -748,6 +739,12 @@ class BotRuntimeStateMixin:
 
     @staticmethod
     def _freshness_attention(label: str, freshness: dict[str, object], *, timestamp_name: str = "update") -> str:
+        clock_skew = freshness.get("clock_skew_seconds")
+        if clock_skew is not None:
+            try:
+                return f"{label} {timestamp_name} is {float(clock_skew):.0f}s ahead of the service clock."
+            except (TypeError, ValueError, OverflowError):
+                return f"{label} {timestamp_name} is ahead of the service clock."
         age = freshness.get("age_seconds")
         if age is None:
             return f"{label} {timestamp_name} is missing."
@@ -853,8 +850,7 @@ class BotRuntimeStateMixin:
                 attention.append(f"Exchange connector state is {connector_state}.")
         if connector_order_circuit_active:
             circuit_message = str(
-                connector_order_circuit.get("message")
-                or "Connector order circuit breaker paused trading."
+                connector_order_circuit.get("message") or "Connector order circuit breaker paused trading."
             )
             attention.append(circuit_message)
         if connector_order_circuit_recovery_pending:
@@ -1125,49 +1121,51 @@ class BotRuntimeStateMixin:
                 if key in reported_order_audit:
                     order_audit_payload[key] = copy.deepcopy(reported_order_audit[key])
 
-        return redact_value({
-            "health": health,
-            "generated_at": now_iso,
-            "attention": attention,
-            "freshness": freshness,
-            "preflight": preflight,
-            "logs": {
-                "total": len(logs),
-                "by_level": by_level,
-                "warning_count": len(warning_events),
-                "error_count": len(error_events),
-                "last_sequence_id": last_sequence_id,
-                "last_event": last_log,
-                "last_warning": last_warning,
-                "last_error": last_error,
-            },
-            "order_audit": order_audit_payload,
-            "exchange_connector": connector_snapshot,
-            "connector_order_circuit_breaker": connector_order_circuit,
-            "connector_order_circuit_incident_log": {
-                "path": incident_log_path,
-                "path_source": incident_log_path_source,
-                "configured_path": incident_configured_path,
-                "max_bytes": incident_log_max_bytes,
-                "backup_count": incident_log_backup_count,
-                "write_ok": not bool(incident_log_last_write_error),
-                "last_write_error": incident_log_last_write_error,
-                "last_write_ok_at": incident_log_last_write_ok_at,
-                "last_event": copy.deepcopy(self._connector_order_circuit_last_incident),
-            },
-            "runtime": {
-                "lifecycle_phase": self._lifecycle_phase,
-                "requested_action": self._requested_action,
-                "runtime_active": self._runtime_active,
-                "active_engine_count": self._active_engine_count,
-                "execution_state": self._execution_state,
-                "execution_last_action": self._execution_last_action,
-                "execution_last_message": self._execution_last_message,
-                "execution_heartbeat_at": self._execution_heartbeat_at,
-                "control_plane_mode": self._control_plane_mode,
-                "control_plane_owner": self._control_plane_owner,
-            },
-        })
+        return redact_value(
+            {
+                "health": health,
+                "generated_at": now_iso,
+                "attention": attention,
+                "freshness": freshness,
+                "preflight": preflight,
+                "logs": {
+                    "total": len(logs),
+                    "by_level": by_level,
+                    "warning_count": len(warning_events),
+                    "error_count": len(error_events),
+                    "last_sequence_id": last_sequence_id,
+                    "last_event": last_log,
+                    "last_warning": last_warning,
+                    "last_error": last_error,
+                },
+                "order_audit": order_audit_payload,
+                "exchange_connector": connector_snapshot,
+                "connector_order_circuit_breaker": connector_order_circuit,
+                "connector_order_circuit_incident_log": {
+                    "path": incident_log_path,
+                    "path_source": incident_log_path_source,
+                    "configured_path": incident_configured_path,
+                    "max_bytes": incident_log_max_bytes,
+                    "backup_count": incident_log_backup_count,
+                    "write_ok": not bool(incident_log_last_write_error),
+                    "last_write_error": incident_log_last_write_error,
+                    "last_write_ok_at": incident_log_last_write_ok_at,
+                    "last_event": copy.deepcopy(self._connector_order_circuit_last_incident),
+                },
+                "runtime": {
+                    "lifecycle_phase": self._lifecycle_phase,
+                    "requested_action": self._requested_action,
+                    "runtime_active": self._runtime_active,
+                    "active_engine_count": self._active_engine_count,
+                    "execution_state": self._execution_state,
+                    "execution_last_action": self._execution_last_action,
+                    "execution_last_message": self._execution_last_message,
+                    "execution_heartbeat_at": self._execution_heartbeat_at,
+                    "control_plane_mode": self._control_plane_mode,
+                    "control_plane_owner": self._control_plane_owner,
+                },
+            }
+        )
 
     def get_operational_snapshot(self) -> dict[str, object]:
         with self._lock:

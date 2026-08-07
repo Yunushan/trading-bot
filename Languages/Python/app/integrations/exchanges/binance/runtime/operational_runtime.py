@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 import threading
 import time
 
@@ -14,22 +15,55 @@ def close_all_spot_positions(self):
     results = []
     balances = self.list_spot_non_usdt_balances()
     for bal in balances:
-        asset = bal["asset"]
-        qty = float(bal.get("free") or 0.0)
+        asset = str((bal or {}).get("asset") or "").strip().upper()
+        symbol = f"{asset}USDT" if asset else ""
+        try:
+            qty = float((bal or {}).get("free") or 0.0)
+        except (TypeError, ValueError) as exc:
+            results.append(
+                {
+                    "symbol": symbol,
+                    "qty": 0.0,
+                    "ok": False,
+                    "error": f"Invalid spot balance quantity: {redact_text(exc)}",
+                }
+            )
+            continue
+        if not asset or not math.isfinite(qty):
+            results.append(
+                {
+                    "symbol": symbol,
+                    "qty": qty if math.isfinite(qty) else 0.0,
+                    "ok": False,
+                    "error": "Invalid spot balance asset or non-finite quantity",
+                }
+            )
+            continue
         if qty <= 0.0:
             continue
-        symbol = f"{asset}USDT"
 
         try:
-            self.get_symbol_info_spot(symbol)
-        except Exception:
+            symbol_info = self.get_symbol_info_spot(symbol)
+        except Exception as exc:
+            results.append(
+                {
+                    "symbol": symbol,
+                    "qty": qty,
+                    "ok": False,
+                    "error": f"Unable to verify spot symbol metadata: {redact_text(exc)}",
+                }
+            )
+            continue
+        status = str((symbol_info or {}).get("status") or "TRADING").upper()
+        quote_asset = str((symbol_info or {}).get("quoteAsset") or "USDT").upper()
+        if status != "TRADING" or quote_asset != "USDT":
             results.append(
                 {
                     "symbol": symbol,
                     "qty": qty,
                     "ok": True,
                     "skipped": True,
-                    "reason": "Symbol not tradable against USDT on this venue",
+                    "reason": "Symbol is not tradable against USDT on this venue",
                 }
             )
             continue
@@ -40,7 +74,7 @@ def close_all_spot_positions(self):
             min_notional = float(filters.get("minNotional", 0.0) or 0.0)
             step = float(filters.get("stepSize", 0.0) or 0.0)
 
-            if price <= 0.0:
+            if not math.isfinite(price) or price <= 0.0:
                 results.append(
                     {
                         "symbol": symbol,
@@ -51,6 +85,10 @@ def close_all_spot_positions(self):
                     }
                 )
                 continue
+            if not math.isfinite(min_notional) or min_notional < 0.0:
+                raise ValueError("Invalid minimum-notional filter")
+            if not math.isfinite(step) or step < 0.0:
+                raise ValueError("Invalid step-size filter")
 
             est_notional = qty * price
             if min_notional > 0.0 and est_notional < min_notional:
@@ -66,7 +104,7 @@ def close_all_spot_positions(self):
                 continue
 
             qty_adj = self._floor_to_step(qty, step) if step else qty
-            if qty_adj <= 0.0:
+            if not math.isfinite(qty_adj) or qty_adj <= 0.0:
                 results.append(
                     {
                         "symbol": symbol,
@@ -106,9 +144,11 @@ def trigger_emergency_close_all(
     max_attempts: int = 12,
     initial_delay: float = 5.0,
 ) -> bool:
+    safe_reason = redact_text(reason or "")
+    safe_source = redact_text(source or "")
     meta = {
-        "reason": redact_text(reason or ""),
-        "source": redact_text(source or ""),
+        "reason": safe_reason,
+        "source": safe_source,
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
     with self._emergency_closer_lock:
@@ -119,8 +159,8 @@ def trigger_emergency_close_all(
                 self._emergency_close_info.update(meta)
             except Exception:
                 self._emergency_close_info = dict(meta)
-            if reason:
-                self._log(f"Emergency close-all already running; latest reason: {reason}", lvl="warn")
+            if safe_reason:
+                self._log(f"Emergency close-all already running; latest reason: {safe_reason}", lvl="warn")
             return False
 
         self._emergency_close_requested = True
@@ -194,22 +234,40 @@ def trigger_emergency_close_all(
         thread = threading.Thread(target=_worker, name="EmergencyCloseAll", daemon=True)
         self._emergency_closer_thread = thread
         self._log(
-            f"Emergency close-all triggered ({source or 'unspecified'}): {reason or 'no reason provided'}.",
+            f"Emergency close-all triggered ({safe_source or 'unspecified'}): "
+            f"{safe_reason or 'no reason provided'}.",
             lvl="warn",
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            self._emergency_closer_thread = None
+            self._emergency_close_requested = False
+            raise
         return True
 
 
 def get_last_price(self, symbol: str, *, max_age: float = 5.0) -> float:
     sym = (symbol or "").upper()
+    if not sym:
+        return 0.0
     cache = getattr(self, "_last_price_cache", None)
-    if cache is not None and sym:
+    try:
+        cache_max_age = float(max_age)
+    except (TypeError, ValueError):
+        cache_max_age = 0.0
+    if not math.isfinite(cache_max_age) or cache_max_age < 0.0:
+        cache_max_age = 0.0
+    if cache is not None:
         cached = cache.get(sym)
         if cached:
-            price, ts = cached
-            if price and (time.time() - ts) <= max_age:
-                return price
+            try:
+                cached_price, cached_at = float(cached[0]), float(cached[1])
+                age = time.time() - cached_at
+                if math.isfinite(cached_price) and cached_price > 0.0 and 0.0 <= age <= cache_max_age:
+                    return cached_price
+            except (IndexError, TypeError, ValueError):
+                pass
     price = 0.0
     try:
         if self.account_type == "FUTURES":
@@ -221,7 +279,9 @@ def get_last_price(self, symbol: str, *, max_age: float = 5.0) -> float:
     except Exception as exc:
         report_runtime_fallback(self, f"Price lookup failed for {sym}", exc)
         price = 0.0
-    if price <= 0.0 and self.account_type != "FUTURES" and sym:
+    if not math.isfinite(price) or price <= 0.0:
+        price = 0.0
+    if price <= 0.0 and self.account_type != "FUTURES":
         try:
             resp = requests.get(f"{self._spot_base()}/v3/ticker/price", params={"symbol": sym}, timeout=5)
             if resp.status_code == 200:
@@ -230,7 +290,9 @@ def get_last_price(self, symbol: str, *, max_age: float = 5.0) -> float:
                     price = float(data.get("price") or 0.0)
         except Exception as exc:
             report_runtime_fallback(self, f"Spot price HTTP fallback failed for {sym}", exc)
-    if cache is not None and sym and price:
+    if not math.isfinite(price) or price <= 0.0:
+        price = 0.0
+    if cache is not None and price > 0.0:
         cache[sym] = (price, time.time())
     return price
 
@@ -269,9 +331,11 @@ def _handle_network_offline(self, context: str, exc: Exception) -> None:
             except Exception as exc:
                 report_runtime_fallback(self, "Emergency offline-close notification failed", exc)
             delay = min(180.0, max(30.0, elapsed))
-            self._network_emergency_dispatched = True
             reason = context or "network_offline"
-            self.trigger_emergency_close_all(reason=reason, source="network", initial_delay=delay)
+            accepted = self.trigger_emergency_close_all(reason=reason, source="network", initial_delay=delay)
+            self._network_emergency_dispatched = bool(
+                accepted or getattr(self, "_emergency_close_requested", False)
+            )
     except Exception as exc:
         report_runtime_fallback(self, "Network-offline state handling failed", exc, level="error")
 

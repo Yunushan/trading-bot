@@ -201,8 +201,8 @@ def _live_smoke_workflow_inputs(
 
 
 def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = True) -> dict[str, Any]:
-    api_key_present = _env_present("BINANCE_API_KEY")
-    api_secret_present = _env_present("BINANCE_API_SECRET")
+    api_key_available = _env_present("BINANCE_API_KEY")
+    signing_credential_available = _env_present("BINANCE_API_SECRET")
     confirmed = str(os.environ.get("TRADING_BOT_RUST_LIVE_SMOKE") or "").strip() == "1"
     market_confirmed = str(os.environ.get("TRADING_BOT_RUST_MARKET_SMOKE") or "").strip() == "1"
     binance_testnet = str(os.environ.get("BINANCE_TESTNET") or "true").strip() or "true"
@@ -243,15 +243,13 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
     account_missing_prerequisites = _missing_named_prerequisites(
         [
             ("clean source tree", source_tree_clean),
-            ("BINANCE_API_KEY", api_key_present),
-            ("BINANCE_API_SECRET", api_secret_present),
+            ("BINANCE_API_KEY", api_key_available),
+            ("BINANCE_API_SECRET", signing_credential_available),
             ("TRADING_BOT_RUST_LIVE_SMOKE=1", confirmed),
             ("generated evidence write guard", account_write_guard_ok),
         ]
     )
     return {
-        "binance_api_key_present": api_key_present,
-        "binance_api_secret_present": api_secret_present,
         "live_smoke_confirmation_present": confirmed,
         "market_smoke_confirmation_present": market_confirmed,
         "binance_testnet": binance_testnet,
@@ -261,7 +259,11 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
         "market_missing_prerequisites": market_missing_prerequisites,
         "account_missing_prerequisites": account_missing_prerequisites,
         "can_run_live_smoke": (
-            source_tree_clean and api_key_present and api_secret_present and confirmed and account_write_guard_ok
+            source_tree_clean
+            and api_key_available
+            and signing_credential_available
+            and confirmed
+            and account_write_guard_ok
         ),
         "can_run_market_smoke": source_tree_clean and market_confirmed and market_write_guard_ok,
         "market_source_control_write_guard": market_source_control_write_guard,
@@ -271,7 +273,7 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
         "github_workflow_inputs": workflow_inputs,
         "github_workflow_artifact": LIVE_SMOKE_EVIDENCE_ARTIFACT,
         "github_workflow_plan_artifact": LIVE_SMOKE_EVIDENCE_PLAN_ARTIFACT,
-        "github_workflow_requires_secrets": ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
+        "github_workflow_required_environment_names": ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
         "workflow_source_sync_audit": _workflow_source_sync_audit(),
         "market_command": (
             "TRADING_BOT_RUST_MARKET_SMOKE=1 "
@@ -309,7 +311,6 @@ def _release_evidence_prerequisites(root: Path, *, missing_limit: int = 10) -> d
     result: dict[str, Any] = {
         "release_tag": release_tag,
         "release_tag_configured": _env_present("TRADING_BOT_RELEASE_TAG"),
-        "github_token_present": _env_present("GITHUB_TOKEN") or _env_present("GH_TOKEN"),
         "platform_evidence_dir": str(platform_evidence_dir),
         "platform_evidence_dir_exists": platform_evidence_dir.is_dir(),
         "platform_evidence_json_count": platform_evidence_count,
@@ -524,8 +525,6 @@ def _evidence_collection_plan(
                     },
                     details={
                         "source_tree_clean": account_source_tree_clean,
-                        "binance_api_key_present": bool(live_smoke_prerequisites.get("binance_api_key_present")),
-                        "binance_api_secret_present": bool(live_smoke_prerequisites.get("binance_api_secret_present")),
                         "live_smoke_confirmation_present": bool(
                             live_smoke_prerequisites.get("live_smoke_confirmation_present")
                         ),
@@ -548,8 +547,8 @@ def _evidence_collection_plan(
                         "github_workflow_plan_artifact": str(
                             live_smoke_prerequisites.get("github_workflow_plan_artifact") or ""
                         ),
-                        "github_workflow_requires_secrets": list(
-                            live_smoke_prerequisites.get("github_workflow_requires_secrets") or []
+                        "github_workflow_required_environment_names": list(
+                            live_smoke_prerequisites.get("github_workflow_required_environment_names") or []
                         ),
                         "workflow_source_sync_audit": dict(
                             live_smoke_prerequisites.get("workflow_source_sync_audit")
@@ -954,8 +953,8 @@ def _next_action_plan(
                 "github_workflow_plan_artifact": str(
                     account_row_details.get("github_workflow_plan_artifact") or ""
                 ),
-                "github_workflow_requires_secrets": list(
-                    account_row_details.get("github_workflow_requires_secrets") or []
+                "github_workflow_required_environment_names": list(
+                    account_row_details.get("github_workflow_required_environment_names") or []
                 ),
                 "workflow_source_sync_audit": dict(
                     account_row_details.get("workflow_source_sync_audit")
@@ -1697,9 +1696,11 @@ def _completion_missing_inputs(
             expected_artifacts = details.get("expected_artifacts")
             if isinstance(expected_artifacts, list) and expected_artifacts:
                 summary["expected_artifacts"] = [str(item) for item in expected_artifacts]
-            required_secrets = details.get("github_workflow_requires_secrets")
-            if isinstance(required_secrets, list) and required_secrets:
-                summary["github_workflow_requires_secrets"] = [str(item) for item in required_secrets]
+            required_environment_names = details.get("github_workflow_required_environment_names")
+            if isinstance(required_environment_names, list) and required_environment_names:
+                summary["github_workflow_required_environment_names"] = [
+                    str(item) for item in required_environment_names
+                ]
             workflow_artifact = str(details.get("github_workflow_artifact") or "").strip()
             if workflow_artifact:
                 summary["github_workflow_artifact"] = workflow_artifact
@@ -1992,9 +1993,12 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
             source_sync_artifact = str(workflow_source_sync.get("github_workflow_artifact") or "").strip()
             if source_sync_artifact:
                 lines.append(f"- GitHub workflow source-sync artifact: `{source_sync_artifact}`")
-        workflow_secrets = details.get("github_workflow_requires_secrets")
-        if isinstance(workflow_secrets, list) and workflow_secrets:
-            lines.append(f"- GitHub workflow required secrets: {_format_markdown_list(workflow_secrets)}")
+        workflow_environment_names = details.get("github_workflow_required_environment_names")
+        if isinstance(workflow_environment_names, list) and workflow_environment_names:
+            lines.append(
+                "- GitHub workflow required environment names: "
+                f"{_format_markdown_list(workflow_environment_names)}"
+            )
         if "release_evidence_target_count" in details:
             lines.append(
                 "- Release evidence target count: "

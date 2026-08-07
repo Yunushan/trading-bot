@@ -354,3 +354,36 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
 
             loaded = reloader.load_config(path=path, source="unit-test", allow_unsafe_path=True)
             self.assertEqual(["ETHUSDT"], loaded["config"]["symbols"])
+
+    def test_service_config_path_containment_rejects_traversal_and_prefix_siblings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            safe_root = root / "config"
+            safe_root.mkdir()
+            allowed = safe_root / "nested" / ".." / "service-config.json"
+            prefix_sibling = root / "config-escape" / "service-config.json"
+
+            with mock.patch.object(config_store, "service_config_safe_root", return_value=safe_root):
+                self.assertEqual(
+                    config_store.resolve_service_config_path(safe_root / "service-config.json"),
+                    config_store.ensure_service_config_path_allowed(allowed),
+                )
+                with self.assertRaises(PermissionError):
+                    config_store.ensure_service_config_path_allowed(prefix_sibling)
+
+    def test_service_config_path_containment_rejects_symlink_escape_when_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            safe_root = root / "config"
+            outside_root = root / "outside"
+            safe_root.mkdir()
+            outside_root.mkdir()
+            link = safe_root / "outside-link"
+            try:
+                link.symlink_to(outside_root, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks are unavailable on this host")
+
+            with mock.patch.object(config_store, "service_config_safe_root", return_value=safe_root):
+                with self.assertRaises(PermissionError):
+                    config_store.ensure_service_config_path_allowed(link / "service-config.json")

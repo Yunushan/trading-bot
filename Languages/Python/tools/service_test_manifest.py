@@ -19,6 +19,10 @@ SERVICE_TESTS = (
         "HTTP route contracts, auth behavior, SSE auth, and runtime/dashboard responses",
     ),
     ServiceTestEntry(
+        "tests.test_service_api_metrics",
+        "Prometheus export, bounded request labels, correlation IDs, and alert-rule contracts",
+    ),
+    ServiceTestEntry(
         "tests.test_service_schema_contracts",
         "service response schema builders, payload normalization, and secret redaction contracts",
     ),

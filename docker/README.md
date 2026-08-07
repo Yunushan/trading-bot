@@ -86,6 +86,23 @@ operational reason.
 - thin same-origin web dashboard at `/ui/`
 - extracted service-owned backtest runner support
 
+## Production monitoring
+
+The authenticated Prometheus endpoint is
+`http://trading-bot-service:8000/api/v1/metrics/prometheus` from another Compose
+service, or `http://127.0.0.1:8000/api/v1/metrics/prometheus` from the host. Use
+an `Authorization: Bearer ...` header sourced from a Prometheus
+`credentials_file`; do not place the token in `prometheus.yml` or the scrape URL.
+
+Load `docker/monitoring/prometheus-alerts.json` through Prometheus `rule_files`.
+It contains the repository-owned availability, read error-rate, p95 latency,
+snapshot freshness, connector circuit, unresolved order-intent, and order
+preflight alerts. The file is JSON, which Prometheus accepts as YAML, so the
+repository can validate it deterministically with the Python standard library.
+The monitoring service is intentionally not added to the default Compose stack:
+production retention, alert routing, TLS, authentication, and storage must be
+owned by the deployment environment rather than hidden in a development stack.
+
 ## What is not included
 
 - PyQt desktop GUI

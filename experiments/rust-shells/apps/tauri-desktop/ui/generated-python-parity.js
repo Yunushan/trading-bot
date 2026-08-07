@@ -567,7 +567,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "2dd75cf66238467ff5e800c729a5eb626fccbac11a012ca88ddcc20e96a050ad",
+  "contractHash": "c73831bf45a1968e990d925281d98842e750607fd9457e42f1e5ccec212413b7",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -4016,6 +4016,9 @@
     "position_close": [
       "POST"
     ],
+    "prometheus_metrics": [
+      "GET"
+    ],
     "runtime": [
       "GET"
     ],
@@ -4037,6 +4040,7 @@
     "dashboard",
     "status",
     "metrics",
+    "prometheus_metrics",
     "execution",
     "backtest",
     "config_summary",
@@ -4100,6 +4104,7 @@
     "operational_preflight": "/api/v1/runtime/operational-preflight",
     "portfolio": "/api/v1/portfolio",
     "position_close": "/api/v1/positions/close",
+    "prometheus_metrics": "/api/v1/metrics/prometheus",
     "runtime": "/api/v1/runtime",
     "runtime_state": "/api/v1/runtime/state",
     "status": "/api/v1/status",
@@ -4147,6 +4152,7 @@
     "operational_preflight": [],
     "portfolio": [],
     "position_close": [],
+    "prometheus_metrics": [],
     "runtime": [],
     "runtime_state": [],
     "status": [],
@@ -4270,6 +4276,7 @@
       "confirm_close",
       "source"
     ],
+    "prometheus_metrics": [],
     "runtime": [],
     "runtime_state": [
       "active",
@@ -4639,6 +4646,7 @@
       "status_message",
       "generated_at"
     ],
+    "prometheus_metrics": [],
     "runtime": [
       "service_name",
       "phase",
@@ -4793,6 +4801,12 @@
         "connector_order_circuit_open",
         "unresolved_order_intent_count"
       ]
+    },
+    {
+      "name": "prometheus_metrics",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": []
     },
     {
       "name": "execution",
@@ -5441,6 +5455,13 @@
       ],
       "name": "metrics",
       "path": "/api/v1/metrics"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "prometheus_metrics",
+      "path": "/api/v1/metrics/prometheus"
     },
     {
       "methods": [

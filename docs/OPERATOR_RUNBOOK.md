@@ -52,6 +52,16 @@ These values are operational exposure limits, not unsafe bypasses:
 Review request-size and write-rate-limit values before exposing the service
 beyond loopback.
 
+Scrape authenticated production metrics from
+`/api/v1/metrics/prometheus`; keep the bearer token in the monitoring platform's
+secret store or credential file. Load
+`docker/monitoring/prometheus-alerts.json` as a Prometheus rule file and route
+critical alerts to an actively monitored channel. Confirm that unavailable,
+read-error-rate, stale-snapshot, open-circuit, and unresolved-order-intent alerts
+reach the operator before declaring a deployment ready. Use `X-Request-ID` from
+service responses to correlate proxy and application incidents without placing
+credentials or query values in logs or labels.
+
 ## Operational Readiness
 
 The source of truth for SLOs, RTO/RPO targets, probe thresholds, and required
@@ -70,7 +80,10 @@ The quick probe is not production evidence. A production promotion also
 requires a passing 30-minute sustained probe against an external HTTPS service
 running the exact candidate commit, a real rolling 30-day telemetry
 window, config/restart recovery evidence, and incident/audit continuity
-evidence from the same clean candidate commit. Validate that evidence with:
+evidence from the same clean candidate commit. Convert the raw telemetry export
+with `python tools/import_production_slo_evidence.py --input production-slo-telemetry.json --json`;
+the importer writes no artifact unless counts, freshness, source binding, and
+all SLO thresholds pass. Validate the complete evidence set with:
 
 ```bash
 python tools/check_operational_readiness.py --require-evidence --require-current-commit --require-clean-source --json

@@ -1471,7 +1471,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("numpy==2.4.4; python_version >= '3.11'", runtime_dependencies)
         self.assertIn("pandas==2.3.2; python_version < '3.11'", runtime_dependencies)
         self.assertIn("pandas==3.0.2; python_version >= '3.11'", runtime_dependencies)
-        self.assertIn("aiohttp==3.14.1", runtime_dependencies)
+        self.assertIn("aiohttp==3.14.3", runtime_dependencies)
         self.assertNotIn("numpy==2.4.4", runtime_dependencies)
         self.assertNotIn("pandas==3.0.2", runtime_dependencies)
 
@@ -1492,9 +1492,9 @@ class ProductPackagingContractTests(unittest.TestCase):
 
         windows_arm64_dependencies = optional_dependencies["windows-arm64"]
         self.assertNotIn("aiohttp==0.13.1", windows_arm64_dependencies)
-        self.assertIn("aiohttp>=3.14.1,<4", windows_arm64_dependencies)
+        self.assertIn("aiohttp>=3.14.3,<4", windows_arm64_dependencies)
 
-        self.assertIn("cryptography==49.0.0", optional_dependencies["service"])
+        self.assertIn("cryptography==50.0.0", optional_dependencies["service"])
 
         self.assertEqual(
             ["pip-audit==2.10.1", "truststore==0.10.4"],

@@ -1092,7 +1092,12 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertEqual("rust-native-live-smoke-evidence", result["github_workflow_artifact"])
         self.assertEqual("rust-native-live-smoke-evidence-plan", result["github_workflow_plan_artifact"])
-        self.assertEqual(["BINANCE_API_KEY", "BINANCE_API_SECRET"], result["github_workflow_requires_secrets"])
+        self.assertNotIn("binance_api_key_present", result)
+        self.assertNotIn("binance_api_secret_present", result)
+        self.assertEqual(
+            ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
+            result["github_workflow_required_environment_names"],
+        )
         self.assertIn("-f symbol=BTCUSDT", result["github_workflow"])
 
     def test_readiness_live_smoke_prerequisites_expose_configured_workflow_inputs(self):
@@ -2985,7 +2990,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                         ],
                         "github_workflow_artifact": "rust-native-live-smoke-evidence",
                         "github_workflow_plan_artifact": "rust-native-live-smoke-evidence-plan",
-                        "github_workflow_requires_secrets": ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
+                        "github_workflow_required_environment_names": [
+                            "BINANCE_API_KEY",
+                            "BINANCE_API_SECRET",
+                        ],
                     },
                 },
                 {
@@ -3054,7 +3062,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("rust-native-live-smoke-evidence-plan", account_summary["github_workflow_plan_artifact"])
         self.assertEqual(
             ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
-            account_summary["github_workflow_requires_secrets"],
+            account_summary["github_workflow_required_environment_names"],
         )
         release_summary = summary["evidence"][1]
         self.assertEqual("rust-native-release-platform-evidence", release_summary["evidence_id"])
@@ -3485,8 +3493,6 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "github_workflow": (
                 "gh workflow run rust-native-live-smoke.yml -f binance_testnet=false -f symbol=ETHUSDT -f interval=5m"
             ),
-            "binance_api_key_present": True,
-            "binance_api_secret_present": True,
             "live_smoke_confirmation_present": True,
             "binance_testnet": "false",
             "live_smoke_symbol": "ETHUSDT",
@@ -3503,7 +3509,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             },
             "github_workflow_artifact": "rust-native-live-smoke-evidence",
             "github_workflow_plan_artifact": "rust-native-live-smoke-evidence-plan",
-            "github_workflow_requires_secrets": ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
+            "github_workflow_required_environment_names": ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
         }
         release_prerequisites = {
             "release_platform_preflight_ok": False,
@@ -3649,7 +3655,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(account_row["safety"]["read_only"])
         self.assertTrue(account_row["safety"]["requires_credentials"])
         self.assertFalse(account_row["safety"]["order_submission_attempted"])
-        self.assertTrue(account_row["details"]["binance_api_key_present"])
+        self.assertNotIn("binance_api_key_present", account_row["details"])
+        self.assertNotIn("binance_api_secret_present", account_row["details"])
         self.assertEqual([], account_row["details"]["missing_prerequisites"])
         self.assertEqual("false", account_row["details"]["binance_testnet"])
         self.assertEqual("ETHUSDT", account_row["details"]["live_smoke_symbol"])
@@ -3668,7 +3675,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(
             ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
-            account_row["details"]["github_workflow_requires_secrets"],
+            account_row["details"]["github_workflow_required_environment_names"],
         )
         self.assertIn("--require-evidence", account_row["validation_command"])
         self.assertIn("--require-current-commit", account_row["validation_command"])
@@ -3781,7 +3788,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(
             ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
-            account_action["details"]["github_workflow_requires_secrets"],
+            account_action["details"]["github_workflow_required_environment_names"],
         )
         self.assertEqual(
             {"binance_testnet": "false", "symbol": "ETHUSDT", "interval": "5m"},
@@ -3916,7 +3923,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("`interval=5m`", markdown)
         self.assertIn("rust-native-live-smoke-evidence", markdown)
         self.assertIn("rust-native-live-smoke-evidence-plan", markdown)
-        self.assertIn("GitHub workflow required secrets: `BINANCE_API_KEY`, `BINANCE_API_SECRET`", markdown)
+        self.assertIn(
+            "GitHub workflow required environment names: `BINANCE_API_KEY`, `BINANCE_API_SECRET`",
+            markdown,
+        )
         self.assertIn("release preflight", markdown)
         self.assertIn("Source tree clean: true", markdown)
         self.assertIn("Missing prerequisites: `TRADING_BOT_RUST_MARKET_SMOKE=1`", markdown)

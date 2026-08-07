@@ -65,6 +65,38 @@ def _mark_operational_inputs_fresh(service: TradingBotService) -> str:
     return fresh_at
 
 
+def _mark_operational_inputs_future(service: TradingBotService, *, seconds: int = 300) -> str:
+    future_at = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+    service.set_exchange_connector_snapshot(
+        {
+            "health": "ok",
+            "state": "ready",
+            "generated_at": future_at,
+        },
+        source="unit-test",
+    )
+    service.set_execution_snapshot(
+        state="running",
+        requested_job_count=1,
+        active_engine_count=1,
+        heartbeat_at=future_at,
+        source="unit-test",
+    )
+    runtime = service._runtime
+    with runtime._lock:
+        runtime._account_snapshot = replace(
+            runtime._account_snapshot,
+            source="unit-test",
+            generated_at=future_at,
+        )
+        runtime._portfolio_snapshot = replace(
+            runtime._portfolio_snapshot,
+            source="unit-test",
+            generated_at=future_at,
+        )
+    return future_at
+
+
 def _mark_running_execution_heartbeat_stale(service: TradingBotService, *, seconds: int = 900) -> str:
     stale_at = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
     service.set_runtime_state(active=True, active_engine_count=1, source="unit-test")
@@ -590,6 +622,38 @@ class ServiceLifecycleRuntimeTests(unittest.TestCase):
         self.assertTrue(preflight["freshness"]["exchange_connector"]["stale"])
         self.assertTrue(preflight["freshness"]["account"]["stale"])
         self.assertTrue(preflight["freshness"]["portfolio"]["stale"])
+
+    def test_service_operational_preflight_rejects_future_dated_critical_snapshots(self):
+        service = TradingBotService(
+            config={
+                "mode": "Live",
+                "operational_connector_snapshot_stale_seconds": 60,
+                "operational_execution_heartbeat_stale_seconds": 60,
+                "operational_account_snapshot_stale_seconds": 60,
+                "operational_portfolio_snapshot_stale_seconds": 60,
+            }
+        )
+        service.set_runtime_state(active=True, active_engine_count=1, source="unit-test")
+        _mark_operational_inputs_future(service)
+
+        preflight = service.get_operational_preflight()
+        operational = service.get_operational_snapshot()
+
+        self.assertEqual("blocked", preflight["state"])
+        self.assertFalse(preflight["start"]["allowed"])
+        self.assertFalse(preflight["orders"]["allowed"])
+        self.assertEqual(
+            {"exchange connector", "execution heartbeat", "account", "portfolio"},
+            set(preflight["critical_stale"]["start"]),
+        )
+        self.assertEqual(
+            {"exchange connector", "account", "portfolio"},
+            set(preflight["critical_stale"]["orders"]),
+        )
+        for freshness in preflight["freshness"].values():
+            self.assertTrue(freshness["stale"])
+            self.assertGreater(freshness["clock_skew_seconds"], 250)
+        self.assertIn("ahead of the service clock", "\n".join(operational["attention"]))
 
     def test_service_operational_preflight_matches_contract_sample_shape(self):
         sample_path = REPO_ROOT / "apps" / "service-api" / "contracts" / "operational-preflight.sample.json"

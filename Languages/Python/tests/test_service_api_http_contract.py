@@ -334,8 +334,15 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             mock.patch("app.service.api.app.pull_ollama_model") as pull_mock,
             mock.patch("app.service.api.app.delete_ollama_model") as delete_mock,
         ):
+            unauthorized_status_response = client.get(
+                SERVICE_API_ROUTE_PATHS["llm_local_model_status"],
+                params={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
+            )
+            self.assertEqual(401, unauthorized_status_response.status_code)
+
             status_response = client.get(
                 SERVICE_API_ROUTE_PATHS["llm_local_model_status"],
+                headers=headers,
                 params={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
             )
             self.assertEqual(200, status_response.status_code)
@@ -715,6 +722,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             headers = {"Authorization": "Bearer token-123"}
             commands = (
                 f'config save "{manual_path.as_posix()}"',
+                f'config load "{manual_path.as_posix()}"',
                 "config set api_secret=remote-terminal-secret",
                 "config set order_audit_log_path=C:/remote/terminal-audit.jsonl",
                 "llm set llm_api_key=remote-terminal-llm-secret",

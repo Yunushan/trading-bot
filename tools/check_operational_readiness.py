@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -37,12 +39,22 @@ REQUIRED_EVIDENCE_FIELDS = (
     "promotion_eligible",
     "suite_results",
 )
+SAFE_TELEMETRY_SOURCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+RATIO_TOLERANCE = 1e-12
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number is not allowed: {value}")
 
 
 def load_policy(path: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            parse_constant=_reject_non_finite_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"{path} is not valid JSON: {exc}") from exc
     except OSError as exc:
         raise ValueError(f"Unable to read {path}: {exc}") from exc
@@ -52,7 +64,12 @@ def load_policy(path: Path) -> dict[str, Any]:
 
 
 def policy_sha256(policy: dict[str, Any]) -> str:
-    canonical = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    canonical = json.dumps(
+        policy,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
 
@@ -60,15 +77,25 @@ def _nonempty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _number(value: object, *, minimum: float | None = None, maximum: float | None = None) -> bool:
+def _number(
+    value: object, *, minimum: float | None = None, maximum: float | None = None
+) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     number = float(value)
+    if not math.isfinite(number):
+        return False
     if minimum is not None and number < minimum:
         return False
     if maximum is not None and number > maximum:
         return False
     return True
+
+
+def _non_negative_integer(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def _unique_ids(items: object, *, field: str, issues: list[str]) -> set[str]:
@@ -154,19 +181,32 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
             )
         for field in ("cycles", "minimum_requests"):
             if not _number(profile.get(field), minimum=1):
-                issues.append(f"probe_profiles.{profile_name}.{field} must be at least 1")
+                issues.append(
+                    f"probe_profiles.{profile_name}.{field} must be at least 1"
+                )
         for field in ("minimum_duration_seconds", "cycle_interval_seconds"):
             if not _number(profile.get(field), minimum=0):
-                issues.append(f"probe_profiles.{profile_name}.{field} must be non-negative")
+                issues.append(
+                    f"probe_profiles.{profile_name}.{field} must be non-negative"
+                )
         if not _number(profile.get("max_error_rate"), minimum=0, maximum=1):
-            issues.append(f"probe_profiles.{profile_name}.max_error_rate must be between 0 and 1")
+            issues.append(
+                f"probe_profiles.{profile_name}.max_error_rate must be between 0 and 1"
+            )
         if not _number(profile.get("max_p95_ms"), minimum=0.001):
             issues.append(f"probe_profiles.{profile_name}.max_p95_ms must be positive")
         endpoints = profile.get("endpoints")
         if not isinstance(endpoints, list) or not endpoints:
-            issues.append(f"probe_profiles.{profile_name}.endpoints must be a non-empty list")
-        elif any(not _nonempty_string(endpoint) or not str(endpoint).startswith("/") for endpoint in endpoints):
-            issues.append(f"probe_profiles.{profile_name}.endpoints must contain absolute URL paths")
+            issues.append(
+                f"probe_profiles.{profile_name}.endpoints must be a non-empty list"
+            )
+        elif any(
+            not _nonempty_string(endpoint) or not str(endpoint).startswith("/")
+            for endpoint in endpoints
+        ):
+            issues.append(
+                f"probe_profiles.{profile_name}.endpoints must contain absolute URL paths"
+            )
 
     evidence = policy.get("required_evidence")
     evidence_ids = _unique_ids(evidence, field="required_evidence", issues=issues)
@@ -183,7 +223,9 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
             if filename:
                 filenames.append(filename)
                 if Path(filename).name != filename or not filename.endswith(".json"):
-                    issues.append(f"{prefix}.filename must be a JSON filename without directories")
+                    issues.append(
+                        f"{prefix}.filename must be a JSON filename without directories"
+                    )
             if requirement.get("required_for_production") is not True:
                 issues.append(f"{prefix}.required_for_production must be true")
             if not _number(requirement.get("maximum_age_hours"), minimum=1):
@@ -192,12 +234,21 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
             if not isinstance(required_fields, list) or not required_fields:
                 issues.append(f"{prefix}.required_fields must be a non-empty list")
             else:
-                missing_fields = sorted(set(REQUIRED_EVIDENCE_FIELDS) - {str(item) for item in required_fields})
+                missing_fields = sorted(
+                    set(REQUIRED_EVIDENCE_FIELDS)
+                    - {str(item) for item in required_fields}
+                )
                 if missing_fields:
-                    issues.append(f"{prefix}.required_fields is missing: {', '.join(missing_fields)}")
-        duplicate_filenames = sorted({name for name in filenames if filenames.count(name) > 1})
+                    issues.append(
+                        f"{prefix}.required_fields is missing: {', '.join(missing_fields)}"
+                    )
+        duplicate_filenames = sorted(
+            {name for name in filenames if filenames.count(name) > 1}
+        )
         if duplicate_filenames:
-            issues.append(f"required_evidence has duplicate filenames: {', '.join(duplicate_filenames)}")
+            issues.append(
+                f"required_evidence has duplicate filenames: {', '.join(duplicate_filenames)}"
+            )
 
     referenced_evidence: set[str] = set()
     for collection_name in ("service_level_objectives", "recovery_objectives"):
@@ -208,9 +259,13 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
                 for item in collection
                 if isinstance(item, dict)
             )
-    unknown = sorted(item for item in referenced_evidence if item and item not in evidence_ids)
+    unknown = sorted(
+        item for item in referenced_evidence if item and item not in evidence_ids
+    )
     if unknown:
-        issues.append(f"objectives reference unknown evidence ids: {', '.join(unknown)}")
+        issues.append(
+            f"objectives reference unknown evidence ids: {', '.join(unknown)}"
+        )
     return issues
 
 
@@ -264,7 +319,7 @@ def _parse_timestamp(value: object) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        return None
     return parsed.astimezone(timezone.utc)
 
 
@@ -302,9 +357,24 @@ def _validate_evidence_metrics(
         if not isinstance(sustained, dict):
             return ["probe_profiles.sustained is unavailable for evidence validation"]
         checks = (
-            ("duration_seconds", payload.get("duration_seconds"), "gte", sustained.get("minimum_duration_seconds")),
-            ("request_count", payload.get("request_count"), "gte", sustained.get("minimum_requests")),
-            ("error_rate", payload.get("error_rate"), "lte", sustained.get("max_error_rate")),
+            (
+                "duration_seconds",
+                payload.get("duration_seconds"),
+                "gte",
+                sustained.get("minimum_duration_seconds"),
+            ),
+            (
+                "request_count",
+                payload.get("request_count"),
+                "gte",
+                sustained.get("minimum_requests"),
+            ),
+            (
+                "error_rate",
+                payload.get("error_rate"),
+                "lte",
+                sustained.get("max_error_rate"),
+            ),
         )
         for metric, value, comparison, target in checks:
             issue = _metric_threshold_issue(
@@ -344,29 +414,142 @@ def _validate_evidence_metrics(
             )
             if issue:
                 issues.append(issue)
+        sample_count = _non_negative_integer(
+            payload.get("operational_snapshot_sample_count")
+        )
+        expected_count = _non_negative_integer(
+            payload.get("operational_snapshot_expected_count")
+        )
+        if sample_count is None or sample_count <= 0:
+            issues.append(
+                f"{path} operational_snapshot_sample_count must be a positive integer"
+            )
+        if expected_count is None or expected_count <= 0:
+            issues.append(
+                f"{path} operational_snapshot_expected_count must be a positive integer"
+            )
+        if (
+            sample_count is not None
+            and expected_count is not None
+            and sample_count != expected_count
+        ):
+            issues.append(
+                f"{path} operational snapshot sample count must equal the expected count"
+            )
         deployed_commit = str(payload.get("deployed_commit") or "").strip()
         evidence_commit = str(payload.get("commit") or "").strip()
         if not deployed_commit or deployed_commit != evidence_commit:
             issues.append(f"{path} deployed_commit must match the evidence commit")
         if payload.get("evidence_scope") != "deployed-sustained-service-api-probe":
-            issues.append(f"{path} must come from a deployed sustained service API probe")
+            issues.append(
+                f"{path} must come from a deployed sustained service API probe"
+            )
         environment = payload.get("environment")
-        if not isinstance(environment, dict) or environment.get("transport") != "external-https":
+        if (
+            not isinstance(environment, dict)
+            or environment.get("transport") != "external-https"
+        ):
             issues.append(f"{path} production probe transport must be external-https")
 
     if evidence_id == "production-service-slo-window":
         window_start = _parse_timestamp(payload.get("window_start"))
         window_end = _parse_timestamp(payload.get("window_end"))
         if window_start is None or window_end is None:
-            issues.append(f"{path} window_start and window_end must be ISO-8601 timestamps")
+            issues.append(
+                f"{path} window_start and window_end must be timezone-aware ISO-8601 timestamps"
+            )
         elif window_end <= window_start:
             issues.append(f"{path} window_end must be after window_start")
-        elif (window_end - window_start).total_seconds() < 30 * 24 * 60 * 60:
-            issues.append(f"{path} production SLO evidence must cover at least 30 days")
+        else:
+            if (window_end - window_start).total_seconds() < 30 * 24 * 60 * 60:
+                issues.append(
+                    f"{path} production SLO evidence must cover at least 30 days"
+                )
+            maximum_age = float(requirement.get("maximum_age_hours") or 0)
+            window_age_hours = (
+                datetime.now(timezone.utc) - window_end
+            ).total_seconds() / 3600
+            if window_age_hours < -0.1:
+                issues.append(f"{path} production SLO window cannot end in the future")
+            elif maximum_age and window_age_hours > maximum_age:
+                issues.append(
+                    f"{path} production SLO window is stale "
+                    f"({window_age_hours:.1f}h > {maximum_age:.1f}h)"
+                )
+
+        telemetry_source = payload.get("telemetry_source")
+        if (
+            not isinstance(telemetry_source, str)
+            or SAFE_TELEMETRY_SOURCE_PATTERN.fullmatch(telemetry_source.strip()) is None
+        ):
+            issues.append(
+                f"{path} telemetry_source must be a credential-free identifier"
+            )
+        telemetry_hash = payload.get("telemetry_input_sha256")
+        if (
+            not isinstance(telemetry_hash, str)
+            or SHA256_PATTERN.fullmatch(telemetry_hash) is None
+        ):
+            issues.append(
+                f"{path} telemetry_input_sha256 must be a lowercase SHA-256 digest"
+            )
+
+        eligible = _non_negative_integer(payload.get("eligible_request_count"))
+        successful = _non_negative_integer(payload.get("successful_request_count"))
+        failed = _non_negative_integer(payload.get("failed_request_count"))
+        for field, value in (
+            ("eligible_request_count", eligible),
+            ("successful_request_count", successful),
+            ("failed_request_count", failed),
+        ):
+            if value is None:
+                issues.append(f"{path} {field} must be a non-negative integer")
+        if eligible == 0:
+            issues.append(f"{path} eligible_request_count must be greater than zero")
+        if (
+            None not in (eligible, successful, failed)
+            and successful + failed != eligible
+        ):
+            issues.append(
+                f"{path} successful_request_count + failed_request_count must equal "
+                "eligible_request_count"
+            )
+
+        successful_ratio = payload.get("successful_request_ratio")
+        failed_ratio = payload.get("failed_request_ratio")
+        if not _number(successful_ratio, minimum=0, maximum=1):
+            issues.append(f"{path} successful_request_ratio must be between 0 and 1")
+        if not _number(failed_ratio, minimum=0, maximum=1):
+            issues.append(f"{path} failed_request_ratio must be between 0 and 1")
+        if _number(successful_ratio, minimum=0, maximum=1) and _number(
+            failed_ratio,
+            minimum=0,
+            maximum=1,
+        ):
+            ratio_sum = float(successful_ratio) + float(failed_ratio)
+            if abs(ratio_sum - 1.0) > RATIO_TOLERANCE:
+                issues.append(
+                    f"{path} successful and failed request ratios must sum to 1"
+                )
+            if eligible and successful is not None:
+                expected = successful / eligible
+                if abs(float(successful_ratio) - expected) > RATIO_TOLERANCE:
+                    issues.append(
+                        f"{path} successful_request_ratio does not match request counts"
+                    )
+            if eligible and failed is not None:
+                expected = failed / eligible
+                if abs(float(failed_ratio) - expected) > RATIO_TOLERANCE:
+                    issues.append(
+                        f"{path} failed_request_ratio does not match request counts"
+                    )
         objectives = policy.get("service_level_objectives")
         if isinstance(objectives, list):
             for objective in objectives:
-                if not isinstance(objective, dict) or objective.get("evidence_id") != evidence_id:
+                if (
+                    not isinstance(objective, dict)
+                    or objective.get("evidence_id") != evidence_id
+                ):
                     continue
                 metric = str(objective.get("metric") or "")
                 issue = _metric_threshold_issue(
@@ -380,14 +563,23 @@ def _validate_evidence_metrics(
                     issues.append(issue)
 
     recovery_objectives = policy.get("recovery_objectives")
-    matching_recovery = [
-        objective
-        for objective in recovery_objectives
-        if isinstance(objective, dict) and objective.get("evidence_id") == evidence_id
-    ] if isinstance(recovery_objectives, list) else []
+    matching_recovery = (
+        [
+            objective
+            for objective in recovery_objectives
+            if isinstance(objective, dict)
+            and objective.get("evidence_id") == evidence_id
+        ]
+        if isinstance(recovery_objectives, list)
+        else []
+    )
     if matching_recovery:
-        rto_target = min(float(objective["rto_seconds"]) for objective in matching_recovery)
-        rpo_target = min(float(objective["rpo_seconds"]) for objective in matching_recovery)
+        rto_target = min(
+            float(objective["rto_seconds"]) for objective in matching_recovery
+        )
+        rpo_target = min(
+            float(objective["rpo_seconds"]) for objective in matching_recovery
+        )
         for metric, target in (
             ("recovery_time_seconds", rto_target),
             ("recovery_point_seconds", rpo_target),
@@ -401,6 +593,58 @@ def _validate_evidence_metrics(
             )
             if issue:
                 issues.append(issue)
+    if evidence_id == "service-config-backup-restore":
+        objectives_by_id = {
+            str(objective.get("id") or ""): objective
+            for objective in matching_recovery
+            if isinstance(objective, dict)
+        }
+        for metric, objective_id in (
+            ("config_recovery_time_seconds", "service-config-recovery"),
+            ("service_recovery_time_seconds", "service-process-recovery"),
+        ):
+            objective = objectives_by_id.get(objective_id)
+            target = (
+                objective.get("rto_seconds") if isinstance(objective, dict) else None
+            )
+            issue = _metric_threshold_issue(
+                path=path,
+                metric=metric,
+                value=payload.get(metric),
+                comparison="lte",
+                target=target,
+            )
+            if issue:
+                issues.append(issue)
+        suite_results = payload.get("suite_results")
+        result_by_name = (
+            {
+                str(item.get("name") or ""): item
+                for item in suite_results
+                if isinstance(item, dict)
+            }
+            if isinstance(suite_results, list)
+            else {}
+        )
+        for required_name in (
+            "config-backup-secret-redaction",
+            "config-restore-round-trip",
+            "synthetic-credential-cleanup",
+            "canonical-service-process-restart",
+        ):
+            result = result_by_name.get(required_name)
+            if not isinstance(result, dict) or result.get("status") != "pass":
+                issues.append(
+                    f"{path} must include a passing {required_name} suite result"
+                )
+        process_result = result_by_name.get("canonical-service-process-restart")
+        if (
+            not isinstance(process_result, dict)
+            or process_result.get("process_boundary") != "child-process"
+        ):
+            issues.append(
+                f"{path} service restart must be proven across a child-process boundary"
+            )
     return issues
 
 
@@ -460,14 +704,21 @@ def _validate_evidence(
         if age_hours < -0.1:
             issues.append(f"{path} generated_at cannot be in the future")
         elif maximum_age and age_hours > maximum_age:
-            issues.append(f"{path} evidence is stale ({age_hours:.1f}h > {maximum_age:.1f}h)")
+            issues.append(
+                f"{path} evidence is stale ({age_hours:.1f}h > {maximum_age:.1f}h)"
+            )
 
     suite_results = payload.get("suite_results")
     if not isinstance(suite_results, list) or not suite_results:
         issues.append(f"{path} suite_results must be a non-empty list")
-    elif any(not isinstance(item, dict) or item.get("status") != "pass" for item in suite_results):
+    elif any(
+        not isinstance(item, dict) or item.get("status") != "pass"
+        for item in suite_results
+    ):
         issues.append(f"{path} every suite result must have status pass")
-    issues.extend(_validate_evidence_metrics(requirement, payload, policy=policy, path=path))
+    issues.extend(
+        _validate_evidence_metrics(requirement, payload, policy=policy, path=path)
+    )
     return issues
 
 
@@ -480,17 +731,31 @@ def audit_operational_readiness(
     require_current_commit: bool = False,
     require_clean_source: bool = False,
 ) -> dict[str, Any]:
-    resolved_policy_path = policy_path if policy_path.is_absolute() else root / policy_path
+    resolved_policy_path = (
+        policy_path if policy_path.is_absolute() else root / policy_path
+    )
     try:
         policy = load_policy(resolved_policy_path)
     except ValueError as exc:
-        return {"ok": False, "schema_ok": False, "promotion_ready": False, "issues": [str(exc)]}
+        return {
+            "ok": False,
+            "schema_ok": False,
+            "promotion_ready": False,
+            "issues": [str(exc)],
+        }
 
     issues = validate_policy(policy)
     schema_ok = not issues
     policy_hash = policy_sha256(policy)
-    policy_flags = policy.get("policy") if isinstance(policy.get("policy"), dict) else {}
-    configured_dir = Path(str(policy_flags.get("evidence_artifact_dir") or "artifacts/operational-readiness"))
+    policy_flags = (
+        policy.get("policy") if isinstance(policy.get("policy"), dict) else {}
+    )
+    configured_dir = Path(
+        str(
+            policy_flags.get("evidence_artifact_dir")
+            or "artifacts/operational-readiness"
+        )
+    )
     resolved_evidence_dir = evidence_dir or configured_dir
     if not resolved_evidence_dir.is_absolute():
         resolved_evidence_dir = root / resolved_evidence_dir
@@ -500,13 +765,18 @@ def audit_operational_readiness(
     if require_current_commit and not commit:
         issues.append("unable to determine current git commit")
     if require_clean_source and current_clean is not True:
-        issues.append("current tracked source tree must be clean for production promotion evidence")
+        issues.append(
+            "current tracked source tree must be clean for production promotion evidence"
+        )
 
     evidence_results: list[dict[str, Any]] = []
     requirements = policy.get("required_evidence")
     if require_evidence and isinstance(requirements, list):
         for requirement in requirements:
-            if not isinstance(requirement, dict) or requirement.get("required_for_production") is not True:
+            if (
+                not isinstance(requirement, dict)
+                or requirement.get("required_for_production") is not True
+            ):
                 continue
             path = resolved_evidence_dir / str(requirement.get("filename") or "")
             evidence_issues = _validate_evidence(
@@ -528,7 +798,9 @@ def audit_operational_readiness(
             )
             issues.extend(evidence_issues)
 
-    promotion_ready = bool(schema_ok and require_evidence and evidence_results and not issues)
+    promotion_ready = bool(
+        schema_ok and require_evidence and evidence_results and not issues
+    )
     return {
         "ok": not issues,
         "schema_ok": schema_ok,
@@ -541,7 +813,9 @@ def audit_operational_readiness(
         "policy_path": str(resolved_policy_path),
         "policy_sha256": policy_hash,
         "evidence_dir": str(resolved_evidence_dir),
-        "service_level_objective_count": len(policy.get("service_level_objectives") or []),
+        "service_level_objective_count": len(
+            policy.get("service_level_objectives") or []
+        ),
         "recovery_objective_count": len(policy.get("recovery_objectives") or []),
         "required_evidence_count": len(policy.get("required_evidence") or []),
         "evidence": evidence_results,
@@ -579,7 +853,9 @@ def main(argv: list[str] | None = None) -> int:
             f"required evidence={report.get('required_evidence_count', 0)}"
         )
         if require_evidence:
-            print(f"Production promotion evidence: {'ready' if report['promotion_ready'] else 'not ready'}")
+            print(
+                f"Production promotion evidence: {'ready' if report['promotion_ready'] else 'not ready'}"
+            )
         for issue in report["issues"]:
             print(f"- {issue}", file=sys.stderr)
     return 0 if report["ok"] else 1

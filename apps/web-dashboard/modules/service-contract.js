@@ -7,6 +7,7 @@ export const SERVICE_API_ROUTE_SUFFIXES = Object.freeze({
   dashboard: "/dashboard",
   status: "/status",
   metrics: "/metrics",
+  prometheus_metrics: "/metrics/prometheus",
   execution: "/execution",
   backtest: "/backtest",
   config_summary: "/config-summary",

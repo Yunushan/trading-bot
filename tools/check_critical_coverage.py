@@ -13,6 +13,7 @@ from pathlib import Path
 CRITICAL_PACKAGE_MINIMUMS: dict[str, float] = {
     "core.strategy": 0.75,
     "core.positions": 0.60,
+    "integrations.exchanges.binance.market": 0.65,
     "integrations.exchanges.binance.orders": 0.70,
     "service.runners": 0.80,
     "settings": 0.85,

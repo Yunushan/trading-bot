@@ -135,6 +135,8 @@
         "request_count",
         "error_rate",
         "latency_ms",
+        "operational_snapshot_sample_count",
+        "operational_snapshot_expected_count",
         "operational_snapshot_max_age_seconds",
         "suite_results"
       ]
@@ -156,8 +158,13 @@
         "read_only",
         "order_submission_attempted",
         "promotion_eligible",
+        "telemetry_source",
+        "telemetry_input_sha256",
         "window_start",
         "window_end",
+        "eligible_request_count",
+        "successful_request_count",
+        "failed_request_count",
         "successful_request_ratio",
         "failed_request_ratio",
         "read_latency_p95_ms",
@@ -183,6 +190,8 @@
         "order_submission_attempted",
         "promotion_eligible",
         "recovery_time_seconds",
+        "config_recovery_time_seconds",
+        "service_recovery_time_seconds",
         "recovery_point_seconds",
         "suite_results"
       ]

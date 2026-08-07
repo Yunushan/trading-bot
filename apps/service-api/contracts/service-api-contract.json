@@ -14,6 +14,7 @@
     "dashboard": "/dashboard",
     "status": "/status",
     "metrics": "/metrics",
+    "prometheus_metrics": "/metrics/prometheus",
     "execution": "/execution",
     "backtest": "/backtest",
     "config_summary": "/config-summary",
@@ -51,6 +52,7 @@
     "dashboard": "/api/v1/dashboard",
     "status": "/api/v1/status",
     "metrics": "/api/v1/metrics",
+    "prometheus_metrics": "/api/v1/metrics/prometheus",
     "execution": "/api/v1/execution",
     "backtest": "/api/v1/backtest",
     "config_summary": "/api/v1/config-summary",
@@ -88,6 +90,7 @@
     "dashboard": "/api/dashboard",
     "status": "/api/status",
     "metrics": "/api/metrics",
+    "prometheus_metrics": "/api/metrics/prometheus",
     "execution": "/api/execution",
     "backtest": "/api/backtest",
     "config_summary": "/api/config-summary",
@@ -131,6 +134,9 @@
       "GET"
     ],
     "metrics": [
+      "GET"
+    ],
+    "prometheus_metrics": [
       "GET"
     ],
     "execution": [
@@ -315,6 +321,11 @@
         "connector_order_circuit_open",
         "unresolved_order_intent_count"
       ]
+    },
+    "prometheus_metrics": {
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": []
     },
     "execution": {
       "query_fields": [],

@@ -1,0 +1,101 @@
+{
+  "groups": [
+    {
+      "name": "trading-bot-service-availability",
+      "rules": [
+        {
+          "alert": "TradingBotServiceUnavailable",
+          "expr": "up{job=\"trading-bot-service\"} == 0",
+          "for": "2m",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "Trading Bot service API is unavailable",
+            "description": "Prometheus has been unable to scrape the service API for two minutes."
+          }
+        },
+        {
+          "alert": "TradingBotServiceReadErrorRateHigh",
+          "expr": "sum(rate(trading_bot_service_http_requests_total{method=~\"GET|HEAD\",route=~\"/livez|/readyz|/api/v1/.*\",route!=\"/api/v1/metrics/prometheus\",status_code=~\"5..\"}[10m])) / clamp_min(sum(rate(trading_bot_service_http_requests_total{method=~\"GET|HEAD\",route=~\"/livez|/readyz|/api/v1/.*\",route!=\"/api/v1/metrics/prometheus\",status_code!~\"401|403\"}[10m])), 0.000000001) > 0.001",
+          "for": "10m",
+          "labels": {
+            "severity": "critical",
+            "slo": "service-api-error-rate"
+          },
+          "annotations": {
+            "summary": "Service API read error rate exceeds 0.1%",
+            "description": "The rolling read error rate is consuming more than the production SLO budget."
+          }
+        },
+        {
+          "alert": "TradingBotServiceReadLatencyHigh",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(trading_bot_service_http_request_duration_seconds_bucket{method=~\"GET|HEAD\",route=~\"/livez|/readyz|/api/v1/.*\",route!=\"/api/v1/metrics/prometheus\"}[10m]))) > 0.5",
+          "for": "10m",
+          "labels": {
+            "severity": "warning",
+            "slo": "service-api-read-latency-p95"
+          },
+          "annotations": {
+            "summary": "Service API read p95 latency exceeds 500 ms",
+            "description": "Read latency has remained above the production SLO for ten minutes."
+          }
+        }
+      ]
+    },
+    {
+      "name": "trading-bot-service-safety",
+      "rules": [
+        {
+          "alert": "TradingBotOperationalSnapshotStale",
+          "expr": "(max(trading_bot_service_operational_snapshot_age_seconds) > 120 or max(trading_bot_service_operational_snapshot_stale) == 1 or absent(trading_bot_service_operational_snapshot_age_seconds) or absent(trading_bot_service_operational_snapshot_stale)) and on() trading_bot_service_runtime_active == 1",
+          "for": "2m",
+          "labels": {
+            "severity": "critical",
+            "slo": "operational-snapshot-freshness"
+          },
+          "annotations": {
+            "summary": "Operational state is stale while the runtime is active",
+            "description": "At least one critical operational snapshot is older than 120 seconds, stale, or missing from telemetry."
+          }
+        },
+        {
+          "alert": "TradingBotConnectorOrderCircuitOpen",
+          "expr": "trading_bot_service_connector_order_circuit_open == 1",
+          "for": "1m",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "Connector order circuit breaker is open",
+            "description": "Order submission is blocked after repeated connector safety failures."
+          }
+        },
+        {
+          "alert": "TradingBotUnresolvedOrderIntent",
+          "expr": "trading_bot_service_unresolved_order_intent_count > 0",
+          "for": "2m",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "Connector has unresolved order intent state",
+            "description": "At least one order intent requires operator reconciliation before further trading."
+          }
+        },
+        {
+          "alert": "TradingBotOperationalOrderPreflightBlocked",
+          "expr": "trading_bot_service_operational_preflight_orders_allowed == 0 and on() trading_bot_service_runtime_active == 1",
+          "for": "2m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "Order preflight is blocked while runtime is active",
+            "description": "The deterministic safety preflight currently rejects new order submission."
+          }
+        }
+      ]
+    }
+  ]
+}

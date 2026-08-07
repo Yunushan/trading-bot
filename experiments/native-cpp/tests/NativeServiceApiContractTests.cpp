@@ -51,14 +51,16 @@ int main(int argc, char **argv) {
     };
 
     const QStringList routes = TradingBotWindowSupport::pythonSourceServiceRouteNames();
-    check(routes.size() == 35,
-          QStringLiteral("generated Python Service API contract should expose all 35 routes"));
+    check(routes.size() == 36,
+          QStringLiteral("generated Python Service API contract should expose all 36 routes"));
     check(contains(routes, QStringLiteral("dashboard")),
           QStringLiteral("generated route names should include dashboard"));
     check(contains(routes, QStringLiteral("config")),
           QStringLiteral("generated route names should include config"));
     check(contains(routes, QStringLiteral("control_start")),
           QStringLiteral("generated route names should include control_start"));
+    check(contains(routes, QStringLiteral("prometheus_metrics")),
+          QStringLiteral("generated route names should include prometheus_metrics"));
     check(TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Binance")),
           QStringLiteral("native exchange guard should accept Binance"));
     check(!TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Bybit")),

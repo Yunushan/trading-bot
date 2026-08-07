@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import math
 import os
 import platform
 import re
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +51,13 @@ else:
 
 DEFAULT_EVIDENCE_ID = "service-api-sustained-runtime"
 API_TOKEN = "operational-readiness-probe-token"
+OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS = {
+    "exchange_connector": "generated_at",
+    "execution": "heartbeat_at",
+    "account": "generated_at",
+    "portfolio": "generated_at",
+}
+MAX_FUTURE_CLOCK_SKEW_SECONDS = 5.0
 DEFAULT_API_TOKEN_ENV = "BOT_SERVICE_API_TOKEN"
 
 
@@ -62,10 +70,16 @@ class _RemoteResponse:
         return json.loads(self.body.decode("utf-8"))
 
 
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        return None
+
+
 class _RemoteReadOnlyClient:
     def __init__(self, base_url: str, *, timeout_seconds: float) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
+        self._opener = build_opener(_NoRedirectHandler)
 
     def __enter__(self) -> _RemoteReadOnlyClient:
         return self
@@ -80,8 +94,10 @@ class _RemoteReadOnlyClient:
             method="GET",
         )
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
-                return _RemoteResponse(status_code=int(response.status), body=response.read())
+            with self._opener.open(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+                return _RemoteResponse(
+                    status_code=int(response.status), body=response.read()
+                )
         except HTTPError as exc:
             return _RemoteResponse(status_code=int(exc.code), body=exc.read())
 
@@ -110,18 +126,70 @@ def _parse_timestamp(value: object) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        return None
     return parsed.astimezone(timezone.utc)
+
+
+def _finite_non_negative_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _operational_snapshot_freshness_samples(
+    payload: object,
+    *,
+    observed_at: datetime | None = None,
+) -> tuple[list[float], list[str]]:
+    now = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if not isinstance(payload, dict):
+        return [], ["operational preflight payload must be an object"]
+    freshness = payload.get("freshness")
+    if not isinstance(freshness, dict):
+        return [], ["operational preflight freshness must be an object"]
+
+    ages: list[float] = []
+    issues: list[str] = []
+    for component, timestamp_field in OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS.items():
+        item = freshness.get(component)
+        if not isinstance(item, dict):
+            issues.append(f"{component} freshness sample is missing")
+            continue
+        reported_age = _finite_non_negative_float(item.get("age_seconds"))
+        timestamp = _parse_timestamp(item.get(timestamp_field))
+        stale = item.get("stale")
+        if reported_age is None:
+            issues.append(f"{component} freshness age is missing or invalid")
+            continue
+        if timestamp is None:
+            issues.append(f"{component} freshness timestamp is missing or invalid")
+            continue
+        clock_age = (now - timestamp).total_seconds()
+        if clock_age < -MAX_FUTURE_CLOCK_SKEW_SECONDS:
+            issues.append(f"{component} freshness timestamp is in the future")
+            continue
+        if not isinstance(stale, bool):
+            issues.append(f"{component} freshness stale flag is missing or invalid")
+            continue
+        ages.append(max(reported_age, max(0.0, clock_age)))
+        if stale:
+            issues.append(f"{component} freshness sample is stale")
+    return ages, issues
 
 
 def _normalize_base_url(value: str) -> tuple[str, bool]:
     parsed = urlsplit(str(value or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("Probe base URL must use http:// or https:// and include a host")
+        raise ValueError(
+            "Probe base URL must use http:// or https:// and include a host"
+        )
     if parsed.username or parsed.password:
         raise ValueError("Probe base URL must not contain credentials")
     if parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
-        raise ValueError("Probe base URL must be an origin without a path, query, or fragment")
+        raise ValueError(
+            "Probe base URL must be an origin without a path, query, or fragment"
+        )
     normalized = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
     return normalized, parsed.scheme == "https"
 
@@ -146,7 +214,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             delete=False,
         ) as handle:
             temporary = Path(handle.name)
-            json.dump(payload, handle, indent=2, sort_keys=True)
+            json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -158,11 +226,19 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _resolve_output_path(policy: dict[str, Any], output: Path) -> Path:
-    policy_flags = policy.get("policy") if isinstance(policy.get("policy"), dict) else {}
+    policy_flags = (
+        policy.get("policy") if isinstance(policy.get("policy"), dict) else {}
+    )
     evidence_root = REPO_ROOT / str(
         policy_flags.get("evidence_artifact_dir") or "artifacts/operational-readiness"
     )
     evidence_root = evidence_root.resolve()
+    try:
+        evidence_root.relative_to(REPO_ROOT.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            "Configured evidence directory must stay inside the repository"
+        ) from exc
     candidate = output if output.is_absolute() else evidence_root / output
     candidate = candidate.resolve()
     try:
@@ -186,7 +262,9 @@ def run_probe(
     api_token_env: str = DEFAULT_API_TOKEN_ENV,
     request_timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
-    resolved_policy_path = policy_path if policy_path.is_absolute() else REPO_ROOT / policy_path
+    resolved_policy_path = (
+        policy_path if policy_path.is_absolute() else REPO_ROOT / policy_path
+    )
     policy = load_policy(resolved_policy_path)
     policy_issues = validate_policy(policy)
     if policy_issues:
@@ -213,18 +291,30 @@ def run_probe(
     configured_requests = int(profile["minimum_requests"])
     actual_cycles = configured_cycles if cycles is None else max(1, int(cycles))
     required_duration = (
-        configured_duration if minimum_duration_seconds is None else max(0.0, float(minimum_duration_seconds))
+        configured_duration
+        if minimum_duration_seconds is None
+        else max(0.0, float(minimum_duration_seconds))
     )
-    required_requests = configured_requests if minimum_requests is None else max(1, int(minimum_requests))
+    required_requests = (
+        configured_requests
+        if minimum_requests is None
+        else max(1, int(minimum_requests))
+    )
     cycle_interval = (
         float(profile["cycle_interval_seconds"])
         if cycle_interval_seconds is None
         else max(0.0, float(cycle_interval_seconds))
     )
     allowed_error_rate = (
-        float(profile["max_error_rate"]) if max_error_rate is None else max(0.0, min(1.0, float(max_error_rate)))
+        float(profile["max_error_rate"])
+        if max_error_rate is None
+        else max(0.0, min(1.0, float(max_error_rate)))
     )
-    allowed_p95_ms = float(profile["max_p95_ms"]) if max_p95_ms is None else max(0.001, float(max_p95_ms))
+    allowed_p95_ms = (
+        float(profile["max_p95_ms"])
+        if max_p95_ms is None
+        else max(0.001, float(max_p95_ms))
+    )
     timeout_seconds = max(0.1, float(request_timeout_seconds))
 
     normalized_base_url = ""
@@ -237,7 +327,9 @@ def run_probe(
             "status": "fail",
             "profile": profile_name,
             "promotion_eligible": False,
-            "issues": ["The sustained production probe requires --base-url for a deployed service"],
+            "issues": [
+                "The sustained production probe requires --base-url for a deployed service"
+            ],
         }
 
     if normalized_base_url:
@@ -260,6 +352,22 @@ def run_probe(
                 "issues": [f"FastAPI TestClient is unavailable: {type(exc).__name__}"],
             }
         service = TradingBotService()
+        probe_timestamp = _now_iso()
+        service.set_exchange_connector_snapshot(
+            {"health": "ok", "state": "ready", "generated_at": probe_timestamp},
+            source="operational-readiness-probe",
+        )
+        service.set_execution_snapshot(
+            state="idle",
+            heartbeat_at=probe_timestamp,
+            source="operational-readiness-probe",
+        )
+        service.set_account_snapshot(
+            total_balance=0.0,
+            available_balance=0.0,
+            source="operational-readiness-probe",
+        )
+        service.set_portfolio_snapshot(source="operational-readiness-probe")
         app = create_service_api_app(
             service=service,
             api_token=API_TOKEN,
@@ -271,11 +379,15 @@ def run_probe(
         client_context = TestClient(app)
         transport = "fastapi-testclient-in-process"
     latencies: list[float] = []
-    endpoint_latencies: dict[str, list[float]] = {endpoint: [] for endpoint in endpoints}
+    endpoint_latencies: dict[str, list[float]] = {
+        endpoint: [] for endpoint in endpoints
+    }
     endpoint_counts: dict[str, int] = {endpoint: 0 for endpoint in endpoints}
     endpoint_errors: dict[str, int] = {endpoint: 0 for endpoint in endpoints}
     failures: list[dict[str, object]] = []
     snapshot_ages: list[float] = []
+    snapshot_freshness_issues: list[str] = []
+    snapshot_freshness_issue_count = 0
     observed_deployment_commits: set[str] = set()
     request_count = 0
     completed_cycles = 0
@@ -305,12 +417,25 @@ def run_probe(
                 if error:
                     endpoint_errors[endpoint] += 1
                     if len(failures) < 20:
-                        failures.append({"endpoint": endpoint, "status_code": status_code, "error": error})
-                if endpoint.endswith("/operational-preflight") and isinstance(payload, dict):
-                    generated_at = _parse_timestamp(payload.get("generated_at"))
-                    if generated_at is not None:
-                        age = max(0.0, (datetime.now(timezone.utc) - generated_at).total_seconds())
-                        snapshot_ages.append(age)
+                        failures.append(
+                            {
+                                "endpoint": endpoint,
+                                "status_code": status_code,
+                                "error": error,
+                            }
+                        )
+                if endpoint.endswith("/operational-preflight") and isinstance(
+                    payload, dict
+                ):
+                    ages, freshness_issues = _operational_snapshot_freshness_samples(
+                        payload
+                    )
+                    snapshot_ages.extend(ages)
+                    snapshot_freshness_issue_count += len(freshness_issues)
+                    remaining_issue_slots = max(0, 20 - len(snapshot_freshness_issues))
+                    snapshot_freshness_issues.extend(
+                        freshness_issues[:remaining_issue_slots]
+                    )
                 observed_commit = _payload_build_commit(payload)
                 if observed_commit:
                     observed_deployment_commits.add(observed_commit)
@@ -329,6 +454,31 @@ def run_probe(
     duration = time.perf_counter() - started
     error_count = sum(endpoint_errors.values())
     error_rate = error_count / request_count if request_count else 1.0
+    snapshot_expected_count = sum(
+        endpoint_counts[endpoint]
+        for endpoint in endpoints
+        if endpoint.endswith("/runtime/operational-preflight")
+    ) * len(OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS)
+    snapshot_sample_count = len(snapshot_ages)
+    snapshot_samples_complete = bool(
+        snapshot_expected_count > 0 and snapshot_sample_count == snapshot_expected_count
+    )
+    snapshot_max_age = max(snapshot_ages) if snapshot_ages else None
+    freshness_targets = [
+        float(objective["target"])
+        for objective in policy.get("service_level_objectives", [])
+        if isinstance(objective, dict)
+        and objective.get("metric") == "operational_snapshot_age_seconds"
+        and objective.get("comparison") == "lte"
+    ]
+    snapshot_max_age_limit = min(freshness_targets) if freshness_targets else None
+    snapshot_freshness_pass = bool(
+        snapshot_samples_complete
+        and snapshot_freshness_issue_count == 0
+        and snapshot_max_age is not None
+        and snapshot_max_age_limit is not None
+        and snapshot_max_age <= snapshot_max_age_limit
+    )
     latency_summary = {
         "p50": round(_percentile(latencies, 0.50), 3),
         "p95": round(_percentile(latencies, 0.95), 3),
@@ -345,7 +495,9 @@ def run_probe(
                 "method": "GET",
                 "request_count": endpoint_counts[endpoint],
                 "error_count": errors,
-                "error_rate": errors / endpoint_counts[endpoint] if endpoint_counts[endpoint] else 1.0,
+                "error_rate": errors / endpoint_counts[endpoint]
+                if endpoint_counts[endpoint]
+                else 1.0,
                 "latency_ms": {
                     "p50": round(_percentile(values, 0.50), 3),
                     "p95": round(_percentile(values, 0.95), 3),
@@ -361,7 +513,11 @@ def run_probe(
         and request_count >= required_requests
         and duration >= required_duration
     )
-    thresholds_pass = error_rate <= allowed_error_rate and latency_summary["p95"] <= allowed_p95_ms
+    thresholds_pass = (
+        error_rate <= allowed_error_rate
+        and latency_summary["p95"] <= allowed_p95_ms
+        and snapshot_freshness_pass
+    )
     endpoints_pass = all(result["status"] == "pass" for result in endpoint_results)
     current_commit = _current_commit(REPO_ROOT)
     deployed_commit = (
@@ -417,6 +573,17 @@ def run_probe(
             "actual_p95_ms": latency_summary["p95"],
             "maximum_p95_ms": allowed_p95_ms,
         },
+        {
+            "name": "operational-snapshot-freshness",
+            "status": "pass" if snapshot_freshness_pass else "fail",
+            "sample_count": snapshot_sample_count,
+            "expected_count": snapshot_expected_count,
+            "issue_count": snapshot_freshness_issue_count,
+            "maximum_age_seconds": (
+                round(snapshot_max_age, 3) if snapshot_max_age is not None else None
+            ),
+            "allowed_maximum_age_seconds": snapshot_max_age_limit,
+        },
     ]
     if profile_name == "sustained":
         suite_results.extend(
@@ -440,13 +607,34 @@ def run_probe(
     if error_rate > allowed_error_rate:
         issues.append(f"error rate {error_rate:.6f} exceeded {allowed_error_rate:.6f}")
     if latency_summary["p95"] > allowed_p95_ms:
-        issues.append(f"p95 latency {latency_summary['p95']:.3f}ms exceeded {allowed_p95_ms:.3f}ms")
+        issues.append(
+            f"p95 latency {latency_summary['p95']:.3f}ms exceeded {allowed_p95_ms:.3f}ms"
+        )
+    if not snapshot_samples_complete:
+        issues.append(
+            "operational preflight freshness samples were missing or malformed "
+            f"({snapshot_sample_count}/{snapshot_expected_count} valid)"
+        )
+    elif snapshot_freshness_issue_count:
+        issues.append(
+            "operational preflight reported invalid or stale component freshness "
+            f"({snapshot_freshness_issue_count} issue(s))"
+        )
+    elif not snapshot_freshness_pass:
+        issues.append(
+            "operational snapshot freshness exceeded the policy limit "
+            f"({snapshot_max_age:.3f}s > {snapshot_max_age_limit:.3f}s)"
+        )
     if failures:
         issues.append(f"{error_count} read-only service requests failed")
     if profile_name == "sustained" and not production_transport_pass:
-        issues.append("production promotion probes require a deployed HTTPS service endpoint")
+        issues.append(
+            "production promotion probes require a deployed HTTPS service endpoint"
+        )
     if profile_name == "sustained" and not deployment_identity_matches:
-        issues.append("deployed service build_commit must match the current repository commit")
+        issues.append(
+            "deployed service build_commit must match the current repository commit"
+        )
     return {
         "ok": ok,
         "evidence_id": DEFAULT_EVIDENCE_ID,
@@ -481,7 +669,13 @@ def run_probe(
         "error_count": error_count,
         "error_rate": error_rate,
         "latency_ms": latency_summary,
-        "operational_snapshot_max_age_seconds": round(max(snapshot_ages, default=0.0), 3),
+        "operational_snapshot_sample_count": snapshot_sample_count,
+        "operational_snapshot_expected_count": snapshot_expected_count,
+        "operational_snapshot_issue_count": snapshot_freshness_issue_count,
+        "operational_snapshot_issues": snapshot_freshness_issues,
+        "operational_snapshot_max_age_seconds": (
+            round(snapshot_max_age, 3) if snapshot_max_age is not None else None
+        ),
         "thresholds": {
             "max_error_rate": allowed_error_rate,
             "max_p95_ms": allowed_p95_ms,
@@ -525,7 +719,9 @@ def main(argv: list[str] | None = None) -> int:
             request_timeout_seconds=args.request_timeout_seconds,
         )
         if args.output:
-            policy_path = args.policy if args.policy.is_absolute() else REPO_ROOT / args.policy
+            policy_path = (
+                args.policy if args.policy.is_absolute() else REPO_ROOT / args.policy
+            )
             output_path = _resolve_output_path(load_policy(policy_path), args.output)
             _atomic_write_json(output_path, report)
             report["output_path"] = str(output_path)
