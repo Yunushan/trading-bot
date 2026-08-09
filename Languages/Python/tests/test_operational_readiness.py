@@ -29,6 +29,7 @@ def _valid_slo_telemetry(*, window_end: datetime | None = None) -> dict[str, obj
     return {
         "schema_version": 1,
         "telemetry_source": "prometheus:trading-bot-production",
+        "deployed_commit": "a" * 40,
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
         "eligible_request_count": 1_000_000,
@@ -94,7 +95,7 @@ class OperationalReadinessTests(unittest.TestCase):
                     "evidence_id": requirement["id"],
                     "status": "pass",
                     "generated_at": generated_at,
-                    "commit": "test-commit",
+                    "commit": "a" * 40,
                     "source_tree_clean": True,
                     "policy_sha256": policy_hash,
                     "secrets_redacted": True,
@@ -116,7 +117,7 @@ class OperationalReadinessTests(unittest.TestCase):
                             "operational_snapshot_sample_count": 1,
                             "operational_snapshot_expected_count": 1,
                             "operational_snapshot_max_age_seconds": 1.0,
-                            "deployed_commit": "test-commit",
+                            "deployed_commit": "a" * 40,
                             "evidence_scope": "deployed-sustained-service-api-probe",
                             "environment": {"transport": "external-https"},
                         }
@@ -354,6 +355,29 @@ class OperationalReadinessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must stay inside"):
             slo_import._resolve_output_path(policy, Path("..") / "outside.json")
 
+    def test_evidence_output_accepts_repo_relative_configured_directory(self):
+        policy = readiness.load_policy(POLICY_PATH)
+        expected = (REPO_ROOT / "artifacts" / "operational-readiness" / "evidence.json").resolve()
+
+        self.assertEqual(
+            expected,
+            service_probe._resolve_output_path(
+                policy,
+                Path("artifacts") / "operational-readiness" / "evidence.json",
+            ),
+        )
+        self.assertEqual(
+            expected,
+            slo_import._resolve_output_path(
+                policy,
+                Path("artifacts") / "operational-readiness" / "evidence.json",
+            ),
+        )
+        self.assertEqual(
+            expected,
+            service_probe._resolve_output_path(policy, Path("evidence.json")),
+        )
+
     def test_production_slo_import_derives_ratios_and_binds_raw_export(self):
         policy = readiness.load_policy(POLICY_PATH)
         telemetry = _valid_slo_telemetry()
@@ -370,7 +394,48 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertEqual(0.9995, report["successful_request_ratio"])
         self.assertEqual(0.0005, report["failed_request_ratio"])
         self.assertEqual("b" * 64, report["telemetry_input_sha256"])
+        self.assertEqual("a" * 40, report["deployed_commit"])
         self.assertTrue(all(item["status"] == "pass" for item in report["suite_results"]))
+
+    def test_production_slo_import_rejects_telemetry_from_another_deployment(self):
+        policy = readiness.load_policy(POLICY_PATH)
+        telemetry = _valid_slo_telemetry()
+        telemetry["deployed_commit"] = "b" * 40
+
+        report = slo_import.build_evidence(
+            telemetry,
+            policy=policy,
+            current_commit="a" * 40,
+            source_tree_clean=True,
+            telemetry_input_sha256="b" * 64,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("must match current git commit", " ".join(report["issues"]))
+
+    def test_production_slo_validator_requires_deployed_commit_binding(self):
+        policy = readiness.load_policy(POLICY_PATH)
+        requirement = next(
+            item for item in policy["required_evidence"] if item["id"] == "production-service-slo-window"
+        )
+        telemetry = _valid_slo_telemetry()
+        telemetry.pop("deployed_commit")
+        payload = {
+            **telemetry,
+            "commit": "a" * 40,
+            "telemetry_input_sha256": "a" * 64,
+            "successful_request_ratio": 0.9995,
+            "failed_request_ratio": 0.0005,
+        }
+
+        issues = readiness._validate_evidence_metrics(
+            requirement,
+            payload,
+            policy=policy,
+            path=Path("production-service-slo-window.json"),
+        )
+
+        self.assertTrue(any("deployed_commit must be a full 40-character SHA" in issue for issue in issues))
 
     def test_production_slo_import_rejects_untrustworthy_evidence(self):
         policy = readiness.load_policy(POLICY_PATH)

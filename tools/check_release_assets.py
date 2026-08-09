@@ -38,6 +38,16 @@ MACOS_ASSET_TAGS = (
     "macos-15-arm64",
     "macos-26-arm64",
 )
+RELEASE_METADATA_IDS = (
+    "windows-x64",
+    "windows-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "macos-14-arm64",
+    "macos-15-intel",
+    "macos-15-arm64",
+    "macos-26-arm64",
+)
 REQUIRED_RUST_PREFIXES = (
     "Trading-Bot-Rust-tauri",
 )
@@ -111,7 +121,28 @@ def _build_expected_assets(tag: str) -> tuple[str, list[ExpectedAsset]]:
         for rust_prefix in REQUIRED_RUST_PREFIXES:
             assets.append(ExpectedAsset(f"{rust_prefix}-{asset_tag}-{version}.zip", True, group))
 
+    for release_id in RELEASE_METADATA_IDS:
+        group = f"Release integrity {release_id}"
+        assets.extend(
+            [
+                ExpectedAsset(f"release-manifest-{release_id}.json", True, group),
+                ExpectedAsset(f"release-sbom-{release_id}.spdx.json", True, group),
+            ]
+        )
+
     return version, assets
+
+
+def _missing_required_assets(
+    expected_assets: list[ExpectedAsset], release_asset_names: set[str]
+) -> list[str]:
+    """Return required release files absent from the published asset names."""
+
+    return sorted(
+        asset.name
+        for asset in expected_assets
+        if asset.required and asset.name not in release_asset_names
+    )
 
 
 def _is_ssl_certificate_error(exc: urllib.error.URLError) -> bool:
@@ -352,7 +383,7 @@ def main() -> int:
     }
 
     present_required = sorted(asset.name for asset in required_assets if asset.name in release_asset_names)
-    missing_required = sorted(asset.name for asset in required_assets if asset.name not in release_asset_names)
+    missing_required = _missing_required_assets(expected_assets, release_asset_names)
     present_optional = sorted(asset.name for asset in optional_assets if asset.name in release_asset_names)
     missing_optional = sorted(asset.name for asset in optional_assets if asset.name not in release_asset_names)
     additional_assets = sorted(name for name in release_asset_names if name not in expected_by_name)

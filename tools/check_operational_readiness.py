@@ -41,6 +41,7 @@ REQUIRED_EVIDENCE_FIELDS = (
 )
 SAFE_TELEMETRY_SOURCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 RATIO_TOLERANCE = 1e-12
 
 
@@ -493,6 +494,14 @@ def _validate_evidence_metrics(
             issues.append(
                 f"{path} telemetry_input_sha256 must be a lowercase SHA-256 digest"
             )
+        deployed_commit = str(payload.get("deployed_commit") or "").strip().lower()
+        evidence_commit = str(payload.get("commit") or "").strip().lower()
+        if COMMIT_SHA_PATTERN.fullmatch(deployed_commit) is None:
+            issues.append(
+                f"{path} deployed_commit must be a full 40-character SHA"
+            )
+        elif deployed_commit != evidence_commit:
+            issues.append(f"{path} deployed_commit must match the evidence commit")
 
         eligible = _non_negative_integer(payload.get("eligible_request_count"))
         successful = _non_negative_integer(payload.get("successful_request_count"))

@@ -31,6 +31,7 @@ jobs:
   python-vulnerability-audit:
     name: Python Dependency Audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -42,22 +43,24 @@ jobs:
           cache: pip
           cache-dependency-path: Languages/Python/pyproject.toml
 
-      - name: Install production Python dependencies
+      - name: Create isolated Python audit environment
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -e "./Languages/Python[service,security]"
+          python -m venv .ci-python-audit
+          .ci-python-audit/bin/python -m pip install --upgrade pip==26.1.2 setuptools==83.0.0 wheel
+          .ci-python-audit/bin/python -m pip install -e "./Languages/Python[service,security]"
 
       - name: Audit Python dependencies
         shell: bash
         run: |
           set -euo pipefail
-          python tools/run_python_security_audit.py --skip-editable --progress-spinner=off
+          .ci-python-audit/bin/python tools/run_python_security_audit.py --skip-editable --progress-spinner=off
 
   node-vulnerability-audit:
     name: Node Dependency Audit (${{ matrix.client }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -87,11 +90,24 @@ jobs:
         working-directory: ${{ matrix.client }}
         run: |
           set -euo pipefail
-          npm audit --omit=dev --audit-level=high
+          audit_file="$(mktemp)"
+          trap 'rm -f "$audit_file"' EXIT
+          audit_status=0
+          npm audit --omit=dev --audit-level=high --json > "$audit_file" || audit_status=$?
+          node ../../tools/check_node_audit_policy.cjs \
+            --report "$audit_file" \
+            --policy ../../tools/node-audit-policy.json \
+            --project "${{ matrix.client }}"
+          if [[ "$audit_status" -gt 1 ]]; then
+            echo "npm audit did not complete successfully (exit code $audit_status)." >&2
+            exit "$audit_status"
+          fi
+          echo "npm audit exit code: $audit_status (policy evaluation is authoritative)"
 
   rust-vulnerability-audit:
     name: Rust Dependency Audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -106,20 +122,41 @@ jobs:
           cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Audit Rust dependencies
+        id: rust-audit
         shell: bash
         working-directory: experiments/rust-shells
         run: |
           set -euo pipefail
-          cargo audit --file Cargo.lock
+          audit_db="$(mktemp -d "$RUNNER_TEMP/trading-bot-rustsec-db.XXXXXX")"
+          audit_report="$RUNNER_TEMP/rust-dependency-audit.json"
+          trap 'rm -rf "$audit_db"' EXIT
+          : > "$audit_report"
+          audit_status=0
+          cargo audit --db "$audit_db" --file Cargo.lock --format json > "$audit_report" || audit_status=$?
+          cat "$audit_report"
+          if [[ "$audit_status" -ne 0 ]]; then
+            echo "cargo audit failed with exit code $audit_status; see the uploaded JSON report." >&2
+            exit "$audit_status"
+          fi
+
+      - name: Upload Rust dependency audit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-dependency-audit-report
+          path: ${{ runner.temp }}/rust-dependency-audit.json
+          if-no-files-found: error
 
   container-vulnerability-audit:
     name: Container Image Audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
 
       - name: Build service container image
+        id: image-build
         shell: bash
         run: |
           set -euo pipefail
@@ -136,6 +173,7 @@ jobs:
           done
 
       - name: Audit service container image
+        if: steps.image-build.outcome == 'success'
         id: trivy
         continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -150,14 +188,14 @@ jobs:
           scanners: vuln
 
       - name: Summarize container findings
-        if: always()
+        if: always() && steps.trivy.outcome != 'skipped'
         shell: bash
         run: |
           set -euo pipefail
           python tools/summarize_trivy_report.py trivy-service-results.json
 
       - name: Upload container vulnerability report
-        if: always()
+        if: always() && steps.trivy.outcome != 'skipped'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: container-vulnerability-report

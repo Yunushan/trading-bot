@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "projects": {
+    "apps/mobile-client": {
+      "exceptions": [
+        {
+          "package": "image-size",
+          "advisories": [
+            "GHSA-w3rx-r6r6-pgpr",
+            "GHSA-5p2g-fcmc-qvqq"
+          ],
+          "expires": "2026-09-30",
+          "max_severity": "high",
+          "required_effects": [
+            "metro"
+          ],
+          "require_major_fix": true,
+          "reason": "Expo 57's Metro build graph currently resolves image-size 1.x, while the registry's latest 2.0.2 remains inside both advisory ranges. npm audit offers only a breaking Expo/React Native downgrade. Metro is build-time tooling and image-size is not shipped in the native production bundle; remove this exception as soon as Expo or image-size publishes a non-breaking fixed path."
+        }
+      ]
+    }
+  }
+}

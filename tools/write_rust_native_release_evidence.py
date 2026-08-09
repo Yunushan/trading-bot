@@ -470,11 +470,12 @@ def _workflow_dispatch_batch_plan(targets: list[dict[str, Any]], *, limit: int) 
             "workflow_dispatch_inputs": {
                 "target_id": "all",
                 "runner_labels_json": "",
+                "include_self_hosted": True,
                 "require_all_evidence": True,
             },
             "command": (
                 "gh workflow run release-platform-real-tests.yml "
-                "-f target_id=all -f require_all_evidence=true"
+                "-f target_id=all -f include_self_hosted=true -f require_all_evidence=true"
             ),
             "description": (
                 "Preferred promotion collection: run every checked-in release target in one "

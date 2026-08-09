@@ -18,6 +18,7 @@ node_modules/
 aqtinstall.log
 CMakeFiles/
 .venv/
+.ci-python-audit/
 .vcpkg/
 .tmp_showtests/
 Languages/C++/build-*/
@@ -33,6 +34,7 @@ experiments/rust-shells/apps/tauri-desktop/gen/schemas/macOS-schema.json
 .coverage
 .coverage.*
 coverage.xml
+coverage.json
 artifacts/rust-native-runtime-evidence/*.json
 artifacts/rust-native-runtime-evidence/*.zip
 artifacts/rust-native-runtime-evidence/downloads/

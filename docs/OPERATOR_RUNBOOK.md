@@ -26,6 +26,7 @@ For local models, Ollama stores model files outside this repository, commonly:
 
 The project repository does not store downloaded model weights and Git should never track them.
 Use the desktop LLM panel to check/download, cancel an in-progress download, or remove Ollama models after reading the shown size and storage-path warning.
+The local-model status probe accepts loopback endpoints by default. Remote model status checks require an HTTPS URL and the explicit `Allow public network endpoint` setting; never place credentials or query-string tokens in the endpoint URL. Automatic Ollama start, download, and removal remain restricted to the local Ollama endpoint.
 
 ## Service API Safety
 
@@ -80,7 +81,9 @@ The quick probe is not production evidence. A production promotion also
 requires a passing 30-minute sustained probe against an external HTTPS service
 running the exact candidate commit, a real rolling 30-day telemetry
 window, config/restart recovery evidence, and incident/audit continuity
-evidence from the same clean candidate commit. Convert the raw telemetry export
+evidence from the same clean candidate commit. The raw telemetry export must
+include a full `deployed_commit` SHA matching that candidate. Convert the raw
+telemetry export
 with `python tools/import_production_slo_evidence.py --input production-slo-telemetry.json --json`;
 the importer writes no artifact unless counts, freshness, source binding, and
 all SLO thresholds pass. Validate the complete evidence set with:
@@ -89,9 +92,55 @@ all SLO thresholds pass. Validate the complete evidence set with:
 python tools/check_operational_readiness.py --require-evidence --require-current-commit --require-clean-source --json
 ```
 
+For a reproducible hosted collection, dispatch the `Operational Readiness
+Evidence` workflow from GitHub Actions. Before dispatching it, configure the
+protected GitHub `production` environment variable
+`PRODUCTION_SERVICE_API_ORIGIN` to the exact deployed HTTPS origin without a
+path, for example `https://service.example.com`. The `service_base_url` input must exactly match
+that environment variable; this prevents an operator from
+accidentally sending `BOT_SERVICE_API_TOKEN` to an unapproved endpoint.
+Configure the `BOT_SERVICE_API_TOKEN` secret in the same protected environment
+when the service requires authentication. The workflow runs the sustained probe and
+both recovery drills, uploads their JSON evidence even when a step fails, and
+downloads and imports the required raw telemetry JSON from a prior Actions
+artifact using `slo_telemetry_run_id`, `slo_telemetry_artifact`, and
+`slo_telemetry_file`, and uploads the complete evidence directory even when a
+later step fails. The telemetry run ID is required at dispatch time so an
+incomplete collection fails before the 30-minute probe starts. Before the
+download, the workflow also verifies that the referenced Actions run completed
+successfully and that its `headSha` is the exact current promotion commit; an
+artifact from another revision is rejected even if its JSON claims the right
+commit. It still deliberately fails strict validation when the downloaded
+telemetry or any other promotion evidence is missing; a failed collection must
+not be treated as a production approval.
+
 Missing evidence is a failed promotion gate, not an assumed pass. See
 `docs/SERVICE_LEVEL_OBJECTIVES.md` and `docs/DISASTER_RECOVERY.md` for the
 collection boundaries and operator drills.
+
+The signed Rust native live-smoke job, release-platform evidence collector, and
+strict Rust native promotion audit also target the protected `production`
+environment. Configure any Binance testnet/mainnet credentials and the
+reviewer rules there; do not store those credentials only as unprotected
+repository secrets. Public market-data smoke does not require credentials and
+remains separate from the signed job.
+
+## Release Publication Protection
+
+The binary release workflows keep platform builds separate from publication.
+Each `publish-release` job targets the GitHub `production` environment and
+shares a non-cancelling lock across the Windows, Linux/macOS, and FreeBSD
+publishers for the same tag. Configure that environment in repository settings
+before publishing a release:
+
+- require at least one independent reviewer;
+- restrict deployment branches/tags to version tags such as `v*`;
+- keep release credentials and signing material in environment secrets, never
+  in workflow inputs or committed files; and
+- review the platform evidence and release manifest before approving the job.
+
+An environment reference in YAML is not itself an approval policy; reviewers
+and branch rules must be configured in GitHub repository settings.
 
 ## Release Smoke
 

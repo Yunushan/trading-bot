@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -31,6 +33,15 @@ class ReleaseManifestTests(unittest.TestCase):
         self.assertEqual("trading-bot.zip", manifest["artifacts"][0]["name"])
         self.assertEqual(64, len(manifest["artifacts"][0]["sha256"]))
         self.assertTrue(manifest["source_revision"])
+
+    def test_git_revision_falls_back_only_for_expected_process_failures(self):
+        module = _load_module()
+        with mock.patch.object(
+            module.subprocess,
+            "check_output",
+            side_effect=subprocess.CalledProcessError(128, ["git"]),
+        ):
+            self.assertEqual("unknown", module._git_revision(REPO_ROOT))
 
     def test_verify_manifest_detects_artifact_tampering(self):
         module = _load_module()

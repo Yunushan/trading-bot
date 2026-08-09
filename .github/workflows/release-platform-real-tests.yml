@@ -41,6 +41,7 @@ jobs:
   prepare-targets:
     name: Resolve Release Target Matrix
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     outputs:
       targets: ${{ steps.matrix.outputs.targets }}
     steps:
@@ -65,9 +66,14 @@ jobs:
         env:
           TARGET_ID: ${{ inputs.target_id }}
           INCLUDE_SELF_HOSTED: ${{ inputs.include_self_hosted }}
+          REQUIRE_ALL_EVIDENCE: ${{ inputs.require_all_evidence }}
           RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
         run: |
           set -euo pipefail
+          if [[ "$TARGET_ID" == "all" && "$REQUIRE_ALL_EVIDENCE" == "true" && "$INCLUDE_SELF_HOSTED" != "true" ]]; then
+            echo "Strict all-target evidence requires include_self_hosted=true so Windows 11 targets are not silently omitted." >&2
+            exit 1
+          fi
           args=(--emit-github-matrix)
           if [[ "$TARGET_ID" != "all" ]]; then
             args+=(--target-filter "$TARGET_ID")
@@ -85,6 +91,7 @@ jobs:
     name: Real Target Probe (${{ matrix.target.target_id }})
     needs: prepare-targets
     runs-on: ${{ fromJson(matrix.target.runner_labels_json) }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -289,6 +296,7 @@ jobs:
     needs: [prepare-targets, run-target]
     if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5

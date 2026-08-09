@@ -8,14 +8,14 @@
   },
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "test": "node tests/service-contract.test.cjs && node tests/app-logic.test.cjs",
+    "test": "node tests/service-contract.test.cjs && node tests/app-logic.test.cjs && node ../../tools/check_node_audit_policy.cjs --self-test",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"
   },
   "dependencies": {
-    "expo": "~57.0.8",
+    "expo": "~57.0.11",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-native": "0.86.2",
@@ -36,6 +36,7 @@
     },
     "test-exclude": {
       "brace-expansion": "1.1.16"
-    }
+    },
+    "nanoid": "3.3.18"
   }
 }

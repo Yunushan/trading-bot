@@ -29,6 +29,7 @@ NOISY_IGNORED_DIRECTORY_NAMES = (
 NOISY_IGNORED_FILENAMES = (
     ".coverage",
     "aqtinstall.log",
+    "coverage.json",
     "coverage.xml",
 )
 
@@ -74,15 +75,25 @@ def is_noisy_ignored_path(path: str) -> bool:
 
 
 def ignored_artifact_summary() -> dict[str, object]:
+    repo_root = _repo_root()
     rows = _git_lines("status", "--ignored", "--short")
     ignored = [row[3:] for row in rows if row.startswith("!! ")]
     noisy = [path for path in ignored if is_noisy_ignored_path(path)]
+    tracked = _git_lines("ls-files")
+    tracked_generated = [
+        path
+        for path in tracked
+        if is_noisy_ignored_path(path) and (repo_root / path).exists()
+    ]
+    all_noisy = sorted(set(noisy + tracked_generated))
     return {
         "ignored_count": len(ignored),
-        "ok": len(noisy) == 0,
-        "noisy_artifact_count": len(noisy),
-        "noisy_artifacts": noisy,
-        "tracked_count": len(_git_lines("ls-files")),
+        "ok": len(all_noisy) == 0,
+        "noisy_artifact_count": len(all_noisy),
+        "noisy_artifacts": all_noisy,
+        "tracked_generated_artifact_count": len(tracked_generated),
+        "tracked_generated_artifacts": tracked_generated,
+        "tracked_count": len(tracked),
     }
 
 

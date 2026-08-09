@@ -7,6 +7,7 @@ import subprocess
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from app.security.network_url import _is_loopback_host, validate_http_url
 from app.security.redaction import redact_text
 
 try:
@@ -153,6 +154,39 @@ def _server_kind(base_url: str) -> str:
     return "openai-compatible"
 
 
+def _validate_local_model_base_url(base_url: str, *, allow_public_network: bool = False) -> str:
+    validated = validate_http_url(
+        base_url,
+        field_name="local model base URL",
+        allow_loopback_http=True,
+        allow_query=False,
+    )
+    hostname = urlsplit(validated).hostname
+    if not allow_public_network and not _is_loopback_host(hostname):
+        raise ValueError(
+            "local model base URL must target loopback unless public network access is enabled."
+        )
+    return validated
+
+
+def _safe_status_base_url(base_url: object) -> str:
+    text = str(base_url or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(text)
+        hostname = parsed.hostname
+        if parsed.scheme.lower() not in {"http", "https"} or not hostname:
+            return "<invalid>"
+        port = parsed.port
+    except ValueError:
+        return "<invalid>"
+
+    host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    netloc = f"{host}:{port}" if port is not None else host
+    return urlunsplit((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", ""))
+
+
 def _ollama_base_url(base_url: str) -> str:
     parsed = urlsplit(str(base_url or "").strip())
     path = parsed.path.rstrip("/")
@@ -250,23 +284,37 @@ def get_local_model_status(
     timeout: float = 3.0,
     request_get: Callable[..., Any] = _default_request_get,
     command_finder: Callable[[str], str | None] = shutil.which,
+    allow_public_network: bool = False,
 ) -> LocalModelStatus:
     clean_base_url = str(base_url or "").strip()
     clean_model = str(model or "").strip()
-    kind = _server_kind(clean_base_url)
-    can_start = kind == "ollama" and bool(ollama_executable_path(command_finder))
-    free_disk_gb, recommended_free_disk_gb, disk_space_warning = (
-        _disk_space_status(clean_model) if kind == "ollama" else (None, None, "")
-    )
+    status_base_url = _safe_status_base_url(clean_base_url)
+    kind = "unknown"
+    can_start = False
+    free_disk_gb: float | None = None
+    recommended_free_disk_gb: float | None = None
+    disk_space_warning = ""
     try:
-        response = request_get(_join_url(clean_base_url, "models"), timeout=max(1.0, float(timeout or 3.0)))
+        validated_base_url = _validate_local_model_base_url(
+            clean_base_url,
+            allow_public_network=allow_public_network,
+        )
+        kind = _server_kind(validated_base_url)
+        can_start = kind == "ollama" and bool(ollama_executable_path(command_finder))
+        free_disk_gb, recommended_free_disk_gb, disk_space_warning = (
+            _disk_space_status(clean_model) if kind == "ollama" else (None, None, "")
+        )
+        response = request_get(
+            _join_url(validated_base_url, "models"),
+            timeout=max(1.0, float(timeout or 3.0)),
+        )
         if hasattr(response, "raise_for_status"):
             response.raise_for_status()
         payload = response.json() if hasattr(response, "json") else {}
         available_models = _model_ids(payload)
         return LocalModelStatus(
             model=clean_model,
-            base_url=clean_base_url,
+            base_url=status_base_url,
             server_kind=kind,
             installed=_model_installed(clean_model, available_models),
             can_download=kind == "ollama",
@@ -282,7 +330,7 @@ def get_local_model_status(
     except Exception as exc:
         return LocalModelStatus(
             model=clean_model,
-            base_url=clean_base_url,
+            base_url=status_base_url,
             server_kind=kind,
             installed=False,
             can_download=kind == "ollama",
@@ -303,7 +351,15 @@ def start_ollama_server(
     command_finder: Callable[[str], str | None] = shutil.which,
     popen: Callable[..., Any] = subprocess.Popen,
 ) -> LocalModelServerStartResult:
-    kind = _server_kind(base_url)
+    try:
+        validated_base_url = _validate_local_model_base_url(base_url)
+    except Exception as exc:
+        return LocalModelServerStartResult(
+            started=False,
+            server_kind="unknown",
+            error=redact_text(exc),
+        )
+    kind = _server_kind(validated_base_url)
     if kind != "ollama":
         return LocalModelServerStartResult(
             started=False,
@@ -359,7 +415,8 @@ def pull_ollama_model(
     clean_model = str(model or "").strip()
     if not clean_model:
         raise ValueError("Local model name cannot be empty.")
-    if _server_kind(base_url) != "ollama":
+    validated_base_url = _validate_local_model_base_url(base_url)
+    if _server_kind(validated_base_url) != "ollama":
         raise ValueError("Automatic local model downloads are only supported for Ollama on localhost:11434.")
     _raise_if_cancelled()
     stream = progress_callback is not None or cancel_callback is not None
@@ -368,7 +425,7 @@ def pull_ollama_model(
         "timeout": max(1.0, float(timeout or 1800.0)),
         "stream": stream,
     }
-    url = _join_url(_ollama_base_url(base_url), "api/pull")
+    url = _join_url(_ollama_base_url(validated_base_url), "api/pull")
     try:
         response = request_post(url, **request_kwargs)
     except TypeError as exc:
@@ -413,10 +470,11 @@ def delete_ollama_model(
     clean_model = str(model or "").strip()
     if not clean_model:
         raise ValueError("Local model name cannot be empty.")
-    if _server_kind(base_url) != "ollama":
+    validated_base_url = _validate_local_model_base_url(base_url)
+    if _server_kind(validated_base_url) != "ollama":
         raise ValueError("Automatic local model removal is only supported for Ollama on localhost:11434.")
     response = request_delete(
-        _join_url(_ollama_base_url(base_url), "api/delete"),
+        _join_url(_ollama_base_url(validated_base_url), "api/delete"),
         json={"model": clean_model},
         timeout=max(1.0, float(timeout or 60.0)),
     )

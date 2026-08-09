@@ -239,7 +239,18 @@ def _resolve_output_path(policy: dict[str, Any], output: Path) -> Path:
         raise ValueError(
             "Configured evidence directory must stay inside the repository"
         ) from exc
-    candidate = output if output.is_absolute() else evidence_root / output
+    if output.is_absolute():
+        candidate = output
+    else:
+        try:
+            repo_relative_evidence_root = evidence_root.relative_to(REPO_ROOT.resolve())
+            output.relative_to(repo_relative_evidence_root)
+        except ValueError:
+            # Bare filenames are resolved inside the configured evidence root.
+            candidate = evidence_root / output
+        else:
+            # CI workflows commonly pass a repository-relative artifact path.
+            candidate = REPO_ROOT / output
     candidate = candidate.resolve()
     try:
         candidate.relative_to(evidence_root)

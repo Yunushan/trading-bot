@@ -507,13 +507,25 @@ class DependencyReproducibilityTests(unittest.TestCase):
             actual,
         )
         self.assertEqual(6, config.count("interval: weekly"))
+        self.assertIn("    groups:\n      binance-sdk:\n        patterns:", config)
+        for package in (
+            "binance-sdk-derivatives-trading-usds-futures",
+            "binance-sdk-derivatives-trading-coin-futures",
+            "binance-sdk-spot",
+        ):
+            self.assertIn(f'          - "{package}"', config)
 
     def test_supply_chain_security_workflow_audits_python_node_rust_and_container_clients(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "supply-chain-security.yml").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn('python -m pip install -e "./Languages/Python[service,security]"', workflow)
+        self.assertIn("python -m venv .ci-python-audit", workflow)
+        self.assertIn(
+            ".ci-python-audit/bin/python -m pip install --upgrade pip==26.1.2 setuptools==83.0.0 wheel",
+            workflow,
+        )
+        self.assertIn('.ci-python-audit/bin/python -m pip install -e "./Languages/Python[service,security]"', workflow)
         self.assertNotIn("actions/checkout@v5", workflow)
         self.assertTrue(
             any(
@@ -543,18 +555,31 @@ class DependencyReproducibilityTests(unittest.TestCase):
             )
         )
         self.assertIn("dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4", workflow)
-        self.assertIn("python tools/run_python_security_audit.py --skip-editable --progress-spinner=off", workflow)
+        self.assertIn(
+            ".ci-python-audit/bin/python tools/run_python_security_audit.py --skip-editable --progress-spinner=off",
+            workflow,
+        )
         self.assertIn("npm audit --omit=dev --audit-level=high", workflow)
         self.assertIn("apps/web-dashboard", workflow)
         self.assertIn("apps/mobile-client", workflow)
         self.assertIn("cargo install cargo-audit --version 0.22.2 --locked", workflow)
         self.assertIn("working-directory: experiments/rust-shells", workflow)
-        self.assertIn("cargo audit --file Cargo.lock", workflow)
+        self.assertIn(
+            'audit_db="$(mktemp -d "$RUNNER_TEMP/trading-bot-rustsec-db.XXXXXX")"',
+            workflow,
+        )
+        self.assertIn("trap 'rm -rf \"$audit_db\"' EXIT", workflow)
+        self.assertIn('cargo audit --db "$audit_db" --file Cargo.lock', workflow)
+        self.assertIn('--format json > "$audit_report"', workflow)
+        self.assertIn("rust-dependency-audit-report", workflow)
+        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
         self.assertIn("container-vulnerability-audit", workflow)
         self.assertIn(
             "docker build --pull --file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .",
             workflow,
         )
+        self.assertIn("id: image-build", workflow)
+        self.assertIn("if: steps.image-build.outcome == 'success'", workflow)
         self.assertIn(
             "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25",
             workflow,
@@ -562,6 +587,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("image-ref: trading-bot-service:supply-chain", workflow)
         self.assertIn("severity: HIGH,CRITICAL", workflow)
         self.assertIn('exit-code: "1"', workflow)
+        self.assertIn("if: always() && steps.trivy.outcome != 'skipped'", workflow)
 
     def test_mobile_production_lockfile_overrides_brace_expansion_security_fix(self):
         mobile_root = REPO_ROOT / "apps" / "mobile-client"
@@ -600,14 +626,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("build-mode: ${{ matrix.build-mode }}", workflow)
         self.assertEqual(4, workflow.count("build-mode: none"))
         for action_name in ("init", "analyze"):
-            self.assertTrue(
-                any(
-                    f"github/codeql-action/{action_name}@{digest}" in workflow
-                    for digest in (
-                        "e0647621c2984b5ed2f768cb892365bf2a616ad1",
-                        "e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81",
-                    )
-                )
+            self.assertRegex(
+                workflow,
+                rf"(?m)^\s*uses:\s*github/codeql-action/{action_name}@[0-9a-f]{{40}}(?:\s+#.*)?$",
             )
 
     def test_rust_live_evidence_commands_use_the_workspace_lockfile(self):
@@ -1038,6 +1059,83 @@ class DependencyReproducibilityTests(unittest.TestCase):
             self.assertTrue(current_release_path.exists())
             self.assertTrue(unknown_path.exists())
 
+    def test_workspace_cleanup_can_opt_in_to_stale_operational_readiness_evidence(self):
+        module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence_dir = root / "artifacts" / "operational-readiness"
+            evidence_dir.mkdir(parents=True)
+            stale_path = evidence_dir / "service-config-backup-restore.json"
+            current_path = evidence_dir / "incident-audit-continuity.json"
+            unknown_path = evidence_dir / "local-not-in-policy.json"
+            current_hash = "b" * 64
+            stale_path.write_text(
+                json.dumps(
+                    {
+                        "evidence_id": "service-config-backup-restore",
+                        "commit": "old-commit",
+                        "policy_sha256": "a" * 64,
+                        "promotion_eligible": False,
+                        "source_tree_clean": False,
+                        "status": "pass",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            current_path.write_text(
+                json.dumps(
+                    {
+                        "evidence_id": "incident-audit-continuity",
+                        "commit": "current-commit",
+                        "policy_sha256": current_hash,
+                        "promotion_eligible": True,
+                        "source_tree_clean": True,
+                        "status": "pass",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unknown_path.write_text("{}", encoding="utf-8")
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(
+                    module,
+                    "_ignored_paths",
+                    return_value=["artifacts/operational-readiness/"],
+                ),
+                mock.patch.object(
+                    module,
+                    "_current_operational_readiness_binding",
+                    return_value=("current-commit", current_hash, True),
+                ),
+                mock.patch.object(
+                    module,
+                    "_operational_readiness_required_filenames",
+                    return_value={
+                        "service-config-backup-restore.json",
+                        "incident-audit-continuity.json",
+                    },
+                ),
+            ):
+                default_dry_run = module.clean_workspace_artifacts(apply=False)
+                stale_dry_run = module.clean_workspace_artifacts(
+                    apply=False,
+                    include_stale_runtime_evidence=True,
+                )
+                payload = module.clean_workspace_artifacts(
+                    apply=True,
+                    include_stale_runtime_evidence=True,
+                )
+
+            expected_path = "artifacts/operational-readiness/service-config-backup-restore.json"
+            self.assertNotIn(expected_path, default_dry_run["planned"])
+            self.assertEqual([expected_path], stale_dry_run["planned"])
+            self.assertEqual([expected_path], payload["removed"])
+            self.assertFalse(stale_path.exists())
+            self.assertTrue(current_path.exists())
+            self.assertTrue(unknown_path.exists())
+
     def test_workspace_hygiene_classifier_includes_generated_caches_not_editor_settings(self):
         module = _load_script_module("audit_workspace_hygiene", REPO_ROOT / "tools" / "audit_workspace_hygiene.py")
 
@@ -1075,6 +1173,32 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(1, payload["noisy_artifact_count"])
         self.assertEqual([".ruff_cache/"], payload["noisy_artifacts"])
+
+    def test_workspace_hygiene_summary_rejects_tracked_generated_files(self):
+        module = _load_script_module("audit_workspace_hygiene_tracked", REPO_ROOT / "tools" / "audit_workspace_hygiene.py")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            generated = root / "coverage.json"
+            generated.write_text("{}", encoding="utf-8")
+
+            def fake_git_lines(*args: str):
+                if args == ("status", "--ignored", "--short"):
+                    return []
+                if args == ("ls-files",):
+                    return ["coverage.json"]
+                return []
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(module, "_git_lines", side_effect=fake_git_lines),
+            ):
+                payload = module.ignored_artifact_summary()
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(1, payload["tracked_generated_artifact_count"])
+        self.assertEqual(["coverage.json"], payload["tracked_generated_artifacts"])
+        self.assertEqual(["coverage.json"], payload["noisy_artifacts"])
 
     def test_risky_pattern_audit_summary_reports_hotspots_without_full_finding_dump(self):
         module = _load_script_module("audit_risky_patterns", RISKY_PATTERN_SCRIPT)

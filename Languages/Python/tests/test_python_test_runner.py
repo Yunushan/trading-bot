@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from tools.audit_workspace_hygiene import is_noisy_ignored_path
+
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PYTHON_ROOT.parents[1]
 RUNNER_SCRIPT = PYTHON_ROOT / "tools" / "run_python_tests.py"
 
 RUNNER_SPEC = importlib.util.spec_from_file_location("run_python_tests", RUNNER_SCRIPT)
@@ -80,6 +84,21 @@ class PythonTestRunnerTests(unittest.TestCase):
 
         self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
         run_pytest_suite.assert_called_once_with()
+
+    def test_python_test_runner_disables_pytest_cache_artifacts(self):
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(run_python_tests.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(0, run_python_tests.run_pytest_suite())
+
+        command = run.call_args.args[0]
+        self.assertEqual(sys.executable, command[0])
+        self.assertEqual(["-m", "pytest", "-p", "no:cacheprovider"], command[1:])
+
+    def test_generated_coverage_json_is_ignored_and_classified_as_noisy(self):
+        gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+
+        self.assertIn("coverage.json", gitignore.splitlines())
+        self.assertTrue(is_noisy_ignored_path("Languages/Python/coverage.json"))
 
     def test_python_test_runner_unittest_discovery_is_not_package_bound(self):
         suite = run_python_tests.build_unittest_suite()

@@ -666,11 +666,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest-dev@sha256:1937c8994699b16ee74e11cb1d88e744270b51fa4b06aa4f83dae78d15067cbe AS builder",
+            "FROM cgr.dev/chainguard/python:latest-dev@sha256:7b253a0b7cbe886469db59e4cca6d86fffb48d3263d36b374bc0c946c2c5d9dd AS builder",
             dockerfile,
         )
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest@sha256:5128c3823542cfb27fd83c42ef9ee3bbbf3fdd0eb9190802e5fc119974c5f776",
+            "FROM cgr.dev/chainguard/python:latest@sha256:69437de912cc3b5d36a2480b8fb0c3f658f151d8bc1978d19a6412be3a4983d5",
             dockerfile,
         )
         self.assertIn("COPY --chown=65532:65532 apps/service-api /app/apps/service-api", dockerfile)
@@ -1471,6 +1471,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("numpy==2.4.4; python_version >= '3.11'", runtime_dependencies)
         self.assertIn("pandas==2.3.2; python_version < '3.11'", runtime_dependencies)
         self.assertIn("pandas==3.0.2; python_version >= '3.11'", runtime_dependencies)
+        self.assertIn("ccxt==4.5.71", runtime_dependencies)
         self.assertIn("aiohttp==3.14.3", runtime_dependencies)
         self.assertNotIn("numpy==2.4.4", runtime_dependencies)
         self.assertNotIn("pandas==3.0.2", runtime_dependencies)
@@ -1682,15 +1683,13 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         for workflow_path in workflows:
             workflow = workflow_path.read_text(encoding="utf-8")
-            self.assertIn("anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610", workflow)
-            self.assertTrue(
-                any(
-                    action in workflow
-                    for action in (
-                        "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6",
-                        "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
-                    )
-                )
+            self.assertRegex(
+                workflow,
+                r"(?m)^\s*uses:\s*anchore/sbom-action@[0-9a-f]{40}(?:\s+#.*)?$",
+            )
+            self.assertRegex(
+                workflow,
+                r"(?m)^\s*uses:\s*actions/attest@[0-9a-f]{40}(?:\s+#.*)?$",
             )
             self.assertIn("attestations: write", workflow)
             self.assertIn("id-token: write", workflow)
@@ -1777,11 +1776,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertIn('grep -A2 -F "cmd LC_RPATH"', macos_release_workflow)
         self.assertNotIn("mapfile -t artifacts", macos_release_workflow)
-        self.assertIn("while IFS= read -r artifact", macos_release_workflow)
+        self.assertIn("for artifact in release/*; do", macos_release_workflow)
         self.assertIn('artifacts+=("${artifact}")', macos_release_workflow)
         freebsd_release_workflow = workflows["release-freebsd.yml"]
         self.assertNotIn("mapfile -t artifacts", freebsd_release_workflow)
-        self.assertIn("while IFS= read -r artifact", freebsd_release_workflow)
+        self.assertIn("for artifact in release/*; do", freebsd_release_workflow)
         self.assertIn('artifacts+=("${artifact}")', freebsd_release_workflow)
         self.assertLess(
             macos_release_workflow.index("Deploy macOS Qt frameworks"),

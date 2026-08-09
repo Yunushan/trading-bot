@@ -84,7 +84,9 @@ def _write_wsl_environment_file(
         if wsl_path:
             return path, wsl_path
     except (OSError, subprocess.SubprocessError):
-        pass
+        if path is not None:
+            path.unlink(missing_ok=True)
+        return None, ""
     if path is not None:
         path.unlink(missing_ok=True)
     return None, ""

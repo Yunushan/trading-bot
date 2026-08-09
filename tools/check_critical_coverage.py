@@ -28,10 +28,18 @@ def build_coverage_report(coverage_file: Path) -> dict[str, object]:
     try:
         root = ET.parse(coverage_file).getroot()
     except (ET.ParseError, OSError) as exc:
+        if isinstance(exc, FileNotFoundError):
+            error = (
+                f"coverage report not found at {coverage_file}; run "
+                "python tools/run_python_tests.py --runner pytest before "
+                "checking critical coverage"
+            )
+        else:
+            error = str(exc)
         return {
             "ok": False,
             "coverage_file": str(coverage_file),
-            "error": str(exc),
+            "error": error,
             "packages": {},
         }
 

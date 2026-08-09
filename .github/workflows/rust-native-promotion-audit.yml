@@ -25,12 +25,13 @@ jobs:
   promotion-audit:
     name: Strict Rust Native Runtime Promotion Audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: production
     env:
-      GH_TOKEN: ${{ github.token }}
-      GITHUB_TOKEN: ${{ github.token }}
       LIVE_SMOKE_RUN_ID: ${{ inputs.live_smoke_run_id }}
       RELEASE_EVIDENCE_RUN_ID: ${{ inputs.release_evidence_run_id }}
       RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}
+      RUST_NATIVE_RUNTIME_EVIDENCE_INPUT: ${{ inputs.evidence_dir }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -78,8 +79,12 @@ jobs:
             echo "release_evidence_run_id must be a numeric GitHub Actions run id." >&2
             exit 1
           fi
-          if [[ -z "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" ]]; then
+          if [[ -z "${RUST_NATIVE_RUNTIME_EVIDENCE_INPUT}" ]]; then
             echo "evidence_dir input is required for Rust native promotion audit." >&2
+            exit 1
+          fi
+          if [[ ! "${RUST_NATIVE_RUNTIME_EVIDENCE_INPUT}" =~ ^artifacts/rust-native-runtime-evidence(/[A-Za-z0-9._-]+)*$ ]]; then
+            echo "evidence_dir must stay under artifacts/rust-native-runtime-evidence and use safe path segments." >&2
             exit 1
           fi
 
@@ -99,6 +104,9 @@ jobs:
           if-no-files-found: warn
 
       - name: Download external Rust native evidence artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail

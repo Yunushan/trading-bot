@@ -558,12 +558,41 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             run_service_api_server(host="0.0.0.0", port=8000, api_token="")
         with self.assertRaisesRegex(RuntimeError, "BOT_SERVICE_API_TOKEN"):
             ServiceApiBackgroundHost(host="0.0.0.0", port=8000, api_token="")
+        with self.assertRaisesRegex(RuntimeError, "BOT_SERVICE_API_TOKEN"):
+            create_service_api_app(
+                service=TradingBotService(),
+                host_context="standalone-service",
+                host_owner="service-process",
+                bound_host="0.0.0.0",
+                api_token="",
+            )
         with self.assertRaisesRegex(RuntimeError, "requires TLS"):
             run_service_api_server(
                 host="0.0.0.0",
                 port=8000,
                 api_token="x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH,
             )
+        with self.assertRaisesRegex(RuntimeError, "requires TLS"):
+            create_service_api_app(
+                service=TradingBotService(),
+                host_context="standalone-service",
+                host_owner="service-process",
+                bound_host="0.0.0.0",
+                api_token="x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH,
+            )
+        with mock.patch.dict(
+            os.environ,
+            {"BOT_SERVICE_API_TRUST_LOOPBACK_PROXY": "1"},
+            clear=True,
+        ):
+            app = create_service_api_app(
+                service=TradingBotService(),
+                host_context="standalone-service",
+                host_owner="service-process",
+                bound_host="0.0.0.0",
+                api_token="x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH,
+            )
+        self.assertTrue(app.state.service_api_non_loopback_bind)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_config_validation_errors_are_client_errors(self):
@@ -926,10 +955,17 @@ class ServiceApiHttpContractTests(unittest.TestCase):
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_non_loopback_service_api_enforces_a_nonzero_write_rate_limit(self):
-        with mock.patch.dict("os.environ", {"BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE": ""}, clear=False):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE": "",
+                "BOT_SERVICE_API_TRUST_LOOPBACK_PROXY": "1",
+            },
+            clear=True,
+        ):
             app = create_service_api_app(
                 service=TradingBotService(),
-                api_token="token-123",
+                api_token="x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH,
                 bound_host="0.0.0.0",
             )
             client = _create_test_client(app)
@@ -941,10 +977,17 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertEqual(60, limits["write_rate_limit_per_minute"])
         self.assertEqual(10_000, limits["write_rate_limit_max_clients"])
 
-        with mock.patch.dict("os.environ", {"BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE": "0"}, clear=False):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE": "0",
+                "BOT_SERVICE_API_TRUST_LOOPBACK_PROXY": "1",
+            },
+            clear=True,
+        ):
             app = create_service_api_app(
                 service=TradingBotService(),
-                api_token="token-123",
+                api_token="x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH,
                 bound_host="192.168.1.10",
             )
             client = _create_test_client(app)

@@ -80,6 +80,22 @@ class RustCommandTests(unittest.TestCase):
         self.assertIn("RUST_NATIVE_RUNTIME_EVIDENCE_DIR=", contents)
         self.assertNotIn("UNRELATED_VALUE", contents)
 
+    def test_wsl_environment_file_cleans_up_when_path_translation_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            rust_command.tempfile, "gettempdir", return_value=temp_dir
+        ), mock.patch.object(
+            rust_command, "_wsl_path", side_effect=OSError("wsl unavailable")
+        ):
+            path, wsl_path = rust_command._write_wsl_environment_file(
+                "wsl.exe",
+                {"BINANCE_API_KEY": "secret"},
+                timeout=90,
+            )
+
+            self.assertIsNone(path)
+            self.assertEqual("", wsl_path)
+            self.assertEqual([], list(Path(temp_dir).iterdir()))
+
     def test_wsl_nonzero_result_preserves_the_fallback_output(self):
         command = ["cargo", "run", "--locked"]
         native = subprocess.CompletedProcess(command, 101, stdout="", stderr="CRYPT_E_NO_REVOCATION_CHECK")

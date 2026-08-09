@@ -273,6 +273,7 @@ def create_service_api_app(
 ):
     _require_fastapi()
     resolved_api_token = resolve_service_api_token(api_token)
+    validate_service_api_exposure(bound_host, resolved_api_token)
     web_client_dir = _resolve_web_client_dir()
     web_ui_available = web_client_dir.is_dir()
     resolved_host_context = str(host_context or "standalone-service").strip() or "standalone-service"
@@ -994,7 +995,14 @@ def create_service_api_app(
 
     @api_router.get("/llm/local-model/status")
     def get_llm_local_model_status(base_url: str = "http://127.0.0.1:11434/v1", model: str = ""):
-        return asdict(get_local_model_status(base_url, model))
+        llm_config = _service().get_llm_config_payload()
+        return asdict(
+            get_local_model_status(
+                base_url,
+                model,
+                allow_public_network=bool(llm_config.get("allow_public_network")),
+            )
+        )
 
     @api_router.post("/llm/local-model/start", dependencies=[Depends(_require_write_api_auth)])
     def start_llm_local_model_server(payload: LLMLocalModelRequest):
@@ -1016,7 +1024,15 @@ def create_service_api_app(
             "ok": True,
             "action": "pull",
             "model": str(payload.model or "").strip(),
-            "status": asdict(get_local_model_status(payload.base_url, payload.model)),
+            "status": asdict(
+                get_local_model_status(
+                    payload.base_url,
+                    payload.model,
+                    allow_public_network=bool(
+                        _service().get_llm_config_payload().get("allow_public_network")
+                    ),
+                )
+            ),
         }
 
     @api_router.post("/llm/local-model/delete", dependencies=[Depends(_require_write_api_auth)])
@@ -1029,7 +1045,15 @@ def create_service_api_app(
             "ok": True,
             "action": "delete",
             "model": str(payload.model or "").strip(),
-            "status": asdict(get_local_model_status(payload.base_url, payload.model)),
+            "status": asdict(
+                get_local_model_status(
+                    payload.base_url,
+                    payload.model,
+                    allow_public_network=bool(
+                        _service().get_llm_config_payload().get("allow_public_network")
+                    ),
+                )
+            ),
         }
 
     @api_router.post("/llm/prompt", dependencies=[Depends(_require_write_api_auth)])

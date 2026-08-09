@@ -83,6 +83,18 @@ class CriticalCoverageGateTests(unittest.TestCase):
         self.assertIn("invalid package line-rate", report["error"])
         self.assertEqual({}, report["packages"])
 
+    def test_missing_coverage_report_has_regeneration_remediation(self):
+        module = _load_tool_module()
+
+        with tempfile.TemporaryDirectory() as directory:
+            coverage_file = Path(directory) / "missing-coverage.xml"
+            report = module.build_coverage_report(coverage_file)
+
+        self.assertFalse(report["ok"])
+        self.assertIn("coverage report not found", report["error"])
+        self.assertIn("tools/run_python_tests.py --runner pytest", report["error"])
+        self.assertEqual({}, report["packages"])
+
     def test_non_finite_or_out_of_range_package_rates_fail_closed(self):
         module = _load_tool_module()
 

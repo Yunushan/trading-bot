@@ -22,6 +22,7 @@ jobs:
   workflow-lint:
     name: Workflow Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -48,6 +49,7 @@ jobs:
   python-quality:
     name: Python Quality
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
@@ -323,6 +325,7 @@ jobs:
   python-version-compatibility:
     name: Python 3.10-3.14 Compatibility (${{ matrix.python-version }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -379,6 +382,7 @@ jobs:
   web-dashboard-quality:
     name: Web Dashboard Quality
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -420,6 +424,7 @@ jobs:
   web-dashboard-browser-contract:
     name: Web Dashboard Browser Contract
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -451,6 +456,7 @@ jobs:
   mobile-client-quality:
     name: Mobile Client Quality
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -483,6 +489,7 @@ jobs:
   cross-platform-support-smoke:
     name: Cross-Platform Support Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -524,6 +531,7 @@ jobs:
   release-platform-matrix-contract:
     name: Release Platform Matrix Contract
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -550,6 +558,7 @@ jobs:
   native-cpp-smoke:
     name: Native C++ Smoke
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -591,6 +600,7 @@ jobs:
   rust-smoke:
     name: Rust Smoke
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5

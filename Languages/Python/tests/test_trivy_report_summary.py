@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -72,6 +74,57 @@ class TrivyReportSummaryTests(unittest.TestCase):
 
         self.assertEqual(1, counts["MEDIUM"])
         self.assertEqual("runtime", findings[0]["target"])
+
+    def test_allows_null_vulnerabilities_for_clean_results(self) -> None:
+        payload = {"Results": [{"Target": "runtime", "Vulnerabilities": None}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trivy.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            counts, findings = trivy.summarize_report(path)
+
+        self.assertEqual({}, counts)
+        self.assertEqual([], findings)
+
+    def test_rejects_unknown_severity_instead_of_counting_it_as_unknown(self) -> None:
+        payload = {
+            "Results": [
+                {
+                    "Target": "runtime",
+                    "Vulnerabilities": [
+                        {
+                            "VulnerabilityID": "CVE-4",
+                            "PkgName": "runtime-package",
+                            "Severity": "severe",
+                        }
+                    ],
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trivy.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(trivy.TrivyReportFormatError):
+                trivy.summarize_report(path)
+
+    def test_rejects_malformed_vulnerability_records(self) -> None:
+        payload = {"Results": [{"Target": "runtime", "Vulnerabilities": ["not an object"]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trivy.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(trivy.TrivyReportFormatError):
+                trivy.summarize_report(path)
+
+    def test_cli_reports_invalid_schema_and_fails_closed(self) -> None:
+        payload = {"Results": [{"Target": "runtime", "Vulnerabilities": "invalid"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trivy.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = trivy.main([str(path)])
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Invalid Trivy report", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -1,17 +1,21 @@
 name: Update LOC Snapshot
 
 on:
-  push:
+  pull_request:
     branches:
       - main
+    paths:
+      - "**"
+      - ".github/workflows/update-loc-snapshot.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  update-readme-loc:
+  check-readme-loc:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -23,23 +27,8 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Refresh README LOC snapshot
+      - name: Check README LOC snapshot
         shell: bash
         run: |
           set -euo pipefail
-          python tools/update_loc_snapshot.py --readme README.md
-
-      - name: Commit updated README if needed
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- README.md; then
-            echo "README LOC snapshot already up-to-date."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "docs: refresh LOC snapshot"
-          git push
-
+          python tools/update_loc_snapshot.py --readme README.md --check

@@ -12,17 +12,23 @@ on:
         default: false
 
 permissions:
+  contents: read
   actions: read
-  contents: write
-  id-token: write
-  attestations: write
+
+concurrency:
+  group: release-freebsd-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-release:
+  build:
+    permissions:
+      contents: read
+      actions: read
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_freebsd == 'true' }}
     runs-on:
       - self-hosted
       - freebsd
+    timeout-minutes: 60
     env:
       TB_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
@@ -159,9 +165,13 @@ jobs:
           set -euo pipefail
           manifest="release/release-manifest-freebsd.json"
           artifacts=()
-          while IFS= read -r artifact; do
+          for artifact in release/*; do
+            [[ -f "${artifact}" ]] || continue
+            case "${artifact}" in
+              release/release-manifest-*.json) continue ;;
+            esac
             artifacts+=("${artifact}")
-          done < <(find release -maxdepth 1 -type f ! -name 'release-manifest-*.json' -print)
+          done
           if [[ "${#artifacts[@]}" -eq 0 ]]; then
             echo "No release artifacts were found to include in the digest manifest." >&2
             exit 1
@@ -178,6 +188,72 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: freebsd-release-assets
+          path: release/*
+          if-no-files-found: error
+
+
+  publish-release:
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    concurrency:
+      group: release-publish-${{ github.ref_name }}
+      cancel-in-progress: false
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Verify required release platform evidence
+        uses: ./.github/actions/verify-release-platform-evidence
+        with:
+          tag: ${{ github.ref_name }}
+          note: docs/release-qa/${{ github.ref_name }}.md
+
+      - name: Download FreeBSD assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: freebsd-release-assets
+          path: release
+
+      - name: Verify downloaded FreeBSD assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          count_regular_files() {
+            local count=0 path
+            for path in "$@"; do
+              [[ -f "${path}" ]] || continue
+              count=$((count + 1))
+            done
+            printf '%s\n' "${count}"
+          }
+          test "$(count_regular_files release/Trading-Bot-Python-freebsd-*.tar.gz)" -eq 1
+          test "$(count_regular_files release/Trading-Bot-C++-freebsd-*.tar.gz)" -eq 1
+          test -f release/release-manifest-freebsd.json
+          test -f release/release-sbom-freebsd.spdx.json
+          python tools/write_release_manifest.py \
+            --verify release/release-manifest-freebsd.json \
+            --repo-root "${GITHUB_WORKSPACE}" \
+            --require-current-revision
+
       - name: Attest release asset provenance
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
@@ -189,24 +265,11 @@ jobs:
           subject-path: release/*
           sbom-path: release/release-sbom-freebsd.spdx.json
 
-      - name: Upload workflow artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: freebsd-release-assets
-          path: release/*
-          if-no-files-found: error
-
-      - name: Publish GitHub release assets
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: ./.github/actions/verify-release-platform-evidence
-        with:
-          tag: ${{ github.ref_name }}
-          note: docs/release-qa/${{ github.ref_name }}.md
-
-      - name: Upload FreeBSD assets to the verified GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish FreeBSD release assets
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: |
             release/Trading-Bot-Python-freebsd-*.tar.gz
             release/Trading-Bot-C++-freebsd-*.tar.gz
+            release/release-manifest-freebsd.json
+            release/release-sbom-freebsd.spdx.json

@@ -18,6 +18,13 @@ from check_rust_native_runtime_evidence import (  # noqa: E402
     _current_git_commit,
     native_python_source_contract_hash,
 )
+from check_operational_readiness import (  # noqa: E402
+    DEFAULT_POLICY_PATH as OPERATIONAL_READINESS_POLICY_PATH,
+    _current_commit as _current_operational_readiness_commit,
+    _source_tree_clean as _current_operational_readiness_source_tree_clean,
+    load_policy as _load_operational_readiness_policy,
+    policy_sha256 as _operational_readiness_policy_sha256,
+)
 
 
 EXPLICIT_GENERATED_ARTIFACT_GLOBS = (
@@ -30,6 +37,9 @@ STALE_RUNTIME_EVIDENCE_GLOBS = (
 )
 STALE_RELEASE_PLATFORM_EVIDENCE_GLOBS = (
     "release-platform-evidence/*.json",
+)
+STALE_OPERATIONAL_READINESS_EVIDENCE_GLOBS = (
+    "artifacts/operational-readiness/*.json",
 )
 
 
@@ -155,6 +165,72 @@ def _stale_release_platform_evidence_artifacts(root: Path) -> list[str]:
     return sorted(paths)
 
 
+def _operational_readiness_required_filenames(root: Path) -> set[str]:
+    policy_path = OPERATIONAL_READINESS_POLICY_PATH
+    if not policy_path.is_absolute():
+        policy_path = root / policy_path
+    try:
+        policy = _load_operational_readiness_policy(policy_path)
+    except ValueError:
+        return set()
+
+    requirements = policy.get("required_evidence")
+    if not isinstance(requirements, list):
+        return set()
+    return {
+        str(item.get("filename") or "").strip()
+        for item in requirements
+        if isinstance(item, dict)
+        and item.get("required_for_production") is True
+        and str(item.get("filename") or "").strip()
+    }
+
+
+def _current_operational_readiness_binding(root: Path) -> tuple[str, str, bool | None]:
+    policy_path = OPERATIONAL_READINESS_POLICY_PATH
+    if not policy_path.is_absolute():
+        policy_path = root / policy_path
+    try:
+        policy = _load_operational_readiness_policy(policy_path)
+        return (
+            _current_operational_readiness_commit(root).strip(),
+            _operational_readiness_policy_sha256(policy).strip().lower(),
+            _current_operational_readiness_source_tree_clean(root),
+        )
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        return "", "", None
+
+
+def _stale_operational_readiness_evidence_artifacts(root: Path) -> list[str]:
+    required_filenames = _operational_readiness_required_filenames(root)
+    current_commit, current_hash, current_source_clean = _current_operational_readiness_binding(root)
+    if not required_filenames or not current_commit or not current_hash:
+        return []
+
+    paths: list[str] = []
+    for pattern in STALE_OPERATIONAL_READINESS_EVIDENCE_GLOBS:
+        for target in root.glob(pattern):
+            if not target.is_file() or target.name not in required_filenames:
+                continue
+            payload = _json_payload(target)
+            source_bound_to_current = bool(
+                isinstance(payload, dict)
+                and payload.get("status") == "pass"
+                and payload.get("promotion_eligible") is True
+                and payload.get("source_tree_clean") is True
+                and str(payload.get("commit") or "").strip() == current_commit
+                and str(payload.get("policy_sha256") or "").strip().lower() == current_hash
+                and current_source_clean is True
+            )
+            if source_bound_to_current:
+                continue
+            try:
+                paths.append(target.relative_to(root).as_posix())
+            except ValueError:
+                continue
+    return sorted(paths)
+
+
 def _cleanup_plan(root: Path, *, include_stale_runtime_evidence: bool = False) -> list[str]:
     planned: list[str] = []
     seen: set[str] = set()
@@ -164,6 +240,7 @@ def _cleanup_plan(root: Path, *, include_stale_runtime_evidence: bool = False) -
     if include_stale_runtime_evidence:
         stale_runtime_artifacts = _stale_runtime_evidence_artifacts(root)
         stale_runtime_artifacts.extend(_stale_release_platform_evidence_artifacts(root))
+        stale_runtime_artifacts.extend(_stale_operational_readiness_evidence_artifacts(root))
         explicit_artifacts.extend(stale_runtime_artifacts)
     stale_runtime_artifact_set = set(stale_runtime_artifacts)
     for path in [*_ignored_paths(), *explicit_artifacts]:
@@ -260,8 +337,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         dest="stale_runtime_evidence",
         help=(
-            "Also delete ignored Rust runtime/release promotion evidence JSON that does not "
-            "match the current git commit or Python source-contract hash."
+            "Also delete ignored Rust and operational-readiness promotion evidence JSON that "
+            "does not match the current source binding."
         ),
     )
     parser.add_argument("--json", action="store_true", help="Print the cleanup plan/result as JSON.")

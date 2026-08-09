@@ -47,6 +47,7 @@ TELEMETRY_FIELDS = frozenset(
     {
         "schema_version",
         "telemetry_source",
+        "deployed_commit",
         "window_start",
         "window_end",
         "eligible_request_count",
@@ -173,6 +174,7 @@ def build_evidence(
         contract_issues.append("telemetry_source must be a credential-free identifier")
     if SHA256_PATTERN.fullmatch(telemetry_input_sha256) is None:
         contract_issues.append("telemetry input SHA-256 is invalid")
+    deployed_commit = str(telemetry.get("deployed_commit") or "").strip().lower()
 
     eligible = _non_negative_int(telemetry.get("eligible_request_count"))
     successful = _non_negative_int(telemetry.get("successful_request_count"))
@@ -228,6 +230,14 @@ def build_evidence(
 
     if COMMIT_SHA_PATTERN.fullmatch(current_commit) is None:
         candidate_issues.append("current git commit must be a full 40-character SHA")
+    elif COMMIT_SHA_PATTERN.fullmatch(deployed_commit) is None:
+        candidate_issues.append(
+            "telemetry deployed_commit must be a full 40-character SHA"
+        )
+    elif deployed_commit != current_commit.lower():
+        candidate_issues.append(
+            f"telemetry deployed_commit must match current git commit {current_commit}"
+        )
     if source_tree_clean is not True:
         candidate_issues.append(
             "tracked source tree must be clean before production evidence is written"
@@ -287,6 +297,7 @@ def build_evidence(
         "order_submission_attempted": False,
         "promotion_eligible": promotion_eligible,
         "telemetry_source": telemetry_source,
+        "deployed_commit": deployed_commit,
         "telemetry_input_sha256": telemetry_input_sha256,
         "window_start": str(telemetry.get("window_start") or ""),
         "window_end": str(telemetry.get("window_end") or ""),
@@ -311,7 +322,18 @@ def _resolve_output_path(policy: dict[str, Any], output: Path) -> Path:
         raise ValueError(
             "Configured evidence directory must stay inside the repository"
         ) from exc
-    candidate = output if output.is_absolute() else evidence_root / output
+    if output.is_absolute():
+        candidate = output
+    else:
+        try:
+            repo_relative_evidence_root = evidence_root.relative_to(REPO_ROOT.resolve())
+            output.relative_to(repo_relative_evidence_root)
+        except ValueError:
+            # Bare filenames are resolved inside the configured evidence root.
+            candidate = evidence_root / output
+        else:
+            # CI workflows commonly pass a repository-relative artifact path.
+            candidate = REPO_ROOT / output
     candidate = candidate.resolve()
     try:
         candidate.relative_to(evidence_root)

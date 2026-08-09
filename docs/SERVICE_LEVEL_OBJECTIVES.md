@@ -66,9 +66,11 @@ importer from a clean candidate checkout. The sample values are illustrative
 and are not valid production evidence.
 
 The importer derives the success and failure ratios from the integer request
-counts, verifies that the counts reconcile, binds the evidence to the raw input
-with SHA-256, enforces the current telemetry window and policy thresholds, and
-writes the canonical artifact only after every check passes. Keep the raw
+counts, verifies that the counts reconcile, requires the raw export's
+`deployed_commit` to be the full candidate commit SHA, binds the evidence to the
+raw input with SHA-256, enforces the current telemetry window and policy
+thresholds, and writes the canonical artifact only after every check passes.
+Keep the raw
 telemetry export in the controlled operational evidence store; do not commit it
 or place credentials, query strings, or tokens in `telemetry_source`.
 

@@ -11,8 +11,9 @@ Run the combined gate from the repository root before publishing changes:
 ```bash
 python tools/clean_workspace_artifacts.py --apply
 python tools/verify_all.py
-python tools/audit_workspace_hygiene.py --json
 python tools/check_critical_coverage.py
+python tools/clean_workspace_artifacts.py --apply
+python tools/audit_workspace_hygiene.py --json
 ```
 
 `tools/verify_all.py` is the canonical local gate. It checks declared Python and
@@ -22,6 +23,12 @@ declarations, Python-owned C++/Rust source synchronization, Rust native runtime
 promotion readiness, Python lint/type/contracts/tests, web and mobile client
 tests, Rust workspace checks, Tauri UI behavior, native C++ build/tests, and
 diff whitespace.
+
+The second cleanup is intentional: the full Python suite writes the ignored
+`.coverage` and `Languages/Python/coverage.xml` reports needed by the critical
+coverage gate. Remove those generated reports only after coverage validation so
+the final workspace-hygiene check evaluates the clean tree that would be
+committed.
 
 ## 18-article completion gate
 
@@ -359,15 +366,20 @@ diff whitespace.
   source-contract hash, `runtime_ready_claimed: false`, and
   `secrets_redacted: true`. The clean-source promotion check ignores
   only the canonical evidence artifact directories
-  `artifacts/rust-native-runtime-evidence/`, `artifacts/native-source-sync/`,
-  and `release-platform-evidence/`; tracked or untracked code, workflow,
+  `artifacts/operational-readiness/`, `artifacts/rust-native-runtime-evidence/`,
+  `artifacts/native-source-sync/`, and `release-platform-evidence/`; tracked or
+  untracked code, workflow,
   documentation, tool, or manifest changes outside those directories still block
-  promotion evidence validation. Runtime, source-sync audit, and release-platform
+  promotion evidence validation. Operational-readiness, runtime, source-sync audit,
+  and release-platform
   evidence JSON/ZIP/download artifacts are ignored generated outputs, not source
   files. Do not hand-edit or commit stale evidence to satisfy promotion;
   regenerate/import it from the candidate commit instead. To remove stale local
-  Rust runtime evidence without deleting current matching evidence, run
-  `python tools/clean_workspace_artifacts.py --stale-runtime-evidence --apply`.
+  Rust or operational-readiness evidence without deleting a matching current
+  pass artifact, run
+  `python tools/clean_workspace_artifacts.py --stale-promotion-evidence --apply`.
+  This removes invalid or source-bound promotion evidence from a dirty checkout
+  while preserving a matching pass artifact from a clean current commit.
   `tools/verify_all.py` also checks that generated evidence artifacts are not
   tracked as source, writes the current checkout's canonical native source-sync
   audit, dry-runs the importer over existing local evidence directories plus
@@ -379,8 +391,8 @@ diff whitespace.
   promotion precondition; any importer schema, source-control, workflow-contract,
   missing current-checkout native source-sync audit, partial bundle, or
   unsupported-artifact regression remains a required failure. Clean stale local
-  Rust runtime evidence with
-  `python tools/clean_workspace_artifacts.py --stale-runtime-evidence --apply`
+  Rust or operational-readiness evidence with
+  `python tools/clean_workspace_artifacts.py --stale-promotion-evidence --apply`
   or import fresh artifacts from the clean candidate commit before treating any
   local verification result as promotion evidence.
   The aggregate release evidence artifact must embed each target's passed
@@ -474,9 +486,14 @@ promotion-eligible sustained evidence. Production promotion additionally
 requires a real rolling 30-day telemetry artifact generated with
 `python tools/import_production_slo_evidence.py --input production-slo-telemetry.json --json`,
 config/restart recovery evidence, and incident/audit continuity evidence. The
-importer reconciles raw request counts, derives ratios, verifies freshness, and
+importer reconciles raw request counts, derives ratios, verifies freshness,
+requires raw telemetry `deployed_commit` to match the candidate commit, and
 binds the canonical artifact to the raw export hash. Validate the complete set with
 `python tools/check_operational_readiness.py --require-evidence --require-current-commit --require-clean-source --json`.
+The hosted collection workflow additionally requires the referenced telemetry
+Actions run to be completed successfully and its `headSha` to match the
+candidate commit before downloading the artifact; an artifact alone cannot
+establish provenance.
 The strict gate rejects missing, stale, wrong-commit, dirty-source, unsafe, or
 threshold-violating evidence; a schema-only or quick-probe pass cannot be
 reported as production readiness.

@@ -147,6 +147,26 @@ class PositionGuardBehaviorTests(unittest.TestCase):
                 self.assertEqual([], guard.snapshot_pending_attempts())
                 self.assertIsNotNone(guard.last_exchange_guard_error)
 
+    def test_live_exchange_presence_does_not_inflate_or_stale_active_state(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.mode = "Live"
+        wrapper.positions = [
+            {"symbol": "BTCUSDT", "positionAmt": "1", "positionSide": "BOTH"},
+        ]
+        guard = IntervalPositionGuard()
+        guard.attach_wrapper(wrapper)
+
+        self.assertFalse(guard.can_open("BTCUSDT", "1m", "BUY"))
+        self.assertFalse(guard.can_open("BTCUSDT", "1m", "BUY"))
+        self.assertEqual({"BUY": 1, "SELL": 0}, guard.active[("BTCUSDT", "1m")])
+
+        wrapper.positions = []
+        guard.mark_closed("BTCUSDT", "1m", "BUY")
+
+        self.assertNotIn(("BTCUSDT", "1m"), guard.active)
+        self.assertTrue(guard.can_open("BTCUSDT", "1m", "SELL"))
+        guard.end_open("BTCUSDT", "1m", "SELL", False)
+
     def test_live_reconciliation_fails_closed_when_position_snapshot_lookup_fails(self):
         guard = IntervalPositionGuard()
         guard.attach_wrapper(

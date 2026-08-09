@@ -232,10 +232,10 @@ class IntervalPositionGuard:
                                 return self._block_exchange_snapshot("live position snapshot contained a non-finite amount")
                             continue
                         if sd == 'BUY' and amt > 0:
-                            self._record_active(sym, iv, 'BUY', delta=1)
+                            self._ensure_active_presence(sym, iv, 'BUY')
                             return False
                         if sd == 'SELL' and amt < 0:
-                            self._record_active(sym, iv, 'SELL', delta=1)
+                            self._ensure_active_presence(sym, iv, 'SELL')
                             return False
             except Exception as exc:
                 if live_exchange:
@@ -245,6 +245,22 @@ class IntervalPositionGuard:
             # reserve pending attempt immediately (coalescing window)
             self.pending_attempts[(sym, sd, ctx)] = (time.time(), iv)
             return True
+
+    def _ensure_active_presence(self, sym: str, iv: str, sd: str) -> None:
+        """Record an exchange-reported position without counting polling attempts."""
+        sd_norm = 'BUY' if str(sd).upper() in ('L', 'LONG', 'BUY') else 'SELL'
+        state = self.active.setdefault((sym, iv), {'BUY': 0, 'SELL': 0})
+        state[sd_norm] = max(1, state.get(sd_norm, 0))
+
+    def _clear_active_side(self, sym: str, iv: str, sd: str) -> None:
+        """Clear active state that came from an exchange snapshot with no ledger row."""
+        sd_norm = 'BUY' if str(sd).upper() in ('L', 'LONG', 'BUY') else 'SELL'
+        state = self.active.get((sym, iv))
+        if not state:
+            return
+        state[sd_norm] = 0
+        if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
+            self.active.pop((sym, iv), None)
 
     def _record_active(self, sym: str, iv: str, sd: str, delta: int = 0) -> None:
         sd_norm = 'BUY' if str(sd).upper() in ('L', 'LONG', 'BUY') else 'SELL'
@@ -495,6 +511,9 @@ class IntervalPositionGuard:
                 removal_count = len(entry)
             else:
                 removal_count = 1 if entry is not None else 0
+            if entry is None:
+                self._clear_active_side(sym, iv, sd)
+                return
             state = self.active.get((sym, iv))
             if state:
                 state[sd] = max(0, state.get(sd, 0) - removal_count)

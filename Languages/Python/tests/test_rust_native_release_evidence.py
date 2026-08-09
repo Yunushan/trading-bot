@@ -201,6 +201,12 @@ def _valid_source_sync_audit_payload(contract_hash: str = PYTHON_SOURCE_CONTRACT
 
 
 class RustNativeReleaseEvidenceTests(unittest.TestCase):
+    def test_readiness_dependency_error_names_supported_bootstrap_command(self):
+        message = str(runtime_readiness._dependency_startup_error("pandas"))
+        self.assertIn("pandas", message)
+        self.assertIn("tools/bootstrap_local_dev.py", message)
+        self.assertIn("Languages/Python[desktop,service,dev]", message)
+
     def test_importer_uses_canonical_runtime_evidence_module(self):
         self.assertIs(evidence_importer.runtime_evidence, runtime_evidence)
 
@@ -225,6 +231,42 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 "artifact_status": [{"status": "missing"}],
             },
             payload,
+        )
+
+    def test_readiness_cli_json_redacts_credential_values(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            runtime_readiness._print_cli_json(
+                {
+                    "api_key": "exchange-key",
+                    "api_secret": "exchange-secret",
+                    "llm_api_key": "llm-secret",
+                    "password": "operator-password",
+                    "nested": {
+                        "client_secret": "client-secret",
+                        "token": "session-token",
+                        "Authorization-Header": "authorization-value",
+                        "credential_value": "credential-value",
+                        "status": "missing",
+                    },
+                }
+            )
+
+        rendered = output.getvalue()
+        self.assertNotIn("exchange-key", rendered)
+        self.assertNotIn("exchange-secret", rendered)
+        self.assertNotIn("llm-secret", rendered)
+        self.assertNotIn("operator-password", rendered)
+        self.assertNotIn("client-secret", rendered)
+        self.assertNotIn("session-token", rendered)
+        self.assertNotIn("authorization-value", rendered)
+        self.assertNotIn("credential-value", rendered)
+        self.assertEqual(
+            {
+                "credential_presence_fields_redacted": True,
+                "nested": {"status": "missing"},
+            },
+            json.loads(rendered),
         )
 
     def test_evidence_workflow_checker_covers_ci_gate(self):
@@ -252,6 +294,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--require-native-source-sync", release_platform_workflow_text)
         self.assertIn("Evidence Gate (selected scope)", release_platform_workflow_text)
         self.assertIn("args+=(--exclude-self-hosted)", release_platform_workflow_text)
+        self.assertIn("REQUIRE_ALL_EVIDENCE: ${{ inputs.require_all_evidence }}", release_platform_workflow_text)
+        self.assertIn(
+            "Strict all-target evidence requires include_self_hosted=true",
+            release_platform_workflow_text,
+        )
         self.assertIn(
             "if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}",
             release_platform_workflow_text,
@@ -1098,6 +1145,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
             result["github_workflow_required_environment_names"],
         )
+        self.assertEqual("production", result["github_workflow_environment"])
         self.assertIn("-f symbol=BTCUSDT", result["github_workflow"])
 
     def test_readiness_live_smoke_prerequisites_expose_configured_workflow_inputs(self):
@@ -1252,6 +1300,25 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             },
             required_rust_assets,
         )
+
+    def test_release_asset_contract_requires_manifest_and_sbom_for_each_build(self):
+        version, assets = release_assets._build_expected_assets("v1.2.3")
+        metadata_assets = {
+            asset.name
+            for asset in assets
+            if asset.name.startswith("release-manifest-") or asset.name.startswith("release-sbom-")
+        }
+        all_expected_names = {asset.name for asset in assets if asset.required}
+
+        self.assertEqual("1.2.3", version)
+        self.assertEqual(2 * len(release_assets.RELEASE_METADATA_IDS), len(metadata_assets))
+        self.assertEqual([], release_assets._missing_required_assets(assets, all_expected_names))
+
+        missing_manifest = next(name for name in metadata_assets if name.startswith("release-manifest-"))
+        remaining_names = all_expected_names - {missing_manifest}
+        missing = release_assets._missing_required_assets(assets, remaining_names)
+
+        self.assertEqual([missing_manifest], missing)
 
     def test_build_release_evidence_requires_rust_assets_and_platform_results(self):
         tag = "v1.2.3"
@@ -1817,12 +1884,13 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             {
                 "target_id": "all",
                 "runner_labels_json": "",
+                "include_self_hosted": True,
                 "require_all_evidence": True,
             },
             workflow_batch["complete_matrix_dispatch"]["workflow_dispatch_inputs"],
         )
         self.assertIn(
-            "-f target_id=all -f require_all_evidence=true",
+            "-f target_id=all -f include_self_hosted=true -f require_all_evidence=true",
             workflow_batch["complete_matrix_dispatch"]["command"],
         )
         self.assertIn("--require-current-commit", workflow_batch["validation_command"])
@@ -2840,8 +2908,13 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             action_plan["collect_rust_native_live_account_smoke"]["requirement_ids"],
         )
         account_details = action_plan["collect_rust_native_live_account_smoke"]["details"]
+        self.assertIn(
+            "protected production environment secrets",
+            action_plan["collect_rust_native_live_account_smoke"]["summary"],
+        )
         self.assertTrue(account_details["requires_credentials"])
         self.assertFalse(account_details["order_submission_attempted"])
+        self.assertEqual("production", account_details["github_workflow_environment"])
         self.assertEqual(2, account_details["evidence_row_count"])
         self.assertEqual(
             ["rust-native-live-market-data-smoke", "rust-native-live-account-read-smoke"],
@@ -2888,6 +2961,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         promotion_details = action_plan["run_rust_native_promotion_audit_workflow"]["details"]
         self.assertEqual("rust-native-promotion-audit.yml", promotion_details["github_workflow"])
+        self.assertEqual("production", promotion_details["github_workflow_environment"])
         self.assertEqual(
             {
                 "live_smoke_run_id": "<live-smoke-actions-run-id>",
@@ -2990,6 +3064,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                         ],
                         "github_workflow_artifact": "rust-native-live-smoke-evidence",
                         "github_workflow_plan_artifact": "rust-native-live-smoke-evidence-plan",
+                        "github_workflow_environment": "production",
                         "github_workflow_required_environment_names": [
                             "BINANCE_API_KEY",
                             "BINANCE_API_SECRET",
@@ -3064,6 +3139,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
             account_summary["github_workflow_required_environment_names"],
         )
+        self.assertEqual("production", account_summary["github_workflow_environment"])
         release_summary = summary["evidence"][1]
         self.assertEqual("rust-native-release-platform-evidence", release_summary["evidence_id"])
         self.assertEqual(97, release_summary["missing_platform_evidence_count"])
@@ -3509,6 +3585,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             },
             "github_workflow_artifact": "rust-native-live-smoke-evidence",
             "github_workflow_plan_artifact": "rust-native-live-smoke-evidence-plan",
+            "github_workflow_environment": "production",
             "github_workflow_required_environment_names": ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
         }
         release_prerequisites = {
@@ -3517,6 +3594,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "preflight_command": "release preflight",
             "command": "release command",
             "github_workflow": "gh workflow run rust-native-release-evidence.yml",
+            "github_workflow_environment": "production",
             "release_tag_configured": False,
             "release_evidence_target_count": 99,
             "platform_target_count": 70,
@@ -3677,6 +3755,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
             account_row["details"]["github_workflow_required_environment_names"],
         )
+        self.assertEqual("production", account_row["details"]["github_workflow_environment"])
         self.assertIn("--require-evidence", account_row["validation_command"])
         self.assertIn("--require-current-commit", account_row["validation_command"])
         self.assertIn("--require-clean-source", account_row["validation_command"])
@@ -3790,6 +3869,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
             account_action["details"]["github_workflow_required_environment_names"],
         )
+        self.assertEqual("production", account_action["details"]["github_workflow_environment"])
         self.assertEqual(
             {"binance_testnet": "false", "symbol": "ETHUSDT", "interval": "5m"},
             account_action["details"]["evidence_rows"][1]["details"]["github_workflow_inputs"],
@@ -3846,6 +3926,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             promotion_action["depends_on_action_ids"],
         )
         self.assertEqual("rust-native-promotion-audit.yml", promotion_action["details"]["github_workflow"])
+        self.assertEqual("production", promotion_action["details"]["github_workflow_environment"])
         self.assertEqual(
             {
                 "live_smoke_run_id": "<live-smoke-actions-run-id>",
@@ -3927,6 +4008,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "GitHub workflow required environment names: `BINANCE_API_KEY`, `BINANCE_API_SECRET`",
             markdown,
         )
+        self.assertIn("GitHub workflow environment: `production`", markdown)
         self.assertIn("release preflight", markdown)
         self.assertIn("Source tree clean: true", markdown)
         self.assertIn("Missing prerequisites: `TRADING_BOT_RUST_MARKET_SMOKE=1`", markdown)

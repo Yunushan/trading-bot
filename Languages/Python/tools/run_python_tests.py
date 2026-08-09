@@ -100,7 +100,7 @@ def run_pytest_suite() -> int:
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     result = subprocess.run(
-        [sys.executable, "-m", "pytest"],
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"],
         cwd=PYTHON_ROOT,
         check=False,
         env=env,

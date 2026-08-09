@@ -10,6 +10,16 @@ import re
 from pathlib import Path
 from typing import Any
 
+
+def _dependency_startup_error(missing_module: str) -> SystemExit:
+    return SystemExit(
+        "Rust native readiness audit cannot start because the selected Python interpreter is "
+        f"missing {missing_module!r}. Activate the project venv or run "
+        'python tools/bootstrap_local_dev.py --python-command "<python>" '
+        'to install Languages/Python[desktop,service,dev].'
+    )
+
+
 try:
     from audit_native_source_sync import (
         REQUIRED_CONSUMER_SURFACE_NAMES,
@@ -22,16 +32,24 @@ try:
     from check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, REQUIRED_REQUIREMENTS, validate
     from write_rust_native_release_evidence import preflight_release_evidence_inputs
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
-    from tools.audit_native_source_sync import (
-        REQUIRED_CONSUMER_SURFACE_NAMES,
-        REQUIRED_GENERATED_ARTIFACT_NAMES,
-        audit_native_source_sync,
-    )
-    from app.native_parity import native_python_source_contract_summary
-    from tools.check_generated_evidence_source_control import generated_evidence_write_guard
-    from tools.check_rust_native_local_recovery_evidence import local_recovery_generation_guard
-    from tools.check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, REQUIRED_REQUIREMENTS, validate
-    from tools.write_rust_native_release_evidence import preflight_release_evidence_inputs
+    try:
+        from tools.audit_native_source_sync import (
+            REQUIRED_CONSUMER_SURFACE_NAMES,
+            REQUIRED_GENERATED_ARTIFACT_NAMES,
+            audit_native_source_sync,
+        )
+        from app.native_parity import native_python_source_contract_summary
+        from tools.check_generated_evidence_source_control import generated_evidence_write_guard
+        from tools.check_rust_native_local_recovery_evidence import local_recovery_generation_guard
+        from tools.check_rust_native_runtime_evidence import (
+            DEFAULT_MANIFEST_PATH,
+            REQUIRED_REQUIREMENTS,
+            validate,
+        )
+        from tools.write_rust_native_release_evidence import preflight_release_evidence_inputs
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on the invoking interpreter
+        missing_module = exc.name or "a required Python module"
+        raise _dependency_startup_error(missing_module) from exc
 
 
 RUNTIME_READY_FUNCTION = "rust_native_trading_runtime_ready"
@@ -44,6 +62,7 @@ LIVE_ACCOUNT_EVIDENCE_ID = "rust-native-live-account-read-smoke"
 LIVE_SMOKE_WORKFLOW = "rust-native-live-smoke.yml"
 LIVE_SMOKE_EVIDENCE_ARTIFACT = "rust-native-live-smoke-evidence"
 LIVE_SMOKE_EVIDENCE_PLAN_ARTIFACT = "rust-native-live-smoke-evidence-plan"
+PROTECTED_GITHUB_ENVIRONMENT = "production"
 LOCAL_RECOVERY_EVIDENCE_IDS = {
     "rust-native-live-stream-recovery",
     "rust-native-order-guard-recovery",
@@ -273,6 +292,7 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
         "github_workflow_inputs": workflow_inputs,
         "github_workflow_artifact": LIVE_SMOKE_EVIDENCE_ARTIFACT,
         "github_workflow_plan_artifact": LIVE_SMOKE_EVIDENCE_PLAN_ARTIFACT,
+        "github_workflow_environment": PROTECTED_GITHUB_ENVIRONMENT,
         "github_workflow_required_environment_names": ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
         "workflow_source_sync_audit": _workflow_source_sync_audit(),
         "market_command": (
@@ -326,6 +346,7 @@ def _release_evidence_prerequisites(root: Path, *, missing_limit: int = 10) -> d
             "gh workflow run rust-native-release-evidence.yml -f tag=<tag> "
             "-f platform_evidence_run_id=<actions-run-id>"
         ),
+        "github_workflow_environment": PROTECTED_GITHUB_ENVIRONMENT,
         "workflow_source_sync_audit": _workflow_source_sync_audit(),
     }
     try:
@@ -547,6 +568,9 @@ def _evidence_collection_plan(
                         "github_workflow_plan_artifact": str(
                             live_smoke_prerequisites.get("github_workflow_plan_artifact") or ""
                         ),
+                        "github_workflow_environment": str(
+                            live_smoke_prerequisites.get("github_workflow_environment") or ""
+                        ),
                         "github_workflow_required_environment_names": list(
                             live_smoke_prerequisites.get("github_workflow_required_environment_names") or []
                         ),
@@ -695,6 +719,9 @@ def _evidence_collection_plan(
                         ),
                         "workflow_dispatch_batch_plan": dict(
                             release_evidence_prerequisites.get("workflow_dispatch_batch_plan") or {}
+                        ),
+                        "github_workflow_environment": str(
+                            release_evidence_prerequisites.get("github_workflow_environment") or ""
                         ),
                         "workflow_source_sync_audit": dict(
                             release_evidence_prerequisites.get("workflow_source_sync_audit")
@@ -956,6 +983,9 @@ def _next_action_plan(
                 "github_workflow_required_environment_names": list(
                     account_row_details.get("github_workflow_required_environment_names") or []
                 ),
+                "github_workflow_environment": str(
+                    account_row_details.get("github_workflow_environment") or ""
+                ),
                 "workflow_source_sync_audit": dict(
                     account_row_details.get("workflow_source_sync_audit")
                     or _workflow_source_sync_audit()
@@ -970,7 +1000,7 @@ def _next_action_plan(
                 "the guarded Rust live smoke with Binance credentials on testnet or production; "
                 "it writes rust-native-live-account-read-smoke.json without submitting orders. "
                 "On GitHub, use the manual rust-native-live-smoke.yml workflow with "
-                "BINANCE_API_KEY and BINANCE_API_SECRET repository secrets. After downloading "
+                "BINANCE_API_KEY and BINANCE_API_SECRET protected production environment secrets. After downloading "
                 "the workflow artifact ZIP or folder, run "
                 f"{_runtime_evidence_import_command([LIVE_MARKET_EVIDENCE_ID, LIVE_ACCOUNT_EVIDENCE_ID])} "
                 "to validate and import it."
@@ -1040,6 +1070,9 @@ def _next_action_plan(
                     "workflow_source_sync_audit": dict(
                         release_row_details.get("workflow_source_sync_audit")
                         or _workflow_source_sync_audit()
+                    ),
+                    "github_workflow_environment": str(
+                        release_row_details.get("github_workflow_environment") or ""
                     ),
                 }
             )
@@ -1131,6 +1164,7 @@ def _next_action_plan(
                 "github_workflow": GITHUB_PROMOTION_AUDIT_WORKFLOW,
                 "github_workflow_inputs": _promotion_audit_workflow_inputs(),
                 "github_workflow_plan_artifact": GITHUB_PROMOTION_AUDIT_WORKFLOW_PLAN_ARTIFACT,
+                "github_workflow_environment": PROTECTED_GITHUB_ENVIRONMENT,
                 "workflow_source_sync_audit": _workflow_source_sync_audit(),
                 "required_runtime_ids": _promotion_required_runtime_ids(),
                 "external_import_runtime_ids": list(PROMOTION_EXTERNAL_EVIDENCE_IMPORT_IDS),
@@ -1701,6 +1735,9 @@ def _completion_missing_inputs(
                 summary["github_workflow_required_environment_names"] = [
                     str(item) for item in required_environment_names
                 ]
+            workflow_environment = str(details.get("github_workflow_environment") or "").strip()
+            if workflow_environment:
+                summary["github_workflow_environment"] = workflow_environment
             workflow_artifact = str(details.get("github_workflow_artifact") or "").strip()
             if workflow_artifact:
                 summary["github_workflow_artifact"] = workflow_artifact
@@ -1999,6 +2036,9 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
                 "- GitHub workflow required environment names: "
                 f"{_format_markdown_list(workflow_environment_names)}"
             )
+        workflow_environment = str(details.get("github_workflow_environment") or "").strip()
+        if workflow_environment:
+            lines.append(f"- GitHub workflow environment: `{_format_markdown_value(workflow_environment)}`")
         if "release_evidence_target_count" in details:
             lines.append(
                 "- Release evidence target count: "
@@ -2305,13 +2345,57 @@ def audit(
 
 _CLI_REDACTED_KEYS = frozenset(
     {
+        "access_token",
+        "api_key",
+        "api_token",
         "api_key_present",
+        "api_secret",
         "api_secret_present",
         "binance_api_key_present",
         "binance_api_secret_present",
+        "bearer_token",
+        "client_secret",
         "github_token_present",
+        "github_token",
+        "llm_api_key",
+        "password",
+        "private_key",
+        "refresh_token",
+        "secret",
+        "secret_key",
+        "session_token",
+        "signing_key",
+        "token",
+        "webhook_secret",
     }
 )
+
+_CLI_REDACTED_KEY_MARKERS = (
+    "access_token",
+    "api_key",
+    "api_secret",
+    "authorization",
+    "bearer_token",
+    "client_secret",
+    "cookie",
+    "credential",
+    "passphrase",
+    "password",
+    "private_key",
+    "refresh_token",
+    "secret",
+    "session_token",
+    "signing_key",
+    "token",
+    "webhook_secret",
+)
+
+
+def _is_cli_redacted_key(key: object) -> bool:
+    normalized = str(key).strip().lower().replace("-", "_")
+    return normalized in _CLI_REDACTED_KEYS or any(
+        marker in normalized for marker in _CLI_REDACTED_KEY_MARKERS
+    )
 
 
 def _redact_cli_json_value(value: object) -> object:
@@ -2320,7 +2404,7 @@ def _redact_cli_json_value(value: object) -> object:
         return {
             str(key): _redact_cli_json_value(item)
             for key, item in value.items()
-            if str(key) not in _CLI_REDACTED_KEYS
+            if not _is_cli_redacted_key(key)
         }
     if isinstance(value, list):
         return [_redact_cli_json_value(item) for item in value]
@@ -2331,6 +2415,9 @@ def _print_cli_json(result: dict[str, Any]) -> None:
     payload = _redact_cli_json_value(result)
     if isinstance(payload, dict):
         payload["credential_presence_fields_redacted"] = True
+    # The recursive redactor removes credential values and presence metadata;
+    # this is the single machine-readable output boundary for the audit.
+    # lgtm [py/clear-text-logging-sensitive-data]
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 

@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "telemetry_source": "prometheus:trading-bot-production",
+  "deployed_commit": "0000000000000000000000000000000000000000",
   "window_start": "2026-06-01T00:00:00+00:00",
   "window_end": "2026-07-01T00:00:00+00:00",
   "eligible_request_count": 1000000,

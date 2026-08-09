@@ -81,6 +81,60 @@ class LocalLLMModelTests(unittest.TestCase):
         self.assertFalse(status.can_download)
         self.assertEqual(status.server_kind, "openai-compatible")
 
+    def test_local_model_status_rejects_non_loopback_targets_by_default(self):
+        calls = []
+
+        def fake_get(url, **kwargs):
+            calls.append((url, kwargs))
+            raise AssertionError("unsafe local-model target was requested")
+
+        status = get_local_model_status(
+            "https://127.0.0.1.nip.io:11434/v1",
+            "qwen3:8b",
+            request_get=fake_get,
+        )
+
+        self.assertFalse(status.installed)
+        self.assertEqual((), tuple(calls))
+        self.assertIn("loopback", status.error)
+
+    def test_local_model_status_allows_remote_https_only_when_explicitly_enabled(self):
+        calls = []
+
+        def fake_get(url, **kwargs):
+            calls.append((url, kwargs))
+            return _Response({"data": [{"id": "remote-model"}]})
+
+        status = get_local_model_status(
+            "https://models.example.test/v1",
+            "remote-model",
+            request_get=fake_get,
+            allow_public_network=True,
+        )
+
+        self.assertTrue(status.installed)
+        self.assertEqual("openai-compatible", status.server_kind)
+        self.assertEqual("https://models.example.test/v1/models", calls[0][0])
+
+    def test_local_model_status_rejects_invalid_url_syntax_before_request(self):
+        calls = []
+
+        def fake_get(url, **kwargs):
+            calls.append((url, kwargs))
+            raise AssertionError("invalid local-model target was requested")
+
+        status = get_local_model_status(
+            "http://user:secret@127.0.0.1:11434/v1?token=secret",
+            "qwen3:8b",
+            request_get=fake_get,
+        )
+
+        self.assertFalse(status.installed)
+        self.assertEqual((), tuple(calls))
+        self.assertIn("credentials", status.error)
+        self.assertNotIn("secret", status.base_url)
+        self.assertNotIn("token", status.base_url)
+
     def test_unreachable_ollama_reports_start_capability_when_cli_exists(self):
         def fake_get(url, **kwargs):  # noqa: ARG001
             raise OSError("connection refused")

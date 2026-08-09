@@ -159,6 +159,7 @@
         "order_submission_attempted",
         "promotion_eligible",
         "telemetry_source",
+        "deployed_commit",
         "telemetry_input_sha256",
         "window_start",
         "window_end",

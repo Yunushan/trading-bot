@@ -1,0 +1,221 @@
+name: Operational Readiness Evidence
+
+"on":
+  workflow_dispatch:
+    inputs:
+      service_base_url:
+        description: "Exact HTTPS origin configured in PRODUCTION_SERVICE_API_ORIGIN (no path)."
+        required: true
+        type: string
+      slo_telemetry_run_id:
+        description: "Actions run id containing the raw production SLO telemetry artifact. Required for strict promotion evidence."
+        required: true
+        default: ""
+        type: string
+      slo_telemetry_artifact:
+        description: "Artifact name containing the raw production SLO telemetry JSON."
+        required: false
+        default: "production-slo-telemetry"
+        type: string
+      slo_telemetry_file:
+        description: "Relative JSON filename inside the downloaded telemetry artifact."
+        required: false
+        default: "production-slo-telemetry.json"
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: operational-readiness-evidence
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Collect operational readiness evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: production
+    env:
+      SERVICE_BASE_URL: ${{ inputs.service_base_url }}
+      EXPECTED_SERVICE_BASE_URL: ${{ vars.PRODUCTION_SERVICE_API_ORIGIN }}
+      SLO_TELEMETRY_RUN_ID: ${{ inputs.slo_telemetry_run_id }}
+      SLO_TELEMETRY_ARTIFACT: ${{ inputs.slo_telemetry_artifact }}
+      SLO_TELEMETRY_FILE: ${{ inputs.slo_telemetry_file }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            Languages/Python/pyproject.toml
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python"
+
+      - name: Validate evidence inputs and clean checkout
+        id: validate_inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPECTED_SERVICE_BASE_URL}" ]]; then
+            echo "Production environment variable PRODUCTION_SERVICE_API_ORIGIN must be configured." >&2
+            exit 1
+          fi
+          if [[ "${SERVICE_BASE_URL}" != "${EXPECTED_SERVICE_BASE_URL}" ]]; then
+            echo "service_base_url must exactly match the configured production service origin." >&2
+            exit 1
+          fi
+          if [[ ! "${SERVICE_BASE_URL}" =~ ^https://[^/?#]+$ ]]; then
+            echo "service_base_url must be an HTTPS origin without a path, query, or fragment." >&2
+            exit 1
+          fi
+          if [[ -z "${SLO_TELEMETRY_RUN_ID}" || ! "${SLO_TELEMETRY_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "slo_telemetry_run_id is required and must be a numeric Actions run id." >&2
+            exit 1
+          fi
+          if [[ -z "${SLO_TELEMETRY_FILE}" || ! "${SLO_TELEMETRY_FILE}" =~ ^[A-Za-z0-9._/-]+\.json$ || "${SLO_TELEMETRY_FILE}" = /* || "${SLO_TELEMETRY_FILE}" == *..* ]]; then
+            echo "slo_telemetry_file must be a relative JSON filename without parent traversal." >&2
+            exit 1
+          fi
+          if [[ ! "${SLO_TELEMETRY_ARTIFACT}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "slo_telemetry_artifact must be a safe artifact name." >&2
+            exit 1
+          fi
+          test -z "$(git status --porcelain)"
+          run_metadata="$(
+            gh run view "${SLO_TELEMETRY_RUN_ID}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json databaseId,status,conclusion,headSha,workflowName,event
+          )"
+          printf '%s' "${run_metadata}" | python -c '
+          import json
+          import os
+          import re
+          import sys
+
+          metadata = json.load(sys.stdin)
+          expected_id = os.environ["SLO_TELEMETRY_RUN_ID"]
+          expected_sha = os.environ.get("GITHUB_SHA", "").strip().lower()
+          database_id = str(metadata.get("databaseId") or "")
+          status = str(metadata.get("status") or "")
+          conclusion = str(metadata.get("conclusion") or "")
+          head_sha = str(metadata.get("headSha") or "").strip().lower()
+          workflow_name = str(metadata.get("workflowName") or "").strip()
+          event = str(metadata.get("event") or "").strip()
+
+          if database_id != expected_id:
+              raise SystemExit("telemetry Actions run metadata returned a different run id")
+          if status != "completed" or conclusion != "success":
+              raise SystemExit(
+                  f"telemetry Actions run must be completed successfully "
+                  f"(status={status!r}, conclusion={conclusion!r})"
+              )
+          if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+              raise SystemExit("current GitHub commit is not a full SHA")
+          if head_sha != expected_sha:
+              raise SystemExit(
+                  "telemetry Actions run headSha must match the current promotion commit"
+              )
+          if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+              raise SystemExit("telemetry Actions run headSha is not a full SHA")
+          if not workflow_name or not event:
+              raise SystemExit("telemetry Actions run metadata is incomplete")
+          print(
+              "Verified telemetry run "
+              f"{database_id}: workflow={workflow_name!r}, event={event!r}, "
+              f"headSha={head_sha}"
+          )
+          '
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: mkdir -p artifacts/operational-readiness
+
+      - name: Run sustained deployed-service probe
+        if: ${{ steps.validate_inputs.outcome == 'success' }}
+        env:
+          BOT_SERVICE_API_TOKEN: ${{ secrets.BOT_SERVICE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/run_service_sustained_probe.py \
+            --profile sustained \
+            --base-url "${SERVICE_BASE_URL}" \
+            --api-token-env BOT_SERVICE_API_TOKEN \
+            --output artifacts/operational-readiness/service-api-sustained-runtime.json \
+            --json
+
+      - name: Run service backup and restore drill
+        if: ${{ steps.validate_inputs.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/run_operational_recovery_drill.py \
+            --output artifacts/operational-readiness/service-config-backup-restore.json \
+            --json
+
+      - name: Run incident and audit continuity drill
+        if: ${{ steps.validate_inputs.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/run_incident_audit_continuity_drill.py \
+            --output artifacts/operational-readiness/incident-audit-continuity.json \
+            --json
+
+      - name: Download raw production SLO telemetry
+        if: ${{ steps.validate_inputs.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/operational-readiness/telemetry-download
+          gh run download "${SLO_TELEMETRY_RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${SLO_TELEMETRY_ARTIFACT}" \
+            --dir artifacts/operational-readiness/telemetry-download
+          test -f "artifacts/operational-readiness/telemetry-download/${SLO_TELEMETRY_FILE}"
+
+      - name: Import production SLO telemetry
+        if: ${{ steps.validate_inputs.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/import_production_slo_evidence.py \
+            --input "artifacts/operational-readiness/telemetry-download/${SLO_TELEMETRY_FILE}" \
+            --output artifacts/operational-readiness/production-service-slo-window.json \
+            --json
+
+      - name: Validate strict operational readiness
+        if: ${{ steps.validate_inputs.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_operational_readiness.py \
+            --require-evidence \
+            --require-current-commit \
+            --require-clean-source \
+            --json
+
+      - name: Upload operational readiness evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: operational-readiness-evidence
+          path: artifacts/operational-readiness
+          if-no-files-found: warn
+          retention-days: 30
