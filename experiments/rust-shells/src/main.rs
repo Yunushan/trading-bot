@@ -1649,21 +1649,36 @@ fn env_truthy(name: &str) -> Option<bool> {
 }
 
 fn selected_binance_market() -> Result<BinanceMarket, std::io::Error> {
-    binance_market_for_connector_backend(
-        &std::env::var("TRADING_BOT_RUST_CONNECTOR_BACKEND").unwrap_or_default(),
-    )
+    let connector = std::env::var("TRADING_BOT_RUST_CONNECTOR_BACKEND").unwrap_or_default();
+    let account_type =
+        std::env::var("TRADING_BOT_RUST_ACCOUNT_TYPE").unwrap_or_else(|_| "Futures".to_owned());
+    binance_market_for_connector_backend_with_account_type(&connector, &account_type)
 }
 
 fn binance_market_for_connector_backend(connector: &str) -> Result<BinanceMarket, std::io::Error> {
+    binance_market_for_connector_backend_with_account_type(connector, "Futures")
+}
+
+fn binance_market_for_connector_backend_with_account_type(
+    connector: &str,
+    account_type: &str,
+) -> Result<BinanceMarket, std::io::Error> {
     let normalized = connector.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "" | "binance-sdk-derivatives-trading-usds-futures" => Ok(BinanceMarket::Futures),
         "binance-sdk-derivatives-trading-coin-futures" => Ok(BinanceMarket::CoinFutures),
         "binance-sdk-spot" => Ok(BinanceMarket::Spot),
+        "binance-connector" | "ccxt" | "python-binance" => {
+            if account_type.to_ascii_lowercase().contains("spot") {
+                Ok(BinanceMarket::Spot)
+            } else {
+                Ok(BinanceMarket::Futures)
+            }
+        }
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
-                "Rust native live smoke supports only Python's explicit Binance spot/futures connector keys; '{}' requires Python Service API/provider evidence.",
+                "Rust native live smoke supports Python's Binance spot/futures connector keys and aliases; '{}' requires Python Service API/provider evidence.",
                 connector.trim()
             ),
         )),
@@ -2120,12 +2135,20 @@ mod tests {
             binance_market_for_connector_backend("binance-sdk-spot")
                 .expect("Spot connector should select a native market")
         );
-        let error = binance_market_for_connector_backend("ccxt")
-            .expect_err("provider connector must not default to Binance");
-        assert!(
-            error
-                .to_string()
-                .contains("requires Python Service API/provider evidence")
+        assert_eq!(
+            BinanceMarket::Futures,
+            binance_market_for_connector_backend("ccxt")
+                .expect("Binance CCXT alias should select the default futures market")
+        );
+        assert_eq!(
+            BinanceMarket::Spot,
+            binance_market_for_connector_backend_with_account_type("binance-connector", "Spot")
+                .expect("Binance Connector alias should select the spot market")
+        );
+        assert_eq!(
+            BinanceMarket::Futures,
+            binance_market_for_connector_backend_with_account_type("python-binance", "Futures")
+                .expect("python-binance alias should select the futures market")
         );
     }
 }

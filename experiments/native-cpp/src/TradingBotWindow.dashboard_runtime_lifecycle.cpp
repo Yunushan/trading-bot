@@ -61,7 +61,7 @@ void TradingBotWindow::startDashboardRuntime() {
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
     if (!TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText)) {
         const QString message = QStringLiteral(
-            "C++ native runtime owns Binance USD-M, Coin-M Futures, and Spot connectors. '%1' remains Python Service API/provider connector-owned "
+            "C++ native runtime owns Binance USD-M, Coin-M Futures, Spot, and supported Binance-compatible connector aliases. '%1' remains Python Service API/provider connector-owned "
             "and will not be submitted by the C++ runtime.")
                                     .arg(defaultConnectorText);
         appendDashboardAllLog(QStringLiteral("Start blocked: %1").arg(message));
@@ -84,7 +84,7 @@ void TradingBotWindow::startDashboardRuntime() {
             continue;
         }
         const QString message = QStringLiteral(
-            "C++ native runtime owns Binance USD-M, Coin-M Futures, and Spot connectors. Override row %1 uses '%2', which remains "
+            "C++ native runtime owns Binance USD-M, Coin-M Futures, Spot, and supported Binance-compatible connector aliases. Override row %1 uses '%2', which remains "
             "Python Service API/provider connector-owned and will not be submitted by the C++ runtime.")
                                     .arg(row + 1)
                                     .arg(connectorText);

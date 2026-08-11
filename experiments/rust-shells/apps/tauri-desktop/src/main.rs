@@ -1293,12 +1293,15 @@ fn native_runtime_ownership_error(config: &Value) -> Option<String> {
         "binance-sdk-derivatives-trading-usds-futures"
             | "binance-sdk-derivatives-trading-coin-futures"
             | "binance-sdk-spot"
+            | "binance-connector"
+            | "ccxt"
+            | "python-binance"
     ) {
         return None;
     }
 
     Some(format!(
-        "Native Rust runtime coordinates only Python's explicit Binance spot/futures connector keys; '{connector_backend}' remains Python Service API/provider connector-owned."
+        "Native Rust runtime coordinates only Python's supported Binance spot/futures connector keys and aliases; '{connector_backend}' remains Python Service API/provider connector-owned."
     ))
 }
 
@@ -1313,6 +1316,14 @@ fn native_runtime_market_poll_spec(config: &Value) -> Result<NativeRuntimeMarket
         "binance-sdk-derivatives-trading-usds-futures" => BinanceMarket::Futures,
         "binance-sdk-derivatives-trading-coin-futures" => BinanceMarket::CoinFutures,
         "binance-sdk-spot" => BinanceMarket::Spot,
+        "binance-connector" | "ccxt" | "python-binance" => {
+            let account_type = first_config_string(config, "account_type", "Futures");
+            if account_type.to_ascii_lowercase().contains("spot") {
+                BinanceMarket::Spot
+            } else {
+                BinanceMarket::Futures
+            }
+        }
         _ => {
             return Err(
                 "Native Rust runtime requires a Binance spot or futures connector.".to_owned(),
@@ -3915,6 +3926,17 @@ mod tests {
             1_700_000_000_000,
         );
         assert!(spot.ok, "{}", spot.error);
+
+        let alias_state = NativeRuntimeState::default();
+        let alias = alias_state.start(
+            &json!({
+                "selected_exchange": "Binance",
+                "connector_backend": "binance-connector",
+                "account_type": "Spot"
+            }),
+            1_700_000_000_000,
+        );
+        assert!(alias.ok, "{}", alias.error);
     }
 
     #[test]
@@ -3949,6 +3971,30 @@ mod tests {
         assert_eq!(spot.market, BinanceMarket::Spot);
         assert_eq!(spot.symbol, "ETHUSDT");
         assert!(!spot.testnet);
+
+        let connector_alias = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "binance-connector",
+            "account_type": "Spot",
+            "symbols": ["solusdt"]
+        }))
+        .expect("Binance Connector alias poll spec");
+        assert_eq!(connector_alias.market, BinanceMarket::Spot);
+        assert_eq!(connector_alias.symbol, "SOLUSDT");
+
+        let python_binance_alias = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "python-binance",
+            "account_type": "Futures"
+        }))
+        .expect("python-binance alias poll spec");
+        assert_eq!(python_binance_alias.market, BinanceMarket::Futures);
+
+        let ccxt_alias = native_runtime_market_poll_spec(&json!({
+            "selected_exchange": "Binance",
+            "connector_backend": "ccxt",
+            "account_type": "Spot"
+        }))
+        .expect("Binance CCXT alias poll spec");
+        assert_eq!(ccxt_alias.market, BinanceMarket::Spot);
     }
 
     #[test]

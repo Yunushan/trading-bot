@@ -75,8 +75,17 @@ int main(int argc, char **argv) {
             QStringLiteral("Binance SDK Derivatives Trading COIN-M Futures")),
         QStringLiteral("C++ native runtime should own Python's Coin-M futures connector label"));
     check(
-        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("ccxt")),
-        QStringLiteral("C++ native runtime should leave CCXT provider routing Python-owned"));
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("ccxt")),
+        QStringLiteral("C++ native runtime should accept Python's Binance-compatible CCXT alias"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("binance-connector")),
+        QStringLiteral("C++ native runtime should accept Python's Binance Connector alias"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("python-binance")),
+        QStringLiteral("C++ native runtime should accept Python's python-binance alias"));
+    check(
+        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("custom")),
+        QStringLiteral("C++ native runtime should reject unknown connector providers"));
     check(
         TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
             QStringLiteral("binance-sdk-spot")),

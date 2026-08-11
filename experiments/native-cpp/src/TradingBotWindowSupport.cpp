@@ -1154,12 +1154,19 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
 bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText) {
     const QString selected = connectorText.trimmed();
     const QString key = normalizeConnectorBackend(selected);
-    if (key != kConnectorUsdsFutures && key != kConnectorCoinFutures && key != kConnectorSpot) {
+    const bool nativeBinanceKey = key == kConnectorUsdsFutures
+        || key == kConnectorCoinFutures
+        || key == kConnectorSpot
+        || key == kConnectorBinanceConnector
+        || key == kConnectorCcxt
+        || key == kConnectorPyBinance;
+    if (!nativeBinanceKey) {
         return false;
     }
 
-    // Only accept keys or labels emitted by the generated Python connector catalog.
-    // This keeps provider aliases from silently becoming native Binance execution.
+    // resolveConnectorConfig() maps the Python Binance-compatible aliases to the
+    // native REST route. Accept them here too so generated options are reachable;
+    // the selected-exchange guard still rejects non-Binance CCXT.
     for (const ConnectorOption &option : pythonConnectorOptions()) {
         if (option.key != key) {
             continue;
