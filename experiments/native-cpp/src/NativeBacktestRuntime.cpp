@@ -107,6 +107,7 @@ Series rawSeries(const SeriesMap &series, const QString &key, int size) {
 }
 
 Series relativeVolume(const QVector<Candle> &candles, int length) {
+    length = std::max(1, length);
     Series output(candles.size(), std::numeric_limits<double>::quiet_NaN());
     double rolling = 0.0;
     for (int index = 0; index < candles.size(); ++index) {
@@ -114,10 +115,9 @@ Series relativeVolume(const QVector<Candle> &candles, int length) {
         if (index >= length) {
             rolling -= candles[index - length].volume;
         }
-        if (index + 1 >= length) {
-            const double mean = rolling / static_cast<double>(length);
-            output[index] = mean == 0.0 ? std::numeric_limits<double>::quiet_NaN() : candles[index].volume / mean;
-        }
+        const int count = std::min(length, index + 1);
+        const double mean = rolling / static_cast<double>(count);
+        output[index] = mean == 0.0 ? std::numeric_limits<double>::quiet_NaN() : candles[index].volume / mean;
     }
     return output;
 }

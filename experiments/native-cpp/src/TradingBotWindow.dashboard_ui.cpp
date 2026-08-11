@@ -212,7 +212,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         });
     connectorCombo->setToolTip(
         "Matches Python connector options.\n"
-        "The C++ native runtime owns Binance USD-M and Coin-M Futures only.\n"
+        "The C++ native runtime owns Binance USD-M, Coin-M Futures, and Spot.\n"
         "Other connector selections remain Python Service API/provider-owned.");
     connectorCombo->setMinimumWidth(340);
     dashboardConnectorCombo_ = connectorCombo;

@@ -375,12 +375,9 @@ QString choiceToken(const QString &value) {
     return out;
 }
 
-bool choiceCandidateMatches(const QString &rawLower, const QString &rawToken, const QString &candidate) {
+bool choiceCandidateMatches(const QString &rawLower, const QString &, const QString &candidate) {
     const QString candidateLower = candidate.trimmed().toLower();
-    const QString candidateToken = choiceToken(candidate);
-    return rawLower == candidateLower
-        || (!rawToken.isEmpty() && rawToken == candidateToken)
-        || (rawToken.size() >= 3 && (candidateToken.startsWith(rawToken) || candidateToken.contains(rawToken)));
+    return rawLower == candidateLower;
 }
 
 void appendChoice(ChoicePairs *choices, const QString &candidate, const QString &normalized) {
@@ -416,25 +413,27 @@ ChoicePairs stringOptionChoices(
 }
 
 template <std::size_t N>
-ChoicePairs connectorOptionChoices(const std::array<PythonParityContract::PythonConnectorOption, N> &options) {
+ChoicePairs configChoicePairs(
+    const std::array<PythonParityContract::PythonConfigChoice, N> &providerChoices) {
     ChoicePairs choices;
-    for (const auto &option : options) {
-        const QString key = parityText(option.key);
-        appendChoice(&choices, key, key);
-        appendChoice(&choices, parityText(option.label), key);
+    for (const auto &providerChoice : providerChoices) {
+        appendChoice(
+            &choices,
+            parityText(providerChoice.key),
+            parityText(providerChoice.value));
     }
     return choices;
 }
 
 template <std::size_t N>
 ChoicePairs llmProviderChoicesFromSource(
-    const std::array<PythonParityContract::PythonLlmProvider, N> &providers,
-    const ChoicePairs &aliases) {
-    ChoicePairs choices = aliases;
-    for (const auto &provider : providers) {
-        const QString key = parityText(provider.key);
-        appendChoice(&choices, key, key);
-        appendChoice(&choices, parityText(provider.label), key);
+    const std::array<PythonParityContract::PythonLlmProviderChoice, N> &providerChoices) {
+    ChoicePairs choices;
+    for (const auto &providerChoice : providerChoices) {
+        appendChoice(
+            &choices,
+            parityText(providerChoice.key),
+            parityText(providerChoice.value));
     }
     return choices;
 }
@@ -486,164 +485,110 @@ QString allowedChoiceText(const ChoicePairs &choices) {
     return out.join(QStringLiteral(", "));
 }
 
-const ChoicePairs &configModeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonConfigModeOptions);
-    return choices;
-}
-
-const ChoicePairs &themeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonThemeOptions);
-    return choices;
-}
-
-const ChoicePairs &designChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonDesignOptions);
-    return choices;
-}
-
-const ChoicePairs &indicatorSourceChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonIndicatorSourceOptions);
-    return choices;
-}
-
-const ChoicePairs &exchangeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonExchangeOptions);
-    return choices;
-}
-
-const ChoicePairs &connectorBackendChoices() {
-    static const ChoicePairs choices = connectorOptionChoices(PythonParityContract::kPythonConnectorOptions);
-    return choices;
-}
-
 const ChoicePairs &chartMarketChoices() {
-    static const ChoicePairs choices = stringOptionChoices(PythonParityContract::kPythonChartMarketOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonAccountTypeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &accountTypeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonAccountTypeOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonAccountTypeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &marginModeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonMarginModeOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonMarginModeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &positionModeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonPositionModeOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonPositionModeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &assetsModeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(
-        PythonParityContract::kPythonAssetsModeOptions,
-        ChoicePairs{{QStringLiteral("multi-asset"), QStringLiteral("Multi-Assets")}});
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonAssetsModeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &accountModeChoices() {
-    static const ChoicePairs choices = stringOptionChoices(PythonParityContract::kPythonAccountModeOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonAccountModeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &sideChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonSideOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonSideConfigChoices);
     return choices;
 }
 
 const ChoicePairs &orderTypeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonOrderTypeOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonOrderTypeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &timeInForceChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonTimeInForceOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonTifConfigChoices);
     return choices;
 }
 
 const ChoicePairs &logicChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonSignalLogicOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonLogicConfigChoices);
     return choices;
 }
 
 const ChoicePairs &mddLogicChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonMddLogicOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonMddLogicConfigChoices);
     return choices;
 }
 
 const ChoicePairs &stopLossModeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonStopLossModes);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonStopLossModeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &stopLossScopeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonStopLossScopes);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonStopLossScopeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &scanScopeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonScanScopeOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonScanScopeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &optimizerModeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonOptimizerModeOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonOptimizerModeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &optimizerMetricChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonOptimizerMetricOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonOptimizerMetricConfigChoices);
     return choices;
 }
 
 const ChoicePairs &backtestExecutionBackendChoices() {
-    static const ChoicePairs choices = uiOptionChoices(
-        PythonParityContract::kPythonBacktestExecutionBackendOptions,
-        ChoicePairs{
-            {QStringLiteral("desktop"), QStringLiteral("local")},
-            {QStringLiteral("desktop-local"), QStringLiteral("local")},
-            {QStringLiteral("remote"), QStringLiteral("service")},
-            {QStringLiteral("service-api"), QStringLiteral("service")},
-        });
+    static const ChoicePairs choices = configChoicePairs(
+        PythonParityContract::kPythonBacktestExecutionBackendConfigChoices);
     return choices;
 }
 
 const ChoicePairs &chartViewModeChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonChartViewOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonChartViewModeConfigChoices);
     return choices;
 }
 
 const ChoicePairs &llmProviderChoices() {
-    static const ChoicePairs choices = llmProviderChoicesFromSource(
-        PythonParityContract::kPythonLlmProviders,
-        ChoicePairs{
-        {QStringLiteral("alibaba"), QStringLiteral("qwen")},
-        {QStringLiteral("alibaba-qwen"), QStringLiteral("qwen")},
-        {QStringLiteral("anthropic-claude"), QStringLiteral("anthropic")},
-        {QStringLiteral("chatgpt"), QStringLiteral("openai")},
-        {QStringLiteral("claude"), QStringLiteral("anthropic")},
-        {QStringLiteral("custom"), QStringLiteral("local")},
-        {QStringLiteral("dashscope"), QStringLiteral("qwen")},
-        {QStringLiteral("google"), QStringLiteral("gemini")},
-        {QStringLiteral("google-gemini"), QStringLiteral("gemini")},
-        {QStringLiteral("local-openai"), QStringLiteral("local")},
-        {QStringLiteral("local-openai-compatible"), QStringLiteral("local")},
-        {QStringLiteral("openai-chatgpt"), QStringLiteral("openai")},
-        {QStringLiteral("xai"), QStringLiteral("grok")},
-        {QStringLiteral("xai-grok"), QStringLiteral("grok")},
-        });
+    static const ChoicePairs choices = llmProviderChoicesFromSource(PythonParityContract::kPythonLlmProviderChoices);
     return choices;
 }
 
 const ChoicePairs &llmUseForChoices() {
-    static const ChoicePairs choices = uiOptionChoices(PythonParityContract::kPythonLlmUseForOptions);
+    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonLlmUseForConfigChoices);
     return choices;
 }
 
 const ChoicePairs &llmReasoningEffortChoices() {
-    static const ChoicePairs choices = llmReasoningEffortChoicesFromSource(PythonParityContract::kPythonLlmProviders);
+    static const ChoicePairs choices = configChoicePairs(
+        PythonParityContract::kPythonLlmReasoningEffortConfigChoices);
     return choices;
 }
 
@@ -703,13 +648,15 @@ const QStringList &backtestAllowedKeys() {
     static const QStringList keys{
         QStringLiteral("account_mode"), QStringLiteral("assets_mode"), QStringLiteral("capital"),
         QStringLiteral("connector_backend"), QStringLiteral("end_date"), QStringLiteral("execution_backend"),
+        QStringLiteral("fee_bps"),
         QStringLiteral("indicators"), QStringLiteral("intervals"), QStringLiteral("leverage"),
         QStringLiteral("logic"), QStringLiteral("margin_mode"), QStringLiteral("mdd_logic"),
         QStringLiteral("position_mode"), QStringLiteral("position_pct"), QStringLiteral("optimizer_combo_size"),
-        QStringLiteral("optimizer_metric"), QStringLiteral("optimizer_min_trades"), QStringLiteral("optimizer_mode"),
+        QStringLiteral("optimizer_max_duration_seconds"), QStringLiteral("optimizer_metric"),
+        QStringLiteral("optimizer_min_trades"), QStringLiteral("optimizer_mode"),
         QStringLiteral("scan_auto_apply"), QStringLiteral("scan_mdd_limit"), QStringLiteral("scan_scope"),
         QStringLiteral("scan_top_n"), QStringLiteral("side"), QStringLiteral("start_date"),
-        QStringLiteral("stop_loss"), QStringLiteral("symbol_source"), QStringLiteral("symbols"),
+        QStringLiteral("slippage_bps"), QStringLiteral("stop_loss"), QStringLiteral("symbol_source"), QStringLiteral("symbols"),
         QStringLiteral("template"),
     };
     return keys;
@@ -814,22 +761,6 @@ void validateChoice(
         return;
     }
     cfg->insert(key, normalized);
-}
-
-void validateOptionalChoice(
-    QJsonObject *cfg,
-    const QString &key,
-    const ChoicePairs &choices,
-    QJsonArray *issues,
-    const QString &prefix = {}) {
-    if (!cfg || !cfg->contains(key)) {
-        return;
-    }
-    if (valueToText(cfg->value(key)).trimmed().isEmpty()) {
-        cfg->insert(key, QString());
-        return;
-    }
-    validateChoice(cfg, key, choices, issues, prefix);
 }
 
 void validateIntRange(
@@ -1129,7 +1060,7 @@ void validateBacktestConfig(QJsonObject *cfg, QJsonArray *issues) {
     validateFloatRange(&backtest, QStringLiteral("capital"), issues, 0.0, 1'000'000'000'000.0, QStringLiteral("backtest"), true);
     validateChoice(&backtest, QStringLiteral("execution_backend"), backtestExecutionBackendChoices(), issues, QStringLiteral("backtest"));
     validateChoice(&backtest, QStringLiteral("logic"), logicChoices(), issues, QStringLiteral("backtest"));
-    validateChoice(&backtest, QStringLiteral("symbol_source"), chartMarketChoices(), issues, QStringLiteral("backtest"));
+    validateText(&backtest, QStringLiteral("symbol_source"), issues, QStringLiteral("backtest"));
     validateDateTimeText(&backtest, QStringLiteral("start_date"), issues, QStringLiteral("backtest"));
     validateDateTimeText(&backtest, QStringLiteral("end_date"), issues, QStringLiteral("backtest"));
     validateFloatRange(&backtest, QStringLiteral("position_pct"), issues, 0.0, 100.0, QStringLiteral("backtest"), true);
@@ -1138,8 +1069,10 @@ void validateBacktestConfig(QJsonObject *cfg, QJsonArray *issues) {
     validateChoice(&backtest, QStringLiteral("position_mode"), positionModeChoices(), issues, QStringLiteral("backtest"));
     validateChoice(&backtest, QStringLiteral("assets_mode"), assetsModeChoices(), issues, QStringLiteral("backtest"));
     validateChoice(&backtest, QStringLiteral("account_mode"), accountModeChoices(), issues, QStringLiteral("backtest"));
-    validateChoice(&backtest, QStringLiteral("connector_backend"), connectorBackendChoices(), issues, QStringLiteral("backtest"));
+    validateText(&backtest, QStringLiteral("connector_backend"), issues, QStringLiteral("backtest"));
     validateIntRange(&backtest, QStringLiteral("leverage"), issues, 1, 125, QStringLiteral("backtest"));
+    validateFloatRange(&backtest, QStringLiteral("fee_bps"), issues, 0.0, 1'000.0, QStringLiteral("backtest"));
+    validateFloatRange(&backtest, QStringLiteral("slippage_bps"), issues, 0.0, 1'000.0, QStringLiteral("backtest"));
     validateChoice(&backtest, QStringLiteral("mdd_logic"), mddLogicChoices(), issues, QStringLiteral("backtest"));
     validateChoice(&backtest, QStringLiteral("scan_scope"), scanScopeChoices(), issues, QStringLiteral("backtest"));
     validateIntRange(&backtest, QStringLiteral("scan_top_n"), issues, 1, 10'000, QStringLiteral("backtest"));
@@ -1148,6 +1081,7 @@ void validateBacktestConfig(QJsonObject *cfg, QJsonArray *issues) {
     validateChoice(&backtest, QStringLiteral("optimizer_mode"), optimizerModeChoices(), issues, QStringLiteral("backtest"));
     validateChoice(&backtest, QStringLiteral("optimizer_metric"), optimizerMetricChoices(), issues, QStringLiteral("backtest"));
     validateIntRange(&backtest, QStringLiteral("optimizer_combo_size"), issues, 1, 5, QStringLiteral("backtest"));
+    validateIntRange(&backtest, QStringLiteral("optimizer_max_duration_seconds"), issues, 60, 604'800, QStringLiteral("backtest"));
     validateIntRange(&backtest, QStringLiteral("optimizer_min_trades"), issues, 0, 1'000'000, QStringLiteral("backtest"));
     validateMapping(&backtest, QStringLiteral("template"), issues, QStringLiteral("backtest"));
     validateMapping(&backtest, QStringLiteral("indicators"), issues, QStringLiteral("backtest"));
@@ -1276,7 +1210,7 @@ ServiceConfigValidationResult validateServiceRuntimeConfig(const QJsonObject &co
     validateAllowedKeys(cfg, runtimeAllowedKeys(), &issues);
     validateText(&cfg, QStringLiteral("api_key"), &issues, {}, true);
     validateText(&cfg, QStringLiteral("api_secret"), &issues, {}, true);
-    validateChoice(&cfg, QStringLiteral("mode"), configModeChoices(), &issues);
+    validateText(&cfg, QStringLiteral("mode"), &issues);
     validateChoice(&cfg, QStringLiteral("account_type"), accountTypeChoices(), &issues);
     validateChoice(&cfg, QStringLiteral("margin_mode"), marginModeChoices(), &issues);
     validateSymbolList(&cfg, QStringLiteral("symbols"), &issues);
@@ -1373,13 +1307,13 @@ ServiceConfigValidationResult validateServiceRuntimeConfig(const QJsonObject &co
         validateFloatRange(&cfg, range.first, &issues, range.second.first, range.second.second);
     }
 
-    validateChoice(&cfg, QStringLiteral("connector_backend"), connectorBackendChoices(), &issues);
-    validateChoice(&cfg, QStringLiteral("indicator_source"), indicatorSourceChoices(), &issues);
+    validateText(&cfg, QStringLiteral("connector_backend"), &issues);
+    validateText(&cfg, QStringLiteral("indicator_source"), &issues);
     validateText(&cfg, QStringLiteral("code_language"), &issues);
-    validateOptionalChoice(&cfg, QStringLiteral("theme"), themeChoices(), &issues);
-    validateOptionalChoice(&cfg, QStringLiteral("design"), designChoices(), &issues);
+    validateText(&cfg, QStringLiteral("theme"), &issues, {}, true);
+    validateText(&cfg, QStringLiteral("design"), &issues, {}, true);
     validateText(&cfg, QStringLiteral("selected_rust_framework"), &issues, {}, true);
-    validateChoice(&cfg, QStringLiteral("selected_exchange"), exchangeChoices(), &issues);
+    validateText(&cfg, QStringLiteral("selected_exchange"), &issues);
     validateText(&cfg, QStringLiteral("selected_forex_broker"), &issues, {}, true);
     validateBool(&cfg, QStringLiteral("llm_enabled"), &issues);
     validateChoice(&cfg, QStringLiteral("llm_provider"), llmProviderChoices(), &issues);

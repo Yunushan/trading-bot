@@ -299,6 +299,7 @@ fn raw_series(series: &BTreeMap<String, Vec<f64>>, key: &str, size: usize) -> Ve
 }
 
 fn relative_volume(candles: &[BinanceKlineCandle], length: usize) -> Vec<f64> {
+    let length = length.max(1);
     let mut output = vec![f64::NAN; candles.len()];
     let mut rolling = 0.0;
     for (index, candle) in candles.iter().enumerate() {
@@ -306,14 +307,13 @@ fn relative_volume(candles: &[BinanceKlineCandle], length: usize) -> Vec<f64> {
         if index >= length {
             rolling -= candles[index - length].volume;
         }
-        if index + 1 >= length {
-            let mean = rolling / length as f64;
-            output[index] = if mean == 0.0 {
-                f64::NAN
-            } else {
-                candle.volume / mean
-            };
-        }
+        let count = length.min(index + 1) as f64;
+        let mean = rolling / count;
+        output[index] = if mean == 0.0 {
+            f64::NAN
+        } else {
+            candle.volume / mean
+        };
     }
     output
 }
@@ -650,12 +650,31 @@ pub fn run_native_backtest(
 pub fn run_native_backtest_with_cancel<F>(
     candles: &[BinanceKlineCandle],
     request: &NativeBacktestRequest,
+    should_stop: F,
+) -> NativeBacktestResult
+where
+    F: FnMut() -> bool,
+{
+    run_native_backtest_with_cancel_and_window(candles, request, None, None, should_stop)
+}
+
+pub fn run_native_backtest_with_cancel_and_window<F>(
+    candles: &[BinanceKlineCandle],
+    request: &NativeBacktestRequest,
+    start_time_ms: Option<i64>,
+    end_time_ms: Option<i64>,
     mut should_stop: F,
 ) -> NativeBacktestResult
 where
     F: FnMut() -> bool,
 {
     let mut result = NativeBacktestResult::from_request(request);
+    if let (Some(start), Some(end)) = (start_time_ms, end_time_ms)
+        && start >= end
+    {
+        result.error = "Backtest start must be earlier than backtest end".to_owned();
+        return result;
+    }
     if candles.is_empty() {
         result.error = "Backtest requires at least one candle".to_owned();
         return result;
@@ -765,6 +784,7 @@ where
     let mut trade_during = DrawdownState::default();
     let mut trade_result = DrawdownState::default();
     let mut trade = TradeState::default();
+    let mut last_processed_close = None;
 
     let record_equity =
         |value: f64, cumulative: &mut DrawdownState, account: &mut DrawdownState| {
@@ -780,6 +800,12 @@ where
             result.error = "backtest_cancelled".to_owned();
             return result;
         }
+        if start_time_ms.is_some_and(|start| candle.open_time_ms < start) {
+            continue;
+        }
+        if end_time_ms.is_some_and(|end| candle.open_time_ms > end) {
+            break;
+        }
         let price = if candle.close.is_finite() {
             candle.close
         } else {
@@ -788,6 +814,7 @@ where
         if price <= 0.0 {
             continue;
         }
+        last_processed_close = Some(price);
         let high = if candle.high.is_finite() && candle.high > 0.0 {
             candle.high
         } else {
@@ -1031,10 +1058,12 @@ where
     }
 
     if position_open && units > 0.0 {
-        let last = candles
-            .last()
-            .map(|candle| candle.close)
-            .unwrap_or_default();
+        let last = last_processed_close.unwrap_or_else(|| {
+            candles
+                .last()
+                .map(|candle| candle.close)
+                .unwrap_or_default()
+        });
         let (exit_price, pnl) = realize_close(
             last,
             &direction,
@@ -1093,11 +1122,8 @@ mod tests {
         value.and_then(Value::as_f64).unwrap_or(fallback)
     }
 
-    #[test]
-    fn native_backtest_matches_every_generated_python_reference_case() {
-        let reference: Value = serde_json::from_str(PYTHON_INDICATOR_REFERENCE_JSON)
-            .expect("generated Python indicator reference must be valid JSON");
-        let candles = reference["candles"]
+    fn candles_from_value(value: &Value) -> Vec<BinanceKlineCandle> {
+        value
             .as_array()
             .expect("reference candles must be an array")
             .iter()
@@ -1110,11 +1136,18 @@ mod tests {
                 close: number(candle.get("close"), 0.0),
                 volume: number(candle.get("volume"), 0.0),
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    #[test]
+    fn native_backtest_matches_every_generated_python_reference_case() {
+        let reference: Value = serde_json::from_str(PYTHON_INDICATOR_REFERENCE_JSON)
+            .expect("generated Python indicator reference must be valid JSON");
+        let candles = candles_from_value(&reference["candles"]);
         let cases = reference["backtest_cases"]
             .as_array()
             .expect("generated Python fixture must include backtest cases");
-        assert!(!cases.is_empty());
+        assert!(cases.len() >= 27);
 
         for test_case in cases {
             let expected = &test_case["expected"];
@@ -1144,8 +1177,17 @@ mod tests {
                 slippage_bps: number(expected.get("slippage_bps"), 2.0),
                 ..NativeBacktestRequest::default()
             };
-            let actual = run_native_backtest(&candles, &request);
-            let case_name = text(test_case.get("name"), "unnamed");
+            let case_candles = test_case
+                .get("candles")
+                .filter(|value| value.is_array())
+                .map(candles_from_value)
+                .unwrap_or_else(|| candles.clone());
+            let actual = run_native_backtest(&case_candles, &request);
+            let case_name = format!(
+                "{}/{}",
+                text(test_case.get("fixture_name"), "baseline"),
+                text(test_case.get("name"), "unnamed")
+            );
             assert!(actual.ok, "{case_name}: {}", actual.error);
             assert_eq!(
                 actual.trades,

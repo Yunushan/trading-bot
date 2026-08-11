@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 use crate::account::{BinanceApiCredentials, BinanceSignedRestClient, current_timestamp_ms};
 
 const FUTURES_ORDER_RECV_WINDOW_MS: u64 = 5_000;
+const SPOT_ORDER_RECV_WINDOW_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinanceFuturesSymbolFilters {
@@ -36,6 +37,21 @@ pub struct BinanceFuturesOrderParams {
     pub position_side: String,
 }
 
+// Spot and futures share the normalized filter/order response shape. The aliases
+// keep the market-specific API explicit without duplicating the wire contract.
+pub type BinanceSpotSymbolFilters = BinanceFuturesSymbolFilters;
+pub type BinanceSpotOrderResult = BinanceFuturesOrderResult;
+pub type BinanceSpotOrderParams = BinanceFuturesOrderParams;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceSpotSymbolMetadata {
+    pub symbol: String,
+    pub status: String,
+    pub base_asset: String,
+    pub quote_asset: String,
+    pub filters: BinanceSpotSymbolFilters,
+}
+
 impl BinanceSignedRestClient {
     pub fn fetch_futures_symbol_filters(
         &self,
@@ -45,6 +61,24 @@ impl BinanceSignedRestClient {
         let exchange_info_path = self.futures_v1_path("/exchangeInfo");
         let payload = self.public_get_json(&exchange_info_path, &[])?;
         parse_futures_symbol_filters(&payload, symbol.as_ref())
+    }
+
+    pub fn fetch_spot_symbol_filters(
+        &self,
+        symbol: impl AsRef<str>,
+    ) -> Result<BinanceSpotSymbolFilters> {
+        self.require_spot_market()?;
+        let payload = self.public_get_json("/api/v3/exchangeInfo", &[])?;
+        parse_spot_symbol_filters(&payload, symbol.as_ref())
+    }
+
+    pub fn fetch_spot_symbol_metadata(
+        &self,
+        symbol: impl AsRef<str>,
+    ) -> Result<BinanceSpotSymbolMetadata> {
+        self.require_spot_market()?;
+        let payload = self.public_get_json("/api/v3/exchangeInfo", &[])?;
+        parse_spot_symbol_metadata(&payload, symbol.as_ref())
     }
 
     pub fn place_futures_market_order(
@@ -72,6 +106,25 @@ impl BinanceSignedRestClient {
             &order_params.side,
             &order_params.position_side,
         )
+    }
+
+    pub fn place_spot_market_order(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: impl AsRef<str>,
+        side: impl AsRef<str>,
+        quantity: f64,
+    ) -> Result<BinanceSpotOrderResult> {
+        self.require_spot_market()?;
+        let order_params = build_spot_market_order_params(symbol, side, quantity)?;
+        let payload = self.signed_post_json(
+            "/api/v3/order",
+            credentials,
+            &order_params.params,
+            current_timestamp_ms()?,
+            SPOT_ORDER_RECV_WINDOW_MS,
+        )?;
+        parse_spot_order_result(&payload, &order_params.symbol, &order_params.side)
     }
 
     // The public request mirrors Binance's independent order fields and the Python contract.
@@ -143,6 +196,27 @@ pub fn build_futures_market_order_params(
         symbol,
         side,
         position_side,
+    })
+}
+
+pub fn build_spot_market_order_params(
+    symbol: impl AsRef<str>,
+    side: impl AsRef<str>,
+    quantity: f64,
+) -> Result<BinanceSpotOrderParams> {
+    let symbol = normalize_symbol(symbol.as_ref())?;
+    let side = normalize_order_side(side.as_ref())?;
+    validate_positive("Quantity", quantity)?;
+    Ok(BinanceSpotOrderParams {
+        params: vec![
+            ("symbol", symbol.clone()),
+            ("side", side.clone()),
+            ("type", "MARKET".to_owned()),
+            ("quantity", format_decimal_for_order(quantity, 8)),
+        ],
+        symbol,
+        side,
+        position_side: String::new(),
     })
 }
 
@@ -292,6 +366,63 @@ pub fn parse_futures_symbol_filters(
     bail!("Symbol {clean_symbol} not found in futures exchangeInfo")
 }
 
+pub fn parse_spot_symbol_filters(
+    exchange_info: &Value,
+    symbol: &str,
+) -> Result<BinanceSpotSymbolFilters> {
+    parse_futures_symbol_filters(exchange_info, symbol)
+        .map_err(|error| anyhow!("spot exchangeInfo parse failed: {error}"))
+}
+
+pub fn parse_spot_symbol_metadata(
+    exchange_info: &Value,
+    symbol: &str,
+) -> Result<BinanceSpotSymbolMetadata> {
+    ensure_not_binance_error(exchange_info)?;
+    let clean_symbol = normalize_symbol(symbol)?;
+    let rows = exchange_info
+        .get("symbols")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("spot exchangeInfo response missing symbols array"))?;
+    for value in rows {
+        let Some(row) = value.as_object() else {
+            continue;
+        };
+        let current = row
+            .get("symbol")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_uppercase();
+        if current != clean_symbol {
+            continue;
+        }
+        return Ok(BinanceSpotSymbolMetadata {
+            symbol: clean_symbol.clone(),
+            status: row
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("TRADING")
+                .trim()
+                .to_uppercase(),
+            base_asset: row
+                .get("baseAsset")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_uppercase(),
+            quote_asset: row
+                .get("quoteAsset")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_uppercase(),
+            filters: parse_spot_symbol_filters(exchange_info, &clean_symbol)?,
+        });
+    }
+    bail!("Symbol {clean_symbol} not found in spot exchangeInfo")
+}
+
 pub fn parse_futures_order_result(
     payload: &Value,
     fallback_symbol: &str,
@@ -339,6 +470,27 @@ pub fn parse_futures_order_result(
         executed_qty,
         avg_price,
     })
+}
+
+pub fn parse_spot_order_result(
+    payload: &Value,
+    fallback_symbol: &str,
+    fallback_side: &str,
+) -> Result<BinanceSpotOrderResult> {
+    let result = parse_futures_order_result(payload, fallback_symbol, fallback_side, "")?;
+    if result.order_id.trim().is_empty() {
+        bail!("spot order response missing orderId");
+    }
+    if result.status.trim().is_empty() {
+        bail!("spot order response missing explicit status");
+    }
+    if matches!(result.status.as_str(), "REJECTED" | "EXPIRED" | "CANCELED") {
+        bail!(
+            "spot order response has terminal failure status {}",
+            result.status
+        );
+    }
+    Ok(result)
 }
 
 pub fn futures_order_recv_window_ms() -> u64 {
@@ -530,6 +682,22 @@ mod tests {
     }
 
     #[test]
+    fn spot_market_order_params_match_python_without_futures_only_fields() {
+        let order =
+            build_spot_market_order_params("ethusdt", "buy", 0.123400).expect("spot params");
+        assert_eq!(
+            order.params,
+            vec![
+                ("symbol", "ETHUSDT".to_owned()),
+                ("side", "BUY".to_owned()),
+                ("type", "MARKET".to_owned()),
+                ("quantity", "0.1234".to_owned()),
+            ]
+        );
+        assert!(order.position_side.is_empty());
+    }
+
+    #[test]
     fn limit_order_params_default_ioc_and_format_decimal_values() {
         let order = build_futures_limit_order_params(
             "btcusdt",
@@ -592,6 +760,59 @@ mod tests {
         assert_eq!(result.status, "FILLED");
         assert_eq!(result.executed_qty, 0.2);
         assert_eq!(result.avg_price, 21000.5);
+    }
+
+    #[test]
+    fn spot_order_result_requires_success_status_and_order_id() {
+        let payload = json!({
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "orderId": 12345,
+            "status": "FILLED",
+            "executedQty": "0.2",
+            "cummulativeQuoteQty": "4200"
+        });
+        let result = parse_spot_order_result(&payload, "BTCUSDT", "BUY").expect("spot result");
+        assert_eq!(result.order_id, "12345");
+        assert_eq!(result.status, "FILLED");
+        assert!(
+            parse_spot_order_result(
+                &json!({"symbol": "BTCUSDT", "side": "BUY", "orderId": 1}),
+                "BTCUSDT",
+                "BUY"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_spot_order_result(
+                &json!({"symbol": "BTCUSDT", "side": "BUY", "orderId": 1, "status": "REJECTED"}),
+                "BTCUSDT",
+                "BUY"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_spot_symbol_metadata_for_close_all_guards() {
+        let payload = json!({
+            "symbols": [{
+                "symbol": "ETHUSDT",
+                "status": "TRADING",
+                "baseAsset": "ETH",
+                "quoteAsset": "USDT",
+                "filters": [
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                    {"filterType": "MIN_NOTIONAL", "minNotional": "5"}
+                ]
+            }]
+        });
+        let metadata = parse_spot_symbol_metadata(&payload, "ethusdt").expect("spot metadata");
+        assert_eq!(metadata.status, "TRADING");
+        assert_eq!(metadata.base_asset, "ETH");
+        assert_eq!(metadata.quote_asset, "USDT");
+        assert_eq!(metadata.filters.step_size, 0.001);
+        assert_eq!(metadata.filters.min_notional, 5.0);
     }
 
     #[test]

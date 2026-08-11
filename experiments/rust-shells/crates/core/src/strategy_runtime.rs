@@ -6,8 +6,8 @@ use serde_json::{Map, Value, json};
 use crate::exchange_connectors::normalize_connector_backend;
 use crate::generated_python_parity::{
     PYTHON_ACCOUNT_MODE_OPTIONS, PYTHON_ASSETS_MODE_OPTIONS, PYTHON_INDICATOR_CATALOG,
-    PYTHON_SIDE_OPTIONS, PYTHON_SIGNAL_LOGIC_OPTIONS, PYTHON_STOP_LOSS_MODES,
-    PYTHON_STOP_LOSS_SCOPES, PythonUiOption,
+    PYTHON_RISK_DEFAULTS_JSON, PYTHON_SIDE_OPTIONS, PYTHON_SIGNAL_LOGIC_OPTIONS,
+    PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES, PythonUiOption,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -193,67 +193,71 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         }
     }
 
-    if let Some((prev, live, value)) = indicator_values(&input, "stoch_rsi_k")
-        && enabled(&input, "stoch_rsi")
-    {
-        descriptions.push(format!(
-            "StochRSI %K={value:.2} (prev={prev:.2}, live={live:.2})"
-        ));
-        let rule = rule(&input, "stoch_rsi");
-        let buy = rule.buy_value.unwrap_or(20.0);
-        let sell = rule.sell_value.unwrap_or(80.0);
-        if buy_allowed && value <= buy {
-            action(
-                "stoch_rsi",
-                "BUY",
-                format!("StochRSI %K <= {buy:.2} -> BUY"),
-                &mut signal,
-                &mut descriptions,
-                &mut sources,
-                &mut actions,
-            );
-        } else if sell_allowed && value >= sell {
-            action(
-                "stoch_rsi",
-                "SELL",
-                format!("StochRSI %K >= {sell:.2} -> SELL"),
-                &mut signal,
-                &mut descriptions,
-                &mut sources,
-                &mut actions,
-            );
+    if enabled(&input, "stoch_rsi") {
+        if let Some((prev, live, value)) = indicator_values(&input, "stoch_rsi_k") {
+            descriptions.push(format!(
+                "StochRSI %K={value:.2} (prev={prev:.2}, live={live:.2})"
+            ));
+            let rule = rule(&input, "stoch_rsi");
+            let buy = rule.buy_value.unwrap_or(20.0);
+            let sell = rule.sell_value.unwrap_or(80.0);
+            if buy_allowed && value <= buy {
+                action(
+                    "stoch_rsi",
+                    "BUY",
+                    format!("StochRSI %K <= {buy:.2} -> BUY"),
+                    &mut signal,
+                    &mut descriptions,
+                    &mut sources,
+                    &mut actions,
+                );
+            } else if sell_allowed && value >= sell {
+                action(
+                    "stoch_rsi",
+                    "SELL",
+                    format!("StochRSI %K >= {sell:.2} -> SELL"),
+                    &mut signal,
+                    &mut descriptions,
+                    &mut sources,
+                    &mut actions,
+                );
+            }
+        } else if input.indicators.contains_key("stoch_rsi_k") {
+            descriptions.push("StochRSI error:ValueError('indicator series empty')".to_owned());
         }
     }
 
-    if let Some((prev, live, value)) = indicator_values(&input, "willr")
-        && enabled(&input, "willr")
-    {
-        descriptions.push(format!(
-            "Williams %R(prev={prev:.2}, live={live:.2}) -> using {value:.2}"
-        ));
-        let rule = rule(&input, "willr");
-        let buy_upper = rule.buy_value.unwrap_or(-80.0).clamp(-100.0, 0.0);
-        let sell_lower = rule.sell_value.unwrap_or(-20.0).clamp(-100.0, 0.0);
-        if buy_allowed && (-100.0..=buy_upper).contains(&value) {
-            action(
-                "willr",
-                "BUY",
-                format!("Williams %R in [-100.00, {buy_upper:.2}] -> BUY"),
-                &mut signal,
-                &mut descriptions,
-                &mut sources,
-                &mut actions,
-            );
-        } else if sell_allowed && (sell_lower..=0.0).contains(&value) {
-            action(
-                "willr",
-                "SELL",
-                format!("Williams %R in [{sell_lower:.2}, 0.00] -> SELL"),
-                &mut signal,
-                &mut descriptions,
-                &mut sources,
-                &mut actions,
-            );
+    if enabled(&input, "willr") {
+        if let Some((prev, live, value)) = indicator_values(&input, "willr") {
+            descriptions.push(format!(
+                "Williams %R(prev={prev:.2}, live={live:.2}) -> using {value:.2}"
+            ));
+            let rule = rule(&input, "willr");
+            let buy_upper = rule.buy_value.unwrap_or(-80.0).clamp(-100.0, 0.0);
+            let sell_lower = rule.sell_value.unwrap_or(-20.0).clamp(-100.0, 0.0);
+            if buy_allowed && (-100.0..=buy_upper).contains(&value) {
+                action(
+                    "willr",
+                    "BUY",
+                    format!("Williams %R in [-100.00, {buy_upper:.2}] -> BUY"),
+                    &mut signal,
+                    &mut descriptions,
+                    &mut sources,
+                    &mut actions,
+                );
+            } else if sell_allowed && (sell_lower..=0.0).contains(&value) {
+                action(
+                    "willr",
+                    "SELL",
+                    format!("Williams %R in [{sell_lower:.2}, 0.00] -> SELL"),
+                    &mut signal,
+                    &mut descriptions,
+                    &mut sources,
+                    &mut actions,
+                );
+            }
+        } else if input.indicators.contains_key("willr") {
+            descriptions.push("Williams %R error:ValueError('indicator series empty')".to_owned());
         }
     }
 
@@ -470,31 +474,34 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         &mut actions,
     );
 
-    if let Some((_, _, value)) = indicator_values(&input, "aroon") {
-        if enabled(&input, "aroon") && value.is_finite() {
-            let up = indicator_values(&input, "aroon_up")
-                .map(|(_, _, v)| v)
-                .unwrap_or(f64::NAN);
-            let down = indicator_values(&input, "aroon_down")
-                .map(|(_, _, v)| v)
-                .unwrap_or(f64::NAN);
-            descriptions.push(format!("Aroon={value:.2} (up={up:.2}, down={down:.2})"));
-            threshold_action_existing_value(
-                &input,
-                "aroon",
-                "Aroon",
-                "{:.2}",
-                value,
-                Compare::GeLeDefaults(50.0, -50.0),
-                buy_allowed,
-                sell_allowed,
-                &mut signal,
-                &mut descriptions,
-                &mut sources,
-                &mut actions,
-            );
-        } else if enabled(&input, "aroon") {
-            descriptions.push("Aroon=NaN/inf skipped".to_owned());
+    if enabled(&input, "aroon") {
+        if let Some((_, _, value)) = indicator_values(&input, "aroon") {
+            if let (Some((_, _, up)), Some((_, _, down))) = (
+                indicator_values(&input, "aroon_up"),
+                indicator_values(&input, "aroon_down"),
+            ) {
+                if value.is_finite() {
+                    descriptions.push(format!("Aroon={value:.2} (up={up:.2}, down={down:.2})"));
+                    threshold_action_existing_value(
+                        &input,
+                        "aroon",
+                        "Aroon",
+                        "{:.2}",
+                        value,
+                        Compare::GeLeDefaults(50.0, -50.0),
+                        buy_allowed,
+                        sell_allowed,
+                        &mut signal,
+                        &mut descriptions,
+                        &mut sources,
+                        &mut actions,
+                    );
+                } else {
+                    descriptions.push("Aroon=NaN/inf skipped".to_owned());
+                }
+            } else {
+                descriptions.push("Aroon error:ValueError('indicator series missing')".to_owned());
+            }
         }
     }
 
@@ -725,6 +732,86 @@ pub fn normalize_strategy_controls(kind: &str, controls: &Value) -> Value {
             "connector_backend".to_owned(),
             Value::String(normalize_connector_backend(backend)),
         );
+    }
+    Value::Object(out)
+}
+
+/// Normalize the Python strategy risk surface with the effective defaults
+/// emitted by the Python-owned parity contract.
+pub fn normalize_strategy_risk_controls(controls: &Value) -> Value {
+    let mut out = serde_json::from_str::<Value>(PYTHON_RISK_DEFAULTS_JSON)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let Some(input) = controls.as_object() else {
+        return Value::Object(out);
+    };
+    let source = input
+        .get("strategy_controls")
+        .and_then(Value::as_object)
+        .unwrap_or(input);
+
+    const BOOL_KEYS: &[&str] = &[
+        "indicator_use_live_values",
+        "require_indicator_flip_signal",
+        "strict_indicator_flip_enforcement",
+        "indicator_reentry_requires_signal_reset",
+        "auto_flip_on_close",
+        "allow_close_ignoring_hold",
+        "allow_multi_indicator_close",
+        "allow_indicator_close_without_signal",
+        "close_on_exit",
+        "positions_missing_autoclose",
+        "allow_opposite_positions",
+        "hedge_preserve_opposites",
+    ];
+    for key in BOOL_KEYS {
+        if source.contains_key(*key) {
+            let fallback = out.get(*key).and_then(Value::as_bool).unwrap_or(false);
+            out.insert(
+                (*key).to_owned(),
+                Value::Bool(coerce_strategy_bool(source.get(*key), fallback)),
+            );
+        }
+    }
+
+    const INTEGER_KEYS: &[(&str, i64)] = &[
+        ("indicator_flip_cooldown_bars", 0),
+        ("indicator_min_position_hold_bars", 0),
+        ("indicator_reentry_cooldown_bars", 0),
+        ("indicator_flip_confirmation_bars", 1),
+        ("positions_missing_threshold", 1),
+        ("positions_missing_grace_seconds", 0),
+        ("futures_flat_purge_miss_threshold", 1),
+    ];
+    for (key, minimum) in INTEGER_KEYS {
+        if let Some(value) = int_value(source.get(*key)) {
+            out.insert((*key).to_owned(), json!(value.max(*minimum)));
+        }
+    }
+
+    const NUMBER_KEYS: &[&str] = &[
+        "indicator_flip_cooldown_seconds",
+        "indicator_min_position_hold_seconds",
+        "indicator_reentry_cooldown_seconds",
+        "futures_flat_purge_grace_seconds",
+        "max_auto_bump_percent",
+        "auto_bump_percent_multiplier",
+    ];
+    for key in NUMBER_KEYS {
+        if let Some(value) = float_value(source.get(*key)) {
+            out.insert((*key).to_owned(), json!(value.max(0.0)));
+        }
+    }
+
+    if let Some(stop_loss) = source.get("stop_loss").filter(|value| value.is_object()) {
+        out.insert("stop_loss".to_owned(), normalize_stop_loss(stop_loss));
+    } else if let Some(stop_loss) = out
+        .get("stop_loss")
+        .filter(|value| value.is_object())
+        .cloned()
+    {
+        out.insert("stop_loss".to_owned(), normalize_stop_loss(&stop_loss));
     }
     Value::Object(out)
 }
@@ -970,7 +1057,9 @@ fn indicator_values(input: &StrategySignalInput, key: &str) -> Option<(f64, f64,
 
 fn value_at(input: &StrategySignalInput, key: &str, index: usize) -> Option<f64> {
     let value = *input.indicators.get(key)?.get(index)?;
-    value.is_finite().then_some(value)
+    // Match pandas Series.dropna(): NaN is missing, while +/-inf remains a
+    // value and must flow through the same comparisons and descriptions.
+    (!value.is_nan()).then_some(value)
 }
 
 fn context_only(
@@ -1136,12 +1225,18 @@ fn histogram_action(
     let Some((_, _, hist)) = indicator_values(input, hist_key) else {
         return;
     };
-    let line = indicator_values(input, line_key)
-        .map(|(_, _, value)| value)
-        .unwrap_or(f64::NAN);
-    let signal_line = indicator_values(input, signal_key)
-        .map(|(_, _, value)| value)
-        .unwrap_or(f64::NAN);
+    let Some((_, _, line)) = indicator_values(input, line_key) else {
+        descriptions.push(format!(
+            "{label} error:ValueError('indicator series missing')"
+        ));
+        return;
+    };
+    let Some((_, _, signal_line)) = indicator_values(input, signal_key) else {
+        descriptions.push(format!(
+            "{label} error:ValueError('indicator series missing')"
+        ));
+        return;
+    };
     if hist.is_finite() {
         let hist_name = if key == "kst" { "spread" } else { "hist" };
         descriptions.push(format!(
@@ -1249,12 +1344,19 @@ fn normalize_python_ui_option_key_fuzzy(
         .map(|option| option.key.to_owned())
 }
 
-fn normalize_python_ui_option_key_or_default(
+fn normalize_python_config_choice_or_default(
     value: Option<&Value>,
-    options: &[PythonUiOption],
+    choices: &[(&str, &str)],
     default_value: &str,
 ) -> String {
-    normalize_python_ui_option_key(value, options).unwrap_or_else(|| default_value.to_owned())
+    let Some(raw) = string_value(value) else {
+        return default_value.to_owned();
+    };
+    choices
+        .iter()
+        .find(|(key, _)| raw.eq_ignore_ascii_case(key))
+        .map(|(_, normalized)| (*normalized).to_owned())
+        .unwrap_or_else(|| default_value.to_owned())
 }
 
 fn normalize_python_string_option_fuzzy(
@@ -1366,14 +1468,14 @@ fn normalize_stop_loss(value: &Value) -> Value {
         return json!({});
     };
     let enabled = coerce_strategy_bool(object.get("enabled"), false);
-    let mode = normalize_python_ui_option_key_or_default(
+    let mode = normalize_python_config_choice_or_default(
         object.get("mode"),
-        PYTHON_STOP_LOSS_MODES,
+        PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
         "usdt",
     );
-    let scope = normalize_python_ui_option_key_or_default(
+    let scope = normalize_python_config_choice_or_default(
         object.get("scope"),
-        PYTHON_STOP_LOSS_SCOPES,
+        PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
         "per_trade",
     );
     json!({
@@ -1650,6 +1752,7 @@ mod tests {
         rules.insert("aroon".to_owned(), rule(true, Some(50.0), Some(-50.0)));
         rules.insert("chop".to_owned(), rule(true, Some(38.2), Some(61.8)));
         rules.insert("mfi".to_owned(), rule(true, Some(20.0), Some(80.0)));
+        rules.insert("bb".to_owned(), rule(true, None, None));
         rules.insert("atr".to_owned(), rule(true, None, None));
         rules.insert("vwap".to_owned(), rule(true, None, None));
         rules.insert("cmf".to_owned(), rule(true, None, None));
@@ -1679,6 +1782,9 @@ mod tests {
                 ("aroon_down".to_owned(), vec![50.0, 40.0, 20.0]),
                 ("chop".to_owned(), vec![70.0, 45.0, 30.0]),
                 ("mfi".to_owned(), vec![50.0, 18.0, 15.0]),
+                ("bb_upper".to_owned(), vec![106.0, 107.0, 108.0]),
+                ("bb_mid".to_owned(), vec![103.0, 104.0, 105.0]),
+                ("bb_lower".to_owned(), vec![100.0, 101.0, 102.0]),
                 ("atr".to_owned(), vec![1.0, 2.0, 3.0]),
                 ("vwap".to_owned(), vec![100.0, 100.5, 101.5]),
                 ("cmf".to_owned(), vec![0.1, 0.2, 0.25]),
@@ -1720,6 +1826,7 @@ mod tests {
             "Aroon >= 50.00 -> BUY",
             "CHOP <= 38.2000 -> BUY",
             "MFI <= 20.00 -> BUY",
+            "BB_up=108.00000000,BB_mid=105.00000000,BB_low=102.00000000",
             "ATR=3.00000000",
             "VWAP=101.50000000",
             "CMF=0.2500",
@@ -1727,6 +1834,108 @@ mod tests {
             "KC_up=105.00000000",
             "IC_tenkan=105.00000000",
             "close above cloud",
+        ] {
+            assert!(decision.description.contains(text), "missing {text}");
+        }
+        let description_segments: Vec<&str> = decision.description.split(" | ").collect();
+        let mut previous_segment = None;
+        for prefix in [
+            "RSI=",
+            "ATR=",
+            "NATR=",
+            "VWAP=",
+            "MFI=",
+            "OBV=",
+            "RVOL=",
+            "CMF=",
+            "CCI=",
+            "ROC=",
+            "TRIX=",
+            "BBW=",
+            "PPO=",
+            "AO=",
+            "KST=",
+            "Aroon=",
+            "CHOP=",
+            "BB_up=",
+            "KC_up=",
+            "IC_tenkan=",
+        ] {
+            if let Some(current_segment) = description_segments
+                .iter()
+                .position(|segment| segment.starts_with(prefix))
+            {
+                assert!(
+                    previous_segment.is_none_or(|previous| current_segment > previous),
+                    "description order diverged at {prefix}"
+                );
+                previous_segment = Some(current_segment);
+            }
+        }
+    }
+
+    #[test]
+    fn signal_generation_preserves_indexed_infinity_context_like_python() {
+        let decision = build_signal_decision(StrategySignalInput {
+            closes: vec![100.0, 101.0],
+            indicators: BTreeMap::from([
+                ("ma".to_owned(), vec![100.0, f64::INFINITY]),
+                ("bb_upper".to_owned(), vec![101.0, f64::INFINITY]),
+                ("bb_mid".to_owned(), vec![100.0, f64::INFINITY]),
+                ("bb_lower".to_owned(), vec![99.0, f64::INFINITY]),
+                ("keltner_upper".to_owned(), vec![101.0, f64::INFINITY]),
+                ("keltner_mid".to_owned(), vec![100.0, f64::INFINITY]),
+                ("keltner_lower".to_owned(), vec![99.0, f64::INFINITY]),
+                ("ichimoku_tenkan".to_owned(), vec![100.0, f64::INFINITY]),
+                ("ichimoku_kijun".to_owned(), vec![99.0, 100.0]),
+                ("ichimoku_span_a".to_owned(), vec![98.0, f64::INFINITY]),
+                ("ichimoku_span_b".to_owned(), vec![97.0, f64::INFINITY]),
+            ]),
+            rules: BTreeMap::from([
+                ("ma".to_owned(), rule(true, None, None)),
+                ("bb".to_owned(), rule(true, None, None)),
+                ("keltner".to_owned(), rule(true, None, None)),
+                ("ichimoku".to_owned(), rule(true, None, None)),
+            ]),
+            side: "BOTH".to_owned(),
+            use_live_values: true,
+        });
+
+        assert_eq!(decision.signal, None);
+        for text in [
+            "MA_prev=100.00000000,MA_last=inf",
+            "BB_up=inf,BB_mid=inf,BB_low=inf",
+            "KC_up=inf,KC_mid=inf,KC_low=inf",
+            "IC_tenkan=inf,IC_kijun=100.00000000",
+            "cloud unavailable",
+        ] {
+            assert!(decision.description.contains(text), "missing {text}");
+        }
+    }
+
+    #[test]
+    fn signal_generation_reports_missing_composite_series_like_python() {
+        let decision = build_signal_decision(StrategySignalInput {
+            closes: vec![100.0, 101.0],
+            indicators: BTreeMap::from([
+                ("ppo_hist".to_owned(), vec![0.0, 1.0]),
+                ("kst_hist".to_owned(), vec![0.0, 1.0]),
+                ("aroon".to_owned(), vec![0.0, 60.0]),
+            ]),
+            rules: BTreeMap::from([
+                ("ppo".to_owned(), rule(true, Some(0.0), Some(0.0))),
+                ("kst".to_owned(), rule(true, Some(0.0), Some(0.0))),
+                ("aroon".to_owned(), rule(true, Some(50.0), Some(-50.0))),
+            ]),
+            side: "BOTH".to_owned(),
+            use_live_values: true,
+        });
+
+        assert_eq!(decision.signal, None);
+        for text in [
+            "PPO error:ValueError('indicator series missing')",
+            "KST error:ValueError('indicator series missing')",
+            "Aroon error:ValueError('indicator series missing')",
         ] {
             assert!(decision.description.contains(text), "missing {text}");
         }
@@ -1796,6 +2005,29 @@ mod tests {
         assert_eq!(backtest["leverage"], 10);
         assert_eq!(backtest["fee_bps"], 5.0);
         assert_eq!(backtest["slippage_bps"], 2.0);
+    }
+
+    #[test]
+    fn strategy_risk_controls_normalize_from_python_effective_defaults() {
+        let controls = normalize_strategy_risk_controls(&json!({
+            "indicator_use_live_values": "true",
+            "allow_opposite_positions": false,
+            "indicator_flip_cooldown_bars": "4",
+            "stop_loss": {
+                "enabled": "true",
+                "mode": "both",
+                "scope": "entire_account",
+                "percent": "2.5"
+            }
+        }));
+
+        assert_eq!(controls["indicator_use_live_values"], true);
+        assert_eq!(controls["allow_opposite_positions"], false);
+        assert_eq!(controls["indicator_flip_cooldown_bars"], 4);
+        assert_eq!(controls["stop_loss"]["enabled"], true);
+        assert_eq!(controls["stop_loss"]["scope"], "entire_account");
+        assert_eq!(controls["stop_loss"]["percent"], 2.5);
+        assert_eq!(controls["strict_indicator_flip_enforcement"], true);
     }
 
     #[test]

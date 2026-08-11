@@ -18,6 +18,11 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from app.native_parity import native_python_source_contract_hash  # noqa: E402
 from app.service.api_contract import SERVICE_API_ROUTE_PATHS  # noqa: E402
+from app.settings.validation import (  # noqa: E402
+    _ALLOWED_BACKTEST_CONFIG_KEYS,
+    _ALLOWED_CHART_CONFIG_KEYS,
+    _ALLOWED_RUNTIME_CONFIG_KEYS,
+)
 from tools.generate_native_parity_contracts import (  # noqa: E402
     CPP_INDICATOR_REFERENCE_OUTPUT,
     CPP_OUTPUT,
@@ -47,6 +52,7 @@ class ConsumerRequirement:
     service_route_names: tuple[str, ...] = ()
     route_extractors: tuple[str, ...] = ()
     forbidden_text: tuple[str, ...] = ()
+    required_patterns: tuple[str, ...] = ()
 
 
 CPP_SERVICE_API_EXTRACTOR = "cpp_service_api"
@@ -92,6 +98,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_native_account_runtime_is_present",
     "rust_strategy_runtime_uses_python_source_options",
     "rust_native_backtest_runtime_uses_python_reference_fixture",
+    "rust_native_backtest_batch_runtime_uses_python_reference_fixture",
     "rust_config_persistence_uses_python_source_options",
     "python_order_guard_implements_behavior_contract",
     "rust_order_guard_uses_python_behavior_contract",
@@ -126,6 +133,9 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "tauri_native_runtime_preview_browser_bridge",
     "tauri_native_runtime_controller_backend",
     "tauri_native_runtime_controller_browser_bridge",
+    "tauri_native_backtest_bridge",
+    "tauri_native_backtest_commands_registered",
+    "tauri_native_backtest_browser_bridge",
 )
 
 
@@ -159,6 +169,106 @@ def _duplicate_names(values: tuple[str, ...]) -> list[str]:
             duplicates.append(value)
         seen.add(value)
     return duplicates
+
+
+def _section(text: str, start: str, end: str) -> str:
+    start_index = text.index(start)
+    end_index = text.index(end, start_index + len(start))
+    return text[start_index:end_index]
+
+
+def _quoted_keys(text: str) -> set[str]:
+    return {
+        left or right
+        for left, right in re.findall(r'QStringLiteral\("([^"]+)"\)|"([^"]+)"', text)
+    }
+
+
+def _config_key_contract() -> dict[str, object]:
+    expected = {
+        "runtime": set(_ALLOWED_RUNTIME_CONFIG_KEYS),
+        "chart": set(_ALLOWED_CHART_CONFIG_KEYS),
+        "backtest": set(_ALLOWED_BACKTEST_CONFIG_KEYS),
+    }
+    source_definitions = {
+        "cpp": (
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeConfigPersistence.cpp",
+            {
+                "runtime": ("const QStringList &runtimeAllowedKeys()", "const QStringList &chartAllowedKeys()"),
+                "chart": ("const QStringList &chartAllowedKeys()", "const QStringList &backtestAllowedKeys()"),
+                "backtest": ("const QStringList &backtestAllowedKeys()", "void validateAllowedKeys("),
+            },
+        ),
+        "rust": (
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "config_persistence.rs",
+            {
+                "runtime": ("const RUNTIME_ALLOWED_KEYS", "const CHART_ALLOWED_KEYS"),
+                "chart": ("const CHART_ALLOWED_KEYS", "const BACKTEST_ALLOWED_KEYS"),
+                "backtest": ("const BACKTEST_ALLOWED_KEYS", "#[derive(Clone, Copy)]"),
+            },
+        ),
+    }
+    surfaces: dict[str, object] = {}
+    issues: list[str] = []
+    for target, (path, section_definitions) in source_definitions.items():
+        target_report: dict[str, object] = {}
+        if not path.exists():
+            issue = f"{_rel(path)}: config allow-list source is missing"
+            issues.append(issue)
+            for section_name, _ in section_definitions.items():
+                target_report[section_name] = {
+                    "ok": False,
+                    "expected": sorted(expected[section_name]),
+                    "actual": [],
+                    "missing": sorted(expected[section_name]),
+                    "extra": [],
+                    "issue": issue,
+                }
+            surfaces[target] = target_report
+            continue
+
+        text = _read(path)
+        for section_name, (start, end) in section_definitions.items():
+            try:
+                actual = _quoted_keys(_section(text, start, end))
+            except ValueError as exc:
+                issue = f"{_rel(path)}: unable to extract {section_name} config allow-list: {exc}"
+                issues.append(issue)
+                target_report[section_name] = {
+                    "ok": False,
+                    "expected": sorted(expected[section_name]),
+                    "actual": [],
+                    "missing": sorted(expected[section_name]),
+                    "extra": [],
+                    "issue": issue,
+                }
+                continue
+
+            missing = sorted(expected[section_name] - actual)
+            extra = sorted(actual - expected[section_name])
+            section_issues: list[str] = []
+            if missing:
+                section_issues.append(f"missing keys: {', '.join(missing)}")
+            if extra:
+                section_issues.append(f"unexpected keys: {', '.join(extra)}")
+            if section_issues:
+                issues.append(f"{_rel(path)} {section_name}: {'; '.join(section_issues)}")
+            target_report[section_name] = {
+                "ok": not section_issues,
+                "expected": sorted(expected[section_name]),
+                "actual": sorted(actual),
+                "missing": missing,
+                "extra": extra,
+                "issues": section_issues,
+            }
+        surfaces[target] = target_report
+
+    return {
+        "ok": not issues,
+        "expected": {name: sorted(values) for name, values in expected.items()},
+        "surfaces": surfaces,
+        "issues": issues,
+    }
 
 
 def _name_contract_issues(label: str, required_names: tuple[str, ...], actual_names: tuple[str, ...]) -> list[str]:
@@ -287,12 +397,13 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PYTHON_ASSETS_MODE_OPTIONS",
                 "PYTHON_SIDE_OPTIONS",
                 "PYTHON_SIGNAL_LOGIC_OPTIONS",
-                "PYTHON_STOP_LOSS_MODES",
-                "PYTHON_STOP_LOSS_SCOPES",
+                "PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES",
+                "PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES",
                 "PYTHON_INDICATOR_CATALOG",
                 "normalize_python_ui_option_key",
                 "normalize_python_ui_option_key_fuzzy",
                 "normalize_python_string_option_fuzzy",
+                "normalize_python_config_choice_or_default",
                 "runtime_output_keys",
                 "canonical_side",
                 "normalize_account_mode",
@@ -316,40 +427,72 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "rust_native_backtest_batch_runtime_uses_python_reference_fixture",
+            REPO_ROOT
+            / "experiments"
+            / "rust-shells"
+            / "crates"
+            / "core"
+            / "src"
+            / "backtest_batch_runtime.rs",
+            (
+                "PYTHON_INDICATOR_REFERENCE_JSON",
+                "pub fn build_indicator_groups",
+                "pub fn estimate_run_count",
+                "pub fn run_native_backtest_batch",
+                "run_native_backtest_with_cancel",
+                "build_override_plans",
+                "optimizer_score",
+                "optimizer_score_from_row",
+                "optimizer_max_duration_seconds",
+                "resume_combo_offset",
+                "completed_combo_count",
+                "native_batch_budget_and_resume_preserve_python_checkpoint_semantics",
+                "native_batch_matches_python_reference_result_and_reuses_candles",
+            ),
+        ),
+        ConsumerRequirement(
             "rust_config_persistence_uses_python_source_options",
             REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "config_persistence.rs",
             (
-                "PYTHON_ACCOUNT_MODE_OPTIONS",
-                "PYTHON_ACCOUNT_TYPE_OPTIONS",
-                "PYTHON_ASSETS_MODE_OPTIONS",
-                "PYTHON_BACKTEST_EXECUTION_BACKEND_OPTIONS",
-                "PYTHON_CHART_MARKET_OPTIONS",
-                "PYTHON_CHART_VIEW_OPTIONS",
-                "PYTHON_CONFIG_MODE_OPTIONS",
-                "PYTHON_CONNECTOR_OPTIONS",
-                "PYTHON_DESIGN_OPTIONS",
-                "PYTHON_EXCHANGE_OPTIONS",
-                "PYTHON_INDICATOR_SOURCE_OPTIONS",
-                "PYTHON_LLM_PROVIDERS",
-                "PYTHON_LLM_USE_FOR_OPTIONS",
-                "PYTHON_MARGIN_MODE_OPTIONS",
-                "PYTHON_MDD_LOGIC_OPTIONS",
-                "PYTHON_OPTIMIZER_METRIC_OPTIONS",
-                "PYTHON_OPTIMIZER_MODE_OPTIONS",
-                "PYTHON_ORDER_TYPE_OPTIONS",
-                "PYTHON_POSITION_MODE_OPTIONS",
-                "PYTHON_SCAN_SCOPE_OPTIONS",
-                "PYTHON_SIDE_OPTIONS",
-                "PYTHON_SIGNAL_LOGIC_OPTIONS",
-                "PYTHON_STOP_LOSS_MODES",
-                "PYTHON_STOP_LOSS_SCOPES",
-                "PYTHON_THEME_OPTIONS",
-                "PYTHON_TIME_IN_FORCE_OPTIONS",
+                "PYTHON_LLM_PROVIDER_CHOICES",
+                "PYTHON_ACCOUNT_MODE_CONFIG_CHOICES",
+                "PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES",
+                "PYTHON_ASSETS_MODE_CONFIG_CHOICES",
+                "PYTHON_BACKTEST_EXECUTION_BACKEND_CONFIG_CHOICES",
+                "PYTHON_CHART_VIEW_MODE_CONFIG_CHOICES",
+                "PYTHON_LLM_REASONING_EFFORT_CONFIG_CHOICES",
+                "PYTHON_LLM_USE_FOR_CONFIG_CHOICES",
+                "PYTHON_LOGIC_CONFIG_CHOICES",
+                "PYTHON_MARGIN_MODE_CONFIG_CHOICES",
+                "PYTHON_MDD_LOGIC_CONFIG_CHOICES",
+                "PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES",
+                "PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES",
+                "PYTHON_ORDER_TYPE_CONFIG_CHOICES",
+                "PYTHON_POSITION_MODE_CONFIG_CHOICES",
+                "PYTHON_SCAN_SCOPE_CONFIG_CHOICES",
+                "PYTHON_SIDE_CONFIG_CHOICES",
+                "PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES",
+                "PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES",
+                "PYTHON_TIF_CONFIG_CHOICES",
+                "BACKTEST_ALLOWED_KEYS",
+                "optimizer_max_duration_seconds",
+                "604_800",
+                "cfg.insert(key.to_owned(), Value::Array(Vec::new()))",
+                'validate_text(&mut backtest, "symbol_source", issues, "backtest", false)',
+                'validate_text(&mut cfg, "mode", &mut issues, "", false)',
+                'validate_text(&mut cfg, "connector_backend", &mut issues, "", false)',
+                'validate_text(&mut cfg, "indicator_source", &mut issues, "", false)',
+                'validate_text(&mut cfg, "theme", &mut issues, "", true)',
+                'validate_text(&mut cfg, "design", &mut issues, "", true)',
+                'validate_text(&mut cfg, "selected_exchange", &mut issues, "", false)',
                 "ChoiceList",
                 "choice_value_from_text",
                 "validate_choice",
-                "validate_optional_choice",
                 "normalize_stop_loss_value",
+            ),
+            required_patterns=(
+                r'validate_text\s*\(\s*&mut backtest,\s*"connector_backend",\s*issues,\s*"backtest",\s*false\s*,?\s*\)',
             ),
         ),
         ConsumerRequirement(
@@ -432,35 +575,41 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeConfigPersistence.cpp",
             (
                 '#include "generated/PythonParityContract.h"',
-                "PythonParityContract::kPythonAccountModeOptions",
-                "PythonParityContract::kPythonAccountTypeOptions",
-                "PythonParityContract::kPythonAssetsModeOptions",
-                "PythonParityContract::kPythonBacktestExecutionBackendOptions",
-                "PythonParityContract::kPythonChartMarketOptions",
-                "PythonParityContract::kPythonChartViewOptions",
-                "PythonParityContract::kPythonConfigModeOptions",
-                "PythonParityContract::kPythonConnectorOptions",
-                "PythonParityContract::kPythonDesignOptions",
-                "PythonParityContract::kPythonExchangeOptions",
-                "PythonParityContract::kPythonIndicatorSourceOptions",
-                "PythonParityContract::kPythonLlmProviders",
-                "PythonParityContract::kPythonLlmUseForOptions",
-                "PythonParityContract::kPythonMarginModeOptions",
-                "PythonParityContract::kPythonMddLogicOptions",
-                "PythonParityContract::kPythonOptimizerMetricOptions",
-                "PythonParityContract::kPythonOptimizerModeOptions",
-                "PythonParityContract::kPythonOrderTypeOptions",
-                "PythonParityContract::kPythonPositionModeOptions",
-                "PythonParityContract::kPythonScanScopeOptions",
-                "PythonParityContract::kPythonSideOptions",
-                "PythonParityContract::kPythonSignalLogicOptions",
-                "PythonParityContract::kPythonStopLossModes",
-                "PythonParityContract::kPythonStopLossScopes",
-                "PythonParityContract::kPythonThemeOptions",
-                "PythonParityContract::kPythonTimeInForceOptions",
+                "PythonParityContract::kPythonLlmProviderChoices",
+                "PythonParityContract::kPythonAccountModeConfigChoices",
+                "PythonParityContract::kPythonAccountTypeConfigChoices",
+                "PythonParityContract::kPythonAssetsModeConfigChoices",
+                "PythonParityContract::kPythonBacktestExecutionBackendConfigChoices",
+                "PythonParityContract::kPythonChartViewModeConfigChoices",
+                "PythonParityContract::kPythonLlmReasoningEffortConfigChoices",
+                "PythonParityContract::kPythonLlmUseForConfigChoices",
+                "PythonParityContract::kPythonLogicConfigChoices",
+                "PythonParityContract::kPythonMarginModeConfigChoices",
+                "PythonParityContract::kPythonMddLogicConfigChoices",
+                "PythonParityContract::kPythonOptimizerMetricConfigChoices",
+                "PythonParityContract::kPythonOptimizerModeConfigChoices",
+                "PythonParityContract::kPythonOrderTypeConfigChoices",
+                "PythonParityContract::kPythonPositionModeConfigChoices",
+                "PythonParityContract::kPythonScanScopeConfigChoices",
+                "PythonParityContract::kPythonSideConfigChoices",
+                "PythonParityContract::kPythonStopLossModeConfigChoices",
+                "PythonParityContract::kPythonStopLossScopeConfigChoices",
+                "PythonParityContract::kPythonTifConfigChoices",
+                "backtestAllowedKeys",
+                "fee_bps",
+                "slippage_bps",
+                "optimizer_max_duration_seconds",
+                "604'800",
+                'validateText(&backtest, QStringLiteral("symbol_source"), issues, QStringLiteral("backtest"))',
+                'validateText(&cfg, QStringLiteral("mode"), &issues)',
+                'validateText(&cfg, QStringLiteral("connector_backend"), &issues)',
+                'validateText(&cfg, QStringLiteral("indicator_source"), &issues)',
+                'validateText(&cfg, QStringLiteral("theme"), &issues, {}, true)',
+                'validateText(&cfg, QStringLiteral("design"), &issues, {}, true)',
+                'validateText(&cfg, QStringLiteral("selected_exchange"), &issues)',
+                'validateText(&backtest, QStringLiteral("connector_backend"), issues, QStringLiteral("backtest"))',
                 "ChoicePairs",
                 "choiceCandidateMatches",
-                "validateOptionalChoice",
                 "llmReasoningEffortChoicesFromSource",
             ),
             forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
@@ -661,11 +810,12 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonAssetsModeOptions",
                 "PythonParityContract::kPythonSideOptions",
                 "PythonParityContract::kPythonSignalLogicOptions",
-                "PythonParityContract::kPythonStopLossModes",
-                "PythonParityContract::kPythonStopLossScopes",
+                "PythonParityContract::kPythonStopLossModeConfigChoices",
+                "PythonParityContract::kPythonStopLossScopeConfigChoices",
                 "PythonParityContract::kPythonIndicatorCatalog",
                 "normalizePythonUiOptionKey",
                 "normalizePythonStringOption",
+                "normalizePythonConfigChoice",
                 "pythonUiOptionKeyAt",
                 "pythonStringOptionAt",
                 "canonicalSide",
@@ -998,6 +1148,52 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "delete config.api_secret",
             ),
         ),
+        ConsumerRequirement(
+            "tauri_native_backtest_bridge",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "native_backtest.rs",
+            (
+                "NativeBacktestBatchRequest::from_python_request",
+                "run_native_backtest_batch",
+                "fetch_klines_range",
+                "request.start_ms",
+                "request.end_ms",
+                "request.warmup_bars",
+                "NativeBacktestCheckpoint",
+                "resume_requested",
+                "managed.checkpoint",
+                'state == "budget_exhausted"',
+                "native_market_data_supported",
+                "pub fn start_native_backtest",
+                "pub fn native_backtest_status",
+                "pub fn stop_native_backtest",
+            ),
+        ),
+        ConsumerRequirement(
+            "tauri_native_backtest_commands_registered",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "main.rs",
+            (
+                "use native_backtest::NativeBacktestState",
+                ".manage(NativeBacktestState::default())",
+                "native_backtest::start_native_backtest",
+                "native_backtest::native_backtest_status",
+                "native_backtest::stop_native_backtest",
+            ),
+        ),
+        ConsumerRequirement(
+            "tauri_native_backtest_browser_bridge",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html",
+            (
+                "const submitBacktest",
+                "usesLocalBacktestBackend",
+                'invoke("start_native_backtest"',
+                'invoke("native_backtest_status"',
+                'invoke("stop_native_backtest"',
+                "syncBacktestResumeAvailability",
+                'runNativeBacktest("Resume optimizer"',
+                "Native Rust backtest",
+                "nativeBacktestResult",
+            ),
+        ),
     )
 
 
@@ -1046,6 +1242,7 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
         "path": _rel(requirement.path),
         "ok": True,
         "missing_text": [],
+        "missing_patterns": [],
         "forbidden_text": [],
         "declared_service_route_names": list(requirement.service_route_names),
         "extracted_service_route_names": [],
@@ -1061,6 +1258,11 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
 
     text = _read(requirement.path)
     missing = [needle for needle in requirement.required_text if needle not in text]
+    missing_patterns = [
+        pattern
+        for pattern in requirement.required_patterns
+        if re.search(pattern, text, re.DOTALL) is None
+    ]
     forbidden = [needle for needle in requirement.forbidden_text if needle in text]
     extracted_service_routes, unknown_route_extractors = _extract_service_routes(text, requirement.route_extractors)
     service_route_names = _ordered_unique([*requirement.service_route_names, *extracted_service_routes])
@@ -1070,12 +1272,19 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
         if route_name not in SERVICE_API_ROUTE_PATHS
     ]
     report["missing_text"] = missing
+    report["missing_patterns"] = missing_patterns
     report["forbidden_text"] = forbidden
     report["extracted_service_route_names"] = extracted_service_routes
     report["service_route_names"] = service_route_names
     report["unknown_service_routes"] = unknown_service_routes
     report["unknown_route_extractors"] = unknown_route_extractors
-    report["ok"] = not missing and not forbidden and not unknown_service_routes and not unknown_route_extractors
+    report["ok"] = (
+        not missing
+        and not missing_patterns
+        and not forbidden
+        and not unknown_service_routes
+        and not unknown_route_extractors
+    )
     if forbidden:
         report["issue"] = "consumer contains Python-owned option values instead of generated parity sources"
     if unknown_service_routes or unknown_route_extractors:
@@ -1090,6 +1299,7 @@ def audit_native_source_sync() -> dict[str, object]:
     generated_artifact_requirements = _generated_artifacts()
     consumer_requirements = _consumer_requirements()
     surface_contract = _surface_contract(generated_artifact_requirements, consumer_requirements)
+    config_key_contract = _config_key_contract()
     generated = [
         _check_generated_artifact(artifact, contract_hash)
         for artifact in generated_artifact_requirements
@@ -1102,11 +1312,13 @@ def audit_native_source_sync() -> dict[str, object]:
         if not bool(item["ok"])
     ]
     issues = [*surface_contract_issues, *surface_wiring_issues]
+    issues.extend(str(issue) for issue in config_key_contract["issues"])
     return {
         "ok": not issues,
         "contract_hash": contract_hash,
         "source": "Languages/Python/app/native_parity.py",
         "surface_contract": surface_contract,
+        "config_key_contract": config_key_contract,
         "generated": generated,
         "consumers": consumers,
         "issues": issues,

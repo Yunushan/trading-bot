@@ -106,6 +106,24 @@ QString normalizePythonStringOption(
 }
 
 template <std::size_t N>
+QString normalizePythonConfigChoice(
+    const QJsonValue &value,
+    const std::array<PythonParityContract::PythonConfigChoice, N> &choices,
+    const QString &fallback = {}) {
+    const QString raw = textOf(value).trimmed();
+    if (raw.isEmpty()) {
+        return fallback;
+    }
+    for (const auto &choice : choices) {
+        const QString key = parityString(choice.key);
+        if (raw.compare(key, Qt::CaseInsensitive) == 0) {
+            return parityString(choice.value);
+        }
+    }
+    return fallback;
+}
+
+template <std::size_t N>
 QString pythonUiOptionKeyAt(
     const std::array<PythonParityContract::PythonUiOption, N> &options,
     std::size_t index,
@@ -132,11 +150,17 @@ QString normalizeSignalLogic(const QJsonValue &value) {
 }
 
 QString normalizeStopLossMode(const QJsonValue &value) {
-    return normalizePythonUiOptionKey(value, PythonParityContract::kPythonStopLossModes, QStringLiteral("usdt"));
+    return normalizePythonConfigChoice(
+        value,
+        PythonParityContract::kPythonStopLossModeConfigChoices,
+        QStringLiteral("usdt"));
 }
 
 QString normalizeStopLossScope(const QJsonValue &value) {
-    return normalizePythonUiOptionKey(value, PythonParityContract::kPythonStopLossScopes, QStringLiteral("per_trade"));
+    return normalizePythonConfigChoice(
+        value,
+        PythonParityContract::kPythonStopLossScopeConfigChoices,
+        QStringLiteral("per_trade"));
 }
 
 std::optional<double> numberOf(const QJsonValue &value) {
@@ -209,7 +233,9 @@ std::optional<double> valueAt(
         return std::nullopt;
     }
     const double value = values.at(index);
-    return std::isfinite(value) ? std::optional<double>(value) : std::nullopt;
+    // Match pandas Series.dropna(): NaN is missing, while +/-inf remains a
+    // value and must flow through the same comparisons and descriptions.
+    return !std::isnan(value) ? std::optional<double>(value) : std::nullopt;
 }
 
 QString fixed(double value, int decimals) {
@@ -392,6 +418,17 @@ QJsonObject normalizeStopLoss(const QJsonObject &input) {
         {QStringLiteral("usdt"), std::max(0.0, numberOf(input.value(QStringLiteral("usdt"))).value_or(0.0))},
         {QStringLiteral("percent"), std::max(0.0, numberOf(input.value(QStringLiteral("percent"))).value_or(0.0))},
     };
+}
+
+QJsonObject pythonRiskDefaults() {
+    static const QJsonObject defaults = [] {
+        const QByteArray encoded(
+            PythonParityContract::kPythonRiskDefaultsJson.data(),
+            static_cast<int>(PythonParityContract::kPythonRiskDefaultsJson.size()));
+        const QJsonDocument document = QJsonDocument::fromJson(encoded);
+        return document.isObject() ? document.object() : QJsonObject{};
+    }();
+    return defaults;
 }
 
 QString formatAmount(double value) {
@@ -617,14 +654,18 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
     if (enabled(input, QStringLiteral("rsi"))) {
         if (const auto values = indicatorValues(input, QStringLiteral("rsi"))) {
             const double value = std::get<2>(*values);
-            descriptions.append(QStringLiteral("RSI=%1").arg(fixed(value, 2)));
-            const auto cfg = rule(input, QStringLiteral("rsi"));
-            const double buy = cfg.buyValue.value_or(30.0);
-            const double sell = cfg.sellValue.value_or(70.0);
-            if (buyAllowed && value <= buy) {
-                addAction(QStringLiteral("rsi"), QStringLiteral("BUY"), QStringLiteral("RSI <= %1 -> BUY").arg(fixed(buy, 2)), signal, descriptions, sources, actions);
-            } else if (sellAllowed && value >= sell) {
-                addAction(QStringLiteral("rsi"), QStringLiteral("SELL"), QStringLiteral("RSI >= %1 -> SELL").arg(fixed(sell, 2)), signal, descriptions, sources, actions);
+            if (std::isfinite(value)) {
+                descriptions.append(QStringLiteral("RSI=%1").arg(fixed(value, 2)));
+                const auto cfg = rule(input, QStringLiteral("rsi"));
+                const double buy = cfg.buyValue.value_or(30.0);
+                const double sell = cfg.sellValue.value_or(70.0);
+                if (buyAllowed && value <= buy) {
+                    addAction(QStringLiteral("rsi"), QStringLiteral("BUY"), QStringLiteral("RSI <= %1 -> BUY").arg(fixed(buy, 2)), signal, descriptions, sources, actions);
+                } else if (sellAllowed && value >= sell) {
+                    addAction(QStringLiteral("rsi"), QStringLiteral("SELL"), QStringLiteral("RSI >= %1 -> SELL").arg(fixed(sell, 2)), signal, descriptions, sources, actions);
+                }
+            } else {
+                descriptions.append(QStringLiteral("RSI=NaN/inf skipped"));
             }
         }
     }
@@ -651,6 +692,8 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
                 descriptions,
                 sources,
                 actions);
+        } else if (input.indicators.contains(QStringLiteral("stoch_rsi_k"))) {
+            descriptions.append(QStringLiteral("StochRSI error:ValueError('indicator series empty')"));
         }
     }
     if (enabled(input, QStringLiteral("willr"))) {
@@ -683,6 +726,8 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
                     sources,
                     actions);
             }
+        } else if (input.indicators.contains(QStringLiteral("willr"))) {
+            descriptions.append(QStringLiteral("Williams %R error:ValueError('indicator series empty')"));
         }
     }
     threshold(input, QStringLiteral("natr"), QStringLiteral("NATR"), QStringLiteral("{:.4}"), Compare::BuyGeSellLe, std::nullopt, std::nullopt, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
@@ -696,66 +741,112 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
     threshold(input, QStringLiteral("chop"), QStringLiteral("CHOP"), QStringLiteral("{:.4}"), Compare::BuyLeSellGe, std::nullopt, std::nullopt, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
 
     if (enabled(input, QStringLiteral("ppo"))) {
-        const double hist = indicatorValues(input, QStringLiteral("ppo_hist")).has_value()
-            ? std::get<2>(*indicatorValues(input, QStringLiteral("ppo_hist"))) : std::numeric_limits<double>::quiet_NaN();
-        const double line = indicatorValues(input, QStringLiteral("ppo")).has_value()
-            ? std::get<2>(*indicatorValues(input, QStringLiteral("ppo"))) : std::numeric_limits<double>::quiet_NaN();
-        const double ppoSignal = indicatorValues(input, QStringLiteral("ppo_signal")).has_value()
-            ? std::get<2>(*indicatorValues(input, QStringLiteral("ppo_signal"))) : std::numeric_limits<double>::quiet_NaN();
-        descriptions.append(QStringLiteral("PPO=%1,PPO_signal=%2,hist=%3").arg(fixed(line, 4), fixed(ppoSignal, 4), fixed(hist, 4)));
-        thresholdExisting(input, QStringLiteral("ppo"), QStringLiteral("PPO hist"), QStringLiteral("{:.4}"), hist, Compare::BuyGeSellLeDefaults, 0.0, 0.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+        const auto histValues = indicatorValues(input, QStringLiteral("ppo_hist"));
+        if (histValues.has_value()) {
+            const auto lineValues = indicatorValues(input, QStringLiteral("ppo"));
+            const auto signalValues = indicatorValues(input, QStringLiteral("ppo_signal"));
+            if (!lineValues.has_value() || !signalValues.has_value()) {
+                descriptions.append(QStringLiteral("PPO error:ValueError('indicator series missing')"));
+            } else {
+                const double hist = std::get<2>(*histValues);
+                const double line = std::get<2>(*lineValues);
+                const double ppoSignal = std::get<2>(*signalValues);
+                if (std::isfinite(hist)) {
+                    descriptions.append(QStringLiteral("PPO=%1,PPO_signal=%2,hist=%3").arg(fixed(line, 4), fixed(ppoSignal, 4), fixed(hist, 4)));
+                    thresholdExisting(input, QStringLiteral("ppo"), QStringLiteral("PPO hist"), QStringLiteral("{:.4}"), hist, Compare::BuyGeSellLeDefaults, 0.0, 0.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+                } else {
+                    descriptions.append(QStringLiteral("PPO=NaN/inf skipped"));
+                }
+            }
+        }
     }
     if (enabled(input, QStringLiteral("kst"))) {
-        const double spread = indicatorValues(input, QStringLiteral("kst_hist")).has_value()
-            ? std::get<2>(*indicatorValues(input, QStringLiteral("kst_hist"))) : std::numeric_limits<double>::quiet_NaN();
-        const double line = indicatorValues(input, QStringLiteral("kst")).has_value()
-            ? std::get<2>(*indicatorValues(input, QStringLiteral("kst"))) : std::numeric_limits<double>::quiet_NaN();
-        const double kstSignal = indicatorValues(input, QStringLiteral("kst_signal")).has_value()
-            ? std::get<2>(*indicatorValues(input, QStringLiteral("kst_signal"))) : std::numeric_limits<double>::quiet_NaN();
-        descriptions.append(QStringLiteral("KST=%1,KST_signal=%2,spread=%3").arg(fixed(line, 4), fixed(kstSignal, 4), fixed(spread, 4)));
-        thresholdExisting(input, QStringLiteral("kst"), QStringLiteral("KST spread"), QStringLiteral("{:.4}"), spread, Compare::BuyGeSellLeDefaults, 0.0, 0.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+        const auto spreadValues = indicatorValues(input, QStringLiteral("kst_hist"));
+        if (spreadValues.has_value()) {
+            const auto lineValues = indicatorValues(input, QStringLiteral("kst"));
+            const auto signalValues = indicatorValues(input, QStringLiteral("kst_signal"));
+            if (!lineValues.has_value() || !signalValues.has_value()) {
+                descriptions.append(QStringLiteral("KST error:ValueError('indicator series missing')"));
+            } else {
+                const double spread = std::get<2>(*spreadValues);
+                const double line = std::get<2>(*lineValues);
+                const double kstSignal = std::get<2>(*signalValues);
+                if (std::isfinite(spread)) {
+                    descriptions.append(QStringLiteral("KST=%1,KST_signal=%2,spread=%3").arg(fixed(line, 4), fixed(kstSignal, 4), fixed(spread, 4)));
+                    thresholdExisting(input, QStringLiteral("kst"), QStringLiteral("KST spread"), QStringLiteral("{:.4}"), spread, Compare::BuyGeSellLeDefaults, 0.0, 0.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+                } else {
+                    descriptions.append(QStringLiteral("KST=NaN/inf skipped"));
+                }
+            }
+        }
     }
     if (enabled(input, QStringLiteral("aroon"))) {
         if (const auto values = indicatorValues(input, QStringLiteral("aroon"))) {
-            const double value = std::get<2>(*values);
-            const double up = indicatorValues(input, QStringLiteral("aroon_up")).has_value() ? std::get<2>(*indicatorValues(input, QStringLiteral("aroon_up"))) : std::numeric_limits<double>::quiet_NaN();
-            const double down = indicatorValues(input, QStringLiteral("aroon_down")).has_value() ? std::get<2>(*indicatorValues(input, QStringLiteral("aroon_down"))) : std::numeric_limits<double>::quiet_NaN();
-            descriptions.append(QStringLiteral("Aroon=%1 (up=%2, down=%3)").arg(fixed(value, 2), fixed(up, 2), fixed(down, 2)));
-            thresholdExisting(input, QStringLiteral("aroon"), QStringLiteral("Aroon"), QStringLiteral("{:.2}"), value, Compare::BuyGeSellLeDefaults, 50.0, -50.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+            const auto upValues = indicatorValues(input, QStringLiteral("aroon_up"));
+            const auto downValues = indicatorValues(input, QStringLiteral("aroon_down"));
+            if (!upValues.has_value() || !downValues.has_value()) {
+                descriptions.append(QStringLiteral("Aroon error:ValueError('indicator series missing')"));
+            } else {
+                const double value = std::get<2>(*values);
+                const double up = std::get<2>(*upValues);
+                const double down = std::get<2>(*downValues);
+                if (std::isfinite(value)) {
+                    descriptions.append(QStringLiteral("Aroon=%1 (up=%2, down=%3)").arg(fixed(value, 2), fixed(up, 2), fixed(down, 2)));
+                    thresholdExisting(input, QStringLiteral("aroon"), QStringLiteral("Aroon"), QStringLiteral("{:.2}"), value, Compare::BuyGeSellLeDefaults, 50.0, -50.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+                } else {
+                    descriptions.append(QStringLiteral("Aroon=NaN/inf skipped"));
+                }
+            }
         }
     }
     if (enabled(input, QStringLiteral("atr"))) {
         if (const auto values = indicatorValues(input, QStringLiteral("atr"))) {
-            descriptions.append(QStringLiteral("ATR=%1").arg(fixed(std::get<2>(*values), 8)));
+            const double value = std::get<2>(*values);
+            descriptions.append(std::isfinite(value)
+                                    ? QStringLiteral("ATR=%1").arg(fixed(value, 8))
+                                    : QStringLiteral("ATR=NaN/inf skipped"));
         }
     }
     if (enabled(input, QStringLiteral("vwap"))) {
         if (const auto values = indicatorValues(input, QStringLiteral("vwap"))) {
             const double value = std::get<2>(*values);
-            descriptions.append(QStringLiteral("VWAP=%1 (prev=%2, live=%3, close %4)")
-                                    .arg(fixed(value, 8), fixed(std::get<0>(*values), 8), fixed(std::get<1>(*values), 8),
-                                         sigClose >= value ? QStringLiteral("above") : QStringLiteral("below")));
+            if (std::isfinite(value)) {
+                descriptions.append(QStringLiteral("VWAP=%1 (prev=%2, live=%3, close %4)")
+                                        .arg(fixed(value, 8), fixed(std::get<0>(*values), 8), fixed(std::get<1>(*values), 8),
+                                             sigClose >= value ? QStringLiteral("above") : QStringLiteral("below")));
+            } else {
+                descriptions.append(QStringLiteral("VWAP=NaN/inf skipped"));
+            }
         }
     }
     if (enabled(input, QStringLiteral("cmf"))) {
         if (const auto values = indicatorValues(input, QStringLiteral("cmf"))) {
             const double value = std::get<2>(*values);
-            const QString flow = value > 0.0 ? QStringLiteral("accumulation") : value < 0.0 ? QStringLiteral("distribution") : QStringLiteral("neutral");
-            descriptions.append(QStringLiteral("CMF=%1 (prev=%2, live=%3, %4)").arg(fixed(value, 4), fixed(std::get<0>(*values), 4), fixed(std::get<1>(*values), 4), flow));
-            thresholdExisting(input, QStringLiteral("cmf"), QStringLiteral("CMF"), QStringLiteral("{:.4}"), value,
-                              Compare::BuyGeSellLe, std::nullopt, std::nullopt,
-                              buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+            if (std::isfinite(value)) {
+                const QString flow = value > 0.0 ? QStringLiteral("accumulation") : value < 0.0 ? QStringLiteral("distribution") : QStringLiteral("neutral");
+                descriptions.append(QStringLiteral("CMF=%1 (prev=%2, live=%3, %4)").arg(fixed(value, 4), fixed(std::get<0>(*values), 4), fixed(std::get<1>(*values), 4), flow));
+                thresholdExisting(input, QStringLiteral("cmf"), QStringLiteral("CMF"), QStringLiteral("{:.4}"), value,
+                                  Compare::BuyGeSellLe, std::nullopt, std::nullopt,
+                                  buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+            } else {
+                descriptions.append(QStringLiteral("CMF=NaN/inf skipped"));
+            }
         }
     }
     if (enabled(input, QStringLiteral("obv"))) {
         if (const auto values = indicatorValues(input, QStringLiteral("obv"))) {
             const double prev = std::get<0>(*values);
             const double live = std::get<1>(*values);
-            const QString trend = live > prev ? QStringLiteral("rising") : live < prev ? QStringLiteral("falling") : QStringLiteral("flat");
-            descriptions.append(QStringLiteral("OBV=%1 (prev=%2, live=%3, %4)").arg(fixed(std::get<2>(*values), 2), fixed(prev, 2), fixed(live, 2), trend));
-            thresholdExisting(input, QStringLiteral("obv"), QStringLiteral("OBV"), QStringLiteral("{:.2}"), std::get<2>(*values),
-                              Compare::BuyGeSellLe, std::nullopt, std::nullopt,
-                              buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+            const double value = std::get<2>(*values);
+            if (std::isfinite(value)) {
+                const QString trend = live > prev ? QStringLiteral("rising") : live < prev ? QStringLiteral("falling") : QStringLiteral("flat");
+                descriptions.append(QStringLiteral("OBV=%1 (prev=%2, live=%3, %4)").arg(fixed(value, 2), fixed(prev, 2), fixed(live, 2), trend));
+                thresholdExisting(input, QStringLiteral("obv"), QStringLiteral("OBV"), QStringLiteral("{:.2}"), value,
+                                  Compare::BuyGeSellLe, std::nullopt, std::nullopt,
+                                  buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+            } else {
+                descriptions.append(QStringLiteral("OBV=NaN/inf skipped"));
+            }
         }
     }
     if (enabled(input, QStringLiteral("keltner"))) {
@@ -799,12 +890,130 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
             }
         }
     }
+    if (enabled(input, QStringLiteral("bb"))) {
+        const auto upper = valueAt(input, QStringLiteral("bb_upper"), signalIndex);
+        const auto mid = valueAt(input, QStringLiteral("bb_mid"), signalIndex);
+        const auto lower = valueAt(input, QStringLiteral("bb_lower"), signalIndex);
+        if (upper && mid && lower) {
+            descriptions.append(
+                QStringLiteral("BB_up=%1,BB_mid=%2,BB_low=%3")
+                    .arg(fixed(*upper, 8), fixed(*mid, 8), fixed(*lower, 8)));
+        }
+    }
+
+    // Keep the presentation order identical to Python even when native helper
+    // implementations evaluate indicators in a different order.
+    const QStringList pythonDescriptionPriority = {
+        QStringLiteral("rsi"),
+        QStringLiteral("stoch_rsi"),
+        QStringLiteral("willr"),
+        QStringLiteral("atr"),
+        QStringLiteral("natr"),
+        QStringLiteral("vwap"),
+        QStringLiteral("mfi"),
+        QStringLiteral("obv"),
+        QStringLiteral("rvol"),
+        QStringLiteral("cmf"),
+        QStringLiteral("cci"),
+        QStringLiteral("roc"),
+        QStringLiteral("trix"),
+        QStringLiteral("bbw"),
+        QStringLiteral("ppo"),
+        QStringLiteral("ao"),
+        QStringLiteral("kst"),
+        QStringLiteral("aroon"),
+        QStringLiteral("chop"),
+        QStringLiteral("ma"),
+        QStringLiteral("bb"),
+        QStringLiteral("keltner"),
+        QStringLiteral("ichimoku"),
+    };
+    const auto descriptionKey = [](const QString &description) {
+        if (description.startsWith(QStringLiteral("RSI"))) return QStringLiteral("rsi");
+        if (description.startsWith(QStringLiteral("StochRSI"))) return QStringLiteral("stoch_rsi");
+        if (description.startsWith(QStringLiteral("Williams %R"))) return QStringLiteral("willr");
+        if (description.startsWith(QStringLiteral("ATR"))) return QStringLiteral("atr");
+        if (description.startsWith(QStringLiteral("NATR"))) return QStringLiteral("natr");
+        if (description.startsWith(QStringLiteral("VWAP"))) return QStringLiteral("vwap");
+        if (description.startsWith(QStringLiteral("MFI"))) return QStringLiteral("mfi");
+        if (description.startsWith(QStringLiteral("OBV"))) return QStringLiteral("obv");
+        if (description.startsWith(QStringLiteral("RVOL"))) return QStringLiteral("rvol");
+        if (description.startsWith(QStringLiteral("CMF"))) return QStringLiteral("cmf");
+        if (description.startsWith(QStringLiteral("CCI"))) return QStringLiteral("cci");
+        if (description.startsWith(QStringLiteral("ROC"))) return QStringLiteral("roc");
+        if (description.startsWith(QStringLiteral("TRIX"))) return QStringLiteral("trix");
+        if (description.startsWith(QStringLiteral("BBW"))) return QStringLiteral("bbw");
+        if (description.startsWith(QStringLiteral("PPO"))) return QStringLiteral("ppo");
+        if (description.startsWith(QStringLiteral("AO"))) return QStringLiteral("ao");
+        if (description.startsWith(QStringLiteral("KST"))) return QStringLiteral("kst");
+        if (description.startsWith(QStringLiteral("Aroon"))) return QStringLiteral("aroon");
+        if (description.startsWith(QStringLiteral("CHOP"))) return QStringLiteral("chop");
+        if (description.startsWith(QStringLiteral("MA_"))) return QStringLiteral("ma");
+        if (description.startsWith(QStringLiteral("BB_"))) return QStringLiteral("bb");
+        if (description.startsWith(QStringLiteral("KC_"))) return QStringLiteral("keltner");
+        if (description.startsWith(QStringLiteral("IC_"))) return QStringLiteral("ichimoku");
+        return QString();
+    };
+    QMap<QString, QStringList> descriptionsByKey;
+    QStringList unclassifiedDescriptions;
+    for (const QString &description : descriptions) {
+        const QString key = descriptionKey(description);
+        if (key.isEmpty()) {
+            unclassifiedDescriptions.append(description);
+        } else {
+            descriptionsByKey[key].append(description);
+        }
+    }
+    QStringList orderedDescriptions;
+    for (const QString &key : pythonDescriptionPriority) {
+        orderedDescriptions.append(descriptionsByKey.value(key));
+    }
+    orderedDescriptions.append(unclassifiedDescriptions);
+    descriptions = orderedDescriptions;
     if (descriptions.isEmpty()) {
         descriptions.append(QStringLiteral("No triggers evaluated"));
     }
+    const QStringList pythonSignalPriority = {
+        QStringLiteral("rsi"),
+        QStringLiteral("stoch_rsi"),
+        QStringLiteral("willr"),
+        QStringLiteral("natr"),
+        QStringLiteral("mfi"),
+        QStringLiteral("obv"),
+        QStringLiteral("rvol"),
+        QStringLiteral("cmf"),
+        QStringLiteral("cci"),
+        QStringLiteral("roc"),
+        QStringLiteral("trix"),
+        QStringLiteral("bbw"),
+        QStringLiteral("ppo"),
+        QStringLiteral("ao"),
+        QStringLiteral("kst"),
+        QStringLiteral("aroon"),
+        QStringLiteral("chop"),
+        QStringLiteral("ma"),
+        QStringLiteral("ichimoku"),
+    };
+    for (const QString &key : pythonSignalPriority) {
+        if (actions.contains(key)) {
+            signal = actions.value(key).toString().toUpper();
+            break;
+        }
+    }
     QJsonArray sourceArray;
     QSet<QString> seen;
+    QStringList orderedSources;
+    for (const QString &key : pythonSignalPriority) {
+        if (sources.contains(key)) {
+            orderedSources.append(key);
+        }
+    }
     for (const QString &source : sources) {
+        if (!orderedSources.contains(source)) {
+            orderedSources.append(source);
+        }
+    }
+    for (const QString &source : orderedSources) {
         if (!seen.contains(source)) {
             seen.insert(source);
             sourceArray.append(source);
@@ -819,6 +1028,308 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
         {QStringLiteral("min_bars"), minBars},
         {QStringLiteral("signal_index_from_end"), fromEnd},
     };
+}
+
+QJsonObject applyIndicatorSignalConfirmation(
+    const QJsonObject &decision,
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    qint64 signalTimestampMs,
+    QMap<QString, IndicatorSignalConfirmationTracker> &trackers) {
+    const QJsonObject normalizedRiskControls = normalizeStrategyRiskControls(riskControls);
+    const int required = std::max(
+        1,
+        static_cast<int>(intOf(normalizedRiskControls.value(QStringLiteral("indicator_flip_confirmation_bars")))
+                             .value_or(1)));
+    const QJsonObject actions = decision.value(QStringLiteral("trigger_actions")).toObject();
+    if (required <= 1 || actions.isEmpty()) {
+        return decision;
+    }
+
+    const double resetWindowSeconds = std::max(1.0, intervalSeconds(interval))
+        * static_cast<double>(std::max(required + 1, 2));
+    const qint64 resetWindowMs = static_cast<qint64>(std::max(
+        1000.0,
+        std::ceil(resetWindowSeconds * 1000.0)));
+    const QString symbolNorm = symbol.trimmed().toUpper();
+    const QString intervalNorm = interval.trimmed().toLower().isEmpty()
+        ? QStringLiteral("default")
+        : interval.trimmed().toLower();
+    QJsonObject confirmedActions;
+    QStringList waiting;
+    for (auto iterator = actions.constBegin(); iterator != actions.constEnd(); ++iterator) {
+        const QString action = iterator.value().toString();
+        const QString actionNorm = action.trimmed().toLower();
+        if (actionNorm != QStringLiteral("buy") && actionNorm != QStringLiteral("sell")) {
+            confirmedActions.insert(iterator.key(), iterator.value());
+            continue;
+        }
+
+        const QString trackerKey = QStringLiteral("%1|%2|%3")
+                                       .arg(symbolNorm, intervalNorm, iterator.key().trimmed().toLower());
+        IndicatorSignalConfirmationTracker &tracker = trackers[trackerKey];
+        const qint64 elapsedMs = signalTimestampMs - tracker.timestampMs;
+        if (tracker.count > 0 && tracker.direction == actionNorm && elapsedMs <= resetWindowMs) {
+            ++tracker.count;
+        } else {
+            tracker.direction = actionNorm;
+            tracker.count = 1;
+        }
+        tracker.timestampMs = signalTimestampMs;
+        if (tracker.count >= required) {
+            confirmedActions.insert(iterator.key(), iterator.value());
+        } else {
+            waiting.append(QStringLiteral("%1 %2 %3/%4")
+                               .arg(iterator.key(), actionNorm)
+                               .arg(tracker.count)
+                               .arg(required));
+        }
+    }
+
+    if (waiting.isEmpty()) {
+        return decision;
+    }
+
+    QJsonObject out = decision;
+    out.insert(QStringLiteral("trigger_actions"), confirmedActions);
+    const QJsonArray originalSources = decision.value(QStringLiteral("trigger_sources")).toArray();
+    QJsonArray confirmedSources;
+    QString confirmedSignal;
+    for (const QJsonValue &sourceValue : originalSources) {
+        const QString source = sourceValue.toString();
+        if (!confirmedActions.contains(source)) {
+            continue;
+        }
+        confirmedSources.append(source);
+        if (confirmedSignal.isEmpty()) {
+            const QString action = confirmedActions.value(source).toString().trimmed().toLower();
+            if (action == QStringLiteral("buy")) {
+                confirmedSignal = QStringLiteral("BUY");
+            } else if (action == QStringLiteral("sell")) {
+                confirmedSignal = QStringLiteral("SELL");
+            }
+        }
+    }
+    out.insert(QStringLiteral("trigger_sources"), confirmedSources);
+    out.insert(QStringLiteral("signal"), confirmedSignal.isEmpty()
+        ? QJsonValue()
+        : QJsonValue(confirmedSignal));
+    if (confirmedSignal.isEmpty()) {
+        out.insert(QStringLiteral("trigger_price"), QJsonValue());
+    }
+    out.insert(
+        QStringLiteral("description"),
+        decision.value(QStringLiteral("description")).toString()
+            + QStringLiteral(" | Indicator confirmation pending: ")
+            + waiting.join(QStringLiteral(", ")));
+    return out;
+}
+
+namespace {
+
+QString indicatorOrderGuardKey(const QString &symbol, const QString &interval, const QString &indicator) {
+    const QString symbolNorm = symbol.trimmed().toUpper();
+    const QString intervalNorm = interval.trimmed().toLower().isEmpty()
+        ? QStringLiteral("default")
+        : interval.trimmed().toLower();
+    return QStringLiteral("%1|%2|%3")
+        .arg(symbolNorm, intervalNorm, indicator.trimmed().toLower());
+}
+
+QString indicatorReentryBlockKey(const QString &symbol, const QString &interval, const QString &side) {
+    const QString intervalNorm = interval.trimmed().toLower().isEmpty()
+        ? QStringLiteral("default")
+        : interval.trimmed().toLower();
+    return QStringLiteral("%1|%2|%3")
+        .arg(symbol.trimmed().toUpper(), intervalNorm, side.trimmed().toUpper());
+}
+
+QStringList rebuildDecisionSourcesAndSignal(QJsonObject &decision) {
+    const QJsonObject actions = decision.value(QStringLiteral("trigger_actions")).toObject();
+    const QJsonArray originalSources = decision.value(QStringLiteral("trigger_sources")).toArray();
+    QJsonArray sources;
+    QString signal;
+    for (const QJsonValue &sourceValue : originalSources) {
+        const QString source = sourceValue.toString();
+        if (!actions.contains(source)) {
+            continue;
+        }
+        sources.append(source);
+        if (signal.isEmpty()) {
+            const QString action = actions.value(source).toString().trimmed().toLower();
+            if (action == QStringLiteral("buy")) {
+                signal = QStringLiteral("BUY");
+            } else if (action == QStringLiteral("sell")) {
+                signal = QStringLiteral("SELL");
+            }
+        }
+    }
+    decision.insert(QStringLiteral("trigger_sources"), sources);
+    decision.insert(QStringLiteral("signal"), signal.isEmpty() ? QJsonValue() : QJsonValue(signal));
+    if (signal.isEmpty()) {
+        decision.insert(QStringLiteral("trigger_price"), QJsonValue());
+    }
+    return {};
+}
+
+double effectiveIndicatorWindowSeconds(
+    const QJsonObject &riskControls,
+    const QString &secondsKey,
+    const QString &barsKey,
+    const QString &interval) {
+    const double intervalWindow = std::max(1.0, intervalSeconds(interval));
+    const double seconds = std::max(0.0, numberOf(riskControls.value(secondsKey)).value_or(0.0));
+    const double bars = std::max(0.0, numberOf(riskControls.value(barsKey)).value_or(0.0));
+    return std::max(seconds, bars * intervalWindow);
+}
+
+} // namespace
+
+QJsonObject applyIndicatorOrderGuards(
+    const QJsonObject &decision,
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    qint64 signalTimestampMs,
+    QMap<QString, IndicatorOrderGuardState> &states,
+    QMap<QString, qint64> &reentryBlocks) {
+    const QJsonObject normalizedRiskControls = normalizeStrategyRiskControls(riskControls);
+    const QJsonObject actions = decision.value(QStringLiteral("trigger_actions")).toObject();
+    if (actions.isEmpty()) {
+        return decision;
+    }
+    const bool requireSignalReset = coerceStrategyBool(
+        normalizedRiskControls.value(QStringLiteral("indicator_reentry_requires_signal_reset")), false);
+    const double cooldownSeconds = effectiveIndicatorWindowSeconds(
+        normalizedRiskControls,
+        QStringLiteral("indicator_flip_cooldown_seconds"),
+        QStringLiteral("indicator_flip_cooldown_bars"),
+        interval);
+    const double reentrySeconds = effectiveIndicatorWindowSeconds(
+        normalizedRiskControls,
+        QStringLiteral("indicator_reentry_cooldown_seconds"),
+        QStringLiteral("indicator_reentry_cooldown_bars"),
+        interval);
+    const qint64 recentCloseWindowMs = static_cast<qint64>(std::ceil(
+        std::max(5.0, std::min(std::max(1.0, intervalSeconds(interval)) * 1.5, 600.0)) * 1000.0));
+    QJsonObject allowedActions;
+    QStringList waiting;
+    for (auto iterator = actions.constBegin(); iterator != actions.constEnd(); ++iterator) {
+        const QString action = iterator.value().toString();
+        const QString actionNorm = action.trimmed().toLower();
+        if (actionNorm != QStringLiteral("buy") && actionNorm != QStringLiteral("sell")) {
+            allowedActions.insert(iterator.key(), iterator.value());
+            continue;
+        }
+        const QString side = actionNorm == QStringLiteral("buy") ? QStringLiteral("BUY") : QStringLiteral("SELL");
+        const QString indicator = iterator.key().trimmed().toLower();
+        if (indicator.isEmpty()) {
+            continue;
+        }
+        const QString stateKey = indicatorOrderGuardKey(symbol, interval, indicator);
+        IndicatorOrderGuardState &state = states[stateKey];
+        bool blocked = false;
+        if (requireSignalReset && state.signalResetSide == side) {
+            waiting.append(QStringLiteral("%1 %2 signal reset").arg(indicator, side));
+            blocked = true;
+        }
+        if (!blocked && cooldownSeconds > 0.0
+            && state.lastActionMs > 0
+            && state.lastActionSide != side) {
+            const qint64 elapsedMs = std::max<qint64>(0, signalTimestampMs - state.lastActionMs);
+            const qint64 cooldownMs = static_cast<qint64>(std::ceil(cooldownSeconds * 1000.0));
+            const bool recentClose = state.recentCloseMs > 0
+                && signalTimestampMs - state.recentCloseMs <= recentCloseWindowMs;
+            if (elapsedMs < cooldownMs && !recentClose) {
+                waiting.append(QStringLiteral("%1 %2 cooldown %3s")
+                                   .arg(indicator, side)
+                                   .arg(std::max(0.0, (cooldownMs - elapsedMs) / 1000.0), 0, 'f', 1));
+                blocked = true;
+            }
+        }
+        if (!blocked && reentrySeconds > 0.0) {
+            const qint64 blockedUntil = reentryBlocks.value(indicatorReentryBlockKey(symbol, interval, side), 0);
+            if (blockedUntil > signalTimestampMs) {
+                waiting.append(QStringLiteral("%1 %2 re-entry %3s")
+                                   .arg(indicator, side)
+                                   .arg(std::max<qint64>(0, blockedUntil - signalTimestampMs) / 1000.0, 0, 'f', 1));
+                blocked = true;
+            }
+        }
+        if (!blocked) {
+            allowedActions.insert(iterator.key(), iterator.value());
+        }
+    }
+    if (waiting.isEmpty()) {
+        return decision;
+    }
+    QJsonObject out = decision;
+    out.insert(QStringLiteral("trigger_actions"), allowedActions);
+    rebuildDecisionSourcesAndSignal(out);
+    out.insert(
+        QStringLiteral("description"),
+        decision.value(QStringLiteral("description")).toString()
+            + QStringLiteral(" | Indicator order guard pending: ")
+            + waiting.join(QStringLiteral(", ")));
+    return out;
+}
+
+void recordIndicatorOrderAction(
+    const QString &symbol,
+    const QString &interval,
+    const QString &indicator,
+    const QString &side,
+    qint64 timestampMs,
+    QMap<QString, IndicatorOrderGuardState> &states) {
+    const QString indicatorNorm = indicator.trimmed().toLower();
+    const QString sideNorm = side.trimmed().toUpper();
+    if (indicatorNorm.isEmpty() || (sideNorm != QStringLiteral("BUY") && sideNorm != QStringLiteral("SELL"))) {
+        return;
+    }
+    IndicatorOrderGuardState &state = states[indicatorOrderGuardKey(symbol, interval, indicatorNorm)];
+    state.lastActionSide = sideNorm;
+    state.lastActionMs = timestampMs;
+    if (!state.signalResetSide.isEmpty() && state.signalResetSide != sideNorm) {
+        state.signalResetSide.clear();
+    }
+}
+
+void recordIndicatorClose(
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    const QString &indicator,
+    const QString &side,
+    qint64 timestampMs,
+    QMap<QString, IndicatorOrderGuardState> &states,
+    QMap<QString, qint64> &reentryBlocks) {
+    const QString sideNorm = side.trimmed().toUpper();
+    if (sideNorm != QStringLiteral("BUY") && sideNorm != QStringLiteral("SELL")) {
+        return;
+    }
+    const QString indicatorNorm = indicator.trimmed().toLower();
+    if (indicatorNorm.isEmpty()) {
+        return;
+    }
+    IndicatorOrderGuardState &state = states[indicatorOrderGuardKey(symbol, interval, indicatorNorm)];
+    state.recentCloseMs = timestampMs;
+    if (coerceStrategyBool(
+            normalizeStrategyRiskControls(riskControls)
+                .value(QStringLiteral("indicator_reentry_requires_signal_reset")),
+            false)) {
+        state.signalResetSide = sideNorm;
+    }
+    const double reentrySeconds = effectiveIndicatorWindowSeconds(
+        normalizeStrategyRiskControls(riskControls),
+        QStringLiteral("indicator_reentry_cooldown_seconds"),
+        QStringLiteral("indicator_reentry_cooldown_bars"),
+        interval);
+    if (reentrySeconds > 0.0) {
+        reentryBlocks.insert(
+            indicatorReentryBlockKey(symbol, interval, sideNorm),
+            timestampMs + static_cast<qint64>(std::ceil(reentrySeconds * 1000.0)));
+    }
 }
 
 QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &controls) {
@@ -859,6 +1370,419 @@ QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &co
     const QString backend = textOf(controls.value(QStringLiteral("connector_backend")));
     if (!backend.isEmpty()) out.insert(QStringLiteral("connector_backend"), NativeExchangeConnectors::normalizeConnectorBackend(backend));
     return out;
+}
+
+QJsonObject normalizeStrategyRiskControls(const QJsonObject &controls) {
+    QJsonObject out = pythonRiskDefaults();
+    const QJsonObject input = controls.value(QStringLiteral("strategy_controls")).isObject()
+        ? controls.value(QStringLiteral("strategy_controls")).toObject()
+        : controls;
+
+    const QStringList boolKeys{
+        QStringLiteral("indicator_use_live_values"),
+        QStringLiteral("require_indicator_flip_signal"),
+        QStringLiteral("strict_indicator_flip_enforcement"),
+        QStringLiteral("indicator_reentry_requires_signal_reset"),
+        QStringLiteral("auto_flip_on_close"),
+        QStringLiteral("allow_close_ignoring_hold"),
+        QStringLiteral("allow_multi_indicator_close"),
+        QStringLiteral("allow_indicator_close_without_signal"),
+        QStringLiteral("close_on_exit"),
+        QStringLiteral("positions_missing_autoclose"),
+        QStringLiteral("allow_opposite_positions"),
+        QStringLiteral("hedge_preserve_opposites"),
+    };
+    for (const QString &key : boolKeys) {
+        if (!input.value(key).isUndefined()) {
+            out.insert(key, NativeStrategyRuntime::coerceStrategyBool(input.value(key), out.value(key).toBool()));
+        }
+    }
+
+    const QStringList integerKeys{
+        QStringLiteral("indicator_flip_cooldown_bars"),
+        QStringLiteral("indicator_min_position_hold_bars"),
+        QStringLiteral("indicator_reentry_cooldown_bars"),
+        QStringLiteral("indicator_flip_confirmation_bars"),
+        QStringLiteral("positions_missing_threshold"),
+        QStringLiteral("positions_missing_grace_seconds"),
+        QStringLiteral("futures_flat_purge_miss_threshold"),
+    };
+    for (const QString &key : integerKeys) {
+        if (auto value = intOf(input.value(key))) {
+            const qint64 minimum = key == QStringLiteral("positions_missing_threshold")
+                || key == QStringLiteral("futures_flat_purge_miss_threshold")
+                || key == QStringLiteral("indicator_flip_confirmation_bars")
+                ? 1
+                : 0;
+            out.insert(key, integerValue(std::max(minimum, *value)));
+        }
+    }
+
+    const QStringList numberKeys{
+        QStringLiteral("indicator_flip_cooldown_seconds"),
+        QStringLiteral("indicator_min_position_hold_seconds"),
+        QStringLiteral("indicator_reentry_cooldown_seconds"),
+        QStringLiteral("futures_flat_purge_grace_seconds"),
+        QStringLiteral("max_auto_bump_percent"),
+        QStringLiteral("auto_bump_percent_multiplier"),
+    };
+    for (const QString &key : numberKeys) {
+        if (auto value = numberOf(input.value(key))) {
+            out.insert(key, std::max(0.0, *value));
+        }
+    }
+
+    if (input.value(QStringLiteral("stop_loss")).isObject()) {
+        out.insert(
+            QStringLiteral("stop_loss"),
+            normalizeStopLoss(input.value(QStringLiteral("stop_loss")).toObject()));
+    } else if (out.value(QStringLiteral("stop_loss")).isObject()) {
+        out.insert(
+            QStringLiteral("stop_loss"),
+            normalizeStopLoss(out.value(QStringLiteral("stop_loss")).toObject()));
+    }
+    return out;
+}
+
+bool indicatorHoldReady(
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    qint64 openedAtMs,
+    qint64 nowMs,
+    QString *reason) {
+    if (reason) {
+        reason->clear();
+    }
+    const QJsonObject normalized = normalizeStrategyRiskControls(riskControls);
+    const double baseHoldSeconds = std::max(
+        0.0,
+        numberOf(normalized.value(QStringLiteral("indicator_min_position_hold_seconds"))).value_or(0.0));
+    const qint64 holdBars = std::max<qint64>(
+        0,
+        intOf(normalized.value(QStringLiteral("indicator_min_position_hold_bars"))).value_or(0));
+
+    const QString intervalText = interval.trimmed().toLower();
+    double intervalSeconds = 60.0;
+    bool intervalParsed = false;
+    const auto parseInterval = [&](const QString &suffix, double multiplier) {
+        if (!intervalText.endsWith(suffix)) {
+            return;
+        }
+        bool ok = false;
+        const qint64 value = intervalText.left(intervalText.size() - suffix.size()).toLongLong(&ok);
+        if (ok && value > 0) {
+            intervalSeconds = static_cast<double>(value) * multiplier;
+            intervalParsed = true;
+        }
+    };
+    parseInterval(QStringLiteral("s"), 1.0);
+    if (!intervalParsed) {
+        parseInterval(QStringLiteral("m"), 60.0);
+    }
+    if (!intervalParsed) {
+        parseInterval(QStringLiteral("h"), 3600.0);
+    }
+    if (!intervalParsed) {
+        parseInterval(QStringLiteral("d"), 86400.0);
+    }
+    if (!intervalParsed) {
+        intervalSeconds = 60.0;
+    }
+    intervalSeconds = std::max(1.0, intervalSeconds);
+    const double effectiveHoldSeconds = std::max(
+        baseHoldSeconds,
+        intervalSeconds * static_cast<double>(holdBars));
+    if (effectiveHoldSeconds <= 0.0) {
+        return true;
+    }
+    if (openedAtMs <= 0 || nowMs <= 0) {
+        if (reason) {
+            *reason = QStringLiteral("%1@%2 hold timestamp is missing").arg(symbol.trimmed().toUpper(), interval);
+        }
+        return false;
+    }
+    const qint64 ageMs = std::max<qint64>(0, nowMs - openedAtMs);
+    const qint64 requiredMs = static_cast<qint64>(std::ceil(effectiveHoldSeconds * 1000.0));
+    if (ageMs >= requiredMs) {
+        return true;
+    }
+    if (reason) {
+        const double remainingSeconds = static_cast<double>(requiredMs - ageMs) / 1000.0;
+        *reason = QStringLiteral("%1@%2 hold guard waiting %3s before indicator flip")
+                      .arg(symbol.trimmed().toUpper(), interval, QString::number(remainingSeconds, 'f', 1));
+    }
+    return false;
+}
+
+QJsonObject evaluatePerTradeStopLoss(
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    const QString &side,
+    double quantity,
+    double entryPrice,
+    double markPrice,
+    double leverage,
+    double marginUsdt,
+    bool futures) {
+    const QJsonObject normalized = normalizeStrategyRiskControls(riskControls);
+    const QJsonObject stopLoss = normalized.value(QStringLiteral("stop_loss")).toObject();
+    const QString mode = stopLoss.value(QStringLiteral("mode")).toString().trimmed().toLower();
+    const QString scope = stopLoss.value(QStringLiteral("scope")).toString().trimmed().toLower();
+    const bool enabled = coerceStrategyBool(stopLoss.value(QStringLiteral("enabled")));
+    const double stopUsdt = std::max(0.0, numberOf(stopLoss.value(QStringLiteral("usdt"))).value_or(0.0));
+    const double stopPercent = std::max(0.0, numberOf(stopLoss.value(QStringLiteral("percent"))).value_or(0.0));
+    const bool applyUsdt = enabled && (mode == QStringLiteral("usdt") || mode == QStringLiteral("both"))
+        && stopUsdt > 0.0;
+    const bool applyPercent = enabled
+        && (mode == QStringLiteral("percent") || mode == QStringLiteral("both"))
+        && stopPercent > 0.0;
+    const QString normalizedSide = side.trimmed().toUpper();
+    const bool validSide = normalizedSide == QStringLiteral("LONG") || normalizedSide == QStringLiteral("SHORT");
+    if (!futures || scope != QStringLiteral("per_trade") || (!applyUsdt && !applyPercent) || !validSide
+        || !qIsFinite(quantity) || quantity <= 0.0 || !qIsFinite(entryPrice) || entryPrice <= 0.0
+        || !qIsFinite(markPrice) || markPrice <= 0.0) {
+        return {{QStringLiteral("triggered"), false}};
+    }
+
+    const double lossUsdt = normalizedSide == QStringLiteral("LONG")
+        ? std::max(0.0, (entryPrice - markPrice) * quantity)
+        : std::max(0.0, (markPrice - entryPrice) * quantity);
+    if (!qIsFinite(lossUsdt)) {
+        return {{QStringLiteral("triggered"), false}};
+    }
+    const double notional = entryPrice * quantity;
+    const double priceLossPercent = notional > 0.0 ? (lossUsdt / notional) * 100.0 : 0.0;
+    const double effectiveMargin = qIsFinite(marginUsdt) && marginUsdt > 0.0
+        ? marginUsdt
+        : (qIsFinite(leverage) && leverage > 0.0 ? notional / leverage : notional);
+    const double marginLossPercent = effectiveMargin > 0.0 ? (lossUsdt / effectiveMargin) * 100.0 : 0.0;
+    const bool triggered = (applyUsdt && lossUsdt >= stopUsdt)
+        || (applyPercent && std::max(priceLossPercent, marginLossPercent) >= stopPercent);
+    QJsonObject result{{QStringLiteral("triggered"), triggered}};
+    if (!triggered) {
+        return result;
+    }
+    result.insert(QStringLiteral("symbol"), symbol.trimmed().toUpper());
+    result.insert(QStringLiteral("interval"), interval.trimmed());
+    result.insert(QStringLiteral("side"), normalizedSide == QStringLiteral("LONG")
+            ? QStringLiteral("BUY")
+            : QStringLiteral("SELL"));
+    result.insert(QStringLiteral("close_side"), normalizedSide == QStringLiteral("LONG")
+            ? QStringLiteral("SELL")
+            : QStringLiteral("BUY"));
+    result.insert(QStringLiteral("position_side"), normalizedSide);
+    result.insert(QStringLiteral("qty"), quantity);
+    result.insert(QStringLiteral("reason"), QStringLiteral("per_trade_stop_loss"));
+    result.insert(QStringLiteral("loss_usdt"), lossUsdt);
+    result.insert(QStringLiteral("price_loss_percent"), priceLossPercent);
+    result.insert(QStringLiteral("margin_loss_percent"), marginLossPercent);
+    return result;
+}
+
+QJsonArray evaluateFuturesStopLoss(
+    const QJsonObject &riskControls,
+    const QJsonArray &positions,
+    const QString &symbol,
+    const QString &interval,
+    double walletUsdt,
+    bool futures) {
+    QJsonArray directives;
+    if (!futures) {
+        return directives;
+    }
+
+    const QJsonObject normalized = normalizeStrategyRiskControls(riskControls);
+    const QJsonObject stopLoss = normalized.value(QStringLiteral("stop_loss")).toObject();
+    const QString mode = stopLoss.value(QStringLiteral("mode")).toString().trimmed().toLower();
+    const QString scope = stopLoss.value(QStringLiteral("scope")).toString().trimmed().toLower();
+    const bool enabled = coerceStrategyBool(stopLoss.value(QStringLiteral("enabled")));
+    const double stopUsdt = std::max(0.0, numberOf(stopLoss.value(QStringLiteral("usdt"))).value_or(0.0));
+    const double stopPercent = std::max(0.0, numberOf(stopLoss.value(QStringLiteral("percent"))).value_or(0.0));
+    const bool applyUsdt = enabled
+        && (mode == QStringLiteral("usdt") || mode == QStringLiteral("both"))
+        && stopUsdt > 0.0;
+    const bool applyPercent = enabled
+        && (mode == QStringLiteral("percent") || mode == QStringLiteral("both"))
+        && stopPercent > 0.0;
+    if ((!applyUsdt && !applyPercent)
+        || !QSet<QString>{QStringLiteral("per_trade"), QStringLiteral("cumulative"),
+                          QStringLiteral("entire_account")}
+               .contains(scope)) {
+        return directives;
+    }
+
+    struct SideTotals {
+        double quantity = 0.0;
+        double lossUsdt = 0.0;
+        double notional = 0.0;
+        double marginUsdt = 0.0;
+        bool dualSide = false;
+    } longTotals, shortTotals;
+    double totalUnrealized = 0.0;
+    const QString targetSymbol = symbol.trimmed().toUpper();
+
+    const auto numberField = [](const QJsonObject &object, const QStringList &keys) {
+        for (const QString &key : keys) {
+            if (auto value = numberOf(object.value(key))) {
+                return *value;
+            }
+        }
+        return 0.0;
+    };
+    const auto boolField = [](const QJsonObject &object, const QString &key, bool fallback = false) {
+        const QJsonValue value = object.value(key);
+        return value.isUndefined() ? fallback : coerceStrategyBool(value, fallback);
+    };
+    const auto shouldTrigger = [applyUsdt, applyPercent, stopUsdt, stopPercent](double lossUsdt, double lossPercent) {
+        return (applyUsdt && lossUsdt >= stopUsdt)
+            || (applyPercent && lossPercent >= stopPercent);
+    };
+    const auto appendDirective = [&directives, &interval](
+                                    const QString &positionSymbol,
+                                    const QString &sideLabel,
+                                    const QString &closeSide,
+                                    const QString &positionSide,
+                                    double quantity,
+                                    const QString &reason,
+                                    double lossUsdt,
+                                    double priceLossPercent,
+                                    double marginLossPercent) {
+        if (!qIsFinite(quantity) || quantity <= 0.0) {
+            return;
+        }
+        QJsonObject directive{
+            {QStringLiteral("symbol"), positionSymbol.trimmed().toUpper()},
+            {QStringLiteral("interval"), interval.trimmed()},
+            {QStringLiteral("side"), sideLabel},
+            {QStringLiteral("close_side"), closeSide},
+            {QStringLiteral("qty"), quantity},
+            {QStringLiteral("reason"), reason},
+            {QStringLiteral("loss_usdt"), lossUsdt},
+            {QStringLiteral("price_loss_percent"), priceLossPercent},
+            {QStringLiteral("margin_loss_percent"), marginLossPercent},
+        };
+        if (!positionSide.isEmpty()) {
+            directive.insert(QStringLiteral("position_side"), positionSide);
+        }
+        directives.append(directive);
+    };
+
+    for (const QJsonValue &value : positions) {
+        const QJsonObject position = value.toObject();
+        const QString positionSymbol = position.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        const bool accountScope = scope == QStringLiteral("entire_account");
+        if (!accountScope && positionSymbol != targetSymbol) {
+            continue;
+        }
+        const QString side = position.value(QStringLiteral("side")).toString().trimmed().toUpper();
+        if (side != QStringLiteral("LONG") && side != QStringLiteral("SHORT")) {
+            continue;
+        }
+        const double quantity = std::fabs(numberField(position, {QStringLiteral("quantity"), QStringLiteral("qty"), QStringLiteral("position_amt")}));
+        const double entryPrice = numberField(position, {QStringLiteral("entry_price"), QStringLiteral("entryPrice")});
+        const double markPrice = numberField(position, {QStringLiteral("mark_price"), QStringLiteral("markPrice"), QStringLiteral("last_price")});
+        if (!qIsFinite(quantity) || quantity <= 0.0 || !qIsFinite(entryPrice) || entryPrice <= 0.0
+            || !qIsFinite(markPrice) || markPrice <= 0.0) {
+            continue;
+        }
+        const double notional = entryPrice * quantity;
+        const double lossUsdt = side == QStringLiteral("LONG")
+            ? std::max(0.0, (entryPrice - markPrice) * quantity)
+            : std::max(0.0, (markPrice - entryPrice) * quantity);
+        const double unrealized = side == QStringLiteral("LONG")
+            ? (markPrice - entryPrice) * quantity
+            : (entryPrice - markPrice) * quantity;
+        const double leverage = numberField(position, {QStringLiteral("leverage")});
+        const double margin = std::max(0.0, numberField(position, {QStringLiteral("margin_usdt"), QStringLiteral("margin"), QStringLiteral("initial_margin")}));
+        const double effectiveMargin = margin > 0.0
+            ? margin
+            : (leverage > 0.0 ? notional / leverage : notional);
+        const double priceLossPercent = notional > 0.0 ? lossUsdt / notional * 100.0 : 0.0;
+        const double marginLossPercent = effectiveMargin > 0.0 ? lossUsdt / effectiveMargin * 100.0 : 0.0;
+        const bool dualSide = boolField(position, QStringLiteral("dual_side"), false);
+        totalUnrealized += qIsFinite(unrealized) ? unrealized : 0.0;
+
+        if (scope == QStringLiteral("per_trade")) {
+            if (shouldTrigger(lossUsdt, std::max(priceLossPercent, marginLossPercent))) {
+                appendDirective(
+                    positionSymbol,
+                    side,
+                    side == QStringLiteral("LONG") ? QStringLiteral("SELL") : QStringLiteral("BUY"),
+                    dualSide ? side : QString(),
+                    quantity,
+                    QStringLiteral("per_trade_stop_loss"),
+                    lossUsdt,
+                    priceLossPercent,
+                    marginLossPercent);
+            }
+            continue;
+        }
+
+        SideTotals &totals = side == QStringLiteral("LONG") ? longTotals : shortTotals;
+        totals.quantity += quantity;
+        totals.lossUsdt += lossUsdt;
+        totals.notional += notional;
+        totals.marginUsdt += effectiveMargin;
+        totals.dualSide = totals.dualSide || dualSide;
+    }
+
+    if (scope == QStringLiteral("entire_account")) {
+        const double wallet = qIsFinite(walletUsdt) ? std::max(0.0, walletUsdt) : 0.0;
+        const double lossPercent = totalUnrealized < 0.0 && wallet > 0.0
+            ? std::fabs(totalUnrealized) / wallet * 100.0
+            : 0.0;
+        const bool triggered = (applyUsdt && totalUnrealized <= -stopUsdt)
+            || (applyPercent && lossPercent >= stopPercent);
+        if (triggered) {
+            directives.append(QJsonObject{
+                {QStringLiteral("symbol"), targetSymbol},
+                {QStringLiteral("interval"), interval.trimmed()},
+                {QStringLiteral("side"), QStringLiteral("ACCOUNT")},
+                {QStringLiteral("close_side"), QStringLiteral("CLOSE_ALL")},
+                {QStringLiteral("qty"), 0.0},
+                {QStringLiteral("reason"), applyUsdt && totalUnrealized <= -stopUsdt
+                        ? QStringLiteral("entire-account-usdt-limit")
+                        : QStringLiteral("entire-account-percent-limit")},
+                {QStringLiteral("loss_usdt"), std::fabs(totalUnrealized)},
+                {QStringLiteral("price_loss_percent"), lossPercent},
+                {QStringLiteral("margin_loss_percent"), 0.0},
+            });
+        }
+        return directives;
+    }
+
+    const auto appendAggregate = [&appendDirective, &shouldTrigger, &symbol](const SideTotals &totals,
+                                                                                const QString &side,
+                                                                                const QString &reason) {
+        if (totals.quantity <= 0.0) {
+            return;
+        }
+        const double priceLossPercent = 0.0;
+        const double marginLossPercent = totals.marginUsdt > 0.0
+            ? totals.lossUsdt / totals.marginUsdt * 100.0
+            : 0.0;
+        if (!shouldTrigger(totals.lossUsdt, std::max(priceLossPercent, marginLossPercent))) {
+            return;
+        }
+        const bool longSide = side == QStringLiteral("LONG");
+        appendDirective(
+            symbol,
+            longSide ? QStringLiteral("BUY") : QStringLiteral("SELL"),
+            longSide ? QStringLiteral("SELL") : QStringLiteral("BUY"),
+            totals.dualSide ? side : QString(),
+            totals.quantity,
+            reason,
+            totals.lossUsdt,
+            priceLossPercent,
+            marginLossPercent);
+    };
+    if (scope == QStringLiteral("cumulative")) {
+        appendAggregate(longTotals, QStringLiteral("LONG"), QStringLiteral("cumulative_stop_loss"));
+        appendAggregate(shortTotals, QStringLiteral("SHORT"), QStringLiteral("cumulative_stop_loss"));
+    }
+    return directives;
 }
 
 QJsonObject cleanBacktestResultPayload(const QJsonObject &payload) {

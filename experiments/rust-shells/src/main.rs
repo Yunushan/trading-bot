@@ -1659,10 +1659,11 @@ fn binance_market_for_connector_backend(connector: &str) -> Result<BinanceMarket
     match normalized.as_str() {
         "" | "binance-sdk-derivatives-trading-usds-futures" => Ok(BinanceMarket::Futures),
         "binance-sdk-derivatives-trading-coin-futures" => Ok(BinanceMarket::CoinFutures),
+        "binance-sdk-spot" => Ok(BinanceMarket::Spot),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
-                "Rust native live smoke supports only Python's explicit Binance futures connector keys; '{}' requires Python Service API/provider evidence.",
+                "Rust native live smoke supports only Python's explicit Binance spot/futures connector keys; '{}' requires Python Service API/provider evidence.",
                 connector.trim()
             ),
         )),
@@ -1832,6 +1833,8 @@ mod tests {
         ) -> Result<BinanceAccountSnapshot, Box<dyn std::error::Error>> {
             Ok(BinanceAccountSnapshot {
                 asset: "USDT".to_owned(),
+                total_balance: 100.0,
+                available_balance: 80.0,
                 usdt_balance: 100.0,
                 total_usdt_balance: 100.0,
                 available_usdt_balance: 80.0,
@@ -2111,6 +2114,11 @@ mod tests {
             BinanceMarket::Futures,
             binance_market_for_connector_backend("binance-sdk-derivatives-trading-usds-futures")
                 .expect("USD-M connector should select a native market")
+        );
+        assert_eq!(
+            BinanceMarket::Spot,
+            binance_market_for_connector_backend("binance-sdk-spot")
+                .expect("Spot connector should select a native market")
         );
         let error = binance_market_for_connector_backend("ccxt")
             .expect_err("provider connector must not default to Binance");

@@ -289,6 +289,16 @@ QString futuresApiPath(const QString &baseUrlOverride, const QString &suffix) {
         : QStringLiteral("/fapi");
     return prefix + suffix;
 }
+
+QString spotBaseUrl(bool testnet, const QString &baseUrlOverride) {
+    const QString overrideBase = baseUrlOverride.trimmed();
+    if (!overrideBase.isEmpty()) {
+        return overrideBase.endsWith(QLatin1Char('/')) ? overrideBase.left(overrideBase.size() - 1)
+                                                       : overrideBase;
+    }
+    return testnet ? QStringLiteral("https://testnet.binance.vision")
+                   : QStringLiteral("https://api.binance.com");
+}
 } // namespace
 
 QString BinanceRestClient::hmacSha256Hex(const QString &secret, const QString &message) {
@@ -379,6 +389,45 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
         return false;
     };
 
+    auto parseAnyAssetRow = [&](const QJsonArray &rows, double *available, double *wallet, QString *assetCode) -> bool {
+        for (const QJsonValue &entry : rows) {
+            const QJsonObject row = entry.toObject();
+            const QString code = row.value(QStringLiteral("asset")).toString().trimmed().toUpper();
+            if (code.isEmpty()) {
+                continue;
+            }
+            double availableValue = 0.0;
+            double walletValue = 0.0;
+            const bool hasAvailable = parseFirstNumber(
+                row,
+                {"availableBalance", "maxWithdrawAmount", "withdrawAvailable", "free", "crossWalletBalance"},
+                &availableValue);
+            const bool hasWallet = parseFirstNumber(
+                row,
+                {"walletBalance", "marginBalance", "balance", "crossWalletBalance"},
+                &walletValue);
+            if (!hasAvailable && !hasWallet) {
+                continue;
+            }
+            const double effectiveAvailable = hasAvailable ? std::max(0.0, availableValue) : 0.0;
+            const double effectiveWallet = hasWallet ? std::max(0.0, walletValue) : effectiveAvailable;
+            if (effectiveAvailable <= 0.0 && effectiveWallet <= 0.0) {
+                continue;
+            }
+            if (available) {
+                *available = effectiveAvailable;
+            }
+            if (wallet) {
+                *wallet = effectiveWallet;
+            }
+            if (assetCode) {
+                *assetCode = code;
+            }
+            return true;
+        }
+        return false;
+    };
+
     auto applySnapshot = [&](double available, double totalBalance, const QString &assetCode) {
         double normalizedTotal = std::max(0.0, totalBalance);
         double normalizedAvailable = std::max(0.0, available);
@@ -390,12 +439,15 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
         }
         result.ok = true;
         result.asset = assetCode.isEmpty() ? QStringLiteral("USDT") : assetCode;
+        result.availableBalance = normalizedAvailable;
+        result.totalBalance = normalizedTotal;
         result.availableUsdtBalance = normalizedAvailable;
         result.totalUsdtBalance = normalizedTotal;
         result.usdtBalance = result.totalUsdtBalance;
     };
 
     if (futures) {
+        const bool coinMargined = isCoinMarginedFuturesBase(overrideBase);
         QString balanceError;
         const QJsonDocument balanceDoc = signedGet(futuresApiPath(overrideBase, QStringLiteral("/v1/balance")), &balanceError);
         bool hasBalanceSnapshot = false;
@@ -413,7 +465,10 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
             double wallet = 0.0;
             QString assetCode;
             const QJsonArray entries = extractBalanceEntries(balanceDoc);
-            if (parsePreferredAssetRow(entries, &available, &wallet, &assetCode)) {
+            const bool parsed = coinMargined
+                ? parseAnyAssetRow(entries, &available, &wallet, &assetCode)
+                : parsePreferredAssetRow(entries, &available, &wallet, &assetCode);
+            if (parsed) {
                 hasBalanceSnapshot = true;
                 balanceSnapshotAvailable = available;
                 balanceSnapshotWallet = wallet;
@@ -457,13 +512,16 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
             accountObj,
             {"totalMarginBalance", "totalWalletBalance", "totalCrossWalletBalance", "totalCrossBalance"},
             &totalBalance);
-        QString assetCode = QStringLiteral("USDT");
+        QString assetCode = coinMargined ? QString() : QStringLiteral("USDT");
         if (!hasAvailable || !hasTotalBalance) {
             const QJsonArray assets = accountObj.value(QStringLiteral("assets")).toArray();
             double rowAvailable = 0.0;
             double rowWallet = 0.0;
             QString rowAsset;
-            if (parsePreferredAssetRow(assets, &rowAvailable, &rowWallet, &rowAsset)) {
+            const bool parsed = coinMargined
+                ? parseAnyAssetRow(assets, &rowAvailable, &rowWallet, &rowAsset)
+                : parsePreferredAssetRow(assets, &rowAvailable, &rowWallet, &rowAsset);
+            if (parsed) {
                 if (!hasAvailable) {
                     available = rowAvailable;
                     hasAvailable = true;
@@ -488,7 +546,11 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
             return result;
         }
 
-        result.error = balanceError.isEmpty() ? QStringLiteral("USDT balance not found") : balanceError;
+        result.error = balanceError.isEmpty()
+            ? (coinMargined
+                ? QStringLiteral("Futures collateral balance not found")
+                : QStringLiteral("USDT balance not found"))
+            : balanceError;
         return result;
     }
 
@@ -515,6 +577,8 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
         if (parseJsonNumber(balance.value(QStringLiteral("free")), &value)) {
             result.ok = true;
             result.asset = QStringLiteral("USDT");
+            result.availableBalance = value;
+            result.totalBalance = value;
             result.availableUsdtBalance = value;
             result.totalUsdtBalance = value;
             result.usdtBalance = value;
@@ -523,6 +587,61 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
     }
 
     result.error = QStringLiteral("USDT balance not found");
+    return result;
+}
+
+BinanceRestClient::SpotBalancesResult BinanceRestClient::fetchSpotBalances(
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    SpotBalancesResult result;
+    if (apiKey.trimmed().isEmpty() || apiSecret.trimmed().isEmpty()) {
+        result.error = QStringLiteral("Missing API credentials");
+        return result;
+    }
+
+    const QString query = QStringLiteral("timestamp=%1&recvWindow=10000")
+                              .arg(QDateTime::currentMSecsSinceEpoch());
+    const QString signature = hmacSha256Hex(apiSecret, query);
+    const QString url = QStringLiteral("%1/api/v3/account?%2&signature=%3")
+                            .arg(spotBaseUrl(testnet, baseUrlOverride), query, signature);
+    QString requestError;
+    const QJsonDocument document = httpGetJson(
+        url,
+        {{QByteArrayLiteral("X-MBX-APIKEY"), apiKey.toUtf8()}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance spot account response")
+                                              : requestError;
+        return result;
+    }
+
+    const QJsonObject object = document.object();
+    if (object.contains(QStringLiteral("code")) || object.contains(QStringLiteral("msg"))) {
+        result.error = QStringLiteral("Binance spot account error: %1")
+                           .arg(object.value(QStringLiteral("msg")).toString(QStringLiteral("unknown")));
+        return result;
+    }
+    const QJsonValue balancesValue = object.value(QStringLiteral("balances"));
+    if (!balancesValue.isArray()) {
+        result.error = QStringLiteral("Binance spot account response missing balances");
+        return result;
+    }
+
+    for (const QJsonValue &entry : balancesValue.toArray()) {
+        const QJsonObject balance = entry.toObject();
+        SpotBalanceRow row;
+        row.asset = balance.value(QStringLiteral("asset")).toString().trimmed().toUpper();
+        if (!parseJsonNumber(balance.value(QStringLiteral("free")), &row.free)) {
+            row.free = std::numeric_limits<double>::quiet_NaN();
+        }
+        parseJsonNumber(balance.value(QStringLiteral("locked")), &row.locked);
+        result.balances.append(row);
+    }
+    result.ok = true;
     return result;
 }
 
@@ -1243,6 +1362,95 @@ BinanceRestClient::FuturesSymbolFilters BinanceRestClient::fetchFuturesSymbolFil
     return result;
 }
 
+BinanceRestClient::SpotSymbolFilters BinanceRestClient::fetchSpotSymbolFilters(
+    const QString &symbol,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    SpotSymbolFilters result;
+    const QString cleanSymbol = symbol.trimmed().toUpper();
+    if (cleanSymbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+
+    const QString base = spotBaseUrl(testnet, baseUrlOverride);
+    const QJsonDocument document = httpGetJson(
+        QStringLiteral("%1/api/v3/exchangeInfo").arg(base),
+        {},
+        timeoutMs,
+        &result.error);
+    if (document.isNull() || !document.isObject()) {
+        if (result.error.isEmpty()) {
+            result.error = QStringLiteral("Unexpected Binance spot exchangeInfo response");
+        }
+        return result;
+    }
+
+    const QJsonArray symbols = document.object().value(QStringLiteral("symbols")).toArray();
+    for (const QJsonValue &value : symbols) {
+        const QJsonObject symObj = value.toObject();
+        if (symObj.value(QStringLiteral("symbol")).toString().trimmed().toUpper() != cleanSymbol) {
+            continue;
+        }
+
+        result.status = symObj.value(QStringLiteral("status")).toString().trimmed().toUpper();
+        result.baseAsset = symObj.value(QStringLiteral("baseAsset")).toString().trimmed().toUpper();
+        result.quoteAsset = symObj.value(QStringLiteral("quoteAsset")).toString().trimmed().toUpper();
+        bool precisionOk = false;
+        result.quantityPrecision = symObj.value(QStringLiteral("quantityPrecision")).toVariant().toInt(&precisionOk);
+        if (!precisionOk) {
+            result.quantityPrecision = symObj.value(QStringLiteral("baseAssetPrecision")).toVariant().toInt(&precisionOk);
+        }
+        result.quantityPrecision = precisionOk ? std::max(0, result.quantityPrecision) : 0;
+        precisionOk = false;
+        result.pricePrecision = symObj.value(QStringLiteral("pricePrecision")).toVariant().toInt(&precisionOk);
+        if (!precisionOk) {
+            result.pricePrecision = symObj.value(QStringLiteral("quotePrecision")).toVariant().toInt(&precisionOk);
+        }
+        result.pricePrecision = precisionOk ? std::max(0, result.pricePrecision) : 0;
+
+        double lotStepSize = 0.0;
+        double lotMinQty = 0.0;
+        double lotMaxQty = 0.0;
+        double marketStepSize = 0.0;
+        double marketMinQty = 0.0;
+        double marketMaxQty = 0.0;
+        double priceTickSize = 0.0;
+        for (const QJsonValue &filterValue : symObj.value(QStringLiteral("filters")).toArray()) {
+            const QJsonObject filter = filterValue.toObject();
+            const QString filterType = filter.value(QStringLiteral("filterType")).toString().trimmed().toUpper();
+            if (filterType == QStringLiteral("LOT_SIZE")) {
+                parseJsonNumber(filter.value(QStringLiteral("stepSize")), &lotStepSize);
+                parseJsonNumber(filter.value(QStringLiteral("minQty")), &lotMinQty);
+                parseJsonNumber(filter.value(QStringLiteral("maxQty")), &lotMaxQty);
+            } else if (filterType == QStringLiteral("MARKET_LOT_SIZE")) {
+                parseJsonNumber(filter.value(QStringLiteral("stepSize")), &marketStepSize);
+                parseJsonNumber(filter.value(QStringLiteral("minQty")), &marketMinQty);
+                parseJsonNumber(filter.value(QStringLiteral("maxQty")), &marketMaxQty);
+            } else if (filterType == QStringLiteral("MIN_NOTIONAL")
+                       || filterType == QStringLiteral("NOTIONAL")) {
+                if (!parseJsonNumber(filter.value(QStringLiteral("minNotional")), &result.minNotional)) {
+                    parseJsonNumber(filter.value(QStringLiteral("notional")), &result.minNotional);
+                }
+            } else if (filterType == QStringLiteral("PRICE_FILTER")) {
+                parseJsonNumber(filter.value(QStringLiteral("tickSize")), &priceTickSize);
+            }
+        }
+
+        result.stepSize = std::max(0.0, marketStepSize > 0.0 ? marketStepSize : lotStepSize);
+        result.tickSize = std::max(0.0, priceTickSize);
+        result.minQty = std::max(0.0, marketMinQty > 0.0 ? marketMinQty : lotMinQty);
+        result.maxQty = std::max(0.0, marketMaxQty > 0.0 ? marketMaxQty : lotMaxQty);
+        result.minNotional = std::max(0.0, result.minNotional);
+        result.ok = true;
+        return result;
+    }
+
+    result.error = QStringLiteral("Symbol %1 not found in spot exchangeInfo").arg(cleanSymbol);
+    return result;
+}
+
 BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesMarketOrder(
     const QString &apiKey,
     const QString &apiSecret,
@@ -1329,6 +1537,96 @@ BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesMarketOrder
     }
     if (!qIsFinite(result.executedQty) || result.executedQty <= 0.0) {
         parseJsonNumber(obj.value(QStringLiteral("origQty")), &result.executedQty);
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::SpotOrderResult BinanceRestClient::placeSpotMarketOrder(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    const QString &side,
+    double quantity,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    SpotOrderResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    result.side = side.trimmed().toUpper();
+    if (apiKey.trimmed().isEmpty() || apiSecret.trimmed().isEmpty()) {
+        result.error = QStringLiteral("Missing API credentials");
+        return result;
+    }
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+    if (result.side != QStringLiteral("BUY") && result.side != QStringLiteral("SELL")) {
+        result.error = QStringLiteral("Side must be BUY or SELL");
+        return result;
+    }
+    if (!qIsFinite(quantity) || quantity <= 0.0) {
+        result.error = QStringLiteral("Quantity must be > 0");
+        return result;
+    }
+
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("symbol"), result.symbol);
+    query.addQueryItem(QStringLiteral("side"), result.side);
+    query.addQueryItem(QStringLiteral("type"), QStringLiteral("MARKET"));
+    query.addQueryItem(QStringLiteral("quantity"), formatDecimalForOrder(quantity, 8));
+    query.addQueryItem(QStringLiteral("timestamp"), QString::number(QDateTime::currentMSecsSinceEpoch()));
+    query.addQueryItem(QStringLiteral("recvWindow"), QStringLiteral("5000"));
+
+    const QString queryString = query.toString(QUrl::FullyEncoded);
+    const QString signature = hmacSha256Hex(apiSecret, queryString);
+    const QString url = QStringLiteral("%1/api/v3/order?%2&signature=%3")
+                            .arg(spotBaseUrl(testnet, baseUrlOverride), queryString, signature);
+    QString requestError;
+    const QJsonDocument document = httpRequestJson(
+        QStringLiteral("POST"),
+        url,
+        {{QByteArrayLiteral("X-MBX-APIKEY"), apiKey.toUtf8()}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance spot order response") : requestError;
+        return result;
+    }
+
+    const QJsonObject object = document.object();
+    if (object.contains(QStringLiteral("code")) || object.contains(QStringLiteral("msg"))) {
+        result.error = QStringLiteral("Binance spot order error: %1")
+                           .arg(object.value(QStringLiteral("msg")).toString(QStringLiteral("unknown")));
+        return result;
+    }
+    result.status = object.value(QStringLiteral("status")).toString().trimmed().toUpper();
+    result.orderId = object.value(QStringLiteral("orderId")).toVariant().toString().trimmed();
+    if (result.status.isEmpty()) {
+        result.error = QStringLiteral("Binance spot order response missing explicit status");
+        return result;
+    }
+    if (result.orderId.isEmpty()) {
+        result.error = QStringLiteral("Binance spot order response missing orderId");
+        return result;
+    }
+    if (result.status == QStringLiteral("REJECTED")
+        || result.status == QStringLiteral("EXPIRED")
+        || result.status == QStringLiteral("CANCELED")) {
+        result.error = QStringLiteral("Binance spot order returned terminal failure status: %1").arg(result.status);
+        return result;
+    }
+    parseJsonNumber(object.value(QStringLiteral("executedQty")), &result.executedQty);
+    if (!qIsFinite(result.executedQty) || result.executedQty <= 0.0) {
+        parseJsonNumber(object.value(QStringLiteral("origQty")), &result.executedQty);
+    }
+    parseJsonNumber(object.value(QStringLiteral("avgPrice")), &result.avgPrice);
+    if (!qIsFinite(result.avgPrice) || result.avgPrice <= 0.0) {
+        const double executedQuoteQty = object.value(QStringLiteral("cummulativeQuoteQty")).toString().toDouble();
+        if (executedQuoteQty > 0.0 && result.executedQty > 0.0) {
+            result.avgPrice = executedQuoteQty / result.executedQty;
+        }
     }
     result.ok = true;
     return result;

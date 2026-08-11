@@ -242,6 +242,15 @@ impl RuntimeOrderEngine {
         F: FnMut(&BinanceFuturesCloseDirective) -> Result<BinanceFuturesOrderResult>,
     {
         let mut batch = RuntimeCloseBatchResult::default();
+        let dry_run = self.dry_run;
+        let mut submit = |directive: &BinanceFuturesCloseDirective| {
+            if dry_run {
+                let params = directive.to_order_params()?;
+                Ok(dry_run_order_result(&params))
+            } else {
+                execute(directive)
+            }
+        };
         for directive in directives {
             let result = self.execute_close_with_fallback(
                 &directive.symbol,
@@ -251,7 +260,7 @@ impl RuntimeOrderEngine {
                 &directive.reason,
                 now_iso.as_ref(),
                 source.as_ref(),
-                &mut execute,
+                &mut submit,
             );
             batch.requested_qty += result.requested_qty;
             batch.closed_qty += result.closed_qty;
@@ -362,16 +371,39 @@ impl RuntimeOrderEngine {
             };
         }
 
-        let close_result = self.execute_close_with_fallback(
-            &plan.symbol,
-            &plan.close_side,
-            target_qty,
-            plan.position_side.as_deref(),
-            "close_opposite_position",
-            now_iso.as_ref(),
-            source.as_ref(),
-            &mut execute,
-        );
+        let close_result = if self.dry_run {
+            self.execute_close_with_fallback(
+                &plan.symbol,
+                &plan.close_side,
+                target_qty,
+                plan.position_side.as_deref(),
+                "close_opposite_position",
+                now_iso.as_ref(),
+                source.as_ref(),
+                &mut |_directive| {
+                    Ok(BinanceFuturesOrderResult {
+                        symbol: plan.symbol.clone(),
+                        side: plan.close_side.clone(),
+                        position_side: plan.position_side.clone().unwrap_or_default(),
+                        order_id: "dry-run-close-opposite".to_owned(),
+                        status: "DRY_RUN".to_owned(),
+                        executed_qty: target_qty,
+                        avg_price: 0.0,
+                    })
+                },
+            )
+        } else {
+            self.execute_close_with_fallback(
+                &plan.symbol,
+                &plan.close_side,
+                target_qty,
+                plan.position_side.as_deref(),
+                "close_opposite_position",
+                now_iso.as_ref(),
+                source.as_ref(),
+                &mut execute,
+            )
+        };
         let allowed_to_open_now =
             close_result.ok && close_result.remaining_qty <= close_qty_epsilon(target_qty);
         let reason = if allowed_to_open_now {

@@ -806,8 +806,30 @@
       }).filter((item) => item.label)
     );
     const optionsFromValues = (values) => values.map((value) => ({ key: value, label: value }));
+    const pythonChoiceValues = (name, fallback = []) => {
+      const canonical = [...new Set(Object.values(pythonParityContract.configChoiceMaps?.[name] || {})
+        .map((value) => String(value || "").trim())
+        .filter(Boolean))];
+      if (!canonical.length) return Object.freeze([...fallback]);
+      const fallbackValues = (Array.isArray(fallback) ? fallback : [])
+        .map((value) => typeof value === "object" ? value.key || value.value : value)
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      const ordered = fallbackValues.filter((value, index) =>
+        canonical.includes(value) && fallbackValues.indexOf(value) === index
+      );
+      for (const value of canonical) {
+        if (!ordered.includes(value)) ordered.push(value);
+      }
+      return Object.freeze(ordered);
+    };
+    const pythonChoiceOptions = (name, fallback) => {
+      const values = pythonChoiceValues(name, fallback);
+      return values.length ? optionsFromValues(values) : fallback;
+    };
     const defaultExecution = Object.freeze(pythonParityContract.defaultExecution || {});
     const defaultBacktest = Object.freeze(pythonParityContract.defaultBacktest || {});
+    const riskDefaults = Object.freeze(pythonParityContract.riskDefaults || {});
     const chartDefaultSymbols = textArray(pythonParityContract.defaultChartSymbols);
     const defaultExecutionSymbols = textArray(pythonParityContract.defaultExecutionSymbols);
     const defaultExecutionIntervals = textArray(pythonParityContract.defaultExecutionIntervals);
@@ -815,7 +837,13 @@
     const defaultBacktestIntervals = textArray(pythonParityContract.defaultBacktestIntervals);
     const chartDefaultIntervals = textArray(pythonParityContract.backtestIntervals);
     const chartMarketOptions = textArray(pythonParityContract.chartMarketOptions);
-    const accountModeOptions = textArray(pythonParityContract.accountModeOptions);
+    const accountModeValues = pythonChoiceValues(
+      "account_mode",
+      textArray(pythonParityContract.accountModeOptions)
+    );
+    const accountModeOptions = accountModeValues.length
+      ? accountModeValues
+      : textArray(pythonParityContract.accountModeOptions);
     const configModeOptions = optionArray(pythonParityContract.configModeOptions);
     const themeOptions = optionArray(pythonParityContract.themeOptions);
     const designOptions = optionArray(pythonParityContract.designOptions);
@@ -823,24 +851,24 @@
     const exchangeOptions = optionArray(pythonParityContract.exchangeOptions);
     const dashboardLoopChoiceOptions = optionArray(pythonParityContract.dashboardLoopChoices);
     const leadTraderOptions = optionArray(pythonParityContract.leadTraderOptions);
-    const llmUseForOptions = optionArray(pythonParityContract.llmUseForOptions);
+    const llmUseForOptions = pythonChoiceOptions("llm_use_for", optionArray(pythonParityContract.llmUseForOptions));
     const dashboardStrategyTemplateOptions = optionArray(pythonParityContract.dashboardStrategyTemplates);
     const backtestTemplateOptions = optionArray(pythonParityContract.backtestTemplates);
-    const sideOptions = optionArray(pythonParityContract.sideOptions);
-    const accountTypeOptions = optionArray(pythonParityContract.accountTypeOptions);
-    const marginModeOptions = optionArray(pythonParityContract.marginModeOptions);
-    const positionModeOptions = optionArray(pythonParityContract.positionModeOptions);
-    const assetsModeOptions = optionArray(pythonParityContract.assetsModeOptions);
-    const timeInForceOptions = optionArray(pythonParityContract.timeInForceOptions);
-    const orderTypeOptions = optionArray(pythonParityContract.orderTypeOptions);
-    const backtestExecutionBackendOptions = optionArray(pythonParityContract.backtestExecutionBackendOptions);
-    const signalLogicOptions = optionArray(pythonParityContract.signalLogicOptions);
-    const mddLogicOptions = optionArray(pythonParityContract.mddLogicOptions);
-    const stopLossModeOptions = optionArray(pythonParityContract.stopLossModes);
-    const stopLossScopeOptions = optionArray(pythonParityContract.stopLossScopes);
-    const scanScopeOptions = optionArray(pythonParityContract.scanScopeOptions);
-    const optimizerModeOptions = optionArray(pythonParityContract.optimizerModeOptions);
-    const optimizerMetricOptions = optionArray(pythonParityContract.optimizerMetricOptions);
+    const sideOptions = pythonChoiceOptions("side", optionArray(pythonParityContract.sideOptions));
+    const accountTypeOptions = pythonChoiceOptions("account_type", optionArray(pythonParityContract.accountTypeOptions));
+    const marginModeOptions = pythonChoiceOptions("margin_mode", optionArray(pythonParityContract.marginModeOptions));
+    const positionModeOptions = pythonChoiceOptions("position_mode", optionArray(pythonParityContract.positionModeOptions));
+    const assetsModeOptions = pythonChoiceOptions("assets_mode", optionArray(pythonParityContract.assetsModeOptions));
+    const timeInForceOptions = pythonChoiceOptions("tif", optionArray(pythonParityContract.timeInForceOptions));
+    const orderTypeOptions = pythonChoiceOptions("order_type", optionArray(pythonParityContract.orderTypeOptions));
+    const backtestExecutionBackendOptions = pythonChoiceOptions("backtest_execution_backend", optionArray(pythonParityContract.backtestExecutionBackendOptions));
+    const signalLogicOptions = pythonChoiceOptions("logic", optionArray(pythonParityContract.signalLogicOptions));
+    const mddLogicOptions = pythonChoiceOptions("mdd_logic", optionArray(pythonParityContract.mddLogicOptions));
+    const stopLossModeOptions = pythonChoiceOptions("stop_loss_mode", optionArray(pythonParityContract.stopLossModes));
+    const stopLossScopeOptions = pythonChoiceOptions("stop_loss_scope", optionArray(pythonParityContract.stopLossScopes));
+    const scanScopeOptions = pythonChoiceOptions("scan_scope", optionArray(pythonParityContract.scanScopeOptions));
+    const optimizerModeOptions = pythonChoiceOptions("optimizer_mode", optionArray(pythonParityContract.optimizerModeOptions));
+    const optimizerMetricOptions = pythonChoiceOptions("optimizer_metric", optionArray(pythonParityContract.optimizerMetricOptions));
     const chartViewKeys = textArray(pythonParityContract.chartViewKeys);
     const chartViewOptionCatalog = optionArray(pythonParityContract.chartViewOptions);
     const chartViewOptions = Object.freeze(chartViewKeys.length
@@ -1909,7 +1937,7 @@
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const isBacktestSnapshotActive = (payload) => {
       const state = String(payload?.state || "").toLowerCase();
-      return ["accepted", "pending", "preparing", "running", "starting"].includes(state);
+      return ["accepted", "pending", "preparing", "running", "starting", "cancelling"].includes(state);
     };
     const syncBacktestResumeAvailability = (payload) => {
       const resumeButton = $("resume-backtest-btn");
@@ -1917,7 +1945,7 @@
       const available = String(payload?.state || "").toLowerCase() === "budget_exhausted";
       resumeButton.disabled = !available;
       resumeButton.title = available
-        ? "Resume the saved optimizer checkpoint using current Service API credentials."
+        ? "Resume the saved optimizer checkpoint using the selected backtest backend."
         : "Available after an optimizer time budget is reached.";
     };
     const pollBacktestUntilIdle = async (label, maxAttempts = 60) => {
@@ -1942,6 +1970,78 @@
       appendLog(`[api] ${label}: backtest still running after timeout; refresh backtest later for final results.`);
       return latest;
     };
+    const localBacktestBackendKeys = new Set(["", "local", "desktop", "desktop-local"]);
+    const usesLocalBacktestBackend = () => localBacktestBackendKeys.has(
+      String(selectedValue("backtest-execution-backend") || defaultBacktest.execution_backend || "local")
+        .trim()
+        .toLowerCase()
+    );
+    const nativeBacktestRequestSupported = (request) => {
+      const exchange = String(request?.selected_exchange || "Binance").trim().toLowerCase();
+      const connector = String(request?.connector_backend || "").trim().toLowerCase();
+      return (exchange === "" || exchange === "binance")
+        && (!connector || connector.includes("binance") || connector === "ccxt");
+    };
+    const usesNativeBacktest = (request) => usesLocalBacktestBackend() && nativeBacktestRequestSupported(request);
+    let activeBacktestExecutionBackend = "";
+    const nativeBacktestResult = (payload, error = "") => {
+      const state = String(payload?.state || "").toLowerCase();
+      return {
+        ok: !error && !["failed", "rejected"].includes(state),
+        status: error ? 0 : 200,
+        route_name: "native_backtest",
+        path: "",
+        payload: payload || {},
+        error: error || String(payload?.error || "")
+      };
+    };
+    const runNativeBacktest = async (label, request) => {
+      if (!invoke) return nativeBacktestResult({}, "Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.");
+      let started;
+      try {
+        started = await invoke("start_native_backtest", { request });
+      } catch (error) {
+        return nativeBacktestResult({}, String(error));
+      }
+      const initial = started?.snapshot || {};
+      if (!started?.accepted) {
+        return nativeBacktestResult(initial, started?.error || started?.status_message || "Native Rust backtest was rejected.");
+      }
+      let latest = initial;
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        try {
+          latest = await invoke("native_backtest_status");
+        } catch (error) {
+          return nativeBacktestResult(latest, String(error));
+        }
+        const runs = backtestRunsFromPayload(latest);
+        if (runs.length) renderBacktestResultsTable(runs);
+        syncBacktestResumeAvailability(latest);
+        const progress = Number(latest?.progress_percent);
+        setText(
+          "backtest-scan-status-text",
+          isBacktestSnapshotActive(latest)
+            ? `Native Rust backtest: ${Number.isFinite(progress) ? `${formatNumber(progress, 1)}%` : "running"}`
+            : String(latest?.status_message || latest?.state || "Complete")
+        );
+        if (!isBacktestSnapshotActive(latest)) return nativeBacktestResult(latest);
+        await sleep(500);
+      }
+      appendLog(`[native] ${label}: backtest still running after timeout; refresh native backtest status later.`);
+      return nativeBacktestResult(latest);
+    };
+    const submitBacktest = async (label, request) => {
+      if (usesNativeBacktest(request)) {
+        activeBacktestExecutionBackend = "native";
+        return runNativeBacktest(label, request);
+      }
+      if (usesLocalBacktestBackend()) {
+        appendLog("[backtest] Selected local backend does not have a native Rust connector for this exchange; using the Python Service API.");
+      }
+      activeBacktestExecutionBackend = "service";
+      if (!(await ensureServiceApi())) return nativeBacktestResult({}, "Python Service API is unavailable.");
+      return requestAndReport(label, "backtest_run", "POST", { request, source: "tauri-desktop" });
+    };
     const runBacktestScan = async () => {
       let scanConfig;
       try {
@@ -1954,7 +2054,6 @@
       if (scanConfig.availableSymbolCount < scanConfig.requestedTopN) {
         appendLog(`[backtest] Only ${scanConfig.availableSymbolCount} symbol(s) are loaded; scanning available symbols instead of requested top ${scanConfig.requestedTopN}.`);
       }
-      if (!(await ensureServiceApi())) return;
       const scanButton = $("backtest-scan-symbols-btn");
       const runButton = $("run-backtest-btn");
       scanButton.disabled = true;
@@ -1962,12 +2061,14 @@
       setText("backtest-scan-status-text", `Starting scan for ${scanConfig.request.symbols.length} symbol(s)...`);
       setText("backtest-scan-best-text", "--");
       try {
-        const submit = await requestAndReport("Scan symbols", "backtest_run", "POST", { request: scanConfig.request, source: "tauri-desktop-scan" });
+        const submit = await submitBacktest("Scan symbols", scanConfig.request);
         if (!submit.ok || submit.payload?.accepted === false) {
           setText("backtest-scan-status-text", submit.payload?.status_message || submit.error || "Scan rejected.");
           return;
         }
-        const snapshot = await pollBacktestUntilIdle("Scan symbols");
+        const snapshot = usesNativeBacktest(scanConfig.request)
+          ? submit
+          : await pollBacktestUntilIdle("Scan symbols");
         const runs = backtestRunsFromPayload(snapshot?.payload);
         renderBacktestResultsTable(runs);
         const best = selectBacktestScanBest(runs, scanConfig.request.scan_mdd_limit);
@@ -2921,11 +3022,11 @@
       setSelect("loop-interval-select", config.loop_interval_override);
       setChecked("lead-trader-enabled", config.lead_trader_enabled);
       setSelect("lead-trader-profile", config.lead_trader_profile);
-      setChecked("indicator-live-values", config.indicator_use_live_values);
-      setChecked("add-only-net-direction", config.add_only);
-      setChecked("allow-opposite-positions", config.allow_opposite_positions);
+      setChecked("indicator-live-values", config.indicator_use_live_values ?? riskDefaults.indicator_use_live_values);
+      setChecked("add-only-net-direction", config.add_only ?? false);
+      setChecked("allow-opposite-positions", config.allow_opposite_positions ?? riskDefaults.allow_opposite_positions);
       setChecked("stop-without-closing-positions", config.stop_without_close);
-      setChecked("close-on-window-close", config.close_on_exit);
+      setChecked("close-on-window-close", config.close_on_exit ?? riskDefaults.close_on_exit);
       setChecked("positions-auto-row-height", config.positions_auto_resize_rows ?? true);
       setChecked("positions-auto-column-width", config.positions_auto_resize_columns ?? true);
       hydrateIndicatorControlsForKind("runtime", config.indicators);
@@ -3319,8 +3420,8 @@
         intervals: linesFrom($("intervals-input")?.value),
         stop_loss: {
           enabled: Boolean($("stop-loss-enabled")?.checked),
-          mode: $("stop-loss-mode")?.value || "usdt",
-          scope: $("stop-loss-scope")?.value || "per_trade",
+          mode: $("stop-loss-mode")?.value || riskDefaults.stop_loss?.mode || "usdt",
+          scope: $("stop-loss-scope")?.value || riskDefaults.stop_loss?.scope || "per_trade",
           usdt: numberFrom("stop-loss-usdt", 0),
           percent: numberFrom("stop-loss-percent", 0)
         }
@@ -3578,6 +3679,7 @@
         logic: selectedValue("backtest-logic") || "AND",
         symbol_source: symbolSource,
         account_type: symbolSource,
+        selected_exchange: selectedValue("exchange-select") || "Binance",
         mode: selectedText("config-mode") || "Demo",
         backtest: true,
         api_key: apiKey,
@@ -3985,7 +4087,6 @@
     $("backtest-add-selected-dashboard-btn")?.addEventListener("click", () => addBacktestRowsToDashboard("selected"));
     $("backtest-add-all-dashboard-btn")?.addEventListener("click", () => addBacktestRowsToDashboard("all"));
     $("run-backtest-btn")?.addEventListener("click", async () => {
-      if (!(await ensureServiceApi())) return;
       const runButton = $("run-backtest-btn");
       const scanButton = $("backtest-scan-symbols-btn");
       runButton.disabled = true;
@@ -3993,12 +4094,15 @@
       setText("backtest-scan-status-text", "Starting backtest...");
       setText("backtest-scan-best-text", "--");
       try {
-        const result = await requestAndReport("Run backtest", "backtest_run", "POST", { request: buildBacktestRequest(), source: "tauri-desktop" });
+        const request = buildBacktestRequest();
+        const result = await submitBacktest("Run backtest", request);
         if (!result.ok || result.payload?.accepted === false) {
           setText("backtest-scan-status-text", result.payload?.status_message || result.error || "Backtest rejected.");
           return;
         }
-        const snapshot = await pollBacktestUntilIdle("Run backtest");
+        const snapshot = usesNativeBacktest(request)
+          ? result
+          : await pollBacktestUntilIdle("Run backtest");
         const runs = backtestRunsFromPayload(snapshot?.payload);
         renderBacktestResultsTable(runs);
         setText(
@@ -4011,7 +4115,6 @@
       }
     });
     $("resume-backtest-btn")?.addEventListener("click", async () => {
-      if (!(await ensureServiceApi())) return;
       const runButton = $("run-backtest-btn");
       const resumeButton = $("resume-backtest-btn");
       const scanButton = $("backtest-scan-symbols-btn");
@@ -4020,15 +4123,21 @@
       if (scanButton) scanButton.disabled = true;
       setText("backtest-scan-status-text", "Resuming optimizer checkpoint...");
       try {
-        const result = await requestAndReport("Resume optimizer", "backtest_run", "POST", {
-          request: { resume_checkpoint: true },
-          source: "tauri-desktop"
-        });
+        const result = activeBacktestExecutionBackend === "native"
+          ? await runNativeBacktest("Resume optimizer", { resume_checkpoint: true })
+          : (await ensureServiceApi()
+            ? await requestAndReport("Resume optimizer", "backtest_run", "POST", {
+              request: { resume_checkpoint: true },
+              source: "tauri-desktop"
+            })
+            : nativeBacktestResult({}, "Python Service API is unavailable."));
         if (!result.ok || result.payload?.accepted === false) {
           setText("backtest-scan-status-text", result.payload?.status_message || result.error || "Optimizer resume rejected.");
           return;
         }
-        const snapshot = await pollBacktestUntilIdle("Resume optimizer");
+        const snapshot = usesLocalBacktestBackend()
+          ? result
+          : await pollBacktestUntilIdle("Resume optimizer");
         const runs = backtestRunsFromPayload(snapshot?.payload);
         renderBacktestResultsTable(runs);
         setText(
@@ -4041,6 +4150,22 @@
       }
     });
     $("stop-backtest-btn")?.addEventListener("click", async () => {
+      if (activeBacktestExecutionBackend === "native") {
+        if (!invoke) {
+          appendLog("[native] Stop backtest: Tauri invoke bridge is unavailable.");
+          return;
+        }
+        setText("backtest-scan-status-text", "Native Rust backtest cancellation requested...");
+        try {
+          const result = await invoke("stop_native_backtest");
+          if (!result?.accepted && result?.state !== "cancelling") {
+            appendLog(`[native] Stop backtest: ${result?.error || result?.status_message || "no native backtest is running."}`);
+          }
+        } catch (error) {
+          appendLog(`[native] Stop backtest failed: ${error}`);
+        }
+        return;
+      }
       if (!(await ensureServiceApi())) return;
       setText("backtest-scan-status-text", "Backtest cancellation requested...");
       await requestAndReport("Stop backtest", "backtest_stop", "POST", { source: "tauri-desktop" });

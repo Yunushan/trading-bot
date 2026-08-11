@@ -97,6 +97,18 @@ for (const requiredStreamFragment of [
   "applyDashboardPayload",
   "hydrateControls: false"
 ]) assert.ok(indexHtml.includes(requiredStreamFragment), `missing dashboard stream fragment: ${requiredStreamFragment}`);
+for (const requiredNativeBacktestFragment of [
+  "const submitBacktest",
+  "usesLocalBacktestBackend",
+  'invoke("start_native_backtest"',
+  'invoke("native_backtest_status"',
+  'invoke("stop_native_backtest"',
+  "Native Rust backtest",
+  "nativeBacktestResult"
+]) assert.ok(
+  indexHtml.includes(requiredNativeBacktestFragment),
+  `missing native backtest bridge fragment: ${requiredNativeBacktestFragment}`
+);
 for (const requiredPythonConfigParityFragment of [
   'id="config-lookback"',
   'id="config-order-type"',
@@ -106,6 +118,9 @@ for (const requiredPythonConfigParityFragment of [
   'id="backtest-scan-auto-apply"',
   'id="operational-live-start-gate-enabled"',
   'id="operational-live-order-gate-enabled"',
+  "pythonParityContract.configChoiceMaps",
+  "const pythonChoiceValues",
+  'pythonChoiceOptions("optimizer_metric"',
   "pythonParityContract.orderTypeOptions",
   "pythonParityContract.backtestExecutionBackendOptions",
   "pythonParityContract.chartViewKeys",

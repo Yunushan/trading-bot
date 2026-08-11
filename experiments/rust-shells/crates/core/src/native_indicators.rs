@@ -1672,54 +1672,76 @@ mod tests {
             crate::generated_python_indicator_reference::PYTHON_INDICATOR_REFERENCE_CONTRACT_HASH,
             crate::generated_python_parity::PYTHON_SOURCE_CONTRACT_HASH,
         );
-        let candles = fixture["candles"]
+        let indicator_cases = fixture["indicator_cases"]
             .as_array()
-            .expect("fixture candles")
-            .iter()
-            .enumerate()
-            .map(|(index, candle)| BinanceKlineCandle {
-                open_time_ms: index as i64 * 60_000,
-                open: candle["open"].as_f64().expect("open"),
-                high: candle["high"].as_f64().expect("high"),
-                low: candle["low"].as_f64().expect("low"),
-                close: candle["close"].as_f64().expect("close"),
-                volume: candle["volume"].as_f64().expect("volume"),
-            })
-            .collect::<Vec<_>>();
-        let configs = fixture["configs"]
-            .as_object()
-            .expect("fixture configs")
-            .iter()
-            .map(|(key, config)| (key.clone(), config.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let actual = compute_configured_indicator_series(&candles, &configs);
-        let expected = fixture["expected"]
-            .as_object()
-            .expect("fixture expected series");
-        assert_eq!(actual.len(), expected.len());
-        for (key, expected_series) in expected {
-            let actual_series = actual.get(key).unwrap_or_else(|| panic!("missing {key}"));
-            let expected_values = expected_series.as_array().expect("fixture series values");
+            .cloned()
+            .unwrap_or_else(|| vec![fixture.clone()]);
+        assert!(
+            indicator_cases.len() >= 3,
+            "generated Python indicator reference should include multiple market scenarios"
+        );
+        for (case_index, indicator_case) in indicator_cases.iter().enumerate() {
+            let case_name = indicator_case["name"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("fixture-{case_index}"));
+            let candles = indicator_case["candles"]
+                .as_array()
+                .expect("fixture candles")
+                .iter()
+                .enumerate()
+                .map(|(index, candle)| BinanceKlineCandle {
+                    open_time_ms: index as i64 * 60_000,
+                    open: candle["open"].as_f64().expect("open"),
+                    high: candle["high"].as_f64().expect("high"),
+                    low: candle["low"].as_f64().expect("low"),
+                    close: candle["close"].as_f64().expect("close"),
+                    volume: candle["volume"].as_f64().expect("volume"),
+                })
+                .collect::<Vec<_>>();
+            let configs = indicator_case["configs"]
+                .as_object()
+                .expect("fixture configs")
+                .iter()
+                .map(|(key, config)| (key.clone(), config.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let actual = compute_configured_indicator_series(&candles, &configs);
+            let expected = indicator_case["expected"]
+                .as_object()
+                .expect("fixture expected series");
+            let actual_keys = actual.keys().cloned().collect::<BTreeSet<_>>();
+            let expected_keys = expected.keys().cloned().collect::<BTreeSet<_>>();
             assert_eq!(
-                actual_series.len(),
-                expected_values.len(),
-                "length mismatch for {key}"
+                actual_keys, expected_keys,
+                "output keys mismatch for {case_name}"
             );
-            for (index, (actual_value, expected_value)) in
-                actual_series.iter().zip(expected_values).enumerate()
-            {
-                if expected_value.is_null() {
-                    assert!(
-                        actual_value.is_nan(),
-                        "{key}[{index}] should be NaN, got {actual_value}"
-                    );
-                } else {
-                    let expected_value = expected_value.as_f64().expect("numeric fixture value");
-                    let tolerance = 1e-9_f64.max(expected_value.abs() * 1e-9);
-                    assert!(
-                        (actual_value - expected_value).abs() <= tolerance,
-                        "{key}[{index}] expected {expected_value}, got {actual_value}",
-                    );
+            for (key, expected_series) in expected {
+                let actual_series = actual
+                    .get(key)
+                    .unwrap_or_else(|| panic!("missing {key} in {case_name}"));
+                let expected_values = expected_series.as_array().expect("fixture series values");
+                assert_eq!(
+                    actual_series.len(),
+                    expected_values.len(),
+                    "length mismatch for {case_name}/{key}"
+                );
+                for (index, (actual_value, expected_value)) in
+                    actual_series.iter().zip(expected_values).enumerate()
+                {
+                    if expected_value.is_null() {
+                        assert!(
+                            actual_value.is_nan(),
+                            "{case_name}/{key}[{index}] should be NaN, got {actual_value}"
+                        );
+                    } else {
+                        let expected_value =
+                            expected_value.as_f64().expect("numeric fixture value");
+                        let tolerance = 1e-9_f64.max(expected_value.abs() * 1e-9);
+                        assert!(
+                            (actual_value - expected_value).abs() <= tolerance,
+                            "{case_name}/{key}[{index}] expected {expected_value}, got {actual_value}",
+                        );
+                    }
                 }
             }
         }

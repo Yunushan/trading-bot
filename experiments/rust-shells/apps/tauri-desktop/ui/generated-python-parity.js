@@ -476,6 +476,124 @@
       "value": "lightweight"
     }
   ],
+  "configChoiceMaps": {
+    "account_mode": {
+      "classic trading": "Classic Trading",
+      "portfolio margin": "Portfolio Margin"
+    },
+    "account_type": {
+      "futures": "Futures",
+      "spot": "Spot"
+    },
+    "assets_mode": {
+      "multi-asset": "Multi-Assets",
+      "multi-assets": "Multi-Assets",
+      "multi-assets mode": "Multi-Assets",
+      "single-asset": "Single-Asset",
+      "single-asset mode": "Single-Asset"
+    },
+    "backtest_execution_backend": {
+      "desktop": "local",
+      "desktop-local": "local",
+      "local": "local",
+      "remote": "service",
+      "service": "service",
+      "service-api": "service"
+    },
+    "chart_view_mode": {
+      "lightweight": "lightweight",
+      "original": "original",
+      "tradingview": "tradingview",
+      "tradingview lightweight": "lightweight"
+    },
+    "llm_reasoning_effort": {
+      "default": "default",
+      "disabled": "disabled",
+      "enabled": "enabled",
+      "extra-high": "xhigh",
+      "extra_high": "xhigh",
+      "high": "high",
+      "low": "low",
+      "max": "max",
+      "medium": "medium",
+      "minimal": "minimal",
+      "none": "none",
+      "xhigh": "xhigh"
+    },
+    "llm_use_for": {
+      "advisory": "advisory",
+      "backtest_explanation": "backtest_explanation",
+      "risk_review": "risk_review",
+      "signal_confirmation": "signal_confirmation"
+    },
+    "logic": {
+      "and": "AND",
+      "or": "OR",
+      "separate": "SEPARATE"
+    },
+    "margin_mode": {
+      "cross": "Cross",
+      "isolated": "Isolated"
+    },
+    "mdd_logic": {
+      "cumulative": "cumulative",
+      "entire_account": "entire_account",
+      "per_trade": "per_trade"
+    },
+    "optimizer_metric": {
+      "roi-drawdown": "roi_drawdown",
+      "roi-percent": "roi_percent",
+      "roi-percent-mdd": "roi_percent_mdd",
+      "roi-value": "roi_value",
+      "roi_drawdown": "roi_drawdown",
+      "roi_percent": "roi_percent",
+      "roi_percent_mdd": "roi_percent_mdd",
+      "roi_value": "roi_value"
+    },
+    "optimizer_mode": {
+      "combinations": "combinations",
+      "current": "current",
+      "pairs": "pairs",
+      "single": "single"
+    },
+    "order_type": {
+      "limit": "LIMIT",
+      "market": "MARKET"
+    },
+    "position_mode": {
+      "hedge": "Hedge",
+      "one-way": "One-way",
+      "oneway": "One-way"
+    },
+    "scan_scope": {
+      "all-loaded": "all_loaded",
+      "all_loaded": "all_loaded",
+      "selected": "selected",
+      "top-n": "top_n",
+      "top_n": "top_n"
+    },
+    "side": {
+      "both": "BOTH",
+      "buy": "BUY",
+      "sell": "SELL"
+    },
+    "stop_loss_mode": {
+      "both": "both",
+      "percent": "percent",
+      "usdt": "usdt"
+    },
+    "stop_loss_scope": {
+      "cumulative": "cumulative",
+      "entire_account": "entire_account",
+      "per_trade": "per_trade"
+    },
+    "tif": {
+      "fok": "FOK",
+      "gtc": "GTC",
+      "gtd": "GTD",
+      "ioc": "IOC"
+    }
+  },
   "configModeOptions": [
     {
       "key": "Live",
@@ -567,7 +685,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "c73831bf45a1968e990d925281d98842e750607fd9457e42f1e5ccec212413b7",
+  "contractHash": "f44ed639838fd832adf73706e46bcbf2b20a39a20fc25d879ed7596431bcc1ca",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -1486,6 +1604,376 @@
       "key": "spot_private",
       "label": "Spot Private Lead Trader",
       "value": "spot_private"
+    }
+  ],
+  "llmProviderChoices": [
+    {
+      "key": "",
+      "value": "openai"
+    },
+    {
+      "key": "alibaba",
+      "value": "qwen"
+    },
+    {
+      "key": "alibaba-qwen",
+      "value": "qwen"
+    },
+    {
+      "key": "anthropic",
+      "value": "anthropic"
+    },
+    {
+      "key": "anthropic-claude",
+      "value": "anthropic"
+    },
+    {
+      "key": "arctic",
+      "value": "open-source"
+    },
+    {
+      "key": "bloom",
+      "value": "open-source"
+    },
+    {
+      "key": "bloomz",
+      "value": "open-source"
+    },
+    {
+      "key": "cerebras",
+      "value": "open-source"
+    },
+    {
+      "key": "chatglm",
+      "value": "open-source"
+    },
+    {
+      "key": "chatgpt",
+      "value": "openai"
+    },
+    {
+      "key": "claude",
+      "value": "anthropic"
+    },
+    {
+      "key": "codet5",
+      "value": "open-source"
+    },
+    {
+      "key": "custom",
+      "value": "local"
+    },
+    {
+      "key": "dashscope",
+      "value": "qwen"
+    },
+    {
+      "key": "dbrx",
+      "value": "open-source"
+    },
+    {
+      "key": "decicoder",
+      "value": "open-source"
+    },
+    {
+      "key": "deepseek",
+      "value": "deepseek"
+    },
+    {
+      "key": "dolly",
+      "value": "open-source"
+    },
+    {
+      "key": "flan-t5",
+      "value": "open-source"
+    },
+    {
+      "key": "fugaku",
+      "value": "open-source"
+    },
+    {
+      "key": "gemini",
+      "value": "gemini"
+    },
+    {
+      "key": "gemma4",
+      "value": "open-source"
+    },
+    {
+      "key": "glm",
+      "value": "open-source"
+    },
+    {
+      "key": "glm5",
+      "value": "open-source"
+    },
+    {
+      "key": "google",
+      "value": "gemini"
+    },
+    {
+      "key": "google-gemini",
+      "value": "gemini"
+    },
+    {
+      "key": "gpt-neox",
+      "value": "open-source"
+    },
+    {
+      "key": "gpt20b",
+      "value": "open-source"
+    },
+    {
+      "key": "grok",
+      "value": "grok"
+    },
+    {
+      "key": "hf",
+      "value": "open-source"
+    },
+    {
+      "key": "hf-tgi",
+      "value": "tgi"
+    },
+    {
+      "key": "hugging-face",
+      "value": "open-source"
+    },
+    {
+      "key": "huggingface",
+      "value": "open-source"
+    },
+    {
+      "key": "huggingface-tgi",
+      "value": "tgi"
+    },
+    {
+      "key": "jais",
+      "value": "open-source"
+    },
+    {
+      "key": "kimi",
+      "value": "moonshot"
+    },
+    {
+      "key": "llama-4",
+      "value": "open-source"
+    },
+    {
+      "key": "llama-cpp",
+      "value": "llamacpp"
+    },
+    {
+      "key": "llama-cpp-server",
+      "value": "llamacpp"
+    },
+    {
+      "key": "llama.cpp",
+      "value": "llamacpp"
+    },
+    {
+      "key": "llama4",
+      "value": "open-source"
+    },
+    {
+      "key": "llamacpp",
+      "value": "llamacpp"
+    },
+    {
+      "key": "lm-studio",
+      "value": "lmstudio"
+    },
+    {
+      "key": "lmstudio",
+      "value": "lmstudio"
+    },
+    {
+      "key": "local",
+      "value": "local"
+    },
+    {
+      "key": "local-openai",
+      "value": "local"
+    },
+    {
+      "key": "local-openai-compatible",
+      "value": "local"
+    },
+    {
+      "key": "mamba",
+      "value": "open-source"
+    },
+    {
+      "key": "mimo",
+      "value": "open-source"
+    },
+    {
+      "key": "minimax",
+      "value": "open-source"
+    },
+    {
+      "key": "mistral",
+      "value": "mistral"
+    },
+    {
+      "key": "mistral-ai",
+      "value": "mistral"
+    },
+    {
+      "key": "moonshot",
+      "value": "moonshot"
+    },
+    {
+      "key": "moonshot-ai",
+      "value": "moonshot"
+    },
+    {
+      "key": "mpt",
+      "value": "open-source"
+    },
+    {
+      "key": "nemotron",
+      "value": "open-source"
+    },
+    {
+      "key": "ollama",
+      "value": "ollama"
+    },
+    {
+      "key": "olmo",
+      "value": "open-source"
+    },
+    {
+      "key": "open-llama",
+      "value": "open-source"
+    },
+    {
+      "key": "open-source",
+      "value": "open-source"
+    },
+    {
+      "key": "open-weight",
+      "value": "open-source"
+    },
+    {
+      "key": "open-weights",
+      "value": "open-source"
+    },
+    {
+      "key": "openai",
+      "value": "openai"
+    },
+    {
+      "key": "openai-chatgpt",
+      "value": "openai"
+    },
+    {
+      "key": "openllama",
+      "value": "open-source"
+    },
+    {
+      "key": "opensource",
+      "value": "open-source"
+    },
+    {
+      "key": "oss",
+      "value": "open-source"
+    },
+    {
+      "key": "pythia",
+      "value": "open-source"
+    },
+    {
+      "key": "qwen",
+      "value": "qwen"
+    },
+    {
+      "key": "qwen-local",
+      "value": "open-source"
+    },
+    {
+      "key": "redpajama",
+      "value": "open-source"
+    },
+    {
+      "key": "replit-code",
+      "value": "open-source"
+    },
+    {
+      "key": "rmkv",
+      "value": "open-source"
+    },
+    {
+      "key": "rwkv",
+      "value": "open-source"
+    },
+    {
+      "key": "s-glang",
+      "value": "vllm"
+    },
+    {
+      "key": "santacoder",
+      "value": "open-source"
+    },
+    {
+      "key": "sglang",
+      "value": "vllm"
+    },
+    {
+      "key": "stablelm",
+      "value": "open-source"
+    },
+    {
+      "key": "starchat",
+      "value": "open-source"
+    },
+    {
+      "key": "step",
+      "value": "open-source"
+    },
+    {
+      "key": "stepfun",
+      "value": "open-source"
+    },
+    {
+      "key": "t5",
+      "value": "open-source"
+    },
+    {
+      "key": "text-generation-inference",
+      "value": "tgi"
+    },
+    {
+      "key": "tgi",
+      "value": "tgi"
+    },
+    {
+      "key": "vllm",
+      "value": "vllm"
+    },
+    {
+      "key": "xai",
+      "value": "grok"
+    },
+    {
+      "key": "xai-grok",
+      "value": "grok"
+    },
+    {
+      "key": "xgen",
+      "value": "open-source"
+    },
+    {
+      "key": "xiaomi",
+      "value": "open-source"
+    },
+    {
+      "key": "yalm",
+      "value": "open-source"
+    },
+    {
+      "key": "zai",
+      "value": "open-source"
     }
   ],
   "llmProviderKeys": [
@@ -3846,6 +4334,40 @@
       "value": "per_trade"
     }
   ],
+  "riskDefaults": {
+    "allow_close_ignoring_hold": false,
+    "allow_indicator_close_without_signal": false,
+    "allow_multi_indicator_close": false,
+    "allow_opposite_positions": true,
+    "auto_bump_percent_multiplier": 10.0,
+    "auto_flip_on_close": true,
+    "close_on_exit": false,
+    "futures_flat_purge_grace_seconds": 12.0,
+    "futures_flat_purge_miss_threshold": 2,
+    "hedge_preserve_opposites": false,
+    "indicator_flip_confirmation_bars": 1,
+    "indicator_flip_cooldown_bars": 1,
+    "indicator_flip_cooldown_seconds": 0.0,
+    "indicator_min_position_hold_bars": 1,
+    "indicator_min_position_hold_seconds": 0.0,
+    "indicator_reentry_cooldown_bars": 1,
+    "indicator_reentry_cooldown_seconds": 0.0,
+    "indicator_reentry_requires_signal_reset": true,
+    "indicator_use_live_values": false,
+    "max_auto_bump_percent": 5.0,
+    "positions_missing_autoclose": true,
+    "positions_missing_grace_seconds": 30,
+    "positions_missing_threshold": 2,
+    "require_indicator_flip_signal": true,
+    "stop_loss": {
+      "enabled": false,
+      "mode": "usdt",
+      "percent": 0.0,
+      "scope": "per_trade",
+      "usdt": 0.0
+    },
+    "strict_indicator_flip_enforcement": true
+  },
   "rustContractParityReady": true,
   "rustEnvironmentDependencies": [
     {

@@ -17,12 +17,21 @@ use crate::order_audit::redact_text;
 use crate::order_guard::OrderSymbolFilters;
 use crate::orders::{
     BinanceFuturesOrderParams, BinanceFuturesOrderResult, build_futures_market_order_params,
+    build_spot_market_order_params,
 };
 use crate::position_close::{BinanceFuturesCloseDirective, plan_futures_position_close};
+use crate::risk::{
+    CloseOppositeRequest, FuturesLegEntry, FuturesRiskPosition, FuturesStopCloseDirective,
+    StopLossSettings, build_stop_loss_runtime_context, evaluate_cumulative_futures_stop_loss,
+    evaluate_directional_futures_stop_loss, evaluate_entire_account_stop_loss,
+    evaluate_per_trade_stop_loss, plan_close_opposite_position,
+};
 use crate::runtime_order_engine::{
     RuntimeOrderEngine, RuntimeOrderSubmitInput, RuntimeOrderSubmitResult,
 };
-use crate::strategy_runtime::{StrategyWorkerLifecycleInput, build_worker_lifecycle_snapshot};
+use crate::strategy_runtime::{
+    StrategyWorkerLifecycleInput, build_worker_lifecycle_snapshot, normalize_strategy_risk_controls,
+};
 use crate::streams::{
     BinanceKlineStreamCandle, BinanceStreamEvent, BinanceWebSocket, BinanceWebSocketClient,
     StreamReconnectPolicy, StreamSupervisor, StreamSupervisorSnapshot,
@@ -45,6 +54,8 @@ const NATIVE_POSITION_EPSILON: f64 = 1e-10;
 pub struct NativeRuntimeLoopConfig {
     pub symbol: String,
     pub interval: String,
+    pub indicator_use_live_values: bool,
+    pub risk_controls: Value,
     pub position_mode: String,
     pub margin_mode: String,
     pub leverage: i64,
@@ -59,6 +70,8 @@ impl Default for NativeRuntimeLoopConfig {
         Self {
             symbol: "BTCUSDT".to_owned(),
             interval: "1m".to_owned(),
+            indicator_use_live_values: false,
+            risk_controls: normalize_strategy_risk_controls(&Value::Null),
             position_mode: "Hedge".to_owned(),
             margin_mode: "ISOLATED".to_owned(),
             leverage: 5,
@@ -267,6 +280,13 @@ fn native_config_bool(value: Option<&Value>) -> bool {
     }
 }
 
+fn value_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        .filter(|value: &f64| value.is_finite())
+}
+
 fn native_config_number(value: Option<&Value>) -> Option<f64> {
     match value {
         Some(Value::Number(value)) => value.as_f64(),
@@ -274,6 +294,42 @@ fn native_config_number(value: Option<&Value>) -> Option<f64> {
         _ => None,
     }
     .filter(|value| value.is_finite())
+}
+
+fn opposite_close_position_matches(
+    position: &NativeRuntimeRiskPositionInput,
+    plan: &crate::risk::CloseOppositePlan,
+    _dual_side: bool,
+) -> bool {
+    if !position.symbol.eq_ignore_ascii_case(&plan.symbol) {
+        return false;
+    }
+    let expected_side = plan
+        .position_side
+        .as_deref()
+        .unwrap_or_else(|| if plan.close_side.eq_ignore_ascii_case("SELL") {
+            "LONG"
+        } else {
+            "SHORT"
+        });
+    position.side.trim().eq_ignore_ascii_case(expected_side)
+}
+
+fn opposite_close_quantity(
+    positions: &[NativeRuntimeRiskPositionInput],
+    plan: &crate::risk::CloseOppositePlan,
+    dual_side: bool,
+) -> f64 {
+    positions
+        .iter()
+        .filter(|position| opposite_close_position_matches(position, plan, dual_side))
+        .filter_map(|position| {
+            position
+                .quantity
+                .is_finite()
+                .then_some(position.quantity.max(0.0))
+        })
+        .sum()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -411,6 +467,8 @@ pub struct NativeRuntimeExposureGuardSnapshot {
 pub struct NativeRuntimeGuardedExecutionCycleInput {
     pub market_cycle: NativeRuntimeReadOnlyMarketCycleInput,
     pub exposure: NativeRuntimeExposureGuardInput,
+    pub risk_positions: Vec<NativeRuntimeRiskPositionInput>,
+    pub risk_wallet_usdt: f64,
     pub filters: Option<OrderSymbolFilters>,
     pub market: String,
     pub connector_state: String,
@@ -419,6 +477,36 @@ pub struct NativeRuntimeGuardedExecutionCycleInput {
     pub now_iso: String,
     pub now_epoch_seconds: f64,
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeRuntimeRiskPositionInput {
+    pub symbol: String,
+    pub side: String,
+    pub quantity: f64,
+    pub entry_price: f64,
+    pub leverage: f64,
+    pub margin_usdt: f64,
+    pub mark_price: f64,
+    pub dual_side: bool,
+    /// Exchange position update/open timestamp used by Python's minimum-hold guard.
+    /// A missing timestamp is deliberately fail-closed whenever a close is required.
+    pub opened_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeRuntimeIndicatorSignalTracker {
+    direction: String,
+    count: usize,
+    timestamp_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct NativeRuntimeIndicatorOrderGuardState {
+    last_action_side: String,
+    last_action_ms: i64,
+    recent_close_ms: i64,
+    signal_reset_side: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -443,6 +531,9 @@ pub struct NativeRuntimeLoop {
     active_engine_count: usize,
     emergency_close_triggered: bool,
     status_message: String,
+    indicator_signal_trackers: BTreeMap<String, NativeRuntimeIndicatorSignalTracker>,
+    indicator_order_guard_states: BTreeMap<String, NativeRuntimeIndicatorOrderGuardState>,
+    indicator_reentry_blocks: BTreeMap<String, i64>,
 }
 
 impl NativeRuntimeLoop {
@@ -462,6 +553,9 @@ impl NativeRuntimeLoop {
             active_engine_count: 0,
             emergency_close_triggered: false,
             status_message: "Runtime idle.".to_owned(),
+            indicator_signal_trackers: BTreeMap::new(),
+            indicator_order_guard_states: BTreeMap::new(),
+            indicator_reentry_blocks: BTreeMap::new(),
         }
     }
 
@@ -472,7 +566,356 @@ impl NativeRuntimeLoop {
         self.global_shutdown = false;
         self.global_pause = false;
         self.active_engine_count = 1;
+        self.indicator_signal_trackers.clear();
+        self.indicator_order_guard_states.clear();
+        self.indicator_reentry_blocks.clear();
         self.status_message = "Runtime started in native dry-run coordination mode.".to_owned();
+    }
+
+    /// Apply Python's per-indicator confirmation-bar guard immediately before a
+    /// native order can be considered. The read-only signal evaluator remains
+    /// stateless; only the guarded execution path advances this tracker, which
+    /// matches Python's order-request boundary.
+    fn apply_indicator_signal_confirmation(
+        &mut self,
+        decision: &mut StrategySignalDecision,
+        now_ms: i64,
+    ) -> Option<String> {
+        let required = self
+            .config
+            .risk_controls
+            .get("indicator_flip_confirmation_bars")
+            .and_then(value_f64)
+            .map(|value| value.round() as usize)
+            .unwrap_or(1)
+            .max(1);
+        if required <= 1 || decision.trigger_actions.is_empty() {
+            return None;
+        }
+
+        let interval_window_ms = interval_seconds(&self.config.interval)
+            .unwrap_or(60.0)
+            .max(1.0)
+            * 1_000.0
+            * (required.saturating_add(1).max(2) as f64);
+        let reset_window_ms = interval_window_ms.ceil().clamp(1_000.0, i64::MAX as f64) as i64;
+        let symbol = self.config.symbol.trim().to_ascii_uppercase();
+        let interval = self.config.interval.trim().to_ascii_lowercase();
+        let mut confirmed = BTreeMap::new();
+        let mut waiting = Vec::new();
+
+        for (indicator, action) in &decision.trigger_actions {
+            let action_norm = action.trim().to_ascii_lowercase();
+            if !matches!(action_norm.as_str(), "buy" | "sell") {
+                confirmed.insert(indicator.clone(), action.clone());
+                continue;
+            }
+            let key = format!(
+                "{symbol}|{interval}|{}",
+                indicator.trim().to_ascii_lowercase()
+            );
+            let tracker = self
+                .indicator_signal_trackers
+                .entry(key)
+                .or_insert_with(|| NativeRuntimeIndicatorSignalTracker {
+                    direction: action_norm.clone(),
+                    count: 0,
+                    timestamp_ms: now_ms,
+                });
+            let elapsed_ms = now_ms.saturating_sub(tracker.timestamp_ms);
+            if tracker.direction == action_norm && elapsed_ms <= reset_window_ms {
+                tracker.count = tracker.count.saturating_add(1);
+            } else {
+                tracker.direction = action_norm.clone();
+                tracker.count = 1;
+            }
+            tracker.timestamp_ms = now_ms;
+            if tracker.count >= required {
+                confirmed.insert(indicator.clone(), action.clone());
+            } else {
+                waiting.push(format!(
+                    "{indicator} {action_norm} {}/{}",
+                    tracker.count, required
+                ));
+            }
+        }
+
+        if waiting.is_empty() {
+            return None;
+        }
+
+        decision.trigger_actions = confirmed;
+        decision
+            .trigger_sources
+            .retain(|source| decision.trigger_actions.contains_key(source));
+        decision.signal = decision
+            .trigger_sources
+            .iter()
+            .find_map(|source| decision.trigger_actions.get(source))
+            .map(|action| {
+                if action.eq_ignore_ascii_case("buy") {
+                    "BUY".to_owned()
+                } else {
+                    "SELL".to_owned()
+                }
+            });
+        if decision.signal.is_none() {
+            decision.trigger_price = None;
+        }
+        decision.description.push_str(&format!(
+            " | Indicator confirmation pending: {}",
+            waiting.join(", ")
+        ));
+
+        if decision.trigger_actions.is_empty() {
+            decision.trigger_price = None;
+            Some(format!(
+                "Native indicator confirmation guard is waiting for {}.",
+                waiting.join(", ")
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn indicator_order_guard_key(&self, indicator: &str) -> String {
+        format!(
+            "{}|{}|{}",
+            self.config.symbol.trim().to_ascii_uppercase(),
+            if self.config.interval.trim().is_empty() {
+                "default"
+            } else {
+                self.config.interval.trim()
+            }
+            .to_ascii_lowercase(),
+            indicator.trim().to_ascii_lowercase()
+        )
+    }
+
+    fn indicator_reentry_block_key(&self, side: &str) -> String {
+        format!(
+            "{}|{}|{}",
+            self.config.symbol.trim().to_ascii_uppercase(),
+            if self.config.interval.trim().is_empty() {
+                "default"
+            } else {
+                self.config.interval.trim()
+            }
+            .to_ascii_lowercase(),
+            side.trim().to_ascii_uppercase()
+        )
+    }
+
+    /// Apply Python's post-confirmation indicator order guards. The guard is
+    /// intentionally evaluated immediately before exposure/order handling so
+    /// read-only signal evaluation stays stateless like Python.
+    fn apply_indicator_order_guards(
+        &mut self,
+        decision: &mut StrategySignalDecision,
+        now_ms: i64,
+    ) -> Option<String> {
+        if decision.trigger_actions.is_empty() {
+            return None;
+        }
+        let controls = normalize_strategy_risk_controls(&self.config.risk_controls);
+        let required_signal_reset = native_config_bool(
+            controls.get("indicator_reentry_requires_signal_reset"),
+        );
+        let interval_window_seconds = interval_seconds(&self.config.interval).unwrap_or(60.0).max(1.0);
+        let cooldown_seconds = native_config_number(controls.get("indicator_flip_cooldown_seconds"))
+            .unwrap_or(0.0)
+            .max(0.0)
+            .max(
+                native_config_number(controls.get("indicator_flip_cooldown_bars"))
+                    .unwrap_or(0.0)
+                    .max(0.0)
+                    * interval_window_seconds,
+            );
+        let reentry_seconds = native_config_number(controls.get("indicator_reentry_cooldown_seconds"))
+            .unwrap_or(0.0)
+            .max(0.0)
+            .max(
+                native_config_number(controls.get("indicator_reentry_cooldown_bars"))
+                    .unwrap_or(0.0)
+                    .max(0.0)
+                    * interval_window_seconds,
+            );
+        let recent_close_window_ms = (interval_window_seconds * 1.5)
+            .clamp(5.0, 600.0)
+            .mul_add(1_000.0, 0.0)
+            .ceil() as i64;
+        let cooldown_ms = (cooldown_seconds * 1_000.0).ceil() as i64;
+        let reentry_ms = (reentry_seconds * 1_000.0).ceil() as i64;
+        let actions = decision.trigger_actions.clone();
+        let mut allowed_actions = BTreeMap::new();
+        let mut waiting = Vec::new();
+        for (indicator, action) in actions {
+            let action_norm = action.trim().to_ascii_lowercase();
+            if !matches!(action_norm.as_str(), "buy" | "sell") {
+                allowed_actions.insert(indicator, action);
+                continue;
+            }
+            let side = if action_norm == "buy" { "BUY" } else { "SELL" };
+            let indicator_norm = indicator.trim().to_ascii_lowercase();
+            if indicator_norm.is_empty() {
+                continue;
+            }
+            let state_key = self.indicator_order_guard_key(&indicator_norm);
+            let state = self
+                .indicator_order_guard_states
+                .entry(state_key)
+                .or_default();
+            let mut blocked = false;
+            if required_signal_reset && state.signal_reset_side == side {
+                waiting.push(format!("{indicator_norm} {side} signal reset"));
+                blocked = true;
+            }
+            if !blocked
+                && cooldown_ms > 0
+                && state.last_action_ms > 0
+                && state.last_action_side != side
+            {
+                let elapsed_ms = now_ms.saturating_sub(state.last_action_ms).max(0);
+                let recent_close = state.recent_close_ms > 0
+                    && now_ms.saturating_sub(state.recent_close_ms) <= recent_close_window_ms;
+                if elapsed_ms < cooldown_ms && !recent_close {
+                    waiting.push(format!(
+                        "{indicator_norm} {side} cooldown {:.1}s",
+                        (cooldown_ms.saturating_sub(elapsed_ms)) as f64 / 1_000.0
+                    ));
+                    blocked = true;
+                }
+            }
+            if !blocked && reentry_ms > 0 {
+                let blocked_until = self
+                    .indicator_reentry_blocks
+                    .get(&self.indicator_reentry_block_key(side))
+                    .copied()
+                    .unwrap_or(0);
+                if blocked_until > now_ms {
+                    waiting.push(format!(
+                        "{indicator_norm} {side} re-entry {:.1}s",
+                        (blocked_until - now_ms) as f64 / 1_000.0
+                    ));
+                    blocked = true;
+                }
+            }
+            if !blocked {
+                allowed_actions.insert(indicator, action);
+            }
+        }
+        if waiting.is_empty() {
+            return None;
+        }
+        decision.trigger_actions = allowed_actions;
+        decision
+            .trigger_sources
+            .retain(|source| decision.trigger_actions.contains_key(source));
+        decision.signal = decision
+            .trigger_sources
+            .iter()
+            .find_map(|source| decision.trigger_actions.get(source))
+            .map(|action| {
+                if action.eq_ignore_ascii_case("buy") {
+                    "BUY".to_owned()
+                } else {
+                    "SELL".to_owned()
+                }
+            });
+        if decision.signal.is_none() {
+            decision.trigger_price = None;
+        }
+        decision.description.push_str(&format!(
+            " | Indicator order guard pending: {}",
+            waiting.join(", ")
+        ));
+        if decision.trigger_actions.is_empty() {
+            Some(format!(
+                "Native indicator order guard is waiting for {}.",
+                waiting.join(", ")
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn record_indicator_order_actions(&mut self, decision: &StrategySignalDecision, now_ms: i64) {
+        for (indicator, action) in &decision.trigger_actions {
+            let side = match action.trim().to_ascii_uppercase().as_str() {
+                "BUY" => "BUY",
+                "SELL" => "SELL",
+                _ => continue,
+            };
+            let state = self
+                .indicator_order_guard_states
+                .entry(self.indicator_order_guard_key(indicator))
+                .or_default();
+            state.last_action_side = side.to_owned();
+            state.last_action_ms = now_ms;
+            if !state.signal_reset_side.is_empty() && state.signal_reset_side != side {
+                state.signal_reset_side.clear();
+            }
+        }
+    }
+
+    fn record_indicator_close(&mut self, indicator: &str, side: &str, timestamp_ms: i64) {
+        let side = side.trim().to_ascii_uppercase();
+        if !matches!(side.as_str(), "BUY" | "SELL") || indicator.trim().is_empty() {
+            return;
+        }
+        let controls = normalize_strategy_risk_controls(&self.config.risk_controls);
+        let state = self
+            .indicator_order_guard_states
+            .entry(self.indicator_order_guard_key(indicator))
+            .or_default();
+        state.recent_close_ms = timestamp_ms;
+        if native_config_bool(controls.get("indicator_reentry_requires_signal_reset")) {
+            state.signal_reset_side = side.clone();
+        }
+        let interval_window_seconds = interval_seconds(&self.config.interval).unwrap_or(60.0).max(1.0);
+        let reentry_seconds = native_config_number(controls.get("indicator_reentry_cooldown_seconds"))
+            .unwrap_or(0.0)
+            .max(0.0)
+            .max(
+                native_config_number(controls.get("indicator_reentry_cooldown_bars"))
+                    .unwrap_or(0.0)
+                    .max(0.0)
+                    * interval_window_seconds,
+            );
+        if reentry_seconds > 0.0 {
+            self.indicator_reentry_blocks.insert(
+                self.indicator_reentry_block_key(&side),
+                timestamp_ms + (reentry_seconds * 1_000.0).ceil() as i64,
+            );
+        }
+    }
+
+    /// Reconcile a confirmed exchange close when the close was initiated by
+    /// an explicit close-all/shutdown path rather than an indicator decision.
+    /// The exchange snapshot does not carry Python's indicator ownership, so
+    /// invalidate every guard state already observed for this symbol.
+    pub fn record_confirmed_position_close(
+        &mut self,
+        symbol: &str,
+        side: &str,
+        timestamp_ms: i64,
+    ) {
+        let symbol = symbol.trim().to_ascii_uppercase();
+        if symbol.is_empty() {
+            return;
+        }
+        let indicators: Vec<String> = self
+            .indicator_order_guard_states
+            .keys()
+            .filter_map(|key| {
+                let mut parts = key.split('|');
+                (parts.next()? == symbol).then(|| parts.collect::<Vec<_>>().join("|"))
+            })
+            .filter(|indicator| !indicator.is_empty())
+            .collect();
+        for indicator in indicators {
+            self.record_indicator_close(&indicator, side, timestamp_ms);
+        }
     }
 
     pub fn set_global_pause(&mut self, paused: bool) {
@@ -842,7 +1285,7 @@ impl NativeRuntimeLoop {
             side,
             last_candle_is_closed,
         } = input;
-        let discard_last_candle = !last_candle_is_closed;
+        let discard_last_candle = !last_candle_is_closed && !self.config.indicator_use_live_values;
         let mut candles: Vec<BinanceKlineCandle> = input_candles
             .into_iter()
             .filter(|candle| {
@@ -916,7 +1359,7 @@ impl NativeRuntimeLoop {
                     indicators,
                     rules,
                     side,
-                    use_live_values: false,
+                    use_live_values: self.config.indicator_use_live_values,
                 })
             });
         let strategy_evaluated = strategy_decision.is_some();
@@ -957,8 +1400,123 @@ impl NativeRuntimeLoop {
     where
         F: FnMut(&BinanceFuturesOrderParams) -> Result<BinanceFuturesOrderResult>,
     {
-        let market_cycle = self.run_read_only_market_cycle(input.market_cycle)?;
-        let Some(decision) = market_cycle.strategy_decision.as_ref() else {
+        let risk_positions = input.risk_positions.clone();
+        let market = input.market.clone();
+        let now_ms = input.market_cycle.now_ms;
+        let mut market_cycle = self.run_read_only_market_cycle(input.market_cycle)?;
+        let risk_directives =
+            self.evaluate_stop_loss(&market, &risk_positions, input.risk_wallet_usdt);
+        if let Some(directive) = risk_directives.first() {
+            let mut executable_directives = risk_directives.clone();
+            if directive.close_side.eq_ignore_ascii_case("CLOSE_ALL") {
+                executable_directives = risk_positions
+                    .iter()
+                    .filter_map(|position| {
+                        let side = position.side.trim().to_ascii_uppercase();
+                        if !matches!(side.as_str(), "LONG" | "SHORT")
+                            || !position.quantity.is_finite()
+                            || position.quantity <= 0.0
+                        {
+                            return None;
+                        }
+                        Some(FuturesStopCloseDirective {
+                            symbol: position.symbol.clone(),
+                            interval: self.config.interval.clone(),
+                            side_label: side.clone(),
+                            close_side: if side == "LONG" {
+                                "SELL".to_owned()
+                            } else {
+                                "BUY".to_owned()
+                            },
+                            position_side: position.dual_side.then_some(side),
+                            qty: position.quantity,
+                            reason: directive.reason.clone(),
+                            loss_usdt: directive.loss_usdt,
+                            price_loss_percent: directive.price_loss_percent,
+                            margin_loss_percent: directive.margin_loss_percent,
+                        })
+                    })
+                    .collect();
+            }
+            if executable_directives.is_empty()
+                || executable_directives
+                    .iter()
+                    .any(|candidate| candidate.qty <= 0.0)
+            {
+                return Ok(guarded_execution_snapshot(
+                    market_cycle,
+                    None,
+                    None,
+                    "blocked",
+                    &format!(
+                        "Native {} stop-loss could not produce a reconciled close directive; no new order was submitted.",
+                        directive.reason
+                    ),
+                ));
+            }
+            let close_result = engine.execute_stop_loss_closes(
+                &executable_directives,
+                &input.now_iso,
+                "native-runtime-stop-loss",
+                |close_directive| {
+                    let params = close_directive.to_order_params()?;
+                    execute(&params)
+                },
+            );
+            if close_result.ok {
+                for close_directive in &executable_directives {
+                    self.record_confirmed_position_close(
+                        &close_directive.symbol,
+                        &close_directive.side_label,
+                        now_ms,
+                    );
+                }
+                return Ok(guarded_execution_snapshot(
+                    market_cycle,
+                    None,
+                    None,
+                    "closed",
+                    &format!(
+                        "Native {} stop-loss closed {} position leg(s) before opening another order.",
+                        directive.reason,
+                        executable_directives.len()
+                    ),
+                ));
+            }
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                None,
+                None,
+                "blocked",
+                &format!(
+                    "Native {} stop-loss close failed for {} ({}); no new order was submitted.",
+                    directive.reason, directive.symbol, close_result.remaining_qty
+                ),
+            ));
+        }
+        if let Some(decision) = market_cycle.strategy_decision.as_mut()
+            && let Some(reason) = self.apply_indicator_signal_confirmation(decision, now_ms)
+        {
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                None,
+                None,
+                "blocked",
+                &reason,
+            ));
+        }
+        if let Some(decision) = market_cycle.strategy_decision.as_mut()
+            && let Some(reason) = self.apply_indicator_order_guards(decision, now_ms)
+        {
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                None,
+                None,
+                "blocked",
+                &reason,
+            ));
+        }
+        let Some(decision) = market_cycle.strategy_decision.clone() else {
             return Ok(guarded_execution_snapshot(
                 market_cycle,
                 None,
@@ -1027,13 +1585,136 @@ impl NativeRuntimeLoop {
             ));
         }
 
-        let order = build_futures_market_order_params(
-            &self.config.symbol,
-            signal,
-            exposure.quantity_estimate,
-            exposure.reduce_only,
-            exposure.desired_position_side.as_deref().unwrap_or(""),
-        )?;
+        // Python resolves conflicting exchange exposure before submitting the new
+        // leg. Keep the same fail-closed boundary in the native runtime, including
+        // the minimum-hold rule for a position that would have to be closed.
+        let decision_for_close = decision.clone();
+        let dual_side = self.hedge_mode_enabled();
+        let controls = self.config.risk_controls.as_object();
+        let allow_opposite_positions = controls
+            .and_then(|value| value.get("allow_opposite_positions"))
+            .map(|value| native_config_bool(Some(value)))
+            .unwrap_or(true);
+        let hedge_preserve_opposites = controls
+            .and_then(|value| value.get("hedge_preserve_opposites"))
+            .map(|value| native_config_bool(Some(value)))
+            .unwrap_or(false);
+        let strict_indicator_flip_enforcement = controls
+            .and_then(|value| value.get("strict_indicator_flip_enforcement"))
+            .map(|value| native_config_bool(Some(value)))
+            .unwrap_or(true);
+        let close_request = CloseOppositeRequest {
+            symbol: self.config.symbol.clone(),
+            interval: self.config.interval.clone(),
+            next_side: signal.to_owned(),
+            dual_side,
+            allow_opposite_positions,
+            hedge_preserve_opposites,
+            strict_indicator_flip_enforcement,
+            indicator_tokens: decision_for_close.trigger_sources.clone(),
+            signature_tokens: decision_for_close.trigger_sources.clone(),
+            target_qty: None,
+        };
+        let close_positions: Vec<FuturesRiskPosition> = risk_positions
+            .iter()
+            .filter_map(|position| {
+                let side = position.side.trim().to_ascii_uppercase();
+                if !matches!(side.as_str(), "LONG" | "SHORT")
+                    || !position.quantity.is_finite()
+                    || position.quantity <= 0.0
+                    || !position.entry_price.is_finite()
+                    || position.entry_price <= 0.0
+                {
+                    return None;
+                }
+                Some(FuturesRiskPosition {
+                    symbol: position.symbol.clone(),
+                    position_side: if dual_side {
+                        side.clone()
+                    } else {
+                        "BOTH".to_owned()
+                    },
+                    position_amt: if side == "LONG" {
+                        position.quantity
+                    } else {
+                        -position.quantity
+                    },
+                    entry_price: position.entry_price,
+                    isolated_wallet: position.margin_usdt.max(0.0),
+                    initial_margin: position.margin_usdt.max(0.0),
+                    notional: position.entry_price * position.quantity,
+                    leverage: position.leverage,
+                    margin_ratio: 0.0,
+                    maint_margin: 0.0,
+                    margin_balance: position.margin_usdt.max(0.0),
+                })
+            })
+            .collect();
+        let close_plan = plan_close_opposite_position(&close_request, &close_positions);
+        if !close_plan.allowed_to_open_now {
+            if let Some(reason) = self.opposite_close_hold_block_reason(
+                &risk_positions,
+                &close_plan,
+                now_ms,
+            ) {
+                return Ok(guarded_execution_snapshot(
+                    market_cycle,
+                    Some(exposure),
+                    None,
+                    "blocked",
+                    &reason,
+                ));
+            }
+            let target_qty = opposite_close_quantity(&risk_positions, &close_plan, dual_side);
+            if target_qty <= NATIVE_POSITION_EPSILON {
+                return Ok(guarded_execution_snapshot(
+                    market_cycle,
+                    Some(exposure),
+                    None,
+                    "blocked",
+                    "Native close-opposite plan found exposure but could not derive a positive quantity; no new order was submitted.",
+                ));
+            }
+            let close_result = engine.execute_close_opposite_plan(
+                &close_plan,
+                target_qty,
+                input.now_iso.clone(),
+                "native-runtime-close-opposite",
+                |close_directive| {
+                    let params = close_directive.to_order_params()?;
+                    execute(&params)
+                },
+            );
+            if !close_result.allowed_to_open_now {
+                return Ok(guarded_execution_snapshot(
+                    market_cycle,
+                    Some(exposure),
+                    None,
+                    "blocked",
+                    &format!(
+                        "Native close-opposite guard blocked the new {} order: {}.",
+                        signal, close_result.reason
+                    ),
+                ));
+            }
+            for position in &risk_positions {
+                if opposite_close_position_matches(position, &close_plan, dual_side) {
+                    self.record_confirmed_position_close(&position.symbol, &position.side, now_ms);
+                }
+            }
+        }
+
+        let order = if input.market.eq_ignore_ascii_case("spot") {
+            build_spot_market_order_params(&self.config.symbol, signal, exposure.quantity_estimate)?
+        } else {
+            build_futures_market_order_params(
+                &self.config.symbol,
+                signal,
+                exposure.quantity_estimate,
+                exposure.reduce_only,
+                exposure.desired_position_side.as_deref().unwrap_or(""),
+            )?
+        };
         let submit = engine.submit_futures_order(
             RuntimeOrderSubmitInput {
                 order: &order,
@@ -1054,6 +1735,11 @@ impl NativeRuntimeLoop {
         } else {
             "blocked"
         };
+        if submit.allowed {
+            if let Some(decision) = market_cycle.strategy_decision.as_ref() {
+                self.record_indicator_order_actions(decision, now_ms);
+            }
+        }
         let status_message = if submit.allowed && engine.dry_run {
             "Native guarded execution cycle completed as a validated dry run.".to_owned()
         } else if submit.allowed {
@@ -1068,6 +1754,290 @@ impl NativeRuntimeLoop {
             state,
             &status_message,
         ))
+    }
+
+    fn opposite_close_hold_block_reason(
+        &self,
+        positions: &[NativeRuntimeRiskPositionInput],
+        plan: &crate::risk::CloseOppositePlan,
+        now_ms: i64,
+    ) -> Option<String> {
+        let controls = self.config.risk_controls.as_object()?;
+        if controls
+            .get("allow_close_ignoring_hold")
+            .map(|value| native_config_bool(Some(value)))
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let seconds = controls
+            .get("indicator_min_position_hold_seconds")
+            .and_then(value_f64)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let bars = controls
+            .get("indicator_min_position_hold_bars")
+            .and_then(value_f64)
+            .map(|value| value.max(0.0).round() as i64)
+            .unwrap_or(0);
+        let interval_ms = interval_seconds(&self.config.interval)
+            .ok()
+            .unwrap_or(0.0)
+            .max(0.0)
+            * 1_000.0;
+        let hold_ms = (seconds * 1_000.0).max(interval_ms * bars as f64).ceil() as i64;
+        if hold_ms <= 0 {
+            return None;
+        }
+        for position in positions {
+            if !opposite_close_position_matches(position, plan, self.hedge_mode_enabled()) {
+                continue;
+            }
+            if position.opened_at_ms <= 0 {
+                return Some(format!(
+                    "Native close-opposite guard blocked {}: position hold timestamp is missing; reconciliation is required.",
+                    position.symbol
+                ));
+            }
+            let age_ms = now_ms.saturating_sub(position.opened_at_ms).max(0);
+            if age_ms < hold_ms {
+                let remaining = hold_ms.saturating_sub(age_ms);
+                return Some(format!(
+                    "Native close-opposite guard blocked {}: minimum position hold remains {} ms.",
+                    position.symbol, remaining
+                ));
+            }
+        }
+        None
+    }
+
+    fn evaluate_stop_loss(
+        &self,
+        market: &str,
+        positions: &[NativeRuntimeRiskPositionInput],
+        wallet_usdt: f64,
+    ) -> Vec<FuturesStopCloseDirective> {
+        if !matches!(
+            market.trim().to_ascii_lowercase().as_str(),
+            "futures" | "coin-futures"
+        ) {
+            return Vec::new();
+        }
+        let Some(stop_loss) = self
+            .config
+            .risk_controls
+            .get("stop_loss")
+            .and_then(Value::as_object)
+        else {
+            return Vec::new();
+        };
+        let settings = StopLossSettings {
+            enabled: stop_loss
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            mode: stop_loss
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("usdt")
+                .to_owned(),
+            usdt: stop_loss.get("usdt").and_then(value_f64).unwrap_or(0.0),
+            percent: stop_loss.get("percent").and_then(value_f64).unwrap_or(0.0),
+            scope: stop_loss
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or("per_trade")
+                .to_owned(),
+        };
+        let context = build_stop_loss_runtime_context(settings, "FUTURES");
+        if !context.stop_enabled {
+            return Vec::new();
+        }
+        let matching_positions: Vec<&NativeRuntimeRiskPositionInput> = positions
+            .iter()
+            .filter(|position| position.symbol.eq_ignore_ascii_case(&self.config.symbol))
+            .collect();
+        if matching_positions.is_empty() && !context.is_entire_account {
+            return Vec::new();
+        }
+        if context.is_entire_account {
+            let total_unrealized = positions.iter().fold(0.0, |total, position| {
+                if !position.quantity.is_finite()
+                    || position.quantity <= 0.0
+                    || !position.entry_price.is_finite()
+                    || position.entry_price <= 0.0
+                    || !position.mark_price.is_finite()
+                    || position.mark_price <= 0.0
+                {
+                    return total;
+                }
+                let loss = if position.side.trim().eq_ignore_ascii_case("LONG") {
+                    (position.mark_price - position.entry_price) * position.quantity
+                } else if position.side.trim().eq_ignore_ascii_case("SHORT") {
+                    (position.entry_price - position.mark_price) * position.quantity
+                } else {
+                    0.0
+                };
+                if loss.is_finite() {
+                    total + loss
+                } else {
+                    total
+                }
+            });
+            let wallet = if wallet_usdt.is_finite() {
+                wallet_usdt.max(0.0)
+            } else {
+                0.0
+            };
+            let decision = evaluate_entire_account_stop_loss(&context, total_unrealized, wallet);
+            if decision.triggered {
+                return vec![FuturesStopCloseDirective {
+                    symbol: self.config.symbol.to_ascii_uppercase(),
+                    interval: self.config.interval.clone(),
+                    side_label: "ACCOUNT".to_owned(),
+                    close_side: "CLOSE_ALL".to_owned(),
+                    position_side: None,
+                    qty: 0.0,
+                    reason: decision.reason,
+                    loss_usdt: decision.total_unrealized.abs(),
+                    price_loss_percent: decision.loss_percent,
+                    margin_loss_percent: 0.0,
+                }];
+            }
+            return Vec::new();
+        }
+        if context.scope == "per_trade" {
+            return matching_positions
+                .iter()
+                .flat_map(|position| {
+                    let side_label = match position.side.trim().to_ascii_uppercase().as_str() {
+                        "LONG" => "BUY",
+                        "SHORT" => "SELL",
+                        _ => return Vec::new(),
+                    };
+                    evaluate_per_trade_stop_loss(
+                        &position.symbol,
+                        &self.config.interval,
+                        side_label,
+                        &[FuturesLegEntry {
+                            qty: position.quantity,
+                            entry_price: position.entry_price,
+                            leverage: position.leverage,
+                            margin_usdt: position.margin_usdt,
+                            ..Default::default()
+                        }],
+                        Some(position.mark_price),
+                        position.dual_side,
+                        &context,
+                    )
+                })
+                .collect();
+        }
+
+        let risk_positions: Vec<FuturesRiskPosition> = matching_positions
+            .iter()
+            .filter_map(|position| {
+                let side_label = match position.side.trim().to_ascii_uppercase().as_str() {
+                    "LONG" => "LONG",
+                    "SHORT" => "SHORT",
+                    _ => return None,
+                };
+                let quantity = position.quantity.abs();
+                let margin = position.margin_usdt.max(0.0);
+                if !quantity.is_finite()
+                    || quantity <= 0.0
+                    || !position.entry_price.is_finite()
+                    || position.entry_price <= 0.0
+                {
+                    return None;
+                }
+                Some(FuturesRiskPosition {
+                    symbol: position.symbol.clone(),
+                    position_side: side_label.to_owned(),
+                    position_amt: if side_label == "LONG" {
+                        quantity
+                    } else {
+                        -quantity
+                    },
+                    entry_price: position.entry_price,
+                    isolated_wallet: margin,
+                    initial_margin: margin,
+                    notional: position.entry_price * quantity,
+                    leverage: position.leverage,
+                    margin_ratio: 0.0,
+                    maint_margin: 0.0,
+                    margin_balance: margin,
+                })
+            })
+            .collect();
+        if risk_positions.is_empty() {
+            return Vec::new();
+        }
+        let dual_side = matching_positions.iter().any(|position| position.dual_side);
+        let last_price = matching_positions
+            .iter()
+            .map(|position| position.mark_price)
+            .find(|price| price.is_finite() && *price > 0.0);
+        if context.scope == "cumulative" {
+            return evaluate_cumulative_futures_stop_loss(
+                &self.config.symbol,
+                &self.config.interval,
+                &risk_positions,
+                last_price,
+                dual_side,
+                &context,
+            );
+        }
+        if context.scope == "directional" {
+            let (long_qty, long_notional, short_qty, short_notional) = risk_positions.iter().fold(
+                (0.0, 0.0, 0.0, 0.0),
+                |(long_qty, long_notional, short_qty, short_notional), position| {
+                    if position.position_side == "LONG" {
+                        (
+                            long_qty + position.position_amt.abs(),
+                            long_notional + position.entry_price * position.position_amt.abs(),
+                            short_qty,
+                            short_notional,
+                        )
+                    } else {
+                        (
+                            long_qty,
+                            long_notional,
+                            short_qty + position.position_amt.abs(),
+                            short_notional + position.entry_price * position.position_amt.abs(),
+                        )
+                    }
+                },
+            );
+            let long_position = risk_positions
+                .iter()
+                .find(|position| position.position_side == "LONG");
+            let short_position = risk_positions
+                .iter()
+                .find(|position| position.position_side == "SHORT");
+            return evaluate_directional_futures_stop_loss(
+                &self.config.symbol,
+                &self.config.interval,
+                long_qty,
+                if long_qty > 0.0 {
+                    long_notional / long_qty
+                } else {
+                    0.0
+                },
+                short_qty,
+                if short_qty > 0.0 {
+                    short_notional / short_qty
+                } else {
+                    0.0
+                },
+                long_position,
+                short_position,
+                last_price,
+                dual_side,
+                &context,
+            );
+        }
+        Vec::new()
     }
 
     pub fn build_operational_preflight(
@@ -1953,6 +2923,8 @@ mod tests {
         NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
             symbol: "btcusdt".to_owned(),
             interval: "1m".to_owned(),
+            indicator_use_live_values: false,
+            risk_controls: normalize_strategy_risk_controls(&Value::Null),
             position_mode: "Hedge".to_owned(),
             margin_mode: "ISOLATED".to_owned(),
             leverage: 5,
@@ -2123,6 +3095,8 @@ mod tests {
         NativeRuntimeGuardedExecutionCycleInput {
             market_cycle: guarded_market_cycle_input(),
             exposure: exposure_input(),
+            risk_positions: Vec::new(),
+            risk_wallet_usdt: 1_000.0,
             filters: Some(OrderSymbolFilters {
                 step_size: 0.001,
                 tick_size: 0.1,
@@ -2350,6 +3324,49 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_read_only_market_cycle_honors_live_indicator_option() {
+        let mut runtime = loop_under_test();
+        runtime.config.indicator_use_live_values = true;
+        runtime.start();
+        let snapshot = runtime
+            .run_read_only_market_cycle(NativeRuntimeReadOnlyMarketCycleInput {
+                now_ms: 1_700_000_010_000,
+                candles: vec![
+                    market_candle(1_700_000_000_000, 10.0),
+                    market_candle(1_700_000_060_000, 11.0),
+                    market_candle(1_700_000_120_000, 12.0),
+                    market_candle(1_700_000_180_000, 13.0),
+                ],
+                indicator_configs: std::collections::BTreeMap::new(),
+                indicators: std::collections::BTreeMap::from([(
+                    "rsi".to_owned(),
+                    vec![80.0, 20.0, 80.0, 90.0],
+                )]),
+                rules: std::collections::BTreeMap::from([(
+                    "rsi".to_owned(),
+                    IndicatorRule {
+                        enabled: true,
+                        buy_value: Some(30.0),
+                        sell_value: Some(70.0),
+                    },
+                )]),
+                side: "BOTH".to_owned(),
+                last_candle_is_closed: false,
+            })
+            .expect("live-value market cycle");
+
+        assert_eq!(snapshot.closed_candle_count, 4);
+        assert_eq!(
+            snapshot
+                .strategy_decision
+                .as_ref()
+                .and_then(|decision| decision.signal.as_deref()),
+            Some("SELL")
+        );
+        assert!(snapshot.status_message.contains("signal=SELL"));
+    }
+
+    #[test]
     fn guarded_execution_cycle_audits_a_valid_paper_signal_without_calling_executor() {
         let mut runtime = loop_under_test();
         runtime.start();
@@ -2381,6 +3398,259 @@ mod tests {
         let audit = fs::read_to_string(directory.join("audit.jsonl")).expect("audit");
         assert!(audit.contains("order_dry_run"));
         fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn guarded_execution_cycle_applies_python_per_trade_stop_loss_before_ordering() {
+        let mut runtime = loop_under_test();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "stop_loss": {
+                "enabled": true,
+                "mode": "both",
+                "scope": "per_trade",
+                "usdt": 4.0,
+                "percent": 10.0
+            }
+        }));
+        runtime.start();
+        let (mut engine, directory) = dry_run_engine();
+        let mut input = guarded_execution_input(&runtime);
+        input.risk_positions.push(NativeRuntimeRiskPositionInput {
+            symbol: "BTCUSDT".to_owned(),
+            side: "LONG".to_owned(),
+            quantity: 1.0,
+            entry_price: 100.0,
+            leverage: 5.0,
+            margin_usdt: 20.0,
+            mark_price: 94.0,
+            dual_side: true,
+            opened_at_ms: 1_700_000_000_000,
+        });
+
+        let snapshot = runtime
+            .run_guarded_execution_cycle(&mut engine, input, |_| {
+                panic!("stop-loss gate must prevent order execution")
+            })
+            .expect("guarded cycle");
+
+        assert_eq!(snapshot.state, "closed");
+        assert!(snapshot.order.is_none());
+        assert!(snapshot.status_message.contains("per_trade_stop_loss"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn guarded_execution_cycle_blocks_python_minimum_hold_before_opposite_close() {
+        let mut runtime = loop_under_test();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "allow_opposite_positions": false,
+            "indicator_min_position_hold_bars": 2,
+            "indicator_min_position_hold_seconds": 0.0
+        }));
+        runtime.start();
+        let (mut engine, directory) = dry_run_engine();
+        let mut input = guarded_execution_input(&runtime);
+        input.risk_positions.push(NativeRuntimeRiskPositionInput {
+            symbol: "BTCUSDT".to_owned(),
+            side: "SHORT".to_owned(),
+            quantity: 1.0,
+            entry_price: 100.0,
+            leverage: 5.0,
+            margin_usdt: 20.0,
+            mark_price: 100.0,
+            dual_side: true,
+            opened_at_ms: input.market_cycle.now_ms - 60_000,
+        });
+
+        let snapshot = runtime
+            .run_guarded_execution_cycle(&mut engine, input, |_| {
+                panic!("minimum hold must block before opening");
+            })
+            .expect("guarded cycle");
+
+        assert_eq!(snapshot.state, "blocked");
+        assert!(
+            snapshot.status_message.contains("minimum position hold"),
+            "unexpected native hold result: {:?}",
+            snapshot
+        );
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn guarded_execution_cycle_executes_python_opposite_close_before_new_order() {
+        let mut runtime = loop_under_test();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "allow_opposite_positions": false,
+            "indicator_min_position_hold_bars": 0,
+            "indicator_min_position_hold_seconds": 0.0
+        }));
+        runtime.start();
+        let (mut engine, directory) = dry_run_engine();
+        let mut input = guarded_execution_input(&runtime);
+        input.risk_positions.push(NativeRuntimeRiskPositionInput {
+            symbol: "BTCUSDT".to_owned(),
+            side: "SHORT".to_owned(),
+            quantity: 1.0,
+            entry_price: 100.0,
+            leverage: 5.0,
+            margin_usdt: 20.0,
+            mark_price: 100.0,
+            dual_side: true,
+            opened_at_ms: input.market_cycle.now_ms - 120_000,
+        });
+
+        let snapshot = runtime
+            .run_guarded_execution_cycle(&mut engine, input, |_| {
+                panic!("dry-run close and opening must not call the live executor");
+            })
+            .expect("guarded cycle");
+
+        assert_eq!(snapshot.state, "accepted", "unexpected native close result: {:?}", snapshot);
+        assert!(snapshot.status_message.contains("dry run"));
+        let audit = fs::read_to_string(directory.join("audit.jsonl")).expect("audit log");
+        assert!(audit.contains("close_opposite_position"));
+        assert!(audit.contains("order_close_accepted"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn native_indicator_confirmation_matches_python_order_boundary() {
+        let mut runtime = loop_under_test();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "indicator_flip_confirmation_bars": 2
+        }));
+        let mut decision = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+
+        let first = runtime.apply_indicator_signal_confirmation(&mut decision, 1_700_000_000_000);
+        assert!(first.is_some());
+        assert!(decision.signal.is_none());
+        assert!(decision.trigger_actions.is_empty());
+        assert!(decision.description.contains("1/2"));
+
+        decision.signal = Some("BUY".to_owned());
+        decision.trigger_price = Some(100.0);
+        decision.trigger_sources = vec!["rsi".to_owned()];
+        decision.trigger_actions = BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]);
+        let second = runtime.apply_indicator_signal_confirmation(&mut decision, 1_700_000_060_000);
+        assert!(second.is_none());
+        assert_eq!(decision.signal.as_deref(), Some("BUY"));
+        assert_eq!(decision.trigger_actions["rsi"], "buy");
+    }
+
+    #[test]
+    fn native_indicator_order_guards_match_python_cooldown_and_reentry_boundary() {
+        let mut runtime = loop_under_test();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "indicator_flip_cooldown_seconds": 120.0,
+            "indicator_reentry_cooldown_seconds": 60.0,
+            "indicator_reentry_requires_signal_reset": true
+        }));
+        let mut buy = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        assert!(runtime.apply_indicator_order_guards(&mut buy, 1_700_000_000_000).is_none());
+        assert_eq!(buy.signal.as_deref(), Some("BUY"));
+        runtime.record_indicator_order_actions(&buy, 1_700_000_000_000);
+
+        let mut sell = StrategySignalDecision {
+            signal: Some("SELL".to_owned()),
+            description: "RSI >= 70.00 -> SELL".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "sell".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        assert!(runtime
+            .apply_indicator_order_guards(&mut sell, 1_700_000_010_000)
+            .is_some());
+        assert!(sell.signal.is_none());
+
+        runtime.record_indicator_close("rsi", "BUY", 1_700_000_020_000);
+        let mut flip_after_close = StrategySignalDecision {
+            signal: Some("SELL".to_owned()),
+            description: "RSI >= 70.00 -> SELL".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "sell".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        assert!(runtime
+            .apply_indicator_order_guards(&mut flip_after_close, 1_700_000_021_000)
+            .is_none());
+        assert_eq!(flip_after_close.signal.as_deref(), Some("SELL"));
+
+        assert!(runtime
+            .apply_indicator_order_guards(&mut buy, 1_700_000_021_000)
+            .is_some());
+        assert!(buy.signal.is_none());
+    }
+
+    #[test]
+    fn native_runtime_risk_gate_matches_python_stop_loss_scopes() {
+        let mut runtime = loop_under_test();
+        let positions = vec![NativeRuntimeRiskPositionInput {
+            symbol: "BTCUSDT".to_owned(),
+            side: "LONG".to_owned(),
+            quantity: 1.0,
+            entry_price: 100.0,
+            leverage: 5.0,
+            margin_usdt: 20.0,
+            mark_price: 70.0,
+            dual_side: true,
+            opened_at_ms: 1_700_000_000_000,
+        }];
+
+        for (scope, mode, usdt, percent, expected_reason) in [
+            ("per_trade", "percent", 0.0, 20.0, "per_trade_stop_loss"),
+            ("cumulative", "usdt", 4.0, 0.0, "cumulative_stop_loss"),
+        ] {
+            runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+                "stop_loss": {
+                    "enabled": true,
+                    "mode": mode,
+                    "scope": scope,
+                    "usdt": usdt,
+                    "percent": percent
+                }
+            }));
+            let directives = runtime.evaluate_stop_loss("futures", &positions, 1_000.0);
+            assert_eq!(directives.len(), 1, "scope={scope}");
+            assert_eq!(directives[0].reason, expected_reason, "scope={scope}");
+        }
+
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "stop_loss": {
+                "enabled": true,
+                "mode": "percent",
+                "scope": "entire_account",
+                "percent": 2.0
+            }
+        }));
+        let account_directives = runtime.evaluate_stop_loss("futures", &positions, 1_000.0);
+        assert_eq!(account_directives.len(), 1);
+        assert!(
+            account_directives[0]
+                .reason
+                .starts_with("entire-account-percent-limit")
+        );
+        assert_eq!(account_directives[0].close_side, "CLOSE_ALL");
     }
 
     #[test]
@@ -2911,6 +4181,8 @@ mod tests {
         let runtime = loop_under_test();
         let balance = BinanceAccountSnapshot {
             asset: "USDT".to_owned(),
+            total_balance: 1_000.0,
+            available_balance: 900.0,
             usdt_balance: 1_000.0,
             total_usdt_balance: 1_000.0,
             available_usdt_balance: 900.0,
@@ -2944,6 +4216,8 @@ mod tests {
         let runtime = loop_under_test();
         let balance = BinanceAccountSnapshot {
             asset: "USDT".to_owned(),
+            total_balance: 1_000.0,
+            available_balance: 900.0,
             usdt_balance: 1_000.0,
             total_usdt_balance: 1_000.0,
             available_usdt_balance: 900.0,
@@ -2971,6 +4245,8 @@ mod tests {
         let runtime = loop_under_test();
         let balance = BinanceAccountSnapshot {
             asset: "USDT".to_owned(),
+            total_balance: 1_000.0,
+            available_balance: 900.0,
             usdt_balance: 1_000.0,
             total_usdt_balance: 1_000.0,
             available_usdt_balance: 900.0,
@@ -3001,6 +4277,8 @@ mod tests {
         let runtime = loop_under_test();
         let balance = BinanceAccountSnapshot {
             asset: "USDT".to_owned(),
+            total_balance: 1_000.0,
+            available_balance: 900.0,
             usdt_balance: 1_000.0,
             total_usdt_balance: 1_000.0,
             available_usdt_balance: 900.0,

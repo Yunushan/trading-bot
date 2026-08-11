@@ -147,6 +147,10 @@ impl BinanceRestMarketDataClient {
         self.url_for_path(self.market.ticker_price_path())
     }
 
+    fn max_klines_limit(&self) -> usize {
+        if self.market.is_futures() { 1500 } else { 1000 }
+    }
+
     pub fn fetch_usdt_symbols(
         &self,
         sort_by_volume: bool,
@@ -172,7 +176,7 @@ impl BinanceRestMarketDataClient {
     ) -> Result<Vec<BinanceKlineCandle>> {
         let clean_symbol = normalize_symbol(symbol.as_ref())?;
         let clean_interval = normalize_interval(interval.as_ref())?;
-        let safe_limit = limit.clamp(10, 1000);
+        let safe_limit = limit.clamp(10, self.max_klines_limit());
         if let Some(base_interval) = custom_interval_base(&clean_interval, self.market)? {
             let requested_interval_seconds = interval_seconds(&clean_interval)?;
             let base_seconds = interval_seconds(base_interval)?;
@@ -192,13 +196,96 @@ impl BinanceRestMarketDataClient {
         self.fetch_native_klines(&clean_symbol, &clean_interval, safe_limit)
     }
 
+    /// Fetch candles for an inclusive millisecond range, following the same
+    /// paginated start/end semantics as Python's Binance range loader.
+    pub fn fetch_klines_range(
+        &self,
+        symbol: impl AsRef<str>,
+        interval: impl AsRef<str>,
+        start_time_ms: i64,
+        end_time_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<BinanceKlineCandle>> {
+        if end_time_ms <= start_time_ms {
+            bail!("end_time_ms must be greater than start_time_ms");
+        }
+        let clean_symbol = normalize_symbol(symbol.as_ref())?;
+        let clean_interval = normalize_interval(interval.as_ref())?;
+        let safe_limit = limit.clamp(1, self.max_klines_limit());
+
+        if let Some(base_interval) = custom_interval_base(&clean_interval, self.market)? {
+            let requested_interval_ms = interval_millis(&clean_interval)?;
+            let base_interval_ms = interval_millis(base_interval)?;
+            let factor = (requested_interval_ms / base_interval_ms).max(1) as usize;
+            let fetch_end = end_time_ms.saturating_add(requested_interval_ms);
+            let base_limit = safe_limit
+                .saturating_mul(factor)
+                .max(factor)
+                .min(self.max_klines_limit());
+            let base_candles = self.fetch_klines_range(
+                &clean_symbol,
+                base_interval,
+                start_time_ms,
+                fetch_end,
+                base_limit,
+            )?;
+            let mut aggregated = aggregate_klines_to_interval(&base_candles, &clean_interval)?;
+            aggregated.retain(|candle| {
+                candle.open_time_ms >= start_time_ms && candle.open_time_ms <= end_time_ms
+            });
+            if aggregated.is_empty() {
+                bail!("no valid kline candles returned for requested range");
+            }
+            return Ok(aggregated);
+        }
+
+        let interval_step_ms = interval_cursor_step_millis(&clean_interval)?;
+        let mut current = start_time_ms;
+        let mut collected = Vec::new();
+        for _ in 0..10_000 {
+            if current >= end_time_ms {
+                break;
+            }
+            let page = self.fetch_native_klines_range(
+                &clean_symbol,
+                &clean_interval,
+                current,
+                end_time_ms,
+                safe_limit,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            let last_open = page
+                .last()
+                .map(|candle| candle.open_time_ms)
+                .unwrap_or(current);
+            collected.extend(page);
+            let next = last_open.saturating_add(interval_step_ms.max(1));
+            if next <= current {
+                break;
+            }
+            current = next;
+        }
+
+        collected.sort_by_key(|candle| candle.open_time_ms);
+        collected.dedup_by_key(|candle| candle.open_time_ms);
+        collected.retain(|candle| {
+            candle.open_time_ms >= start_time_ms && candle.open_time_ms <= end_time_ms
+        });
+        if collected.is_empty() {
+            bail!("no valid kline candles returned for requested range");
+        }
+        Ok(collected)
+    }
+
     fn fetch_native_klines(
         &self,
         clean_symbol: &str,
         clean_interval: &str,
         safe_limit: usize,
     ) -> Result<Vec<BinanceKlineCandle>> {
-        let safe_limit = safe_limit.clamp(10, 1000).to_string();
+        let safe_limit = safe_limit.clamp(10, self.max_klines_limit()).to_string();
         let payload = self.get_json(
             &self.klines_url(),
             &[
@@ -207,6 +294,33 @@ impl BinanceRestMarketDataClient {
                 ("limit", safe_limit.as_str()),
             ],
         )?;
+        parse_klines(&payload)
+    }
+
+    fn fetch_native_klines_range(
+        &self,
+        clean_symbol: &str,
+        clean_interval: &str,
+        start_time_ms: i64,
+        end_time_ms: i64,
+        safe_limit: usize,
+    ) -> Result<Vec<BinanceKlineCandle>> {
+        let start = start_time_ms.to_string();
+        let end = end_time_ms.to_string();
+        let limit = safe_limit.clamp(1, self.max_klines_limit()).to_string();
+        let payload = self.get_json(
+            &self.klines_url(),
+            &[
+                ("symbol", clean_symbol),
+                ("interval", clean_interval),
+                ("startTime", start.as_str()),
+                ("endTime", end.as_str()),
+                ("limit", limit.as_str()),
+            ],
+        )?;
+        if payload.as_array().is_some_and(Vec::is_empty) {
+            return Ok(Vec::new());
+        }
         parse_klines(&payload)
     }
 
@@ -530,6 +644,13 @@ fn interval_millis(interval: &str) -> Result<i64> {
         bail!("interval must resolve to whole milliseconds");
     }
     Ok(rounded as i64)
+}
+
+fn interval_cursor_step_millis(interval: &str) -> Result<i64> {
+    if interval == "1M" {
+        return Ok(30 * 86_400_000);
+    }
+    interval_millis(interval)
 }
 
 fn interval_amount_and_unit_multiplier(lower: &str) -> Option<(&str, f64)> {

@@ -1,6 +1,7 @@
 use trading_bot_contracts::AppIdentity;
 
 pub mod account;
+pub mod backtest_batch_runtime;
 pub mod backtest_runtime;
 pub mod chart_heatmap;
 pub mod config_persistence;

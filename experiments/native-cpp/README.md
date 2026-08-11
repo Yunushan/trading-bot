@@ -2,14 +2,14 @@
 
 This directory contains the native Qt/C++ desktop path for the trading-bot workspace.
 
-Today it is a C++ desktop re-platforming path with source-contract parity against the Python/PyQt app in `Languages/Python`. Python remains the shared contract source of truth. The C++ dashboard owns its implemented Binance USD-M Futures order path directly; other venues remain unsupported or evidence-gated.
+Today it is a C++ desktop re-platforming path with source-contract parity against the Python/PyQt app in `Languages/Python`. Python remains the shared contract source of truth. The C++ dashboard owns its implemented Binance USD-M Futures, Coin-M Futures, and Spot account/order paths directly; other venues remain unsupported or evidence-gated.
 
 ## Current role
 
 - Native Qt Widgets desktop shell
 - C++23 / Qt 6 build target
 - Dashboard, chart, positions, backtest, and web/runtime slices under active restructuring
-- Native exchange connectivity experiments, with Binance as the current implemented connector path inside the C++ tree
+- Native exchange connectivity experiments, with Binance USD-M Futures, Coin-M Futures, and Spot as the current implemented connector paths inside the C++ tree
 - Dashboard LLM settings for cloud providers and local/private OpenAI-compatible endpoints
 
 ## Current status
@@ -19,7 +19,7 @@ Today it is a C++ desktop re-platforming path with source-contract parity agains
 | Native desktop shell | Active development | Real source tree exists and builds locally |
 | Python source-contract parity | Complete | All tracked Python-source parity domains have C++ helper coverage, UI/service delegation, or native regression tests |
 | Standalone runtime/product parity | Not complete | Requires native execution ownership plus external release, platform, credential, and installer evidence |
-| Primary exchange implementation | Binance | Current connector code in this workspace is Binance-specific |
+| Primary exchange implementation | Binance markets | Current connector code covers USD-M Futures, Coin-M Futures, and Spot; other venues remain Python-owned or evidence-gated |
 | Cross-platform Qt build path | Supported for local builds | Windows, macOS, and Linux toolchains are expected |
 
 ## Python app contract parity audit
@@ -39,7 +39,7 @@ platform/installer/credential-gated evidence.
 | Strategy runtime | Complete indicator output keys, signal threshold/index semantics, controls normalization, override provenance, and worker lifecycle parity helpers/tests | Complete for this domain |
 | Exchange connectors | Complete connector support metadata, Python backend catalog, non-Binance rejection reasons, rate-limit/backoff, and diagnostic health snapshots | Complete for this domain |
 | Account, portfolio, and positions | Complete portfolio DTOs, history/allocation ledgers, close-all cache reconciliation, and native parity tests | Complete for this domain |
-| Order execution and risk | Complete native Binance USD-M Futures order audit, preflight, circuit breaker, exchange filters, signed market/limit submission, retry/fallback, close/stop/shutdown guards, and risk behavior | Complete for the implemented Binance Futures scope; other venues remain gated |
+| Order execution and risk | Complete native Binance USD-M/Coin-M Futures and Spot order audit, preflight, circuit breaker, exchange filters, signed market/limit or Spot market submission, retry/fallback, close/stop/shutdown guards, and risk behavior | Complete for the implemented Binance market scope; other venues remain gated |
 | Backtest engine | Native C++ historical simulator and batch optimizer are the default local backend, with generated Python indicator defaults, paginated Binance candle loading, cancellation, bounded ranking, dashboard import, and a Python Service API compatibility backend | Complete for the implemented Binance backtest domain; live-trading ownership remains separate |
 | Charts and heatmaps | Complete chart state payloads, TradingView interval aliases, lightweight asset fallbacks, safe-mode guards, and liquidation provider catalog tests | Complete for this domain |
 | Logs, terminal, diagnostics | Complete controlled terminal UI delegated to the Python Service API, service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests | Complete for this domain |

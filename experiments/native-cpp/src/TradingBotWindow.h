@@ -2,6 +2,7 @@
 
 #include "BinanceRestClient.h"
 #include "NativeOrderSafety.h"
+#include "NativeStrategyRuntime.h"
 
 #include <QMainWindow>
 #include <QFutureWatcher>
@@ -292,6 +293,11 @@ private:
     QMap<QString, QVector<BinanceRestClient::KlineCandle>> dashboardRuntimeSignalCandles_;
     QMap<QString, bool> dashboardRuntimeSignalLastClosed_;
     QMap<QString, qint64> dashboardRuntimeSignalUpdateMs_;
+    QMap<QString, NativeStrategyRuntime::IndicatorSignalConfirmationTracker>
+        dashboardRuntimeIndicatorSignalTrackers_;
+    QMap<QString, NativeStrategyRuntime::IndicatorOrderGuardState>
+        dashboardRuntimeIndicatorOrderGuardStates_;
+    QMap<QString, qint64> dashboardRuntimeIndicatorReentryBlocks_;
     QList<QWidget *> dashboardRuntimeLockWidgets_;
     QCheckBox *dashboardLeadTraderEnableCheck_;
     QComboBox *dashboardLeadTraderCombo_;
@@ -323,6 +329,7 @@ private:
         double leverage = 1.0;
         double roiBasisUsdt = 0.0;
         double displayMarginUsdt = 0.0;
+        qint64 openedAtMs = 0;
     };
     QMap<QString, RuntimePosition> dashboardRuntimeOpenPositions_;
 
@@ -343,6 +350,7 @@ private:
     QLabel *positionsBotTimeLabel_;
     double positionsLastTotalBalanceUsdt_;
     double positionsLastAvailableBalanceUsdt_;
+    QString positionsBalanceAsset_ = QStringLiteral("USDT");
     QString positionsLiveActivePnlContextKey_;
     bool positionsLiveActivePnlValid_ = false;
     double positionsLiveActivePnlUsdt_ = 0.0;

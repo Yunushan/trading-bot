@@ -48,6 +48,7 @@ void TradingBotWindow::refreshDashboardBalance() {
                 const double total = payload.value(QStringLiteral("total_balance")).toVariant().toDouble(&totalOk);
                 const double available = payload.value(QStringLiteral("available_balance")).toVariant().toDouble(&availableOk);
                 const QString currency = payload.value(QStringLiteral("balance_currency")).toString(QStringLiteral("USDT"));
+                positionsBalanceAsset_ = currency.trimmed().isEmpty() ? QStringLiteral("USDT") : currency.trimmed().toUpper();
                 const QString source = payload.value(QStringLiteral("source")).toString(QStringLiteral("Python Service API"));
                 if (totalOk && qIsFinite(total)) {
                     positionsLastTotalBalanceUsdt_ = std::max(0.0, total);
@@ -136,16 +137,17 @@ void TradingBotWindow::refreshDashboardBalance() {
     }
 
     if (dashboardBalanceLabel_) {
-        const double totalValue = std::max(0.0, (result.totalUsdtBalance > 0.0) ? result.totalUsdtBalance : result.usdtBalance);
-        const double availableValue = std::max(0.0, (result.availableUsdtBalance > 0.0) ? result.availableUsdtBalance : totalValue);
+        const double totalValue = std::max(0.0, (result.totalBalance > 0.0) ? result.totalBalance : result.totalUsdtBalance);
+        const double availableValue = std::max(0.0, (result.availableBalance > 0.0) ? result.availableBalance : result.availableUsdtBalance);
+        positionsBalanceAsset_ = result.asset.trimmed().isEmpty() ? QStringLiteral("USDT") : result.asset.trimmed().toUpper();
         positionsLastTotalBalanceUsdt_ = totalValue;
         positionsLastAvailableBalanceUsdt_ = availableValue;
         const QString totalText = QString::number(totalValue, 'f', 3);
         const QString availableText = QString::number(availableValue, 'f', 3);
         if (qAbs(totalValue - availableValue) > 1e-6) {
-            dashboardBalanceLabel_->setText(QString("Total %1 USDT | Available %2 USDT").arg(totalText, availableText));
+            dashboardBalanceLabel_->setText(QString("Total %1 %2 | Available %3 %2").arg(totalText, positionsBalanceAsset_, availableText));
         } else {
-            dashboardBalanceLabel_->setText(QString("%1 USDT").arg(totalText));
+            dashboardBalanceLabel_->setText(QString("%1 %2").arg(totalText, positionsBalanceAsset_));
         }
         dashboardBalanceLabel_->setStyleSheet("color: #22c55e; font-weight: 700;");
     }
@@ -177,6 +179,7 @@ void TradingBotWindow::syncDashboardPaperBalanceUi() {
     if (!paperTrading) {
         positionsLastTotalBalanceUsdt_ = std::numeric_limits<double>::quiet_NaN();
         positionsLastAvailableBalanceUsdt_ = std::numeric_limits<double>::quiet_NaN();
+        positionsBalanceAsset_ = QStringLiteral("USDT");
         if (dashboardBalanceLabel_) {
             dashboardBalanceLabel_->setText(QStringLiteral("N/A"));
             dashboardBalanceLabel_->setStyleSheet("color: #fbbf24; font-weight: 700;");
@@ -188,6 +191,7 @@ void TradingBotWindow::syncDashboardPaperBalanceUi() {
     const double paperBalance = currentDashboardPaperBalanceUsdt();
     positionsLastTotalBalanceUsdt_ = paperBalance;
     positionsLastAvailableBalanceUsdt_ = paperBalance;
+    positionsBalanceAsset_ = QStringLiteral("USDT");
     if (dashboardBalanceLabel_) {
         dashboardBalanceLabel_->setText(
             QStringLiteral("Paper balance: %1 USDT")

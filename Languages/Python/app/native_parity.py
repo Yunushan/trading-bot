@@ -36,7 +36,7 @@ from .gui.runtime.composition.module_state_constants import (
     _connector_options,
 )
 from .gui.runtime.ui.theme_styles import DESIGN_OPTIONS
-from .integrations.llm.providers import _PROVIDER_SPECS
+from .integrations.llm.providers import _PROVIDER_SPECS, llm_provider_choices
 from .service.api_contract import (
     SERVICE_API_ROUTE_METHODS,
     SERVICE_API_ROUTE_PATHS,
@@ -44,7 +44,7 @@ from .service.api_contract import (
     SERVICE_BACKTEST_RUN_REQUEST_FIELDS,
     service_api_contract_payload,
 )
-from .settings.backtest import BacktestSettings
+from .settings.backtest import BacktestSettings, MDD_LOGIC_OPTIONS
 from .settings.execution import ExecutionSettings
 from .settings.exchange_support import (
     BROKER_MARKET_SCOPES,
@@ -57,10 +57,15 @@ from .settings.indicators import (
     build_backtest_indicator_defaults,
     build_runtime_indicator_defaults,
 )
+from .settings.risk import RiskManagementSettings, STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS
 from .settings.validation import (
+    _ACCOUNT_MODE_CHOICES,
     _ACCOUNT_TYPE_CHOICES,
+    _ASSETS_MODE_CHOICES,
     _BACKTEST_EXECUTION_BACKEND_CHOICES,
     _CHART_VIEW_MODE_CHOICES,
+    _LLM_REASONING_EFFORT_CHOICES,
+    _LLM_USE_FOR_CHOICES,
     _LOGIC_CHOICES,
     _MARGIN_MODE_CHOICES,
     _OPTIMIZER_METRIC_CHOICES,
@@ -68,6 +73,7 @@ from .settings.validation import (
     _ORDER_TYPE_CHOICES,
     _POSITION_MODE_CHOICES,
     _SCAN_SCOPE_CHOICES,
+    _SIDE_CHOICES,
     _TIF_CHOICES,
 )
 
@@ -336,6 +342,30 @@ def _llm_provider_payload() -> list[dict[str, object]]:
     ]
 
 
+def _config_choice_maps() -> dict[str, dict[str, str]]:
+    return {
+        "account_type": dict(_ACCOUNT_TYPE_CHOICES),
+        "margin_mode": dict(_MARGIN_MODE_CHOICES),
+        "position_mode": dict(_POSITION_MODE_CHOICES),
+        "assets_mode": dict(_ASSETS_MODE_CHOICES),
+        "account_mode": dict(_ACCOUNT_MODE_CHOICES),
+        "side": dict(_SIDE_CHOICES),
+        "order_type": dict(_ORDER_TYPE_CHOICES),
+        "tif": dict(_TIF_CHOICES),
+        "logic": dict(_LOGIC_CHOICES),
+        "mdd_logic": {item: item for item in MDD_LOGIC_OPTIONS},
+        "stop_loss_mode": {item: item for item in STOP_LOSS_MODE_ORDER},
+        "stop_loss_scope": {item: item for item in STOP_LOSS_SCOPE_OPTIONS},
+        "scan_scope": dict(_SCAN_SCOPE_CHOICES),
+        "optimizer_mode": dict(_OPTIMIZER_MODE_CHOICES),
+        "optimizer_metric": dict(_OPTIMIZER_METRIC_CHOICES),
+        "backtest_execution_backend": dict(_BACKTEST_EXECUTION_BACKEND_CHOICES),
+        "chart_view_mode": dict(_CHART_VIEW_MODE_CHOICES),
+        "llm_use_for": dict(_LLM_USE_FOR_CHOICES),
+        "llm_reasoning_effort": dict(_LLM_REASONING_EFFORT_CHOICES),
+    }
+
+
 def _label_map_payload(values: dict[str, str]) -> list[dict[str, str]]:
     return [{"key": str(key), "label": str(label)} for key, label in values.items()]
 
@@ -402,6 +432,20 @@ def _rust_environment_dependency_payload() -> list[dict[str, str]]:
     return payload
 
 
+def native_python_risk_defaults() -> dict[str, object]:
+    """Return the effective Python strategy-risk defaults for native consumers.
+
+    ``RiskManagementSettings`` retains the UI setting default for live candle
+    values, while ``StrategyEngine`` deliberately defaults that runtime option
+    to ``False`` when it is absent. Native runtimes must consume the effective
+    engine default so the generated contract describes execution behavior.
+    """
+
+    defaults = RiskManagementSettings().to_config_dict()
+    defaults["indicator_use_live_values"] = False
+    return defaults
+
+
 def native_python_source_contract_payload() -> dict[str, Any]:
     route_methods = {name: list(methods) for name, methods in SERVICE_API_ROUTE_METHODS.items()}
     connector_options = [{"label": label, "key": key} for label, key in _connector_options()]
@@ -417,6 +461,7 @@ def native_python_source_contract_payload() -> dict[str, Any]:
     ]
     execution_defaults = ExecutionSettings()
     backtest_defaults = BacktestSettings()
+    risk_defaults = native_python_risk_defaults()
     cpp_contract_parity = all(domain.cpp_full_parity for domain in NATIVE_PARITY_DOMAINS)
     rust_contract_parity = all(domain.rust_full_parity for domain in NATIVE_PARITY_DOMAINS)
     return {
@@ -509,7 +554,10 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         },
         "default_execution": execution_defaults.to_config_dict(),
         "default_backtest": backtest_defaults.to_config_dict(),
+        "risk_defaults": risk_defaults,
         "llm_providers": _llm_provider_payload(),
+        "llm_provider_choices": dict(llm_provider_choices()),
+        "config_choice_maps": _config_choice_maps(),
         "exchange_support": {
             "supported_brokers": list(SUPPORTED_BROKERS),
             "supported_forex_brokers": list(SUPPORTED_FOREX_BROKERS),
@@ -567,6 +615,13 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "connectors": list(payload["ui_options"]["connectors"]),
         "llm_providers": list(payload["llm_providers"]),
         "llm_provider_keys": [provider.key for provider in _PROVIDER_SPECS],
+        "llm_provider_choices": [
+            {"key": key, "value": value}
+            for key, value in payload["llm_provider_choices"].items()
+        ],
+        "config_choice_maps": {
+            name: dict(values) for name, values in payload["config_choice_maps"].items()
+        },
         "connector_keys": [key for _label, key in _connector_options()],
         "supported_brokers": list(payload["exchange_support"]["supported_brokers"]),
         "supported_forex_brokers": list(payload["exchange_support"]["supported_forex_brokers"]),
@@ -611,6 +666,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "backtest_templates": list(payload["ui_options"]["backtest_templates"]),
         "default_execution": dict(payload["default_execution"]),
         "default_backtest": dict(payload["default_backtest"]),
+        "risk_defaults": dict(payload["risk_defaults"]),
         "cpp_contract_parity": payload["contract_parity"]["cpp"],
         "rust_contract_parity": payload["contract_parity"]["rust"],
         "cpp_standalone_runtime_ready": payload["standalone_runtime_ready"]["cpp"],

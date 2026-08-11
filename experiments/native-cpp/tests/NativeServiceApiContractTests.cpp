@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QHostAddress>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -77,9 +78,9 @@ int main(int argc, char **argv) {
         !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("ccxt")),
         QStringLiteral("C++ native runtime should leave CCXT provider routing Python-owned"));
     check(
-        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
             QStringLiteral("binance-sdk-spot")),
-        QStringLiteral("C++ native runtime should leave Binance Spot Python-owned"));
+        QStringLiteral("C++ native runtime should own Python's Binance Spot connector"));
 
     const QMap<QString, QJsonObject> backtestConfigs =
         TradingBotWindowSupport::pythonSourceBacktestIndicatorConfigs();
@@ -202,6 +203,123 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ Coin-M route should parse DAPI kline data"));
     check(observedCoinMarketRequest.startsWith("GET /dapi/v1/klines?"),
           QStringLiteral("C++ Coin-M route should request the DAPI kline endpoint"));
+
+    QTcpServer coinBalanceServer;
+    check(coinBalanceServer.listen(QHostAddress::LocalHost, 0),
+          QStringLiteral("local Coin-M balance HTTP test server should listen"));
+    QByteArray observedCoinBalanceRequest;
+    QObject::connect(&coinBalanceServer, &QTcpServer::newConnection,
+                     [&coinBalanceServer, &observedCoinBalanceRequest]() {
+                         QTcpSocket *socket = coinBalanceServer.nextPendingConnection();
+                         QObject::connect(socket, &QTcpSocket::readyRead,
+                                          [socket, &observedCoinBalanceRequest]() {
+                                              observedCoinBalanceRequest += socket->readAll();
+                                              if (!observedCoinBalanceRequest.contains("\r\n\r\n")) {
+                                                  return;
+                                              }
+                                              const QByteArray body =
+                                                  R"([{"asset":"BTC","balance":"0.75","availableBalance":"0.50"}])";
+                                              writeJsonResponseAndClose(socket, body);
+                                          });
+                     });
+    const auto coinBalance = BinanceRestClient::fetchUsdtBalance(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        true,
+        false,
+        5000,
+        QStringLiteral("http://127.0.0.1:%1/dapi").arg(coinBalanceServer.serverPort()));
+    check(coinBalance.ok, QStringLiteral("C++ Coin-M balance should parse a collateral row"));
+    check(coinBalance.asset == QStringLiteral("BTC"),
+          QStringLiteral("C++ Coin-M balance should preserve the collateral asset"));
+    check(std::abs(coinBalance.totalBalance - 0.75) < 1e-9,
+          QStringLiteral("C++ Coin-M balance should expose canonical total collateral"));
+    check(std::abs(coinBalance.availableBalance - 0.50) < 1e-9,
+          QStringLiteral("C++ Coin-M balance should expose canonical available collateral"));
+    check(observedCoinBalanceRequest.startsWith("GET /dapi/v1/balance?"),
+          QStringLiteral("C++ Coin-M balance should request the DAPI balance endpoint"));
+
+    QTcpServer spotServer;
+    check(spotServer.listen(QHostAddress::LocalHost, 0),
+          QStringLiteral("local Spot HTTP test server should listen"));
+    QByteArray observedSpotExchangeInfoRequest;
+    QByteArray observedSpotBalanceRequest;
+    QByteArray observedSpotOrderRequest;
+    QObject::connect(&spotServer, &QTcpServer::newConnection,
+                     [&spotServer, &observedSpotExchangeInfoRequest, &observedSpotBalanceRequest, &observedSpotOrderRequest]() {
+        QTcpSocket *socket = spotServer.nextPendingConnection();
+        QObject::connect(socket, &QTcpSocket::readyRead,
+                         [socket, &observedSpotExchangeInfoRequest, &observedSpotBalanceRequest, &observedSpotOrderRequest]() {
+            const QByteArray request = socket->readAll();
+            if (!request.contains("\r\n\r\n")) {
+                return;
+            }
+            const QByteArray requestLine = request.left(request.indexOf('\n')).trimmed();
+            if (requestLine.startsWith("GET /api/v3/account?")) {
+                observedSpotBalanceRequest = requestLine;
+                writeJsonResponseAndClose(
+                    socket,
+                    R"({"balances":[{"asset":"USDT","free":"100","locked":"0"},{"asset":"ETH","free":"0.25","locked":"0"}]})");
+            } else if (requestLine.startsWith("GET /api/v3/exchangeInfo")) {
+                observedSpotExchangeInfoRequest = requestLine;
+                writeJsonResponseAndClose(
+                    socket,
+                    R"({"symbols":[{"symbol":"ETHUSDT","status":"TRADING","baseAsset":"ETH","quoteAsset":"USDT","baseAssetPrecision":8,"quotePrecision":8,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001","maxQty":"100"},{"filterType":"MIN_NOTIONAL","minNotional":"5"},{"filterType":"PRICE_FILTER","tickSize":"0.01"}]}]})");
+            } else if (requestLine.startsWith("POST /api/v3/order?")) {
+                observedSpotOrderRequest = requestLine;
+                writeJsonResponseAndClose(
+                    socket,
+                    R"({"symbol":"ETHUSDT","side":"BUY","orderId":42,"status":"NEW","executedQty":"0.1","cummulativeQuoteQty":"200"})");
+            }
+        });
+    });
+    const QString spotBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(spotServer.serverPort());
+    const auto spotBalances = BinanceRestClient::fetchSpotBalances(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        false,
+        5000,
+        spotBaseUrl);
+    check(spotBalances.ok && spotBalances.balances.size() == 2,
+          QStringLiteral("C++ Spot account should parse all balance rows"));
+    check(spotBalances.ok && spotBalances.balances.at(1).asset == QStringLiteral("ETH")
+              && std::abs(spotBalances.balances.at(1).free - 0.25) < 1e-12,
+          QStringLiteral("C++ Spot account should preserve free asset quantities"));
+    check(observedSpotBalanceRequest.startsWith("GET /api/v3/account?"),
+          QStringLiteral("C++ Spot account should request the signed Spot account endpoint"));
+    const auto spotFilters = BinanceRestClient::fetchSpotSymbolFilters(
+        QStringLiteral("ethusdt"), false, 5000, spotBaseUrl);
+    check(spotFilters.ok, QStringLiteral("C++ Spot exchangeInfo should parse symbol filters"));
+    check(std::abs(spotFilters.stepSize - 0.001) < 1e-12,
+          QStringLiteral("C++ Spot filters should preserve LOT_SIZE step size"));
+    check(std::abs(spotFilters.minNotional - 5.0) < 1e-12,
+          QStringLiteral("C++ Spot filters should preserve MIN_NOTIONAL"));
+    check(spotFilters.status == QStringLiteral("TRADING")
+              && spotFilters.baseAsset == QStringLiteral("ETH")
+              && spotFilters.quoteAsset == QStringLiteral("USDT"),
+          QStringLiteral("C++ Spot filters should preserve symbol trading metadata"));
+    check(spotFilters.quantityPrecision == 8,
+          QStringLiteral("C++ Spot filters should fall back to baseAssetPrecision"));
+    check(observedSpotExchangeInfoRequest.startsWith("GET /api/v3/exchangeInfo "),
+          QStringLiteral("C++ Spot filters should request the Spot exchangeInfo endpoint"));
+
+    const auto spotOrder = BinanceRestClient::placeSpotMarketOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("ethusdt"),
+        QStringLiteral("buy"),
+        0.1,
+        false,
+        5000,
+        spotBaseUrl);
+    check(spotOrder.ok && spotOrder.orderId == QStringLiteral("42")
+              && spotOrder.status == QStringLiteral("NEW"),
+          QStringLiteral("C++ Spot market order should require and parse a successful response"));
+    check(observedSpotOrderRequest.startsWith("POST /api/v3/order?"),
+          QStringLiteral("C++ Spot order should request the Spot order endpoint"));
+    check(!observedSpotOrderRequest.contains("positionSide")
+              && !observedSpotOrderRequest.contains("reduceOnly"),
+          QStringLiteral("C++ Spot order should not send Futures-only fields"));
 
     const QStringList dashboardResponseFields =
         TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("dashboard"));

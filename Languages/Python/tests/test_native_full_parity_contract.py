@@ -17,6 +17,12 @@ from app.service.api_contract import (  # noqa: E402
 )
 from app.settings.backtest import BacktestSettings  # noqa: E402
 from app.settings.execution import ExecutionSettings  # noqa: E402
+from app.settings.validation import (  # noqa: E402
+    _ALLOWED_BACKTEST_CONFIG_KEYS,
+    _ALLOWED_CHART_CONFIG_KEYS,
+    _ALLOWED_RUNTIME_CONFIG_KEYS,
+    validate_runtime_config,
+)
 
 
 def _read(path: Path) -> str:
@@ -38,6 +44,116 @@ def _assert_contains_in_order(test: unittest.TestCase, text: str, needles: list[
 
 
 class NativeFullParityContractTests(unittest.TestCase):
+    def test_native_config_allow_lists_match_python_source(self):
+        cpp_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeConfigPersistence.cpp")
+        rust_source = _read(
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "config_persistence.rs"
+        )
+
+        def quoted_keys(text: str) -> set[str]:
+            return set(re.findall(r'QStringLiteral\("([^"]+)"\)|"([^"]+)"', text))
+
+        def normalized_matches(text: str) -> set[str]:
+            return {left or right for left, right in quoted_keys(text)}
+
+        cpp_sections = {
+            "runtime": _section(cpp_source, "const QStringList &runtimeAllowedKeys()", "const QStringList &chartAllowedKeys()"),
+            "chart": _section(cpp_source, "const QStringList &chartAllowedKeys()", "const QStringList &backtestAllowedKeys()"),
+            "backtest": _section(cpp_source, "const QStringList &backtestAllowedKeys()", "void validateAllowedKeys("),
+        }
+        rust_sections = {
+            "runtime": _section(rust_source, "const RUNTIME_ALLOWED_KEYS", "const CHART_ALLOWED_KEYS"),
+            "chart": _section(rust_source, "const CHART_ALLOWED_KEYS", "const BACKTEST_ALLOWED_KEYS"),
+            "backtest": _section(rust_source, "const BACKTEST_ALLOWED_KEYS", "#[derive(Clone, Copy)]"),
+        }
+        expected = {
+            "runtime": set(_ALLOWED_RUNTIME_CONFIG_KEYS),
+            "chart": set(_ALLOWED_CHART_CONFIG_KEYS),
+            "backtest": set(_ALLOWED_BACKTEST_CONFIG_KEYS),
+        }
+        for name, keys in expected.items():
+            self.assertEqual(normalized_matches(cpp_sections[name]), keys, f"C++ {name} config keys drifted")
+            self.assertEqual(normalized_matches(rust_sections[name]), keys, f"Rust {name} config keys drifted")
+
+    def test_backtest_symbol_source_preserves_python_text_contract(self):
+        validated = validate_runtime_config({"backtest": {"symbol_source": "margin"}})
+        self.assertEqual(validated["backtest"]["symbol_source"], "margin")
+
+        cpp_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeConfigPersistence.cpp")
+        rust_source = _read(
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "config_persistence.rs"
+        )
+        self.assertIn(
+            'validateText(&backtest, QStringLiteral("symbol_source"), issues, QStringLiteral("backtest"))',
+            cpp_source,
+        )
+        rust_backtest_validation = _section(
+            rust_source,
+            "fn validate_backtest_config(",
+            "fn validate_datetime_text(",
+        )
+        self.assertRegex(
+            rust_backtest_validation,
+            r'validate_text\s*\(\s*&mut backtest,\s*"symbol_source",\s*issues,\s*"backtest",\s*false\s*,?\s*\)',
+        )
+
+    def test_native_text_config_fields_preserve_python_contract(self):
+        validated = validate_runtime_config(
+            {
+                "mode": "custom-mode",
+                "connector_backend": "custom-backend",
+                "indicator_source": "custom-source",
+                "theme": "custom-theme",
+                "design": "custom-design",
+                "selected_exchange": "custom-exchange",
+                "backtest": {
+                    "connector_backend": "custom-backtest-backend",
+                    "symbol_source": "custom-symbol-source",
+                },
+            }
+        )
+        self.assertEqual(validated["mode"], "custom-mode")
+        self.assertEqual(validated["connector_backend"], "custom-backend")
+        self.assertEqual(validated["indicator_source"], "custom-source")
+        self.assertEqual(validated["theme"], "custom-theme")
+        self.assertEqual(validated["design"], "custom-design")
+        self.assertEqual(validated["selected_exchange"], "custom-exchange")
+        self.assertEqual(validated["backtest"]["connector_backend"], "custom-backtest-backend")
+        self.assertEqual(validated["backtest"]["symbol_source"], "custom-symbol-source")
+
+        cpp_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeConfigPersistence.cpp")
+        rust_source = _read(
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "config_persistence.rs"
+        )
+        for fragment in (
+            'validateText(&cfg, QStringLiteral("mode"), &issues)',
+            'validateText(&cfg, QStringLiteral("connector_backend"), &issues)',
+            'validateText(&cfg, QStringLiteral("indicator_source"), &issues)',
+            'validateText(&cfg, QStringLiteral("theme"), &issues, {}, true)',
+            'validateText(&cfg, QStringLiteral("design"), &issues, {}, true)',
+            'validateText(&cfg, QStringLiteral("selected_exchange"), &issues)',
+            'validateText(&backtest, QStringLiteral("connector_backend"), issues, QStringLiteral("backtest"))',
+        ):
+            self.assertIn(fragment, cpp_source)
+        rust_backtest_validation = _section(
+            rust_source,
+            "fn validate_backtest_config(",
+            "fn validate_datetime_text(",
+        )
+        for fragment in (
+            'validate_text(&mut cfg, "mode", &mut issues, "", false)',
+            'validate_text(&mut cfg, "connector_backend", &mut issues, "", false)',
+            'validate_text(&mut cfg, "indicator_source", &mut issues, "", false)',
+            'validate_text(&mut cfg, "theme", &mut issues, "", true)',
+            'validate_text(&mut cfg, "design", &mut issues, "", true)',
+            'validate_text(&mut cfg, "selected_exchange", &mut issues, "", false)',
+        ):
+            self.assertIn(fragment, rust_source)
+        self.assertRegex(
+            rust_backtest_validation,
+            r'validate_text\s*\(\s*&mut backtest,\s*"connector_backend",\s*issues,\s*"backtest",\s*false\s*,?\s*\)',
+        )
+
     def test_runtime_evidence_artifacts_are_not_source_tracked_outputs(self):
         gitignore = _read(REPO_ROOT / ".gitignore")
 
@@ -306,26 +422,23 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("pub fn load_service_config_file", config_persistence)
         self.assertIn("pub fn service_config_file_status", config_persistence)
         self.assertIn("pub fn build_service_config_persistence_status", config_persistence)
-        self.assertIn("PYTHON_CONFIG_MODE_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_THEME_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_DESIGN_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_CONNECTOR_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_CHART_MARKET_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_INDICATOR_SOURCE_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_EXCHANGE_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_LLM_PROVIDERS", config_persistence)
-        self.assertIn("PYTHON_ACCOUNT_TYPE_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_MARGIN_MODE_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_POSITION_MODE_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_ASSETS_MODE_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_SIDE_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_SIGNAL_LOGIC_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_MDD_LOGIC_OPTIONS", config_persistence)
-        self.assertIn("PYTHON_STOP_LOSS_MODES", config_persistence)
-        self.assertIn("PYTHON_STOP_LOSS_SCOPES", config_persistence)
-        self.assertIn("ChoiceList::LlmReasoningEfforts", config_persistence)
+        self.assertIn("PYTHON_LLM_PROVIDER_CHOICES", config_persistence)
+        self.assertIn("PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_MARGIN_MODE_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_POSITION_MODE_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_ASSETS_MODE_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_SIDE_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_LOGIC_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_MDD_LOGIC_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES", config_persistence)
+        self.assertIn("PYTHON_LLM_REASONING_EFFORT_CONFIG_CHOICES", config_persistence)
+        self.assertIn("BACKTEST_ALLOWED_KEYS", config_persistence)
+        self.assertIn("optimizer_max_duration_seconds", config_persistence)
+        self.assertIn("604_800", config_persistence)
+        self.assertIn("cfg.insert(key.to_owned(), Value::Array(Vec::new()))", config_persistence)
+        self.assertIn("ChoiceList::ConfigOptions", config_persistence)
         self.assertIn("choice_value_from_text", config_persistence)
-        self.assertIn("validate_optional_choice", config_persistence)
         self.assertIn("secret_metadata_and_payload_redact_inline_values_like_python", config_persistence)
         self.assertIn("config_persistence_payload_ignores_legacy_inline_secret_override", config_persistence)
         self.assertIn("coerce_service_config_payload_migrates_old_versions_and_rejects_future", config_persistence)
@@ -479,8 +592,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("PYTHON_ASSETS_MODE_OPTIONS", strategy_runtime)
         self.assertIn("PYTHON_SIDE_OPTIONS", strategy_runtime)
         self.assertIn("PYTHON_SIGNAL_LOGIC_OPTIONS", strategy_runtime)
-        self.assertIn("PYTHON_STOP_LOSS_MODES", strategy_runtime)
-        self.assertIn("PYTHON_STOP_LOSS_SCOPES", strategy_runtime)
+        self.assertIn("PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES", strategy_runtime)
+        self.assertIn("PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES", strategy_runtime)
+        self.assertIn("normalize_python_config_choice_or_default", strategy_runtime)
         self.assertIn("normalize_python_ui_option_key", strategy_runtime)
         self.assertIn("normalize_python_ui_option_key_fuzzy", strategy_runtime)
         self.assertIn("normalize_python_string_option_fuzzy", strategy_runtime)
@@ -753,7 +867,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("evaluate_native_runtime_preview", rust_readme)
         self.assertIn("evaluate_native_runtime_preview", tauri_main)
         self.assertIn("native_runtime_ownership_error", tauri_main)
-        self.assertIn("Native Rust runtime coordinates Binance futures only", tauri_main)
+        self.assertIn("Native Rust runtime coordinates Binance spot/futures", tauri_main)
         self.assertIn("Python Service API/provider connector-owned", tauri_main)
         self.assertIn("poll_native_runtime_market", tauri_main)
         self.assertIn("poll_native_runtime_account", tauri_main)
@@ -1492,11 +1606,12 @@ class NativeFullParityContractTests(unittest.TestCase):
             "backtest-optimizer-min-trades",
         ):
             self.assertIn(f'id="{control_id}"', tauri_html)
-        self.assertIn("const scanScopeOptions = optionArray(pythonParityContract.scanScopeOptions)", tauri_html)
-        self.assertIn("const optimizerModeOptions = optionArray(pythonParityContract.optimizerModeOptions)", tauri_html)
+        self.assertIn('pythonChoiceOptions("scan_scope", optionArray(pythonParityContract.scanScopeOptions))', tauri_html)
+        self.assertIn('pythonChoiceOptions("optimizer_mode", optionArray(pythonParityContract.optimizerModeOptions))', tauri_html)
         self.assertIn(
-            "const optimizerMetricOptions = optionArray(pythonParityContract.optimizerMetricOptions)", tauri_html
+            'pythonChoiceOptions("optimizer_metric", optionArray(pythonParityContract.optimizerMetricOptions))', tauri_html
         )
+        self.assertIn("pythonParityContract.configChoiceMaps", tauri_html)
         match = re.search(
             r"const buildBacktestRequest = \(\) => \{(?P<body>.*?)\n    \};\n    const addCustomIntervals",
             tauri_html,
@@ -1516,7 +1631,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn('selectedValue("backtest-optimizer-metric")', body)
         self.assertIn('numberFrom("backtest-optimizer-combo-size", 2)', body)
         self.assertIn('numberFrom("backtest-optimizer-min-trades", 1)', body)
-        self.assertIn('const snapshot = await pollBacktestUntilIdle("Run backtest")', tauri_html)
+        self.assertIn('const snapshot = usesLocalBacktestBackend()', tauri_html)
+        self.assertIn('await pollBacktestUntilIdle("Run backtest")', tauri_html)
         self.assertIn('setText("backtest-scan-status-text", "Backtest cancellation requested...")', tauri_html)
 
     def test_tauri_persists_and_hydrates_complete_python_execution_and_backtest_settings(self):
@@ -1706,10 +1822,16 @@ class NativeFullParityContractTests(unittest.TestCase):
         cpp_root = REPO_ROOT / "experiments" / "native-cpp"
         rust_lib = _read(rust_core / "lib.rs")
         rust_backtest = _read(rust_core / "backtest_runtime.rs")
+        rust_backtest_batch = _read(rust_core / "backtest_batch_runtime.rs")
         cpp_backtest = _read(cpp_root / "src" / "NativeBacktestRuntime.cpp")
         cpp_tests = _read(cpp_root / "tests" / "NativeOrderSafetyTests.cpp")
+        tauri_root = REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop"
+        tauri_bridge = _read(tauri_root / "src" / "native_backtest.rs")
+        tauri_main = _read(tauri_root / "src" / "main.rs")
+        tauri_ui = _read(tauri_root / "ui" / "index.html")
 
         self.assertIn("pub mod backtest_runtime", rust_lib)
+        self.assertIn("pub mod backtest_batch_runtime", rust_lib)
         for fragment in (
             "PYTHON_INDICATOR_REFERENCE_JSON",
             "compute_configured_indicator_series",
@@ -1721,6 +1843,23 @@ class NativeFullParityContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, rust_backtest)
 
+        for fragment in (
+            "PYTHON_INDICATOR_REFERENCE_JSON",
+            "pub fn build_indicator_groups",
+            "pub fn estimate_run_count",
+            "pub fn run_native_backtest_batch",
+            "run_native_backtest_with_cancel",
+            "build_override_plans",
+            "optimizer_score",
+            "optimizer_score_from_row",
+            "optimizer_max_duration_seconds",
+            "resume_combo_offset",
+            "completed_combo_count",
+            "native_batch_budget_and_resume_preserve_python_checkpoint_semantics",
+            "native_batch_matches_python_reference_result_and_reuses_candles",
+        ):
+            self.assertIn(fragment, rust_backtest_batch)
+
         self.assertIn('combine(sellArrays, QStringLiteral("OR"))', cpp_backtest)
         self.assertIn("*realizedPnl - trade.entryFee", cpp_backtest)
         for metric in (
@@ -1731,6 +1870,44 @@ class NativeFullParityContractTests(unittest.TestCase):
             "indicator_keys",
         ):
             self.assertIn(f'QStringLiteral("{metric}")', cpp_tests)
+
+        for fragment in (
+            "NativeBacktestBatchRequest::from_python_request",
+            "run_native_backtest_batch",
+            "fetch_klines_range",
+            "request.start_ms",
+            "request.end_ms",
+            "request.warmup_bars",
+            "NativeBacktestCheckpoint",
+            "resume_requested",
+            "managed.checkpoint",
+            'state == "budget_exhausted"',
+            "native_market_data_supported",
+            "pub fn start_native_backtest",
+            "pub fn native_backtest_status",
+            "pub fn stop_native_backtest",
+        ):
+            self.assertIn(fragment, tauri_bridge)
+        for fragment in (
+            "use native_backtest::NativeBacktestState",
+            ".manage(NativeBacktestState::default())",
+            "native_backtest::start_native_backtest",
+            "native_backtest::native_backtest_status",
+            "native_backtest::stop_native_backtest",
+        ):
+            self.assertIn(fragment, tauri_main)
+        for fragment in (
+            "const submitBacktest",
+            "usesLocalBacktestBackend",
+            'invoke("start_native_backtest"',
+            'invoke("native_backtest_status"',
+            'invoke("stop_native_backtest"',
+            "syncBacktestResumeAvailability",
+            'runNativeBacktest("Resume optimizer"',
+            "Native Rust backtest",
+            "nativeBacktestResult",
+        ):
+            self.assertIn(fragment, tauri_ui)
 
     def test_cpp_full_parity_boundary_is_explicit(self):
         cpp_root = REPO_ROOT / "experiments" / "native-cpp"
@@ -1967,8 +2144,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("PythonParityContract::kPythonAssetsModeOptions", native_strategy_runtime_source)
         self.assertIn("PythonParityContract::kPythonSideOptions", native_strategy_runtime_source)
         self.assertIn("PythonParityContract::kPythonSignalLogicOptions", native_strategy_runtime_source)
-        self.assertIn("PythonParityContract::kPythonStopLossModes", native_strategy_runtime_source)
-        self.assertIn("PythonParityContract::kPythonStopLossScopes", native_strategy_runtime_source)
+        self.assertIn("PythonParityContract::kPythonStopLossModeConfigChoices", native_strategy_runtime_source)
+        self.assertIn("PythonParityContract::kPythonStopLossScopeConfigChoices", native_strategy_runtime_source)
+        self.assertIn("normalizePythonConfigChoice", native_strategy_runtime_source)
         self.assertIn("normalizePythonUiOptionKey", native_strategy_runtime_source)
         self.assertIn("normalizePythonStringOption", native_strategy_runtime_source)
         self.assertIn("pythonUiOptionKeyAt", native_strategy_runtime_source)
@@ -2013,26 +2191,26 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("buildServiceConfigPersistenceStatus", native_config_persistence_header)
         self.assertIn("redacted", native_config_persistence_header)
         self.assertIn("validateAllowedKeys(cfg, runtimeAllowedKeys()", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonConfigModeOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonThemeOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonDesignOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonConnectorOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonChartMarketOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonIndicatorSourceOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonExchangeOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonLlmProviders", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonAccountTypeOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonMarginModeOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonPositionModeOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonAssetsModeOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonSideOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonSignalLogicOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonMddLogicOptions", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonStopLossModes", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonStopLossScopes", native_config_persistence_source)
-        self.assertIn("PythonParityContract::kPythonBacktestExecutionBackendOptions", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonLlmProviderChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonAccountTypeConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonMarginModeConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonPositionModeConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonAssetsModeConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonSideConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonLogicConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonMddLogicConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonStopLossModeConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonStopLossScopeConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonBacktestExecutionBackendConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonChartViewModeConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonLlmUseForConfigChoices", native_config_persistence_source)
+        self.assertIn("PythonParityContract::kPythonLlmReasoningEffortConfigChoices", native_config_persistence_source)
+        self.assertIn("backtestAllowedKeys", native_config_persistence_source)
+        self.assertIn('QStringLiteral("fee_bps")', native_config_persistence_source)
+        self.assertIn('QStringLiteral("slippage_bps")', native_config_persistence_source)
+        self.assertIn('QStringLiteral("optimizer_max_duration_seconds")', native_config_persistence_source)
+        self.assertIn("604'800", native_config_persistence_source)
         self.assertIn("choiceCandidateMatches", native_config_persistence_source)
-        self.assertIn("validateOptionalChoice", native_config_persistence_source)
         self.assertIn("llmReasoningEffortChoicesFromSource", native_config_persistence_source)
         self.assertIn("withoutInlineServiceConfigSecretValues(configPayload).toObject()", native_config_persistence_source)
         self.assertIn("validation.error.toStdString()", native_config_persistence_source)

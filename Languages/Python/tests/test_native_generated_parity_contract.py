@@ -17,9 +17,10 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.native_parity import (  # noqa: E402
-    NATIVE_PARITY_DOMAINS,
-    native_python_source_contract_hash,
-    native_python_source_contract_summary,
+    INDICATOR_RUNTIME_OUTPUT_KEYS,
+        NATIVE_PARITY_DOMAINS,
+        native_python_source_contract_hash,
+        native_python_source_contract_summary,
 )
 from app.service.api_contract import (  # noqa: E402
     SERVICE_API_ROUTE_METHODS,
@@ -32,6 +33,7 @@ from tools.generate_native_parity_contracts import (  # noqa: E402
     RUST_OUTPUT,
     TAURI_BROWSER_OUTPUT,
     _cpp_string,
+    _indicator_reference_payload,
     _rust_string,
     render_cpp_header,
     render_rust_module,
@@ -58,6 +60,47 @@ def _load_repo_tool(module_name: str, path: Path):
 
 class NativeGeneratedParityContractTests(unittest.TestCase):
     maxDiff = None
+
+    def test_indicator_reference_contains_multiple_python_generated_scenarios(self):
+        payload = _indicator_reference_payload()
+        cases = payload["indicator_cases"]
+        self.assertIsInstance(cases, list)
+        self.assertGreaterEqual(len(cases), 3)
+        self.assertEqual(
+            payload["candles"],
+            cases[0]["candles"],
+        )
+        self.assertEqual(
+            payload["configs"],
+            cases[0]["configs"],
+        )
+        self.assertEqual(
+            payload["expected"],
+            cases[0]["expected"],
+        )
+        self.assertEqual(
+            {"baseline", "reversal-and-flat", "parameterized-longer-series"},
+            {case["name"] for case in cases},
+        )
+        for case in cases:
+            self.assertEqual(
+                set(case["expected"]),
+                {
+                    output_key
+                    for output_keys in INDICATOR_RUNTIME_OUTPUT_KEYS.values()
+                    for output_key in output_keys
+                },
+            )
+
+        backtest_cases = payload["backtest_cases"]
+        self.assertGreaterEqual(len(backtest_cases), 27)
+        self.assertEqual(
+            {"baseline", "reversal-and-flat", "parameterized-longer-series"},
+            {case["fixture_name"] for case in backtest_cases},
+        )
+        for case in backtest_cases:
+            self.assertTrue(case["candles"])
+            self.assertIn("expected", case)
 
     def test_generated_native_contracts_are_in_sync_with_python_source(self):
         self.assertEqual(render_rust_module(), _read(RUST_OUTPUT))
@@ -100,6 +143,8 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("service_api_contract", summary["domain_keys"])
         self.assertIn("backtest_engine", summary["domain_keys"])
         self.assertIn("order_execution_and_risk", summary["domain_keys"])
+        self.assertFalse(summary["risk_defaults"]["indicator_use_live_values"])
+        self.assertEqual(summary["risk_defaults"]["stop_loss"]["scope"], "per_trade")
 
     def test_rust_and_cpp_consume_generated_python_contracts(self):
         rust_core = _read(REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "lib.rs")
@@ -141,6 +186,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pub const RUST_STANDALONE_RUNTIME_READY: bool = false;", rust_generated)
         self.assertIn("pub const CPP_FULL_PARITY_READY: bool = false;", rust_generated)
         self.assertIn("pub const RUST_FULL_PARITY_READY: bool = false;", rust_generated)
+        self.assertIn("PYTHON_RISK_DEFAULTS_JSON", rust_generated)
         self.assertIn("PYTHON_SUPPORTED_BROKERS", rust_generated)
         self.assertIn("PYTHON_SUPPORTED_FOREX_BROKERS", rust_generated)
         self.assertIn("PYTHON_BROKER_ORDER_ROUTING_BACKENDS", rust_generated)
@@ -150,6 +196,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn('"rustStandaloneRuntimeReady": false', tauri_generated)
         self.assertIn('"cppFullParityReady": false', tauri_generated)
         self.assertIn('"rustFullParityReady": false', tauri_generated)
+        self.assertIn('"riskDefaults"', tauri_generated)
         self.assertIn('"supportedBrokers"', tauri_generated)
         self.assertIn('"supportedForexBrokers"', tauri_generated)
         self.assertIn('"brokerOrderRoutingBackends"', tauri_generated)
@@ -240,6 +287,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pythonParityContract.connectorOptions", tauri_html)
         self.assertIn("pythonParityContract.defaultExecution", tauri_html)
         self.assertIn("pythonParityContract.defaultBacktest", tauri_html)
+        self.assertIn("pythonParityContract.riskDefaults", tauri_html)
         self.assertIn("pythonParityContract.defaultChartSymbols", tauri_html)
         self.assertIn("pythonParityContract.dashboardLoopChoices", tauri_html)
         self.assertIn("pythonParityContract.leadTraderOptions", tauri_html)
@@ -598,7 +646,12 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pub const PYTHON_LLM_PROVIDERS", rust_generated)
         self.assertIn("struct PythonLlmProvider", cpp_generated)
         self.assertIn("kPythonLlmProviders", cpp_generated)
+        self.assertIn("pub const PYTHON_LLM_PROVIDER_CHOICES", rust_generated)
+        self.assertIn("struct PythonLlmProviderChoice", cpp_generated)
+        self.assertIn("kPythonLlmProviderChoices", cpp_generated)
         self.assertIn('"llmProviders"', tauri_generated)
+        self.assertIn('"llmProviderChoices"', tauri_generated)
+        self.assertIn('"configChoiceMaps"', tauri_generated)
 
         for connector in summary["connectors"]:
             key = json.dumps(str(connector["key"]))
@@ -623,6 +676,36 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertIn(f'"label": {label}', tauri_generated)
             self.assertIn(f'"default_model": {default_model}', tauri_generated)
             self.assertIn(f'"api_key_env": {api_key_env}', tauri_generated)
+
+        for choice in summary["llm_provider_choices"]:
+            key = str(choice["key"])
+            value = str(choice["value"])
+            self.assertIn(
+                f"({_rust_string(key)}, {_rust_string(value)}),",
+                rust_generated,
+            )
+            self.assertIn(
+                f"PythonLlmProviderChoice{{{_cpp_string(key)}, {_cpp_string(value)}}}",
+                cpp_generated,
+            )
+            self.assertIn(f'"key": {json.dumps(key)}', tauri_generated)
+            self.assertIn(f'"value": {json.dumps(value)}', tauri_generated)
+
+        for name, choices in summary["config_choice_maps"].items():
+            rust_name = f"PYTHON_{name.upper()}_CONFIG_CHOICES"
+            cpp_suffix = "".join(part.capitalize() for part in name.split("_"))
+            cpp_name = f"kPython{cpp_suffix}ConfigChoices"
+            self.assertIn(f"pub const {rust_name}", rust_generated)
+            self.assertIn(cpp_name, cpp_generated)
+            for key, value in choices.items():
+                self.assertIn(
+                    f"({_rust_string(str(key))}, {_rust_string(str(value))}),",
+                    rust_generated,
+                )
+                self.assertIn(
+                    f"PythonConfigChoice{{{_cpp_string(str(key))}, {_cpp_string(str(value))}}}",
+                    cpp_generated,
+                )
 
     def test_generated_runtime_option_catalogs_match_python_source_contract(self):
         summary = native_python_source_contract_summary()
@@ -852,6 +935,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
 
         self.assertIn('"defaultExecution"', tauri_generated)
         self.assertIn('"defaultBacktest"', tauri_generated)
+        self.assertIn('"riskDefaults"', tauri_generated)
         for key, value in summary["default_execution"].items():
             if isinstance(value, str):
                 self.assertIn(f'"{key}": {json.dumps(value)}', tauri_generated)

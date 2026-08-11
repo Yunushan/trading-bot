@@ -5,7 +5,8 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "c73831bf45a1968e990d925281d98842e750607fd9457e42f1e5ccec212413b7";
+    pub const PYTHON_RISK_DEFAULTS_JSON: &str = "{\"allow_close_ignoring_hold\":false,\"allow_indicator_close_without_signal\":false,\"allow_multi_indicator_close\":false,\"allow_opposite_positions\":true,\"auto_bump_percent_multiplier\":10.0,\"auto_flip_on_close\":true,\"close_on_exit\":false,\"futures_flat_purge_grace_seconds\":12.0,\"futures_flat_purge_miss_threshold\":2,\"hedge_preserve_opposites\":false,\"indicator_flip_confirmation_bars\":1,\"indicator_flip_cooldown_bars\":1,\"indicator_flip_cooldown_seconds\":0.0,\"indicator_min_position_hold_bars\":1,\"indicator_min_position_hold_seconds\":0.0,\"indicator_reentry_cooldown_bars\":1,\"indicator_reentry_cooldown_seconds\":0.0,\"indicator_reentry_requires_signal_reset\":true,\"indicator_use_live_values\":false,\"max_auto_bump_percent\":5.0,\"positions_missing_autoclose\":true,\"positions_missing_grace_seconds\":30,\"positions_missing_threshold\":2,\"require_indicator_flip_signal\":true,\"stop_loss\":{\"enabled\":false,\"mode\":\"usdt\",\"percent\":0.0,\"scope\":\"per_trade\",\"usdt\":0.0},\"strict_indicator_flip_enforcement\":true}";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "f44ed639838fd832adf73706e46bcbf2b20a39a20fc25d879ed7596431bcc1ca";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -1190,6 +1191,236 @@ pub const PYTHON_LLM_PROVIDERS: &[PythonLlmProvider] = &[
         reasoning_efforts: &["default", "none", "disabled", "auto", "low", "medium", "high", "xhigh"],
         default_reasoning_effort: "default",
     },
+];
+
+    pub const PYTHON_LLM_PROVIDER_CHOICES: &[(&str, &str)] = &[
+    ("", "openai"),
+    ("alibaba", "qwen"),
+    ("alibaba-qwen", "qwen"),
+    ("anthropic", "anthropic"),
+    ("anthropic-claude", "anthropic"),
+    ("arctic", "open-source"),
+    ("bloom", "open-source"),
+    ("bloomz", "open-source"),
+    ("cerebras", "open-source"),
+    ("chatglm", "open-source"),
+    ("chatgpt", "openai"),
+    ("claude", "anthropic"),
+    ("codet5", "open-source"),
+    ("custom", "local"),
+    ("dashscope", "qwen"),
+    ("dbrx", "open-source"),
+    ("decicoder", "open-source"),
+    ("deepseek", "deepseek"),
+    ("dolly", "open-source"),
+    ("flan-t5", "open-source"),
+    ("fugaku", "open-source"),
+    ("gemini", "gemini"),
+    ("gemma4", "open-source"),
+    ("glm", "open-source"),
+    ("glm5", "open-source"),
+    ("google", "gemini"),
+    ("google-gemini", "gemini"),
+    ("gpt-neox", "open-source"),
+    ("gpt20b", "open-source"),
+    ("grok", "grok"),
+    ("hf", "open-source"),
+    ("hf-tgi", "tgi"),
+    ("hugging-face", "open-source"),
+    ("huggingface", "open-source"),
+    ("huggingface-tgi", "tgi"),
+    ("jais", "open-source"),
+    ("kimi", "moonshot"),
+    ("llama-4", "open-source"),
+    ("llama-cpp", "llamacpp"),
+    ("llama-cpp-server", "llamacpp"),
+    ("llama.cpp", "llamacpp"),
+    ("llama4", "open-source"),
+    ("llamacpp", "llamacpp"),
+    ("lm-studio", "lmstudio"),
+    ("lmstudio", "lmstudio"),
+    ("local", "local"),
+    ("local-openai", "local"),
+    ("local-openai-compatible", "local"),
+    ("mamba", "open-source"),
+    ("mimo", "open-source"),
+    ("minimax", "open-source"),
+    ("mistral", "mistral"),
+    ("mistral-ai", "mistral"),
+    ("moonshot", "moonshot"),
+    ("moonshot-ai", "moonshot"),
+    ("mpt", "open-source"),
+    ("nemotron", "open-source"),
+    ("ollama", "ollama"),
+    ("olmo", "open-source"),
+    ("open-llama", "open-source"),
+    ("open-source", "open-source"),
+    ("open-weight", "open-source"),
+    ("open-weights", "open-source"),
+    ("openai", "openai"),
+    ("openai-chatgpt", "openai"),
+    ("openllama", "open-source"),
+    ("opensource", "open-source"),
+    ("oss", "open-source"),
+    ("pythia", "open-source"),
+    ("qwen", "qwen"),
+    ("qwen-local", "open-source"),
+    ("redpajama", "open-source"),
+    ("replit-code", "open-source"),
+    ("rmkv", "open-source"),
+    ("rwkv", "open-source"),
+    ("s-glang", "vllm"),
+    ("santacoder", "open-source"),
+    ("sglang", "vllm"),
+    ("stablelm", "open-source"),
+    ("starchat", "open-source"),
+    ("step", "open-source"),
+    ("stepfun", "open-source"),
+    ("t5", "open-source"),
+    ("text-generation-inference", "tgi"),
+    ("tgi", "tgi"),
+    ("vllm", "vllm"),
+    ("xai", "grok"),
+    ("xai-grok", "grok"),
+    ("xgen", "open-source"),
+    ("xiaomi", "open-source"),
+    ("yalm", "open-source"),
+    ("zai", "open-source"),
+];
+
+    pub const PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("spot", "Spot"),
+    ("futures", "Futures"),
+];
+
+pub const PYTHON_MARGIN_MODE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("isolated", "Isolated"),
+    ("cross", "Cross"),
+];
+
+pub const PYTHON_POSITION_MODE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("hedge", "Hedge"),
+    ("one-way", "One-way"),
+    ("oneway", "One-way"),
+];
+
+pub const PYTHON_ASSETS_MODE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("single-asset", "Single-Asset"),
+    ("single-asset mode", "Single-Asset"),
+    ("multi-assets", "Multi-Assets"),
+    ("multi-asset", "Multi-Assets"),
+    ("multi-assets mode", "Multi-Assets"),
+];
+
+pub const PYTHON_ACCOUNT_MODE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("classic trading", "Classic Trading"),
+    ("portfolio margin", "Portfolio Margin"),
+];
+
+pub const PYTHON_SIDE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("both", "BOTH"),
+    ("buy", "BUY"),
+    ("sell", "SELL"),
+];
+
+pub const PYTHON_ORDER_TYPE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("market", "MARKET"),
+    ("limit", "LIMIT"),
+];
+
+pub const PYTHON_TIF_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("gtc", "GTC"),
+    ("ioc", "IOC"),
+    ("fok", "FOK"),
+    ("gtd", "GTD"),
+];
+
+pub const PYTHON_LOGIC_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("and", "AND"),
+    ("or", "OR"),
+    ("separate", "SEPARATE"),
+];
+
+pub const PYTHON_MDD_LOGIC_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("per_trade", "per_trade"),
+    ("cumulative", "cumulative"),
+    ("entire_account", "entire_account"),
+];
+
+pub const PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("usdt", "usdt"),
+    ("percent", "percent"),
+    ("both", "both"),
+];
+
+pub const PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("per_trade", "per_trade"),
+    ("cumulative", "cumulative"),
+    ("entire_account", "entire_account"),
+];
+
+pub const PYTHON_SCAN_SCOPE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("selected", "selected"),
+    ("top_n", "top_n"),
+    ("top-n", "top_n"),
+    ("all_loaded", "all_loaded"),
+    ("all-loaded", "all_loaded"),
+];
+
+pub const PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("current", "current"),
+    ("single", "single"),
+    ("pairs", "pairs"),
+    ("combinations", "combinations"),
+];
+
+pub const PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("roi_percent", "roi_percent"),
+    ("roi-percent", "roi_percent"),
+    ("roi_percent_mdd", "roi_percent_mdd"),
+    ("roi-percent-mdd", "roi_percent_mdd"),
+    ("roi_drawdown", "roi_drawdown"),
+    ("roi-drawdown", "roi_drawdown"),
+    ("roi_value", "roi_value"),
+    ("roi-value", "roi_value"),
+];
+
+pub const PYTHON_BACKTEST_EXECUTION_BACKEND_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("desktop", "local"),
+    ("desktop-local", "local"),
+    ("local", "local"),
+    ("remote", "service"),
+    ("service", "service"),
+    ("service-api", "service"),
+];
+
+pub const PYTHON_CHART_VIEW_MODE_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("tradingview", "tradingview"),
+    ("original", "original"),
+    ("lightweight", "lightweight"),
+    ("tradingview lightweight", "lightweight"),
+];
+
+pub const PYTHON_LLM_USE_FOR_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("advisory", "advisory"),
+    ("backtest_explanation", "backtest_explanation"),
+    ("risk_review", "risk_review"),
+    ("signal_confirmation", "signal_confirmation"),
+];
+
+pub const PYTHON_LLM_REASONING_EFFORT_CONFIG_CHOICES: &[(&str, &str)] = &[
+    ("default", "default"),
+    ("disabled", "disabled"),
+    ("enabled", "enabled"),
+    ("extra-high", "xhigh"),
+    ("extra_high", "xhigh"),
+    ("high", "high"),
+    ("low", "low"),
+    ("max", "max"),
+    ("medium", "medium"),
+    ("minimal", "minimal"),
+    ("none", "none"),
+    ("xhigh", "xhigh"),
 ];
 
     pub const PYTHON_CONNECTOR_KEYS: &[&str] = &[

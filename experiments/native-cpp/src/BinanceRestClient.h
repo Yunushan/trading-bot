@@ -23,10 +23,25 @@ public:
 
     struct BalanceResult {
         bool ok = false;
+        // Canonical values in `asset`; the legacy USDT fields remain for API compatibility.
+        double totalBalance = 0.0;
+        double availableBalance = 0.0;
         double usdtBalance = 0.0;
         double totalUsdtBalance = 0.0;
         double availableUsdtBalance = 0.0;
         QString asset = QStringLiteral("USDT");
+        QString error;
+    };
+
+    struct SpotBalanceRow {
+        QString asset;
+        double free = 0.0;
+        double locked = 0.0;
+    };
+
+    struct SpotBalancesResult {
+        bool ok = false;
+        QVector<SpotBalanceRow> balances;
         QString error;
     };
 
@@ -78,6 +93,9 @@ public:
 
     struct FuturesSymbolFilters {
         bool ok = false;
+        QString status;
+        QString baseAsset;
+        QString quoteAsset;
         double stepSize = 0.0;
         double tickSize = 0.0;
         double minQty = 0.0;
@@ -100,10 +118,20 @@ public:
         QString error;
     };
 
+    using SpotSymbolFilters = FuturesSymbolFilters;
+    using SpotOrderResult = FuturesOrderResult;
+
     static BalanceResult fetchUsdtBalance(
         const QString &apiKey,
         const QString &apiSecret,
         bool futures,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static SpotBalancesResult fetchSpotBalances(
+        const QString &apiKey,
+        const QString &apiSecret,
         bool testnet,
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
@@ -159,6 +187,12 @@ public:
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 
+    static SpotSymbolFilters fetchSpotSymbolFilters(
+        const QString &symbol,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
     static FuturesOrderResult placeFuturesMarketOrder(
         const QString &apiKey,
         const QString &apiSecret,
@@ -168,6 +202,16 @@ public:
         bool testnet,
         bool reduceOnly = false,
         const QString &positionSide = {},
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static SpotOrderResult placeSpotMarketOrder(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        const QString &side,
+        double quantity,
+        bool testnet,
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 

@@ -180,7 +180,10 @@ def _json_backtest_result(result: object) -> dict[str, object]:
     return normalized
 
 
-def _backtest_reference_cases(frame: pd.DataFrame) -> list[dict[str, object]]:
+def _backtest_reference_cases(
+    frame: pd.DataFrame,
+    fixture_name: str = "baseline",
+) -> list[dict[str, object]]:
     indexed = frame.copy()
     start = datetime(2024, 1, 1, 0, 0, 0)
     indexed.index = [start + timedelta(minutes=offset) for offset in range(len(indexed))]
@@ -262,6 +265,115 @@ def _backtest_reference_cases(frame: pd.DataFrame) -> list[dict[str, object]]:
                 },
             },
         },
+        {
+            "name": "donchian-band-position-both",
+            "logic": "OR",
+            "side": "BOTH",
+            "capital": 1100.0,
+            "position_pct": 35.0,
+            "position_pct_units": "percent",
+            "leverage": 2.0,
+            "margin_mode": "Isolated",
+            "mdd_logic": "per_trade",
+            "stop_loss": {"enabled": False, "mode": "percent", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
+            "configs": {
+                "donchian": {
+                    "enabled": True,
+                    "length": 3,
+                    "signal_mode": "band_position",
+                    "buy_value": 20.0,
+                    "sell_value": 80.0,
+                },
+            },
+        },
+        {
+            "name": "volume-relative-between-filter",
+            "logic": "OR",
+            "side": "BUY",
+            "capital": 1000.0,
+            "position_pct": 25.0,
+            "position_pct_units": "percent",
+            "leverage": 1.0,
+            "margin_mode": "Cross",
+            "mdd_logic": "cumulative",
+            "stop_loss": {"enabled": False, "mode": "usdt", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
+            "configs": {
+                "rsi": {"enabled": True, "length": 3, "buy_value": 45.0, "sell_value": 55.0},
+                "volume": {
+                    "enabled": True,
+                    "length": 3,
+                    "signal_mode": "relative_to_sma",
+                    "signal_role": "filter",
+                    "filter_operator": "between",
+                    "buy_value": 0.8,
+                    "sell_value": 1.2,
+                },
+            },
+        },
+        {
+            "name": "obv-slope-short",
+            "logic": "OR",
+            "side": "SELL",
+            "capital": 950.0,
+            "position_pct": 30.0,
+            "position_pct_units": "percent",
+            "leverage": 3.0,
+            "margin_mode": "Isolated",
+            "mdd_logic": "entire_account",
+            "stop_loss": {"enabled": True, "mode": "usdt", "usdt": 20.0, "percent": 0.0, "scope": "per_trade"},
+            "configs": {
+                "obv": {
+                    "enabled": True,
+                    "length": 3,
+                    "signal_mode": "slope",
+                    "buy_value": 0.0,
+                    "sell_value": 0.0,
+                },
+            },
+        },
+        {
+            "name": "atr-percent-of-close-long",
+            "logic": "OR",
+            "side": "BUY",
+            "capital": 1050.0,
+            "position_pct": 40.0,
+            "position_pct_units": "percent",
+            "leverage": 2.0,
+            "margin_mode": "Cross",
+            "mdd_logic": "per_trade",
+            "stop_loss": {"enabled": True, "mode": "percent", "usdt": 0.0, "percent": 3.0, "scope": "cumulative"},
+            "configs": {
+                "atr": {
+                    "enabled": True,
+                    "length": 3,
+                    "signal_mode": "percent_of_close",
+                    "buy_value": 1.0,
+                    "sell_value": 2.0,
+                },
+            },
+        },
+        {
+            "name": "macd-histogram-both",
+            "logic": "AND",
+            "side": "BOTH",
+            "capital": 875.0,
+            "position_pct": 0.5,
+            "position_pct_units": "fraction",
+            "leverage": 2.0,
+            "margin_mode": "Isolated",
+            "mdd_logic": "cumulative",
+            "stop_loss": {"enabled": False, "mode": "percent", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
+            "configs": {
+                "macd": {
+                    "enabled": True,
+                    "fast": 2,
+                    "slow": 3,
+                    "signal": 2,
+                    "buy_value": 0.0,
+                    "sell_value": 0.0,
+                },
+            },
+        },
     ]
 
     rendered: list[dict[str, object]] = []
@@ -309,16 +421,18 @@ def _backtest_reference_cases(frame: pd.DataFrame) -> list[dict[str, object]]:
         )
         if result is None:
             raise RuntimeError(f"Python backtest fixture case produced no result: {case['name']}")
-        rendered.append({**case, "expected": _json_backtest_result(result)})
+        rendered.append(
+            {
+                **case,
+                "fixture_name": fixture_name,
+                "candles": frame.to_dict(orient="records"),
+                "expected": _json_backtest_result(result),
+            }
+        )
     return rendered
 
 
-def _indicator_reference_payload() -> dict[str, object]:
-    closes = [100.0, 103.0, 101.0, 106.0, 104.0, 109.0, 105.0, 111.0, 108.0, 114.0, 110.0, 116.0]
-    highs = [101.0, 104.5, 102.5, 107.5, 105.0, 110.5, 106.0, 112.5, 109.5, 115.0, 111.5, 117.0]
-    lows = [98.5, 101.0, 99.0, 103.5, 102.0, 107.0, 103.0, 109.0, 106.0, 112.0, 108.0, 114.0]
-    volumes = [18.0, 31.0, 24.0, 42.0, 29.0, 47.0, 35.0, 53.0, 38.0, 59.0, 44.0, 63.0]
-    frame = pd.DataFrame({"open": closes, "high": highs, "low": lows, "close": closes, "volume": volumes})
+def _indicator_configs(variant: str = "baseline") -> dict[str, dict[str, object]]:
     configs: dict[str, dict[str, object]] = {
         "ma": {"enabled": True, "length": 3, "type": "SMA"},
         "donchian": {"enabled": True, "length": 3},
@@ -365,34 +479,182 @@ def _indicator_reference_payload() -> dict[str, object]:
         "ema": {"enabled": True, "length": 3},
         "stochastic": {"enabled": True, "length": 3, "smooth_k": 2, "smooth_d": 2},
     }
-    bb_upper, bb_mid, bb_lower = indicator_math.bollinger_bands(frame, length=3, std=2.0)
+    if variant == "parameterized":
+        configs.update(
+            {
+                "ma": {"enabled": True, "length": 4, "type": "EMA"},
+                "donchian": {"enabled": True, "length": 4},
+                "psar": {"enabled": True, "af": 0.04, "max_af": 0.4},
+                "bb": {"enabled": True, "length": 4, "std": 1.5},
+                "bbw": {"enabled": True, "length": 4, "std": 1.5},
+                "keltner": {"enabled": True, "length": 4, "atr_length": 3, "multiplier": 1.5},
+                "ichimoku": {"enabled": True, "conversion_length": 3, "base_length": 4, "span_b_length": 5, "displacement": 3},
+                "rsi": {"enabled": True, "length": 5},
+                "rvol": {"enabled": True, "length": 4},
+                "cmf": {"enabled": True, "length": 4},
+                "cci": {"enabled": True, "length": 4, "constant": 0.02},
+                "roc": {"enabled": True, "length": 4},
+                "trix": {"enabled": True, "length": 4},
+                "ppo": {"enabled": True, "fast": 3, "slow": 5, "signal": 3},
+                "ao": {"enabled": True, "fast": 3, "slow": 5},
+                "kst": {
+                    "enabled": True,
+                    "roc1": 2,
+                    "roc2": 3,
+                    "roc3": 4,
+                    "roc4": 5,
+                    "sma1": 3,
+                    "sma2": 3,
+                    "sma3": 3,
+                    "sma4": 3,
+                    "signal": 3,
+                },
+                "aroon": {"enabled": True, "length": 4},
+                "chop": {"enabled": True, "length": 4},
+                "atr": {"enabled": True, "length": 4},
+                "natr": {"enabled": True, "length": 4},
+                "vwap": {"enabled": True, "length": 4},
+                "mfi": {"enabled": True, "length": 4},
+                "stoch_rsi": {"enabled": True, "length": 5, "smooth_k": 3, "smooth_d": 3},
+                "willr": {"enabled": True, "length": 4},
+                "macd": {"enabled": True, "fast": 3, "slow": 5, "signal": 3},
+                "uo": {"enabled": True, "short": 3, "medium": 4, "long": 6},
+                "adx": {"enabled": True, "length": 4},
+                "dmi": {"enabled": True, "length": 4},
+                "supertrend": {"enabled": True, "atr_period": 4, "multiplier": 2.5},
+                "ema": {"enabled": True, "length": 4},
+                "stochastic": {"enabled": True, "length": 4, "smooth_k": 3, "smooth_d": 3},
+            }
+        )
+    elif variant != "baseline":
+        raise ValueError(f"Unknown indicator fixture variant: {variant}")
+    return configs
+
+
+def _indicator_config_int(config: dict[str, object], key: str, default: int) -> int:
+    value = config.get(key, default)
+    return int(default if value is None else value)
+
+
+def _indicator_config_float(config: dict[str, object], key: str, default: float) -> float:
+    value = config.get(key, default)
+    return float(default if value is None else value)
+
+
+def _indicator_expected(
+    frame: pd.DataFrame,
+    configs: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    ma_config = configs["ma"]
+    ma_length = _indicator_config_int(ma_config, "length", 20)
+    ma = (
+        indicator_math.ema(frame["close"], ma_length)
+        if str(ma_config.get("type", "SMA")).upper() == "EMA"
+        else indicator_math.sma(frame["close"], ma_length)
+    )
+    donchian_config = configs["donchian"]
+    donchian_length = _indicator_config_int(donchian_config, "length", 20)
+    donchian_high = indicator_math.donchian_high(frame, donchian_length)
+    donchian_low = indicator_math.donchian_low(frame, donchian_length)
+    psar_config = configs["psar"]
+    bb_config = configs["bb"]
+    bb_upper, bb_mid, bb_lower = indicator_math.bollinger_bands(
+        frame,
+        length=_indicator_config_int(bb_config, "length", 20),
+        std=_indicator_config_float(bb_config, "std", 2.0),
+    )
+    bbw_config = configs["bbw"]
+    keltner_config = configs["keltner"]
     keltner_upper, keltner_mid, keltner_lower = indicator_math.keltner_channels(
-        frame, length=3, atr_length=2, multiplier=2.0
+        frame,
+        length=_indicator_config_int(keltner_config, "length", 20),
+        atr_length=_indicator_config_int(keltner_config, "atr_length", 10),
+        multiplier=_indicator_config_float(keltner_config, "multiplier", 2.0),
     )
+    ichimoku_config = configs["ichimoku"]
     ichimoku_tenkan, ichimoku_kijun, ichimoku_span_a, ichimoku_span_b, ichimoku_chikou = indicator_math.ichimoku_cloud(
-        frame, conversion_length=2, base_length=3, span_b_length=4, displacement=2
+        frame,
+        conversion_length=_indicator_config_int(ichimoku_config, "conversion_length", 9),
+        base_length=_indicator_config_int(ichimoku_config, "base_length", 26),
+        span_b_length=_indicator_config_int(ichimoku_config, "span_b_length", 52),
+        displacement=_indicator_config_int(ichimoku_config, "displacement", 26),
     )
-    ppo_line, ppo_signal, ppo_hist = indicator_math.ppo(frame["close"], fast=2, slow=3, signal=2)
+    rsi_config = configs["rsi"]
+    rvol_config = configs["rvol"]
+    cmf_config = configs["cmf"]
+    cci_config = configs["cci"]
+    roc_config = configs["roc"]
+    trix_config = configs["trix"]
+    ppo_config = configs["ppo"]
+    ppo_line, ppo_signal, ppo_hist = indicator_math.ppo(
+        frame["close"],
+        fast=_indicator_config_int(ppo_config, "fast", 12),
+        slow=_indicator_config_int(ppo_config, "slow", 26),
+        signal=_indicator_config_int(ppo_config, "signal", 9),
+    )
+    ao_config = configs["ao"]
+    kst_config = configs["kst"]
     kst_line, kst_signal, kst_hist = indicator_math.kst(
-        frame["close"], roc1=1, roc2=2, roc3=3, roc4=4, sma1=2, sma2=2, sma3=2, sma4=2, signal=2
+        frame["close"],
+        roc1=_indicator_config_int(kst_config, "roc1", 10),
+        roc2=_indicator_config_int(kst_config, "roc2", 15),
+        roc3=_indicator_config_int(kst_config, "roc3", 20),
+        roc4=_indicator_config_int(kst_config, "roc4", 30),
+        sma1=_indicator_config_int(kst_config, "sma1", 10),
+        sma2=_indicator_config_int(kst_config, "sma2", 10),
+        sma3=_indicator_config_int(kst_config, "sma3", 10),
+        sma4=_indicator_config_int(kst_config, "sma4", 15),
+        signal=_indicator_config_int(kst_config, "signal", 9),
     )
-    aroon_up, aroon_down, aroon = indicator_math.aroon(frame, length=3)
-    stoch_rsi, stoch_rsi_d = indicator_math.stoch_rsi(frame["close"], length=3, smooth_k=2, smooth_d=2)
-    macd_line, macd_signal, _macd_hist = indicator_math.macd(frame["close"], fast=2, slow=3, signal=2)
-    dmi_plus, dmi_minus, adx = indicator_math.dmi(frame, length=3)
-    stochastic, stochastic_d = indicator_math.stochastic(frame, length=3, smooth_k=2, smooth_d=2)
-    donchian_high = indicator_math.donchian_high(frame, 3)
-    donchian_low = indicator_math.donchian_low(frame, 3)
+    aroon_config = configs["aroon"]
+    stoch_rsi_config = configs["stoch_rsi"]
+    stoch_rsi, stoch_rsi_d = indicator_math.stoch_rsi(
+        frame["close"],
+        length=_indicator_config_int(stoch_rsi_config, "length", 14),
+        smooth_k=_indicator_config_int(stoch_rsi_config, "smooth_k", 3),
+        smooth_d=_indicator_config_int(stoch_rsi_config, "smooth_d", 3),
+    )
+    macd_config = configs["macd"]
+    macd_line, macd_signal, _macd_hist = indicator_math.macd(
+        frame["close"],
+        fast=_indicator_config_int(macd_config, "fast", 12),
+        slow=_indicator_config_int(macd_config, "slow", 26),
+        signal=_indicator_config_int(macd_config, "signal", 9),
+    )
+    dmi_config = configs["dmi"]
+    dmi_plus, dmi_minus, adx = indicator_math.dmi(
+        frame,
+        length=_indicator_config_int(dmi_config, "length", 14),
+    )
+    stochastic_config = configs["stochastic"]
+    stochastic, stochastic_d = indicator_math.stochastic(
+        frame,
+        length=_indicator_config_int(stochastic_config, "length", 14),
+        smooth_k=_indicator_config_int(stochastic_config, "smooth_k", 3),
+        smooth_d=_indicator_config_int(stochastic_config, "smooth_d", 3),
+    )
+    aroon_up, aroon_down, aroon = indicator_math.aroon(
+        frame,
+        length=_indicator_config_int(aroon_config, "length", 25),
+    )
     expected = {
-        "ma": indicator_math.sma(frame["close"], 3),
+        "ma": ma,
         "donchian_high": donchian_high,
         "donchian_low": donchian_low,
         "donchian": (donchian_high + donchian_low) / 2.0,
-        "psar": indicator_math.parabolic_sar(frame, af=0.02, max_af=0.2),
+        "psar": indicator_math.parabolic_sar(
+            frame,
+            af=_indicator_config_float(psar_config, "af", 0.02),
+            max_af=_indicator_config_float(psar_config, "max_af", 0.2),
+        ),
         "bb_upper": bb_upper,
         "bb_mid": bb_mid,
         "bb_lower": bb_lower,
-        "bbw": indicator_math.bollinger_band_width(frame, length=3, std=2.0),
+        "bbw": indicator_math.bollinger_band_width(
+            frame,
+            length=_indicator_config_int(bbw_config, "length", 20),
+            std=_indicator_config_float(bbw_config, "std", 2.0),
+        ),
         "keltner_upper": keltner_upper,
         "keltner_mid": keltner_mid,
         "keltner_lower": keltner_lower,
@@ -402,42 +664,83 @@ def _indicator_reference_payload() -> dict[str, object]:
         "ichimoku_span_b": ichimoku_span_b,
         "ichimoku_chikou": ichimoku_chikou,
         "ichimoku": ichimoku_tenkan - ichimoku_kijun,
-        "rsi": indicator_math.rsi(frame["close"], length=3),
+        "rsi": indicator_math.rsi(
+            frame["close"], length=_indicator_config_int(rsi_config, "length", 14)
+        ),
         "volume": frame["volume"],
         "obv": indicator_math.obv(frame),
-        "rvol": indicator_math.relative_volume(frame, length=3),
-        "cmf": indicator_math.chaikin_money_flow(frame, length=3),
-        "cci": indicator_math.cci(frame, length=3, constant=0.015),
-        "roc": indicator_math.roc(frame["close"], length=3),
-        "trix": indicator_math.trix(frame["close"], length=3),
+        "rvol": indicator_math.relative_volume(
+            frame, length=_indicator_config_int(rvol_config, "length", 20)
+        ),
+        "cmf": indicator_math.chaikin_money_flow(
+            frame, length=_indicator_config_int(cmf_config, "length", 20)
+        ),
+        "cci": indicator_math.cci(
+            frame,
+            length=_indicator_config_int(cci_config, "length", 20),
+            constant=_indicator_config_float(cci_config, "constant", 0.015),
+        ),
+        "roc": indicator_math.roc(
+            frame["close"], length=_indicator_config_int(roc_config, "length", 12)
+        ),
+        "trix": indicator_math.trix(
+            frame["close"], length=_indicator_config_int(trix_config, "length", 15)
+        ),
         "ppo": ppo_line,
         "ppo_signal": ppo_signal,
         "ppo_hist": ppo_hist,
-        "ao": indicator_math.awesome_oscillator(frame, fast=2, slow=3),
+        "ao": indicator_math.awesome_oscillator(
+            frame,
+            fast=_indicator_config_int(ao_config, "fast", 5),
+            slow=_indicator_config_int(ao_config, "slow", 34),
+        ),
         "kst": kst_line,
         "kst_signal": kst_signal,
         "kst_hist": kst_hist,
         "aroon_up": aroon_up,
         "aroon_down": aroon_down,
         "aroon": aroon,
-        "chop": indicator_math.choppiness_index(frame, length=3),
-        "atr": indicator_math.atr(frame, length=3),
-        "natr": indicator_math.natr(frame, length=3),
-        "vwap": indicator_math.vwap(frame, length=3),
-        "mfi": indicator_math.mfi(frame, length=3),
+        "chop": indicator_math.choppiness_index(
+            frame, length=_indicator_config_int(configs["chop"], "length", 14)
+        ),
+        "atr": indicator_math.atr(
+            frame, length=_indicator_config_int(configs["atr"], "length", 14)
+        ),
+        "natr": indicator_math.natr(
+            frame, length=_indicator_config_int(configs["natr"], "length", 14)
+        ),
+        "vwap": indicator_math.vwap(
+            frame, length=_indicator_config_int(configs["vwap"], "length", 20)
+        ),
+        "mfi": indicator_math.mfi(
+            frame, length=_indicator_config_int(configs["mfi"], "length", 14)
+        ),
         "stoch_rsi": stoch_rsi,
         "stoch_rsi_k": stoch_rsi,
         "stoch_rsi_d": stoch_rsi_d,
-        "willr": indicator_math.williams_r(frame, length=3),
+        "willr": indicator_math.williams_r(
+            frame, length=_indicator_config_int(configs["willr"], "length", 14)
+        ),
         "macd_line": macd_line,
         "macd_signal": macd_signal,
-        "uo": indicator_math.ultimate_oscillator(frame, short=2, medium=3, long=4),
+        "uo": indicator_math.ultimate_oscillator(
+            frame,
+            short=_indicator_config_int(configs["uo"], "short", 7),
+            medium=_indicator_config_int(configs["uo"], "medium", 14),
+            long=_indicator_config_int(configs["uo"], "long", 28),
+        ),
         "adx": adx,
         "dmi_plus": dmi_plus,
         "dmi_minus": dmi_minus,
         "dmi": dmi_plus - dmi_minus,
-        "supertrend": indicator_math.supertrend(frame, atr_period=2, multiplier=3.0),
-        "ema": indicator_math.ema(frame["close"], 3),
+        "supertrend": indicator_math.supertrend(
+            frame,
+            atr_period=_indicator_config_int(configs["supertrend"], "atr_period", 10),
+            multiplier=_indicator_config_float(configs["supertrend"], "multiplier", 3.0),
+        ),
+        "ema": indicator_math.ema(
+            frame["close"], _indicator_config_int(configs["ema"], "length", 20)
+        ),
         "stochastic": stochastic,
         "stochastic_k": stochastic,
         "stochastic_d": stochastic_d,
@@ -453,12 +756,134 @@ def _indicator_reference_payload() -> dict[str, object]:
             "INDICATOR_RUNTIME_OUTPUT_KEYS must exactly match the Python numerical "
             f"indicator fixture (missing: {missing or '-'}; unexpected: {unexpected or '-'})"
         )
+    return expected
+
+
+def _indicator_case_payload(
+    name: str,
+    frame: pd.DataFrame,
+    configs: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    expected = _indicator_expected(frame, configs)
     return {
-        "python_source_contract_hash": native_python_source_contract_hash(),
+        "name": name,
         "candles": frame.to_dict(orient="records"),
         "configs": configs,
         "expected": {key: _json_series(series) for key, series in expected.items()},
-        "backtest_cases": _backtest_reference_cases(frame),
+    }
+
+
+def _indicator_reference_payload() -> dict[str, object]:
+    baseline_closes = [100.0, 103.0, 101.0, 106.0, 104.0, 109.0, 105.0, 111.0, 108.0, 114.0, 110.0, 116.0]
+    baseline_highs = [101.0, 104.5, 102.5, 107.5, 105.0, 110.5, 106.0, 112.5, 109.5, 115.0, 111.5, 117.0]
+    baseline_lows = [98.5, 101.0, 99.0, 103.5, 102.0, 107.0, 103.0, 109.0, 106.0, 112.0, 108.0, 114.0]
+    baseline_volumes = [18.0, 31.0, 24.0, 42.0, 29.0, 47.0, 35.0, 53.0, 38.0, 59.0, 44.0, 63.0]
+    baseline_frame = pd.DataFrame(
+        {
+            "open": baseline_closes,
+            "high": baseline_highs,
+            "low": baseline_lows,
+            "close": baseline_closes,
+            "volume": baseline_volumes,
+        }
+    )
+
+    reversal_closes = [
+        100.0,
+        100.0,
+        101.5,
+        99.5,
+        103.0,
+        98.0,
+        102.0,
+        97.5,
+        104.0,
+        96.0,
+        101.0,
+        99.0,
+        105.0,
+        98.5,
+        103.5,
+        97.0,
+        106.0,
+        95.5,
+        102.5,
+        100.0,
+        107.0,
+        96.5,
+        104.5,
+        98.0,
+    ]
+    reversal_frame = pd.DataFrame(
+        {
+            "open": reversal_closes,
+            "high": [close + 1.0 + (index % 3) * 0.5 for index, close in enumerate(reversal_closes)],
+            "low": [close - 1.5 - (index % 2) * 0.25 for index, close in enumerate(reversal_closes)],
+            "close": reversal_closes,
+            "volume": [10.0 + (index % 5) * 17.0 + (index * 3.0) for index in range(len(reversal_closes))],
+        }
+    )
+
+    parameterized_closes = [
+        200.0,
+        198.0,
+        201.0,
+        205.0,
+        202.0,
+        207.0,
+        204.0,
+        209.0,
+        203.0,
+        211.0,
+        206.0,
+        214.0,
+        210.0,
+        216.0,
+        208.0,
+        219.0,
+        212.0,
+        221.0,
+        215.0,
+        223.0,
+        217.0,
+        225.0,
+        220.0,
+        228.0,
+    ]
+    parameterized_frame = pd.DataFrame(
+        {
+            "open": parameterized_closes,
+            "high": [close + 1.2 + (index % 4) * 0.35 for index, close in enumerate(parameterized_closes)],
+            "low": [close - 1.1 - (index % 3) * 0.4 for index, close in enumerate(parameterized_closes)],
+            "close": parameterized_closes,
+            "volume": [25.0 + ((index * 11) % 70) for index in range(len(parameterized_closes))],
+        }
+    )
+
+    cases = [
+        _indicator_case_payload("baseline", baseline_frame, _indicator_configs()),
+        _indicator_case_payload("reversal-and-flat", reversal_frame, _indicator_configs()),
+        _indicator_case_payload(
+            "parameterized-longer-series",
+            parameterized_frame,
+            _indicator_configs("parameterized"),
+        ),
+    ]
+    primary = cases[0]
+    backtest_cases: list[dict[str, object]] = []
+    for fixture_name, frame in (
+        ("baseline", baseline_frame),
+        ("reversal-and-flat", reversal_frame),
+        ("parameterized-longer-series", parameterized_frame),
+    ):
+        backtest_cases.extend(_backtest_reference_cases(frame, fixture_name))
+    return {
+        "python_source_contract_hash": native_python_source_contract_hash(),
+        "candles": primary["candles"],
+        "configs": primary["configs"],
+        "expected": primary["expected"],
+        "indicator_cases": cases,
+        "backtest_cases": backtest_cases,
     }
 
 
@@ -769,6 +1194,38 @@ def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _rust_llm_provider_choices(choices: list[dict[str, object]]) -> str:
+    lines = ["pub const PYTHON_LLM_PROVIDER_CHOICES: &[(&str, &str)] = &["]
+    lines.extend(
+        f"    ({_rust_string(choice['key'])}, {_rust_string(choice['value'])}),"
+        for choice in choices
+    )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _config_choice_suffix(name: str) -> str:
+    return "".join(part.capitalize() for part in name.split("_"))
+
+
+def _rust_config_choice_maps(choice_maps: dict[str, dict[str, str]]) -> str:
+    lines: list[str] = []
+    for name, choices in choice_maps.items():
+        constant = f"PYTHON_{name.upper()}_CONFIG_CHOICES"
+        lines.extend(
+            [
+                f"pub const {constant}: &[(&str, &str)] = &[",
+                *(
+                    f"    ({_rust_string(key)}, {_rust_string(value)}),"
+                    for key, value in choices.items()
+                ),
+                "];",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
 def _ui_option_key(option: dict[str, object]) -> str:
     return str(option.get("key", option.get("value", "")))
 
@@ -983,6 +1440,47 @@ def _cpp_llm_providers(providers: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _cpp_llm_provider_choices(choices: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonLlmProviderChoice {",
+        "    std::string_view key;",
+        "    std::string_view value;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonLlmProviderChoice, "
+            f"{len(choices)}> kPythonLlmProviderChoices = {{"
+        ),
+    ]
+    lines.extend(
+        f"    PythonLlmProviderChoice{{{_cpp_string(choice['key'])}, {_cpp_string(choice['value'])}}},"
+        for choice in choices
+    )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _cpp_config_choice_maps(choice_maps: dict[str, dict[str, str]]) -> str:
+    lines = [
+        "struct PythonConfigChoice {",
+        "    std::string_view key;",
+        "    std::string_view value;",
+        "};",
+        "",
+    ]
+    for name, choices in choice_maps.items():
+        constant = f"kPython{_config_choice_suffix(name)}ConfigChoices"
+        lines.append(
+            f"inline constexpr std::array<PythonConfigChoice, {len(choices)}> {constant} = {{"
+        )
+        lines.extend(
+            f"    PythonConfigChoice{{{_cpp_string(key)}, {_cpp_string(value)}}},"
+            for key, value in choices.items()
+        )
+        lines.extend(["};", ""])
+    return "\n".join(lines).rstrip()
+
+
 def _cpp_ui_option_catalogs(summary: dict[str, object]) -> str:
     option_groups = [
         ("kPythonDashboardLoopChoices", list(summary["dashboard_loop_choices"])),
@@ -1088,6 +1586,10 @@ def render_rust_module() -> str:
     parts = [
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
+        (
+            "pub const PYTHON_RISK_DEFAULTS_JSON: &str = "
+            f"{_rust_string(_contract_json(dict(summary['risk_defaults'])))};"
+        ),
         f"pub const PYTHON_SOURCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
         f"pub const CPP_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['cpp_contract_parity'])};",
         f"pub const RUST_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['rust_contract_parity'])};",
@@ -1140,6 +1642,10 @@ def render_rust_module() -> str:
         _rust_array("PYTHON_LLM_PROVIDER_KEYS", list(summary["llm_provider_keys"])),
         "",
         _rust_llm_providers(list(summary["llm_providers"])),
+        "",
+        _rust_llm_provider_choices(list(summary["llm_provider_choices"])),
+        "",
+        _rust_config_choice_maps(dict(summary["config_choice_maps"])),
         "",
         _rust_array("PYTHON_CONNECTOR_KEYS", list(summary["connector_keys"])),
         "",
@@ -1228,6 +1734,10 @@ def render_cpp_header() -> str:
             f"{_cpp_string(_contract_json(dict(summary['default_backtest'])))};"
         ),
         (
+            "inline constexpr std::string_view kPythonRiskDefaultsJson = "
+            f"{_cpp_string(_contract_json(dict(summary['risk_defaults'])))};"
+        ),
+        (
             "inline constexpr std::string_view kPythonOrderGuardBehaviorJson = "
             f"{_cpp_string(_contract_json(order_guard_behavior))};"
         ),
@@ -1275,6 +1785,10 @@ def render_cpp_header() -> str:
         _cpp_array("kPythonLlmProviderKeys", list(summary["llm_provider_keys"])),
         "",
         _cpp_llm_providers(list(summary["llm_providers"])),
+        "",
+        _cpp_llm_provider_choices(list(summary["llm_provider_choices"])),
+        "",
+        _cpp_config_choice_maps(dict(summary["config_choice_maps"])),
         "",
         _cpp_array("kPythonConnectorKeys", list(summary["connector_keys"])),
         "",
@@ -1397,9 +1911,14 @@ def render_tauri_browser_contract() -> str:
         "rustEnvironmentDependencies": list(summary["rust_environment_dependencies"]),
         "defaultExecution": dict(summary["default_execution"]),
         "defaultBacktest": dict(summary["default_backtest"]),
+        "riskDefaults": dict(summary["risk_defaults"]),
         "backtestRunRequestFields": list(summary["backtest_run_request_fields"]),
         "llmProviders": list(summary["llm_providers"]),
         "llmProviderKeys": list(summary["llm_provider_keys"]),
+        "llmProviderChoices": list(summary["llm_provider_choices"]),
+        "configChoiceMaps": {
+            name: dict(values) for name, values in summary["config_choice_maps"].items()
+        },
         "connectorKeys": list(summary["connector_keys"]),
         "serviceRouteNames": list(summary["route_names"]),
         "serviceRoutePaths": service_route_paths,

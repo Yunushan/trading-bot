@@ -296,6 +296,7 @@ struct OverridePlan {
     QString interval;
     QStringList indicatorKeys;
     NativeBacktestRuntime::Request runTemplate;
+    QString reportedLogic;
     QString loopIntervalOverride;
     QString connectorBackend;
 };
@@ -328,6 +329,7 @@ OverridePlanSet buildOverridePlans(const NativeBacktestBatchRuntime::BatchReques
             QStringLiteral("current"),
             request.optimizerComboSize,
             runTemplate.logic);
+        const QString reportedLogic = runTemplate.logic.trimmed().toUpper();
         const QString effectiveLogic = runTemplate.logic.trimmed().toUpper() == QStringLiteral("SEPARATE")
             ? QStringLiteral("AND")
             : runTemplate.logic;
@@ -339,6 +341,7 @@ OverridePlanSet buildOverridePlans(const NativeBacktestBatchRuntime::BatchReques
                 interval,
                 group,
                 effectiveTemplate,
+                reportedLogic,
                 jsonText(entry, QStringLiteral("loop_interval_override"),
                          jsonText(controls, QStringLiteral("loop_interval_override"), request.loopIntervalOverride)),
                 jsonText(entry, QStringLiteral("connector_backend"),
@@ -572,6 +575,7 @@ QJsonObject runBatch(
                                 const QString &interval,
                                 const QStringList &group,
                                 NativeBacktestRuntime::Request runTemplate,
+                                const QString &reportedLogic,
                                 const QString &loopIntervalOverride,
                                 const QString &connectorBackend) {
         if (shouldStop && shouldStop()) {
@@ -629,11 +633,15 @@ QJsonObject runBatch(
         }
 
         QJsonObject row = result.toJson();
+        const QString visibleLogic = reportedLogic.isEmpty() ? result.logic : reportedLogic;
+        row.insert(QStringLiteral("logic"), visibleLogic);
         row.insert(QStringLiteral("start"), request.startDisplay);
         row.insert(QStringLiteral("end"), request.endDisplay);
         row.insert(QStringLiteral("loop_interval_override"), loopIntervalOverride);
         row.insert(QStringLiteral("connector_backend"), connectorBackend);
-        row.insert(QStringLiteral("strategy_controls"), strategyControls(runTemplate));
+        QJsonObject controls = strategyControls(runTemplate);
+        controls.insert(QStringLiteral("logic"), visibleLogic);
+        row.insert(QStringLiteral("strategy_controls"), controls);
         const Score score = optimizerScore(
             result,
             metric,
@@ -673,6 +681,7 @@ QJsonObject runBatch(
                     plan.interval,
                     plan.indicatorKeys,
                     plan.runTemplate,
+                    plan.reportedLogic,
                     plan.loopIntervalOverride,
                     plan.connectorBackend)) {
                 break;
@@ -689,6 +698,7 @@ QJsonObject runBatch(
                             interval,
                             group,
                             runTemplate,
+                            originalLogic,
                             request.loopIntervalOverride,
                             request.connectorBackend)) {
                         break;

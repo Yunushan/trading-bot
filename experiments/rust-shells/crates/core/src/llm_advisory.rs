@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
+use std::fs;
+use std::net::IpAddr;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::generated_python_parity::{
-    PYTHON_LLM_PROVIDERS, PYTHON_SERVICE_ROUTES, PythonLlmProvider,
+    PYTHON_LLM_PROVIDER_CHOICES, PYTHON_LLM_PROVIDERS, PYTHON_SERVICE_ROUTES, PythonLlmProvider,
 };
 use crate::order_audit::{redact_text, redact_value};
 
@@ -100,26 +104,110 @@ pub struct LocalModelRouteRequest {
 }
 
 pub fn normalize_llm_provider_key(value: impl AsRef<str>) -> String {
-    let raw = value.as_ref().trim().to_lowercase().replace('_', "-");
-    let normalized = match raw.as_str() {
-        "openai-chatgpt" => "openai",
-        "claude" | "anthropic-claude" => "anthropic",
-        "google" | "google-gemini" => "gemini",
-        "xai" | "xai-grok" => "grok",
-        "dashscope" | "alibaba" | "alibaba-qwen" => "qwen",
-        "ollama" | "local-openai" | "local-openai-compatible" | "custom" => "local",
-        other => other,
-    };
+    let raw = normalize_provider_token(value.as_ref());
+    let normalized = PYTHON_LLM_PROVIDER_CHOICES
+        .iter()
+        .find(|(alias, _)| *alias == raw)
+        .map(|(_, provider)| *provider)
+        .unwrap_or(raw.as_str());
     provider_by_key(normalized)
         .map(|provider| provider.key.to_owned())
         .unwrap_or_else(|| "openai".to_owned())
 }
 
 pub fn provider_by_key(value: impl AsRef<str>) -> Option<&'static PythonLlmProvider> {
-    let key = value.as_ref().trim();
+    let key = normalize_provider_token(value.as_ref());
     PYTHON_LLM_PROVIDERS
         .iter()
         .find(|provider| provider.key == key)
+}
+
+fn normalize_provider_token(value: &str) -> String {
+    value.trim().to_lowercase().replace('_', "-")
+}
+
+fn base_url_uses_public_network(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim().to_lowercase();
+    if host == "localhost" || host.ends_with(".local") {
+        return false;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) => {
+            !(address.is_loopback() || address.is_private() || address.is_link_local())
+        }
+        Ok(IpAddr::V6(address)) => {
+            !(address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local())
+        }
+        Err(_) => true,
+    }
+}
+
+fn append_unique_model(models: &mut Vec<String>, value: impl AsRef<str>) {
+    let model = value.as_ref().trim();
+    if !model.is_empty() && !models.iter().any(|item| item == model) {
+        models.push(model.to_owned());
+    }
+}
+
+fn model_catalog_path() -> Option<PathBuf> {
+    if let Ok(value) = env::var("BOT_LLM_MODEL_CATALOG_PATH") {
+        let path = value.trim();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".trading-bot")
+                .join("llm-models.json")
+        })
+}
+
+fn model_suggestions_for_provider(provider: &PythonLlmProvider) -> Vec<String> {
+    let mut models = provider
+        .model_suggestions
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    let env_name = format!(
+        "BOT_LLM_EXTRA_MODELS_{}",
+        provider.key.to_uppercase().replace('-', "_")
+    );
+    if let Ok(raw) = env::var(env_name) {
+        for value in raw.replace(';', ",").split(',') {
+            append_unique_model(&mut models, value);
+        }
+    }
+    let Some(path) = model_catalog_path() else {
+        return models;
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return models;
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(&text) else {
+        return models;
+    };
+    let raw_models = payload.get(provider.key).or_else(|| {
+        payload
+            .get("providers")
+            .and_then(|items| items.get(provider.key))
+    });
+    if let Some(Value::Array(items)) = raw_models {
+        for value in items {
+            if let Some(model) = value.as_str() {
+                append_unique_model(&mut models, model);
+            }
+        }
+    }
+    models
 }
 
 pub fn build_llm_config_payload(input: &LlmConfigInput) -> LlmConfigPayload {
@@ -150,11 +238,7 @@ pub fn build_llm_config_payload(input: &LlmConfigInput) -> LlmConfigPayload {
             .iter()
             .map(|value| (*value).to_owned())
             .collect(),
-        model_suggestions: provider
-            .model_suggestions
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
+        model_suggestions: model_suggestions_for_provider(provider),
         execution_policy: LlmExecutionPolicy::default(),
     }
 }
@@ -176,12 +260,23 @@ pub fn build_llm_chat_request(
             payload.provider_label
         ));
     }
+    let base_url_is_public = base_url_uses_public_network(&payload.base_url);
+    if payload.mode != "cloud" && base_url_is_public && !payload.allow_public_network {
+        return Err(
+            "Public local/custom LLM endpoints are disabled. Enable the public network endpoint control before using this base URL."
+                .to_owned(),
+        );
+    }
 
     let api_key = non_empty_or(
         &input.llm_api_key,
         &std::env::var(&payload.api_key_env).unwrap_or_default(),
     );
-    let context_for_request = context_for_provider(context, &payload.mode);
+    let context_for_request = context_for_provider(
+        context,
+        &payload.mode,
+        payload.allow_public_network || base_url_is_public,
+    );
     let mut headers = BTreeMap::from([("Content-Type".to_owned(), "application/json".to_owned())]);
     let url;
     let body;
@@ -205,9 +300,11 @@ pub fn build_llm_chat_request(
                 ("model".to_owned(), Value::String(payload.model.clone())),
                 ("messages".to_owned(), Value::Array(messages)),
             ]);
-            for (key, value) in
-                openai_compatible_reasoning_body(&payload.provider, &payload.reasoning_effort)
-            {
+            for (key, value) in openai_compatible_reasoning_body(
+                &payload.provider,
+                &payload.model,
+                &payload.reasoning_effort,
+            ) {
                 object.insert(key, value);
             }
             body = Value::Object(object);
@@ -313,12 +410,13 @@ pub fn sanitize_llm_request_for_display(request: &LlmHttpRequest) -> LlmHttpRequ
 }
 
 pub fn llm_output_policy_violations(text: impl AsRef<str>) -> Vec<String> {
-    let lower = text.as_ref().trim().to_lowercase();
+    let raw = text.as_ref().trim();
+    let lower = raw.to_lowercase();
     if lower.is_empty() {
         return Vec::new();
     }
     let mut violations = BTreeSet::<String>::new();
-    if let Ok(value) = serde_json::from_str::<Value>(text.as_ref()) {
+    for value in json_candidates_from_text(raw) {
         scan_structured_policy_value(&value, &mut violations);
     }
     for (label, phrases) in [
@@ -478,9 +576,13 @@ pub fn describe_local_model_status(
     )
 }
 
-fn context_for_provider(context: Option<&Value>, mode: &str) -> Option<Value> {
+fn context_for_provider(
+    context: Option<&Value>,
+    mode: &str,
+    allow_public_network: bool,
+) -> Option<Value> {
     let context = context?;
-    if mode.trim().eq_ignore_ascii_case("cloud") {
+    if mode.trim().eq_ignore_ascii_case("cloud") || allow_public_network {
         return Some(cloud_safe_context(context));
     }
     Some(redact_value(context.clone()))
@@ -574,7 +676,11 @@ fn normalize_reasoning_effort(provider: &PythonLlmProvider, value: &str) -> Stri
     }
 }
 
-fn openai_compatible_reasoning_body(provider: &str, effort: &str) -> BTreeMap<String, Value> {
+fn openai_compatible_reasoning_body(
+    provider: &str,
+    model: &str,
+    effort: &str,
+) -> BTreeMap<String, Value> {
     if matches!(effort, "" | "default") {
         return BTreeMap::new();
     }
@@ -594,6 +700,35 @@ fn openai_compatible_reasoning_body(provider: &str, effort: &str) -> BTreeMap<St
             );
         }
         return body;
+    }
+    if provider == "qwen" {
+        return BTreeMap::from([(
+            "enable_thinking".to_owned(),
+            json!(!matches!(effort, "none" | "disabled" | "off")),
+        )]);
+    }
+    if provider == "moonshot" {
+        let normalized_model = model.trim().to_lowercase();
+        if normalized_model.starts_with("kimi-k3") {
+            return if effort == "max" {
+                BTreeMap::from([("reasoning_effort".to_owned(), json!("max"))])
+            } else {
+                BTreeMap::new()
+            };
+        }
+        if normalized_model.starts_with("kimi-k2.5") || normalized_model.starts_with("kimi-k2.6") {
+            if matches!(effort, "none" | "disabled" | "off") {
+                return BTreeMap::from([("thinking".to_owned(), json!({"type": "disabled"}))]);
+            }
+            if matches!(
+                effort,
+                "enabled" | "low" | "medium" | "high" | "max" | "xhigh"
+            ) {
+                return BTreeMap::from([("thinking".to_owned(), json!({"type": "enabled"}))]);
+            }
+        }
+        // Kimi K2.7 Code always reasons and rejects a thinking override.
+        return BTreeMap::new();
     }
     BTreeMap::from([("reasoning_effort".to_owned(), json!(effort))])
 }
@@ -636,24 +771,81 @@ fn gemini_generation_config(effort: &str, model: &str) -> Option<Value> {
         .then(|| json!({"thinkingConfig": {"thinkingLevel": level}}))
 }
 
+fn json_candidates_from_text(text: &str) -> Vec<Value> {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = vec![raw.to_owned()];
+    if raw.starts_with("```") {
+        let lines = raw.lines().collect::<Vec<_>>();
+        if lines.len() >= 3
+            && lines
+                .last()
+                .is_some_and(|line| line.trim().starts_with("```"))
+        {
+            candidates.push(lines[1..lines.len() - 1].join("\n").trim().to_owned());
+        }
+    }
+    if let (Some(first), Some(last)) = (raw.find('{'), raw.rfind('}')) {
+        if last > first {
+            candidates.push(raw[first..=last].to_owned());
+        }
+    }
+    if let (Some(first), Some(last)) = (raw.find('['), raw.rfind(']')) {
+        if last > first {
+            candidates.push(raw[first..=last].to_owned());
+        }
+    }
+    let mut seen = BTreeSet::new();
+    candidates
+        .into_iter()
+        .filter(|candidate| !candidate.is_empty() && seen.insert(candidate.clone()))
+        .filter_map(|candidate| serde_json::from_str::<Value>(&candidate).ok())
+        .collect()
+}
+
 fn scan_structured_policy_value(value: &Value, violations: &mut BTreeSet<String>) {
     match value {
         Value::Object(map) => {
             for (key, raw_item) in map {
+                let key = key.trim().to_lowercase();
                 let item = raw_item
                     .as_str()
                     .map(|value| value.trim().to_lowercase())
                     .unwrap_or_else(|| raw_item.to_string().trim().to_lowercase());
-                if key == "action"
-                    && matches!(
+                if matches!(
+                    key.as_str(),
+                    "action" | "command" | "intent" | "operation" | "tool"
+                ) {
+                    if matches!(
                         item.as_str(),
-                        "place_order" | "submit_order" | "execute_order"
-                    )
-                {
-                    violations.insert("direct_order_action".to_owned());
+                        "cancel_order"
+                            | "change_leverage"
+                            | "close_position"
+                            | "create_order"
+                            | "execute_order"
+                            | "market_buy"
+                            | "market_sell"
+                            | "open_position"
+                            | "place_order"
+                            | "set_leverage"
+                            | "submit_order"
+                    ) {
+                        violations.insert("direct_order_action".to_owned());
+                    }
+                    if matches!(
+                        item.as_str(),
+                        "change_leverage" | "disable_stop_loss" | "override_risk" | "set_leverage"
+                    ) {
+                        violations.insert("risk_override".to_owned());
+                    }
                 }
                 if matches!(key.as_str(), "execution_status" | "order_status" | "status")
-                    && matches!(item.as_str(), "executed" | "filled" | "submitted")
+                    && matches!(
+                        item.as_str(),
+                        "executed" | "filled" | "order_executed" | "placed" | "submitted"
+                    )
                 {
                     violations.insert("order_execution_claim".to_owned());
                 }
@@ -683,8 +875,8 @@ fn scan_structured_policy_value(value: &Value, violations: &mut BTreeSet<String>
 
 fn ordered_policy_violations(violations: BTreeSet<String>) -> Vec<String> {
     [
-        "direct_order_action",
         "order_execution_claim",
+        "direct_order_action",
         "risk_override",
     ]
     .into_iter()
@@ -734,12 +926,85 @@ mod tests {
             llm_reasoning_effort: "extra-high".to_owned(),
             ..Default::default()
         });
-        assert_eq!(payload.provider, "local");
+        assert_eq!(payload.provider, "ollama");
         assert_eq!(payload.base_url, "http://127.0.0.1:11434/v1");
         assert_eq!(payload.model, "qwen3:8b");
         assert_eq!(payload.reasoning_effort, "xhigh");
         assert!(payload.execution_policy.advisory_only);
         assert!(!payload.execution_policy.can_execute_orders);
+    }
+
+    #[test]
+    fn every_generated_python_provider_alias_normalizes_to_its_source_value() {
+        for (alias, expected) in PYTHON_LLM_PROVIDER_CHOICES {
+            assert_eq!(
+                normalize_llm_provider_key(alias),
+                *expected,
+                "provider alias should follow the generated Python mapping: {alias}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_specific_reasoning_and_public_endpoint_rules_match_python() {
+        let qwen = build_llm_chat_request(
+            &LlmConfigInput {
+                llm_provider: "qwen".to_owned(),
+                llm_model: "qwen3.7-max".to_owned(),
+                llm_reasoning_effort: "enabled".to_owned(),
+                ..Default::default()
+            },
+            "Explain risk",
+            "",
+            None,
+        )
+        .expect("Qwen request should be buildable");
+        assert_eq!(qwen.json["enable_thinking"], true);
+
+        let kimi = build_llm_chat_request(
+            &LlmConfigInput {
+                llm_provider: "moonshot".to_owned(),
+                llm_model: "kimi-k2.6".to_owned(),
+                llm_reasoning_effort: "disabled".to_owned(),
+                ..Default::default()
+            },
+            "Explain risk",
+            "",
+            None,
+        )
+        .expect("Kimi request should be buildable");
+        assert_eq!(kimi.json["thinking"], json!({"type": "disabled"}));
+
+        let error = build_llm_chat_request(
+            &LlmConfigInput {
+                llm_provider: "open-source".to_owned(),
+                llm_model: "RWKV/rwkv-6-world".to_owned(),
+                llm_base_url: "https://llm.example.test/v1".to_owned(),
+                ..Default::default()
+            },
+            "Explain risk",
+            "",
+            None,
+        )
+        .expect_err("public custom endpoints require explicit consent");
+        assert!(error.contains("Public local/custom LLM endpoints are disabled"));
+
+        let request = build_llm_chat_request(
+            &LlmConfigInput {
+                llm_provider: "open-source".to_owned(),
+                llm_model: "RWKV/rwkv-6-world".to_owned(),
+                llm_base_url: "https://llm.example.test/v1".to_owned(),
+                llm_allow_public_network: true,
+                ..Default::default()
+            },
+            "Explain risk",
+            "",
+            Some(&json!({"custom": {"private": "do-not-send"}})),
+        )
+        .expect("consented public custom endpoint should be buildable");
+        let body = request.json.to_string();
+        assert!(body.contains("Cloud LLM context minimized"));
+        assert!(!body.contains("do-not-send"));
     }
 
     #[test]
@@ -832,8 +1097,8 @@ mod tests {
         assert_eq!(
             llm_output_policy_violations(r#"{"action":"place_order","status":"executed"}"#),
             vec![
-                "direct_order_action".to_owned(),
-                "order_execution_claim".to_owned()
+                "order_execution_claim".to_owned(),
+                "direct_order_action".to_owned()
             ]
         );
         assert_eq!(
@@ -842,6 +1107,16 @@ mod tests {
                 "order_execution_claim".to_owned(),
                 "risk_override".to_owned()
             ]
+        );
+        assert_eq!(
+            llm_output_policy_violations(
+                "```json\n{\"tool\": \"submit_order\", \"symbol\": \"BTCUSDT\"}\n```"
+            ),
+            vec!["direct_order_action".to_owned()]
+        );
+        assert_eq!(
+            llm_output_policy_violations(r#"{"operation":"change_leverage"}"#),
+            vec!["direct_order_action".to_owned(), "risk_override".to_owned()]
         );
     }
 }

@@ -1154,11 +1154,11 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
 bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText) {
     const QString selected = connectorText.trimmed();
     const QString key = normalizeConnectorBackend(selected);
-    if (key != kConnectorUsdsFutures && key != kConnectorCoinFutures) {
+    if (key != kConnectorUsdsFutures && key != kConnectorCoinFutures && key != kConnectorSpot) {
         return false;
     }
 
-    // Only accept the key or label emitted by the generated Python connector catalog.
+    // Only accept keys or labels emitted by the generated Python connector catalog.
     // This keeps provider aliases from silently becoming native Binance execution.
     for (const ConnectorOption &option : pythonConnectorOptions()) {
         if (option.key != key) {

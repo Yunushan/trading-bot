@@ -118,6 +118,24 @@ QString formatQuantityWithSymbol(double quantity, const QString &symbol) {
     return baseAsset.isEmpty() ? qtyText : QStringLiteral("%1 %2").arg(qtyText, baseAsset);
 }
 
+double floorSpotQuantityToStep(double quantity, double stepSize) {
+    if (!qIsFinite(quantity) || quantity <= 0.0) {
+        return 0.0;
+    }
+    if (!qIsFinite(stepSize) || stepSize < 0.0) {
+        return 0.0;
+    }
+    if (stepSize == 0.0) {
+        return quantity;
+    }
+    const double units = std::floor((quantity / stepSize) + 1e-9);
+    if (!qIsFinite(units) || units <= 0.0) {
+        return 0.0;
+    }
+    const double adjusted = units * stepSize;
+    return qIsFinite(adjusted) && adjusted > 0.0 ? adjusted : 0.0;
+}
+
 QString formatPositionSizeText(double sizeUsdt, double quantity, const QString &symbol) {
     const QString usdtText = QStringLiteral("%1 USDT").arg(QString::number(std::max(0.0, sizeUsdt), 'f', 2));
     const QString qtyText = formatQuantityWithSymbol(quantity, symbol);
@@ -361,12 +379,15 @@ QWidget *TradingBotWindow::createPositionsTab() {
         if (balance.ok) {
             const double totalBalance = std::max(
                 0.0,
-                (balance.totalUsdtBalance > 0.0) ? balance.totalUsdtBalance : balance.usdtBalance);
+                (balance.totalBalance > 0.0) ? balance.totalBalance : balance.totalUsdtBalance);
             const double availableBalance = std::max(
                 0.0,
-                (balance.availableUsdtBalance > 0.0) ? balance.availableUsdtBalance : totalBalance);
+                (balance.availableBalance > 0.0) ? balance.availableBalance : totalBalance);
             positionsLastTotalBalanceUsdt_ = totalBalance;
             positionsLastAvailableBalanceUsdt_ = availableBalance;
+            positionsBalanceAsset_ = balance.asset.trimmed().isEmpty()
+                ? QStringLiteral("USDT")
+                : balance.asset.trimmed().toUpper();
         }
 
         QSet<QString> liveSymbols;
@@ -479,7 +500,7 @@ QWidget *TradingBotWindow::createPositionsTab() {
         }
         if (symbol.isEmpty() || sideKey.isEmpty() || !quantityOk || !qIsFinite(quantity) || quantity <= 0.0
             || status == QStringLiteral("CLOSED") || status == QStringLiteral("CLOSING")) {
-            updateStatusMessage("Selected row is not a valid open directional futures position.");
+            updateStatusMessage("Selected row is not a valid open directional position.");
             return;
         }
 
@@ -575,10 +596,6 @@ QWidget *TradingBotWindow::createPositionsTab() {
         const bool futuresMode = dashboardAccountTypeCombo_
             ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
             : true;
-        if (!futuresMode) {
-            updateStatusMessage("Selected position close currently supports Futures account only.");
-            return;
-        }
         const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
         const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
         if (apiKey.isEmpty() || apiSecret.isEmpty()) {
@@ -591,10 +608,34 @@ QWidget *TradingBotWindow::createPositionsTab() {
         const QString connectorText = dashboardConnectorCombo_
             ? dashboardConnectorCombo_->currentText().trimmed()
             : TradingBotWindowSupport::connectorLabelForKey(
-                  TradingBotWindowSupport::recommendedConnectorKey(true));
-        const auto connectorCfg = TradingBotWindowSupport::resolveConnectorConfig(connectorText, true);
+                  TradingBotWindowSupport::recommendedConnectorKey(futuresMode));
+        const auto connectorCfg = TradingBotWindowSupport::resolveConnectorConfig(connectorText, futuresMode);
         if (!connectorCfg.ok()) {
             updateStatusMessage(QStringLiteral("Selected position close connector error: %1").arg(connectorCfg.error));
+            return;
+        }
+        const QString closeSide = sideKey == QStringLiteral("L") ? QStringLiteral("SELL") : QStringLiteral("BUY");
+        if (!futuresMode) {
+            const auto order = BinanceRestClient::placeSpotMarketOrder(
+                apiKey,
+                apiSecret,
+                symbol,
+                closeSide,
+                quantity,
+                isTestnet,
+                10000,
+                connectorCfg.baseUrl);
+            if (!order.ok) {
+                updateStatusMessage(QStringLiteral("Selected Spot position close failed for %1: %2")
+                                        .arg(symbol, order.error));
+                return;
+            }
+            markSelectedClosed();
+            updateStatusMessage(QStringLiteral("Selected Spot market close succeeded: %1 %2, qty=%3, order=%4.")
+                                    .arg(symbol,
+                                         sideLabel,
+                                         QString::number(quantity, 'g', 12),
+                                         order.orderId.trimmed().isEmpty() ? QStringLiteral("accepted") : order.orderId));
             return;
         }
         const auto livePositions = BinanceRestClient::fetchOpenFuturesPositions(
@@ -636,7 +677,6 @@ QWidget *TradingBotWindow::createPositionsTab() {
         }
 
         const double closeQuantity = std::min(quantity, std::fabs(liveMatch->positionAmt));
-        const QString closeSide = sideKey == QStringLiteral("L") ? QStringLiteral("SELL") : QStringLiteral("BUY");
         const QString livePositionSide = liveMatch->positionSide.trimmed().toUpper();
         const QString positionSide = livePositionSide == QStringLiteral("LONG")
                 || livePositionSide == QStringLiteral("SHORT")
@@ -682,10 +722,6 @@ QWidget *TradingBotWindow::createPositionsTab() {
         const bool futuresMode = dashboardAccountTypeCombo_
             ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
             : true;
-        if (!futuresMode) {
-            updateStatusMessage("Market close-all currently supports Futures account only.");
-            return;
-        }
 
         const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
         const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
@@ -702,9 +738,117 @@ QWidget *TradingBotWindow::createPositionsTab() {
             : TradingBotWindowSupport::connectorLabelForKey(
                   TradingBotWindowSupport::recommendedConnectorKey(true));
         const TradingBotWindowSupport::ConnectorRuntimeConfig connectorCfg =
-            TradingBotWindowSupport::resolveConnectorConfig(connectorText, true);
+            TradingBotWindowSupport::resolveConnectorConfig(connectorText, futuresMode);
         if (!connectorCfg.ok()) {
             updateStatusMessage(QString("Market close-all connector error: %1").arg(connectorCfg.error));
+            return;
+        }
+
+        if (!futuresMode) {
+            const auto balances = BinanceRestClient::fetchSpotBalances(
+                apiKey,
+                apiSecret,
+                isTestnet,
+                10000,
+                connectorCfg.baseUrl);
+            if (!balances.ok) {
+                updateStatusMessage(QString("Spot close-all failed to load account balances: %1").arg(balances.error));
+                return;
+            }
+            int skipped = 0;
+            int succeeded = 0;
+            int failed = 0;
+            QStringList failures;
+            for (const auto &balance : balances.balances) {
+                const QString asset = balance.asset.trimmed().toUpper();
+                if (asset == QStringLiteral("USDT")) {
+                    continue;
+                }
+                const QString symbol = asset.isEmpty() ? QString() : asset + QStringLiteral("USDT");
+                if (asset.isEmpty() || !qIsFinite(balance.free)) {
+                    ++failed;
+                    failures.push_back(QStringLiteral("%1: invalid spot balance asset or quantity").arg(symbol));
+                    continue;
+                }
+                if (balance.free <= 0.0) {
+                    continue;
+                }
+
+                const auto filters = BinanceRestClient::fetchSpotSymbolFilters(
+                    symbol,
+                    isTestnet,
+                    10000,
+                    connectorCfg.baseUrl);
+                if (!filters.ok) {
+                    ++failed;
+                    failures.push_back(QStringLiteral("%1: unable to verify Spot metadata: %2")
+                                           .arg(symbol, filters.error));
+                    continue;
+                }
+                const QString status = filters.status.isEmpty() ? QStringLiteral("TRADING") : filters.status;
+                const QString quoteAsset = filters.quoteAsset.isEmpty()
+                    ? QStringLiteral("USDT")
+                    : filters.quoteAsset;
+                if (status != QStringLiteral("TRADING") || quoteAsset != QStringLiteral("USDT")) {
+                    ++skipped;
+                    continue;
+                }
+
+                const auto ticker = BinanceRestClient::fetchTickerPrice(
+                    symbol,
+                    false,
+                    isTestnet,
+                    10000,
+                    connectorCfg.baseUrl);
+                if (!ticker.ok || !qIsFinite(ticker.price) || ticker.price <= 0.0) {
+                    ++skipped;
+                    continue;
+                }
+                if (!qIsFinite(filters.minNotional) || filters.minNotional < 0.0
+                    || !qIsFinite(filters.stepSize) || filters.stepSize < 0.0) {
+                    ++failed;
+                    failures.push_back(QStringLiteral("%1: invalid Spot order filters").arg(symbol));
+                    continue;
+                }
+                const double estimatedNotional = balance.free * ticker.price;
+                if (filters.minNotional > 0.0 && estimatedNotional < filters.minNotional) {
+                    ++skipped;
+                    continue;
+                }
+                const double quantity = floorSpotQuantityToStep(balance.free, filters.stepSize);
+                if (!qIsFinite(quantity) || quantity <= 0.0) {
+                    ++skipped;
+                    continue;
+                }
+
+                const auto order = BinanceRestClient::placeSpotMarketOrder(
+                    apiKey,
+                    apiSecret,
+                    symbol,
+                    QStringLiteral("SELL"),
+                    quantity,
+                    isTestnet,
+                    10000,
+                    connectorCfg.baseUrl);
+                if (!order.ok) {
+                    ++failed;
+                    failures.push_back(QStringLiteral("%1: %2").arg(symbol, order.error));
+                    continue;
+                }
+                ++succeeded;
+            }
+            if (failed == 0) {
+                table->setRowCount(0);
+                dashboardRuntimeOpenPositions_.clear();
+            }
+            updateStatusMessage(
+                QString("Spot close-all evaluated %1 balance(s): %2 order(s) succeeded, %3 failed, %4 skipped%5.")
+                    .arg(balances.balances.size())
+                    .arg(succeeded)
+                    .arg(failed)
+                    .arg(skipped)
+                    .arg(failures.isEmpty() ? QString() : QStringLiteral(" - ") + failures.join(QStringLiteral("; "))));
+            applyPositionsViewMode();
             return;
         }
 
@@ -991,11 +1135,14 @@ void TradingBotWindow::refreshPositionsSummaryLabels() {
         codePnlClosedLabel_->setText(closedPnlText);
     }
 
+    const QString balanceAsset = positionsBalanceAsset_.trimmed().isEmpty()
+        ? QStringLiteral("USDT")
+        : positionsBalanceAsset_.trimmed().toUpper();
     if (positionsTotalBalanceLabel_) {
         if (qIsFinite(positionsLastTotalBalanceUsdt_) && positionsLastTotalBalanceUsdt_ >= 0.0) {
             positionsTotalBalanceLabel_->setText(
-                QStringLiteral("Total Balance: %1 USDT")
-                    .arg(QString::number(positionsLastTotalBalanceUsdt_, 'f', 3)));
+                QStringLiteral("Total Balance: %1 %2")
+                    .arg(QString::number(positionsLastTotalBalanceUsdt_, 'f', 3), balanceAsset));
         } else {
             positionsTotalBalanceLabel_->setText(QStringLiteral("Total Balance: --"));
         }
@@ -1003,8 +1150,8 @@ void TradingBotWindow::refreshPositionsSummaryLabels() {
     if (positionsAvailableBalanceLabel_) {
         if (qIsFinite(positionsLastAvailableBalanceUsdt_) && positionsLastAvailableBalanceUsdt_ >= 0.0) {
             positionsAvailableBalanceLabel_->setText(
-                QStringLiteral("Available Balance: %1 USDT")
-                    .arg(QString::number(positionsLastAvailableBalanceUsdt_, 'f', 3)));
+                QStringLiteral("Available Balance: %1 %2")
+                    .arg(QString::number(positionsLastAvailableBalanceUsdt_, 'f', 3), balanceAsset));
         } else {
             positionsAvailableBalanceLabel_->setText(QStringLiteral("Available Balance: --"));
         }

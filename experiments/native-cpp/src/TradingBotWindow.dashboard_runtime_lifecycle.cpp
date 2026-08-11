@@ -59,9 +59,9 @@ void TradingBotWindow::startDashboardRuntime() {
     const QString defaultConnectorText = dashboardConnectorCombo_
         ? dashboardConnectorCombo_->currentText().trimmed()
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
-    if (!futures || !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText)) {
+    if (!TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText)) {
         const QString message = QStringLiteral(
-            "C++ native runtime owns only Binance USD-M and Coin-M Futures connectors. '%1' remains Python Service API/provider connector-owned "
+            "C++ native runtime owns Binance USD-M, Coin-M Futures, and Spot connectors. '%1' remains Python Service API/provider connector-owned "
             "and will not be submitted by the C++ runtime.")
                                     .arg(defaultConnectorText);
         appendDashboardAllLog(QStringLiteral("Start blocked: %1").arg(message));
@@ -84,7 +84,7 @@ void TradingBotWindow::startDashboardRuntime() {
             continue;
         }
         const QString message = QStringLiteral(
-            "C++ native runtime owns only Binance USD-M and Coin-M Futures connectors. Override row %1 uses '%2', which remains "
+            "C++ native runtime owns Binance USD-M, Coin-M Futures, and Spot connectors. Override row %1 uses '%2', which remains "
             "Python Service API/provider connector-owned and will not be submitted by the C++ runtime.")
                                     .arg(row + 1)
                                     .arg(connectorText);
@@ -126,6 +126,9 @@ void TradingBotWindow::startDashboardRuntime() {
     dashboardRuntimeLastEvalMs_.clear();
     dashboardRuntimeEntryRetryAfterMs_.clear();
     dashboardRuntimeOpenQtyCaps_.clear();
+    dashboardRuntimeIndicatorSignalTrackers_.clear();
+    dashboardRuntimeIndicatorOrderGuardStates_.clear();
+    dashboardRuntimeIndicatorReentryBlocks_.clear();
     dashboardRuntimeLiveSubmitAttemptCount_ = 0;
     NativeOrderSafety::OrderAuditLogConfig orderAuditConfig;
     orderAuditConfig.enabled = dashboardOrderAuditEnabledCheck_ && dashboardOrderAuditEnabledCheck_->isChecked();
@@ -269,6 +272,19 @@ void TradingBotWindow::startDashboardRuntime() {
                 continue;
             }
 
+            qint64 openedAtMs = 0;
+            const QDateTime openedAt = QDateTime::fromString(
+                rawCellText(row, 13).trimmed(),
+                QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            if (openedAt.isValid()) {
+                openedAtMs = openedAt.toLocalTime().toMSecsSinceEpoch();
+            }
+            // A legacy row has no machine-readable timestamp. Start its hold
+            // window at restoration instead of permitting an unsafe flip.
+            if (openedAtMs <= 0) {
+                openedAtMs = QDateTime::currentMSecsSinceEpoch();
+            }
+
             dashboardRuntimeOpenPositions_.insert(
                 runtimeKey,
                 RuntimePosition{
@@ -282,6 +298,7 @@ void TradingBotWindow::startDashboardRuntime() {
                     leverage,
                     std::max(1e-9, marginUsdt),
                     std::max(0.0, marginUsdt),
+                    openedAtMs,
                 });
             ++restoredOpenCount;
         }
@@ -565,10 +582,7 @@ void TradingBotWindow::stopDashboardRuntime() {
             appendDashboardPositionLog("Stop paper close summary: no active paper positions to close.");
         }
     } else if (!dashboardRuntimeOpenPositions_.isEmpty()) {
-        if (!futures) {
-            appendDashboardPositionLog("Stop close skipped: auto-close is supported for Futures account type only.");
-            closeFailed = dashboardRuntimeOpenPositions_.size();
-        } else if (!hasApiCredentials) {
+        if (!hasApiCredentials) {
             appendDashboardPositionLog("Stop close skipped: missing API credentials.");
             closeFailed = dashboardRuntimeOpenPositions_.size();
         } else {
@@ -588,7 +602,7 @@ void TradingBotWindow::stopDashboardRuntime() {
                     connectorBaseUrl = keyParts.mid(3).join(QStringLiteral("|")).trimmed();
                 }
 
-                const auto *liveSnapshot = fetchStopLivePositions(connectorBaseUrl);
+            const auto *liveSnapshot = futures ? fetchStopLivePositions(connectorBaseUrl) : nullptr;
                 const auto *livePos = pickStopLivePosition(liveSnapshot, symbol, openPos.side);
                 if (livePos) {
                     const double liveQty = std::fabs(livePos->positionAmt);
@@ -627,8 +641,8 @@ void TradingBotWindow::stopDashboardRuntime() {
 
                 const QString closeOrderSide = (openPos.side == QStringLiteral("LONG")) ? QStringLiteral("SELL")
                                                                                          : QStringLiteral("BUY");
-                const QString closePositionSide = hedgeMode ? openPos.side : QString();
-                const bool closeReduceOnly = !hedgeMode;
+                const QString closePositionSide = futures && hedgeMode ? openPos.side : QString();
+                const bool closeReduceOnly = futures && !hedgeMode;
                 int targetRow = -1;
                 if (positionsTable_) {
                     for (int row = positionsTable_->rowCount() - 1; row >= 0; --row) {
@@ -659,18 +673,28 @@ void TradingBotWindow::stopDashboardRuntime() {
                     fallbackClosePrice = openPos.entryPrice;
                 }
                 ++closeRequested;
-                const auto closeOrder = placeFuturesCloseOrderWithFallback(
-                    apiKey,
-                    apiSecret,
-                    symbol,
-                    closeOrderSide,
-                    openPos.quantity,
-                    isTestnet,
-                    closeReduceOnly,
-                    closePositionSide,
-                    10000,
-                    connectorBaseUrl,
-                    fallbackClosePrice);
+                const auto closeOrder = futures
+                    ? placeFuturesCloseOrderWithFallback(
+                          apiKey,
+                          apiSecret,
+                          symbol,
+                          closeOrderSide,
+                          openPos.quantity,
+                          isTestnet,
+                          closeReduceOnly,
+                          closePositionSide,
+                          10000,
+                          connectorBaseUrl,
+                          fallbackClosePrice)
+                    : BinanceRestClient::placeSpotMarketOrder(
+                          apiKey,
+                          apiSecret,
+                          symbol,
+                          closeOrderSide,
+                          openPos.quantity,
+                          isTestnet,
+                          10000,
+                          connectorBaseUrl);
 
                 if (!closeOrder.ok) {
                     if (isReduceOnlyRejectedError(closeOrder.error)) {
@@ -1028,5 +1052,6 @@ void TradingBotWindow::stopDashboardRuntime() {
     dashboardRuntimeSignalCandles_.clear();
     dashboardRuntimeSignalLastClosed_.clear();
     dashboardRuntimeSignalUpdateMs_.clear();
+    dashboardRuntimeIndicatorSignalTrackers_.clear();
     dashboardRuntimeStopping_ = false;
 }
