@@ -595,7 +595,8 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     config.insert(QStringLiteral("assets_mode"), comboDataOrText(dashboardAssetsModeCombo_, QStringLiteral("Single-Asset")));
     config.insert(QStringLiteral("connector_backend"), comboDataOrText(dashboardConnectorCombo_, QStringLiteral("binance-native")));
     config.insert(QStringLiteral("selected_exchange"), comboDataOrText(dashboardExchangeCombo_, QStringLiteral("Binance")));
-    config.insert(QStringLiteral("theme"), comboText(dashboardThemeCombo_));
+    config.insert(QStringLiteral("theme"), comboDataOrText(dashboardThemeCombo_));
+    config.insert(QStringLiteral("design"), comboDataOrText(dashboardDesignCombo_, QStringLiteral("Classic")));
     config.insert(QStringLiteral("leverage"), dashboardLeverageSpin_ ? dashboardLeverageSpin_->value() : 1);
     config.insert(QStringLiteral("tif"), comboDataOrText(dashboardTimeInForceCombo_, QStringLiteral("GTC")));
     config.insert(QStringLiteral("gtd_minutes"), dashboardGtdMinutesSpin_ ? dashboardGtdMinutesSpin_->value() : 30);
@@ -758,6 +759,7 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
     setComboValue(dashboardConnectorCombo_, config.value(QStringLiteral("connector_backend")));
     setComboValue(dashboardExchangeCombo_, config.value(QStringLiteral("selected_exchange")));
     setComboValue(dashboardThemeCombo_, config.value(QStringLiteral("theme")));
+    setComboValue(dashboardDesignCombo_, config.value(QStringLiteral("design")));
     setComboValue(dashboardIndicatorSourceCombo_, config.value(QStringLiteral("indicator_source")));
     setComboValue(dashboardTimeInForceCombo_, config.value(QStringLiteral("tif")));
     setComboValue(dashboardOrderTypeCombo_, config.value(QStringLiteral("order_type")));
@@ -1010,6 +1012,9 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
 
     if (dashboardThemeCombo_) {
         applyDashboardTheme(dashboardThemeCombo_->currentText());
+    }
+    if (dashboardDesignCombo_) {
+        applyDashboardDesign(dashboardDesignCombo_->currentText());
     }
     if (dashboardGtdMinutesSpin_ && dashboardTimeInForceCombo_) {
         dashboardGtdMinutesSpin_->setEnabled(

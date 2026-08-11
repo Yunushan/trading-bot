@@ -105,6 +105,118 @@
       min-width: 0;
       overflow: auto;
     }
+    body[data-design="Workstation"] .topbar,
+    body.workstation-design .topbar {
+      padding-top: 10px;
+      padding-bottom: 10px;
+    }
+    #workspace-navigation-rail { display: none; }
+    #workspace-navigation {
+      display: grid;
+      gap: 8px;
+    }
+    .workspace-navigation-button {
+      min-height: 34px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 7px 10px;
+      background: transparent;
+      color: #b8c5d8;
+      text-align: left;
+      cursor: pointer;
+    }
+    .workspace-navigation-button.active {
+      border-color: var(--accent);
+      background: var(--accent-surface);
+      color: var(--accent-text);
+    }
+    body[data-design="Workstation"] .tabs,
+    body.workstation-design .tabs {
+      display: none;
+    }
+    body[data-design="Workstation"] .workspace,
+    body.workstation-design .workspace {
+      display: grid;
+      grid-template-columns: 210px minmax(0, 1fr);
+      gap: 0;
+      padding: 0;
+      min-height: 0;
+    }
+    body[data-design="Workstation"] #workspace-navigation-rail,
+    body.workstation-design #workspace-navigation-rail {
+      display: block;
+      grid-column: 1;
+      grid-row: 1;
+      min-height: 100%;
+      padding: 14px 10px 10px;
+      background: #0f1726;
+      border-right: 1px solid var(--line);
+    }
+    body[data-design="Workstation"] .tab-panel,
+    body.workstation-design .tab-panel {
+      grid-column: 2;
+      grid-row: 1;
+      min-width: 0;
+      padding: 18px;
+    }
+    body[data-design="Workstation"] .workspace-navigation-button,
+    body.workstation-design .workspace-navigation-button {
+      width: 100%;
+    }
+    body[data-design="Workstation"] .tab-panel.active,
+    body.workstation-design .tab-panel.active {
+      gap: 12px;
+    }
+    body[data-theme="Light"] {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --panel-strong: #f1f5f9;
+      --line: #cbd5e1;
+      --line-strong: #94a3b8;
+      --text: #0f172a;
+      --muted: #475569;
+      --accent: #0a84ff;
+      --accent-surface: #dbeafe;
+      --accent-text: #0f172a;
+    }
+    body[data-theme="Blue"] { --accent: #2563eb; --accent-surface: #1e3a8a; --accent-text: #ffffff; }
+    body[data-theme="Yellow"] { --accent: #fbbf24; --accent-surface: #713f12; --accent-text: #111827; }
+    body[data-theme="Green"] { --accent: #22c55e; --accent-surface: #14532d; --accent-text: #ffffff; }
+    body[data-theme="Red"] { --accent: #ef4444; --accent-surface: #7f1d1d; --accent-text: #ffffff; }
+    body[data-theme] .tab-button.active {
+      border-color: var(--accent);
+      background: var(--accent-surface);
+      color: var(--accent-text);
+    }
+    body[data-theme] .action.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: var(--accent-text);
+    }
+    body[data-theme] .card-button:hover,
+    body[data-theme] .card-button:focus-visible,
+    body[data-theme] .card-button.selected {
+      border-color: var(--accent);
+      background: var(--accent-surface);
+    }
+    body[data-theme="Light"] .topbar,
+    body[data-theme="Light"] .bottombar,
+    body[data-theme="Light"] .tabs {
+      background: #ffffff;
+    }
+    body[data-theme="Light"] input,
+    body[data-theme="Light"] select,
+    body[data-theme="Light"] textarea,
+    body[data-theme="Light"] output {
+      background: #ffffff;
+      color: #0f172a;
+    }
+    body[data-theme="Light"] .metric,
+    body[data-theme="Light"] .panel,
+    body[data-theme="Light"] .table-wrap,
+    body[data-theme="Light"] .log-output {
+      background: #ffffff;
+    }
     .tab-panel { display: none; gap: 16px; }
     .tab-panel.active { display: grid; }
     .section-head {
@@ -309,6 +421,10 @@
     </nav>
 
     <section class="workspace">
+      <aside id="workspace-navigation-rail" aria-label="Workspace navigation">
+        <div class="muted">OPERATIONS</div>
+        <div id="workspace-navigation"></div>
+      </aside>
       <article class="tab-panel active" id="dashboard" aria-label="Dashboard">
         <div class="section-head">
           <div>
@@ -847,6 +963,32 @@
     const configModeOptions = optionArray(pythonParityContract.configModeOptions);
     const themeOptions = optionArray(pythonParityContract.themeOptions);
     const designOptions = optionArray(pythonParityContract.designOptions);
+    const applyThemeMode = (value) => {
+      const theme = tauriUiBehavior.normalizeTheme
+        ? tauriUiBehavior.normalizeTheme(value)
+        : (String(value || "").trim() || "Dark");
+      const modeClass = tauriUiBehavior.themeModeClass
+        ? tauriUiBehavior.themeModeClass(theme)
+        : `theme-${theme.toLowerCase()}`;
+      document.body.dataset.theme = theme;
+      document.body.classList.remove(
+        "theme-light", "theme-dark", "theme-blue", "theme-yellow", "theme-green", "theme-red"
+      );
+      document.body.classList.add(modeClass);
+      return theme;
+    };
+    const applyDesignMode = (value) => {
+      const design = tauriUiBehavior.normalizeDesign
+        ? tauriUiBehavior.normalizeDesign(value)
+        : (String(value || "").trim().toLowerCase() === "workstation" ? "Workstation" : "Classic");
+      const modeClass = tauriUiBehavior.designModeClass
+        ? tauriUiBehavior.designModeClass(design)
+        : (design === "Workstation" ? "workstation-design" : "classic-design");
+      document.body.dataset.design = design;
+      document.body.classList.remove("classic-design", "workstation-design");
+      document.body.classList.add(modeClass);
+      return design;
+    };
     const indicatorSourceOptions = optionArray(pythonParityContract.indicatorSourceOptions);
     const exchangeOptions = optionArray(pythonParityContract.exchangeOptions);
     const dashboardLoopChoiceOptions = optionArray(pythonParityContract.dashboardLoopChoices);
@@ -927,13 +1069,28 @@
 
     const tabButtons = [...document.querySelectorAll(".tab-button")];
     const tabPanels = [...document.querySelectorAll(".tab-panel")];
+    const workspaceNavigation = document.getElementById("workspace-navigation");
+    const syncWorkspaceNavigation = () => {
+      if (!workspaceNavigation) return;
+      workspaceNavigation.replaceChildren(...tabButtons.map((button, index) => {
+        const navigationButton = document.createElement("button");
+        navigationButton.type = "button";
+        navigationButton.className = `workspace-navigation-button${button.classList.contains("active") ? " active" : ""}`;
+        navigationButton.textContent = button.textContent;
+        navigationButton.setAttribute("aria-current", button.classList.contains("active") ? "page" : "false");
+        navigationButton.addEventListener("click", () => tabButtons[index]?.click());
+        return navigationButton;
+      }));
+    };
     for (const button of tabButtons) {
       button.addEventListener("click", () => {
         const nextTab = button.dataset.tab;
         for (const item of tabButtons) item.classList.toggle("active", item === button);
         for (const panel of tabPanels) panel.classList.toggle("active", panel.id === nextTab);
+        syncWorkspaceNavigation();
       });
     }
+    syncWorkspaceNavigation();
 
     const modelSuggestions = Object.freeze(Object.fromEntries(
       llmProviders.map((item) => [item.key, item.modelSuggestions])
@@ -961,11 +1118,17 @@
       themeOptions,
       defaultExecution.theme || "Dark"
     );
+    const themeControl = document.getElementById("config-theme");
+    themeControl?.addEventListener("change", () => applyThemeMode(themeControl.value));
+    applyThemeMode(themeControl?.value || defaultExecution.theme || "Dark");
     populateOptions(
       document.getElementById("config-design"),
       designOptions,
       defaultExecution.design || "Classic"
     );
+    const designControl = document.getElementById("config-design");
+    designControl?.addEventListener("change", () => applyDesignMode(designControl.value));
+    applyDesignMode(designControl?.value || defaultExecution.design || "Classic");
     populateOptions(
       document.getElementById("config-indicator-source"),
       indicatorSourceOptions,
@@ -2997,6 +3160,8 @@
       setSelect("config-mode", config.mode);
       setSelect("config-theme", config.theme);
       setSelect("config-design", config.design);
+      if (config.theme !== undefined) applyThemeMode(config.theme);
+      if (config.design !== undefined) applyDesignMode(config.design);
       setSelect("config-account-type", config.account_type);
       setSelect("config-account-mode", config.account_mode);
       setSelect("config-connector", config.connector_backend);

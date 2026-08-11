@@ -3,6 +3,8 @@
 #include "NativeOrderSafety.h"
 #include "generated/PythonParityContract.h"
 
+#include <array>
+
 #include <QJsonArray>
 #include <QRegularExpression>
 
@@ -10,6 +12,16 @@ namespace {
 
 QString parityString(std::string_view value) {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
+}
+
+template <std::size_t Size>
+QStringList generatedStringList(const std::array<std::string_view, Size> &values) {
+    QStringList result;
+    result.reserve(static_cast<qsizetype>(Size));
+    for (const std::string_view value : values) {
+        result.append(parityString(value));
+    }
+    return result;
 }
 
 QString firstNonEmpty(const QStringList &values, const QString &fallback = {}) {
@@ -79,20 +91,29 @@ QString supportKey(const QString &value) {
     return QString(value).trimmed().toLower().replace(QLatin1Char('_'), QLatin1Char('-'));
 }
 
+static QString brokerIdentityKey(const QString &value) {
+    QString identity;
+    for (const QChar character : value.trimmed().toLower()) {
+        if (character.isLetterOrNumber()) {
+            identity.append(character);
+        }
+    }
+    return identity;
+}
+
+static QString canonicalBrokerName(const QString &value) {
+    const QString trimmed = value.trimmed();
+    const QString identity = brokerIdentityKey(trimmed);
+    for (const auto &mapping : PythonParityContract::kPythonBrokerCanonicalNames) {
+        if (parityString(mapping.identity) == identity) {
+            return parityString(mapping.canonical);
+        }
+    }
+    return trimmed;
+}
+
 QStringList supportedExchanges() {
-    return {
-        QStringLiteral("Binance"),
-        QStringLiteral("Bybit"),
-        QStringLiteral("OKX"),
-        QStringLiteral("Bitget"),
-        QStringLiteral("Gate"),
-        QStringLiteral("MEXC"),
-        QStringLiteral("KuCoin"),
-        QStringLiteral("HTX"),
-        QStringLiteral("Crypto.com Exchange"),
-        QStringLiteral("Kraken"),
-        QStringLiteral("Bitfinex"),
-    };
+    return generatedStringList(PythonParityContract::kPythonSupportedExchanges);
 }
 
 QStringList supportedConnectorBackends() {
@@ -159,22 +180,11 @@ static QJsonObject brokerOrderRoutingBackends() {
 
 QString ccxtExchangeIdFor(const QString &exchange) {
     const QString key = supportKey(exchange);
-    if (key == QStringLiteral("bybit")) return QStringLiteral("bybit");
-    if (key == QStringLiteral("okx")) return QStringLiteral("okx");
-    if (key == QStringLiteral("bitget")) return QStringLiteral("bitget");
-    if (key == QStringLiteral("gate") || key == QStringLiteral("gate.io") || key == QStringLiteral("gateio")) {
-        return QStringLiteral("gateio");
+    for (const auto &mapping : PythonParityContract::kPythonCcxtExchangeIds) {
+        if (supportKey(parityString(mapping.key)) == key) {
+            return parityString(mapping.value);
+        }
     }
-    if (key == QStringLiteral("mexc")) return QStringLiteral("mexc");
-    if (key == QStringLiteral("kucoin")) return QStringLiteral("kucoin");
-    if (key == QStringLiteral("htx")) return QStringLiteral("htx");
-    if (key == QStringLiteral("crypto.com")
-        || key == QStringLiteral("crypto.com exchange")
-        || key == QStringLiteral("cryptocom")) {
-        return QStringLiteral("cryptocom");
-    }
-    if (key == QStringLiteral("kraken")) return QStringLiteral("kraken");
-    if (key == QStringLiteral("bitfinex")) return QStringLiteral("bitfinex");
     return {};
 }
 
@@ -201,8 +211,8 @@ QJsonObject buildExchangeSupportPayload(
     const QString connectorBackend = firstNonEmpty(
         {snapshot.connectorBackend, config.connectorBackend},
         QStringLiteral("Unknown"));
-    const QString selectedForexBroker = firstNonEmpty(
-        {snapshot.selectedForexBroker, config.selectedForexBroker});
+    const QString selectedForexBroker = canonicalBrokerName(firstNonEmpty(
+        {snapshot.selectedForexBroker, config.selectedForexBroker}));
 
     const QStringList exchanges = supportedExchanges();
     const QStringList backends = supportedConnectorBackends();
@@ -218,13 +228,18 @@ QJsonObject buildExchangeSupportPayload(
     const bool brokerSupported = selectedForexBroker.trimmed().isEmpty()
         || containsSupportKey(brokers, selectedForexBroker);
     const bool usesCcxtDiagnostics = !ccxtExchangeId.isEmpty() && backendKey == QStringLiteral("ccxt");
-    const bool usesCcxtOrderRouting = usesCcxtDiagnostics;
+    const bool usesCcxtOrderRouting = usesCcxtDiagnostics
+        && containsSupportKey(
+            generatedStringList(PythonParityContract::kPythonCcxtOrderRoutingExchanges),
+            selectedExchange);
     const QString expectedBrokerBackend = brokerOrderRoutingBackend(brokerKey);
     const bool usesBrokerOrderRouting = !expectedBrokerBackend.isEmpty() && backendKey == expectedBrokerBackend;
     const QString brokerScope = brokerMarketScope(selectedForexBroker);
     const bool forexOrderRoutingSupported = usesBrokerOrderRouting
         && brokerForexOrderRoutingSupported(selectedForexBroker);
-    const bool orderExecutionExchange = exchangeKey == QStringLiteral("binance");
+    const bool orderExecutionExchange = containsSupportKey(
+        generatedStringList(PythonParityContract::kPythonOrderExecutionExchanges),
+        selectedExchange);
     const bool marketDataSupported = backendSupported
         && ((!usesBroker && brokerSupported && (orderExecutionExchange || usesCcxtDiagnostics))
             || (usesBroker && usesBrokerOrderRouting));
@@ -288,21 +303,12 @@ QJsonObject buildExchangeSupportPayload(
     for (const QString &backend : backends) {
         backendArray.append(backend);
     }
-    QJsonArray ccxtDiagnosticArray;
-    for (const QString &exchange : {
-             QStringLiteral("Bybit"),
-             QStringLiteral("OKX"),
-             QStringLiteral("Bitget"),
-             QStringLiteral("Gate"),
-             QStringLiteral("MEXC"),
-             QStringLiteral("KuCoin"),
-             QStringLiteral("HTX"),
-             QStringLiteral("Crypto.com Exchange"),
-             QStringLiteral("Kraken"),
-             QStringLiteral("Bitfinex"),
-         }) {
-        ccxtDiagnosticArray.append(exchange);
-    }
+    const QStringList ccxtDiagnosticExchanges = generatedStringList(
+        PythonParityContract::kPythonCcxtDiagnosticExchanges);
+    const QStringList ccxtOrderRoutingExchanges = generatedStringList(
+        PythonParityContract::kPythonCcxtOrderRoutingExchanges);
+    const QStringList orderExecutionExchanges = generatedStringList(
+        PythonParityContract::kPythonOrderExecutionExchanges);
     return {
         {QStringLiteral("selected_exchange"), selectedExchange},
         {QStringLiteral("connector_backend"), connectorBackend},
@@ -328,9 +334,9 @@ QJsonObject buildExchangeSupportPayload(
         {QStringLiteral("supported_connector_backends"), backendArray},
         {QStringLiteral("supported_brokers"), QJsonArray::fromStringList(brokers)},
         {QStringLiteral("supported_forex_brokers"), QJsonArray::fromStringList(forexBrokers)},
-        {QStringLiteral("ccxt_diagnostic_exchanges"), ccxtDiagnosticArray},
-        {QStringLiteral("ccxt_order_routing_exchanges"), ccxtDiagnosticArray},
-        {QStringLiteral("order_execution_exchanges"), QJsonArray{QStringLiteral("Binance")}},
+        {QStringLiteral("ccxt_diagnostic_exchanges"), QJsonArray::fromStringList(ccxtDiagnosticExchanges)},
+        {QStringLiteral("ccxt_order_routing_exchanges"), QJsonArray::fromStringList(ccxtOrderRoutingExchanges)},
+        {QStringLiteral("order_execution_exchanges"), QJsonArray::fromStringList(orderExecutionExchanges)},
         {QStringLiteral("broker_order_routing_brokers"), QJsonArray::fromStringList(brokers)},
         {QStringLiteral("broker_order_routing_backends"), brokerOrderRoutingBackends()},
     };

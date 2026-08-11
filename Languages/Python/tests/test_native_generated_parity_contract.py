@@ -102,6 +102,40 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertTrue(case["candles"])
             self.assertIn("expected", case)
 
+        live_signal_cases = payload["live_signal_cases"]
+        self.assertIsInstance(live_signal_cases, list)
+        self.assertGreaterEqual(len(live_signal_cases), 40)
+        self.assertEqual({"BUY", "SELL"}, {case["expected"]["signal"] for case in live_signal_cases})
+        self.assertIn(3, {case["expected"]["min_bars"] for case in live_signal_cases})
+        self.assertEqual(
+            {
+                "rsi",
+                "stoch_rsi",
+                "willr",
+                "natr",
+                "mfi",
+                "obv",
+                "rvol",
+                "cmf",
+                "cci",
+                "roc",
+                "trix",
+                "bbw",
+                "ppo",
+                "ao",
+                "kst",
+                "aroon",
+                "chop",
+                "ma",
+                "ichimoku",
+            },
+            {source for case in live_signal_cases for source in case["expected"]["trigger_sources"]},
+        )
+        for case in live_signal_cases:
+            self.assertTrue(case["candles"])
+            self.assertIn("indicators", case)
+            self.assertIn("expected", case)
+
     def test_generated_native_contracts_are_in_sync_with_python_source(self):
         self.assertEqual(render_rust_module(), _read(RUST_OUTPUT))
         self.assertEqual(render_cpp_header(), _read(CPP_OUTPUT))
@@ -128,12 +162,25 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             summary["supported_brokers"],
             [mapping["broker"] for mapping in summary["broker_order_routing_backends"]],
         )
+        self.assertEqual(
+            ["Binance", "Bybit", "OKX", "Bitget", "Gate", "MEXC", "KuCoin", "HTX", "Crypto.com Exchange", "Kraken", "Bitfinex"],
+            summary["supported_exchanges"],
+        )
+        self.assertEqual(summary["ccxt_diagnostic_exchanges"], summary["ccxt_order_routing_exchanges"])
+        self.assertEqual(["Binance"], summary["order_execution_exchanges"])
+        self.assertEqual("gateio", dict((item["key"], item["value"]) for item in summary["ccxt_exchange_ids"])["gate"])
         self.assertIn("Trading 212", summary["supported_brokers"])
         self.assertNotIn("Trading 212", summary["supported_forex_brokers"])
         self.assertIn("StoneX", summary["supported_brokers"])
         self.assertNotIn("StoneX", summary["supported_forex_brokers"])
         self.assertIn("AI Gold Securities", summary["supported_brokers"])
         self.assertNotIn("AI Gold Securities", summary["supported_forex_brokers"])
+        broker_canonical_names = {
+            mapping["identity"]: mapping["canonical"] for mapping in summary["broker_canonical_names"]
+        }
+        self.assertEqual("AI Gold Securities", broker_canonical_names["aigold"])
+        self.assertEqual("PhillipCapital (Phillip Nova)", broker_canonical_names["phillipsecurities"])
+        self.assertEqual("PhillipCapital (Phillip Nova)", broker_canonical_names["philipsecurities"])
         for broker in ("Trade Nation", "FXTF", "FOREX EXCHANGE"):
             self.assertIn(broker, summary["supported_forex_brokers"])
         self.assertIn("metatrader4-bridge", summary["connector_keys"])
@@ -150,8 +197,19 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         rust_core = _read(REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "lib.rs")
         cpp_support_header = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindowSupport.h")
         cpp_support_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindowSupport.cpp")
+        cpp_window_header = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.h")
+        cpp_dashboard_ui = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_ui.cpp")
+        cpp_dashboard_overrides = _read(
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_overrides.cpp"
+        )
+        cpp_dashboard_theme = _read(
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_theme.cpp"
+        )
         cpp_chart_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.chart.cpp")
         tauri_html = _read(REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html")
+        tauri_behavior = _read(
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "tauri-ui-behavior.js"
+        )
         cmake = _read(REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt")
 
         self.assertIn("pub mod generated_python_parity", rust_core)
@@ -263,6 +321,27 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pythonSourceConfigModeOptionLabels", cpp_support_source)
         self.assertIn("pythonSourceThemeOptionLabels", cpp_support_source)
         self.assertIn("pythonSourceDesignOptionLabels", cpp_support_source)
+        self.assertIn("applyDashboardDesign", cpp_window_header)
+        self.assertIn("dashboardDesignCombo_", cpp_window_header)
+        self.assertIn("pythonSourceDesignOptionKeys", cpp_dashboard_ui)
+        self.assertIn('addPair(0, col, "Design:", dashboardDesignCombo_)', cpp_dashboard_ui)
+        self.assertIn('config.insert(QStringLiteral("design")', cpp_dashboard_overrides)
+        self.assertIn('setComboValue(dashboardDesignCombo_', cpp_dashboard_overrides)
+        self.assertIn("isWorkstationDesign", cpp_dashboard_theme)
+        self.assertIn('setProperty("workstationLayout"', cpp_dashboard_theme)
+        self.assertIn("workspaceNavigation_->setVisible(workstation)", cpp_dashboard_theme)
+        self.assertIn("syncWorkspaceNavigation", cpp_dashboard_theme)
+        self.assertIn("workspaceNavigation_", cpp_window_header)
+        self.assertIn("workspaceNavigation_", _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.cpp"))
+        cpp_main = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "main.cpp")
+        self.assertIn("pythonSourceThemeOptionLabels", cpp_main)
+        self.assertIn("pythonSourceDesignOptionLabels", cpp_main)
+        self.assertIn('findChild<QListWidget *>(QStringLiteral("workspaceNavigation"))', cpp_main)
+        self.assertIn('findChild<QWidget *>(QStringLiteral("workspaceNavigationRail"))', cpp_main)
+        self.assertIn('findData(QStringLiteral("Workstation"))', cpp_main)
+        self.assertIn('findData(QStringLiteral("Classic"))', cpp_main)
+        self.assertIn("currentData().toString()", cpp_main)
+        self.assertIn('window.property("workstationLayout")', cpp_main)
         self.assertIn("pythonSourceIndicatorSourceOptionLabels", cpp_support_source)
         self.assertIn("pythonSourceExchangeOptionLabels", cpp_support_source)
         self.assertIn("pythonSourceAccountTypeOptionLabels", cpp_support_source)
@@ -298,6 +377,11 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pythonParityContract.configModeOptions", tauri_html)
         self.assertIn("pythonParityContract.themeOptions", tauri_html)
         self.assertIn("pythonParityContract.designOptions", tauri_html)
+        self.assertIn("applyDesignMode", tauri_html)
+        self.assertIn("tauriUiBehavior.normalizeDesign", tauri_html)
+        self.assertIn('body[data-design="Workstation"]', tauri_html)
+        self.assertIn("normalizeDesign", tauri_behavior)
+        self.assertIn("designModeClass", tauri_behavior)
         self.assertIn("pythonParityContract.indicatorSourceOptions", tauri_html)
         self.assertIn("pythonParityContract.exchangeOptions", tauri_html)
         self.assertIn("pythonParityContract.accountTypeOptions", tauri_html)

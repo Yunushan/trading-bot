@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "f44ed639838fd832adf73706e46bcbf2b20a39a20fc25d879ed7596431bcc1ca";
+inline constexpr std::string_view kPythonSourceContractHash = "9adccf010ea1ed7197ad19a20fec5ab53a560601c519b7dfbc2dbb58859e803c";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -813,6 +813,134 @@ inline constexpr std::array<PythonBrokerOrderRoutingBackend, 45> kPythonBrokerOr
     PythonBrokerOrderRoutingBackend{"CITIC Futures", "citic futures", "citic-ctp", "china-futures-and-options", false},
     PythonBrokerOrderRoutingBackend{"Trading 212", "trading 212", "trading212-public-api", "invest-and-stocks-isa-equities-only", false},
     PythonBrokerOrderRoutingBackend{"moomoo", "moomoo", "moomoo-opend", "stocks-etfs-options-futures-funds-and-supported-crypto", false},
+};
+
+struct PythonBrokerCanonicalName {
+    std::string_view identity;
+    std::string_view canonical;
+};
+
+inline constexpr std::array<PythonBrokerCanonicalName, 54> kPythonBrokerCanonicalNames = {
+    PythonBrokerCanonicalName{"oanda", "OANDA"},
+    PythonBrokerCanonicalName{"fxcm", "FXCM"},
+    PythonBrokerCanonicalName{"ig", "IG"},
+    PythonBrokerCanonicalName{"tradenation", "Trade Nation"},
+    PythonBrokerCanonicalName{"fxtf", "FXTF"},
+    PythonBrokerCanonicalName{"forexexchange", "FOREX EXCHANGE"},
+    PythonBrokerCanonicalName{"avatrade", "AvaTrade"},
+    PythonBrokerCanonicalName{"ecmarkets", "EC Markets"},
+    PythonBrokerCanonicalName{"gtcfx", "GTCFX"},
+    PythonBrokerCanonicalName{"finalto", "Finalto"},
+    PythonBrokerCanonicalName{"atfx", "ATFX"},
+    PythonBrokerCanonicalName{"vantage", "Vantage"},
+    PythonBrokerCanonicalName{"startrader", "STARTRADER"},
+    PythonBrokerCanonicalName{"xm", "XM"},
+    PythonBrokerCanonicalName{"tmgm", "TMGM"},
+    PythonBrokerCanonicalName{"capitalcom", "Capital.com"},
+    PythonBrokerCanonicalName{"icmarketsglobal", "IC Markets Global"},
+    PythonBrokerCanonicalName{"hantecfinancial", "Hantec Financial"},
+    PythonBrokerCanonicalName{"gomarkets", "GO Markets"},
+    PythonBrokerCanonicalName{"vtmarkets", "VT Markets"},
+    PythonBrokerCanonicalName{"neex", "Neex"},
+    PythonBrokerCanonicalName{"acysecurities", "ACY Securities"},
+    PythonBrokerCanonicalName{"fortuneprimeglobal", "Fortune Prime Global"},
+    PythonBrokerCanonicalName{"decodefx", "DecodeFX"},
+    PythonBrokerCanonicalName{"cptmarkets", "CPT Markets"},
+    PythonBrokerCanonicalName{"puprime", "PU Prime"},
+    PythonBrokerCanonicalName{"aims", "AIMS"},
+    PythonBrokerCanonicalName{"etomarkets", "ETO Markets"},
+    PythonBrokerCanonicalName{"dprime", "D Prime"},
+    PythonBrokerCanonicalName{"fusionmarkets", "Fusion Markets"},
+    PythonBrokerCanonicalName{"exness", "Exness"},
+    PythonBrokerCanonicalName{"valetax", "Valetax"},
+    PythonBrokerCanonicalName{"cxm", "CXM"},
+    PythonBrokerCanonicalName{"dbgmarkets", "DBG Markets"},
+    PythonBrokerCanonicalName{"fxt", "FXT"},
+    PythonBrokerCanonicalName{"plotio", "Plotio"},
+    PythonBrokerCanonicalName{"forexcom", "FOREX.com"},
+    PythonBrokerCanonicalName{"cmcmarkets", "CMC Markets"},
+    PythonBrokerCanonicalName{"stonex", "StoneX"},
+    PythonBrokerCanonicalName{"sbcfx", "SBCFX"},
+    PythonBrokerCanonicalName{"phillipcapitalphillipnova", "PhillipCapital (Phillip Nova)"},
+    PythonBrokerCanonicalName{"aigoldsecurities", "AI Gold Securities"},
+    PythonBrokerCanonicalName{"citicfutures", "CITIC Futures"},
+    PythonBrokerCanonicalName{"trading212", "Trading 212"},
+    PythonBrokerCanonicalName{"moomoo", "moomoo"},
+    PythonBrokerCanonicalName{"mitrade", "Mitrade"},
+    PythonBrokerCanonicalName{"axpm", "AXPM"},
+    PythonBrokerCanonicalName{"spreadex", "Spreadex"},
+    PythonBrokerCanonicalName{"jefferies", "Jefferies"},
+    PythonBrokerCanonicalName{"marex", "Marex"},
+    PythonBrokerCanonicalName{"aigold", "AI Gold Securities"},
+    PythonBrokerCanonicalName{"phillipsecurities", "PhillipCapital (Phillip Nova)"},
+    PythonBrokerCanonicalName{"philipsecurities", "PhillipCapital (Phillip Nova)"},
+    PythonBrokerCanonicalName{"cmcmarkes", "CMC Markets"},
+};
+
+inline constexpr std::array<std::string_view, 11> kPythonSupportedExchanges = {
+    "Binance",
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+};
+
+inline constexpr std::array<std::string_view, 10> kPythonCcxtDiagnosticExchanges = {
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+};
+
+inline constexpr std::array<std::string_view, 10> kPythonCcxtOrderRoutingExchanges = {
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+};
+
+inline constexpr std::array<std::string_view, 1> kPythonOrderExecutionExchanges = {
+    "Binance",
+};
+
+struct PythonStringPair {
+    std::string_view key;
+    std::string_view value;
+};
+
+inline constexpr std::array<PythonStringPair, 14> kPythonCcxtExchangeIds = {
+    PythonStringPair{"bybit", "bybit"},
+    PythonStringPair{"okx", "okx"},
+    PythonStringPair{"bitget", "bitget"},
+    PythonStringPair{"gate", "gateio"},
+    PythonStringPair{"gate.io", "gateio"},
+    PythonStringPair{"gateio", "gateio"},
+    PythonStringPair{"mexc", "mexc"},
+    PythonStringPair{"kucoin", "kucoin"},
+    PythonStringPair{"htx", "htx"},
+    PythonStringPair{"crypto.com", "cryptocom"},
+    PythonStringPair{"crypto.com exchange", "cryptocom"},
+    PythonStringPair{"cryptocom", "cryptocom"},
+    PythonStringPair{"kraken", "kraken"},
+    PythonStringPair{"bitfinex", "bitfinex"},
 };
 
 inline constexpr std::array<std::string_view, 38> kPythonBacktestIntervals = {

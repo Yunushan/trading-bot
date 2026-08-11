@@ -97,9 +97,11 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_core_consumes_generated_contract",
     "rust_native_account_runtime_is_present",
     "rust_strategy_runtime_uses_python_source_options",
+    "rust_native_strategy_runtime_uses_python_live_signal_fixture",
     "rust_native_backtest_runtime_uses_python_reference_fixture",
     "rust_native_backtest_batch_runtime_uses_python_reference_fixture",
     "rust_config_persistence_uses_python_source_options",
+    "rust_native_exchange_connectors_use_python_source_connectors",
     "python_order_guard_implements_behavior_contract",
     "rust_order_guard_uses_python_behavior_contract",
     "cpp_support_consumes_generated_contract",
@@ -118,6 +120,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_account_uses_python_service_api",
     "cpp_native_exchange_connectors_use_python_source_connectors",
     "cpp_native_strategy_runtime_uses_python_source_options",
+    "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
     "cpp_native_indicator_runtime_uses_python_reference_fixture",
     "cpp_native_backtest_runtime_uses_python_reference_fixture",
     "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline",
@@ -413,6 +416,17 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "rust_native_strategy_runtime_uses_python_live_signal_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "strategy_runtime.rs",
+            (
+                "PYTHON_INDICATOR_REFERENCE_JSON",
+                "live_signal_cases",
+                "StrategySignalInput",
+                "build_signal_decision",
+                "live_signal_generation_matches_python_reference_cases",
+            ),
+        ),
+        ConsumerRequirement(
             "rust_native_backtest_runtime_uses_python_reference_fixture",
             REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "backtest_runtime.rs",
             (
@@ -493,6 +507,22 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
             required_patterns=(
                 r'validate_text\s*\(\s*&mut backtest,\s*"connector_backend",\s*issues,\s*"backtest",\s*false\s*,?\s*\)',
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_native_exchange_connectors_use_python_source_connectors",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "exchange_connectors.rs",
+            (
+                "PYTHON_CONNECTOR_OPTIONS",
+                "PYTHON_BROKER_ORDER_ROUTING_BACKENDS",
+                "PYTHON_BROKER_CANONICAL_NAMES",
+                "PYTHON_SUPPORTED_EXCHANGES",
+                "PYTHON_CCXT_DIAGNOSTIC_EXCHANGES",
+                "PYTHON_CCXT_ORDER_ROUTING_EXCHANGES",
+                "PYTHON_ORDER_EXECUTION_EXCHANGES",
+                "PYTHON_CCXT_EXCHANGE_IDS",
+                "canonical_broker_name",
+                "build_exchange_support_payload",
             ),
         ),
         ConsumerRequirement(
@@ -796,6 +826,12 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             (
                 '#include "generated/PythonParityContract.h"',
                 "PythonParityContract::kPythonConnectorOptions",
+                "PythonParityContract::kPythonBrokerCanonicalNames",
+                "PythonParityContract::kPythonSupportedExchanges",
+                "PythonParityContract::kPythonCcxtDiagnosticExchanges",
+                "PythonParityContract::kPythonCcxtOrderRoutingExchanges",
+                "PythonParityContract::kPythonOrderExecutionExchanges",
+                "PythonParityContract::kPythonCcxtExchangeIds",
                 "supportedConnectorBackends",
                 "buildExchangeSupportPayload",
                 "buildConnectorHealthSnapshot",
@@ -826,6 +862,17 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "normalizeStopLossScope",
                 "normalizeStrategyControls",
                 "runtimeOutputKeysCsv",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                '#include "../src/NativeStrategyRuntime.h"',
+                "live_signal_cases",
+                "NativeStrategyRuntime::StrategySignalInput",
+                "NativeStrategyRuntime::buildSignalDecision",
+                "native C++ live signal description should match Python",
             ),
         ),
         ConsumerRequirement(

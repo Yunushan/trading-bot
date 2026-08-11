@@ -20,6 +20,7 @@ from app.native_parity import (  # noqa: E402
 from app.core import indicators as indicator_math  # noqa: E402
 from app.core.backtest.engine import BacktestEngine  # noqa: E402
 from app.core.backtest.models import BacktestRequest, IndicatorDefinition  # noqa: E402
+from app.core.strategy.runtime.strategy_signal_generation import generate_signal  # noqa: E402
 
 import pandas as pd  # noqa: E402
 
@@ -141,6 +142,67 @@ def _cpp_broker_order_routing_backends(values: list[dict[str, object]]) -> str:
             f"{_rust_bool(value['forex_order_routing_supported'])}"
             "},"
         )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _rust_broker_canonical_names(values: list[dict[str, object]]) -> str:
+    lines = ["pub const PYTHON_BROKER_CANONICAL_NAMES: &[(&str, &str)] = &["]
+    lines.extend(
+        f"    ({_rust_string(value['identity'])}, {_rust_string(value['canonical'])}),"
+        for value in values
+    )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _cpp_broker_canonical_names(values: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonBrokerCanonicalName {",
+        "    std::string_view identity;",
+        "    std::string_view canonical;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonBrokerCanonicalName, "
+            f"{len(values)}> kPythonBrokerCanonicalNames = {{"
+        ),
+    ]
+    lines.extend(
+        "    PythonBrokerCanonicalName{"
+        f"{_cpp_string(value['identity'])}, {_cpp_string(value['canonical'])}"
+        "},"
+        for value in values
+    )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _rust_string_pairs(name: str, values: list[dict[str, object]]) -> str:
+    lines = [f"pub const {name}: &[(&str, &str)] = &["]
+    lines.extend(
+        f"    ({_rust_string(value['key'])}, {_rust_string(value['value'])}),"
+        for value in values
+    )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _cpp_string_pairs(name: str, values: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonStringPair {",
+        "    std::string_view key;",
+        "    std::string_view value;",
+        "};",
+        "",
+        f"inline constexpr std::array<PythonStringPair, {len(values)}> {name} = {{",
+    ]
+    lines.extend(
+        "    PythonStringPair{"
+        f"{_cpp_string(value['key'])}, {_cpp_string(value['value'])}"
+        "},"
+        for value in values
+    )
     lines.append("};")
     return "\n".join(lines)
 
@@ -773,6 +835,72 @@ def _indicator_case_payload(
     }
 
 
+class _LiveSignalFixtureStrategy:
+    """Small adapter that executes the Python signal function without starting the app."""
+
+    def __init__(self, config: dict[str, object], use_live_values: bool) -> None:
+        self.config = config
+        self._indicator_use_live_values = use_live_values
+
+    def _indicator_prev_live_signal_values(self, series: object) -> tuple[float, float, float]:
+        data = series.dropna()
+        if data.empty:
+            raise ValueError("indicator series empty")
+        live = float(data.iloc[-1])
+        previous = float(data.iloc[-2]) if len(data) >= 2 else live
+        selected = live if self._indicator_use_live_values else previous
+        return previous, live, selected
+
+
+def _json_number(value: object) -> float | None:
+    if value is None:
+        return None
+    rounded = round(float(value), INDICATOR_REFERENCE_DECIMAL_PLACES)
+    return 0.0 if rounded == 0.0 else rounded
+
+
+def _live_signal_case_payload(
+    name: str,
+    frame: pd.DataFrame,
+    indicator_key: str,
+    thresholds: dict[str, float],
+    *,
+    side: str = "BUY",
+    use_live_values: bool = True,
+) -> dict[str, object]:
+    configs = {key: dict(value) for key, value in _indicator_configs().items()}
+    for config in configs.values():
+        config["enabled"] = False
+    configs[indicator_key].update({"enabled": True, **thresholds})
+    expected_series = _indicator_expected(frame, configs)
+    strategy = _LiveSignalFixtureStrategy(
+        {"side": side, "indicators": configs},
+        use_live_values,
+    )
+    signal, description, trigger_price, trigger_sources, trigger_actions = generate_signal(
+        strategy,
+        frame,
+        expected_series,
+    )
+    return {
+        "name": name,
+        "candles": frame.to_dict(orient="records"),
+        "configs": configs,
+        "indicators": {key: _json_series(series) for key, series in expected_series.items()},
+        "side": side,
+        "use_live_values": use_live_values,
+        "expected": {
+            "signal": signal,
+            "description": description,
+            "trigger_price": _json_number(trigger_price),
+            "trigger_sources": trigger_sources,
+            "trigger_actions": trigger_actions,
+            "min_bars": 2 if use_live_values else 3,
+            "signal_index_from_end": 1 if use_live_values else 2,
+        },
+    }
+
+
 def _indicator_reference_payload() -> dict[str, object]:
     baseline_closes = [100.0, 103.0, 101.0, 106.0, 104.0, 109.0, 105.0, 111.0, 108.0, 114.0, 110.0, 116.0]
     baseline_highs = [101.0, 104.5, 102.5, 107.5, 105.0, 110.5, 106.0, 112.5, 109.5, 115.0, 111.5, 117.0]
@@ -877,6 +1005,60 @@ def _indicator_reference_payload() -> dict[str, object]:
         ("parameterized-longer-series", parameterized_frame),
     ):
         backtest_cases.extend(_backtest_reference_cases(frame, fixture_name))
+    live_signal_cases = [
+        _live_signal_case_payload("rsi-buy", baseline_frame, "rsi", {"buy_value": 1_000_000.0}),
+        _live_signal_case_payload(
+            "stoch-rsi-buy", baseline_frame, "stoch_rsi", {"buy_value": 1_000_000.0}
+        ),
+        _live_signal_case_payload("willr-buy", baseline_frame, "willr", {"buy_value": 0.0}),
+        _live_signal_case_payload("natr-buy", baseline_frame, "natr", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("mfi-buy", baseline_frame, "mfi", {"buy_value": 1_000_000.0}),
+        _live_signal_case_payload("obv-buy", baseline_frame, "obv", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("rvol-buy", baseline_frame, "rvol", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("cmf-buy", baseline_frame, "cmf", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("cci-buy", baseline_frame, "cci", {"buy_value": 1_000_000.0}),
+        _live_signal_case_payload("roc-buy", baseline_frame, "roc", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("trix-buy", baseline_frame, "trix", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("bbw-buy", baseline_frame, "bbw", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("ppo-buy", baseline_frame, "ppo", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("ao-buy", baseline_frame, "ao", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("kst-buy", baseline_frame, "kst", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("aroon-buy", baseline_frame, "aroon", {"buy_value": -1_000_000.0}),
+        _live_signal_case_payload("chop-buy", baseline_frame, "chop", {"buy_value": 1_000_000.0}),
+        _live_signal_case_payload("ma-buy", baseline_frame, "ma", {}),
+        _live_signal_case_payload(
+            "ichimoku-buy", baseline_frame, "ichimoku", {"buy_value": -1_000_000.0}
+        ),
+        _live_signal_case_payload("rsi-sell", baseline_frame, "rsi", {"sell_value": -1_000_000.0}, side="SELL"),
+        _live_signal_case_payload(
+            "stoch-rsi-sell", baseline_frame, "stoch_rsi", {"sell_value": -1_000_000.0}, side="SELL"
+        ),
+        _live_signal_case_payload("willr-sell", baseline_frame, "willr", {"sell_value": -100.0}, side="SELL"),
+        _live_signal_case_payload("natr-sell", baseline_frame, "natr", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("mfi-sell", baseline_frame, "mfi", {"sell_value": -1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("obv-sell", baseline_frame, "obv", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("rvol-sell", baseline_frame, "rvol", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("cmf-sell", baseline_frame, "cmf", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("cci-sell", baseline_frame, "cci", {"sell_value": -1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("roc-sell", baseline_frame, "roc", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("trix-sell", baseline_frame, "trix", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("bbw-sell", baseline_frame, "bbw", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("ppo-sell", baseline_frame, "ppo", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("ao-sell", baseline_frame, "ao", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("kst-sell", baseline_frame, "kst", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("aroon-sell", baseline_frame, "aroon", {"sell_value": 1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("chop-sell", baseline_frame, "chop", {"sell_value": -1_000_000.0}, side="SELL"),
+        _live_signal_case_payload("ma-sell", reversal_frame, "ma", {}, side="SELL"),
+        _live_signal_case_payload(
+            "ichimoku-sell", baseline_frame, "ichimoku", {"sell_value": 1_000_000.0}, side="SELL"
+        ),
+        _live_signal_case_payload(
+            "rsi-buy-closed", baseline_frame, "rsi", {"buy_value": 1_000_000.0}, use_live_values=False
+        ),
+        _live_signal_case_payload(
+            "natr-buy-closed", baseline_frame, "natr", {"buy_value": -1_000_000.0}, use_live_values=False
+        ),
+    ]
     return {
         "python_source_contract_hash": native_python_source_contract_hash(),
         "candles": primary["candles"],
@@ -884,6 +1066,7 @@ def _indicator_reference_payload() -> dict[str, object]:
         "expected": primary["expected"],
         "indicator_cases": cases,
         "backtest_cases": backtest_cases,
+        "live_signal_cases": live_signal_cases,
     }
 
 
@@ -1659,6 +1842,18 @@ def render_rust_module() -> str:
         "",
         _rust_broker_order_routing_backends(list(summary["broker_order_routing_backends"])),
         "",
+        _rust_broker_canonical_names(list(summary["broker_canonical_names"])),
+        "",
+        _rust_array("PYTHON_SUPPORTED_EXCHANGES", list(summary["supported_exchanges"])),
+        "",
+        _rust_array("PYTHON_CCXT_DIAGNOSTIC_EXCHANGES", list(summary["ccxt_diagnostic_exchanges"])),
+        "",
+        _rust_array("PYTHON_CCXT_ORDER_ROUTING_EXCHANGES", list(summary["ccxt_order_routing_exchanges"])),
+        "",
+        _rust_array("PYTHON_ORDER_EXECUTION_EXCHANGES", list(summary["order_execution_exchanges"])),
+        "",
+        _rust_string_pairs("PYTHON_CCXT_EXCHANGE_IDS", list(summary["ccxt_exchange_ids"])),
+        "",
         _rust_array("PYTHON_BACKTEST_INTERVALS", list(summary["intervals"])),
         "",
         _rust_tradingview_interval_map(dict(summary["tradingview_interval_map"])),
@@ -1801,6 +1996,18 @@ def render_cpp_header() -> str:
         _cpp_array("kPythonSupportedForexBrokers", list(summary["supported_forex_brokers"])),
         "",
         _cpp_broker_order_routing_backends(list(summary["broker_order_routing_backends"])),
+        "",
+        _cpp_broker_canonical_names(list(summary["broker_canonical_names"])),
+        "",
+        _cpp_array("kPythonSupportedExchanges", list(summary["supported_exchanges"])),
+        "",
+        _cpp_array("kPythonCcxtDiagnosticExchanges", list(summary["ccxt_diagnostic_exchanges"])),
+        "",
+        _cpp_array("kPythonCcxtOrderRoutingExchanges", list(summary["ccxt_order_routing_exchanges"])),
+        "",
+        _cpp_array("kPythonOrderExecutionExchanges", list(summary["order_execution_exchanges"])),
+        "",
+        _cpp_string_pairs("kPythonCcxtExchangeIds", list(summary["ccxt_exchange_ids"])),
         "",
         _cpp_array("kPythonBacktestIntervals", list(summary["intervals"])),
         "",

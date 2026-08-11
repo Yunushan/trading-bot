@@ -140,6 +140,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(0, col, "Mode:", dashboardModeCombo_);
 
     dashboardThemeCombo_ = new QComboBox(accountBox);
+    dashboardThemeCombo_->setObjectName("dashboardThemeCombo");
     TradingBotWindowSupport::populateComboFromPythonSourceOptions(
         dashboardThemeCombo_,
         TradingBotWindowSupport::pythonSourceThemeOptionKeys(),
@@ -148,7 +149,30 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         QStringLiteral("Dark"));
     registerDashboardRuntimeLockWidget(dashboardThemeCombo_);
     addPair(0, col, "Theme:", dashboardThemeCombo_);
-    connect(dashboardThemeCombo_, &QComboBox::currentTextChanged, this, &TradingBotWindow::applyDashboardTheme);
+    connect(dashboardThemeCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (dashboardThemeCombo_) {
+            applyDashboardTheme(dashboardThemeCombo_->itemData(index).toString());
+        }
+    });
+
+    dashboardDesignCombo_ = new QComboBox(accountBox);
+    dashboardDesignCombo_->setObjectName("dashboardDesignCombo");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        dashboardDesignCombo_,
+        TradingBotWindowSupport::pythonSourceDesignOptionKeys(),
+        TradingBotWindowSupport::pythonSourceDesignOptionLabels(),
+        {},
+        executionDefaults.value(QStringLiteral("design")).toString(QStringLiteral("Classic")));
+    dashboardDesignCombo_->setToolTip(
+        "Classic: compact tabbed workspace.\n"
+        "Workstation: denser, task-oriented workspace styling from the Python source UI.");
+    registerDashboardRuntimeLockWidget(dashboardDesignCombo_);
+    addPair(0, col, "Design:", dashboardDesignCombo_);
+    connect(dashboardDesignCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (dashboardDesignCombo_) {
+            applyDashboardDesign(dashboardDesignCombo_->itemData(index).toString());
+        }
+    });
 
     auto *pnlActive = new QLabel("--", accountBox);
     pnlActive->setStyleSheet("color: #a5b4fc;");
@@ -1678,6 +1702,7 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardBotTimeLabel_ = nullptr;
     dashboardRefreshBtn_ = nullptr;
     dashboardThemeCombo_ = nullptr;
+    dashboardDesignCombo_ = nullptr;
     dashboardAccountTypeCombo_ = nullptr;
     dashboardAccountModeCombo_ = nullptr;
     dashboardModeCombo_ = nullptr;
@@ -1791,6 +1816,7 @@ QWidget *TradingBotWindow::createDashboardTab() {
     auto *root = new QVBoxLayout(content);
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(12);
+    dashboardScrollLayout_ = root;
 
     createDashboardAccountStatusSection(page, root);
     createDashboardLlmSection(page, root);
@@ -1830,6 +1856,10 @@ QWidget *TradingBotWindow::createDashboardTab() {
     root->addStretch();
 
     setDashboardRuntimeControlsEnabled(true);
-    applyDashboardTheme(dashboardThemeCombo_ ? dashboardThemeCombo_->currentText() : QString());
+    if (dashboardDesignCombo_) {
+        applyDashboardDesign(dashboardDesignCombo_->currentText());
+    } else {
+        applyDashboardTheme(dashboardThemeCombo_ ? dashboardThemeCombo_->currentText() : QString());
+    }
     return page;
 }

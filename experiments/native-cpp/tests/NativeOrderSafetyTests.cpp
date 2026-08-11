@@ -856,6 +856,33 @@ int main(int argc, char **argv) {
           QStringLiteral("native exchange support payload should expose IG order routing"));
     check(igBroker.value(QStringLiteral("live_evidence_required")).toBool(false),
           QStringLiteral("native exchange support payload should require live evidence for IG"));
+    const QJsonObject aiGoldAlias = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("metatrader5"),
+            QStringLiteral("AI Gold"),
+        });
+    check(aiGoldAlias.value(QStringLiteral("selected_forex_broker")).toString()
+              == QStringLiteral("AI Gold Securities"),
+          QStringLiteral("native exchange support payload should canonicalize Python broker aliases"));
+    check(aiGoldAlias.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should route canonicalized AI Gold"));
+    check(aiGoldAlias.value(QStringLiteral("broker_market_scope")).toString()
+              == QStringLiteral("otc-commodity-derivatives"),
+          QStringLiteral("native exchange support payload should preserve canonical broker scope"));
+    check(!aiGoldAlias.value(QStringLiteral("forex_order_routing_supported")).toBool(true),
+          QStringLiteral("native exchange support payload should preserve canonical non-forex scope"));
+    const QJsonObject phillipAlias = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("metatrader5"),
+            QStringLiteral("Philip Securities"),
+        });
+    check(phillipAlias.value(QStringLiteral("selected_forex_broker")).toString()
+              == QStringLiteral("PhillipCapital (Phillip Nova)"),
+          QStringLiteral("native exchange support payload should canonicalize the Python Philip alias"));
+    check(phillipAlias.value(QStringLiteral("order_execution_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should route canonicalized Philip"));
     const QJsonObject brokerBackends = igBroker.value(QStringLiteral("broker_order_routing_backends")).toObject();
     int mt5BrokerCount = 0;
     for (const QJsonValue &brokerValue : igBroker.value(QStringLiteral("supported_forex_brokers")).toArray()) {
@@ -1475,6 +1502,77 @@ int main(int argc, char **argv) {
     check(priorityDecision.value(QStringLiteral("trigger_sources")).toArray().at(0).toString()
               == QStringLiteral("mfi"),
           QStringLiteral("native strategy trigger source order should follow Python indicator priority"));
+
+    const QJsonArray liveSignalCases = indicatorReference.value(QStringLiteral("live_signal_cases")).toArray();
+    check(liveSignalCases.size() >= 40,
+          QStringLiteral("generated Python fixture should cover BUY, SELL, and closed-candle live signal behavior"));
+    for (const QJsonValue &caseValue : liveSignalCases) {
+        const QJsonObject liveCase = caseValue.toObject();
+        const QString caseName = liveCase.value(QStringLiteral("name")).toString();
+        NativeStrategyRuntime::StrategySignalInput liveInput;
+        liveInput.side = liveCase.value(QStringLiteral("side")).toString();
+        liveInput.useLiveValues = liveCase.value(QStringLiteral("use_live_values")).toBool();
+
+        for (const QJsonValue &candleValue : liveCase.value(QStringLiteral("candles")).toArray()) {
+            liveInput.closes.append(candleValue.toObject().value(QStringLiteral("close")).toDouble());
+        }
+        const QJsonObject configObject = liveCase.value(QStringLiteral("configs")).toObject();
+        for (auto iterator = configObject.constBegin(); iterator != configObject.constEnd(); ++iterator) {
+            const QJsonObject config = iterator.value().toObject();
+            NativeStrategyRuntime::IndicatorRule rule;
+            rule.enabled = config.value(QStringLiteral("enabled")).toBool();
+            if (config.value(QStringLiteral("buy_value")).isDouble()) {
+                rule.buyValue = config.value(QStringLiteral("buy_value")).toDouble();
+            }
+            if (config.value(QStringLiteral("sell_value")).isDouble()) {
+                rule.sellValue = config.value(QStringLiteral("sell_value")).toDouble();
+            }
+            liveInput.rules.insert(iterator.key(), rule);
+        }
+        const QJsonObject indicatorObject = liveCase.value(QStringLiteral("indicators")).toObject();
+        for (auto iterator = indicatorObject.constBegin(); iterator != indicatorObject.constEnd(); ++iterator) {
+            QVector<double> values;
+            const QJsonArray series = iterator.value().toArray();
+            values.reserve(series.size());
+            for (const QJsonValue &value : series) {
+                values.append(value.isNull() ? std::numeric_limits<double>::quiet_NaN() : value.toDouble());
+            }
+            liveInput.indicators.insert(iterator.key(), values);
+        }
+
+        const QJsonObject expected = liveCase.value(QStringLiteral("expected")).toObject();
+        const QJsonObject actual = NativeStrategyRuntime::buildSignalDecision(liveInput);
+        const QJsonValue expectedSignal = expected.value(QStringLiteral("signal"));
+        const QJsonValue actualSignal = actual.value(QStringLiteral("signal"));
+        check((expectedSignal.isNull() && actualSignal.isNull())
+                  || (!expectedSignal.isNull() && actualSignal.toString() == expectedSignal.toString()),
+              QStringLiteral("native C++ live signal should match Python for %1").arg(caseName));
+        check(actual.value(QStringLiteral("description")) == expected.value(QStringLiteral("description")),
+              QStringLiteral("native C++ live signal description should match Python for %1").arg(caseName));
+        const QJsonValue expectedPrice = expected.value(QStringLiteral("trigger_price"));
+        const QJsonValue actualPrice = actual.value(QStringLiteral("trigger_price"));
+        if (expectedPrice.isNull()) {
+            check(actualPrice.isNull(),
+                  QStringLiteral("native C++ live signal trigger price should be null like Python for %1")
+                      .arg(caseName));
+        } else {
+            const double expectedNumber = expectedPrice.toDouble();
+            const double actualNumber = actualPrice.toDouble();
+            check(std::isfinite(actualNumber)
+                      && std::abs(actualNumber - expectedNumber) <= 1e-9 * std::max(1.0, std::abs(expectedNumber)),
+                  QStringLiteral("native C++ live signal trigger price should match Python for %1")
+                      .arg(caseName));
+        }
+        check(actual.value(QStringLiteral("trigger_sources")) == expected.value(QStringLiteral("trigger_sources")),
+              QStringLiteral("native C++ live signal trigger sources should match Python for %1").arg(caseName));
+        check(actual.value(QStringLiteral("trigger_actions")) == expected.value(QStringLiteral("trigger_actions")),
+              QStringLiteral("native C++ live signal trigger actions should match Python for %1").arg(caseName));
+        check(actual.value(QStringLiteral("min_bars")).toInt() == expected.value(QStringLiteral("min_bars")).toInt(),
+              QStringLiteral("native C++ live signal minimum bars should match Python for %1").arg(caseName));
+        check(actual.value(QStringLiteral("signal_index_from_end")).toInt()
+                  == expected.value(QStringLiteral("signal_index_from_end")).toInt(),
+              QStringLiteral("native C++ live signal index should match Python for %1").arg(caseName));
+    }
 
     const QJsonObject normalizedRuntimeControls = NativeStrategyRuntime::normalizeStrategyControls(
         QStringLiteral("runtime"),

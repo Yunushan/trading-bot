@@ -6,7 +6,7 @@ mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
     pub const PYTHON_RISK_DEFAULTS_JSON: &str = "{\"allow_close_ignoring_hold\":false,\"allow_indicator_close_without_signal\":false,\"allow_multi_indicator_close\":false,\"allow_opposite_positions\":true,\"auto_bump_percent_multiplier\":10.0,\"auto_flip_on_close\":true,\"close_on_exit\":false,\"futures_flat_purge_grace_seconds\":12.0,\"futures_flat_purge_miss_threshold\":2,\"hedge_preserve_opposites\":false,\"indicator_flip_confirmation_bars\":1,\"indicator_flip_cooldown_bars\":1,\"indicator_flip_cooldown_seconds\":0.0,\"indicator_min_position_hold_bars\":1,\"indicator_min_position_hold_seconds\":0.0,\"indicator_reentry_cooldown_bars\":1,\"indicator_reentry_cooldown_seconds\":0.0,\"indicator_reentry_requires_signal_reset\":true,\"indicator_use_live_values\":false,\"max_auto_bump_percent\":5.0,\"positions_missing_autoclose\":true,\"positions_missing_grace_seconds\":30,\"positions_missing_threshold\":2,\"require_indicator_flip_signal\":true,\"stop_loss\":{\"enabled\":false,\"mode\":\"usdt\",\"percent\":0.0,\"scope\":\"per_trade\",\"usdt\":0.0},\"strict_indicator_flip_enforcement\":true}";
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "f44ed639838fd832adf73706e46bcbf2b20a39a20fc25d879ed7596431bcc1ca";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "9adccf010ea1ed7197ad19a20fec5ab53a560601c519b7dfbc2dbb58859e803c";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -1701,6 +1701,124 @@ pub const PYTHON_RUST_ENVIRONMENT_DEPENDENCIES: &[PythonRustEnvironmentDependenc
     ("citic futures", "citic-ctp", "china-futures-and-options", false),
     ("trading 212", "trading212-public-api", "invest-and-stocks-isa-equities-only", false),
     ("moomoo", "moomoo-opend", "stocks-etfs-options-futures-funds-and-supported-crypto", false),
+];
+
+    pub const PYTHON_BROKER_CANONICAL_NAMES: &[(&str, &str)] = &[
+    ("oanda", "OANDA"),
+    ("fxcm", "FXCM"),
+    ("ig", "IG"),
+    ("tradenation", "Trade Nation"),
+    ("fxtf", "FXTF"),
+    ("forexexchange", "FOREX EXCHANGE"),
+    ("avatrade", "AvaTrade"),
+    ("ecmarkets", "EC Markets"),
+    ("gtcfx", "GTCFX"),
+    ("finalto", "Finalto"),
+    ("atfx", "ATFX"),
+    ("vantage", "Vantage"),
+    ("startrader", "STARTRADER"),
+    ("xm", "XM"),
+    ("tmgm", "TMGM"),
+    ("capitalcom", "Capital.com"),
+    ("icmarketsglobal", "IC Markets Global"),
+    ("hantecfinancial", "Hantec Financial"),
+    ("gomarkets", "GO Markets"),
+    ("vtmarkets", "VT Markets"),
+    ("neex", "Neex"),
+    ("acysecurities", "ACY Securities"),
+    ("fortuneprimeglobal", "Fortune Prime Global"),
+    ("decodefx", "DecodeFX"),
+    ("cptmarkets", "CPT Markets"),
+    ("puprime", "PU Prime"),
+    ("aims", "AIMS"),
+    ("etomarkets", "ETO Markets"),
+    ("dprime", "D Prime"),
+    ("fusionmarkets", "Fusion Markets"),
+    ("exness", "Exness"),
+    ("valetax", "Valetax"),
+    ("cxm", "CXM"),
+    ("dbgmarkets", "DBG Markets"),
+    ("fxt", "FXT"),
+    ("plotio", "Plotio"),
+    ("forexcom", "FOREX.com"),
+    ("cmcmarkets", "CMC Markets"),
+    ("stonex", "StoneX"),
+    ("sbcfx", "SBCFX"),
+    ("phillipcapitalphillipnova", "PhillipCapital (Phillip Nova)"),
+    ("aigoldsecurities", "AI Gold Securities"),
+    ("citicfutures", "CITIC Futures"),
+    ("trading212", "Trading 212"),
+    ("moomoo", "moomoo"),
+    ("mitrade", "Mitrade"),
+    ("axpm", "AXPM"),
+    ("spreadex", "Spreadex"),
+    ("jefferies", "Jefferies"),
+    ("marex", "Marex"),
+    ("aigold", "AI Gold Securities"),
+    ("phillipsecurities", "PhillipCapital (Phillip Nova)"),
+    ("philipsecurities", "PhillipCapital (Phillip Nova)"),
+    ("cmcmarkes", "CMC Markets"),
+];
+
+    pub const PYTHON_SUPPORTED_EXCHANGES: &[&str] = &[
+    "Binance",
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+];
+
+    pub const PYTHON_CCXT_DIAGNOSTIC_EXCHANGES: &[&str] = &[
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+];
+
+    pub const PYTHON_CCXT_ORDER_ROUTING_EXCHANGES: &[&str] = &[
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+];
+
+    pub const PYTHON_ORDER_EXECUTION_EXCHANGES: &[&str] = &[
+    "Binance",
+];
+
+    pub const PYTHON_CCXT_EXCHANGE_IDS: &[(&str, &str)] = &[
+    ("bybit", "bybit"),
+    ("okx", "okx"),
+    ("bitget", "bitget"),
+    ("gate", "gateio"),
+    ("gate.io", "gateio"),
+    ("gateio", "gateio"),
+    ("mexc", "mexc"),
+    ("kucoin", "kucoin"),
+    ("htx", "htx"),
+    ("crypto.com", "cryptocom"),
+    ("crypto.com exchange", "cryptocom"),
+    ("cryptocom", "cryptocom"),
+    ("kraken", "kraken"),
+    ("bitfinex", "bitfinex"),
 ];
 
     pub const PYTHON_BACKTEST_INTERVALS: &[&str] = &[

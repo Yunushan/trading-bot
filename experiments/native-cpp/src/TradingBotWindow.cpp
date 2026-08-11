@@ -37,6 +37,7 @@
 #include <QFile>
 #include <QFontMetrics>
 #include <QEventLoop>
+#include <QFrame>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1702,9 +1703,17 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
       resultsTable_(nullptr),
       botTimer_(nullptr),
       tabs_(nullptr),
+      workspaceRootLayout_(nullptr),
+      workspaceBody_(nullptr),
+      workspaceHeader_(nullptr),
+      workspaceNavRail_(nullptr),
+      workspaceNavigation_(nullptr),
+      workspacePageLabel_(nullptr),
       backtestTab_(nullptr),
       dashboardThemeCombo_(nullptr),
+      dashboardDesignCombo_(nullptr),
       dashboardPage_(nullptr),
+      dashboardScrollLayout_(nullptr),
       dashboardTemplateCombo_(nullptr),
       dashboardMarginModeCombo_(nullptr),
       dashboardPositionModeCombo_(nullptr),
@@ -1771,10 +1780,50 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
     setCentralWidget(central);
     auto *rootLayout = new QVBoxLayout(central);
     rootLayout->setContentsMargins(0, 0, 0, 0);
+    workspaceRootLayout_ = rootLayout;
     const bool boundedSmoke = qApp
         && qApp->property("tradingBotBoundedSmoke").toBool();
 
-    tabs_ = new QTabWidget(central);
+    workspaceHeader_ = new QFrame(central);
+    workspaceHeader_->setObjectName("workspaceHeader");
+    auto *headerLayout = new QHBoxLayout(workspaceHeader_);
+    headerLayout->setContentsMargins(18, 10, 18, 10);
+    headerLayout->setSpacing(14);
+    auto *titleStack = new QWidget(workspaceHeader_);
+    auto *titleLayout = new QVBoxLayout(titleStack);
+    titleLayout->setContentsMargins(0, 0, 0, 0);
+    titleLayout->setSpacing(1);
+    auto *workspaceTitle = new QLabel("Trading Workspace", titleStack);
+    workspaceTitle->setObjectName("workspaceHeaderTitle");
+    workspacePageLabel_ = new QLabel("Dashboard", titleStack);
+    workspacePageLabel_->setObjectName("workspacePageTitle");
+    titleLayout->addWidget(workspaceTitle);
+    titleLayout->addWidget(workspacePageLabel_);
+    headerLayout->addWidget(titleStack);
+    headerLayout->addStretch(1);
+    rootLayout->addWidget(workspaceHeader_);
+
+    workspaceBody_ = new QWidget(central);
+    auto *bodyLayout = new QHBoxLayout(workspaceBody_);
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(0);
+    workspaceNavRail_ = new QFrame(workspaceBody_);
+    workspaceNavRail_->setObjectName("workspaceNavigationRail");
+    auto *railLayout = new QVBoxLayout(workspaceNavRail_);
+    railLayout->setContentsMargins(10, 14, 10, 10);
+    railLayout->setSpacing(8);
+    auto *railLabel = new QLabel("OPERATIONS", workspaceNavRail_);
+    railLabel->setObjectName("workspaceNavigationLabel");
+    railLayout->addWidget(railLabel);
+    workspaceNavigation_ = new QListWidget(workspaceNavRail_);
+    workspaceNavigation_->setObjectName("workspaceNavigation");
+    workspaceNavigation_->setSelectionMode(QAbstractItemView::SingleSelection);
+    workspaceNavigation_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    workspaceNavigation_->setUniformItemSizes(true);
+    railLayout->addWidget(workspaceNavigation_, 1);
+    bodyLayout->addWidget(workspaceNavRail_);
+
+    tabs_ = new QTabWidget(workspaceBody_);
     tabs_->setMovable(false);
     tabs_->setDocumentMode(true);
     tabs_->addTab(createDashboardTab(), "Dashboard");
@@ -1787,7 +1836,18 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
     tabs_->addTab(createCodeTab(), "Code Languages");
     tabs_->setCurrentIndex(0);
 
-    rootLayout->addWidget(tabs_);
+    bodyLayout->addWidget(tabs_, 1);
+    rootLayout->addWidget(workspaceBody_, 1);
+
+    connect(workspaceNavigation_, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (tabs_ && row >= 0 && row < tabs_->count() && tabs_->currentIndex() != row) {
+            tabs_->setCurrentIndex(row);
+        }
+    });
+    connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
+        syncWorkspaceNavigation(index);
+    });
+    syncWorkspaceNavigation(0);
 
     populateDefaults();
     wireSignals();
@@ -1814,8 +1874,10 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
         });
     }
 
-    // Ensure the initial theme applies after all tabs/widgets exist.
-    if (dashboardThemeCombo_) {
+    // Ensure the initial Python-selected design and theme apply after all tabs/widgets exist.
+    if (dashboardDesignCombo_) {
+        applyDashboardDesign(dashboardDesignCombo_->currentText());
+    } else if (dashboardThemeCombo_) {
         applyDashboardTheme(dashboardThemeCombo_->currentText());
     }
     refreshPositionsSummaryLabels();

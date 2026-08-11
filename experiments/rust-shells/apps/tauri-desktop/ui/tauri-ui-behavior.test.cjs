@@ -12,6 +12,7 @@ const {
   describeOrderCircuit,
   dashboardPayloadFromStreamEvent,
   dashboardStreamReconnectDelay,
+  designModeClass,
   environmentSelectionCountText,
   environmentUpdateScope,
   formatLlmPromptResult,
@@ -21,6 +22,8 @@ const {
   formatPreflightLabel,
   importBacktestRowsToDashboard,
   mergeUniqueLines,
+  normalizeDesign,
+  normalizeTheme,
   normalizeEnvironmentVersionRows,
   normalizePositionCloseSide,
   normalizeOverrideRow,
@@ -38,6 +41,14 @@ assert.equal(normalizePositionCloseSide("BUY"), "L");
 assert.equal(normalizePositionCloseSide("short"), "S");
 assert.equal(normalizePositionCloseSide("sell"), "S");
 assert.equal(normalizePositionCloseSide("both"), "");
+assert.equal(normalizeDesign("workstation"), "Workstation");
+assert.equal(normalizeDesign("invalid"), "Classic");
+assert.equal(designModeClass("Workstation"), "workstation-design");
+assert.equal(designModeClass("Classic"), "classic-design");
+assert.equal(normalizeTheme("gren"), "Green");
+assert.equal(normalizeTheme("yellow"), "Yellow");
+assert.equal(normalizeTheme("unknown"), "Dark");
+assert.equal(behavior.themeModeClass("Light"), "theme-light");
 assert.equal(dashboardStreamReconnectDelay(0), 1000);
 assert.equal(dashboardStreamReconnectDelay(4), 16000);
 assert.equal(dashboardStreamReconnectDelay(20), 30000);
@@ -97,6 +108,27 @@ for (const requiredStreamFragment of [
   "applyDashboardPayload",
   "hydrateControls: false"
 ]) assert.ok(indexHtml.includes(requiredStreamFragment), `missing dashboard stream fragment: ${requiredStreamFragment}`);
+for (const requiredDesignFragment of [
+  'id="config-design"',
+  "applyDesignMode",
+  "tauriUiBehavior.normalizeDesign",
+  "workstation-design",
+  'data-design="Workstation"'
+]) assert.ok(indexHtml.includes(requiredDesignFragment), `missing design behavior fragment: ${requiredDesignFragment}`);
+for (const requiredWorkstationFragment of [
+  'id="workspace-navigation-rail"',
+  'id="workspace-navigation"',
+  "syncWorkspaceNavigation",
+  "workspace-navigation-button",
+  'body.workstation-design .tabs'
+]) assert.ok(indexHtml.includes(requiredWorkstationFragment), `missing workstation layout fragment: ${requiredWorkstationFragment}`);
+for (const requiredThemeFragment of [
+  'id="config-theme"',
+  "applyThemeMode",
+  "tauriUiBehavior.normalizeTheme",
+  'body[data-theme="Light"]',
+  'body[data-theme="Blue"]'
+]) assert.ok(indexHtml.includes(requiredThemeFragment), `missing theme behavior fragment: ${requiredThemeFragment}`);
 for (const requiredNativeBacktestFragment of [
   "const submitBacktest",
   "usesLocalBacktestBackend",

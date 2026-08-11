@@ -3,38 +3,18 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use crate::generated_python_parity::{
-    PYTHON_BROKER_ORDER_ROUTING_BACKENDS, PYTHON_CONNECTOR_OPTIONS, PYTHON_SUPPORTED_BROKERS,
+    PYTHON_BROKER_CANONICAL_NAMES, PYTHON_BROKER_ORDER_ROUTING_BACKENDS,
+    PYTHON_CCXT_DIAGNOSTIC_EXCHANGES, PYTHON_CCXT_EXCHANGE_IDS,
+    PYTHON_CCXT_ORDER_ROUTING_EXCHANGES, PYTHON_CONNECTOR_OPTIONS,
+    PYTHON_ORDER_EXECUTION_EXCHANGES, PYTHON_SUPPORTED_BROKERS, PYTHON_SUPPORTED_EXCHANGES,
     PYTHON_SUPPORTED_FOREX_BROKERS, PythonConnectorOption,
 };
 use crate::order_audit::{redact_text, redact_value};
 
 pub const DEFAULT_CONNECTOR_BACKEND: &str = "binance-sdk-derivatives-trading-usds-futures";
-pub const CCXT_DIAGNOSTIC_EXCHANGES: &[&str] = &[
-    "Bybit",
-    "OKX",
-    "Bitget",
-    "Gate",
-    "MEXC",
-    "KuCoin",
-    "HTX",
-    "Crypto.com Exchange",
-    "Kraken",
-    "Bitfinex",
-];
-pub const CCXT_ORDER_ROUTING_EXCHANGES: &[&str] = CCXT_DIAGNOSTIC_EXCHANGES;
-pub const SUPPORTED_EXCHANGES: &[&str] = &[
-    "Binance",
-    "Bybit",
-    "OKX",
-    "Bitget",
-    "Gate",
-    "MEXC",
-    "KuCoin",
-    "HTX",
-    "Crypto.com Exchange",
-    "Kraken",
-    "Bitfinex",
-];
+pub const CCXT_DIAGNOSTIC_EXCHANGES: &[&str] = PYTHON_CCXT_DIAGNOSTIC_EXCHANGES;
+pub const CCXT_ORDER_ROUTING_EXCHANGES: &[&str] = PYTHON_CCXT_ORDER_ROUTING_EXCHANGES;
+pub const SUPPORTED_EXCHANGES: &[&str] = PYTHON_SUPPORTED_EXCHANGES;
 pub const SUPPORTED_FOREX_BROKERS: &[&str] = PYTHON_SUPPORTED_FOREX_BROKERS;
 pub const SUPPORTED_BROKERS: &[&str] = PYTHON_SUPPORTED_BROKERS;
 pub const BROKER_ORDER_ROUTING_BROKERS: &[&str] = SUPPORTED_BROKERS;
@@ -135,6 +115,27 @@ pub fn support_key(value: impl AsRef<str>) -> String {
     value.as_ref().trim().to_lowercase().replace('_', "-")
 }
 
+pub fn broker_identity_key(value: impl AsRef<str>) -> String {
+    value
+        .as_ref()
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .collect()
+}
+
+pub fn canonical_broker_name(value: impl AsRef<str>) -> String {
+    let trimmed = value.as_ref().trim();
+    let identity = broker_identity_key(trimmed);
+    PYTHON_BROKER_CANONICAL_NAMES
+        .iter()
+        .find_map(|(known_identity, canonical)| {
+            (*known_identity == identity).then_some((*canonical).to_owned())
+        })
+        .unwrap_or_else(|| trimmed.to_owned())
+}
+
 pub fn supported_connector_backends() -> Vec<String> {
     PYTHON_CONNECTOR_OPTIONS
         .iter()
@@ -143,20 +144,11 @@ pub fn supported_connector_backends() -> Vec<String> {
 }
 
 pub fn ccxt_exchange_id_for(value: impl AsRef<str>) -> String {
-    match support_key(value).as_str() {
-        "bybit" => "bybit",
-        "okx" => "okx",
-        "bitget" => "bitget",
-        "gate" | "gate.io" | "gateio" => "gateio",
-        "mexc" => "mexc",
-        "kucoin" => "kucoin",
-        "htx" => "htx",
-        "crypto.com" | "crypto.com exchange" | "cryptocom" => "cryptocom",
-        "kraken" => "kraken",
-        "bitfinex" => "bitfinex",
-        _ => "",
-    }
-    .to_owned()
+    let key = support_key(value);
+    PYTHON_CCXT_EXCHANGE_IDS
+        .iter()
+        .find_map(|(known_key, exchange_id)| (*known_key == key).then_some((*exchange_id).to_owned()))
+        .unwrap_or_default()
 }
 
 pub fn normalize_connector_backend(value: impl AsRef<str>) -> String {
@@ -183,9 +175,10 @@ pub fn build_exchange_support_payload(
         .unwrap_or_else(|| "Unknown".to_owned());
     let connector_backend = first_non_empty(&[&raw.connector_backend, &config.connector_backend])
         .unwrap_or_else(|| "Unknown".to_owned());
-    let selected_forex_broker =
+    let selected_forex_broker = canonical_broker_name(
         first_non_empty(&[&raw.selected_forex_broker, &config.selected_forex_broker])
-            .unwrap_or_default();
+            .unwrap_or_default(),
+    );
     let ccxt_exchange_id = ccxt_exchange_id_for(&selected_exchange);
 
     let exchange_supported = SUPPORTED_EXCHANGES
@@ -231,7 +224,9 @@ pub fn build_exchange_support_payload(
         })
         .unwrap_or_default();
     let forex_order_routing_supported = uses_broker_order_routing && broker_supports_forex;
-    let order_execution_exchange = exchange_key == "binance";
+    let order_execution_exchange = PYTHON_ORDER_EXECUTION_EXCHANGES
+        .iter()
+        .any(|item| support_key(item) == exchange_key);
     let market_data_supported = connector_backend_supported
         && ((!uses_broker
             && broker_supported
@@ -355,7 +350,10 @@ pub fn build_exchange_support_payload(
             .iter()
             .map(|item| (*item).to_owned())
             .collect(),
-        order_execution_exchanges: vec!["Binance".to_owned()],
+        order_execution_exchanges: PYTHON_ORDER_EXECUTION_EXCHANGES
+            .iter()
+            .map(|item| (*item).to_owned())
+            .collect(),
         broker_order_routing_brokers: BROKER_ORDER_ROUTING_BROKERS
             .iter()
             .map(|item| (*item).to_owned())
@@ -705,6 +703,33 @@ mod tests {
         assert!(ig.order_routing_supported);
         assert!(ig.order_execution_supported);
         assert!(ig.live_evidence_required);
+
+        let ai_gold_alias = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "metatrader5".to_owned(),
+                selected_forex_broker: "AI Gold".to_owned(),
+            },
+            None,
+        );
+        assert_eq!(ai_gold_alias.selected_forex_broker, "AI Gold Securities");
+        assert!(ai_gold_alias.order_routing_supported);
+        assert_eq!(ai_gold_alias.broker_market_scope, "otc-commodity-derivatives");
+        assert!(!ai_gold_alias.forex_order_routing_supported);
+
+        let phillip_alias = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "metatrader5".to_owned(),
+                selected_forex_broker: "Philip Securities".to_owned(),
+            },
+            None,
+        );
+        assert_eq!(
+            phillip_alias.selected_forex_broker,
+            "PhillipCapital (Phillip Nova)"
+        );
+        assert!(phillip_alias.order_execution_supported);
 
         let mut mt5_broker_count = 0;
         for broker in SUPPORTED_FOREX_BROKERS {

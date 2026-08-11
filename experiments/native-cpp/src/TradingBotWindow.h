@@ -17,6 +17,7 @@
 #include <memory>
 
 class QListWidget;
+class QFrame;
 class QLabel;
 class QPushButton;
 class QLineEdit;
@@ -52,6 +53,9 @@ private slots:
     void handleStopBacktest();
     void updateBotActiveTime();
     void applyDashboardTheme(const QString &themeName);
+    void applyDashboardDesign(const QString &designName);
+    void syncWorkspaceNavigation(int currentIndex = -1);
+    void updateWorkspacePage(int index);
 
 private:
     // Tab/page creation helpers.
@@ -196,9 +200,17 @@ private:
     QTimer *botTimer_;
     std::chrono::steady_clock::time_point botStart_;
     QTabWidget *tabs_;
+    QVBoxLayout *workspaceRootLayout_ = nullptr;
+    QWidget *workspaceBody_ = nullptr;
+    QFrame *workspaceHeader_ = nullptr;
+    QFrame *workspaceNavRail_ = nullptr;
+    QListWidget *workspaceNavigation_ = nullptr;
+    QLabel *workspacePageLabel_ = nullptr;
     QWidget *backtestTab_;
     QComboBox *dashboardThemeCombo_;
+    QComboBox *dashboardDesignCombo_ = nullptr;
     QWidget *dashboardPage_;
+    QVBoxLayout *dashboardScrollLayout_ = nullptr;
     QWidget *codePage_;
     QLineEdit *dashboardApiKey_;
     QLineEdit *dashboardApiSecret_;

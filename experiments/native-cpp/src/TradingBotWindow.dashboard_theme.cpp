@@ -1,6 +1,12 @@
 #include "TradingBotWindow.h"
 
 #include <QColor>
+#include <QComboBox>
+#include <QLabel>
+#include <QListWidget>
+#include <QSignalBlocker>
+#include <QTabWidget>
+#include <QVBoxLayout>
 #include <QWidget>
 
 namespace {
@@ -19,6 +25,31 @@ QString normalizedDashboardThemeName(QString themeName) {
         themeName = QStringLiteral("green");
     }
     return themeName;
+}
+
+bool isWorkstationDesign(const QString &designName) {
+    return designName.trimmed().compare(QStringLiteral("Workstation"), Qt::CaseInsensitive) == 0;
+}
+
+QString dashboardDesignCss(bool workstation) {
+    if (!workstation) {
+        return QString();
+    }
+
+    // Match Python's workstation density, hierarchy, and alternate navigation shell.
+    return QStringLiteral(
+        "QGroupBox { margin-top: 16px; padding: 10px 8px 8px 8px; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
+        "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { min-height: 26px; }"
+        "QPushButton { min-height: 28px; padding-left: 10px; padding-right: 10px; }"
+        "QTabBar::tab { padding: 9px 16px; }"
+        "QFrame#workspaceHeader { background-color: #070B12; border-bottom: 1px solid #26364F; }"
+        "QLabel#workspaceHeaderTitle { color: #E6EDF7; font-size: 18px; font-weight: 700; }"
+        "QLabel#workspacePageTitle { color: #A8C7FF; font-size: 12px; }"
+        "QFrame#workspaceNavigationRail { background-color: #0F1726; border-right: 1px solid #26364F; }"
+        "QListWidget#workspaceNavigation { background-color: transparent; border: none; color: #B8C5D8; }"
+        "QListWidget#workspaceNavigation::item { padding: 8px 10px; border-radius: 5px; }"
+        "QListWidget#workspaceNavigation::item:selected { background-color: #1F6FEB; color: #FFFFFF; }");
 }
 
 DashboardThemePalette dashboardThemePaletteForName(const QString &themeName) {
@@ -271,11 +302,87 @@ void TradingBotWindow::applyDashboardTheme(const QString &themeName) {
 
     const DashboardThemePalette palette = dashboardThemePaletteForName(themeName);
     const QString accentCss = dashboardAccentCss(palette);
+    const QString selectedDesign = dashboardDesignCombo_
+        ? dashboardDesignCombo_->currentData().toString()
+        : QString();
+    const bool workstation = dashboardDesignCombo_ && isWorkstationDesign(selectedDesign);
+    const QString designCss = dashboardDesignCss(workstation);
 
-    this->setStyleSheet(dashboardGlobalThemeCss(palette.isLight) + accentCss);
-    dashboardPage_->setStyleSheet(dashboardPageThemeCss(palette.isLight) + accentCss);
+    this->setStyleSheet(dashboardGlobalThemeCss(palette.isLight) + accentCss + designCss);
+    dashboardPage_->setStyleSheet(dashboardPageThemeCss(palette.isLight) + accentCss + designCss);
 
     if (codePage_) {
-        codePage_->setStyleSheet(dashboardCodeThemeCss(palette.isLight) + accentCss);
+        codePage_->setStyleSheet(dashboardCodeThemeCss(palette.isLight) + accentCss + designCss);
     }
+}
+
+void TradingBotWindow::applyDashboardDesign(const QString &designName) {
+    if (!dashboardPage_) {
+        return;
+    }
+
+    const QString selectedDesign = dashboardDesignCombo_
+        ? dashboardDesignCombo_->currentData().toString()
+        : designName;
+    const bool workstation = isWorkstationDesign(selectedDesign);
+    setProperty("workstationLayout", workstation);
+    dashboardPage_->setProperty("workstationLayout", workstation);
+
+    if (workspaceHeader_) {
+        workspaceHeader_->setVisible(workstation);
+    }
+    if (workspaceNavRail_) {
+        workspaceNavRail_->setVisible(workstation);
+        workspaceNavRail_->setFixedWidth(workstation ? 210 : 0);
+    }
+    if (workspaceNavigation_) {
+        workspaceNavigation_->setVisible(workstation);
+    }
+    if (tabs_) {
+        tabs_->tabBar()->setVisible(!workstation);
+        tabs_->setDocumentMode(workstation);
+        if (workstation) {
+            syncWorkspaceNavigation();
+        }
+    }
+    if (workspaceRootLayout_) {
+        workspaceRootLayout_->setContentsMargins(0, 0, 0, 0);
+        workspaceRootLayout_->setSpacing(workstation ? 0 : 6);
+    }
+
+    if (dashboardScrollLayout_) {
+        if (workstation) {
+            dashboardScrollLayout_->setContentsMargins(18, 14, 18, 18);
+            dashboardScrollLayout_->setSpacing(14);
+        } else {
+            dashboardScrollLayout_->setContentsMargins(10, 10, 10, 10);
+            dashboardScrollLayout_->setSpacing(12);
+        }
+    }
+
+    applyDashboardTheme(dashboardThemeCombo_ ? dashboardThemeCombo_->currentText() : QString());
+}
+
+void TradingBotWindow::syncWorkspaceNavigation(int currentIndex) {
+    if (!tabs_ || !workspaceNavigation_) {
+        return;
+    }
+
+    const int selectedIndex = currentIndex >= 0 ? currentIndex : tabs_->currentIndex();
+    const QSignalBlocker blocker(workspaceNavigation_);
+    workspaceNavigation_->clear();
+    for (int index = 0; index < tabs_->count(); ++index) {
+        workspaceNavigation_->addItem(tabs_->tabText(index));
+    }
+    if (selectedIndex >= 0 && selectedIndex < workspaceNavigation_->count()) {
+        workspaceNavigation_->setCurrentRow(selectedIndex);
+    }
+    updateWorkspacePage(selectedIndex);
+}
+
+void TradingBotWindow::updateWorkspacePage(int index) {
+    if (!tabs_ || !workspacePageLabel_ || index < 0 || index >= tabs_->count()) {
+        return;
+    }
+    workspacePageLabel_->setText(tabs_->tabText(index));
 }

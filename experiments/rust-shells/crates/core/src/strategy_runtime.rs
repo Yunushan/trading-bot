@@ -522,12 +522,12 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
     if enabled(&input, "ma")
         && let Some(ma) = input.indicators.get("ma")
     {
-        let clean: Vec<f64> = ma.iter().copied().filter(|value| !value.is_nan()).collect();
-        if clean.len() >= 2 && clean.len() > signal_index {
-            let last_ma = clean[signal_index];
-            let prev_ma = clean[prev_index];
+        let non_missing_count = ma.iter().filter(|value| !value.is_nan()).count();
+        if non_missing_count >= 2
+            && let (Some(last_ma), Some(prev_ma)) = (ma.get(signal_index), ma.get(prev_index))
+        {
             descriptions.push(format!("MA_prev={prev_ma:.8},MA_last={last_ma:.8}"));
-            if buy_allowed && prev_close < prev_ma && sig_close > last_ma {
+            if buy_allowed && prev_close < *prev_ma && sig_close > *last_ma {
                 action(
                     "ma",
                     "BUY",
@@ -537,7 +537,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
                     &mut sources,
                     &mut actions,
                 );
-            } else if sell_allowed && prev_close > prev_ma && sig_close < last_ma {
+            } else if sell_allowed && prev_close > *prev_ma && sig_close < *last_ma {
                 action(
                     "ma",
                     "SELL",
@@ -1138,28 +1138,22 @@ fn threshold_action_existing_value(
 ) {
     let rule = rule(input, key);
     let (buy, sell, buy_ge) = match compare {
-        Compare::LeGe => match (rule.buy_value, rule.sell_value) {
-            (Some(buy), Some(sell)) => (buy, sell, false),
-            _ => return,
-        },
-        Compare::GeLe => match (rule.buy_value, rule.sell_value) {
-            (Some(buy), Some(sell)) => (buy, sell, true),
-            _ => return,
-        },
+        Compare::LeGe => (rule.buy_value, rule.sell_value, false),
+        Compare::GeLe => (rule.buy_value, rule.sell_value, true),
         Compare::LeGeDefaults(buy, sell) => (
-            rule.buy_value.unwrap_or(buy),
-            rule.sell_value.unwrap_or(sell),
+            Some(rule.buy_value.unwrap_or(buy)),
+            Some(rule.sell_value.unwrap_or(sell)),
             false,
         ),
         Compare::GeLeDefaults(buy, sell) => (
-            rule.buy_value.unwrap_or(buy),
-            rule.sell_value.unwrap_or(sell),
+            Some(rule.buy_value.unwrap_or(buy)),
+            Some(rule.sell_value.unwrap_or(sell)),
             true,
         ),
     };
     let precision = precision_from_pattern(pattern);
     if buy_ge {
-        if buy_allowed && value >= buy {
+        if let Some(buy) = buy.filter(|threshold| buy_allowed && value >= *threshold) {
             actions.insert(key.to_owned(), "buy".to_owned());
             descriptions.push(format!(
                 "{label} >= {} -> BUY",
@@ -1169,7 +1163,7 @@ fn threshold_action_existing_value(
             if signal.is_none() {
                 *signal = Some("BUY".to_owned());
             }
-        } else if sell_allowed && value <= sell {
+        } else if let Some(sell) = sell.filter(|threshold| sell_allowed && value <= *threshold) {
             actions.insert(key.to_owned(), "sell".to_owned());
             descriptions.push(format!(
                 "{label} <= {} -> SELL",
@@ -1180,7 +1174,7 @@ fn threshold_action_existing_value(
                 *signal = Some("SELL".to_owned());
             }
         }
-    } else if buy_allowed && value <= buy {
+    } else if let Some(buy) = buy.filter(|threshold| buy_allowed && value <= *threshold) {
         actions.insert(key.to_owned(), "buy".to_owned());
         descriptions.push(format!(
             "{label} <= {} -> BUY",
@@ -1190,7 +1184,7 @@ fn threshold_action_existing_value(
         if signal.is_none() {
             *signal = Some("BUY".to_owned());
         }
-    } else if sell_allowed && value >= sell {
+    } else if let Some(sell) = sell.filter(|threshold| sell_allowed && value >= *threshold) {
         actions.insert(key.to_owned(), "sell".to_owned());
         descriptions.push(format!(
             "{label} >= {} -> SELL",
@@ -1871,6 +1865,164 @@ mod tests {
                 );
                 previous_segment = Some(current_segment);
             }
+        }
+    }
+
+    #[test]
+    fn live_signal_generation_matches_python_reference_cases() {
+        let reference: Value = serde_json::from_str(
+            crate::generated_python_indicator_reference::PYTHON_INDICATOR_REFERENCE_JSON,
+        )
+        .expect("generated Python indicator reference should be valid JSON");
+        let cases = reference
+            .get("live_signal_cases")
+            .and_then(Value::as_array)
+            .expect("generated Python indicator reference should include live signal cases");
+        assert!(
+            cases.len() >= 40,
+            "fixture should cover BUY, SELL, and closed-candle Python live signal behavior"
+        );
+
+        for case in cases {
+            let name = case
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unnamed-live-signal-case");
+            let closes = case
+                .get("candles")
+                .and_then(Value::as_array)
+                .expect("live signal case should include candles")
+                .iter()
+                .map(|candle| {
+                    candle
+                        .get("close")
+                        .and_then(Value::as_f64)
+                        .expect("live signal candle close should be numeric")
+                })
+                .collect();
+            let rules = case
+                .get("configs")
+                .and_then(Value::as_object)
+                .expect("live signal case should include configs")
+                .iter()
+                .map(|(key, config)| {
+                    (
+                        key.clone(),
+                        IndicatorRule {
+                            enabled: config
+                                .get("enabled")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            buy_value: config.get("buy_value").and_then(Value::as_f64),
+                            sell_value: config.get("sell_value").and_then(Value::as_f64),
+                        },
+                    )
+                })
+                .collect();
+            let indicators = case
+                .get("indicators")
+                .and_then(Value::as_object)
+                .expect("live signal case should include indicator values")
+                .iter()
+                .map(|(key, series)| {
+                    let values = series
+                        .as_array()
+                        .expect("live signal indicator values should be arrays")
+                        .iter()
+                        .map(|value| value.as_f64().unwrap_or(f64::NAN))
+                        .collect();
+                    (key.clone(), values)
+                })
+                .collect();
+            let input = StrategySignalInput {
+                closes,
+                indicators,
+                rules,
+                side: case
+                    .get("side")
+                    .and_then(Value::as_str)
+                    .unwrap_or("BOTH")
+                    .to_owned(),
+                use_live_values: case
+                    .get("use_live_values")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            };
+            let expected = case
+                .get("expected")
+                .and_then(Value::as_object)
+                .expect("live signal case should include expected decision");
+            let decision = build_signal_decision(input);
+
+            assert_eq!(
+                decision.signal.as_deref(),
+                expected.get("signal").and_then(Value::as_str),
+                "signal mismatch for {name}"
+            );
+            assert_eq!(
+                decision.description,
+                expected
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .expect("expected description should be text"),
+                "description mismatch for {name}"
+            );
+            let expected_price = expected.get("trigger_price").and_then(Value::as_f64);
+            match (decision.trigger_price, expected_price) {
+                (Some(actual), Some(expected)) => assert!(
+                    (actual - expected).abs() <= 1e-9 * actual.abs().max(expected.abs()).max(1.0),
+                    "trigger price mismatch for {name}: {actual} != {expected}"
+                ),
+                (None, None) => {}
+                (actual, expected) => {
+                    panic!(
+                        "trigger price presence mismatch for {name}: {actual:?} != {expected:?}"
+                    )
+                }
+            }
+            let expected_sources: Vec<String> = expected
+                .get("trigger_sources")
+                .and_then(Value::as_array)
+                .expect("expected trigger sources should be an array")
+                .iter()
+                .map(|source| {
+                    source
+                        .as_str()
+                        .expect("trigger source should be text")
+                        .to_owned()
+                })
+                .collect();
+            assert_eq!(
+                decision.trigger_sources, expected_sources,
+                "trigger source mismatch for {name}"
+            );
+            let expected_actions: BTreeMap<String, String> = serde_json::from_value(
+                expected
+                    .get("trigger_actions")
+                    .cloned()
+                    .expect("expected trigger actions should be present"),
+            )
+            .expect("expected trigger actions should be a string map");
+            assert_eq!(
+                decision.trigger_actions, expected_actions,
+                "trigger action mismatch for {name}"
+            );
+            assert_eq!(
+                decision.min_bars,
+                expected
+                    .get("min_bars")
+                    .and_then(Value::as_u64)
+                    .expect("expected minimum bars should be numeric") as usize,
+                "minimum bars mismatch for {name}"
+            );
+            assert_eq!(
+                decision.signal_index_from_end,
+                expected
+                    .get("signal_index_from_end")
+                    .and_then(Value::as_u64)
+                    .expect("expected signal index should be numeric") as usize,
+                "signal index mismatch for {name}"
+            );
         }
     }
 

@@ -47,10 +47,19 @@ from .service.api_contract import (
 from .settings.backtest import BacktestSettings, MDD_LOGIC_OPTIONS
 from .settings.execution import ExecutionSettings
 from .settings.exchange_support import (
+    BROKER_INTEGRATION_DISPOSITIONS,
     BROKER_MARKET_SCOPES,
     BROKER_ORDER_ROUTING_BACKENDS,
+    CCXT_DIAGNOSTIC_EXCHANGES,
+    CCXT_EXCHANGE_IDS,
+    CCXT_ORDER_ROUTING_EXCHANGES,
+    METATRADER5_BROKER_ALIASES,
+    ORDER_EXECUTION_EXCHANGES,
+    REQUESTED_BROKER_TARGETS,
+    SUPPORTED_EXCHANGES,
     SUPPORTED_BROKERS,
     SUPPORTED_FOREX_BROKERS,
+    canonical_broker_name,
 )
 from .settings.indicators import (
     INDICATOR_CATALOG,
@@ -446,6 +455,24 @@ def native_python_risk_defaults() -> dict[str, object]:
     return defaults
 
 
+def _broker_identity_key(value: object) -> str:
+    return "".join(character for character in str(value or "").strip().lower() if character.isalnum())
+
+
+def _broker_canonical_name_payload() -> list[dict[str, str]]:
+    """Expose Python's broker alias resolution to native consumers."""
+
+    mappings: dict[str, str] = {}
+    for value in (
+        *SUPPORTED_BROKERS,
+        *BROKER_INTEGRATION_DISPOSITIONS,
+        *METATRADER5_BROKER_ALIASES,
+        *REQUESTED_BROKER_TARGETS,
+    ):
+        mappings[_broker_identity_key(value)] = canonical_broker_name(value)
+    return [{"identity": identity, "canonical": canonical} for identity, canonical in mappings.items()]
+
+
 def native_python_source_contract_payload() -> dict[str, Any]:
     route_methods = {name: list(methods) for name, methods in SERVICE_API_ROUTE_METHODS.items()}
     connector_options = [{"label": label, "key": key} for label, key in _connector_options()]
@@ -559,9 +586,15 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         "llm_provider_choices": dict(llm_provider_choices()),
         "config_choice_maps": _config_choice_maps(),
         "exchange_support": {
+            "supported_exchanges": list(SUPPORTED_EXCHANGES),
+            "ccxt_diagnostic_exchanges": list(CCXT_DIAGNOSTIC_EXCHANGES),
+            "ccxt_order_routing_exchanges": list(CCXT_ORDER_ROUTING_EXCHANGES),
+            "order_execution_exchanges": list(ORDER_EXECUTION_EXCHANGES),
+            "ccxt_exchange_ids": [{"key": key, "value": value} for key, value in CCXT_EXCHANGE_IDS.items()],
             "supported_brokers": list(SUPPORTED_BROKERS),
             "supported_forex_brokers": list(SUPPORTED_FOREX_BROKERS),
             "broker_order_routing_backends": broker_backends,
+            "broker_canonical_names": _broker_canonical_name_payload(),
         },
     }
 
@@ -623,9 +656,15 @@ def native_python_source_contract_summary() -> dict[str, object]:
             name: dict(values) for name, values in payload["config_choice_maps"].items()
         },
         "connector_keys": [key for _label, key in _connector_options()],
+        "supported_exchanges": list(payload["exchange_support"]["supported_exchanges"]),
+        "ccxt_diagnostic_exchanges": list(payload["exchange_support"]["ccxt_diagnostic_exchanges"]),
+        "ccxt_order_routing_exchanges": list(payload["exchange_support"]["ccxt_order_routing_exchanges"]),
+        "order_execution_exchanges": list(payload["exchange_support"]["order_execution_exchanges"]),
+        "ccxt_exchange_ids": list(payload["exchange_support"]["ccxt_exchange_ids"]),
         "supported_brokers": list(payload["exchange_support"]["supported_brokers"]),
         "supported_forex_brokers": list(payload["exchange_support"]["supported_forex_brokers"]),
         "broker_order_routing_backends": list(payload["exchange_support"]["broker_order_routing_backends"]),
+        "broker_canonical_names": list(payload["exchange_support"]["broker_canonical_names"]),
         "intervals": list(BACKTEST_INTERVAL_ORDER),
         "tradingview_interval_map": dict(payload["ui_options"]["tradingview_interval_map"]),
         "default_chart_symbols": list(payload["ui_options"]["default_chart_symbols"]),

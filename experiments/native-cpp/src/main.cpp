@@ -1,7 +1,9 @@
 #include "TradingBotWindow.h"
+#include "TradingBotWindowSupport.h"
 
 #include <QApplication>
 #include <QByteArray>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
 #include <QEvent>
@@ -9,6 +11,8 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QListWidget>
+#include <QTabBar>
 #include <QStringList>
 #include <QTabWidget>
 #include <QTextStream>
@@ -99,6 +103,101 @@ bool verifyBoundedSmokeWindow(TradingBotWindow &window) {
         QTextStream(stderr) << "Trading Bot C++ smoke failed: primary desktop tabs are unavailable\n";
         return false;
     }
+
+    auto verifyComboCatalog = [](QComboBox *combo,
+                                 const QStringList &expectedKeys,
+                                 const QStringList &expectedLabels,
+                                 const QString &name) {
+        if (!combo || combo->count() != expectedKeys.size() || combo->count() != expectedLabels.size()) {
+            QTextStream(stderr) << "Trading Bot C++ smoke failed: " << name
+                                << " does not expose the Python option catalog\n";
+            return false;
+        }
+        for (int index = 0; index < expectedKeys.size(); ++index) {
+            if (combo->itemData(index).toString() != expectedKeys.at(index)
+                || combo->itemText(index) != expectedLabels.at(index)) {
+                QTextStream(stderr) << "Trading Bot C++ smoke failed: " << name
+                                    << " option key/label differs at index " << index << "\n";
+                return false;
+            }
+        }
+        return true;
+    };
+
+    if (!verifyComboCatalog(
+            window.findChild<QComboBox *>(QStringLiteral("dashboardThemeCombo")),
+            TradingBotWindowSupport::pythonSourceThemeOptionKeys(),
+            TradingBotWindowSupport::pythonSourceThemeOptionLabels(),
+            QStringLiteral("theme"))
+        || !verifyComboCatalog(
+            window.findChild<QComboBox *>(QStringLiteral("dashboardDesignCombo")),
+            TradingBotWindowSupport::pythonSourceDesignOptionKeys(),
+            TradingBotWindowSupport::pythonSourceDesignOptionLabels(),
+            QStringLiteral("design"))) {
+        return false;
+    }
+
+    auto *workspaceNavigation = window.findChild<QListWidget *>(QStringLiteral("workspaceNavigation"));
+    auto *workspaceNavigationRail = window.findChild<QWidget *>(QStringLiteral("workspaceNavigationRail"));
+    if (!workspaceNavigation || !workspaceNavigationRail || workspaceNavigation->count() != mainTabs->count()) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: workspace navigation is not synchronized\n";
+        return false;
+    }
+    const int originalIndex = mainTabs->currentIndex();
+    auto *designCombo = window.findChild<QComboBox *>(QStringLiteral("dashboardDesignCombo"));
+    if (!designCombo) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: design selector is unavailable\n";
+        return false;
+    }
+    const QString originalDesignKey = designCombo->currentData().toString();
+    const int workstationIndex = designCombo->findData(QStringLiteral("Workstation"));
+    const int classicIndex = designCombo->findData(QStringLiteral("Classic"));
+    if (workstationIndex < 0 || classicIndex < 0) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: design keys are not synchronized\n";
+        return false;
+    }
+    designCombo->setCurrentIndex(workstationIndex);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    if (!window.property("workstationLayout").toBool()
+        || workspaceNavigationRail->isHidden()
+        || workspaceNavigation->isHidden()
+        || !mainTabs->tabBar()->isHidden()) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: Workstation design was not applied"
+                            << " (selected=" << designCombo->currentText()
+                            << ", key=" << designCombo->currentData().toString()
+                            << ", property=" << window.property("workstationLayout").toBool()
+                            << ", railHidden=" << workspaceNavigationRail->isHidden()
+                            << ", navigationHidden=" << workspaceNavigation->isHidden()
+                            << ", tabbarHidden=" << mainTabs->tabBar()->isHidden() << ")\n";
+        return false;
+    }
+    workspaceNavigation->setCurrentRow(2);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    if (mainTabs->currentIndex() != 2 || workspaceNavigation->currentRow() != 2) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: workspace navigation did not select the tab\n";
+        return false;
+    }
+    mainTabs->setCurrentIndex(4);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    if (workspaceNavigation->currentRow() != 4) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: tab selection did not update workspace navigation\n";
+        return false;
+    }
+    designCombo->setCurrentIndex(classicIndex);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    if (window.property("workstationLayout").toBool()
+        || !workspaceNavigationRail->isHidden()
+        || !workspaceNavigation->isHidden()
+        || mainTabs->tabBar()->isHidden()) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: Classic design was not restored\n";
+        return false;
+    }
+    const int originalDesignIndex = designCombo->findData(originalDesignKey);
+    if (originalDesignIndex >= 0) {
+        designCombo->setCurrentIndex(originalDesignIndex);
+    }
+    mainTabs->setCurrentIndex(originalIndex);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
     for (int index = 0; index < expectedTabs.size(); ++index) {
         if (!mainTabs->widget(index)) {
@@ -195,4 +294,3 @@ int main(int argc, char *argv[]) {
 
     return app.exec();
 }
-

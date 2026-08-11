@@ -37,6 +37,31 @@
     return result;
   };
 
+  const normalizeDesign = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized === "workstation" ? "Workstation" : "Classic";
+  };
+
+  const designModeClass = (value) => normalizeDesign(value) === "Workstation"
+    ? "workstation-design"
+    : "classic-design";
+
+  const normalizeTheme = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    const canonical = normalized === "gren" ? "green" : normalized;
+    const themes = new Map([
+      ["light", "Light"],
+      ["dark", "Dark"],
+      ["blue", "Blue"],
+      ["yellow", "Yellow"],
+      ["green", "Green"],
+      ["red", "Red"]
+    ]);
+    return themes.get(canonical) || "Dark";
+  };
+
+  const themeModeClass = (value) => `theme-${normalizeTheme(value).toLowerCase()}`;
+
   const optionsMatchingKeys = (options, keys) => {
     const optionsByKey = new Map(
       (Array.isArray(options) ? options : [])
@@ -622,6 +647,10 @@
     preflightStartBlocked,
     preflightStartDetail,
     selectBacktestScanBest,
+    designModeClass,
+    normalizeDesign,
+    normalizeTheme,
+    themeModeClass,
     titleizeLabel,
     uniqueValues
   };
