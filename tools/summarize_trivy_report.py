@@ -48,7 +48,9 @@ def _results(payload: Any) -> list[dict[str, Any]]:
 def _vulnerabilities(result: dict[str, Any], result_index: int) -> list[dict[str, Any]]:
     raw = _field(result, "Vulnerabilities", "vulnerabilities")
     if raw is _MISSING:
-        raise TrivyReportFormatError(f"result {result_index} is missing Vulnerabilities/vulnerabilities")
+        # Trivy omits the field for clean image targets; absence has the same
+        # meaning as its documented null value, not a malformed finding list.
+        return []
     if raw is None:
         return []
     if not isinstance(raw, list):

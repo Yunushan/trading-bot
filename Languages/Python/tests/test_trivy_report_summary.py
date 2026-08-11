@@ -85,6 +85,16 @@ class TrivyReportSummaryTests(unittest.TestCase):
         self.assertEqual({}, counts)
         self.assertEqual([], findings)
 
+    def test_allows_omitted_vulnerabilities_for_clean_results(self) -> None:
+        payload = {"Results": [{"Target": "runtime"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trivy.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            counts, findings = trivy.summarize_report(path)
+
+        self.assertEqual({}, counts)
+        self.assertEqual([], findings)
+
     def test_rejects_unknown_severity_instead_of_counting_it_as_unknown(self) -> None:
         payload = {
             "Results": [
