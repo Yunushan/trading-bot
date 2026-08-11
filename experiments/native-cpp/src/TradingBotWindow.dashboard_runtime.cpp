@@ -16,6 +16,7 @@
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
@@ -230,6 +231,10 @@ void TradingBotWindow::refreshDashboardOpenPositionIndicatorValuesForSignalKey(
 
 void TradingBotWindow::runDashboardRuntimeCycle() {
     if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_ || dashboardRuntimeCycleInProgress_) {
+        return;
+    }
+    if (dashboardServiceRuntimeActive_) {
+        runDashboardServiceRuntimeCycle();
         return;
     }
     if (!dashboardOverridesTable_ || dashboardOverridesTable_->rowCount() <= 0) {
@@ -1989,4 +1994,170 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
 
     flushPendingPositionsView();
     refreshPositionsSummaryLabels();
+}
+
+void TradingBotWindow::runDashboardServiceRuntimeCycle() {
+    if (!dashboardServiceRuntimeActive_ || dashboardRuntimeStopping_ || dashboardRuntimeCycleInProgress_) {
+        return;
+    }
+    dashboardRuntimeCycleInProgress_ = true;
+    struct RuntimeCycleGuard final {
+        bool *flag = nullptr;
+        ~RuntimeCycleGuard() {
+            if (flag) {
+                *flag = false;
+            }
+        }
+    } runtimeCycleGuard{&dashboardRuntimeCycleInProgress_};
+
+    QJsonObject query;
+    query.insert(QStringLiteral("log_limit"), 20);
+    query.insert(QStringLiteral("incident_limit"), 20);
+    const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+        QStringLiteral("GET"),
+        QStringLiteral("dashboard"),
+        query,
+        10000);
+    if (!result.ok) {
+        const QString warningKey = QStringLiteral("service-runtime-cycle|") + result.error;
+        if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+            dashboardRuntimeConnectorWarnings_.insert(warningKey);
+            appendDashboardAllLog(QStringLiteral("Python Service API runtime snapshot failed: %1").arg(result.error));
+        }
+        updateStatusMessage(QStringLiteral("Python Service API runtime snapshot unavailable: %1").arg(result.error));
+        return;
+    }
+
+    const QJsonObject payload = result.document.object();
+    const QJsonObject status = payload.value(QStringLiteral("status")).toObject();
+    const QJsonObject runtime = payload.value(QStringLiteral("runtime")).toObject();
+    const QJsonObject account = payload.value(QStringLiteral("account")).toObject();
+    const QJsonObject portfolio = payload.value(QStringLiteral("portfolio")).toObject();
+    const QJsonArray logs = payload.value(QStringLiteral("logs")).toArray();
+    for (const QJsonValue &logValue : logs) {
+        if (!logValue.isObject()) {
+            continue;
+        }
+        const QJsonObject log = logValue.toObject();
+        const qint64 sequenceId = static_cast<qint64>(log.value(QStringLiteral("sequence_id")).toDouble(0.0));
+        if (sequenceId > 0 && sequenceId <= dashboardServiceLastLogSequenceId_) {
+            continue;
+        }
+        const QString message = log.value(QStringLiteral("message")).toString().trimmed();
+        if (!message.isEmpty()) {
+            const QString level = log.value(QStringLiteral("level")).toString(QStringLiteral("info")).trimmed();
+            const QString source = log.value(QStringLiteral("source")).toString(QStringLiteral("python-service")).trimmed();
+            appendDashboardAllLog(QStringLiteral("[%1/%2] %3").arg(source, level, message));
+        }
+        dashboardServiceLastLogSequenceId_ = std::max(dashboardServiceLastLogSequenceId_, sequenceId);
+    }
+    const bool runtimeActive = status.value(QStringLiteral("state")).toString().compare(
+                                   QStringLiteral("running"), Qt::CaseInsensitive) == 0
+        || runtime.value(QStringLiteral("runtime_active")).toBool(false);
+    if (dashboardBotStatusLabel_) {
+        dashboardBotStatusLabel_->setText(runtimeActive ? QStringLiteral("ON (Python Service)") : QStringLiteral("OFF"));
+        dashboardBotStatusLabel_->setStyleSheet(runtimeActive
+                ? "color: #16a34a; font-weight: 700;"
+                : "color: #ef4444; font-weight: 700;");
+    }
+    if (dashboardBotTimeLabel_) {
+        dashboardBotTimeLabel_->setText(
+            runtimeActive
+                ? QStringLiteral("%1 engine(s)").arg(status.value(QStringLiteral("active_engine_count")).toInt(
+                      runtime.value(QStringLiteral("active_engine_count")).toInt(0)))
+                : QStringLiteral("0s"));
+    }
+
+    const QJsonValue totalBalanceValue = account.value(QStringLiteral("total_balance"));
+    const QJsonValue availableBalanceValue = account.value(QStringLiteral("available_balance"));
+    if (dashboardBalanceLabel_ && (totalBalanceValue.isDouble() || availableBalanceValue.isDouble())) {
+        const QString currency = account.value(QStringLiteral("balance_currency")).toString(QStringLiteral("USDT"));
+        const QString total = totalBalanceValue.isDouble()
+            ? QString::number(totalBalanceValue.toDouble(), 'f', 3)
+            : QStringLiteral("N/A");
+        const QString available = availableBalanceValue.isDouble()
+            ? QString::number(availableBalanceValue.toDouble(), 'f', 3)
+            : QStringLiteral("N/A");
+        dashboardBalanceLabel_->setText(QStringLiteral("%1 total %2 | available %3").arg(currency, total, available));
+        dashboardBalanceLabel_->setStyleSheet("color: #22c55e; font-weight: 700;");
+        positionsBalanceAsset_ = currency.trimmed().isEmpty() ? QStringLiteral("USDT") : currency.trimmed().toUpper();
+        if (totalBalanceValue.isDouble()) {
+            positionsLastTotalBalanceUsdt_ = totalBalanceValue.toDouble();
+        }
+        if (availableBalanceValue.isDouble()) {
+            positionsLastAvailableBalanceUsdt_ = availableBalanceValue.toDouble();
+        }
+    }
+
+    auto setPnlLabel = [](QLabel *label, const QJsonValue &value, const QString &prefix) {
+        if (!label) {
+            return;
+        }
+        if (value.isDouble()) {
+            label->setText(QStringLiteral("%1 %2").arg(prefix, QString::number(value.toDouble(), 'f', 3)));
+        } else {
+            label->setText(QStringLiteral("%1 N/A").arg(prefix));
+        }
+    };
+    hydrateDashboardServicePortfolio(portfolio);
+    setPnlLabel(dashboardPnlActiveLabel_, portfolio.value(QStringLiteral("active_pnl")), QStringLiteral("Active PNL:"));
+    setPnlLabel(dashboardPnlClosedLabel_, portfolio.value(QStringLiteral("closed_pnl")), QStringLiteral("Closed PNL:"));
+    refreshPositionsSummaryLabels();
+    setPnlLabel(dashboardPnlActiveLabel_, portfolio.value(QStringLiteral("active_pnl")), QStringLiteral("Active PNL:"));
+    setPnlLabel(dashboardPnlClosedLabel_, portfolio.value(QStringLiteral("closed_pnl")), QStringLiteral("Closed PNL:"));
+
+    const auto servicePnlText = [](const QJsonValue &value) {
+        return value.isDouble()
+            ? QString::number(value.toDouble(), 'f', 2)
+            : QStringLiteral("N/A");
+    };
+    const QString activePnlText = servicePnlText(portfolio.value(QStringLiteral("active_pnl")));
+    const QString closedPnlText = servicePnlText(portfolio.value(QStringLiteral("closed_pnl")));
+    for (QLabel *label : {positionsPnlActiveLabel_, chartPnlActiveLabel_, backtestPnlActiveLabel_, codePnlActiveLabel_}) {
+        if (label) {
+            label->setText(QStringLiteral("Total PNL Active Positions: %1 USDT").arg(activePnlText));
+        }
+    }
+    for (QLabel *label : {positionsPnlClosedLabel_, chartPnlClosedLabel_, backtestPnlClosedLabel_, codePnlClosedLabel_}) {
+        if (label) {
+            label->setText(QStringLiteral("Total PNL Closed Positions: %1 USDT").arg(closedPnlText));
+        }
+    }
+    const QString serviceStatusText = runtimeActive ? QStringLiteral("ON (Python Service)") : QStringLiteral("OFF");
+    const QString serviceStatusStyle = runtimeActive
+        ? QStringLiteral("color: #16a34a; font-weight: 700;")
+        : QStringLiteral("color: #ef4444; font-weight: 700;");
+    if (botStatusLabel_) {
+        botStatusLabel_->setText(QStringLiteral("Bot Status: %1").arg(serviceStatusText));
+        botStatusLabel_->setStyleSheet(serviceStatusStyle);
+    }
+    for (QLabel *label : {chartBotStatusLabel_, positionsBotStatusLabel_, codeBotStatusLabel_}) {
+        if (label) {
+            label->setText(QStringLiteral("Bot Status: %1").arg(serviceStatusText));
+            label->setStyleSheet(serviceStatusStyle);
+        }
+    }
+    const QString serviceTimeText = runtimeActive
+        ? QStringLiteral("Bot Active Time: %1 engine(s)").arg(status.value(QStringLiteral("active_engine_count")).toInt(
+              runtime.value(QStringLiteral("active_engine_count")).toInt(0)))
+        : QStringLiteral("Bot Active Time: 0s");
+    for (QLabel *label : {botTimeLabel_, chartBotTimeLabel_, positionsBotTimeLabel_, codeBotTimeLabel_}) {
+        if (label) {
+            label->setText(serviceTimeText);
+        }
+    }
+    if (dashboardBotStatusLabel_) {
+        dashboardBotStatusLabel_->setText(serviceStatusText);
+        dashboardBotStatusLabel_->setStyleSheet(serviceStatusStyle);
+    }
+    if (dashboardBotTimeLabel_) {
+        dashboardBotTimeLabel_->setText(runtimeActive
+                ? QStringLiteral("%1 engine(s)").arg(status.value(QStringLiteral("active_engine_count")).toInt(
+                      runtime.value(QStringLiteral("active_engine_count")).toInt(0)))
+                : QStringLiteral("0s"));
+    }
+
+    const QString message = status.value(QStringLiteral("status_message")).toString(
+        QStringLiteral("Python Service API runtime snapshot refreshed."));
+    updateStatusMessage(message);
 }

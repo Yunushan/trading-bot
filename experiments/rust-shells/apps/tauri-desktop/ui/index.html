@@ -2678,6 +2678,48 @@
       }
       return result;
     };
+    const nativeRuntimeDelegationRequired = (result) => {
+      if (result?.ok) return false;
+      const detail = String(result?.error || "") + " " + String(result?.message || "");
+      const normalized = detail.toLowerCase();
+      return normalized.includes("python service api/provider connector-owned")
+        || normalized.includes("native rust runtime coordinates binance")
+        || normalized.includes("native rust runtime requires a binance spot or futures connector");
+    };
+    const startPythonServiceRuntime = async ({ source = "tauri-desktop" } = {}) => {
+      if (!(await ensureServiceApi())) return { ok: false, error: "Python Service API is unavailable." };
+      const configResult = await requestAndReport(
+        "Apply runtime config",
+        "config",
+        "PATCH",
+        { config: buildRuntimeConfigPatch() }
+      );
+      if (!configResult.ok) return configResult;
+      const preflightResult = await refreshOperationalPreflight();
+      if (!preflightResult.ok) return preflightResult;
+      if (preflightStartBlocked(preflightResult.payload)) {
+        const detail = preflightStartDetail(preflightResult.payload);
+        setServiceStatus("Start blocked by preflight: " + detail, false);
+        appendLog("[api] Start blocked by operational preflight - " + detail);
+        return { ...preflightResult, ok: false, error: detail };
+      }
+      const result = await requestAndReport(
+        "Start bot",
+        "control_start",
+        "POST",
+        { requested_job_count: 0, source }
+      );
+      if (result.ok && result.payload?.accepted === false) {
+        const detail = result.payload?.status_message || "service rejected the start request";
+        setStatusSnapshot(result.payload);
+        setServiceStatus("Start blocked: " + detail, false);
+        appendLog("[api] Start bot rejected - " + detail);
+        await refreshOperationalPreflight();
+        return { ...result, ok: false, error: detail };
+      }
+      if (result.ok) await refreshDashboard();
+      return result;
+    };
     const runServiceTerminal = async () => {
       const input = $("service-terminal-command");
       const output = $("service-terminal-output");
@@ -3862,6 +3904,16 @@
             reportNativeExecutionResponse(execution);
           }
           if (poll?.ok) startNativeRuntimeMarketPolling(config);
+        } else if (nativeRuntimeDelegationRequired(result)) {
+          clearNativeRuntimeMarketPolling();
+          activeNativeRuntimePollConfig = null;
+          const backend = $("runtime-execution-backend");
+          if (backend) {
+            backend.value = "service";
+            backend.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          appendLog("[native] Selected exchange/connector is Python-owned; delegating runtime start to the Python Service API.");
+          await startPythonServiceRuntime({ source: "tauri-desktop-native-delegation" });
         }
         return;
       }

@@ -34,6 +34,142 @@
 using namespace TradingBotWindowDashboardRuntime;
 using ConnectorRuntimeConfig = TradingBotWindowSupport::ConnectorRuntimeConfig;
 
+bool TradingBotWindow::startDashboardServiceRuntime() {
+    QJsonObject configRequest;
+    configRequest.insert(QStringLiteral("config"), buildDashboardServiceConfigPatch());
+    const auto configResult = TradingBotWindowSupport::serviceApiRequestJson(
+        QStringLiteral("PATCH"),
+        QStringLiteral("config"),
+        configRequest,
+        30000);
+    if (!configResult.ok) {
+        const QString message = QStringLiteral(
+            "Python Service API runtime config patch failed: %1").arg(configResult.error);
+        appendDashboardAllLog(message);
+        updateStatusMessage(message);
+        QMessageBox::warning(this, tr("Python Service API unavailable"), message);
+        return false;
+    }
+
+    QJsonObject startRequest;
+    startRequest.insert(QStringLiteral("requested_job_count"), 0);
+    startRequest.insert(QStringLiteral("source"), QStringLiteral("cpp-desktop-service-delegation"));
+    const auto startResult = TradingBotWindowSupport::serviceApiRequestJson(
+        QStringLiteral("POST"),
+        QStringLiteral("control_start"),
+        startRequest,
+        30000);
+    if (!startResult.ok) {
+        const QString message = QStringLiteral(
+            "Python Service API runtime start failed: %1").arg(startResult.error);
+        appendDashboardAllLog(message);
+        updateStatusMessage(message);
+        QMessageBox::warning(this, tr("Start failed"), message);
+        return false;
+    }
+
+    const QJsonObject response = startResult.document.object();
+    if (response.contains(QStringLiteral("accepted"))
+        && !response.value(QStringLiteral("accepted")).toBool(false)) {
+        const QString message = response.value(QStringLiteral("status_message")).toString(
+            QStringLiteral("Python Service API rejected the runtime start request."));
+        appendDashboardAllLog(QStringLiteral("Service delegation start rejected: %1").arg(message));
+        updateStatusMessage(message);
+        QMessageBox::information(this, tr("Start blocked"), message);
+        return false;
+    }
+
+    dashboardServiceRuntimeActive_ = true;
+    dashboardRuntimeActive_ = true;
+    dashboardRuntimeStopping_ = false;
+    setDashboardRuntimeControlsEnabled(false);
+    if (dashboardStartBtn_) {
+        dashboardStartBtn_->setEnabled(false);
+    }
+    if (dashboardStopBtn_) {
+        dashboardStopBtn_->setEnabled(true);
+    }
+    if (dashboardBotStatusLabel_) {
+        dashboardBotStatusLabel_->setText(QStringLiteral("ON (Python Service)"));
+        dashboardBotStatusLabel_->setStyleSheet("color: #16a34a; font-weight: 700;");
+    }
+    if (dashboardBotTimeLabel_) {
+        dashboardBotTimeLabel_->setText(QStringLiteral("service"));
+    }
+    if (!dashboardRuntimeTimer_) {
+        dashboardRuntimeTimer_ = new QTimer(this);
+        connect(dashboardRuntimeTimer_, &QTimer::timeout, this, &TradingBotWindow::runDashboardRuntimeCycle);
+    }
+    dashboardRuntimeTimer_->setInterval(1000);
+    dashboardRuntimeTimer_->start();
+    appendDashboardAllLog(QStringLiteral(
+        "Runtime delegated to the Python Service API for the selected exchange/connector; Python remains the execution source of truth."));
+    updateStatusMessage(QStringLiteral("Runtime started through Python Service API delegation."));
+    runDashboardRuntimeCycle();
+    return true;
+}
+
+void TradingBotWindow::stopDashboardServiceRuntime() {
+    if (!dashboardServiceRuntimeActive_) {
+        return;
+    }
+    if (dashboardRuntimeStopping_) {
+        appendDashboardAllLog(QStringLiteral("Service runtime stop is already in progress."));
+        return;
+    }
+    dashboardRuntimeStopping_ = true;
+    const bool closePositions = !(dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked());
+    QJsonObject stopRequest;
+    stopRequest.insert(QStringLiteral("close_positions"), closePositions);
+    stopRequest.insert(QStringLiteral("source"), QStringLiteral("cpp-desktop-service-delegation"));
+    const auto stopResult = TradingBotWindowSupport::serviceApiRequestJson(
+        QStringLiteral("POST"),
+        QStringLiteral("control_stop"),
+        stopRequest,
+        30000);
+    if (!stopResult.ok) {
+        dashboardRuntimeStopping_ = false;
+        const QString message = QStringLiteral(
+            "Python Service API runtime stop failed: %1").arg(stopResult.error);
+        appendDashboardAllLog(message);
+        updateStatusMessage(message);
+        return;
+    }
+    const QJsonObject response = stopResult.document.object();
+    if (response.contains(QStringLiteral("accepted"))
+        && !response.value(QStringLiteral("accepted")).toBool(false)) {
+        dashboardRuntimeStopping_ = false;
+        const QString message = response.value(QStringLiteral("status_message")).toString(
+            QStringLiteral("Python Service API rejected the runtime stop request."));
+        appendDashboardAllLog(QStringLiteral("Service delegation stop rejected: %1").arg(message));
+        updateStatusMessage(message);
+        return;
+    }
+
+    dashboardServiceRuntimeActive_ = false;
+    dashboardRuntimeActive_ = false;
+    dashboardRuntimeStopping_ = false;
+    if (dashboardRuntimeTimer_) {
+        dashboardRuntimeTimer_->stop();
+    }
+    setDashboardRuntimeControlsEnabled(true);
+    if (dashboardStartBtn_) {
+        dashboardStartBtn_->setEnabled(true);
+    }
+    if (dashboardStopBtn_) {
+        dashboardStopBtn_->setEnabled(false);
+    }
+    if (dashboardBotStatusLabel_) {
+        dashboardBotStatusLabel_->setText(QStringLiteral("OFF"));
+        dashboardBotStatusLabel_->setStyleSheet("color: #ef4444; font-weight: 700;");
+    }
+    if (dashboardBotTimeLabel_) {
+        dashboardBotTimeLabel_->setText(QStringLiteral("0s"));
+    }
+    appendDashboardAllLog(QStringLiteral("Python Service API runtime stopped."));
+    updateStatusMessage(QStringLiteral("Python Service API runtime stopped."));
+}
+
 void TradingBotWindow::startDashboardRuntime() {
     if (dashboardRuntimeStopping_) {
         appendDashboardAllLog("Start ignored: runtime stop/close sequence is still in progress.");
@@ -42,39 +178,21 @@ void TradingBotWindow::startDashboardRuntime() {
     if (!dashboardOverridesTable_) {
         return;
     }
-    const QString selectedExchange = TradingBotWindowSupport::selectedDashboardExchange(dashboardExchangeCombo_);
-    if (!TradingBotWindowSupport::exchangeUsesBinanceApi(selectedExchange)) {
-        const QString message = QStringLiteral(
-            "C++ native runtime executes Binance only. %1 routing remains Python Service API/provider connector-owned "
-            "and will not be submitted by the C++ runtime.")
-                                    .arg(selectedExchange);
-        appendDashboardAllLog(QStringLiteral("Start blocked: %1").arg(message));
-        updateStatusMessage(message);
-        QMessageBox::information(this, tr("Start blocked"), message);
-        return;
-    }
-    const bool futures = dashboardAccountTypeCombo_
-        ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
-        : true;
-    const QString defaultConnectorText = dashboardConnectorCombo_
-        ? dashboardConnectorCombo_->currentText().trimmed()
-        : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
-    if (!TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText)) {
-        const QString message = QStringLiteral(
-            "C++ native runtime owns Binance USD-M, Coin-M Futures, Spot, and supported Binance-compatible connector aliases. '%1' remains Python Service API/provider connector-owned "
-            "and will not be submitted by the C++ runtime.")
-                                    .arg(defaultConnectorText);
-        appendDashboardAllLog(QStringLiteral("Start blocked: %1").arg(message));
-        updateStatusMessage(message);
-        QMessageBox::information(this, tr("Start blocked"), message);
-        return;
-    }
     if (dashboardOverridesTable_->rowCount() <= 0) {
         appendDashboardAllLog("Start blocked: no symbol/interval override rows found.");
         appendDashboardWaitingLog("No overrides queued. Add at least one pair first.");
         QMessageBox::information(this, tr("Start blocked"), tr("Add at least one Symbol / Interval override row first."));
         return;
     }
+    const QString selectedExchange = TradingBotWindowSupport::selectedDashboardExchange(dashboardExchangeCombo_);
+    const bool futures = dashboardAccountTypeCombo_
+        ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+        : true;
+    const QString defaultConnectorText = dashboardConnectorCombo_
+        ? dashboardConnectorCombo_->currentText().trimmed()
+        : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
+    bool serviceDelegationRequired = !TradingBotWindowSupport::exchangeUsesBinanceApi(selectedExchange)
+        || !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText);
     for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
         const QTableWidgetItem *connectorItem = dashboardOverridesTable_->item(row, 5);
         const QString connectorText = connectorItem && !connectorItem->text().trimmed().isEmpty()
@@ -83,14 +201,11 @@ void TradingBotWindow::startDashboardRuntime() {
         if (TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(connectorText)) {
             continue;
         }
-        const QString message = QStringLiteral(
-            "C++ native runtime owns Binance USD-M, Coin-M Futures, Spot, and supported Binance-compatible connector aliases. Override row %1 uses '%2', which remains "
-            "Python Service API/provider connector-owned and will not be submitted by the C++ runtime.")
-                                    .arg(row + 1)
-                                    .arg(connectorText);
-        appendDashboardAllLog(QStringLiteral("Start blocked: %1").arg(message));
-        updateStatusMessage(message);
-        QMessageBox::information(this, tr("Start blocked"), message);
+        serviceDelegationRequired = true;
+        break;
+    }
+    if (serviceDelegationRequired) {
+        startDashboardServiceRuntime();
         return;
     }
 
@@ -337,6 +452,10 @@ void TradingBotWindow::startDashboardRuntime() {
 }
 
 void TradingBotWindow::stopDashboardRuntime() {
+    if (dashboardServiceRuntimeActive_) {
+        stopDashboardServiceRuntime();
+        return;
+    }
     const bool stopWithoutCloseIntent = dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked();
     NativeOrderSafety::RuntimeStopGuardInput stopGuardInput;
     stopGuardInput.runtimeActive = dashboardRuntimeActive_;

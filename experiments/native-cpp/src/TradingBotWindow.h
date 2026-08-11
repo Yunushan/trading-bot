@@ -85,6 +85,9 @@ private:
     void startDashboardRuntime();
     void stopDashboardRuntime();
     void runDashboardRuntimeCycle();
+    bool startDashboardServiceRuntime();
+    void stopDashboardServiceRuntime();
+    void runDashboardServiceRuntimeCycle();
     void refreshDashboardOrderAuditStatus();
     void refreshDashboardOpenPositionIndicatorValuesForSignalKey(
         const QString &signalKey,
@@ -106,6 +109,7 @@ private:
     void hydrateBacktestSymbolIntervalPairs(const QJsonArray &pairs);
     bool saveDashboardServiceConfig();
     bool loadDashboardServiceConfig();
+    void hydrateDashboardServicePortfolio(const QJsonObject &portfolio);
     void saveDashboardLocalOverrideConfig();
     void loadDashboardLocalOverrideConfig();
     // Utility/UI state helpers.
@@ -312,6 +316,8 @@ private:
     QDoubleSpinBox *dashboardStopLossPercentSpin_;
     bool dashboardRuntimeActive_ = false;
     bool dashboardRuntimeStopping_ = false;
+    bool dashboardServiceRuntimeActive_ = false;
+    qint64 dashboardServiceLastLogSequenceId_ = 0;
     bool dashboardRuntimeCycleInProgress_ = false;
     int dashboardRuntimeLiveSubmitAttemptCount_ = 0;
     std::unique_ptr<NativeOrderSafety::ConnectorOrderCircuitBreaker> dashboardRuntimeConnectorOrderCircuit_;

@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -488,6 +489,8 @@ QWidget *TradingBotWindow::createPositionsTab() {
         const QString symbol = cellText(selectedRow, 0).trimmed().toUpper();
         const QString sideKey = canonicalPositionSideKey(cellText(selectedRow, 12));
         const QString status = cellText(selectedRow, 16).trimmed().toUpper();
+        const bool serviceOwnedPosition = dashboardServiceRuntimeActive_
+            || cellText(selectedRow, 17).contains(QStringLiteral("Python Service"), Qt::CaseInsensitive);
         const QString interval = positionsCumulativeView_
             ? QString()
             : cellText(selectedRow, 8, true).trimmed();
@@ -549,14 +552,14 @@ QWidget *TradingBotWindow::createPositionsTab() {
         };
 
         const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
-        if (TradingBotWindowSupport::isPaperTradingModeLabel(mode)) {
+        if (TradingBotWindowSupport::isPaperTradingModeLabel(mode) && !serviceOwnedPosition) {
             markSelectedClosed();
             updateStatusMessage(QStringLiteral("Closed selected local paper position: %1 %2.").arg(symbol, sideLabel));
             return;
         }
 
         const QString exchange = TradingBotWindowSupport::selectedDashboardExchange(dashboardExchangeCombo_);
-        if (!TradingBotWindowSupport::exchangeUsesBinanceApi(exchange)) {
+        if (serviceOwnedPosition || !TradingBotWindowSupport::exchangeUsesBinanceApi(exchange)) {
             QJsonObject targetIdentity;
             if (!positionsCumulativeView_ && table->item(selectedRow, 0)) {
                 bool sequenceOk = false;
@@ -1033,6 +1036,117 @@ void TradingBotWindow::refreshPositionsTableSizing(bool resizeColumns, bool resi
             header->setSectionResizeMode(i, QHeaderView::Interactive);
         }
     }
+}
+
+void TradingBotWindow::hydrateDashboardServicePortfolio(const QJsonObject &portfolio) {
+    if (!positionsTable_) {
+        return;
+    }
+
+    const QJsonArray positions = portfolio.value(QStringLiteral("positions")).toArray();
+    ScopedTableUpdatesPause updatesPause(positionsTable_);
+    const bool sortingWasEnabled = positionsTable_->isSortingEnabled();
+    positionsTable_->setSortingEnabled(false);
+    positionsTable_->setRowCount(0);
+
+    const auto numberValue = [](const QJsonObject &object, const QString &key) -> double {
+        const QJsonValue value = object.value(key);
+        if (!value.isDouble()) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        const double number = value.toDouble();
+        return qIsFinite(number) ? number : std::numeric_limits<double>::quiet_NaN();
+    };
+    const auto numberText = [](double value, int decimals) -> QString {
+        return qIsFinite(value) ? QString::number(value, 'f', decimals) : QStringLiteral("-");
+    };
+    const auto setText = [this](int row, int column, const QString &text) {
+        QTableWidgetItem *item = positionsTable_->item(row, column);
+        if (!item) {
+            item = new QTableWidgetItem();
+            positionsTable_->setItem(row, column, item);
+        }
+        item->setText(text);
+        item->setData(Qt::UserRole, text);
+    };
+
+    for (const QJsonValue &value : positions) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject position = value.toObject();
+        const QString symbol = position.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        if (symbol.isEmpty()) {
+            continue;
+        }
+        const double quantity = numberValue(position, QStringLiteral("quantity"));
+        const double sizeUsdt = numberValue(position, QStringLiteral("size_usdt"));
+        const double markPrice = numberValue(position, QStringLiteral("mark_price"));
+        const double marginUsdt = numberValue(position, QStringLiteral("margin_usdt"));
+        const double pnlValue = numberValue(position, QStringLiteral("pnl_value"));
+        const double roiPercent = numberValue(position, QStringLiteral("roi_percent"));
+        const double liquidationPrice = numberValue(position, QStringLiteral("liquidation_price"));
+        const QString sideKey = position.value(QStringLiteral("side_key")).toString().trimmed().toUpper();
+        QString sideLabel = position.value(QStringLiteral("side_label")).toString().trimmed();
+        if (sideLabel.isEmpty()) {
+            sideLabel = sideKey == QStringLiteral("L")
+                ? QStringLiteral("Long")
+                : sideKey == QStringLiteral("S") ? QStringLiteral("Short") : sideKey;
+        }
+        QString status = position.value(QStringLiteral("status")).toString().trimmed().toUpper();
+        if (status.isEmpty() || status == QStringLiteral("ACTIVE") || status == QStringLiteral("RUNNING")) {
+            status = QStringLiteral("OPEN");
+        }
+
+        const int row = positionsTable_->rowCount();
+        positionsTable_->insertRow(row);
+        setText(row, 0, symbol);
+        setText(row, 1, formatPositionSizeText(sizeUsdt, quantity, symbol));
+        TradingBotWindowDashboardRuntime::setTableCellNumeric(positionsTable_, row, 1, sizeUsdt);
+        setText(row, 2, numberText(markPrice, 6));
+        TradingBotWindowDashboardRuntime::setTableCellNumeric(positionsTable_, row, 2, markPrice);
+        setText(row, 3, QStringLiteral("-"));
+        TradingBotWindowDashboardRuntime::setTableCellNumeric(
+            positionsTable_, row, 3, std::numeric_limits<double>::quiet_NaN());
+        setText(row, 4, numberText(liquidationPrice, 6));
+        TradingBotWindowDashboardRuntime::setTableCellNumeric(positionsTable_, row, 4, liquidationPrice);
+        setText(row, 5, numberText(marginUsdt, 2));
+        TradingBotWindowDashboardRuntime::setTableCellNumeric(positionsTable_, row, 5, marginUsdt);
+        setText(row, 6, formatQuantityWithSymbol(quantity, symbol));
+        TradingBotWindowDashboardRuntime::setTableCellNumeric(positionsTable_, row, 6, quantity);
+        const QString pnlText = qIsFinite(pnlValue)
+            ? QStringLiteral("%1 (%2%)").arg(
+                  QString::number(pnlValue, 'f', 2),
+                  qIsFinite(roiPercent) ? QString::number(roiPercent, 'f', 2) : QStringLiteral("N/A"))
+            : QStringLiteral("-");
+        setText(row, 7, pnlText);
+        TradingBotWindowDashboardRuntime::setTableCellNumeric(positionsTable_, row, 7, pnlValue);
+        if (QTableWidgetItem *pnlItem = positionsTable_->item(row, 7)) {
+            const double roiBasis = qIsFinite(pnlValue) && qIsFinite(roiPercent)
+                && std::fabs(roiPercent) > 1e-9
+                ? pnlValue / (roiPercent / 100.0)
+                : marginUsdt;
+            TradingBotWindowDashboardRuntime::setTableCellRoiBasis(pnlItem, roiBasis);
+        }
+        setText(row, 8, position.value(QStringLiteral("interval")).toString(QStringLiteral("-")));
+        setText(row, 9, QStringLiteral("Python Service"));
+        setText(row, 10, QStringLiteral("-"));
+        setText(row, 11, QStringLiteral("-"));
+        setText(row, 12, sideLabel.isEmpty() ? QStringLiteral("Unknown") : sideLabel);
+        setText(row, 13, position.value(QStringLiteral("open_time")).toString(QStringLiteral("-")));
+        setText(row, 14, position.value(QStringLiteral("close_time")).toString(QStringLiteral("-")));
+        setText(row, 15, position.value(QStringLiteral("stop_loss_enabled")).toBool(false)
+                ? QStringLiteral("Enabled")
+                : QStringLiteral("Disabled"));
+        setText(row, 16, status);
+        setText(row, 17, QStringLiteral("Python Service API"));
+        if (QTableWidgetItem *symbolItem = positionsTable_->item(row, 0)) {
+            symbolItem->setData(kPositionsRowSequenceRole, positionsRowSequenceCounter_++);
+        }
+    }
+
+    positionsTable_->setSortingEnabled(sortingWasEnabled);
+    applyPositionsViewMode(false, false);
 }
 
 void TradingBotWindow::refreshPositionsSummaryLabels() {

@@ -215,6 +215,19 @@ QVector<ConnectorOption> pythonConnectorOptions() {
     return options;
 }
 
+bool pythonConnectorOptionExists(const QString &key) {
+    const QString normalized = key.trimmed().toLower();
+    if (normalized.isEmpty()) {
+        return false;
+    }
+    for (const ConnectorOption &option : pythonConnectorOptions()) {
+        if (option.key.compare(normalized, Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 template <std::size_t N>
 QStringList parityStringList(const std::array<std::string_view, N> &values) {
     QStringList result;
@@ -1025,7 +1038,8 @@ void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceD
         currentKey = normalizeConnectorBackend(combo->currentText().trimmed());
     }
     const QString recommended = recommendedConnectorKey(futures);
-    if (forceDefault || !connectorAllowedForAccount(currentKey, futures)) {
+    const bool legacyConnector = currentKey == kConnectorLegacyGateway || currentKey == kConnectorLegacyCustom;
+    if (forceDefault || (!legacyConnector && !pythonConnectorOptionExists(currentKey))) {
         currentKey = recommended;
     }
 
@@ -1033,9 +1047,16 @@ void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceD
     combo->clear();
     const QSet<QString> &allowed = futures ? kFuturesConnectorKeys : kSpotConnectorKeys;
     for (const auto &option : pythonConnectorOptions()) {
-        if (allowed.contains(option.key)) {
-            combo->addItem(option.label, option.key);
-        }
+        combo->addItem(option.label, option.key);
+        const int row = combo->count() - 1;
+        const bool nativeOwned = allowed.contains(option.key);
+        combo->setItemData(
+            row,
+            nativeOwned
+                ? QStringLiteral("Native C++ runtime connector.")
+                : QStringLiteral("Python Service API connector; C++ delegates this selection to the Python runtime."),
+            Qt::ToolTipRole);
+        combo->setItemData(row, nativeOwned ? QStringLiteral("native-cpp") : QStringLiteral("python-service"), Qt::UserRole + 1);
     }
 
     if (combo->count() <= 0) {
