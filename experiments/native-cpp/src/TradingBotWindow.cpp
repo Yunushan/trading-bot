@@ -493,25 +493,7 @@ QString formatPositionSizeText(double sizeUsdt, double quantity, const QString &
 
 
 QString normalizeExchangeKey(QString value) {
-    value = value.trimmed();
-    const int badgePos = value.indexOf('(');
-    if (badgePos > 0) {
-        value = value.left(badgePos).trimmed();
-    }
-
-    const QString key = value.toLower();
-    if (key == "binance") return "Binance";
-    if (key == "bybit") return "Bybit";
-    if (key == "okx") return "OKX";
-    if (key == "gate") return "Gate";
-    if (key == "bitget") return "Bitget";
-    if (key == "mexc") return "MEXC";
-    if (key == "kucoin") return "KuCoin";
-    if (key == "coinbase") return "Coinbase";
-    if (key == "htx") return "HTX";
-    if (key == "kraken") return "Kraken";
-    if (key == "tradingview") return "TradingView";
-    return value;
+    return TradingBotWindowSupport::canonicalPythonExchangeKey(value);
 }
 
 QString selectedDashboardExchange(const QComboBox *combo) {

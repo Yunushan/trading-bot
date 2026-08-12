@@ -80,7 +80,11 @@ void TradingBotWindow::refreshDashboardBalance() {
     }
 
     const QString accountType = dashboardAccountTypeCombo_ ? dashboardAccountTypeCombo_->currentText() : "Futures";
-    const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : "Live";
+    const QString mode = dashboardModeCombo_
+        ? dashboardModeCombo_->currentText()
+        : TradingBotWindowSupport::pythonSourceDefaultExecutionConfig()
+              .value(QStringLiteral("mode"))
+              .toString(QStringLiteral("Demo/Testnet"));
 
     if (dashboardBalanceLabel_) {
         dashboardBalanceLabel_->setText("Refreshing...");
@@ -249,7 +253,11 @@ void TradingBotWindow::refreshDashboardSymbols() {
     };
 
     const QString accountType = dashboardAccountTypeCombo_ ? dashboardAccountTypeCombo_->currentText() : "Futures";
-    const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : "Live";
+    const QString mode = dashboardModeCombo_
+        ? dashboardModeCombo_->currentText()
+        : TradingBotWindowSupport::pythonSourceDefaultExecutionConfig()
+              .value(QStringLiteral("mode"))
+              .toString(QStringLiteral("Demo/Testnet"));
     const QString accountNorm = accountType.trimmed().toLower();
     const bool isFutures = accountNorm.startsWith("fut");
     const bool isTestnet = TradingBotWindowSupport::isTestnetModeLabel(mode);

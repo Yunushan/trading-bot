@@ -7,6 +7,7 @@
 #include <QByteArray>
 #include <QEventLoop>
 #include <QHostAddress>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -32,25 +33,7 @@ constexpr int kTableCellNumericRole = Qt::UserRole + 2;
 constexpr int kTableCellRawNumericRole = Qt::UserRole + 4;
 
 QString normalizeExchangeKey(QString value) {
-    value = value.trimmed();
-    const int badgePos = value.indexOf('(');
-    if (badgePos > 0) {
-        value = value.left(badgePos).trimmed();
-    }
-
-    const QString key = value.toLower();
-    if (key == "binance") return "Binance";
-    if (key == "bybit") return "Bybit";
-    if (key == "okx") return "OKX";
-    if (key == "gate") return "Gate";
-    if (key == "bitget") return "Bitget";
-    if (key == "mexc") return "MEXC";
-    if (key == "kucoin") return "KuCoin";
-    if (key == "coinbase") return "Coinbase";
-    if (key == "htx") return "HTX";
-    if (key == "kraken") return "Kraken";
-    if (key == "tradingview") return "TradingView";
-    return value;
+    return TradingBotWindowSupport::canonicalPythonExchangeKey(value);
 }
 
 struct ConnectorOption {
@@ -304,6 +287,31 @@ bool isPaperTradingModeLabel(const QString &modeText) {
         || modeNorm == QStringLiteral("paper local")
         || modeNorm.contains("paper local")
         || modeNorm.contains("paper trading");
+}
+
+QString canonicalPythonExchangeKey(const QString &value) {
+    QString normalized = value.trimmed();
+    const int badgePos = normalized.indexOf('(');
+    if (badgePos > 0) {
+        normalized = normalized.left(badgePos).trimmed();
+    }
+    if (normalized.isEmpty()) {
+        return normalized;
+    }
+
+    for (const auto &option : PythonParityContract::kPythonExchangeOptions) {
+        const QString key = parityString(option.key);
+        QString label = parityString(option.label);
+        const int labelBadgePos = label.indexOf('(');
+        if (labelBadgePos > 0) {
+            label = label.left(labelBadgePos).trimmed();
+        }
+        if (normalized.compare(key, Qt::CaseInsensitive) == 0
+            || normalized.compare(label, Qt::CaseInsensitive) == 0) {
+            return key;
+        }
+    }
+    return normalized;
 }
 
 QString selectedDashboardExchange(const QComboBox *combo) {
@@ -644,6 +652,61 @@ QStringList pythonSourceLlmProviderApiKeyEnvs() {
     return envs;
 }
 
+QVariantMap mergePythonLlmProviderSpec(
+    const QVariantMap &current,
+    const QJsonObject &pythonProviderPayload) {
+    QVariantMap merged = current;
+    const auto copyString = [&merged, &pythonProviderPayload](
+                                const QString &pythonKey,
+                                const QString &localKey) {
+        if (!pythonProviderPayload.contains(pythonKey)) {
+            return;
+        }
+        const QString value = pythonProviderPayload.value(pythonKey).toString().trimmed();
+        if (!value.isEmpty()) {
+            merged.insert(localKey, value);
+        }
+    };
+    copyString(QStringLiteral("key"), QStringLiteral("key"));
+    copyString(QStringLiteral("label"), QStringLiteral("label"));
+    copyString(QStringLiteral("mode"), QStringLiteral("mode"));
+    copyString(QStringLiteral("protocol"), QStringLiteral("protocol"));
+    copyString(QStringLiteral("default_base_url"), QStringLiteral("base_url"));
+    copyString(QStringLiteral("default_model"), QStringLiteral("default_model"));
+    copyString(QStringLiteral("api_key_env"), QStringLiteral("api_key_env"));
+    copyString(QStringLiteral("catalog_revision"), QStringLiteral("catalog_revision"));
+    copyString(QStringLiteral("custom_models_env"), QStringLiteral("custom_models_env"));
+    copyString(QStringLiteral("custom_models_path_env"), QStringLiteral("custom_models_path_env"));
+    copyString(QStringLiteral("catalog_path"), QStringLiteral("catalog_path"));
+    copyString(QStringLiteral("catalog_note"), QStringLiteral("catalog_note"));
+    copyString(QStringLiteral("default_reasoning_effort"), QStringLiteral("default_reasoning"));
+
+    const auto copyUniqueStrings = [&merged, &pythonProviderPayload](
+                                       const QString &pythonKey,
+                                       const QString &localKey) {
+        if (!pythonProviderPayload.contains(pythonKey)) {
+            return;
+        }
+        QStringList values;
+        for (const QJsonValue &item : pythonProviderPayload.value(pythonKey).toArray()) {
+            const QString value = item.toString().trimmed();
+            if (!value.isEmpty() && !values.contains(value)) {
+                values.append(value);
+            }
+        }
+        if (!values.isEmpty()) {
+            merged.insert(localKey, values);
+        }
+    };
+    copyUniqueStrings(QStringLiteral("model_suggestions"), QStringLiteral("models"));
+    copyUniqueStrings(QStringLiteral("reasoning_efforts"), QStringLiteral("reasoning_efforts"));
+
+    if (pythonProviderPayload.contains(QStringLiteral("notes"))) {
+        copyUniqueStrings(QStringLiteral("notes"), QStringLiteral("notes"));
+    }
+    return merged;
+}
+
 QVector<LlmProviderRuntimeConfig> pythonSourceLlmProviderConfigs() {
     QVector<LlmProviderRuntimeConfig> configs;
     configs.reserve(static_cast<int>(PythonParityContract::kPythonLlmProviders.size()));
@@ -659,6 +722,10 @@ QVector<LlmProviderRuntimeConfig> pythonSourceLlmProviderConfigs() {
             parityCsvStringList(provider.modelSuggestions),
             parityCsvStringList(provider.reasoningEfforts),
             parityString(provider.defaultReasoningEffort),
+            parityString(provider.catalogRevision),
+            parityString(provider.customModelsEnv),
+            parityString(provider.customModelsPathEnv),
+            parityString(provider.notes).split(QStringLiteral("\n"), Qt::SkipEmptyParts),
         });
     }
     return configs;
@@ -724,6 +791,14 @@ QJsonObject pythonSourceDefaultExecutionConfig() {
 
 QJsonObject pythonSourceDefaultBacktestConfig() {
     return parityJsonObject(PythonParityContract::kPythonDefaultBacktestJson);
+}
+
+QJsonObject pythonSourceRiskDefaults() {
+    return parityJsonObject(PythonParityContract::kPythonRiskDefaultsJson);
+}
+
+QJsonObject pythonSourceUiDefaults() {
+    return parityJsonObject(PythonParityContract::kPythonUiDefaultsJson);
 }
 
 QStringList pythonSourceChartMarketOptions() {

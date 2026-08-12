@@ -27,6 +27,7 @@ using CandleLoader = std::function<CandleLoadResult(
     const StopCallback &shouldStop)>;
 
 struct BatchRequest {
+    BatchRequest();
     QStringList symbols;
     QStringList intervals;
     NativeIndicatorRuntime::ConfigMap indicatorConfigs;
@@ -36,7 +37,7 @@ struct BatchRequest {
     QString optimizerScope = QStringLiteral("selected");
     int optimizerComboSize = 2;
     int optimizerMinTrades = 1;
-    double optimizerMddLimit = 0.0;
+    double optimizerMddLimit = 10.0;
     int resultLimit = kDefaultResultLimit;
     qint64 maxRunCount = kMaxOptimizerRuns;
     QString startDisplay;

@@ -36,7 +36,12 @@ from .gui.runtime.composition.module_state_constants import (
     _connector_options,
 )
 from .gui.runtime.ui.theme_styles import DESIGN_OPTIONS
-from .integrations.llm.providers import _PROVIDER_SPECS, llm_provider_choices
+from .integrations.llm.providers import (
+    LLM_MODEL_CATALOG_PATH_ENV,
+    LLM_PROVIDER_CATALOG_REVISION,
+    _PROVIDER_SPECS,
+    llm_provider_choices,
+)
 from .service.api_contract import (
     SERVICE_API_ROUTE_METHODS,
     SERVICE_API_ROUTE_PATHS,
@@ -45,6 +50,7 @@ from .service.api_contract import (
     service_api_contract_payload,
 )
 from .settings.backtest import BacktestSettings, MDD_LOGIC_OPTIONS
+from .settings.connectors import DEFAULT_INDICATOR_SOURCE
 from .settings.execution import ExecutionSettings
 from .settings.exchange_support import (
     BROKER_INTEGRATION_DISPOSITIONS,
@@ -56,6 +62,7 @@ from .settings.exchange_support import (
     METATRADER5_BROKER_ALIASES,
     ORDER_EXECUTION_EXCHANGES,
     REQUESTED_BROKER_TARGETS,
+    SUPPORTED_CONNECTOR_BACKENDS,
     SUPPORTED_EXCHANGES,
     SUPPORTED_BROKERS,
     SUPPORTED_FOREX_BROKERS,
@@ -67,6 +74,7 @@ from .settings.indicators import (
     build_runtime_indicator_defaults,
 )
 from .settings.risk import RiskManagementSettings, STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS
+from .settings.ui import DEFAULT_DESIGN, DEFAULT_SELECTED_EXCHANGE, DEFAULT_THEME
 from .settings.validation import (
     _ACCOUNT_MODE_CHOICES,
     _ACCOUNT_TYPE_CHOICES,
@@ -346,6 +354,10 @@ def _llm_provider_payload() -> list[dict[str, object]]:
             "model_suggestions": list(provider.model_suggestions),
             "reasoning_efforts": list(provider.reasoning_efforts),
             "default_reasoning_effort": provider.default_reasoning_effort,
+            "catalog_revision": LLM_PROVIDER_CATALOG_REVISION,
+            "custom_models_env": f"BOT_LLM_EXTRA_MODELS_{provider.key.upper().replace('-', '_')}",
+            "custom_models_path_env": LLM_MODEL_CATALOG_PATH_ENV,
+            "notes": list(provider.notes),
         }
         for provider in _PROVIDER_SPECS
     ]
@@ -489,6 +501,12 @@ def native_python_source_contract_payload() -> dict[str, Any]:
     execution_defaults = ExecutionSettings()
     backtest_defaults = BacktestSettings()
     risk_defaults = native_python_risk_defaults()
+    ui_defaults = {
+        "theme": DEFAULT_THEME,
+        "design": DEFAULT_DESIGN,
+        "indicator_source": DEFAULT_INDICATOR_SOURCE,
+        "selected_exchange": DEFAULT_SELECTED_EXCHANGE,
+    }
     cpp_contract_parity = all(domain.cpp_full_parity for domain in NATIVE_PARITY_DOMAINS)
     rust_contract_parity = all(domain.rust_full_parity for domain in NATIVE_PARITY_DOMAINS)
     return {
@@ -582,11 +600,17 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         "default_execution": execution_defaults.to_config_dict(),
         "default_backtest": backtest_defaults.to_config_dict(),
         "risk_defaults": risk_defaults,
+        "ui_defaults": ui_defaults,
         "llm_providers": _llm_provider_payload(),
         "llm_provider_choices": dict(llm_provider_choices()),
+        "llm_catalog": {
+            "revision": LLM_PROVIDER_CATALOG_REVISION,
+            "model_catalog_path_env": LLM_MODEL_CATALOG_PATH_ENV,
+        },
         "config_choice_maps": _config_choice_maps(),
         "exchange_support": {
             "supported_exchanges": list(SUPPORTED_EXCHANGES),
+            "supported_connector_backends": list(SUPPORTED_CONNECTOR_BACKENDS),
             "ccxt_diagnostic_exchanges": list(CCXT_DIAGNOSTIC_EXCHANGES),
             "ccxt_order_routing_exchanges": list(CCXT_ORDER_ROUTING_EXCHANGES),
             "order_execution_exchanges": list(ORDER_EXECUTION_EXCHANGES),
@@ -648,6 +672,8 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "connectors": list(payload["ui_options"]["connectors"]),
         "llm_providers": list(payload["llm_providers"]),
         "llm_provider_keys": [provider.key for provider in _PROVIDER_SPECS],
+        "llm_catalog_revision": str(payload["llm_catalog"]["revision"]),
+        "llm_model_catalog_path_env": str(payload["llm_catalog"]["model_catalog_path_env"]),
         "llm_provider_choices": [
             {"key": key, "value": value}
             for key, value in payload["llm_provider_choices"].items()
@@ -657,6 +683,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         },
         "connector_keys": [key for _label, key in _connector_options()],
         "supported_exchanges": list(payload["exchange_support"]["supported_exchanges"]),
+        "supported_connector_backends": list(payload["exchange_support"]["supported_connector_backends"]),
         "ccxt_diagnostic_exchanges": list(payload["exchange_support"]["ccxt_diagnostic_exchanges"]),
         "ccxt_order_routing_exchanges": list(payload["exchange_support"]["ccxt_order_routing_exchanges"]),
         "order_execution_exchanges": list(payload["exchange_support"]["order_execution_exchanges"]),
@@ -706,6 +733,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "default_execution": dict(payload["default_execution"]),
         "default_backtest": dict(payload["default_backtest"]),
         "risk_defaults": dict(payload["risk_defaults"]),
+        "ui_defaults": dict(payload["ui_defaults"]),
         "cpp_contract_parity": payload["contract_parity"]["cpp"],
         "rust_contract_parity": payload["contract_parity"]["rust"],
         "cpp_standalone_runtime_ready": payload["standalone_runtime_ready"]["cpp"],

@@ -486,7 +486,11 @@ void TradingBotWindow::stopDashboardRuntime() {
         dashboardRuntimeTimer_->stop();
     }
 
-    const QString modeText = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QString defaultMode = executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"));
+    const QString defaultAccountType = executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures"));
+    const QString defaultPositionMode = executionDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"));
+    const QString modeText = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : defaultMode;
     const bool paperTrading = TradingBotWindowSupport::isPaperTradingModeLabel(modeText);
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     for (auto it = dashboardWaitingActiveEntries_.begin(); it != dashboardWaitingActiveEntries_.end(); ++it) {
@@ -511,14 +515,14 @@ void TradingBotWindow::stopDashboardRuntime() {
     const bool keepOpenPositions = stopWithoutCloseIntent;
     const bool futures = dashboardAccountTypeCombo_
         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
-        : true;
+        : defaultAccountType.trimmed().toLower().startsWith(QStringLiteral("fut"));
     const bool isTestnet = TradingBotWindowSupport::isTestnetModeLabel(modeText);
     const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
     const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
     const bool hasApiCredentials = !apiKey.isEmpty() && !apiSecret.isEmpty();
     const bool hedgeMode = dashboardPositionModeCombo_
         ? dashboardPositionModeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("hedge"))
-        : true;
+        : defaultPositionMode.trimmed().toLower().startsWith(QStringLiteral("hedge"));
     const QString defaultConnectorText = dashboardConnectorCombo_
         ? dashboardConnectorCombo_->currentText().trimmed()
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));

@@ -11,6 +11,8 @@
 #include "../src/NativePortfolio.h"
 #include "../src/NativeStartupPackaging.h"
 #include "../src/NativeStrategyRuntime.h"
+#include "../src/TradingBotWindowSupport.h"
+#include "../src/generated/PythonExchangeSupportReference.h"
 #include "../src/generated/PythonIndicatorReference.h"
 #include "../src/generated/PythonParityContract.h"
 
@@ -45,6 +47,15 @@ bool jsonArrayContains(const QJsonArray &array, const QString &expected) {
         }
     }
     return false;
+}
+
+NativeExchangeConnectors::ExchangeSupportInput exchangeSupportInputFromJson(const QJsonValue &value) {
+    const QJsonObject object = value.toObject();
+    return {
+        object.value(QStringLiteral("selected_exchange")).toString(),
+        object.value(QStringLiteral("connector_backend")).toString(),
+        object.value(QStringLiteral("selected_forex_broker")).toString(),
+    };
 }
 
 } // namespace
@@ -106,6 +117,46 @@ int main(int argc, char **argv) {
     check(indicatorReference.value(QStringLiteral("python_source_contract_hash")).toString()
               == parityContractHash,
           QStringLiteral("indicator fixture payload should identify the active Python source contract"));
+
+    const QString exchangeSupportReferenceHash = QString::fromUtf8(
+        PythonExchangeSupportReference::kPythonSourceContractHash.data(),
+        static_cast<qsizetype>(PythonExchangeSupportReference::kPythonSourceContractHash.size()));
+    check(exchangeSupportReferenceHash == parityContractHash,
+          QStringLiteral("generated C++ exchange support reference should match the Python source contract hash"));
+    const QByteArray exchangeSupportReferenceJson(
+        PythonExchangeSupportReference::kReferenceJson.data(),
+        static_cast<qsizetype>(PythonExchangeSupportReference::kReferenceJson.size()));
+    QJsonParseError exchangeSupportReferenceParseError;
+    const QJsonDocument exchangeSupportReferenceDocument = QJsonDocument::fromJson(
+        exchangeSupportReferenceJson,
+        &exchangeSupportReferenceParseError);
+    check(exchangeSupportReferenceParseError.error == QJsonParseError::NoError
+              && exchangeSupportReferenceDocument.isObject(),
+          QStringLiteral("generated C++ exchange support reference should contain valid JSON"));
+    const QJsonObject exchangeSupportReference = exchangeSupportReferenceDocument.object();
+    check(exchangeSupportReference.value(QStringLiteral("python_source_contract_hash")).toString()
+              == parityContractHash,
+          QStringLiteral("exchange support fixture should identify the active Python source contract"));
+    const QJsonArray exchangeSupportCases = exchangeSupportReference
+        .value(QStringLiteral("exchange_support_cases"))
+        .toArray();
+    check(exchangeSupportCases.size() >= 60,
+          QStringLiteral("generated Python exchange support reference should include the complete matrix"));
+    for (qsizetype caseIndex = 0; caseIndex < exchangeSupportCases.size(); ++caseIndex) {
+        const QJsonObject exchangeSupportCase = exchangeSupportCases.at(caseIndex).toObject();
+        const QString caseName = exchangeSupportCase.value(QStringLiteral("name")).toString(
+            QStringLiteral("exchange-support-fixture-%1").arg(caseIndex));
+        const NativeExchangeConnectors::ExchangeSupportInput config = exchangeSupportInputFromJson(
+            exchangeSupportCase.value(QStringLiteral("config")));
+        const QJsonValue snapshotValue = exchangeSupportCase.value(QStringLiteral("snapshot"));
+        const NativeExchangeConnectors::ExchangeSupportInput snapshot = exchangeSupportInputFromJson(snapshotValue);
+        const QJsonObject actual = NativeExchangeConnectors::buildExchangeSupportPayload(
+            config,
+            snapshotValue.isNull() ? NativeExchangeConnectors::ExchangeSupportInput{} : snapshot);
+        const QJsonObject expected = exchangeSupportCase.value(QStringLiteral("expected")).toObject();
+        check(actual == expected,
+              QStringLiteral("native C++ exchange support payload should exactly match Python case %1").arg(caseName));
+    }
 
     QJsonArray indicatorCases = indicatorReference.value(QStringLiteral("indicator_cases")).toArray();
     if (indicatorCases.isEmpty()) {
@@ -243,6 +294,7 @@ int main(int argc, char **argv) {
         const QJsonObject expected = testCase.value(QStringLiteral("expected")).toObject();
         request.feeBps = expected.value(QStringLiteral("fee_bps")).toDouble(5.0);
         request.slippageBps = expected.value(QStringLiteral("slippage_bps")).toDouble(2.0);
+        request.indicators.clear();
         const QJsonObject caseConfigs = testCase.value(QStringLiteral("configs")).toObject();
         for (auto iterator = caseConfigs.constBegin(); iterator != caseConfigs.constEnd(); ++iterator) {
             request.indicators.insert(iterator.key(), iterator.value().toObject());
@@ -423,6 +475,7 @@ int main(int argc, char **argv) {
     batchRequest.indicatorConfigs.insert(QStringLiteral("rsi"), optimizerConfigs.value(QStringLiteral("rsi")));
     batchRequest.runTemplate = cancelledBacktest;
     batchRequest.optimizerMinTrades = 0;
+    batchRequest.optimizerMddLimit = 0.0;
     batchRequest.startDisplay = QStringLiteral("2026-01-01");
     batchRequest.endDisplay = QStringLiteral("2026-02-01");
     const QJsonObject batchSnapshot = NativeBacktestBatchRuntime::runBatch(
@@ -626,9 +679,9 @@ int main(int argc, char **argv) {
     check(cppStartupContract.value(QStringLiteral("icon_resource")).toString() == QStringLiteral(":/app_icon.ico"),
           QStringLiteral("native startup contract should expose packaged icon resource"));
     check(!cppStartupContract.value(QStringLiteral("delegates_trading_execution_to_python")).toBool(true),
-          QStringLiteral("native startup contract should not delegate Binance Futures execution to Python"));
+          QStringLiteral("native startup contract should not delegate implemented Binance execution to Python"));
     check(cppStartupContract.value(QStringLiteral("native_trading_execution_scope")).toString()
-              == QStringLiteral("binance-usds-and-coin-futures"),
+              == QStringLiteral("binance-spot-usds-and-coin-futures"),
           QStringLiteral("native startup contract should report its exact trading execution scope"));
     check(jsonArrayContains(
               cppStartupContract.value(QStringLiteral("startup_suppression_env")).toArray(),
@@ -785,10 +838,10 @@ int main(int argc, char **argv) {
     check(cppShellOwnership.value(QStringLiteral("owns_desktop_tab_lifecycle")).toBool(false),
           QStringLiteral("native desktop shell should own the C++ tab lifecycle"));
     check(cppShellOwnership.value(QStringLiteral("owns_trading_execution")).toBool(false),
-          QStringLiteral("native desktop shell should own its Binance Futures trading path"));
+          QStringLiteral("native desktop shell should own its implemented Binance trading paths"));
     check(cppShellOwnership.value(QStringLiteral("native_trading_execution_scope")).toString()
-              == QStringLiteral("binance-usds-and-coin-futures"),
-          QStringLiteral("native desktop shell should bound native execution ownership to Binance Futures"));
+              == QStringLiteral("binance-spot-usds-and-coin-futures"),
+          QStringLiteral("native desktop shell should bound native execution ownership to implemented Binance markets"));
 
     const QJsonObject supportedExchange = NativeExchangeConnectors::buildExchangeSupportPayload(
         NativeExchangeConnectors::ExchangeSupportInput{
@@ -1943,9 +1996,9 @@ int main(int argc, char **argv) {
     check(lifecycleSnapshot.value(QStringLiteral("execution_owner")).toString() == QStringLiteral("native-cpp"),
           QStringLiteral("native strategy lifecycle should report the C++ execution owner"));
     check(lifecycleSnapshot.value(QStringLiteral("native_trading_execution_enabled")).toBool(false),
-          QStringLiteral("native strategy lifecycle should enable its native Binance Futures path"));
+          QStringLiteral("native strategy lifecycle should enable its native Binance market path"));
     check(lifecycleSnapshot.value(QStringLiteral("native_trading_execution_scope")).toString()
-              == QStringLiteral("binance-usds-and-coin-futures"),
+              == QStringLiteral("binance-spot-usds-and-coin-futures"),
           QStringLiteral("native strategy lifecycle should report its exact execution scope"));
 
     const QDateTime diagnosticsAt =
@@ -2017,6 +2070,65 @@ int main(int argc, char **argv) {
           QStringLiteral("native LLM policy should block direct order actions"));
     check(llmViolations.contains(QStringLiteral("order_execution_claim")),
           QStringLiteral("native LLM policy should block execution claims"));
+    const QStringList structuredLlmViolations = NativeLlmAdvisory::outputPolicyViolations(
+        QStringLiteral(R"(prefix {"command":"create_order","disable_stop_loss":true} suffix)"));
+    check(structuredLlmViolations.contains(QStringLiteral("direct_order_action")),
+          QStringLiteral("native LLM policy should scan Python-equivalent command actions"));
+    check(structuredLlmViolations.contains(QStringLiteral("risk_override")),
+          QStringLiteral("native LLM policy should scan boolean risk overrides"));
+    const QStringList fencedLlmViolations = NativeLlmAdvisory::outputPolicyViolations(
+        QStringLiteral("```json\n{\"tool\":\"market_sell\",\"status\":\"placed\"}\n```"));
+    check(fencedLlmViolations.contains(QStringLiteral("direct_order_action")),
+          QStringLiteral("native LLM policy should scan fenced JSON candidates"));
+    check(fencedLlmViolations.contains(QStringLiteral("order_execution_claim")),
+          QStringLiteral("native LLM policy should scan placed execution claims"));
+    const QVariantMap currentLlmProviderSpec{
+        {QStringLiteral("key"), QStringLiteral("local")},
+        {QStringLiteral("label"), QStringLiteral("Local")},
+        {QStringLiteral("base_url"), QStringLiteral("http://127.0.0.1:11434/v1")},
+        {QStringLiteral("default_reasoning"), QStringLiteral("default")},
+        {QStringLiteral("models"), QStringList{QStringLiteral("qwen3:8b")}},
+    };
+    const QVariantMap mergedLlmProviderSpec = TradingBotWindowSupport::mergePythonLlmProviderSpec(
+        currentLlmProviderSpec,
+        QJsonObject{
+            {QStringLiteral("key"), QStringLiteral("local")},
+            {QStringLiteral("label"), QStringLiteral("Local / Ollama")},
+            {QStringLiteral("protocol"), QStringLiteral("openai-chat-completions")},
+            {QStringLiteral("default_base_url"), QStringLiteral("http://127.0.0.1:11434/v1")},
+            {QStringLiteral("default_model"), QStringLiteral("qwen3:8b")},
+            {QStringLiteral("default_reasoning_effort"), QStringLiteral("medium")},
+            {QStringLiteral("custom_models_env"), QStringLiteral("BOT_LLM_EXTRA_MODELS_LOCAL")},
+            {QStringLiteral("custom_models_path_env"), QStringLiteral("BOT_LLM_MODEL_CATALOG_PATH")},
+            {QStringLiteral("catalog_path"), QStringLiteral("C:/Users/test/.trading-bot/llm-models.json")},
+            {QStringLiteral("catalog_note"), QStringLiteral("Local catalog overrides are supported")},
+            {QStringLiteral("model_suggestions"), QJsonArray{
+                QStringLiteral("qwen3:8b"), QStringLiteral("qwen3:32b"), QStringLiteral("qwen3:32b")}},
+            {QStringLiteral("reasoning_efforts"), QJsonArray{
+                QStringLiteral("default"), QStringLiteral("medium"), QStringLiteral("medium")}},
+            {QStringLiteral("notes"), QJsonArray{QStringLiteral("Local/private endpoint")}},
+        });
+    check(mergedLlmProviderSpec.value(QStringLiteral("base_url")).toString()
+              == QStringLiteral("http://127.0.0.1:11434/v1"),
+          QStringLiteral("C++ LLM catalog merge should map Python default_base_url"));
+    check(mergedLlmProviderSpec.value(QStringLiteral("default_reasoning")).toString()
+              == QStringLiteral("medium"),
+          QStringLiteral("C++ LLM catalog merge should map Python default_reasoning_effort"));
+    check(mergedLlmProviderSpec.value(QStringLiteral("models")).toStringList()
+              == QStringList{QStringLiteral("qwen3:8b"), QStringLiteral("qwen3:32b")},
+          QStringLiteral("C++ LLM catalog merge should deduplicate Python model_suggestions"));
+    check(mergedLlmProviderSpec.value(QStringLiteral("reasoning_efforts")).toStringList()
+              == QStringList{QStringLiteral("default"), QStringLiteral("medium")},
+          QStringLiteral("C++ LLM catalog merge should deduplicate reasoning_efforts"));
+    check(mergedLlmProviderSpec.value(QStringLiteral("custom_models_path_env")).toString()
+              == QStringLiteral("BOT_LLM_MODEL_CATALOG_PATH"),
+          QStringLiteral("C++ LLM catalog merge should preserve Python catalog path metadata"));
+    check(mergedLlmProviderSpec.value(QStringLiteral("catalog_note")).toString()
+              == QStringLiteral("Local catalog overrides are supported"),
+          QStringLiteral("C++ LLM catalog merge should preserve Python catalog note metadata"));
+    check(mergedLlmProviderSpec.value(QStringLiteral("notes")).toStringList()
+              == QStringList{QStringLiteral("Local/private endpoint")},
+          QStringLiteral("C++ LLM catalog merge should preserve provider notes"));
     const QJsonObject localModelPayload = NativeLlmAdvisory::buildLocalModelRoutePayload(
         QStringLiteral("http://127.0.0.1:11434/v1"),
         QStringLiteral("qwen3:8b"),

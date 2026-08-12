@@ -12,6 +12,7 @@ use trading_bot_core::{
         CandleLoadResult, NativeBacktestBatchRequest, run_native_backtest_batch,
     },
     market_data::{BinanceMarket, BinanceRestMarketDataClient, interval_seconds},
+    python_source_default_backtest_config, python_source_default_execution_config,
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -84,19 +85,27 @@ fn response(
 }
 
 fn request_mode(payload: &Value) -> String {
+    let default_mode = python_source_default_execution_config()
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("Demo/Testnet");
     payload
         .get("mode")
         .and_then(Value::as_str)
-        .unwrap_or("Demo")
+        .unwrap_or(default_mode)
         .trim()
         .to_ascii_lowercase()
 }
 
 fn request_market(payload: &Value) -> BinanceMarket {
+    let default_source = python_source_default_backtest_config()
+        .get("symbol_source")
+        .and_then(Value::as_str)
+        .unwrap_or("Futures");
     let source = payload
         .get("symbol_source")
         .and_then(Value::as_str)
-        .unwrap_or("Futures")
+        .unwrap_or(default_source)
         .trim()
         .to_ascii_lowercase();
     if source.contains("coin") {
@@ -429,4 +438,33 @@ pub fn stop_native_backtest(
     state: State<'_, NativeBacktestState>,
 ) -> NativeBacktestCommandResponse {
     state.stop()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omitted_native_backtest_market_and_mode_follow_python_defaults() {
+        let payload = json!({});
+        assert_eq!(
+            request_mode(&payload),
+            python_source_default_execution_config()["mode"]
+                .as_str()
+                .unwrap()
+                .to_ascii_lowercase()
+        );
+        assert_eq!(
+            request_market(&payload),
+            match python_source_default_backtest_config()["symbol_source"]
+                .as_str()
+                .unwrap()
+            {
+                source if source.to_ascii_lowercase().contains("coin") =>
+                    BinanceMarket::CoinFutures,
+                source if source.to_ascii_lowercase().starts_with("spot") => BinanceMarket::Spot,
+                _ => BinanceMarket::Futures,
+            }
+        );
+    }
 }

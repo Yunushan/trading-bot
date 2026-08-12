@@ -9,6 +9,7 @@ use crate::account::{
     BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceFuturesSymbolSettings,
     normalize_futures_margin_type,
 };
+use crate::generated_python_parity::{PYTHON_DEFAULT_EXECUTION_JSON, PYTHON_RISK_DEFAULTS_JSON};
 use crate::native_indicators::{
     compute_configured_indicator_series, default_runtime_indicator_configs,
     unsupported_enabled_indicator_keys,
@@ -50,10 +51,36 @@ use crate::{
 
 const NATIVE_POSITION_EPSILON: f64 = 1e-10;
 
+fn python_default_execution_config() -> serde_json::Map<String, Value> {
+    serde_json::from_str::<Value>(PYTHON_DEFAULT_EXECUTION_JSON)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn python_default_risk_controls() -> Value {
+    let defaults = serde_json::from_str::<Value>(PYTHON_RISK_DEFAULTS_JSON).unwrap_or(Value::Null);
+    normalize_strategy_risk_controls(&defaults)
+}
+
+fn python_default_text(
+    defaults: &serde_json::Map<String, Value>,
+    key: &str,
+    fallback: &str,
+) -> String {
+    defaults
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeRuntimeLoopConfig {
     pub symbol: String,
     pub interval: String,
+    pub futures_account: bool,
     pub indicator_use_live_values: bool,
     pub risk_controls: Value,
     pub position_mode: String,
@@ -67,16 +94,41 @@ pub struct NativeRuntimeLoopConfig {
 
 impl Default for NativeRuntimeLoopConfig {
     fn default() -> Self {
+        let defaults = python_default_execution_config();
+        let risk_controls = python_default_risk_controls();
+        let symbol = defaults
+            .get("symbols")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .unwrap_or("BTCUSDT")
+            .to_owned();
+        let interval = defaults
+            .get("intervals")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .unwrap_or("1m")
+            .to_owned();
+        let assets_mode = python_default_text(&defaults, "assets_mode", "Single-Asset");
+        let loop_interval_override = python_default_text(&defaults, "loop_interval_override", "1m");
         Self {
-            symbol: "BTCUSDT".to_owned(),
-            interval: "1m".to_owned(),
-            indicator_use_live_values: false,
-            risk_controls: normalize_strategy_risk_controls(&Value::Null),
-            position_mode: "Hedge".to_owned(),
-            margin_mode: "ISOLATED".to_owned(),
-            leverage: 5,
-            multi_assets_mode: false,
-            loop_interval_override: None,
+            symbol,
+            interval,
+            futures_account: true,
+            indicator_use_live_values: risk_controls
+                .get("indicator_use_live_values")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            risk_controls,
+            position_mode: python_default_text(&defaults, "position_mode", "Hedge"),
+            margin_mode: python_default_text(&defaults, "margin_mode", "Isolated"),
+            leverage: defaults
+                .get("leverage")
+                .and_then(Value::as_i64)
+                .unwrap_or(1),
+            multi_assets_mode: assets_mode.eq_ignore_ascii_case("Multi-Assets"),
+            loop_interval_override: Some(loop_interval_override),
             stream_reconnect_policy: StreamReconnectPolicy::default(),
             stream_stale_after_ms: 30_000,
         }
@@ -304,14 +356,13 @@ fn opposite_close_position_matches(
     if !position.symbol.eq_ignore_ascii_case(&plan.symbol) {
         return false;
     }
-    let expected_side = plan
-        .position_side
-        .as_deref()
-        .unwrap_or_else(|| if plan.close_side.eq_ignore_ascii_case("SELL") {
+    let expected_side = plan.position_side.as_deref().unwrap_or_else(|| {
+        if plan.close_side.eq_ignore_ascii_case("SELL") {
             "LONG"
         } else {
             "SHORT"
-        });
+        }
+    });
     position.side.trim().eq_ignore_ascii_case(expected_side)
 }
 
@@ -718,28 +769,31 @@ impl NativeRuntimeLoop {
             return None;
         }
         let controls = normalize_strategy_risk_controls(&self.config.risk_controls);
-        let required_signal_reset = native_config_bool(
-            controls.get("indicator_reentry_requires_signal_reset"),
-        );
-        let interval_window_seconds = interval_seconds(&self.config.interval).unwrap_or(60.0).max(1.0);
-        let cooldown_seconds = native_config_number(controls.get("indicator_flip_cooldown_seconds"))
-            .unwrap_or(0.0)
-            .max(0.0)
-            .max(
-                native_config_number(controls.get("indicator_flip_cooldown_bars"))
-                    .unwrap_or(0.0)
-                    .max(0.0)
-                    * interval_window_seconds,
-            );
-        let reentry_seconds = native_config_number(controls.get("indicator_reentry_cooldown_seconds"))
-            .unwrap_or(0.0)
-            .max(0.0)
-            .max(
-                native_config_number(controls.get("indicator_reentry_cooldown_bars"))
-                    .unwrap_or(0.0)
-                    .max(0.0)
-                    * interval_window_seconds,
-            );
+        let required_signal_reset =
+            native_config_bool(controls.get("indicator_reentry_requires_signal_reset"));
+        let interval_window_seconds = interval_seconds(&self.config.interval)
+            .unwrap_or(60.0)
+            .max(1.0);
+        let cooldown_seconds =
+            native_config_number(controls.get("indicator_flip_cooldown_seconds"))
+                .unwrap_or(0.0)
+                .max(0.0)
+                .max(
+                    native_config_number(controls.get("indicator_flip_cooldown_bars"))
+                        .unwrap_or(0.0)
+                        .max(0.0)
+                        * interval_window_seconds,
+                );
+        let reentry_seconds =
+            native_config_number(controls.get("indicator_reentry_cooldown_seconds"))
+                .unwrap_or(0.0)
+                .max(0.0)
+                .max(
+                    native_config_number(controls.get("indicator_reentry_cooldown_bars"))
+                        .unwrap_or(0.0)
+                        .max(0.0)
+                        * interval_window_seconds,
+                );
         let recent_close_window_ms = (interval_window_seconds * 1.5)
             .clamp(5.0, 600.0)
             .mul_add(1_000.0, 0.0)
@@ -872,16 +926,19 @@ impl NativeRuntimeLoop {
         if native_config_bool(controls.get("indicator_reentry_requires_signal_reset")) {
             state.signal_reset_side = side.clone();
         }
-        let interval_window_seconds = interval_seconds(&self.config.interval).unwrap_or(60.0).max(1.0);
-        let reentry_seconds = native_config_number(controls.get("indicator_reentry_cooldown_seconds"))
-            .unwrap_or(0.0)
-            .max(0.0)
-            .max(
-                native_config_number(controls.get("indicator_reentry_cooldown_bars"))
-                    .unwrap_or(0.0)
-                    .max(0.0)
-                    * interval_window_seconds,
-            );
+        let interval_window_seconds = interval_seconds(&self.config.interval)
+            .unwrap_or(60.0)
+            .max(1.0);
+        let reentry_seconds =
+            native_config_number(controls.get("indicator_reentry_cooldown_seconds"))
+                .unwrap_or(0.0)
+                .max(0.0)
+                .max(
+                    native_config_number(controls.get("indicator_reentry_cooldown_bars"))
+                        .unwrap_or(0.0)
+                        .max(0.0)
+                        * interval_window_seconds,
+                );
         if reentry_seconds > 0.0 {
             self.indicator_reentry_blocks.insert(
                 self.indicator_reentry_block_key(&side),
@@ -894,12 +951,7 @@ impl NativeRuntimeLoop {
     /// an explicit close-all/shutdown path rather than an indicator decision.
     /// The exchange snapshot does not carry Python's indicator ownership, so
     /// invalidate every guard state already observed for this symbol.
-    pub fn record_confirmed_position_close(
-        &mut self,
-        symbol: &str,
-        side: &str,
-        timestamp_ms: i64,
-    ) {
+    pub fn record_confirmed_position_close(&mut self, symbol: &str, side: &str, timestamp_ms: i64) {
         let symbol = symbol.trim().to_ascii_uppercase();
         if symbol.is_empty() {
             return;
@@ -1152,6 +1204,26 @@ impl NativeRuntimeLoop {
         )
     }
 
+    /// Apply the account gate appropriate to the selected Binance market.
+    /// Spot accounts do not expose Futures position-mode, margin-mode,
+    /// leverage, or multi-assets settings, so those checks must not block a
+    /// Spot signal cycle. Futures keeps the stricter reconciliation path.
+    pub fn account_preflight_for_market(
+        &self,
+        input: NativeRuntimeAccountPreflightInput,
+    ) -> NativeRuntimeAccountPreflightSnapshot {
+        if self.config.futures_account {
+            return self.reconcile_account_preflight(input);
+        }
+        evaluate_native_spot_account_preflight(
+            &self.config.position_mode,
+            &self.config.symbol,
+            &self.config.margin_mode,
+            self.config.leverage,
+            self.config.multi_assets_mode,
+        )
+    }
+
     /// Bind a freshly read account snapshot to this runtime's configured symbol and safety
     /// preflight. It is intentionally read-only; callers retain ownership of all exchange I/O.
     pub fn bootstrap_read_only_account(
@@ -1239,7 +1311,7 @@ impl NativeRuntimeLoop {
         });
         let exchange_leverage = (leverages.len() == 1).then(|| leverages[0]);
         let account_preflight =
-            self.reconcile_account_preflight(NativeRuntimeAccountPreflightInput {
+            self.account_preflight_for_market(NativeRuntimeAccountPreflightInput {
                 exchange_position_mode: exchange_position_mode.cloned(),
                 futures_settings: NativeRuntimeFuturesSettingsInput {
                     exchange_margin_mode,
@@ -1652,11 +1724,9 @@ impl NativeRuntimeLoop {
             .collect();
         let close_plan = plan_close_opposite_position(&close_request, &close_positions);
         if !close_plan.allowed_to_open_now {
-            if let Some(reason) = self.opposite_close_hold_block_reason(
-                &risk_positions,
-                &close_plan,
-                now_ms,
-            ) {
+            if let Some(reason) =
+                self.opposite_close_hold_block_reason(&risk_positions, &close_plan, now_ms)
+            {
                 return Ok(guarded_execution_snapshot(
                     market_cycle,
                     Some(exposure),
@@ -1831,21 +1901,37 @@ impl NativeRuntimeLoop {
         else {
             return Vec::new();
         };
+        let python_stop_loss = python_default_risk_controls()
+            .get("stop_loss")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         let settings = StopLossSettings {
             enabled: stop_loss
                 .get("enabled")
                 .and_then(Value::as_bool)
+                .or_else(|| python_stop_loss.get("enabled").and_then(Value::as_bool))
                 .unwrap_or(false),
             mode: stop_loss
                 .get("mode")
                 .and_then(Value::as_str)
+                .or_else(|| python_stop_loss.get("mode").and_then(Value::as_str))
                 .unwrap_or("usdt")
                 .to_owned(),
-            usdt: stop_loss.get("usdt").and_then(value_f64).unwrap_or(0.0),
-            percent: stop_loss.get("percent").and_then(value_f64).unwrap_or(0.0),
+            usdt: stop_loss
+                .get("usdt")
+                .and_then(value_f64)
+                .or_else(|| python_stop_loss.get("usdt").and_then(value_f64))
+                .unwrap_or(0.0),
+            percent: stop_loss
+                .get("percent")
+                .and_then(value_f64)
+                .or_else(|| python_stop_loss.get("percent").and_then(value_f64))
+                .unwrap_or(0.0),
             scope: stop_loss
                 .get("scope")
                 .and_then(Value::as_str)
+                .or_else(|| python_stop_loss.get("scope").and_then(Value::as_str))
                 .unwrap_or("per_trade")
                 .to_owned(),
         };
@@ -2312,6 +2398,56 @@ pub fn evaluate_native_account_preflight(
         futures_settings,
         signal_evaluation_allowed,
         status_message,
+        trading_execution_supported: rust_trading_execution_supported(),
+    }
+}
+
+pub fn evaluate_native_spot_account_preflight(
+    configured_position_mode: impl AsRef<str>,
+    symbol: impl AsRef<str>,
+    configured_margin_mode: impl AsRef<str>,
+    configured_leverage: i64,
+    configured_multi_assets_mode: bool,
+) -> NativeRuntimeAccountPreflightSnapshot {
+    let configured_position_mode = normalize_native_position_mode(configured_position_mode);
+    let configured_margin_mode = normalize_native_margin_mode(configured_margin_mode);
+    let configured_leverage = clamp_native_futures_leverage(configured_leverage);
+    let symbol = non_empty_or(&symbol.as_ref().trim().to_uppercase(), "UNKNOWN");
+    let position_mode = NativeRuntimePositionModeSnapshot {
+        configured_position_mode: configured_position_mode.clone(),
+        exchange_position_mode: None,
+        exchange_dual_side_position: None,
+        matches_config: true,
+        signal_evaluation_allowed: true,
+        status_message:
+            "Spot market does not use Binance Futures position mode; account preflight passed."
+                .to_owned(),
+        trading_execution_supported: rust_trading_execution_supported(),
+    };
+    let futures_settings = NativeRuntimeFuturesSettingsSnapshot {
+        symbol,
+        configured_margin_mode,
+        exchange_margin_mode: None,
+        margin_mode_matches_config: true,
+        configured_leverage,
+        exchange_leverage: None,
+        leverage_matches_config: true,
+        configured_multi_assets_mode,
+        exchange_multi_assets_mode: None,
+        multi_assets_matches_config: true,
+        open_position_blocks_margin_change: false,
+        signal_evaluation_allowed: true,
+        status_message: "Spot market does not use Binance Futures margin, leverage, or multi-assets settings; account preflight passed."
+            .to_owned(),
+        trading_execution_supported: rust_trading_execution_supported(),
+    };
+    NativeRuntimeAccountPreflightSnapshot {
+        position_mode,
+        futures_settings,
+        signal_evaluation_allowed: true,
+        status_message:
+            "Native Spot account preflight passed; Futures-only settings are not applicable."
+                .to_owned(),
         trading_execution_supported: rust_trading_execution_supported(),
     }
 }
@@ -2919,10 +3055,45 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn native_runtime_default_config_matches_python_execution_defaults() {
+        let config = NativeRuntimeLoopConfig::default();
+        let python: Value = serde_json::from_str(PYTHON_DEFAULT_EXECUTION_JSON)
+            .expect("generated Python execution defaults should be valid JSON");
+        assert_eq!(config.symbol, python["symbols"][0].as_str().unwrap());
+        assert_eq!(config.interval, python["intervals"][0].as_str().unwrap());
+        assert_eq!(
+            config.position_mode,
+            python["position_mode"].as_str().unwrap()
+        );
+        assert_eq!(config.margin_mode, python["margin_mode"].as_str().unwrap());
+        assert_eq!(config.leverage, python["leverage"].as_i64().unwrap());
+        assert_eq!(
+            config.multi_assets_mode,
+            python["assets_mode"].as_str() == Some("Multi-Assets")
+        );
+        assert_eq!(
+            config.loop_interval_override,
+            Some(
+                python["loop_interval_override"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            )
+        );
+        let python_risk: Value = serde_json::from_str(PYTHON_RISK_DEFAULTS_JSON)
+            .expect("generated Python risk defaults should be valid JSON");
+        assert_eq!(
+            config.risk_controls,
+            normalize_strategy_risk_controls(&python_risk)
+        );
+    }
+
     fn loop_under_test() -> NativeRuntimeLoop {
         NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
             symbol: "btcusdt".to_owned(),
             interval: "1m".to_owned(),
+            futures_account: true,
             indicator_use_live_values: false,
             risk_controls: normalize_strategy_risk_controls(&Value::Null),
             position_mode: "Hedge".to_owned(),
@@ -3401,6 +3572,42 @@ mod tests {
     }
 
     #[test]
+    fn guarded_execution_cycle_preserves_python_spot_order_shape_in_audit() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let (mut engine, directory) = dry_run_engine();
+        let mut input = guarded_execution_input(&runtime);
+        input.market = "spot".to_owned();
+
+        let snapshot = runtime
+            .run_guarded_execution_cycle(&mut engine, input, |_| {
+                panic!("dry-run spot cycle must not invoke the exchange executor")
+            })
+            .expect("guarded spot cycle");
+
+        assert_eq!(snapshot.state, "accepted");
+        let order = snapshot.order.as_ref().expect("spot order result");
+        assert!(order.allowed, "{}", order.error);
+        assert_eq!(
+            order.order_result.as_ref().expect("spot dry run").status,
+            "DRY_RUN"
+        );
+        let audit = fs::read_to_string(directory.join("audit.jsonl")).expect("spot audit");
+        assert!(audit.contains("\"event\":\"order_dry_run\""));
+        assert!(audit.contains("\"market\":\"spot\""));
+        let event: Value = serde_json::from_str(audit.lines().next().expect("spot audit line"))
+            .expect("spot audit JSON");
+        let params = event
+            .get("params")
+            .and_then(Value::as_object)
+            .expect("spot request params");
+        assert_eq!(params.get("quantity").and_then(Value::as_str), Some("1"));
+        assert!(!params.contains_key("positionSide"));
+        assert!(!params.contains_key("reduceOnly"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
     fn guarded_execution_cycle_applies_python_per_trade_stop_loss_before_ordering() {
         let mut runtime = loop_under_test();
         runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
@@ -3506,7 +3713,11 @@ mod tests {
             })
             .expect("guarded cycle");
 
-        assert_eq!(snapshot.state, "accepted", "unexpected native close result: {:?}", snapshot);
+        assert_eq!(
+            snapshot.state, "accepted",
+            "unexpected native close result: {:?}",
+            snapshot
+        );
         assert!(snapshot.status_message.contains("dry run"));
         let audit = fs::read_to_string(directory.join("audit.jsonl")).expect("audit log");
         assert!(audit.contains("close_opposite_position"));
@@ -3563,7 +3774,11 @@ mod tests {
             min_bars: 3,
             signal_index_from_end: 2,
         };
-        assert!(runtime.apply_indicator_order_guards(&mut buy, 1_700_000_000_000).is_none());
+        assert!(
+            runtime
+                .apply_indicator_order_guards(&mut buy, 1_700_000_000_000)
+                .is_none()
+        );
         assert_eq!(buy.signal.as_deref(), Some("BUY"));
         runtime.record_indicator_order_actions(&buy, 1_700_000_000_000);
 
@@ -3576,9 +3791,11 @@ mod tests {
             min_bars: 3,
             signal_index_from_end: 2,
         };
-        assert!(runtime
-            .apply_indicator_order_guards(&mut sell, 1_700_000_010_000)
-            .is_some());
+        assert!(
+            runtime
+                .apply_indicator_order_guards(&mut sell, 1_700_000_010_000)
+                .is_some()
+        );
         assert!(sell.signal.is_none());
 
         runtime.record_indicator_close("rsi", "BUY", 1_700_000_020_000);
@@ -3591,14 +3808,18 @@ mod tests {
             min_bars: 3,
             signal_index_from_end: 2,
         };
-        assert!(runtime
-            .apply_indicator_order_guards(&mut flip_after_close, 1_700_000_021_000)
-            .is_none());
+        assert!(
+            runtime
+                .apply_indicator_order_guards(&mut flip_after_close, 1_700_000_021_000)
+                .is_none()
+        );
         assert_eq!(flip_after_close.signal.as_deref(), Some("SELL"));
 
-        assert!(runtime
-            .apply_indicator_order_guards(&mut buy, 1_700_000_021_000)
-            .is_some());
+        assert!(
+            runtime
+                .apply_indicator_order_guards(&mut buy, 1_700_000_021_000)
+                .is_some()
+        );
         assert!(buy.signal.is_none());
     }
 
@@ -4174,6 +4395,38 @@ mod tests {
         );
         assert!(!blocked_settings.signal_evaluation_allowed);
         assert!(blocked_settings.status_message.contains("open position"));
+    }
+
+    #[test]
+    fn native_runtime_spot_account_preflight_skips_futures_only_settings() {
+        let mut config = NativeRuntimeLoopConfig::default();
+        config.futures_account = false;
+        let runtime = NativeRuntimeLoop::new(config);
+        let snapshot = runtime.account_preflight_for_market(NativeRuntimeAccountPreflightInput {
+            exchange_position_mode: None,
+            futures_settings: NativeRuntimeFuturesSettingsInput {
+                exchange_margin_mode: None,
+                exchange_leverage: None,
+                exchange_multi_assets_mode: None,
+                open_position_amt: 0.0,
+            },
+        });
+
+        assert!(snapshot.signal_evaluation_allowed);
+        assert!(snapshot.position_mode.signal_evaluation_allowed);
+        assert!(snapshot.futures_settings.signal_evaluation_allowed);
+        assert!(
+            snapshot
+                .status_message
+                .contains("Futures-only settings are not applicable")
+        );
+        assert!(
+            snapshot
+                .futures_settings
+                .status_message
+                .contains("Spot market does not use")
+        );
+        assert!(!snapshot.trading_execution_supported);
     }
 
     #[test]

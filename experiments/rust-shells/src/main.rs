@@ -1655,6 +1655,7 @@ fn selected_binance_market() -> Result<BinanceMarket, std::io::Error> {
     binance_market_for_connector_backend_with_account_type(&connector, &account_type)
 }
 
+#[cfg(test)]
 fn binance_market_for_connector_backend(connector: &str) -> Result<BinanceMarket, std::io::Error> {
     binance_market_for_connector_backend_with_account_type(connector, "Futures")
 }

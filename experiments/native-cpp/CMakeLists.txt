@@ -263,8 +263,11 @@ if (BUILD_TESTING)
         src/NativeStartupPackaging.h
         src/NativeStrategyRuntime.cpp
         src/NativeStrategyRuntime.h
+        src/TradingBotWindowSupport.cpp
+        src/TradingBotWindowSupport.h
+        src/generated/PythonParityContract.h
     )
-    target_link_libraries(native_order_safety_tests PRIVATE Qt6::Core)
+    target_link_libraries(native_order_safety_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Network)
     if (MSVC)
         target_compile_options(native_order_safety_tests PRIVATE /Zc:__cplusplus)
     endif()

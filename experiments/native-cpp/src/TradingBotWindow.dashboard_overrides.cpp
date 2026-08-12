@@ -586,21 +586,25 @@ void TradingBotWindow::clearDashboardOverrideRows() {
 }
 
 QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QJsonObject backtestDefaults = TradingBotWindowSupport::pythonSourceDefaultBacktestConfig();
+    const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
+    const QJsonObject uiDefaults = TradingBotWindowSupport::pythonSourceUiDefaults();
     QJsonObject config;
-    config.insert(QStringLiteral("mode"), comboText(dashboardModeCombo_, QStringLiteral("Testnet")));
-    config.insert(QStringLiteral("account_type"), comboText(dashboardAccountTypeCombo_, QStringLiteral("Futures")));
-    config.insert(QStringLiteral("account_mode"), comboText(dashboardAccountModeCombo_, QStringLiteral("Classic Trading")));
-    config.insert(QStringLiteral("margin_mode"), comboDataOrText(dashboardMarginModeCombo_, QStringLiteral("Isolated")));
-    config.insert(QStringLiteral("position_mode"), comboDataOrText(dashboardPositionModeCombo_, QStringLiteral("Hedge")));
-    config.insert(QStringLiteral("assets_mode"), comboDataOrText(dashboardAssetsModeCombo_, QStringLiteral("Single-Asset")));
-    config.insert(QStringLiteral("connector_backend"), comboDataOrText(dashboardConnectorCombo_, QStringLiteral("binance-native")));
-    config.insert(QStringLiteral("selected_exchange"), comboDataOrText(dashboardExchangeCombo_, QStringLiteral("Binance")));
-    config.insert(QStringLiteral("theme"), comboDataOrText(dashboardThemeCombo_));
-    config.insert(QStringLiteral("design"), comboDataOrText(dashboardDesignCombo_, QStringLiteral("Classic")));
-    config.insert(QStringLiteral("leverage"), dashboardLeverageSpin_ ? dashboardLeverageSpin_->value() : 1);
-    config.insert(QStringLiteral("tif"), comboDataOrText(dashboardTimeInForceCombo_, QStringLiteral("GTC")));
-    config.insert(QStringLiteral("gtd_minutes"), dashboardGtdMinutesSpin_ ? dashboardGtdMinutesSpin_->value() : 30);
-    config.insert(QStringLiteral("indicator_source"), comboDataOrText(dashboardIndicatorSourceCombo_, QStringLiteral("Binance futures")));
+    config.insert(QStringLiteral("mode"), comboText(dashboardModeCombo_, executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"))));
+    config.insert(QStringLiteral("account_type"), comboText(dashboardAccountTypeCombo_, executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures"))));
+    config.insert(QStringLiteral("account_mode"), comboText(dashboardAccountModeCombo_, executionDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
+    config.insert(QStringLiteral("margin_mode"), comboDataOrText(dashboardMarginModeCombo_, executionDefaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"))));
+    config.insert(QStringLiteral("position_mode"), comboDataOrText(dashboardPositionModeCombo_, executionDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"))));
+    config.insert(QStringLiteral("assets_mode"), comboDataOrText(dashboardAssetsModeCombo_, executionDefaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"))));
+    config.insert(QStringLiteral("connector_backend"), comboDataOrText(dashboardConnectorCombo_, backtestDefaults.value(QStringLiteral("connector_backend")).toString()));
+    config.insert(QStringLiteral("selected_exchange"), comboDataOrText(dashboardExchangeCombo_, uiDefaults.value(QStringLiteral("selected_exchange")).toString(QStringLiteral("Binance"))));
+    config.insert(QStringLiteral("theme"), comboDataOrText(dashboardThemeCombo_, uiDefaults.value(QStringLiteral("theme")).toString(QStringLiteral("Dark"))));
+    config.insert(QStringLiteral("design"), comboDataOrText(dashboardDesignCombo_, uiDefaults.value(QStringLiteral("design")).toString(QStringLiteral("Classic"))));
+    config.insert(QStringLiteral("leverage"), dashboardLeverageSpin_ ? dashboardLeverageSpin_->value() : executionDefaults.value(QStringLiteral("leverage")).toInt(1));
+    config.insert(QStringLiteral("tif"), comboDataOrText(dashboardTimeInForceCombo_, executionDefaults.value(QStringLiteral("tif")).toString(QStringLiteral("GTC"))));
+    config.insert(QStringLiteral("gtd_minutes"), dashboardGtdMinutesSpin_ ? dashboardGtdMinutesSpin_->value() : executionDefaults.value(QStringLiteral("gtd_minutes")).toInt(30));
+    config.insert(QStringLiteral("indicator_source"), comboDataOrText(dashboardIndicatorSourceCombo_, uiDefaults.value(QStringLiteral("indicator_source")).toString(QStringLiteral("Binance futures"))));
     QJsonArray symbols = selectedOrAllListValues(dashboardSymbolList_, true);
     if (symbols.isEmpty()) {
         symbols = stringListJsonArray(TradingBotWindowSupport::pythonSourceDefaultExecutionSymbols(), true);
@@ -611,86 +615,86 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     }
     config.insert(QStringLiteral("symbols"), symbols);
     config.insert(QStringLiteral("intervals"), intervals);
-    config.insert(QStringLiteral("lookback"), dashboardLookbackSpin_ ? dashboardLookbackSpin_->value() : 200);
+    config.insert(QStringLiteral("lookback"), dashboardLookbackSpin_ ? dashboardLookbackSpin_->value() : executionDefaults.value(QStringLiteral("lookback")).toInt(200));
     config.insert(QStringLiteral("runtime_symbol_interval_pairs"), dashboardOverrideRows(dashboardOverridesTable_));
     config.insert(QStringLiteral("backtest_symbol_interval_pairs"), buildBacktestSymbolIntervalPairs());
-    config.insert(QStringLiteral("position_pct"), dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : 2.0);
-    config.insert(QStringLiteral("order_type"), comboDataOrText(dashboardOrderTypeCombo_, QStringLiteral("MARKET")));
-    config.insert(QStringLiteral("live_trading_enabled"), dashboardLiveTradingEnabledCheck_ && dashboardLiveTradingEnabledCheck_->isChecked());
+    config.insert(QStringLiteral("position_pct"), dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : executionDefaults.value(QStringLiteral("position_pct")).toDouble(2.0));
+    config.insert(QStringLiteral("order_type"), comboDataOrText(dashboardOrderTypeCombo_, executionDefaults.value(QStringLiteral("order_type")).toString(QStringLiteral("MARKET"))));
+    config.insert(QStringLiteral("live_trading_enabled"), dashboardLiveTradingEnabledCheck_ ? dashboardLiveTradingEnabledCheck_->isChecked() : executionDefaults.value(QStringLiteral("live_trading_enabled")).toBool(false));
     config.insert(
         QStringLiteral("live_trading_acknowledgement"),
         dashboardLiveTradingAcknowledgementEdit_ ? dashboardLiveTradingAcknowledgementEdit_->text().trimmed() : QString());
     config.insert(
         QStringLiteral("live_allow_auto_bump_to_min_order"),
-        dashboardLiveAllowAutoBumpCheck_ && dashboardLiveAllowAutoBumpCheck_->isChecked());
+        dashboardLiveAllowAutoBumpCheck_ ? dashboardLiveAllowAutoBumpCheck_->isChecked() : executionDefaults.value(QStringLiteral("live_allow_auto_bump_to_min_order")).toBool(false));
     config.insert(
         QStringLiteral("live_trading_max_leverage"),
-        dashboardLiveTradingMaxLeverageSpin_ ? dashboardLiveTradingMaxLeverageSpin_->value() : 20);
+        dashboardLiveTradingMaxLeverageSpin_ ? dashboardLiveTradingMaxLeverageSpin_->value() : executionDefaults.value(QStringLiteral("live_trading_max_leverage")).toInt(20));
     config.insert(
         QStringLiteral("live_trading_max_position_pct"),
-        dashboardLiveTradingMaxPositionPctSpin_ ? dashboardLiveTradingMaxPositionPctSpin_->value() : 10.0);
+        dashboardLiveTradingMaxPositionPctSpin_ ? dashboardLiveTradingMaxPositionPctSpin_->value() : executionDefaults.value(QStringLiteral("live_trading_max_position_pct")).toDouble(10.0));
     config.insert(
         QStringLiteral("live_trading_max_session_orders"),
-        dashboardLiveTradingMaxSessionOrdersSpin_ ? dashboardLiveTradingMaxSessionOrdersSpin_->value() : 100);
+        dashboardLiveTradingMaxSessionOrdersSpin_ ? dashboardLiveTradingMaxSessionOrdersSpin_->value() : executionDefaults.value(QStringLiteral("live_trading_max_session_orders")).toInt(100));
     config.insert(
         QStringLiteral("max_auto_bump_percent"),
-        dashboardMaxAutoBumpPercentSpin_ ? dashboardMaxAutoBumpPercentSpin_->value() : 5.0);
+        dashboardMaxAutoBumpPercentSpin_ ? dashboardMaxAutoBumpPercentSpin_->value() : riskDefaults.value(QStringLiteral("max_auto_bump_percent")).toDouble(5.0));
     config.insert(
         QStringLiteral("auto_bump_percent_multiplier"),
-        dashboardAutoBumpPercentMultiplierSpin_ ? dashboardAutoBumpPercentMultiplierSpin_->value() : 10.0);
-    config.insert(QStringLiteral("order_audit_enabled"), dashboardOrderAuditEnabledCheck_ && dashboardOrderAuditEnabledCheck_->isChecked());
+        dashboardAutoBumpPercentMultiplierSpin_ ? dashboardAutoBumpPercentMultiplierSpin_->value() : riskDefaults.value(QStringLiteral("auto_bump_percent_multiplier")).toDouble(10.0));
+    config.insert(QStringLiteral("order_audit_enabled"), dashboardOrderAuditEnabledCheck_ ? dashboardOrderAuditEnabledCheck_->isChecked() : executionDefaults.value(QStringLiteral("order_audit_enabled")).toBool(true));
     config.insert(
         QStringLiteral("order_audit_log_path"),
         dashboardOrderAuditLogPathEdit_ ? dashboardOrderAuditLogPathEdit_->text().trimmed() : QString());
     config.insert(
         QStringLiteral("order_audit_max_bytes"),
-        dashboardOrderAuditMaxBytesSpin_ ? dashboardOrderAuditMaxBytesSpin_->value() : 10 * 1024 * 1024);
+        dashboardOrderAuditMaxBytesSpin_ ? dashboardOrderAuditMaxBytesSpin_->value() : executionDefaults.value(QStringLiteral("order_audit_max_bytes")).toInt(10 * 1024 * 1024));
     config.insert(
         QStringLiteral("order_audit_backup_count"),
-        dashboardOrderAuditBackupCountSpin_ ? dashboardOrderAuditBackupCountSpin_->value() : 1);
+        dashboardOrderAuditBackupCountSpin_ ? dashboardOrderAuditBackupCountSpin_->value() : executionDefaults.value(QStringLiteral("order_audit_backup_count")).toInt(1));
     config.insert(
         QStringLiteral("connector_order_block_circuit_breaker_enabled"),
-        dashboardConnectorOrderCircuitEnabledCheck_ && dashboardConnectorOrderCircuitEnabledCheck_->isChecked());
+        dashboardConnectorOrderCircuitEnabledCheck_ ? dashboardConnectorOrderCircuitEnabledCheck_->isChecked() : executionDefaults.value(QStringLiteral("connector_order_block_circuit_breaker_enabled")).toBool(true));
     config.insert(
         QStringLiteral("connector_order_block_pause_threshold"),
-        dashboardConnectorOrderCircuitThresholdSpin_ ? dashboardConnectorOrderCircuitThresholdSpin_->value() : 2);
+        dashboardConnectorOrderCircuitThresholdSpin_ ? dashboardConnectorOrderCircuitThresholdSpin_->value() : executionDefaults.value(QStringLiteral("connector_order_block_pause_threshold")).toInt(2));
     config.insert(
         QStringLiteral("connector_order_block_window_seconds"),
-        dashboardConnectorOrderCircuitWindowSecondsSpin_ ? dashboardConnectorOrderCircuitWindowSecondsSpin_->value() : 60.0);
+        dashboardConnectorOrderCircuitWindowSecondsSpin_ ? dashboardConnectorOrderCircuitWindowSecondsSpin_->value() : executionDefaults.value(QStringLiteral("connector_order_block_window_seconds")).toDouble(60.0));
     config.insert(
         QStringLiteral("connector_order_circuit_incident_log_path"),
         dashboardConnectorOrderIncidentLogPathEdit_ ? dashboardConnectorOrderIncidentLogPathEdit_->text().trimmed() : QString());
     config.insert(
         QStringLiteral("connector_order_circuit_incident_log_max_bytes"),
-        dashboardConnectorOrderIncidentMaxBytesSpin_ ? dashboardConnectorOrderIncidentMaxBytesSpin_->value() : 2 * 1024 * 1024);
+        dashboardConnectorOrderIncidentMaxBytesSpin_ ? dashboardConnectorOrderIncidentMaxBytesSpin_->value() : executionDefaults.value(QStringLiteral("connector_order_circuit_incident_log_max_bytes")).toInt(2 * 1024 * 1024));
     config.insert(
         QStringLiteral("connector_order_circuit_incident_log_backup_count"),
-        dashboardConnectorOrderIncidentBackupCountSpin_ ? dashboardConnectorOrderIncidentBackupCountSpin_->value() : 1);
+        dashboardConnectorOrderIncidentBackupCountSpin_ ? dashboardConnectorOrderIncidentBackupCountSpin_->value() : executionDefaults.value(QStringLiteral("connector_order_circuit_incident_log_backup_count")).toInt(1));
     config.insert(
         QStringLiteral("operational_connector_snapshot_stale_seconds"),
-        dashboardOperationalConnectorStaleSpin_ ? dashboardOperationalConnectorStaleSpin_->value() : 120.0);
+        dashboardOperationalConnectorStaleSpin_ ? dashboardOperationalConnectorStaleSpin_->value() : executionDefaults.value(QStringLiteral("operational_connector_snapshot_stale_seconds")).toDouble(120.0));
     config.insert(
         QStringLiteral("operational_execution_heartbeat_stale_seconds"),
-        dashboardOperationalExecutionStaleSpin_ ? dashboardOperationalExecutionStaleSpin_->value() : 10.0);
+        dashboardOperationalExecutionStaleSpin_ ? dashboardOperationalExecutionStaleSpin_->value() : executionDefaults.value(QStringLiteral("operational_execution_heartbeat_stale_seconds")).toDouble(10.0));
     config.insert(
         QStringLiteral("operational_account_snapshot_stale_seconds"),
-        dashboardOperationalAccountStaleSpin_ ? dashboardOperationalAccountStaleSpin_->value() : 300.0);
+        dashboardOperationalAccountStaleSpin_ ? dashboardOperationalAccountStaleSpin_->value() : executionDefaults.value(QStringLiteral("operational_account_snapshot_stale_seconds")).toDouble(300.0));
     config.insert(
         QStringLiteral("operational_portfolio_snapshot_stale_seconds"),
-        dashboardOperationalPortfolioStaleSpin_ ? dashboardOperationalPortfolioStaleSpin_->value() : 300.0);
+        dashboardOperationalPortfolioStaleSpin_ ? dashboardOperationalPortfolioStaleSpin_->value() : executionDefaults.value(QStringLiteral("operational_portfolio_snapshot_stale_seconds")).toDouble(300.0));
     config.insert(
         QStringLiteral("operational_live_start_gate_enabled"),
-        dashboardOperationalLiveStartGateCheck_ && dashboardOperationalLiveStartGateCheck_->isChecked());
+        dashboardOperationalLiveStartGateCheck_ ? dashboardOperationalLiveStartGateCheck_->isChecked() : executionDefaults.value(QStringLiteral("operational_live_start_gate_enabled")).toBool(true));
     config.insert(
         QStringLiteral("operational_live_order_gate_enabled"),
-        dashboardOperationalLiveOrderGateCheck_ && dashboardOperationalLiveOrderGateCheck_->isChecked());
-    config.insert(QStringLiteral("side"), comboDataOrText(dashboardSideCombo_, QStringLiteral("BOTH")));
-    config.insert(QStringLiteral("loop_interval_override"), comboDataOrText(dashboardLoopOverrideCombo_, QStringLiteral("1m")));
+        dashboardOperationalLiveOrderGateCheck_ ? dashboardOperationalLiveOrderGateCheck_->isChecked() : executionDefaults.value(QStringLiteral("operational_live_order_gate_enabled")).toBool(true));
+    config.insert(QStringLiteral("side"), comboDataOrText(dashboardSideCombo_, executionDefaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"))));
+    config.insert(QStringLiteral("loop_interval_override"), comboDataOrText(dashboardLoopOverrideCombo_, executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m"))));
     config.insert(QStringLiteral("lead_trader_enabled"), dashboardLeadTraderEnableCheck_ && dashboardLeadTraderEnableCheck_->isChecked());
     config.insert(QStringLiteral("lead_trader_profile"), comboDataOrText(dashboardLeadTraderCombo_));
-    config.insert(QStringLiteral("indicator_use_live_values"), dashboardLiveIndicatorValuesCheck_ && dashboardLiveIndicatorValuesCheck_->isChecked());
+    config.insert(QStringLiteral("indicator_use_live_values"), dashboardLiveIndicatorValuesCheck_ ? dashboardLiveIndicatorValuesCheck_->isChecked() : riskDefaults.value(QStringLiteral("indicator_use_live_values")).toBool(false));
     config.insert(QStringLiteral("add_only"), dashboardOneWayCheck_ && dashboardOneWayCheck_->isChecked());
-    config.insert(QStringLiteral("allow_opposite_positions"), dashboardHedgeStackCheck_ && dashboardHedgeStackCheck_->isChecked());
+    config.insert(QStringLiteral("allow_opposite_positions"), dashboardHedgeStackCheck_ ? dashboardHedgeStackCheck_->isChecked() : riskDefaults.value(QStringLiteral("allow_opposite_positions")).toBool(true));
     config.insert(
         QStringLiteral("stop_without_close"),
         dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked());
@@ -708,11 +712,12 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     }
 
     QJsonObject stopLoss;
-    stopLoss.insert(QStringLiteral("enabled"), dashboardStopLossEnableCheck_ && dashboardStopLossEnableCheck_->isChecked());
-    stopLoss.insert(QStringLiteral("mode"), comboDataOrText(dashboardStopLossModeCombo_, QStringLiteral("usdt")));
-    stopLoss.insert(QStringLiteral("scope"), comboDataOrText(dashboardStopLossScopeCombo_, QStringLiteral("per_trade")));
-    stopLoss.insert(QStringLiteral("usdt"), dashboardStopLossUsdtSpin_ ? dashboardStopLossUsdtSpin_->value() : 0.0);
-    stopLoss.insert(QStringLiteral("percent"), dashboardStopLossPercentSpin_ ? dashboardStopLossPercentSpin_->value() : 0.0);
+    const QJsonObject stopLossDefaults = riskDefaults.value(QStringLiteral("stop_loss")).toObject();
+    stopLoss.insert(QStringLiteral("enabled"), dashboardStopLossEnableCheck_ ? dashboardStopLossEnableCheck_->isChecked() : stopLossDefaults.value(QStringLiteral("enabled")).toBool(false));
+    stopLoss.insert(QStringLiteral("mode"), comboDataOrText(dashboardStopLossModeCombo_, stopLossDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("usdt"))));
+    stopLoss.insert(QStringLiteral("scope"), comboDataOrText(dashboardStopLossScopeCombo_, stopLossDefaults.value(QStringLiteral("scope")).toString(QStringLiteral("per_trade"))));
+    stopLoss.insert(QStringLiteral("usdt"), dashboardStopLossUsdtSpin_ ? dashboardStopLossUsdtSpin_->value() : stopLossDefaults.value(QStringLiteral("usdt")).toDouble(0.0));
+    stopLoss.insert(QStringLiteral("percent"), dashboardStopLossPercentSpin_ ? dashboardStopLossPercentSpin_->value() : stopLossDefaults.value(QStringLiteral("percent")).toDouble(0.0));
     config.insert(QStringLiteral("stop_loss"), stopLoss);
     config.insert(QStringLiteral("indicators"), dashboardIndicatorConfig(dashboardIndicatorChecks_, dashboardIndicatorParams_));
     config.insert(QStringLiteral("backtest"), buildBacktestServiceConfig());

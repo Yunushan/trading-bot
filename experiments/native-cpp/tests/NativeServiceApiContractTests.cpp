@@ -1,5 +1,6 @@
 #include "../src/TradingBotWindowSupport.h"
 #include "../src/BinanceRestClient.h"
+#include "../src/generated/PythonParityContract.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -15,11 +16,21 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <string_view>
 
 namespace {
 
 bool contains(const QStringList &values, const QString &expected) {
     return values.contains(expected);
+}
+
+QString parityString(const std::string_view value) {
+    return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
+}
+
+QStringList parityCsv(const std::string_view value) {
+    const QString text = parityString(value);
+    return text.isEmpty() ? QStringList{} : text.split(QStringLiteral(","), Qt::SkipEmptyParts);
 }
 
 void writeJsonResponseAndClose(QTcpSocket *socket, const QByteArray &body) {
@@ -64,6 +75,23 @@ int main(int argc, char **argv) {
           QStringLiteral("generated route names should include prometheus_metrics"));
     check(TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Binance")),
           QStringLiteral("native exchange guard should accept Binance"));
+    check(
+        TradingBotWindowSupport::canonicalPythonExchangeKey(
+            QStringLiteral("Crypto.com Exchange (ccxt order routing)"))
+            == QStringLiteral("Crypto.com Exchange"),
+        QStringLiteral("native exchange normalization should preserve Python's Crypto.com Exchange option"));
+    check(
+        TradingBotWindowSupport::canonicalPythonExchangeKey(QStringLiteral("Bitfinex"))
+            == QStringLiteral("Bitfinex"),
+        QStringLiteral("native exchange normalization should preserve Python's Bitfinex option"));
+    for (const auto &option : PythonParityContract::kPythonExchangeOptions) {
+        const QString key = parityString(option.key);
+        const QString label = parityString(option.label);
+        check(TradingBotWindowSupport::canonicalPythonExchangeKey(key) == key,
+              QStringLiteral("native exchange key should match Python: %1").arg(key));
+        check(TradingBotWindowSupport::canonicalPythonExchangeKey(label) == key,
+              QStringLiteral("native exchange label should normalize to Python key: %1").arg(key));
+    }
     check(!TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Bybit")),
           QStringLiteral("native exchange guard should reject non-Binance selections"));
     check(
@@ -103,6 +131,80 @@ int main(int argc, char **argv) {
         backtestConfigs.value(QStringLiteral("volume")).value(QStringLiteral("signal_role")).toString()
             == QStringLiteral("filter"),
         QStringLiteral("generated volume backtest config should preserve the Python filter role"));
+
+    const QVector<TradingBotWindowSupport::LlmProviderRuntimeConfig> llmProviders =
+        TradingBotWindowSupport::pythonSourceLlmProviderConfigs();
+    check(
+        llmProviders.size() == static_cast<int>(PythonParityContract::kPythonLlmProviders.size()),
+        QStringLiteral("native LLM provider catalog should preserve every Python provider"));
+    const int llmProviderCount = std::min(
+        static_cast<int>(llmProviders.size()),
+        static_cast<int>(PythonParityContract::kPythonLlmProviders.size()));
+    for (int index = 0; index < llmProviderCount; ++index) {
+        const auto &actual = llmProviders.at(index);
+        const auto &expected = PythonParityContract::kPythonLlmProviders.at(static_cast<size_t>(index));
+        const QString providerLabel = parityString(expected.key);
+        check(actual.key == providerLabel,
+              QStringLiteral("native LLM provider key should match Python: %1").arg(providerLabel));
+        check(actual.label == parityString(expected.label),
+              QStringLiteral("native LLM provider label should match Python: %1").arg(providerLabel));
+        check(actual.mode == parityString(expected.mode),
+              QStringLiteral("native LLM provider mode should match Python: %1").arg(providerLabel));
+        check(actual.protocol == parityString(expected.protocol),
+              QStringLiteral("native LLM provider protocol should match Python: %1").arg(providerLabel));
+        check(actual.defaultBaseUrl == parityString(expected.defaultBaseUrl),
+              QStringLiteral("native LLM provider endpoint should match Python: %1").arg(providerLabel));
+        check(actual.defaultModel == parityString(expected.defaultModel),
+              QStringLiteral("native LLM provider default model should match Python: %1").arg(providerLabel));
+        check(actual.apiKeyEnv == parityString(expected.apiKeyEnv),
+              QStringLiteral("native LLM provider API-key environment should match Python: %1").arg(providerLabel));
+        check(actual.modelSuggestions == parityCsv(expected.modelSuggestions),
+              QStringLiteral("native LLM model options should match Python: %1").arg(providerLabel));
+        check(actual.reasoningEfforts == parityCsv(expected.reasoningEfforts),
+              QStringLiteral("native LLM reasoning options should match Python: %1").arg(providerLabel));
+        check(actual.defaultReasoningEffort == parityString(expected.defaultReasoningEffort),
+              QStringLiteral("native LLM default reasoning option should match Python: %1").arg(providerLabel));
+        check(actual.catalogRevision == parityString(expected.catalogRevision),
+              QStringLiteral("native LLM catalog revision should match Python: %1").arg(providerLabel));
+        check(actual.customModelsEnv == parityString(expected.customModelsEnv),
+              QStringLiteral("native LLM custom-model environment should match Python: %1").arg(providerLabel));
+        check(actual.customModelsPathEnv == parityString(expected.customModelsPathEnv),
+              QStringLiteral("native LLM catalog-path environment should match Python: %1").arg(providerLabel));
+        check(actual.notes == parityString(expected.notes).split(QStringLiteral("\n"), Qt::SkipEmptyParts),
+              QStringLiteral("native LLM provider notes should match Python: %1").arg(providerLabel));
+    }
+
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QJsonObject expectedExecutionDefaults = QJsonDocument::fromJson(
+        QByteArray(PythonParityContract::kPythonDefaultExecutionJson.data(),
+                   static_cast<qsizetype>(PythonParityContract::kPythonDefaultExecutionJson.size())))
+                                                        .object();
+    check(executionDefaults == expectedExecutionDefaults,
+          QStringLiteral("C++ execution defaults accessor should preserve the complete Python default object"));
+    const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
+    const QJsonObject expectedRiskDefaults = QJsonDocument::fromJson(
+        QByteArray(PythonParityContract::kPythonRiskDefaultsJson.data(),
+                   static_cast<qsizetype>(PythonParityContract::kPythonRiskDefaultsJson.size())))
+                                                     .object();
+    check(riskDefaults == expectedRiskDefaults,
+          QStringLiteral("C++ risk defaults accessor should preserve the complete Python risk object"));
+    check(riskDefaults.value(QStringLiteral("indicator_use_live_values")).toBool(true) == false,
+          QStringLiteral("C++ dashboard must consume Python's closed-candle default"));
+    check(riskDefaults.value(QStringLiteral("allow_opposite_positions")).toBool(false),
+          QStringLiteral("C++ dashboard must consume Python's hedge-stacking default"));
+    const QJsonObject uiDefaults = TradingBotWindowSupport::pythonSourceUiDefaults();
+    const QJsonObject expectedUiDefaults = QJsonDocument::fromJson(
+        QByteArray(PythonParityContract::kPythonUiDefaultsJson.data(),
+                   static_cast<qsizetype>(PythonParityContract::kPythonUiDefaultsJson.size())))
+                                                    .object();
+    check(uiDefaults == expectedUiDefaults,
+          QStringLiteral("C++ UI defaults accessor should preserve the complete Python default object"));
+    check(uiDefaults.value(QStringLiteral("theme")).toString() == QStringLiteral("Dark"),
+          QStringLiteral("C++ dashboard must consume Python's theme default"));
+    check(uiDefaults.value(QStringLiteral("design")).toString() == QStringLiteral("Classic"),
+          QStringLiteral("C++ dashboard must consume Python's design default"));
+    check(uiDefaults.value(QStringLiteral("indicator_source")).toString() == QStringLiteral("Binance futures"),
+          QStringLiteral("C++ dashboard must consume Python's indicator-source default"));
 
     const QStringList configMethods =
         TradingBotWindowSupport::pythonSourceServiceRouteMethods(QStringLiteral("config"));
@@ -343,6 +445,41 @@ int main(int argc, char **argv) {
           QStringLiteral("config route should expose llm response field"));
     check(contains(configResponseFields, QStringLiteral("exchange_support")),
           QStringLiteral("config route should expose exchange_support response field"));
+
+    const QStringList llmProviderResponseFields =
+        TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("llm_providers"));
+    for (const QString &field : {
+             QStringLiteral("default_base_url"),
+             QStringLiteral("default_model"),
+             QStringLiteral("model_suggestions"),
+             QStringLiteral("reasoning_efforts"),
+             QStringLiteral("default_reasoning_effort"),
+             QStringLiteral("catalog_revision"),
+             QStringLiteral("catalog_path"),
+             QStringLiteral("custom_models_env"),
+             QStringLiteral("custom_models_path_env"),
+             QStringLiteral("catalog_note"),
+             QStringLiteral("notes"),
+         }) {
+        check(contains(llmProviderResponseFields, field),
+              QStringLiteral("llm_providers route should expose Python catalog field %1").arg(field));
+    }
+
+    const QStringList llmConfigResponseFields =
+        TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("llm_config"));
+    for (const QString &field : {
+             QStringLiteral("catalog_revision"),
+             QStringLiteral("catalog_path"),
+             QStringLiteral("custom_models_env"),
+             QStringLiteral("custom_models_path_env"),
+             QStringLiteral("default_reasoning_effort"),
+             QStringLiteral("reasoning_efforts"),
+             QStringLiteral("model_suggestions"),
+             QStringLiteral("execution_policy"),
+         }) {
+        check(contains(llmConfigResponseFields, field),
+              QStringLiteral("llm_config route should expose Python catalog field %1").arg(field));
+    }
 
     const QStringList accountResponseFields =
         TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("account"));

@@ -16,7 +16,10 @@ if str(REPO_ROOT) not in sys.path:
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from app.native_parity import native_python_source_contract_hash  # noqa: E402
+from app.native_parity import (  # noqa: E402
+    native_python_source_contract_hash,
+    native_python_source_contract_payload,
+)
 from app.service.api_contract import SERVICE_API_ROUTE_PATHS  # noqa: E402
 from app.settings.validation import (  # noqa: E402
     _ALLOWED_BACKTEST_CONFIG_KEYS,
@@ -25,12 +28,16 @@ from app.settings.validation import (  # noqa: E402
 )
 from tools.generate_native_parity_contracts import (  # noqa: E402
     CPP_INDICATOR_REFERENCE_OUTPUT,
+    CPP_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
     CPP_OUTPUT,
+    RUST_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
     RUST_INDICATOR_REFERENCE_OUTPUT,
     RUST_OUTPUT,
     TAURI_BROWSER_OUTPUT,
+    render_cpp_exchange_support_reference_header,
     render_cpp_indicator_reference_header,
     render_cpp_header,
+    render_rust_exchange_support_reference_module,
     render_rust_indicator_reference_module,
     render_rust_module,
     render_tauri_browser_contract,
@@ -89,8 +96,10 @@ PYTHON_OWNED_OPTION_VALUE_FRAGMENTS = (
 REQUIRED_GENERATED_ARTIFACT_NAMES = (
     "rust_core_generated_contract",
     "rust_indicator_reference_fixture",
+    "rust_exchange_support_reference_fixture",
     "cpp_generated_contract",
     "cpp_indicator_reference_fixture",
+    "cpp_exchange_support_reference_fixture",
     "tauri_browser_generated_contract",
 )
 REQUIRED_CONSUMER_SURFACE_NAMES = (
@@ -102,6 +111,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_native_backtest_batch_runtime_uses_python_reference_fixture",
     "rust_config_persistence_uses_python_source_options",
     "rust_native_exchange_connectors_use_python_source_connectors",
+    "rust_native_exchange_connectors_use_python_reference_fixture",
     "python_order_guard_implements_behavior_contract",
     "rust_order_guard_uses_python_behavior_contract",
     "cpp_support_consumes_generated_contract",
@@ -112,6 +122,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_native_backtest_pair_overrides_match_python",
     "cpp_backtest_service_api_uses_python_source_routes",
     "cpp_dashboard_llm_service_api_uses_python_source_routes",
+    "cpp_llm_catalog_payload_fields_follow_python",
     "cpp_config_service_api_uses_python_source_routes",
     "cpp_code_terminal_uses_python_service_api",
     "cpp_chart_uses_python_source_surface",
@@ -119,6 +130,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_positions_uses_python_source_surface",
     "cpp_account_uses_python_service_api",
     "cpp_native_exchange_connectors_use_python_source_connectors",
+    "cpp_native_exchange_connectors_use_python_reference_fixture",
     "cpp_native_strategy_runtime_uses_python_source_options",
     "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
     "cpp_native_indicator_runtime_uses_python_reference_fixture",
@@ -128,6 +140,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_dashboard_runtime_enforces_live_order_safety",
     "tauri_browser_consumes_generated_contract",
     "tauri_browser_service_api_uses_python_source_routes",
+    "tauri_llm_catalog_uses_python_source_route",
     "tauri_dashboard_stream_backend_uses_python_source_route",
     "tauri_dashboard_stream_browser_bridge",
     "tauri_environment_versions_backend_uses_python_source_catalog",
@@ -340,11 +353,21 @@ def _generated_artifacts() -> tuple[GeneratedArtifact, ...]:
             RUST_INDICATOR_REFERENCE_OUTPUT,
             render_rust_indicator_reference_module(),
         ),
+        GeneratedArtifact(
+            "rust_exchange_support_reference_fixture",
+            RUST_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
+            render_rust_exchange_support_reference_module(),
+        ),
         GeneratedArtifact("cpp_generated_contract", CPP_OUTPUT, render_cpp_header()),
         GeneratedArtifact(
             "cpp_indicator_reference_fixture",
             CPP_INDICATOR_REFERENCE_OUTPUT,
             render_cpp_indicator_reference_header(),
+        ),
+        GeneratedArtifact(
+            "cpp_exchange_support_reference_fixture",
+            CPP_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
+            render_cpp_exchange_support_reference_header(),
         ),
         GeneratedArtifact("tauri_browser_generated_contract", TAURI_BROWSER_OUTPUT, render_tauri_browser_contract()),
     )
@@ -517,12 +540,23 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PYTHON_BROKER_ORDER_ROUTING_BACKENDS",
                 "PYTHON_BROKER_CANONICAL_NAMES",
                 "PYTHON_SUPPORTED_EXCHANGES",
+                "PYTHON_SUPPORTED_CONNECTOR_BACKENDS",
                 "PYTHON_CCXT_DIAGNOSTIC_EXCHANGES",
                 "PYTHON_CCXT_ORDER_ROUTING_EXCHANGES",
                 "PYTHON_ORDER_EXECUTION_EXCHANGES",
                 "PYTHON_CCXT_EXCHANGE_IDS",
                 "canonical_broker_name",
                 "build_exchange_support_payload",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_native_exchange_connectors_use_python_reference_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "exchange_connectors.rs",
+            (
+                "crate::generated_python_exchange_support_reference::PYTHON_EXCHANGE_SUPPORT_REFERENCE_JSON",
+                "exchange_support_cases",
+                "support_payload_matches_every_generated_python_reference_case",
+                "Rust exchange support payload diverged from Python case",
             ),
         ),
         ConsumerRequirement(
@@ -715,6 +749,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_ui.cpp",
             (
                 "TradingBotWindowSupport::serviceApiRequestJson",
+                'QStringLiteral("llm_providers")',
                 'QStringLiteral("llm_config")',
                 'QStringLiteral("llm_prompt")',
                 'QStringLiteral("llm_local_model_status")',
@@ -723,6 +758,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 'QStringLiteral("llm_local_model_delete")',
             ),
             (
+                "llm_providers",
                 "llm_config",
                 "llm_prompt",
                 "llm_local_model_status",
@@ -731,6 +767,19 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "llm_local_model_delete",
             ),
             (CPP_SERVICE_API_EXTRACTOR,),
+        ),
+        ConsumerRequirement(
+            "cpp_llm_catalog_payload_fields_follow_python",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindowSupport.cpp",
+            (
+                "mergePythonLlmProviderSpec",
+                'QStringLiteral(\"default_base_url\")',
+                'QStringLiteral(\"default_reasoning_effort\")',
+                'QStringLiteral(\"model_suggestions\")',
+                'QStringLiteral(\"reasoning_efforts\")',
+                'QStringLiteral(\"custom_models_path_env\")',
+                'QStringLiteral(\"catalog_note\")',
+            ),
         ),
         ConsumerRequirement(
             "cpp_config_service_api_uses_python_source_routes",
@@ -828,6 +877,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonConnectorOptions",
                 "PythonParityContract::kPythonBrokerCanonicalNames",
                 "PythonParityContract::kPythonSupportedExchanges",
+                "PythonParityContract::kPythonSupportedConnectorBackends",
                 "PythonParityContract::kPythonCcxtDiagnosticExchanges",
                 "PythonParityContract::kPythonCcxtOrderRoutingExchanges",
                 "PythonParityContract::kPythonOrderExecutionExchanges",
@@ -835,6 +885,17 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "supportedConnectorBackends",
                 "buildExchangeSupportPayload",
                 "buildConnectorHealthSnapshot",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_exchange_connectors_use_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                '#include "../src/generated/PythonExchangeSupportReference.h"',
+                "PythonExchangeSupportReference::kPythonSourceContractHash",
+                "PythonExchangeSupportReference::kReferenceJson",
+                "exchange_support_cases",
+                "native C++ exchange support payload should exactly match Python case",
             ),
         ),
         ConsumerRequirement(
@@ -1029,6 +1090,19 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "terminal_run",
             ),
             (TAURI_REQUEST_AND_REPORT_EXTRACTOR,),
+        ),
+        ConsumerRequirement(
+            "tauri_llm_catalog_uses_python_source_route",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html",
+            (
+                'id="refresh-llm-catalog-btn"',
+                "const refreshLlmProviderCatalog",
+                'serviceRequest("llm_providers", "GET")',
+                "mergeLlmProviderSpec",
+                "customModelsPathEnv",
+                "defaultReasoningEffort",
+            ),
+            service_route_names=("llm_providers",),
         ),
         ConsumerRequirement(
             "tauri_dashboard_stream_backend_uses_python_source_route",
@@ -1341,12 +1415,70 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
     return report
 
 
+def _feature_option_contract() -> dict[str, object]:
+    """Report the Python-owned feature and option surface independently of runtime promotion."""
+    payload = native_python_source_contract_payload()
+    domains = list(payload["domains"])
+    option_catalogs = dict(payload["ui_options"])
+    option_catalog_entry_counts = {
+        name: len(value) if isinstance(value, (dict, list, tuple)) else 1
+        for name, value in option_catalogs.items()
+    }
+    domain_contract_parity = {
+        "cpp": all(bool(domain["cpp_full_parity"]) for domain in domains),
+        "rust": all(bool(domain["rust_full_parity"]) for domain in domains),
+    }
+    generated_artifact_reports = {
+        artifact.name: _check_generated_artifact(
+            artifact,
+            native_python_source_contract_hash(),
+        )
+        for artifact in _generated_artifacts()
+    }
+    native_generated_artifact_names = {
+        "cpp": tuple(
+            name
+            for name in generated_artifact_reports
+            if name.startswith("cpp_")
+        ),
+        "rust": tuple(
+            name
+            for name in generated_artifact_reports
+            if name.startswith("rust_") or name.startswith("tauri_")
+        ),
+    }
+    generated_native_contracts_match_python = {
+        side: all(
+            bool(generated_artifact_reports[name]["ok"])
+            for name in artifact_names
+        )
+        for side, artifact_names in native_generated_artifact_names.items()
+    }
+    return {
+        "scope": "Python feature and option contract/catalog equality; standalone runtime promotion is reported separately.",
+        "feature_domain_count": len(domains),
+        "feature_domain_contract_parity": domain_contract_parity,
+        "option_catalog_count": len(option_catalogs),
+        "option_catalog_entry_count": sum(option_catalog_entry_counts.values()),
+        "option_catalog_entry_counts": option_catalog_entry_counts,
+        "option_catalog_names": sorted(option_catalogs),
+        "generated_native_contracts_match_python": generated_native_contracts_match_python,
+        "generated_native_contract_artifacts": {
+            side: list(artifact_names)
+            for side, artifact_names in native_generated_artifact_names.items()
+        },
+        "ok": all(domain_contract_parity.values())
+        and all(generated_native_contracts_match_python.values()),
+    }
+
+
 def audit_native_source_sync() -> dict[str, object]:
     contract_hash = native_python_source_contract_hash()
     generated_artifact_requirements = _generated_artifacts()
     consumer_requirements = _consumer_requirements()
     surface_contract = _surface_contract(generated_artifact_requirements, consumer_requirements)
     config_key_contract = _config_key_contract()
+    feature_option_contract = _feature_option_contract()
     generated = [
         _check_generated_artifact(artifact, contract_hash)
         for artifact in generated_artifact_requirements
@@ -1360,12 +1492,15 @@ def audit_native_source_sync() -> dict[str, object]:
     ]
     issues = [*surface_contract_issues, *surface_wiring_issues]
     issues.extend(str(issue) for issue in config_key_contract["issues"])
+    if not bool(feature_option_contract["ok"]):
+        issues.append("Python feature or option contract/catalog parity failed")
     return {
         "ok": not issues,
         "contract_hash": contract_hash,
         "source": "Languages/Python/app/native_parity.py",
         "surface_contract": surface_contract,
         "config_key_contract": config_key_contract,
+        "feature_option_contract": feature_option_contract,
         "generated": generated,
         "consumers": consumers,
         "issues": issues,

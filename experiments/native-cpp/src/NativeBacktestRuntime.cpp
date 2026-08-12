@@ -1,6 +1,8 @@
 #include "NativeBacktestRuntime.h"
+#include "generated/PythonParityContract.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonValue>
 
 #include <algorithm>
@@ -302,6 +304,39 @@ QJsonArray stringArray(const QStringList &values) {
 } // namespace
 
 namespace NativeBacktestRuntime {
+
+Request::Request() {
+    const QJsonObject defaults = QJsonDocument::fromJson(QByteArray(
+        PythonParityContract::kPythonDefaultBacktestJson.data(),
+        static_cast<int>(PythonParityContract::kPythonDefaultBacktestJson.size()))).object();
+    const QJsonObject stopLoss = defaults.value(QStringLiteral("stop_loss")).toObject();
+    const QJsonArray symbols = defaults.value(QStringLiteral("symbols")).toArray();
+    const QJsonArray intervals = defaults.value(QStringLiteral("intervals")).toArray();
+    const QJsonObject configuredIndicators = defaults.value(QStringLiteral("indicators")).toObject();
+    for (auto iterator = configuredIndicators.constBegin(); iterator != configuredIndicators.constEnd(); ++iterator) {
+        indicators.insert(iterator.key(), iterator.value().toObject());
+    }
+    symbol = symbols.isEmpty() ? QString() : symbols.first().toString();
+    interval = intervals.isEmpty() ? QString() : intervals.first().toString();
+    logic = defaults.value(QStringLiteral("logic")).toString(QStringLiteral("AND"));
+    side = defaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"));
+    capital = defaults.value(QStringLiteral("capital")).toDouble(1000.0);
+    positionPct = defaults.value(QStringLiteral("position_pct")).toDouble(2.0);
+    positionPctUnits = QStringLiteral("percent");
+    leverage = defaults.value(QStringLiteral("leverage")).toDouble(20.0);
+    marginMode = defaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"));
+    positionMode = defaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"));
+    assetsMode = defaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"));
+    accountMode = defaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"));
+    mddLogic = defaults.value(QStringLiteral("mdd_logic")).toString(QStringLiteral("per_trade"));
+    stopLossEnabled = stopLoss.value(QStringLiteral("enabled")).toBool(false);
+    stopLossMode = stopLoss.value(QStringLiteral("mode")).toString(QStringLiteral("usdt"));
+    stopLossUsdt = stopLoss.value(QStringLiteral("usdt")).toDouble(0.0);
+    stopLossPercent = stopLoss.value(QStringLiteral("percent")).toDouble(0.0);
+    stopLossScope = stopLoss.value(QStringLiteral("scope")).toString(QStringLiteral("per_trade"));
+    feeBps = defaults.value(QStringLiteral("fee_bps")).toDouble(5.0);
+    slippageBps = defaults.value(QStringLiteral("slippage_bps")).toDouble(2.0);
+}
 
 QJsonObject Result::toJson() const {
     return {

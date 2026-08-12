@@ -79,7 +79,9 @@ state machine for Python-source parity, plus a native runtime loop coordinator
 that owns stream supervision snapshots, live stream event/close/error ingestion,
 pause, stop, shutdown, idle transitions, hedge/one-way close planning,
 account-mode reconciliation, futures-settings reconciliation for margin mode,
-leverage, and assets mode before signal evaluation, a native account preflight gate, native operational preflight gate, and portfolio-aware exposure guard checks for target margin, available balance, side
+leverage, and assets mode before signal evaluation, Spot-aware account
+preflight that skips those Futures-only settings, a native account preflight gate,
+native operational preflight gate, and portfolio-aware exposure guard checks for target margin, available balance, side
 caps, filter headroom, and one-way add-only reduce-only behavior without
 enabling live trading. These paths support Python-source
 parity validation. Before standalone native Rust trading can be enabled, Rust

@@ -809,23 +809,46 @@ void TradingBotWindow::addSelectedBacktestSymbolIntervalPairs() {
             indicatorKeys.append(indicatorKey);
         }
     }
+    const QJsonObject backtestDefaults = TradingBotWindowSupport::pythonSourceDefaultBacktestConfig();
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
+    const QJsonObject configuredStopLossDefaults = backtestDefaults.value(QStringLiteral("stop_loss")).toObject();
+    const QJsonObject stopLossDefaults = configuredStopLossDefaults.isEmpty()
+        ? riskDefaults.value(QStringLiteral("stop_loss")).toObject()
+        : configuredStopLossDefaults;
     QJsonObject stopLoss;
-    stopLoss.insert(QStringLiteral("enabled"), backtestStopLossEnableCheck_ && backtestStopLossEnableCheck_->isChecked());
-    stopLoss.insert(QStringLiteral("mode"), comboValue(backtestStopLossModeCombo_, QStringLiteral("usdt")));
-    stopLoss.insert(QStringLiteral("scope"), comboValue(backtestStopLossScopeCombo_, QStringLiteral("per_trade")));
-    stopLoss.insert(QStringLiteral("usdt"), doubleSpinValue(backtestStopLossUsdtSpin_, 0.0));
-    stopLoss.insert(QStringLiteral("percent"), doubleSpinValue(backtestStopLossPercentSpin_, 0.0));
+    stopLoss.insert(QStringLiteral("enabled"), backtestStopLossEnableCheck_
+        ? backtestStopLossEnableCheck_->isChecked()
+        : stopLossDefaults.value(QStringLiteral("enabled")).toBool(false));
+    stopLoss.insert(QStringLiteral("mode"), comboValue(
+        backtestStopLossModeCombo_, stopLossDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("usdt"))));
+    stopLoss.insert(QStringLiteral("scope"), comboValue(
+        backtestStopLossScopeCombo_, stopLossDefaults.value(QStringLiteral("scope")).toString(QStringLiteral("per_trade"))));
+    stopLoss.insert(QStringLiteral("usdt"), doubleSpinValue(
+        backtestStopLossUsdtSpin_, stopLossDefaults.value(QStringLiteral("usdt")).toDouble(0.0)));
+    stopLoss.insert(QStringLiteral("percent"), doubleSpinValue(
+        backtestStopLossPercentSpin_, stopLossDefaults.value(QStringLiteral("percent")).toDouble(0.0)));
     QJsonObject strategyControls;
-    strategyControls.insert(QStringLiteral("side"), comboValue(backtestSideCombo_, QStringLiteral("BOTH")));
-    strategyControls.insert(QStringLiteral("position_pct"), doubleSpinValue(backtestPositionPctSpin_, 2.0));
+    strategyControls.insert(QStringLiteral("side"), comboValue(
+        backtestSideCombo_, backtestDefaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"))));
+    strategyControls.insert(QStringLiteral("position_pct"), doubleSpinValue(
+        backtestPositionPctSpin_, backtestDefaults.value(QStringLiteral("position_pct")).toDouble(2.0)));
     strategyControls.insert(QStringLiteral("position_pct_units"), QStringLiteral("percent"));
-    strategyControls.insert(QStringLiteral("leverage"), spinValue(backtestLeverageSpin_, 20));
-    strategyControls.insert(QStringLiteral("margin_mode"), comboValue(backtestMarginModeCombo_, QStringLiteral("Isolated")));
-    strategyControls.insert(QStringLiteral("position_mode"), comboValue(backtestPositionModeCombo_, QStringLiteral("Hedge")));
-    strategyControls.insert(QStringLiteral("assets_mode"), comboValue(backtestAssetsModeCombo_, QStringLiteral("Single-Asset")));
-    strategyControls.insert(QStringLiteral("account_mode"), comboValue(backtestAccountModeCombo_, QStringLiteral("Classic Trading")));
-    strategyControls.insert(QStringLiteral("connector_backend"), comboValue(backtestConnectorCombo_));
-    strategyControls.insert(QStringLiteral("loop_interval_override"), comboValue(backtestLoopCombo_, QStringLiteral("1m")));
+    strategyControls.insert(QStringLiteral("leverage"), spinValue(
+        backtestLeverageSpin_, backtestDefaults.value(QStringLiteral("leverage")).toInt(20)));
+    strategyControls.insert(QStringLiteral("margin_mode"), comboValue(
+        backtestMarginModeCombo_, backtestDefaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"))));
+    strategyControls.insert(QStringLiteral("position_mode"), comboValue(
+        backtestPositionModeCombo_, backtestDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"))));
+    strategyControls.insert(QStringLiteral("assets_mode"), comboValue(
+        backtestAssetsModeCombo_, backtestDefaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"))));
+    strategyControls.insert(QStringLiteral("account_mode"), comboValue(
+        backtestAccountModeCombo_, backtestDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
+    strategyControls.insert(QStringLiteral("connector_backend"), comboValue(
+        backtestConnectorCombo_, backtestDefaults.value(QStringLiteral("connector_backend")).toString()));
+    strategyControls.insert(QStringLiteral("loop_interval_override"), comboValue(
+        backtestLoopCombo_, backtestDefaults.value(QStringLiteral("loop_interval_override")).toString(
+            executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m")))));
     strategyControls.insert(QStringLiteral("stop_loss"), stopLoss);
 
     int added = 0;
@@ -941,6 +964,11 @@ void TradingBotWindow::hydrateBacktestSymbolIntervalPairs(const QJsonArray &pair
 
 QJsonObject TradingBotWindow::buildBacktestServiceConfig() const {
     const QJsonObject defaults = TradingBotWindowSupport::pythonSourceDefaultBacktestConfig();
+    const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
+    const QJsonObject configuredStopLossDefaults = defaults.value(QStringLiteral("stop_loss")).toObject();
+    const QJsonObject stopLossDefaults = configuredStopLossDefaults.isEmpty()
+        ? riskDefaults.value(QStringLiteral("stop_loss")).toObject()
+        : configuredStopLossDefaults;
     QStringList symbols = selectedListValues(symbolList_);
     if (symbols.isEmpty()) {
         symbols = TradingBotWindowSupport::pythonSourceDefaultBacktestSymbols();
@@ -951,11 +979,17 @@ QJsonObject TradingBotWindow::buildBacktestServiceConfig() const {
     }
 
     QJsonObject stopLoss;
-    stopLoss.insert(QStringLiteral("enabled"), backtestStopLossEnableCheck_ && backtestStopLossEnableCheck_->isChecked());
-    stopLoss.insert(QStringLiteral("mode"), comboValue(backtestStopLossModeCombo_, QStringLiteral("usdt")));
-    stopLoss.insert(QStringLiteral("scope"), comboValue(backtestStopLossScopeCombo_, QStringLiteral("per_trade")));
-    stopLoss.insert(QStringLiteral("usdt"), doubleSpinValue(backtestStopLossUsdtSpin_, 0.0));
-    stopLoss.insert(QStringLiteral("percent"), doubleSpinValue(backtestStopLossPercentSpin_, 0.0));
+    stopLoss.insert(QStringLiteral("enabled"), backtestStopLossEnableCheck_
+        ? backtestStopLossEnableCheck_->isChecked()
+        : stopLossDefaults.value(QStringLiteral("enabled")).toBool(false));
+    stopLoss.insert(QStringLiteral("mode"), comboValue(
+        backtestStopLossModeCombo_, stopLossDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("usdt"))));
+    stopLoss.insert(QStringLiteral("scope"), comboValue(
+        backtestStopLossScopeCombo_, stopLossDefaults.value(QStringLiteral("scope")).toString(QStringLiteral("per_trade"))));
+    stopLoss.insert(QStringLiteral("usdt"), doubleSpinValue(
+        backtestStopLossUsdtSpin_, stopLossDefaults.value(QStringLiteral("usdt")).toDouble(0.0)));
+    stopLoss.insert(QStringLiteral("percent"), doubleSpinValue(
+        backtestStopLossPercentSpin_, stopLossDefaults.value(QStringLiteral("percent")).toDouble(0.0)));
 
     QJsonObject indicators;
     const QMap<QString, QJsonObject> sourceIndicators = TradingBotWindowSupport::pythonSourceBacktestIndicatorConfigs();
@@ -978,12 +1012,16 @@ QJsonObject TradingBotWindow::buildBacktestServiceConfig() const {
     QJsonObject config;
     config.insert(QStringLiteral("symbols"), stringArray(symbols));
     config.insert(QStringLiteral("intervals"), stringArray(intervals));
-    config.insert(QStringLiteral("execution_backend"), comboValue(backtestExecutionBackendCombo_, QStringLiteral("local")));
+    config.insert(QStringLiteral("execution_backend"), comboValue(
+        backtestExecutionBackendCombo_, defaults.value(QStringLiteral("execution_backend")).toString(QStringLiteral("local"))));
     config.insert(QStringLiteral("capital"), doubleSpinValue(backtestCapitalSpin_, defaults.value(QStringLiteral("capital")).toDouble(1000.0)));
-    config.insert(QStringLiteral("logic"), comboValue(backtestSignalLogicCombo_, QStringLiteral("AND")));
+    config.insert(QStringLiteral("logic"), comboValue(
+        backtestSignalLogicCombo_, defaults.value(QStringLiteral("logic")).toString(QStringLiteral("AND"))));
     config.insert(
         QStringLiteral("symbol_source"),
-        symbolSourceCombo_ ? symbolSourceCombo_->currentText().trimmed() : QStringLiteral("Futures"));
+        symbolSourceCombo_ && !symbolSourceCombo_->currentText().trimmed().isEmpty()
+            ? symbolSourceCombo_->currentText().trimmed()
+            : defaults.value(QStringLiteral("symbol_source")).toString(QStringLiteral("Futures")));
     config.insert(
         QStringLiteral("start_date"),
         backtestStartDateEdit_ && backtestStartDateEdit_->date().isValid()
@@ -994,26 +1032,45 @@ QJsonObject TradingBotWindow::buildBacktestServiceConfig() const {
         backtestEndDateEdit_ && backtestEndDateEdit_->date().isValid()
             ? QJsonValue(backtestEndDateEdit_->date().toString(Qt::ISODate))
             : QJsonValue(QJsonValue::Null));
-    config.insert(QStringLiteral("position_pct"), doubleSpinValue(backtestPositionPctSpin_, 2.0));
-    config.insert(QStringLiteral("side"), comboValue(backtestSideCombo_, QStringLiteral("BOTH")));
-    config.insert(QStringLiteral("margin_mode"), comboValue(backtestMarginModeCombo_, QStringLiteral("Isolated")));
-    config.insert(QStringLiteral("position_mode"), comboValue(backtestPositionModeCombo_, QStringLiteral("Hedge")));
-    config.insert(QStringLiteral("assets_mode"), comboValue(backtestAssetsModeCombo_, QStringLiteral("Single-Asset")));
-    config.insert(QStringLiteral("account_mode"), comboValue(backtestAccountModeCombo_, QStringLiteral("Classic Trading")));
-    config.insert(QStringLiteral("connector_backend"), comboValue(backtestConnectorCombo_));
-    config.insert(QStringLiteral("leverage"), spinValue(backtestLeverageSpin_, 20));
-    config.insert(QStringLiteral("mdd_logic"), comboValue(backtestMddLogicCombo_, QStringLiteral("per_trade")));
-    config.insert(QStringLiteral("scan_scope"), comboValue(backtestScanScopeCombo_, QStringLiteral("selected")));
-    config.insert(QStringLiteral("scan_top_n"), spinValue(backtestScanTopNSpin_, 200));
-    config.insert(QStringLiteral("scan_mdd_limit"), doubleSpinValue(backtestScanMddSpin_, 10.0));
+    config.insert(QStringLiteral("position_pct"), doubleSpinValue(
+        backtestPositionPctSpin_, defaults.value(QStringLiteral("position_pct")).toDouble(2.0)));
+    config.insert(QStringLiteral("side"), comboValue(
+        backtestSideCombo_, defaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"))));
+    config.insert(QStringLiteral("margin_mode"), comboValue(
+        backtestMarginModeCombo_, defaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"))));
+    config.insert(QStringLiteral("position_mode"), comboValue(
+        backtestPositionModeCombo_, defaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"))));
+    config.insert(QStringLiteral("assets_mode"), comboValue(
+        backtestAssetsModeCombo_, defaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"))));
+    config.insert(QStringLiteral("account_mode"), comboValue(
+        backtestAccountModeCombo_, defaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
+    config.insert(QStringLiteral("connector_backend"), comboValue(
+        backtestConnectorCombo_, defaults.value(QStringLiteral("connector_backend")).toString()));
+    config.insert(QStringLiteral("leverage"), spinValue(
+        backtestLeverageSpin_, defaults.value(QStringLiteral("leverage")).toInt(20)));
+    config.insert(QStringLiteral("mdd_logic"), comboValue(
+        backtestMddLogicCombo_, defaults.value(QStringLiteral("mdd_logic")).toString(QStringLiteral("per_trade"))));
+    config.insert(QStringLiteral("scan_scope"), comboValue(
+        backtestScanScopeCombo_, defaults.value(QStringLiteral("scan_scope")).toString(QStringLiteral("selected"))));
+    config.insert(QStringLiteral("scan_top_n"), spinValue(
+        backtestScanTopNSpin_, defaults.value(QStringLiteral("scan_top_n")).toInt(200)));
+    config.insert(QStringLiteral("scan_mdd_limit"), doubleSpinValue(
+        backtestScanMddSpin_, defaults.value(QStringLiteral("scan_mdd_limit")).toDouble(10.0)));
     config.insert(QStringLiteral("scan_auto_apply"), backtestScanAutoApplyCheck_ && backtestScanAutoApplyCheck_->isChecked());
-    config.insert(QStringLiteral("optimizer_mode"), comboValue(backtestOptimizerModeCombo_, QStringLiteral("current")));
-    config.insert(QStringLiteral("optimizer_metric"), comboValue(backtestOptimizerMetricCombo_, QStringLiteral("roi_percent")));
-    config.insert(QStringLiteral("optimizer_combo_size"), spinValue(backtestOptimizerComboSizeSpin_, 2));
-    config.insert(QStringLiteral("optimizer_min_trades"), spinValue(backtestOptimizerMinTradesSpin_, 1));
-    config.insert(QStringLiteral("optimizer_max_duration_seconds"), spinValue(backtestOptimizerMaxDurationSpin_, 240) * 60);
-    config.insert(QStringLiteral("fee_bps"), doubleSpinValue(backtestFeeBpsSpin_, 5.0));
-    config.insert(QStringLiteral("slippage_bps"), doubleSpinValue(backtestSlippageBpsSpin_, 2.0));
+    config.insert(QStringLiteral("optimizer_mode"), comboValue(
+        backtestOptimizerModeCombo_, defaults.value(QStringLiteral("optimizer_mode")).toString(QStringLiteral("current"))));
+    config.insert(QStringLiteral("optimizer_metric"), comboValue(
+        backtestOptimizerMetricCombo_, defaults.value(QStringLiteral("optimizer_metric")).toString(QStringLiteral("roi_percent"))));
+    config.insert(QStringLiteral("optimizer_combo_size"), spinValue(
+        backtestOptimizerComboSizeSpin_, defaults.value(QStringLiteral("optimizer_combo_size")).toInt(2)));
+    config.insert(QStringLiteral("optimizer_min_trades"), spinValue(
+        backtestOptimizerMinTradesSpin_, defaults.value(QStringLiteral("optimizer_min_trades")).toInt(1)));
+    config.insert(QStringLiteral("optimizer_max_duration_seconds"), spinValue(
+        backtestOptimizerMaxDurationSpin_, std::max(1, defaults.value(QStringLiteral("optimizer_max_duration_seconds")).toInt(14'400) / 60)) * 60);
+    config.insert(QStringLiteral("fee_bps"), doubleSpinValue(
+        backtestFeeBpsSpin_, defaults.value(QStringLiteral("fee_bps")).toDouble(5.0)));
+    config.insert(QStringLiteral("slippage_bps"), doubleSpinValue(
+        backtestSlippageBpsSpin_, defaults.value(QStringLiteral("slippage_bps")).toDouble(2.0)));
     config.insert(QStringLiteral("template"), templateConfig);
     config.insert(QStringLiteral("indicators"), indicators);
     config.insert(QStringLiteral("stop_loss"), stopLoss);
@@ -1464,24 +1521,37 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
         return;
     }
 
-    const QString loopInterval = comboValue(backtestLoopCombo_, QStringLiteral("1m"));
+    const QJsonObject backtestDefaults = TradingBotWindowSupport::pythonSourceDefaultBacktestConfig();
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
+    const QJsonObject uiDefaults = TradingBotWindowSupport::pythonSourceUiDefaults();
+    const QString loopInterval = comboValue(
+        backtestLoopCombo_,
+        backtestDefaults.value(QStringLiteral("loop_interval_override")).toString(
+            executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m"))));
     QJsonObject stopLoss;
-    stopLoss.insert(QStringLiteral("enabled"), backtestStopLossEnableCheck_ && backtestStopLossEnableCheck_->isChecked());
-    stopLoss.insert(QStringLiteral("mode"), comboValue(backtestStopLossModeCombo_, QStringLiteral("usdt")));
-    stopLoss.insert(QStringLiteral("scope"), comboValue(backtestStopLossScopeCombo_, QStringLiteral("per_trade")));
-    stopLoss.insert(QStringLiteral("usdt"), doubleSpinValue(backtestStopLossUsdtSpin_, 0.0));
-    stopLoss.insert(QStringLiteral("percent"), doubleSpinValue(backtestStopLossPercentSpin_, 0.0));
+    const QJsonObject stopLossDefaults = backtestDefaults.value(QStringLiteral("stop_loss")).toObject();
+    const QJsonObject effectiveStopLossDefaults = stopLossDefaults.isEmpty()
+        ? riskDefaults.value(QStringLiteral("stop_loss")).toObject()
+        : stopLossDefaults;
+    stopLoss.insert(QStringLiteral("enabled"), backtestStopLossEnableCheck_ ? backtestStopLossEnableCheck_->isChecked() : effectiveStopLossDefaults.value(QStringLiteral("enabled")).toBool(false));
+    stopLoss.insert(QStringLiteral("mode"), comboValue(backtestStopLossModeCombo_, effectiveStopLossDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("usdt"))));
+    stopLoss.insert(QStringLiteral("scope"), comboValue(backtestStopLossScopeCombo_, effectiveStopLossDefaults.value(QStringLiteral("scope")).toString(QStringLiteral("per_trade"))));
+    stopLoss.insert(QStringLiteral("usdt"), doubleSpinValue(backtestStopLossUsdtSpin_, effectiveStopLossDefaults.value(QStringLiteral("usdt")).toDouble(0.0)));
+    stopLoss.insert(QStringLiteral("percent"), doubleSpinValue(backtestStopLossPercentSpin_, effectiveStopLossDefaults.value(QStringLiteral("percent")).toDouble(0.0)));
 
-    const QString symbolSource = symbolSourceCombo_ ? symbolSourceCombo_->currentText().trimmed() : QStringLiteral("Futures");
+    const QString symbolSource = symbolSourceCombo_ && !symbolSourceCombo_->currentText().trimmed().isEmpty()
+        ? symbolSourceCombo_->currentText().trimmed()
+        : backtestDefaults.value(QStringLiteral("symbol_source")).toString(QStringLiteral("Futures"));
     QJsonObject request;
     request.insert(QStringLiteral("symbols"), stringArray(symbols));
     request.insert(QStringLiteral("intervals"), stringArray(intervals));
     request.insert(QStringLiteral("indicators"), indicators);
     request.insert(QStringLiteral("execution_backend"), backend);
-    request.insert(QStringLiteral("logic"), comboValue(backtestSignalLogicCombo_, QStringLiteral("AND")));
-    request.insert(QStringLiteral("symbol_source"), symbolSource.isEmpty() ? QStringLiteral("Futures") : symbolSource);
+    request.insert(QStringLiteral("logic"), comboValue(backtestSignalLogicCombo_, backtestDefaults.value(QStringLiteral("logic")).toString(QStringLiteral("AND"))));
+    request.insert(QStringLiteral("symbol_source"), symbolSource);
     request.insert(QStringLiteral("account_type"), symbolSource.toLower().startsWith(QStringLiteral("spot")) ? QStringLiteral("Spot") : QStringLiteral("Futures"));
-    request.insert(QStringLiteral("mode"), comboValue(dashboardModeCombo_, QStringLiteral("Demo/Testnet")));
+    request.insert(QStringLiteral("mode"), comboValue(dashboardModeCombo_, executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"))));
     request.insert(QStringLiteral("backtest"), true);
     const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
     const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
@@ -1491,38 +1561,41 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     if (!apiSecret.isEmpty() && apiSecret != QStringLiteral("********")) {
         request.insert(QStringLiteral("api_secret"), apiSecret);
     }
-    request.insert(QStringLiteral("capital"), doubleSpinValue(backtestCapitalSpin_, 1000.0));
+    request.insert(QStringLiteral("capital"), doubleSpinValue(backtestCapitalSpin_, backtestDefaults.value(QStringLiteral("capital")).toDouble(1000.0)));
     request.insert(QStringLiteral("start"), startDate.toString(Qt::ISODate));
     request.insert(QStringLiteral("end"), endDate.toString(Qt::ISODate));
     request.insert(QStringLiteral("start_date"), request.value(QStringLiteral("start")));
     request.insert(QStringLiteral("end_date"), request.value(QStringLiteral("end")));
-    request.insert(QStringLiteral("position_pct"), doubleSpinValue(backtestPositionPctSpin_, 2.0));
+    request.insert(QStringLiteral("position_pct"), doubleSpinValue(backtestPositionPctSpin_, backtestDefaults.value(QStringLiteral("position_pct")).toDouble(2.0)));
     request.insert(QStringLiteral("position_pct_units"), QStringLiteral("percent"));
     request.insert(QStringLiteral("loop_interval_override"), loopInterval);
-    request.insert(QStringLiteral("side"), comboValue(backtestSideCombo_, QStringLiteral("BOTH")));
-    request.insert(QStringLiteral("margin_mode"), comboValue(backtestMarginModeCombo_, QStringLiteral("Isolated")));
-    request.insert(QStringLiteral("position_mode"), comboValue(backtestPositionModeCombo_, QStringLiteral("Hedge")));
-    request.insert(QStringLiteral("assets_mode"), comboValue(backtestAssetsModeCombo_, QStringLiteral("Single-Asset")));
-    request.insert(QStringLiteral("account_mode"), comboValue(backtestAccountModeCombo_, QStringLiteral("Classic Trading")));
-    request.insert(QStringLiteral("connector_backend"), comboValue(backtestConnectorCombo_));
-    request.insert(QStringLiteral("selected_exchange"), selectedExchange);
-    request.insert(QStringLiteral("leverage"), spinValue(backtestLeverageSpin_, 1));
-    request.insert(QStringLiteral("mdd_logic"), comboValue(backtestMddLogicCombo_, QStringLiteral("per_trade")));
+    request.insert(QStringLiteral("side"), comboValue(backtestSideCombo_, backtestDefaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"))));
+    request.insert(QStringLiteral("margin_mode"), comboValue(backtestMarginModeCombo_, backtestDefaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"))));
+    request.insert(QStringLiteral("position_mode"), comboValue(backtestPositionModeCombo_, backtestDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"))));
+    request.insert(QStringLiteral("assets_mode"), comboValue(backtestAssetsModeCombo_, backtestDefaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"))));
+    request.insert(QStringLiteral("account_mode"), comboValue(backtestAccountModeCombo_, backtestDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
+    request.insert(QStringLiteral("connector_backend"), comboValue(backtestConnectorCombo_, backtestDefaults.value(QStringLiteral("connector_backend")).toString()));
+    request.insert(QStringLiteral("selected_exchange"), selectedExchange.isEmpty() ? uiDefaults.value(QStringLiteral("selected_exchange")).toString(QStringLiteral("Binance")) : selectedExchange);
+    request.insert(QStringLiteral("leverage"), spinValue(backtestLeverageSpin_, backtestDefaults.value(QStringLiteral("leverage")).toInt(20)));
+    request.insert(QStringLiteral("mdd_logic"), comboValue(backtestMddLogicCombo_, backtestDefaults.value(QStringLiteral("mdd_logic")).toString(QStringLiteral("per_trade"))));
     request.insert(QStringLiteral("scan_scope"), scanScope);
-    request.insert(QStringLiteral("scan_top_n"), spinValue(backtestScanTopNSpin_, 200));
-    request.insert(QStringLiteral("scan_mdd_limit"), doubleSpinValue(backtestScanMddSpin_, 10.0));
+    request.insert(QStringLiteral("scan_top_n"), spinValue(backtestScanTopNSpin_, backtestDefaults.value(QStringLiteral("scan_top_n")).toInt(200)));
+    request.insert(QStringLiteral("scan_mdd_limit"), doubleSpinValue(backtestScanMddSpin_, backtestDefaults.value(QStringLiteral("scan_mdd_limit")).toDouble(10.0)));
     request.insert(
         QStringLiteral("scan_auto_apply"),
         backtestScanAutoApplyCheck_ && backtestScanAutoApplyCheck_->isChecked());
     request.insert(QStringLiteral("optimizer_mode"), optimizerMode);
     request.insert(
         QStringLiteral("optimizer_max_duration_seconds"),
-        spinValue(backtestOptimizerMaxDurationSpin_, 240) * 60);
-    request.insert(QStringLiteral("optimizer_metric"), comboValue(backtestOptimizerMetricCombo_, QStringLiteral("roi_percent")));
-    request.insert(QStringLiteral("optimizer_combo_size"), spinValue(backtestOptimizerComboSizeSpin_, 2));
-    request.insert(QStringLiteral("optimizer_min_trades"), spinValue(backtestOptimizerMinTradesSpin_, 1));
-    request.insert(QStringLiteral("fee_bps"), doubleSpinValue(backtestFeeBpsSpin_, 5.0));
-    request.insert(QStringLiteral("slippage_bps"), doubleSpinValue(backtestSlippageBpsSpin_, 2.0));
+        spinValue(
+            backtestOptimizerMaxDurationSpin_,
+            std::max(1, backtestDefaults.value(QStringLiteral("optimizer_max_duration_seconds")).toInt(14 * 60 * 60) / 60))
+            * 60);
+    request.insert(QStringLiteral("optimizer_metric"), comboValue(backtestOptimizerMetricCombo_, backtestDefaults.value(QStringLiteral("optimizer_metric")).toString(QStringLiteral("roi_percent"))));
+    request.insert(QStringLiteral("optimizer_combo_size"), spinValue(backtestOptimizerComboSizeSpin_, backtestDefaults.value(QStringLiteral("optimizer_combo_size")).toInt(2)));
+    request.insert(QStringLiteral("optimizer_min_trades"), spinValue(backtestOptimizerMinTradesSpin_, backtestDefaults.value(QStringLiteral("optimizer_min_trades")).toInt(1)));
+    request.insert(QStringLiteral("fee_bps"), doubleSpinValue(backtestFeeBpsSpin_, backtestDefaults.value(QStringLiteral("fee_bps")).toDouble(5.0)));
+    request.insert(QStringLiteral("slippage_bps"), doubleSpinValue(backtestSlippageBpsSpin_, backtestDefaults.value(QStringLiteral("slippage_bps")).toDouble(2.0)));
     request.insert(
         QStringLiteral("queue_if_busy"),
         backtestQueueIfBusyCheck_ && backtestQueueIfBusyCheck_->isChecked());
@@ -1549,7 +1622,10 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
         runTemplate.capital = jsonNumber(request, QStringLiteral("capital"), 1000.0);
         runTemplate.positionPct = jsonNumber(request, QStringLiteral("position_pct"), 2.0);
         runTemplate.positionPctUnits = QStringLiteral("percent");
-        runTemplate.leverage = jsonNumber(request, QStringLiteral("leverage"), 1.0);
+        runTemplate.leverage = jsonNumber(
+            request,
+            QStringLiteral("leverage"),
+            backtestDefaults.value(QStringLiteral("leverage")).toDouble(20.0));
         runTemplate.marginMode = jsonText(request, QStringLiteral("margin_mode"), QStringLiteral("Isolated"));
         runTemplate.positionMode = jsonText(request, QStringLiteral("position_mode"), QStringLiteral("Hedge"));
         runTemplate.assetsMode = jsonText(request, QStringLiteral("assets_mode"), QStringLiteral("Single-Asset"));
@@ -1573,7 +1649,10 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
         batchRequest.optimizerScope = scanScope;
         batchRequest.optimizerComboSize = static_cast<int>(jsonNumber(request, QStringLiteral("optimizer_combo_size"), 2.0));
         batchRequest.optimizerMinTrades = static_cast<int>(jsonNumber(request, QStringLiteral("optimizer_min_trades"), 1.0));
-        batchRequest.optimizerMddLimit = jsonNumber(request, QStringLiteral("scan_mdd_limit"), 0.0);
+        batchRequest.optimizerMddLimit = jsonNumber(
+            request,
+            QStringLiteral("scan_mdd_limit"),
+            backtestDefaults.value(QStringLiteral("scan_mdd_limit")).toDouble(10.0));
         batchRequest.startDisplay = startDate.toString(Qt::ISODate);
         batchRequest.endDisplay = endDate.toString(Qt::ISODate);
         batchRequest.loopIntervalOverride = loopInterval;
@@ -1951,6 +2030,8 @@ QWidget *TradingBotWindow::createParametersGroup() {
     auto *group = new QGroupBox("Backtest Parameters", this);
     auto *form = new QFormLayout(group);
     const QJsonObject backtestDefaults = TradingBotWindowSupport::pythonSourceDefaultBacktestConfig();
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
@@ -2045,7 +2126,7 @@ QWidget *TradingBotWindow::createParametersGroup() {
         TradingBotWindowSupport::pythonSourceDashboardLoopChoiceKeys(),
         TradingBotWindowSupport::pythonSourceDashboardLoopChoiceLabels(),
         {},
-        QStringLiteral("1m"),
+        executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m")),
         QStringLiteral("1 minute"));
     backtestLoopCombo_ = loopCombo;
     form->addRow("Loop Interval Override:", loopCombo);
@@ -2055,7 +2136,10 @@ QWidget *TradingBotWindow::createParametersGroup() {
     stopLossLayout->setContentsMargins(0, 0, 0, 0);
     stopLossLayout->setSpacing(6);
     auto *stopEnable = new QCheckBox("Enable", stopLossRow);
-    const QJsonObject stopLossDefaults = backtestDefaults.value(QStringLiteral("stop_loss")).toObject();
+    const QJsonObject configuredStopLossDefaults = backtestDefaults.value(QStringLiteral("stop_loss")).toObject();
+    const QJsonObject stopLossDefaults = configuredStopLossDefaults.isEmpty()
+        ? riskDefaults.value(QStringLiteral("stop_loss")).toObject()
+        : configuredStopLossDefaults;
     stopEnable->setChecked(stopLossDefaults.value(QStringLiteral("enabled")).toBool(false));
     auto *stopMode = new QComboBox(stopLossRow);
     TradingBotWindowSupport::populateComboFromPythonSourceOptions(
@@ -2063,14 +2147,14 @@ QWidget *TradingBotWindow::createParametersGroup() {
         TradingBotWindowSupport::pythonSourceStopLossModeKeys(),
         TradingBotWindowSupport::pythonSourceStopLossModeLabels(),
         {},
-        QStringLiteral("usdt"));
+        stopLossDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("usdt")));
     auto *stopScope = new QComboBox(stopLossRow);
     TradingBotWindowSupport::populateComboFromPythonSourceOptions(
         stopScope,
         TradingBotWindowSupport::pythonSourceStopLossScopeKeys(),
         TradingBotWindowSupport::pythonSourceStopLossScopeLabels(),
         {},
-        QStringLiteral("per_trade"));
+        stopLossDefaults.value(QStringLiteral("scope")).toString(QStringLiteral("per_trade")));
     auto *stopUsdt = new QDoubleSpinBox(stopLossRow);
     stopUsdt->setPrefix("USDT ");
     stopUsdt->setRange(0.0, 1'000'000.0);

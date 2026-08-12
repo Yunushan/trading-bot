@@ -11,6 +11,7 @@
 namespace NativeBacktestRuntime {
 
 struct Request {
+    Request();
     QString symbol;
     QString interval;
     NativeIndicatorRuntime::ConfigMap indicators;

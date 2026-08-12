@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QMap>
 #include <QJsonObject>
+#include <QVariantMap>
 
 class QComboBox;
 class QTableWidgetItem;
@@ -35,6 +36,10 @@ struct LlmProviderRuntimeConfig {
     QStringList modelSuggestions;
     QStringList reasoningEfforts;
     QString defaultReasoningEffort;
+    QString catalogRevision;
+    QString customModelsEnv;
+    QString customModelsPathEnv;
+    QStringList notes;
 };
 
 struct ServiceApiJsonResult {
@@ -46,6 +51,7 @@ struct ServiceApiJsonResult {
 
 bool isTestnetModeLabel(const QString &modeText);
 bool isPaperTradingModeLabel(const QString &modeText);
+QString canonicalPythonExchangeKey(const QString &value);
 QString selectedDashboardExchange(const QComboBox *combo);
 bool exchangeUsesBinanceApi(const QString &exchangeKey);
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures);
@@ -82,6 +88,9 @@ QStringList pythonSourceLlmProviderLabels();
 QStringList pythonSourceLlmProviderDefaultModels();
 QStringList pythonSourceLlmProviderApiKeyEnvs();
 QVector<LlmProviderRuntimeConfig> pythonSourceLlmProviderConfigs();
+QVariantMap mergePythonLlmProviderSpec(
+    const QVariantMap &current,
+    const QJsonObject &pythonProviderPayload);
 QStringList pythonSourceConnectorKeys();
 QStringList pythonSourceConnectorLabels();
 QStringList pythonSourceBacktestIntervals();
@@ -94,6 +103,8 @@ QStringList pythonSourceDefaultBacktestSymbols();
 QStringList pythonSourceDefaultBacktestIntervals();
 QJsonObject pythonSourceDefaultExecutionConfig();
 QJsonObject pythonSourceDefaultBacktestConfig();
+QJsonObject pythonSourceRiskDefaults();
+QJsonObject pythonSourceUiDefaults();
 QStringList pythonSourceChartMarketOptions();
 QStringList pythonSourceAccountModeOptions();
 QStringList pythonSourceDashboardLoopChoiceKeys();

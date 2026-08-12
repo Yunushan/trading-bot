@@ -318,7 +318,11 @@ QWidget *TradingBotWindow::createPositionsTab() {
             return;
         }
 
-        const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+        const QString mode = dashboardModeCombo_
+            ? dashboardModeCombo_->currentText()
+            : TradingBotWindowSupport::pythonSourceDefaultExecutionConfig()
+                  .value(QStringLiteral("mode"))
+                  .toString(QStringLiteral("Demo/Testnet"));
         if (TradingBotWindowSupport::isPaperTradingModeLabel(mode)) {
             const double paperBalance = currentDashboardPaperBalanceUsdt();
             positionsLastTotalBalanceUsdt_ = paperBalance;
@@ -335,9 +339,7 @@ QWidget *TradingBotWindow::createPositionsTab() {
             return;
         }
 
-        const bool isTestnet = dashboardModeCombo_
-            ? TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText())
-            : false;
+        const bool isTestnet = TradingBotWindowSupport::isTestnetModeLabel(mode);
         const QString connectorText = dashboardConnectorCombo_
             ? dashboardConnectorCombo_->currentText().trimmed()
             : TradingBotWindowSupport::connectorLabelForKey(
@@ -551,7 +553,11 @@ QWidget *TradingBotWindow::createPositionsTab() {
             applyPositionsViewMode();
         };
 
-        const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+        const QString mode = dashboardModeCombo_
+            ? dashboardModeCombo_->currentText()
+            : TradingBotWindowSupport::pythonSourceDefaultExecutionConfig()
+                  .value(QStringLiteral("mode"))
+                  .toString(QStringLiteral("Demo/Testnet"));
         if (TradingBotWindowSupport::isPaperTradingModeLabel(mode) && !serviceOwnedPosition) {
             markSelectedClosed();
             updateStatusMessage(QStringLiteral("Closed selected local paper position: %1 %2.").arg(symbol, sideLabel));
@@ -713,7 +719,11 @@ QWidget *TradingBotWindow::createPositionsTab() {
     });
     connect(closeAllBtn, &QPushButton::clicked, this, [=]() {
         const int localRowCount = table->rowCount();
-        const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+        const QString mode = dashboardModeCombo_
+            ? dashboardModeCombo_->currentText()
+            : TradingBotWindowSupport::pythonSourceDefaultExecutionConfig()
+                  .value(QStringLiteral("mode"))
+                  .toString(QStringLiteral("Demo/Testnet"));
         if (TradingBotWindowSupport::isPaperTradingModeLabel(mode)) {
             table->setRowCount(0);
             dashboardRuntimeOpenPositions_.clear();
@@ -1156,7 +1166,11 @@ void TradingBotWindow::refreshPositionsSummaryLabels() {
     const bool futuresMode = dashboardAccountTypeCombo_
         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
         : true;
-    const QString modeText = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+    const QString modeText = dashboardModeCombo_
+        ? dashboardModeCombo_->currentText()
+        : TradingBotWindowSupport::pythonSourceDefaultExecutionConfig()
+              .value(QStringLiteral("mode"))
+              .toString(QStringLiteral("Demo/Testnet"));
     const bool paperTrading = TradingBotWindowSupport::isPaperTradingModeLabel(modeText);
     const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
     const QString liveActivePnlContextKey = QStringLiteral("%1|%2|%3")

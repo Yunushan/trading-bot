@@ -800,7 +800,13 @@
         "api_key_env",
         "model_suggestions",
         "reasoning_efforts",
-        "default_reasoning_effort"
+        "default_reasoning_effort",
+        "catalog_revision",
+        "catalog_path",
+        "custom_models_env",
+        "custom_models_path_env",
+        "catalog_note",
+        "notes"
       ]
     },
     "llm_config": {
@@ -814,13 +820,22 @@
         "provider_label",
         "mode",
         "protocol",
+        "catalog_revision",
+        "catalog_path",
+        "custom_models_env",
+        "custom_models_path_env",
         "model",
         "base_url",
         "api_key_env",
         "api_key_present",
         "allow_public_network",
         "use_for",
-        "reasoning_effort"
+        "reasoning_effort",
+        "default_reasoning_effort",
+        "reasoning_efforts",
+        "model_suggestions",
+        "notes",
+        "execution_policy"
       ]
     },
     "llm_prompt": {

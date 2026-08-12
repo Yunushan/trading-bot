@@ -6,7 +6,8 @@ use crate::generated_python_parity::{
     PYTHON_BROKER_CANONICAL_NAMES, PYTHON_BROKER_ORDER_ROUTING_BACKENDS,
     PYTHON_CCXT_DIAGNOSTIC_EXCHANGES, PYTHON_CCXT_EXCHANGE_IDS,
     PYTHON_CCXT_ORDER_ROUTING_EXCHANGES, PYTHON_CONNECTOR_OPTIONS,
-    PYTHON_ORDER_EXECUTION_EXCHANGES, PYTHON_SUPPORTED_BROKERS, PYTHON_SUPPORTED_EXCHANGES,
+    PYTHON_ORDER_EXECUTION_EXCHANGES, PYTHON_SUPPORTED_BROKERS,
+    PYTHON_SUPPORTED_CONNECTOR_BACKENDS, PYTHON_SUPPORTED_EXCHANGES,
     PYTHON_SUPPORTED_FOREX_BROKERS, PythonConnectorOption,
 };
 use crate::order_audit::{redact_text, redact_value};
@@ -21,7 +22,7 @@ pub const BROKER_ORDER_ROUTING_BROKERS: &[&str] = SUPPORTED_BROKERS;
 pub const BROKER_ORDER_ROUTING_BACKENDS: &[(&str, &str, &str, bool)] =
     PYTHON_BROKER_ORDER_ROUTING_BACKENDS;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExchangeSupportInput {
     pub selected_exchange: String,
     pub connector_backend: String,
@@ -137,9 +138,9 @@ pub fn canonical_broker_name(value: impl AsRef<str>) -> String {
 }
 
 pub fn supported_connector_backends() -> Vec<String> {
-    PYTHON_CONNECTOR_OPTIONS
+    PYTHON_SUPPORTED_CONNECTOR_BACKENDS
         .iter()
-        .map(|option| option.key.to_owned())
+        .map(|backend| (*backend).to_owned())
         .collect()
 }
 
@@ -147,7 +148,9 @@ pub fn ccxt_exchange_id_for(value: impl AsRef<str>) -> String {
     let key = support_key(value);
     PYTHON_CCXT_EXCHANGE_IDS
         .iter()
-        .find_map(|(known_key, exchange_id)| (*known_key == key).then_some((*exchange_id).to_owned()))
+        .find_map(|(known_key, exchange_id)| {
+            (*known_key == key).then_some((*exchange_id).to_owned())
+        })
         .unwrap_or_default()
 }
 
@@ -626,6 +629,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn support_payload_matches_every_generated_python_reference_case() {
+        let reference: Value = serde_json::from_str(
+            crate::generated_python_exchange_support_reference::PYTHON_EXCHANGE_SUPPORT_REFERENCE_JSON,
+        )
+        .expect("generated exchange support reference should be valid JSON");
+        assert_eq!(
+            reference["python_source_contract_hash"],
+            crate::generated_python_parity::PYTHON_SOURCE_CONTRACT_HASH
+        );
+        let cases = reference["exchange_support_cases"]
+            .as_array()
+            .expect("generated exchange support cases should be an array");
+        assert!(
+            cases.len() >= 60,
+            "generated exchange support reference should cover the full Python matrix"
+        );
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("unnamed case");
+            let config: ExchangeSupportInput = serde_json::from_value(case["config"].clone())
+                .unwrap_or_else(|error| panic!("{name}: invalid config fixture: {error}"));
+            let snapshot = if case["snapshot"].is_null() {
+                None
+            } else {
+                Some(
+                    serde_json::from_value(case["snapshot"].clone()).unwrap_or_else(|error| {
+                        panic!("{name}: invalid snapshot fixture: {error}")
+                    }),
+                )
+            };
+            let actual = serde_json::to_value(build_exchange_support_payload(config, snapshot))
+                .unwrap_or_else(|error| {
+                    panic!("{name}: native payload did not serialize: {error}")
+                });
+            assert_eq!(
+                actual, case["expected"],
+                "Rust exchange support payload diverged from Python case {name}"
+            );
+        }
+    }
+
+    #[test]
     fn support_payload_matches_python_exchange_support() {
         let supported = build_exchange_support_payload(
             ExchangeSupportInput {
@@ -714,7 +758,10 @@ mod tests {
         );
         assert_eq!(ai_gold_alias.selected_forex_broker, "AI Gold Securities");
         assert!(ai_gold_alias.order_routing_supported);
-        assert_eq!(ai_gold_alias.broker_market_scope, "otc-commodity-derivatives");
+        assert_eq!(
+            ai_gold_alias.broker_market_scope,
+            "otc-commodity-derivatives"
+        );
         assert!(!ai_gold_alias.forex_order_routing_supported);
 
         let phillip_alias = build_exchange_support_payload(

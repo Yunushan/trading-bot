@@ -37,25 +37,7 @@
 
 namespace {
 QString normalizeExchangeKey(QString value) {
-    value = value.trimmed();
-    const int badgePos = value.indexOf('(');
-    if (badgePos > 0) {
-        value = value.left(badgePos).trimmed();
-    }
-
-    const QString key = value.toLower();
-    if (key == "binance") return "Binance";
-    if (key == "bybit") return "Bybit";
-    if (key == "okx") return "OKX";
-    if (key == "gate") return "Gate";
-    if (key == "bitget") return "Bitget";
-    if (key == "mexc") return "MEXC";
-    if (key == "kucoin") return "KuCoin";
-    if (key == "coinbase") return "Coinbase";
-    if (key == "htx") return "HTX";
-    if (key == "kraken") return "Kraken";
-    if (key == "tradingview") return "TradingView";
-    return value;
+    return TradingBotWindowSupport::canonicalPythonExchangeKey(value);
 }
 
 QString exchangeFromIndicatorSource(const QString &sourceText) {
@@ -75,13 +57,19 @@ QString exchangeFromIndicatorSource(const QString &sourceText) {
     return QString();
 }
 
+QString pythonDefaultIndicatorSource() {
+    return TradingBotWindowSupport::pythonSourceUiDefaults()
+        .value(QStringLiteral("indicator_source"))
+        .toString(QStringLiteral("Binance futures"));
+}
+
 QString preferredIndicatorSourceForExchange(const QString &exchangeKey, const QString &currentSource) {
     const QString normalized = normalizeExchangeKey(exchangeKey);
     if (normalized.compare(QStringLiteral("Binance"), Qt::CaseInsensitive) == 0) {
         if (currentSource.trimmed().toLower().contains(QStringLiteral("binance"))) {
             return currentSource.trimmed();
         }
-        return QStringLiteral("Binance futures");
+        return pythonDefaultIndicatorSource();
     }
     if (normalized == QStringLiteral("MEXC")) {
         return QStringLiteral("Mexc");
@@ -107,6 +95,14 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     auto *accountBox = new QGroupBox("Account & Status", page);
     auto *accountGrid = new QGridLayout(accountBox);
     const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
+    const QJsonObject uiDefaults = TradingBotWindowSupport::pythonSourceUiDefaults();
+    const QString configuredMode = executionDefaults.value(QStringLiteral("mode")).toString().trimmed();
+    const QString defaultMode = configuredMode.compare(QStringLiteral("Live"), Qt::CaseInsensitive) == 0
+        ? QStringLiteral("Live")
+        : (configuredMode.compare(QStringLiteral("Testnet"), Qt::CaseInsensitive) == 0
+            ? QStringLiteral("Testnet")
+            : QStringLiteral("Demo"));
     accountGrid->setHorizontalSpacing(10);
     accountGrid->setVerticalSpacing(8);
     accountGrid->setContentsMargins(12, 12, 12, 12);
@@ -131,7 +127,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceConfigModeOptionKeys(),
         TradingBotWindowSupport::pythonSourceConfigModeOptionLabels(),
         {},
-        QStringLiteral("Demo"));
+        defaultMode);
     dashboardModeCombo_->setToolTip(
         "Live: real Binance Futures orders.\n"
         "Demo: compatibility mode for the configured test environment.\n"
@@ -146,7 +142,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceThemeOptionKeys(),
         TradingBotWindowSupport::pythonSourceThemeOptionLabels(),
         {},
-        QStringLiteral("Dark"));
+        uiDefaults.value(QStringLiteral("theme")).toString(QStringLiteral("Dark")));
     registerDashboardRuntimeLockWidget(dashboardThemeCombo_);
     addPair(0, col, "Theme:", dashboardThemeCombo_);
     connect(dashboardThemeCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
@@ -162,7 +158,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceDesignOptionKeys(),
         TradingBotWindowSupport::pythonSourceDesignOptionLabels(),
         {},
-        executionDefaults.value(QStringLiteral("design")).toString(QStringLiteral("Classic")));
+        uiDefaults.value(QStringLiteral("design")).toString(QStringLiteral("Classic")));
     dashboardDesignCombo_->setToolTip(
         "Classic: compact tabbed workspace.\n"
         "Workstation: denser, task-oriented workspace styling from the Python source UI.");
@@ -210,12 +206,17 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceAccountTypeOptionKeys(),
         TradingBotWindowSupport::pythonSourceAccountTypeOptionLabels(),
         {},
-        QStringLiteral("Futures"));
+        executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures")));
     registerDashboardRuntimeLockWidget(dashboardAccountTypeCombo_);
     addPair(1, col, "Account Type:", dashboardAccountTypeCombo_);
 
     auto *accountModeCombo = new QComboBox(accountBox);
-    accountModeCombo->addItems(TradingBotWindowSupport::pythonSourceAccountModeOptions());
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        accountModeCombo,
+        TradingBotWindowSupport::pythonSourceAccountModeOptions(),
+        TradingBotWindowSupport::pythonSourceAccountModeOptions(),
+        {},
+        executionDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading")));
     dashboardAccountModeCombo_ = accountModeCombo;
     registerDashboardRuntimeLockWidget(accountModeCombo);
     addPair(1, col, "Account Mode:", accountModeCombo);
@@ -285,7 +286,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *leverageSpin = new QSpinBox(accountBox);
     leverageSpin->setRange(1, 150);
-    leverageSpin->setValue(1);
+    leverageSpin->setValue(executionDefaults.value(QStringLiteral("leverage")).toInt(1));
     dashboardLeverageSpin_ = leverageSpin;
     registerDashboardRuntimeLockWidget(leverageSpin);
     addPair(2, col, "Leverage (Futures):", leverageSpin);
@@ -296,7 +297,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceMarginModeOptionKeys(),
         TradingBotWindowSupport::pythonSourceMarginModeOptionLabels(),
         {},
-        QStringLiteral("Isolated"));
+        executionDefaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated")));
     dashboardMarginModeCombo_ = marginModeCombo;
     registerDashboardRuntimeLockWidget(marginModeCombo);
     addPair(2, col, "Margin Mode (Futures):", marginModeCombo);
@@ -307,7 +308,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourcePositionModeOptionKeys(),
         TradingBotWindowSupport::pythonSourcePositionModeOptionLabels(),
         {},
-        QStringLiteral("Hedge"));
+        executionDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge")));
     dashboardPositionModeCombo_ = positionModeCombo;
     registerDashboardRuntimeLockWidget(positionModeCombo);
     addPair(2, col, "Position Mode:", positionModeCombo);
@@ -316,7 +317,9 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     TradingBotWindowSupport::populateComboFromPythonSourceOptions(
         assetsModeCombo,
         TradingBotWindowSupport::pythonSourceAssetsModeOptionKeys(),
-        TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels());
+        TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels(),
+        {},
+        executionDefaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset")));
     dashboardAssetsModeCombo_ = assetsModeCombo;
     registerDashboardRuntimeLockWidget(assetsModeCombo);
     addPair(2, col, "Assets Mode:", assetsModeCombo);
@@ -328,7 +331,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceIndicatorSourceOptionKeys(),
         TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels(),
         {},
-        QStringLiteral("Binance futures"));
+        uiDefaults.value(QStringLiteral("indicator_source")).toString(QStringLiteral("Binance futures")));
     indicatorSourceCombo->setMinimumWidth(140);
     indicatorSourceCombo->setToolTip(
         "Signal candles currently use Binance market data.\n"
@@ -363,14 +366,14 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceTimeInForceOptionKeys(),
         TradingBotWindowSupport::pythonSourceTimeInForceOptionLabels(),
         {},
-        QStringLiteral("GTC"));
+        executionDefaults.value(QStringLiteral("tif")).toString(QStringLiteral("GTC")));
     dashboardTimeInForceCombo_ = tifCombo;
     registerDashboardRuntimeLockWidget(tifCombo);
     addPair(3, col, "Time-in-Force:", tifCombo);
 
     auto *gtdMinutesSpin = new QSpinBox(accountBox);
     gtdMinutesSpin->setRange(1, 1440);
-    gtdMinutesSpin->setValue(30);
+    gtdMinutesSpin->setValue(executionDefaults.value(QStringLiteral("gtd_minutes")).toInt(30));
     gtdMinutesSpin->setSuffix(" min (GTD)");
     gtdMinutesSpin->setEnabled(false);
     dashboardGtdMinutesSpin_ = gtdMinutesSpin;
@@ -382,6 +385,8 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     col = 0;
     auto *liveTradingEnabledCheck = new QCheckBox("Enable live trading", accountBox);
+    liveTradingEnabledCheck->setChecked(
+        executionDefaults.value(QStringLiteral("live_trading_enabled")).toBool(false));
     liveTradingEnabledCheck->setToolTip(
         "Live orders require this setting, the acknowledgement phrase, and all configured safety caps.");
     dashboardLiveTradingEnabledCheck_ = liveTradingEnabledCheck;
@@ -397,7 +402,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *liveMaxLeverageSpin = new QSpinBox(accountBox);
     liveMaxLeverageSpin->setRange(1, 125);
-    liveMaxLeverageSpin->setValue(20);
+    liveMaxLeverageSpin->setValue(executionDefaults.value(QStringLiteral("live_trading_max_leverage")).toInt(20));
     dashboardLiveTradingMaxLeverageSpin_ = liveMaxLeverageSpin;
     registerDashboardRuntimeLockWidget(liveMaxLeverageSpin);
     addPair(4, col, "Live max leverage:", liveMaxLeverageSpin);
@@ -405,7 +410,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     auto *liveMaxPositionPctSpin = new QDoubleSpinBox(accountBox);
     liveMaxPositionPctSpin->setRange(0.01, 100.0);
     liveMaxPositionPctSpin->setDecimals(2);
-    liveMaxPositionPctSpin->setValue(10.0);
+    liveMaxPositionPctSpin->setValue(executionDefaults.value(QStringLiteral("live_trading_max_position_pct")).toDouble(10.0));
     liveMaxPositionPctSpin->setSuffix(" %");
     dashboardLiveTradingMaxPositionPctSpin_ = liveMaxPositionPctSpin;
     registerDashboardRuntimeLockWidget(liveMaxPositionPctSpin);
@@ -414,12 +419,14 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     col = 0;
     auto *liveMaxSessionOrdersSpin = new QSpinBox(accountBox);
     liveMaxSessionOrdersSpin->setRange(1, 100000);
-    liveMaxSessionOrdersSpin->setValue(100);
+    liveMaxSessionOrdersSpin->setValue(executionDefaults.value(QStringLiteral("live_trading_max_session_orders")).toInt(100));
     dashboardLiveTradingMaxSessionOrdersSpin_ = liveMaxSessionOrdersSpin;
     registerDashboardRuntimeLockWidget(liveMaxSessionOrdersSpin);
     addPair(5, col, "Live session order cap:", liveMaxSessionOrdersSpin);
 
     auto *liveAllowAutoBumpCheck = new QCheckBox("Allow live minimum-order auto-bump", accountBox);
+    liveAllowAutoBumpCheck->setChecked(
+        executionDefaults.value(QStringLiteral("live_allow_auto_bump_to_min_order")).toBool(false));
     liveAllowAutoBumpCheck->setToolTip(
         "Off by default. Live position sizing is blocked when the exchange minimum would increase the requested size.");
     dashboardLiveAllowAutoBumpCheck_ = liveAllowAutoBumpCheck;
@@ -429,7 +436,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     auto *maxAutoBumpPercentSpin = new QDoubleSpinBox(accountBox);
     maxAutoBumpPercentSpin->setRange(0.0, 100.0);
     maxAutoBumpPercentSpin->setDecimals(2);
-    maxAutoBumpPercentSpin->setValue(5.0);
+    maxAutoBumpPercentSpin->setValue(riskDefaults.value(QStringLiteral("max_auto_bump_percent")).toDouble(5.0));
     maxAutoBumpPercentSpin->setSuffix(" %");
     maxAutoBumpPercentSpin->setToolTip("0 disables the percentage cap; funding checks still apply.");
     dashboardMaxAutoBumpPercentSpin_ = maxAutoBumpPercentSpin;
@@ -439,7 +446,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     auto *autoBumpPercentMultiplierSpin = new QDoubleSpinBox(accountBox);
     autoBumpPercentMultiplierSpin->setRange(0.0, 1000.0);
     autoBumpPercentMultiplierSpin->setDecimals(2);
-    autoBumpPercentMultiplierSpin->setValue(10.0);
+    autoBumpPercentMultiplierSpin->setValue(riskDefaults.value(QStringLiteral("auto_bump_percent_multiplier")).toDouble(10.0));
     autoBumpPercentMultiplierSpin->setSuffix(" x");
     dashboardAutoBumpPercentMultiplierSpin_ = autoBumpPercentMultiplierSpin;
     registerDashboardRuntimeLockWidget(autoBumpPercentMultiplierSpin);
@@ -447,7 +454,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     col = 0;
     auto *orderAuditEnabledCheck = new QCheckBox("Enable order audit", accountBox);
-    orderAuditEnabledCheck->setChecked(true);
+    orderAuditEnabledCheck->setChecked(executionDefaults.value(QStringLiteral("order_audit_enabled")).toBool(true));
     dashboardOrderAuditEnabledCheck_ = orderAuditEnabledCheck;
     registerDashboardRuntimeLockWidget(orderAuditEnabledCheck);
     accountGrid->addWidget(orderAuditEnabledCheck, 6, col++, 1, 2);
@@ -460,7 +467,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *orderAuditMaxBytesSpin = new QSpinBox(accountBox);
     orderAuditMaxBytesSpin->setRange(1, 1000000000);
-    orderAuditMaxBytesSpin->setValue(10 * 1024 * 1024);
+    orderAuditMaxBytesSpin->setValue(executionDefaults.value(QStringLiteral("order_audit_max_bytes")).toInt(10 * 1024 * 1024));
     orderAuditMaxBytesSpin->setSuffix(" bytes");
     dashboardOrderAuditMaxBytesSpin_ = orderAuditMaxBytesSpin;
     registerDashboardRuntimeLockWidget(orderAuditMaxBytesSpin);
@@ -468,14 +475,14 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *orderAuditBackupCountSpin = new QSpinBox(accountBox);
     orderAuditBackupCountSpin->setRange(0, 100);
-    orderAuditBackupCountSpin->setValue(1);
+    orderAuditBackupCountSpin->setValue(executionDefaults.value(QStringLiteral("order_audit_backup_count")).toInt(1));
     dashboardOrderAuditBackupCountSpin_ = orderAuditBackupCountSpin;
     registerDashboardRuntimeLockWidget(orderAuditBackupCountSpin);
     addPair(6, col, "Audit backups:", orderAuditBackupCountSpin);
 
     col = 0;
     auto *connectorCircuitEnabledCheck = new QCheckBox("Enable connector order circuit", accountBox);
-    connectorCircuitEnabledCheck->setChecked(true);
+    connectorCircuitEnabledCheck->setChecked(executionDefaults.value(QStringLiteral("connector_order_block_circuit_breaker_enabled")).toBool(true));
     connectorCircuitEnabledCheck->setToolTip("Pauses new entries after repeated connector order failures inside the configured window.");
     dashboardConnectorOrderCircuitEnabledCheck_ = connectorCircuitEnabledCheck;
     registerDashboardRuntimeLockWidget(connectorCircuitEnabledCheck);
@@ -483,7 +490,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *connectorCircuitThresholdSpin = new QSpinBox(accountBox);
     connectorCircuitThresholdSpin->setRange(1, 1000000);
-    connectorCircuitThresholdSpin->setValue(2);
+    connectorCircuitThresholdSpin->setValue(executionDefaults.value(QStringLiteral("connector_order_block_pause_threshold")).toInt(2));
     dashboardConnectorOrderCircuitThresholdSpin_ = connectorCircuitThresholdSpin;
     registerDashboardRuntimeLockWidget(connectorCircuitThresholdSpin);
     addPair(7, col, "Circuit threshold:", connectorCircuitThresholdSpin);
@@ -491,7 +498,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     auto *connectorCircuitWindowSecondsSpin = new QDoubleSpinBox(accountBox);
     connectorCircuitWindowSecondsSpin->setRange(1.0, 24.0 * 60.0 * 60.0);
     connectorCircuitWindowSecondsSpin->setDecimals(1);
-    connectorCircuitWindowSecondsSpin->setValue(60.0);
+    connectorCircuitWindowSecondsSpin->setValue(executionDefaults.value(QStringLiteral("connector_order_block_window_seconds")).toDouble(60.0));
     connectorCircuitWindowSecondsSpin->setSuffix(" s");
     dashboardConnectorOrderCircuitWindowSecondsSpin_ = connectorCircuitWindowSecondsSpin;
     registerDashboardRuntimeLockWidget(connectorCircuitWindowSecondsSpin);
@@ -519,7 +526,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *incidentMaxBytesSpin = new QSpinBox(accountBox);
     incidentMaxBytesSpin->setRange(1, 1000000000);
-    incidentMaxBytesSpin->setValue(2 * 1024 * 1024);
+    incidentMaxBytesSpin->setValue(executionDefaults.value(QStringLiteral("connector_order_circuit_incident_log_max_bytes")).toInt(2 * 1024 * 1024));
     incidentMaxBytesSpin->setSuffix(" bytes");
     dashboardConnectorOrderIncidentMaxBytesSpin_ = incidentMaxBytesSpin;
     registerDashboardRuntimeLockWidget(incidentMaxBytesSpin);
@@ -527,7 +534,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *incidentBackupCountSpin = new QSpinBox(accountBox);
     incidentBackupCountSpin->setRange(0, 100);
-    incidentBackupCountSpin->setValue(1);
+    incidentBackupCountSpin->setValue(executionDefaults.value(QStringLiteral("connector_order_circuit_incident_log_backup_count")).toInt(1));
     dashboardConnectorOrderIncidentBackupCountSpin_ = incidentBackupCountSpin;
     registerDashboardRuntimeLockWidget(incidentBackupCountSpin);
     addPair(8, col, "Incident backups:", incidentBackupCountSpin);
@@ -621,7 +628,7 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
 
     auto *allowPublicCheck = new QCheckBox("Allow public network endpoint", llmBox);
     allowPublicCheck->setToolTip(
-        "Keep unchecked for local/private IP endpoints. Enable for cloud LLM providers.");
+        "Keep unchecked for local/private endpoints. Enable only for public local/custom LLM endpoints.");
     dashboardLlmAllowPublicNetworkCheck_ = allowPublicCheck;
     registerDashboardRuntimeLockWidget(allowPublicCheck);
     llmGrid->addWidget(allowPublicCheck, 0, 2, 1, 2);
@@ -655,7 +662,9 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     llmGrid->addWidget(providerCombo, 1, 1);
 
     auto *modelCombo = new QComboBox(llmBox);
-    modelCombo->setEditable(false);
+    modelCombo->setEditable(true);
+    modelCombo->setInsertPolicy(QComboBox::NoInsert);
+    modelCombo->setToolTip("Choose a catalog model or enter any model ID supported by the selected endpoint.");
     dashboardLlmModelCombo_ = modelCombo;
     registerDashboardRuntimeLockWidget(modelCombo);
     llmGrid->addWidget(new QLabel("Model:", llmBox), 1, 2);
@@ -738,10 +747,14 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     llmGrid->addWidget(downloadLocalModelBtn, 8, 2);
     llmGrid->addWidget(deleteLocalModelBtn, 8, 3);
 
+    auto *refreshLlmCatalogBtn = new QPushButton("Refresh provider catalog", llmBox);
+    registerDashboardRuntimeLockWidget(refreshLlmCatalogBtn);
+    llmGrid->addWidget(refreshLlmCatalogBtn, 9, 0, 1, 2);
+
     auto *statusLabel = new QLabel("LLM settings are saved with dashboard config.", llmBox);
     statusLabel->setStyleSheet("color: #94a3b8; font-weight: 600;");
     dashboardLlmStatusLabel_ = statusLabel;
-    llmGrid->addWidget(statusLabel, 9, 0, 1, 4);
+    llmGrid->addWidget(statusLabel, 10, 0, 1, 4);
 
     auto applyProviderDefaults = [this](bool forceText) {
         if (!dashboardLlmProviderCombo_) {
@@ -784,42 +797,12 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         if (dashboardLlmApiKeyEnvEdit_ && (forceText || dashboardLlmApiKeyEnvEdit_->text().trimmed().isEmpty())) {
             dashboardLlmApiKeyEnvEdit_->setText(spec.value(QStringLiteral("api_key_env")).toString());
         }
-        if (dashboardLlmAllowPublicNetworkCheck_) {
-            dashboardLlmAllowPublicNetworkCheck_->setChecked(spec.value(QStringLiteral("mode")).toString() == QStringLiteral("cloud"));
-        }
         if (dashboardLlmStatusLabel_) {
             dashboardLlmStatusLabel_->setText(
                 QStringLiteral("%1 selected (%2, reasoning: %3).")
                     .arg(dashboardLlmProviderCombo_->currentText().trimmed())
                     .arg(spec.value(QStringLiteral("mode")).toString())
                     .arg(dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default")));
-        }
-    };
-    auto syncProviderNetworkAccess = [this]() {
-        if (!dashboardLlmProviderCombo_) {
-            return;
-        }
-        const bool allowPublicNetwork = dashboardLlmAllowPublicNetworkCheck_
-            && dashboardLlmAllowPublicNetworkCheck_->isChecked();
-        int fallbackIndex = -1;
-        if (auto *model = qobject_cast<QStandardItemModel *>(dashboardLlmProviderCombo_->model())) {
-            for (int row = 0; row < dashboardLlmProviderCombo_->count(); ++row) {
-                const QVariantMap spec = dashboardLlmProviderCombo_->itemData(row).toMap();
-                const bool isCloud = spec.value(QStringLiteral("mode")).toString() == QStringLiteral("cloud");
-                const bool allowed = allowPublicNetwork || !isCloud;
-                if (!isCloud && fallbackIndex < 0) {
-                    fallbackIndex = row;
-                }
-                if (QStandardItem *item = model->item(row)) {
-                    item->setEnabled(allowed);
-                    item->setForeground(QColor(allowed ? "#f8fafc" : "#64748b"));
-                }
-            }
-        }
-        const QVariantMap currentSpec = dashboardLlmProviderCombo_->currentData().toMap();
-        const bool currentIsCloud = currentSpec.value(QStringLiteral("mode")).toString() == QStringLiteral("cloud");
-        if (!allowPublicNetwork && currentIsCloud && fallbackIndex >= 0) {
-            dashboardLlmProviderCombo_->setCurrentIndex(fallbackIndex);
         }
     };
     auto buildLlmConfigPatch = [this]() {
@@ -862,6 +845,7 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
                                   downloadLocalModelBtn,
                                   prepareLlmBtn,
                                   promptEdit,
+                                  refreshLlmCatalogBtn,
                                   sendLlmBtn,
                                   startLocalModelBtn,
                                   systemPromptEdit]() {
@@ -884,6 +868,7 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
             dashboardLlmApiKeyEnvEdit_,
             dashboardLlmApiKeyEdit_,
             dashboardLlmUseForCombo_,
+            refreshLlmCatalogBtn,
             applyLlmBtn,
             checkLocalModelBtn,
             deleteLocalModelBtn,
@@ -931,13 +916,11 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     connect(enabledCheck, &QCheckBox::toggled, this, [updateLlmEnabledState](bool) {
         updateLlmEnabledState();
     });
-    connect(allowPublicCheck, &QCheckBox::toggled, this, [syncProviderNetworkAccess, updateLlmEnabledState](bool) {
-        syncProviderNetworkAccess();
+    connect(allowPublicCheck, &QCheckBox::toggled, this, [updateLlmEnabledState](bool) {
         updateLlmEnabledState();
     });
-    connect(providerCombo, &QComboBox::currentIndexChanged, this, [applyProviderDefaults, syncProviderNetworkAccess, updateLlmEnabledState](int) {
+    connect(providerCombo, &QComboBox::currentIndexChanged, this, [applyProviderDefaults, updateLlmEnabledState](int) {
         applyProviderDefaults(true);
-        syncProviderNetworkAccess();
         updateLlmEnabledState();
     });
     connect(reasoningCombo, &QComboBox::currentIndexChanged, this, [updateLlmEnabledState](int) {
@@ -1172,8 +1155,65 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
             60000,
             true);
     });
+
+    auto refreshLlmCatalog = [this, providerCombo, applyProviderDefaults, updateLlmEnabledState]() {
+        if (dashboardLlmStatusLabel_) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("Refreshing LLM provider catalog through Python Service API..."));
+        }
+        const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("GET"),
+            QStringLiteral("llm_providers"),
+            {},
+            30000);
+        if (!result.ok || !result.document.isArray()) {
+            if (dashboardLlmStatusLabel_) {
+                dashboardLlmStatusLabel_->setText(
+                    QStringLiteral("Provider catalog refresh failed; generated Python catalog retained: %1")
+                        .arg(result.error.isEmpty() ? QStringLiteral("invalid response") : result.error));
+            }
+            return;
+        }
+        int updated = 0;
+        for (const QJsonValue &value : result.document.array()) {
+            const QJsonObject provider = value.toObject();
+            const QString key = provider.value(QStringLiteral("key")).toString().trimmed();
+            if (key.isEmpty()) {
+                continue;
+            }
+            for (int row = 0; row < providerCombo->count(); ++row) {
+                QVariantMap spec = providerCombo->itemData(row).toMap();
+                if (spec.value(QStringLiteral("key")).toString().trimmed() != key) {
+                    continue;
+                }
+                spec = TradingBotWindowSupport::mergePythonLlmProviderSpec(spec, provider);
+                providerCombo->setItemData(row, spec);
+                const QString label = spec.value(QStringLiteral("label")).toString().trimmed();
+                if (!label.isEmpty()) {
+                    providerCombo->setItemText(row, label);
+                }
+                ++updated;
+                break;
+            }
+        }
+        if (updated == 0) {
+            if (dashboardLlmStatusLabel_) {
+                dashboardLlmStatusLabel_->setText(QStringLiteral("Provider catalog refresh returned no known Python providers."));
+            }
+            return;
+        }
+        applyProviderDefaults(false);
+        updateLlmEnabledState();
+        if (dashboardLlmStatusLabel_) {
+            dashboardLlmStatusLabel_->setText(
+                QStringLiteral("Provider catalog refreshed from Python Service API (%1 providers).")
+                    .arg(updated));
+        }
+    };
+    connect(refreshLlmCatalogBtn, &QPushButton::clicked, this, [refreshLlmCatalog]() {
+        refreshLlmCatalog();
+    });
+
     applyProviderDefaults(true);
-    syncProviderNetworkAccess();
     updateLlmEnabledState();
 
     llmGrid->setColumnStretch(1, 1);
@@ -1323,7 +1363,7 @@ void TradingBotWindow::createDashboardExchangeAndMarketsSections(QWidget *page, 
         });
     }
     syncIndicatorSourceCombos(
-        dashboardIndicatorSourceCombo_ ? dashboardIndicatorSourceCombo_->currentText() : QStringLiteral("Binance futures"),
+        dashboardIndicatorSourceCombo_ ? dashboardIndicatorSourceCombo_->currentText() : pythonDefaultIndicatorSource(),
         dashboardIndicatorSourceCombo_);
 
     connect(customButton, &QPushButton::clicked, this, [customIntervalEdit, dashboardIntervalList]() {
@@ -1356,6 +1396,8 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     strategyGrid->setVerticalSpacing(8);
     strategyGrid->setContentsMargins(12, 12, 12, 12);
     root->addWidget(strategyBox);
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
 
     int row = 0;
     strategyGrid->addWidget(new QLabel("Side:", strategyBox), row, 0);
@@ -1375,7 +1417,7 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     auto *positionPct = new QDoubleSpinBox(strategyBox);
     positionPct->setRange(0.1, 100.0);
     positionPct->setSingleStep(0.1);
-    positionPct->setValue(2.0);
+    positionPct->setValue(executionDefaults.value(QStringLiteral("position_pct")).toDouble(2.0));
     positionPct->setSuffix(" %");
     dashboardPositionPctSpin_ = positionPct;
     registerDashboardRuntimeLockWidget(positionPct);
@@ -1388,7 +1430,7 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
         TradingBotWindowSupport::pythonSourceDashboardLoopChoiceKeys(),
         TradingBotWindowSupport::pythonSourceDashboardLoopChoiceLabels(),
         {},
-        QStringLiteral("1m"),
+        executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m")),
         QStringLiteral("1 minute"));
     dashboardLoopOverrideCombo_ = loopOverride;
     registerDashboardRuntimeLockWidget(loopOverride);
@@ -1418,7 +1460,7 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     liveIndicatorValuesCheck->setToolTip(
         "When unchecked, signals use the previous closed candle (no repaint), matching candle-close backtests."
     );
-    liveIndicatorValuesCheck->setChecked(true);
+    liveIndicatorValuesCheck->setChecked(riskDefaults.value(QStringLiteral("indicator_use_live_values")).toBool(false));
     dashboardLiveIndicatorValuesCheck_ = liveIndicatorValuesCheck;
     registerDashboardRuntimeLockWidget(liveIndicatorValuesCheck);
     strategyGrid->addWidget(liveIndicatorValuesCheck, row, 0, 1, 6);
@@ -1431,7 +1473,7 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
 
     ++row;
     auto *hedgeStackCheck = new QCheckBox("Allow simultaneous long & short positions (hedge stacking)", strategyBox);
-    hedgeStackCheck->setChecked(true);
+    hedgeStackCheck->setChecked(riskDefaults.value(QStringLiteral("allow_opposite_positions")).toBool(true));
     dashboardHedgeStackCheck_ = hedgeStackCheck;
     registerDashboardRuntimeLockWidget(hedgeStackCheck);
     strategyGrid->addWidget(hedgeStackCheck, row, 0, 1, 6);
@@ -1453,6 +1495,8 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     ++row;
     strategyGrid->addWidget(new QLabel("Stop Loss:", strategyBox), row, 0);
     auto *stopLossEnable = new QCheckBox("Enable", strategyBox);
+    stopLossEnable->setChecked(
+        riskDefaults.value(QStringLiteral("stop_loss")).toObject().value(QStringLiteral("enabled")).toBool(false));
     dashboardStopLossEnableCheck_ = stopLossEnable;
     registerDashboardRuntimeLockWidget(stopLossEnable);
     strategyGrid->addWidget(stopLossEnable, row, 1);
@@ -1463,7 +1507,7 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
         TradingBotWindowSupport::pythonSourceStopLossModeKeys(),
         TradingBotWindowSupport::pythonSourceStopLossModeLabels(),
         {},
-        QStringLiteral("usdt"));
+        riskDefaults.value(QStringLiteral("stop_loss")).toObject().value(QStringLiteral("mode")).toString(QStringLiteral("usdt")));
     dashboardStopLossModeCombo_ = stopModeCombo;
     strategyGrid->addWidget(stopModeCombo, row, 2, 1, 2);
 
@@ -1471,6 +1515,8 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     stopUsdtSpin->setRange(0.0, 1'000'000'000.0);
     stopUsdtSpin->setDecimals(2);
     stopUsdtSpin->setSuffix(" USDT");
+    stopUsdtSpin->setValue(
+        riskDefaults.value(QStringLiteral("stop_loss")).toObject().value(QStringLiteral("usdt")).toDouble(0.0));
     stopUsdtSpin->setEnabled(false);
     dashboardStopLossUsdtSpin_ = stopUsdtSpin;
     strategyGrid->addWidget(stopUsdtSpin, row, 4);
@@ -1479,6 +1525,8 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     stopPctSpin->setRange(0.0, 100.0);
     stopPctSpin->setDecimals(2);
     stopPctSpin->setSuffix(" %");
+    stopPctSpin->setValue(
+        riskDefaults.value(QStringLiteral("stop_loss")).toObject().value(QStringLiteral("percent")).toDouble(0.0));
     stopPctSpin->setEnabled(false);
     dashboardStopLossPercentSpin_ = stopPctSpin;
     strategyGrid->addWidget(stopPctSpin, row, 5);
@@ -1491,7 +1539,7 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
         TradingBotWindowSupport::pythonSourceStopLossScopeKeys(),
         TradingBotWindowSupport::pythonSourceStopLossScopeLabels(),
         {},
-        QStringLiteral("per_trade"));
+        riskDefaults.value(QStringLiteral("stop_loss")).toObject().value(QStringLiteral("scope")).toString(QStringLiteral("per_trade")));
     dashboardStopLossScopeCombo_ = stopScopeCombo;
     strategyGrid->addWidget(stopScopeCombo, row, 1, 1, 2);
 

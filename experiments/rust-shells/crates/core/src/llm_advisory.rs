@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::generated_python_parity::{
-    PYTHON_LLM_PROVIDER_CHOICES, PYTHON_LLM_PROVIDERS, PYTHON_SERVICE_ROUTES, PythonLlmProvider,
+    PYTHON_LLM_MODEL_CATALOG_PATH_ENV, PYTHON_LLM_PROVIDER_CHOICES, PYTHON_LLM_PROVIDERS,
+    PYTHON_SERVICE_ROUTES, PythonLlmProvider,
 };
 use crate::order_audit::{redact_text, redact_value};
 
@@ -52,6 +53,10 @@ pub struct LlmConfigPayload {
     pub provider_label: String,
     pub mode: String,
     pub protocol: String,
+    pub catalog_revision: String,
+    pub catalog_path: String,
+    pub custom_models_env: String,
+    pub custom_models_path_env: String,
     pub model: String,
     pub base_url: String,
     pub api_key_env: String,
@@ -62,6 +67,7 @@ pub struct LlmConfigPayload {
     pub default_reasoning_effort: String,
     pub reasoning_efforts: Vec<String>,
     pub model_suggestions: Vec<String>,
+    pub notes: Vec<String>,
     pub execution_policy: LlmExecutionPolicy,
 }
 
@@ -155,38 +161,98 @@ fn append_unique_model(models: &mut Vec<String>, value: impl AsRef<str>) {
     }
 }
 
+fn append_catalog_model(models: &mut Vec<String>, value: &Value) {
+    let text = match value {
+        Value::Null | Value::Bool(false) => None,
+        Value::String(value) => Some(value.clone()),
+        Value::Bool(true) => Some("True".to_owned()),
+        Value::Number(value) if value.as_f64() == Some(0.0) => None,
+        Value::Number(value) => Some(value.to_string()),
+        Value::Array(values) if values.is_empty() => None,
+        Value::Object(values) if values.is_empty() => None,
+        Value::Array(_) | Value::Object(_) => Some(value.to_string()),
+    };
+    if let Some(text) = text {
+        append_unique_model(models, text);
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        env::var_os("USERPROFILE")
+            .filter(|value| !value.is_empty())
+            .or_else(|| env::var_os("HOME").filter(|value| !value.is_empty()))
+            .map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .or_else(|| env::var_os("USERPROFILE").filter(|value| !value.is_empty()))
+            .map(PathBuf::from)
+    }
+}
+
+fn expand_user_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if text == "~" {
+        return home_dir().unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\"))
+        && let Some(home) = home_dir()
+    {
+        return home.join(rest);
+    }
+    path.to_path_buf()
+}
+
 fn model_catalog_path() -> Option<PathBuf> {
-    if let Ok(value) = env::var("BOT_LLM_MODEL_CATALOG_PATH") {
+    if let Ok(value) = env::var(PYTHON_LLM_MODEL_CATALOG_PATH_ENV) {
         let path = value.trim();
         if !path.is_empty() {
-            return Some(PathBuf::from(path));
+            return Some(expand_user_path(Path::new(path)));
         }
     }
-    env::var_os("USERPROFILE")
-        .or_else(|| env::var_os("HOME"))
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".trading-bot")
-                .join("llm-models.json")
+    home_dir().map(|home| home.join(".trading-bot").join("llm-models.json"))
+}
+
+fn model_catalog_path_label() -> String {
+    model_catalog_path()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| {
+            expand_user_path(Path::new("~/.trading-bot/llm-models.json"))
+                .to_string_lossy()
+                .into_owned()
         })
 }
 
 fn model_suggestions_for_provider(provider: &PythonLlmProvider) -> Vec<String> {
+    let extra_models = env::var(provider.custom_models_env).ok();
+    let catalog_path = model_catalog_path();
+    model_suggestions_for_provider_with_sources(
+        provider,
+        extra_models.as_deref(),
+        catalog_path.as_deref(),
+    )
+}
+
+fn model_suggestions_for_provider_with_sources(
+    provider: &PythonLlmProvider,
+    extra_models: Option<&str>,
+    catalog_path: Option<&Path>,
+) -> Vec<String> {
     let mut models = provider
         .model_suggestions
         .iter()
         .map(|value| (*value).to_owned())
         .collect::<Vec<_>>();
-    let env_name = format!(
-        "BOT_LLM_EXTRA_MODELS_{}",
-        provider.key.to_uppercase().replace('-', "_")
-    );
-    if let Ok(raw) = env::var(env_name) {
+    if let Some(raw) = extra_models {
         for value in raw.replace(';', ",").split(',') {
             append_unique_model(&mut models, value);
         }
     }
-    let Some(path) = model_catalog_path() else {
+    let Some(path) = catalog_path else {
         return models;
     };
     let Ok(text) = fs::read_to_string(path) else {
@@ -202,9 +268,7 @@ fn model_suggestions_for_provider(provider: &PythonLlmProvider) -> Vec<String> {
     });
     if let Some(Value::Array(items)) = raw_models {
         for value in items {
-            if let Some(model) = value.as_str() {
-                append_unique_model(&mut models, model);
-            }
+            append_catalog_model(&mut models, value);
         }
     }
     models
@@ -222,6 +286,10 @@ pub fn build_llm_config_payload(input: &LlmConfigInput) -> LlmConfigPayload {
         provider_label: provider.label.to_owned(),
         mode: provider.mode.to_owned(),
         protocol: provider.protocol.to_owned(),
+        catalog_revision: provider.catalog_revision.to_owned(),
+        catalog_path: model_catalog_path_label(),
+        custom_models_env: provider.custom_models_env.to_owned(),
+        custom_models_path_env: provider.custom_models_path_env.to_owned(),
         model: non_empty_or(&input.llm_model, provider.default_model),
         base_url: non_empty_or(&input.llm_base_url, provider.default_base_url),
         api_key_env: api_key_env.clone(),
@@ -239,6 +307,11 @@ pub fn build_llm_config_payload(input: &LlmConfigInput) -> LlmConfigPayload {
             .map(|value| (*value).to_owned())
             .collect(),
         model_suggestions: model_suggestions_for_provider(provider),
+        notes: provider
+            .notes
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
         execution_policy: LlmExecutionPolicy::default(),
     }
 }
@@ -486,17 +559,59 @@ pub fn ollama_base_url(base_url: impl AsRef<str>) -> String {
 }
 
 pub fn estimate_ollama_model_size_label(model: impl AsRef<str>) -> String {
-    match model.as_ref().trim().to_lowercase().as_str() {
-        "" => "unknown size".to_owned(),
-        "qwen3:0.6b" | "llama3.2:1b" => "about 1 GB".to_owned(),
-        "qwen3:1.7b" | "llama3.2:3b" => "about 2 GB".to_owned(),
-        "qwen3:4b" | "gemma3:4b" => "about 3 GB".to_owned(),
-        "qwen3:8b" | "llama3.1:8b" | "deepseek-r1:8b" => "about 5 GB".to_owned(),
-        "qwen3:14b" => "about 9 GB".to_owned(),
-        "gpt-oss:20b" => "about 13 GB".to_owned(),
-        "qwen3:30b-a3b" => "about 19 GB".to_owned(),
-        "qwen3:32b" => "about 20 GB".to_owned(),
-        _ => "size varies by model and quantization".to_owned(),
+    let clean = model.as_ref().trim().to_lowercase();
+    if clean.is_empty() {
+        return "unknown size".to_owned();
+    }
+    let size = match clean.as_str() {
+        "qwen3:0.6b" | "llama3.2:1b" | "gemma3:1b" => "about 1 GB",
+        "qwen3:1.7b" | "llama3.2:3b" | "deepseek-r1:1.5b" => "about 2 GB",
+        "qwen3:4b" | "gemma3:4b" => "about 3 GB",
+        "qwen3:8b" | "llama3.1:8b" | "deepseek-r1:7b" | "deepseek-r1:8b" => "about 5 GB",
+        "qwen3:14b" | "qwen2.5:14b" | "qwen2.5-coder:14b" | "deepseek-r1:14b" => "about 9 GB",
+        "qwen3:30b-a3b" => "about 19 GB",
+        "qwen3:32b" | "qwen2.5:32b" | "qwen2.5-coder:32b" | "qwq:32b" | "deepseek-r1:32b" => {
+            "about 20 GB"
+        }
+        "qwen3-vl:8b" => "about 6 GB",
+        "qwen3-vl:32b" => "about 21 GB",
+        "qwen2.5:7b" | "qwen2.5-coder:7b" => "about 5 GB",
+        "qwen2.5:72b" => "about 45 GB",
+        "llama3.1:70b" | "deepseek-r1:70b" => "about 43 GB",
+        "gemma3:12b" => "about 8 GB",
+        "gemma3:27b" => "about 17 GB",
+        "gpt-oss:20b" => "about 13 GB",
+        "gpt-oss:120b" => "about 75 GB",
+        _ => "size varies by model and quantization",
+    };
+    size.to_owned()
+}
+
+pub fn estimate_ollama_model_size_gb(model: impl AsRef<str>) -> Option<f64> {
+    let clean = model.as_ref().trim().to_lowercase();
+    if clean.is_empty() {
+        return None;
+    }
+    match clean.as_str() {
+        "qwen3:0.6b" | "llama3.2:1b" | "gemma3:1b" => Some(1.0),
+        "qwen3:1.7b" | "llama3.2:3b" | "deepseek-r1:1.5b" => Some(2.0),
+        "qwen3:4b" | "gemma3:4b" => Some(3.0),
+        "qwen3:8b" | "llama3.1:8b" | "deepseek-r1:7b" | "deepseek-r1:8b" => Some(5.0),
+        "qwen3:14b" | "qwen2.5:14b" | "qwen2.5-coder:14b" | "deepseek-r1:14b" => Some(9.0),
+        "qwen3:30b-a3b" => Some(19.0),
+        "qwen3:32b" | "qwen2.5:32b" | "qwen2.5-coder:32b" | "qwq:32b" | "deepseek-r1:32b" => {
+            Some(20.0)
+        }
+        "qwen3-vl:8b" => Some(6.0),
+        "qwen3-vl:32b" => Some(21.0),
+        "qwen2.5:7b" | "qwen2.5-coder:7b" => Some(5.0),
+        "qwen2.5:72b" => Some(45.0),
+        "llama3.1:70b" | "deepseek-r1:70b" => Some(43.0),
+        "gemma3:12b" => Some(8.0),
+        "gemma3:27b" => Some(17.0),
+        "gpt-oss:20b" => Some(13.0),
+        "gpt-oss:120b" => Some(75.0),
+        _ => None,
     }
 }
 
@@ -583,9 +698,18 @@ fn context_for_provider(
 ) -> Option<Value> {
     let context = context?;
     if mode.trim().eq_ignore_ascii_case("cloud") || allow_public_network {
+        if !context.as_object().is_some_and(|object| !object.is_empty()) {
+            return None;
+        }
         return Some(cloud_safe_context(context));
     }
-    Some(redact_value(context.clone()))
+    match context {
+        Value::Null => None,
+        Value::Object(object) if object.is_empty() => None,
+        Value::Array(items) if items.is_empty() => None,
+        Value::String(value) if value.is_empty() => None,
+        _ => Some(context.clone()),
+    }
 }
 
 fn cloud_safe_context(context: &Value) -> Value {
@@ -946,6 +1070,231 @@ mod tests {
     }
 
     #[test]
+    fn every_generated_python_provider_preserves_all_catalog_options() {
+        for provider in PYTHON_LLM_PROVIDERS {
+            let payload = build_llm_config_payload(&LlmConfigInput {
+                llm_provider: provider.key.to_owned(),
+                llm_api_key_env: "__TRADING_BOT_PARITY_PROVIDER_KEY__".to_owned(),
+                ..Default::default()
+            });
+            assert_eq!(
+                payload.provider, provider.key,
+                "provider key should match Python"
+            );
+            assert_eq!(
+                payload.provider_label, provider.label,
+                "provider label should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.mode, provider.mode,
+                "provider mode should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.protocol, provider.protocol,
+                "provider protocol should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.base_url, provider.default_base_url,
+                "provider endpoint should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.model, provider.default_model,
+                "provider model should match Python: {}",
+                provider.key
+            );
+            assert_eq!(payload.api_key_env, "__TRADING_BOT_PARITY_PROVIDER_KEY__");
+            assert_eq!(
+                payload.reasoning_efforts,
+                provider
+                    .reasoning_efforts
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .collect::<Vec<_>>(),
+                "reasoning options should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.default_reasoning_effort, provider.default_reasoning_effort,
+                "default reasoning should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.catalog_revision, provider.catalog_revision,
+                "catalog revision should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.custom_models_env, provider.custom_models_env,
+                "custom model environment should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.custom_models_path_env, provider.custom_models_path_env,
+                "custom model catalog environment should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.model_suggestions,
+                model_suggestions_for_provider(provider),
+                "model options should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.notes,
+                provider
+                    .notes
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .collect::<Vec<_>>(),
+                "provider notes should match Python: {}",
+                provider.key
+            );
+            assert!(payload.execution_policy.advisory_only);
+            assert!(!payload.execution_policy.can_execute_orders);
+        }
+    }
+
+    #[test]
+    fn dynamic_catalog_paths_and_values_follow_python_shape() {
+        if let Some(home) = home_dir() {
+            assert_eq!(
+                expand_user_path(Path::new("~/.trading-bot/llm-models.json")),
+                home.join(".trading-bot").join("llm-models.json")
+            );
+        }
+
+        let mut models = Vec::new();
+        append_catalog_model(&mut models, &json!("qwen3:32b"));
+        append_catalog_model(&mut models, &json!(1));
+        append_catalog_model(&mut models, &json!(0));
+        append_catalog_model(&mut models, &json!(true));
+        append_catalog_model(&mut models, &json!(false));
+        append_catalog_model(&mut models, &json!(null));
+        assert_eq!(models, vec!["qwen3:32b", "1", "True"]);
+    }
+
+    #[test]
+    fn dynamic_catalog_environment_and_file_overrides_merge_like_python() {
+        let provider = provider_by_key("local").expect("Python local provider should exist");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("trading-bot-llm-catalog-{stamp}"));
+        std::fs::create_dir_all(&directory).expect("catalog test directory should be creatable");
+        let path = directory.join("llm-models.json");
+        std::fs::write(
+            &path,
+            r#"{"providers":{"local":["file-model","qwen3:32b"],"openai":["unused-openai-model"]}}"#,
+        )
+        .expect("catalog test file should be writable");
+
+        let models = model_suggestions_for_provider_with_sources(
+            provider,
+            Some("env-model;qwen3:32b,env-model"),
+            Some(&path),
+        );
+
+        assert!(models.contains(&"qwen3:8b".to_owned()));
+        assert!(models.contains(&"env-model".to_owned()));
+        assert!(models.contains(&"file-model".to_owned()));
+        assert_eq!(
+            models.iter().filter(|model| *model == "env-model").count(),
+            1
+        );
+        assert_eq!(
+            models.iter().filter(|model| *model == "qwen3:32b").count(),
+            1
+        );
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(directory);
+    }
+
+    #[test]
+    fn every_generated_python_provider_builds_its_declared_protocol_request() {
+        for provider in PYTHON_LLM_PROVIDERS {
+            let request = build_llm_chat_request(
+                &LlmConfigInput {
+                    llm_provider: provider.key.to_owned(),
+                    llm_model: provider.default_model.to_owned(),
+                    llm_base_url: provider.default_base_url.to_owned(),
+                    llm_api_key: if provider.mode == "cloud" {
+                        "parity-test-key".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    ..Default::default()
+                },
+                "Explain risk",
+                "Be concise",
+                None,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "every Python provider should build its declared protocol request ({}): {}",
+                    provider.key, error
+                )
+            });
+            assert_eq!(request.provider, provider.key);
+            assert_eq!(request.protocol, provider.protocol);
+            assert!(request.json.to_string().contains(LLM_EXECUTION_BOUNDARY));
+            match provider.protocol {
+                "openai-chat-completions" => {
+                    assert!(request.url.ends_with("/chat/completions"));
+                    assert!(request.json["messages"].is_array());
+                }
+                "anthropic-messages" => {
+                    assert!(request.url.ends_with("/v1/messages"));
+                    assert_eq!(request.headers["x-api-key"], "parity-test-key");
+                    assert!(request.json["messages"].is_array());
+                }
+                "gemini-generate-content" => {
+                    assert!(request.url.contains(":generateContent?key="));
+                    assert!(request.json["contents"].is_array());
+                }
+                protocol => panic!("unhandled Python LLM protocol in Rust: {protocol}"),
+            }
+        }
+    }
+
+    #[test]
+    fn every_generated_python_reasoning_option_is_request_buildable() {
+        for provider in PYTHON_LLM_PROVIDERS {
+            for effort in provider.reasoning_efforts {
+                let request = build_llm_chat_request(
+                    &LlmConfigInput {
+                        llm_provider: provider.key.to_owned(),
+                        llm_model: provider.default_model.to_owned(),
+                        llm_base_url: provider.default_base_url.to_owned(),
+                        llm_api_key: if provider.mode == "cloud" {
+                            "parity-test-key".to_owned()
+                        } else {
+                            String::new()
+                        },
+                        llm_reasoning_effort: (*effort).to_owned(),
+                        ..Default::default()
+                    },
+                    "Explain risk",
+                    "",
+                    None,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Python reasoning option should build for {} / {}: {}",
+                        provider.key, effort, error
+                    )
+                });
+                assert_eq!(request.provider, provider.key);
+            }
+        }
+    }
+
+    #[test]
     fn provider_specific_reasoning_and_public_endpoint_rules_match_python() {
         let qwen = build_llm_chat_request(
             &LlmConfigInput {
@@ -1008,6 +1357,57 @@ mod tests {
     }
 
     #[test]
+    fn local_context_matches_python_privacy_boundary_and_empty_context_behavior() {
+        let local = build_llm_chat_request(
+            &LlmConfigInput {
+                llm_provider: "local".to_owned(),
+                llm_model: "qwen3:8b".to_owned(),
+                ..Default::default()
+            },
+            "Explain risk",
+            "",
+            Some(&json!({"custom": {"local_secret": "kept-on-loopback"}})),
+        )
+        .expect("loopback local context should be buildable");
+        assert!(local.json.to_string().contains("kept-on-loopback"));
+
+        let local_empty = build_llm_chat_request(
+            &LlmConfigInput {
+                llm_provider: "local".to_owned(),
+                ..Default::default()
+            },
+            "Explain risk",
+            "",
+            Some(&json!({})),
+        )
+        .expect("empty local context should be buildable");
+        assert!(
+            !local_empty
+                .json
+                .to_string()
+                .contains("Trading context JSON")
+        );
+
+        let cloud_empty = build_llm_chat_request(
+            &LlmConfigInput {
+                llm_provider: "openai".to_owned(),
+                llm_api_key: "parity-test-key".to_owned(),
+                ..Default::default()
+            },
+            "Explain risk",
+            "",
+            Some(&json!({})),
+        )
+        .expect("empty cloud context should be buildable");
+        assert!(
+            !cloud_empty
+                .json
+                .to_string()
+                .contains("Cloud LLM context minimized")
+        );
+    }
+
+    #[test]
     fn openai_request_includes_advisory_boundary_and_cloud_safe_context() {
         let request = build_llm_chat_request(
             &LlmConfigInput {
@@ -1055,6 +1455,20 @@ mod tests {
             "http://127.0.0.1:11434"
         );
         assert_eq!(estimate_ollama_model_size_label("qwen3:8b"), "about 5 GB");
+        assert_eq!(
+            estimate_ollama_model_size_label("qwen2.5:72b"),
+            "about 45 GB"
+        );
+        assert_eq!(
+            estimate_ollama_model_size_label("gpt-oss:120b"),
+            "about 75 GB"
+        );
+        assert_eq!(
+            estimate_ollama_model_size_label("gemma3:27b"),
+            "about 17 GB"
+        );
+        assert_eq!(estimate_ollama_model_size_gb("gpt-oss:120b"), Some(75.0));
+        assert_eq!(estimate_ollama_model_size_gb("custom-local-model"), None);
         let status_route = build_local_model_route_request(
             "llm_local_model_status",
             "http://127.0.0.1:11434/v1",

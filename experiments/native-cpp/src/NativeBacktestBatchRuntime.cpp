@@ -1,6 +1,8 @@
 #include "NativeBacktestBatchRuntime.h"
+#include "generated/PythonParityContract.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonValue>
 #include <QMap>
 #include <QSet>
@@ -355,6 +357,35 @@ OverridePlanSet buildOverridePlans(const NativeBacktestBatchRuntime::BatchReques
 } // namespace
 
 namespace NativeBacktestBatchRuntime {
+
+BatchRequest::BatchRequest() {
+    const QJsonObject defaults = QJsonDocument::fromJson(QByteArray(
+        PythonParityContract::kPythonDefaultBacktestJson.data(),
+        static_cast<int>(PythonParityContract::kPythonDefaultBacktestJson.size()))).object();
+    const QJsonObject executionDefaults = QJsonDocument::fromJson(QByteArray(
+        PythonParityContract::kPythonDefaultExecutionJson.data(),
+        static_cast<int>(PythonParityContract::kPythonDefaultExecutionJson.size()))).object();
+    for (const QJsonValue &value : defaults.value(QStringLiteral("symbols")).toArray()) {
+        const QString symbol = value.toString().trimmed();
+        if (!symbol.isEmpty()) symbols.append(symbol);
+    }
+    for (const QJsonValue &value : defaults.value(QStringLiteral("intervals")).toArray()) {
+        const QString interval = value.toString().trimmed();
+        if (!interval.isEmpty()) intervals.append(interval);
+    }
+    const QJsonObject configuredIndicators = defaults.value(QStringLiteral("indicators")).toObject();
+    for (auto iterator = configuredIndicators.constBegin(); iterator != configuredIndicators.constEnd(); ++iterator) {
+        indicatorConfigs.insert(iterator.key(), iterator.value().toObject());
+    }
+    optimizerMode = defaults.value(QStringLiteral("optimizer_mode")).toString(QStringLiteral("current"));
+    optimizerMetric = defaults.value(QStringLiteral("optimizer_metric")).toString(QStringLiteral("roi_percent"));
+    optimizerScope = defaults.value(QStringLiteral("scan_scope")).toString(QStringLiteral("selected"));
+    optimizerComboSize = defaults.value(QStringLiteral("optimizer_combo_size")).toInt(2);
+    optimizerMinTrades = defaults.value(QStringLiteral("optimizer_min_trades")).toInt(1);
+    optimizerMddLimit = defaults.value(QStringLiteral("scan_mdd_limit")).toDouble(10.0);
+    loopIntervalOverride = executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m"));
+    connectorBackend = defaults.value(QStringLiteral("connector_backend")).toString();
+}
 
 QVector<QStringList> buildIndicatorGroups(
     const ConfigMap &configs,

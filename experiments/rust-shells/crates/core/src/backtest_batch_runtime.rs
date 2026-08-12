@@ -9,6 +9,9 @@ use crate::backtest_runtime::{
     NativeBacktestRequest, NativeBacktestResult, run_native_backtest_with_cancel_and_window,
 };
 use crate::market_data::BinanceKlineCandle;
+use crate::python_source_default_backtest_config;
+use crate::python_source_default_execution_config;
+use crate::python_source_ui_defaults;
 
 pub const MAX_OPTIMIZER_RUNS: u64 = 100_000_000_000;
 pub const DEFAULT_RESULT_LIMIT: usize = 5_000;
@@ -74,19 +77,79 @@ pub struct NativeBacktestBatchRequest {
 
 impl Default for NativeBacktestBatchRequest {
     fn default() -> Self {
+        let backtest_defaults = python_source_default_backtest_config();
+        let execution_defaults = python_source_default_execution_config();
+        let ui_defaults = python_source_ui_defaults();
+        let default_symbols = backtest_defaults
+            .get("symbols")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let default_intervals = backtest_defaults
+            .get("intervals")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let default_indicator_configs = backtest_defaults
+            .get("indicators")
+            .and_then(Value::as_object)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let text_default = |defaults: &Value, key: &str, fallback: &str| {
+            defaults
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(fallback)
+                .to_owned()
+        };
+        let number_default = |key: &str, fallback: f64| {
+            backtest_defaults
+                .get(key)
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite())
+                .unwrap_or(fallback)
+        };
         Self {
-            symbols: Vec::new(),
-            intervals: Vec::new(),
-            indicator_configs: BTreeMap::new(),
+            symbols: default_symbols,
+            intervals: default_intervals,
+            indicator_configs: default_indicator_configs,
             run_template: NativeBacktestRequest::default(),
             optimizer_enabled: false,
-            optimizer_mode: "current".to_owned(),
-            optimizer_metric: "roi_percent".to_owned(),
-            optimizer_scope: "selected".to_owned(),
-            optimizer_combo_size: 2,
-            optimizer_min_trades: 1,
-            optimizer_mdd_limit: 0.0,
-            optimizer_max_duration_seconds: 0,
+            optimizer_mode: text_default(backtest_defaults, "optimizer_mode", "current"),
+            optimizer_metric: text_default(backtest_defaults, "optimizer_metric", "roi_percent"),
+            optimizer_scope: text_default(backtest_defaults, "scan_scope", "selected"),
+            optimizer_combo_size: number_default("optimizer_combo_size", 2.0).round().max(1.0)
+                as usize,
+            optimizer_min_trades: number_default("optimizer_min_trades", 1.0).round().max(0.0)
+                as usize,
+            optimizer_mdd_limit: number_default("scan_mdd_limit", 10.0).max(0.0),
+            optimizer_max_duration_seconds: number_default(
+                "optimizer_max_duration_seconds",
+                14_400.0,
+            )
+            .round()
+            .max(MIN_OPTIMIZER_DURATION_SECONDS as f64)
+                as u64,
             result_limit: DEFAULT_RESULT_LIMIT,
             max_run_count: MAX_OPTIMIZER_RUNS,
             start_display: String::new(),
@@ -94,10 +157,23 @@ impl Default for NativeBacktestBatchRequest {
             start_ms: None,
             end_ms: None,
             warmup_bars: 50,
-            loop_interval_override: String::new(),
-            connector_backend: String::new(),
-            selected_exchange: "Binance".to_owned(),
-            scan_top_n: 200,
+            loop_interval_override: text_default(
+                execution_defaults,
+                "loop_interval_override",
+                "1m",
+            ),
+            connector_backend: text_default(
+                backtest_defaults,
+                "connector_backend",
+                "binance-connector",
+            ),
+            selected_exchange: ui_defaults
+                .get("selected_exchange")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Binance")
+                .to_owned(),
+            scan_top_n: number_default("scan_top_n", 200.0).round().max(1.0) as usize,
             resume_combo_offset: 0,
             resume_prior_runs: Vec::new(),
             resume_prior_errors: Vec::new(),
@@ -263,6 +339,7 @@ impl NativeBacktestBatchRequest {
     /// controls that are only relevant to optimizer or pair-override runs.
     pub fn from_python_request(payload: &Value) -> Result<Self, String> {
         let object = request_object(payload)?;
+        let defaults = python_source_default_backtest_config();
         let mut symbols = request_text_list(object, "symbols");
         let intervals = request_text_list(object, "intervals");
         let indicator_configs = object
@@ -288,8 +365,24 @@ impl NativeBacktestBatchRequest {
         }
 
         let mut run_template = NativeBacktestRequest::default();
-        run_template.logic = request_text(object, "logic", "AND").to_ascii_uppercase();
-        run_template.side = request_text(object, "side", "BOTH").to_ascii_uppercase();
+        run_template.logic = request_text(
+            object,
+            "logic",
+            defaults
+                .get("logic")
+                .and_then(Value::as_str)
+                .unwrap_or("AND"),
+        )
+        .to_ascii_uppercase();
+        run_template.side = request_text(
+            object,
+            "side",
+            defaults
+                .get("side")
+                .and_then(Value::as_str)
+                .unwrap_or("BOTH"),
+        )
+        .to_ascii_uppercase();
         run_template.capital = request_number(object, "capital", run_template.capital);
         if run_template.capital <= 0.0 {
             return Err("Backtest capital must be positive.".to_owned());
@@ -342,9 +435,32 @@ impl NativeBacktestBatchRequest {
             &request_text(object, "stop_loss_scope", &run_template.stop_loss_scope),
         );
 
-        let optimizer_mode = request_text(object, "optimizer_mode", "current");
-        let optimizer_scope = request_text(object, "scan_scope", "selected");
-        let scan_top_n = request_number(object, "scan_top_n", 200.0).round().max(1.0) as usize;
+        let optimizer_mode = request_text(
+            object,
+            "optimizer_mode",
+            defaults
+                .get("optimizer_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("current"),
+        );
+        let optimizer_scope = request_text(
+            object,
+            "scan_scope",
+            defaults
+                .get("scan_scope")
+                .and_then(Value::as_str)
+                .unwrap_or("selected"),
+        );
+        let scan_top_n = request_number(
+            object,
+            "scan_top_n",
+            defaults
+                .get("scan_top_n")
+                .and_then(Value::as_f64)
+                .unwrap_or(200.0),
+        )
+        .round()
+        .max(1.0) as usize;
         if !optimizer_mode.eq_ignore_ascii_case("current")
             && optimizer_scope.eq_ignore_ascii_case("top_n")
         {
@@ -366,7 +482,10 @@ impl NativeBacktestBatchRequest {
         let optimizer_max_duration_seconds = request_number(
             object,
             "optimizer_max_duration_seconds",
-            DEFAULT_OPTIMIZER_DURATION_SECONDS as f64,
+            defaults
+                .get("optimizer_max_duration_seconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(DEFAULT_OPTIMIZER_DURATION_SECONDS as f64),
         )
         .round()
         .max(MIN_OPTIMIZER_DURATION_SECONDS as f64)
@@ -380,15 +499,44 @@ impl NativeBacktestBatchRequest {
             run_template,
             optimizer_enabled,
             optimizer_mode,
-            optimizer_metric: request_text(object, "optimizer_metric", "roi_percent"),
+            optimizer_metric: request_text(
+                object,
+                "optimizer_metric",
+                defaults
+                    .get("optimizer_metric")
+                    .and_then(Value::as_str)
+                    .unwrap_or("roi_percent"),
+            ),
             optimizer_scope,
-            optimizer_combo_size: request_number(object, "optimizer_combo_size", 2.0)
-                .round()
-                .clamp(1.0, 5.0) as usize,
-            optimizer_min_trades: request_number(object, "optimizer_min_trades", 1.0)
-                .round()
-                .max(0.0) as usize,
-            optimizer_mdd_limit: request_number(object, "scan_mdd_limit", 10.0).max(0.0),
+            optimizer_combo_size: request_number(
+                object,
+                "optimizer_combo_size",
+                defaults
+                    .get("optimizer_combo_size")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(2.0),
+            )
+            .round()
+            .clamp(1.0, 5.0) as usize,
+            optimizer_min_trades: request_number(
+                object,
+                "optimizer_min_trades",
+                defaults
+                    .get("optimizer_min_trades")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(1.0),
+            )
+            .round()
+            .max(0.0) as usize,
+            optimizer_mdd_limit: request_number(
+                object,
+                "scan_mdd_limit",
+                defaults
+                    .get("scan_mdd_limit")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(10.0),
+            )
+            .max(0.0),
             optimizer_max_duration_seconds,
             result_limit: request_number(
                 object,
@@ -403,9 +551,30 @@ impl NativeBacktestBatchRequest {
             start_ms: Some(start_ms),
             end_ms: Some(end_ms),
             warmup_bars,
-            loop_interval_override: request_text(object, "loop_interval_override", ""),
-            connector_backend: request_text(object, "connector_backend", "binance-connector"),
-            selected_exchange: request_text(object, "selected_exchange", "Binance"),
+            loop_interval_override: request_text(
+                object,
+                "loop_interval_override",
+                defaults
+                    .get("loop_interval_override")
+                    .and_then(Value::as_str)
+                    .unwrap_or("1m"),
+            ),
+            connector_backend: request_text(
+                object,
+                "connector_backend",
+                defaults
+                    .get("connector_backend")
+                    .and_then(Value::as_str)
+                    .unwrap_or("binance-connector"),
+            ),
+            selected_exchange: request_text(
+                object,
+                "selected_exchange",
+                crate::python_source_ui_defaults()
+                    .get("selected_exchange")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Binance"),
+            ),
             scan_top_n,
             resume_combo_offset: request_number(object, "resume_combo_offset", 0.0)
                 .round()
@@ -1561,6 +1730,9 @@ where
 mod tests {
     use super::*;
     use crate::generated_python_indicator_reference::PYTHON_INDICATOR_REFERENCE_JSON;
+    use crate::generated_python_parity::{
+        PYTHON_DEFAULT_BACKTEST_JSON, PYTHON_DEFAULT_EXECUTION_JSON,
+    };
 
     fn candles_from_value(value: &Value) -> Vec<BinanceKlineCandle> {
         value
@@ -1596,6 +1768,57 @@ mod tests {
             })
             .cloned()
             .unwrap_or_else(|| panic!("missing generated backtest fixture {fixture_name}"))
+    }
+
+    #[test]
+    fn native_batch_defaults_match_python_backtest_and_execution_contracts() {
+        let python_backtest: Value = serde_json::from_str(PYTHON_DEFAULT_BACKTEST_JSON)
+            .expect("generated Python backtest defaults must be valid JSON");
+        let python_execution: Value = serde_json::from_str(PYTHON_DEFAULT_EXECUTION_JSON)
+            .expect("generated Python execution defaults must be valid JSON");
+        let request = NativeBacktestBatchRequest::default();
+        assert_eq!(
+            request.optimizer_mode,
+            python_backtest["optimizer_mode"].as_str().unwrap()
+        );
+        assert_eq!(
+            request.optimizer_metric,
+            python_backtest["optimizer_metric"].as_str().unwrap()
+        );
+        assert_eq!(
+            request.optimizer_scope,
+            python_backtest["scan_scope"].as_str().unwrap()
+        );
+        assert_eq!(
+            request.optimizer_combo_size,
+            python_backtest["optimizer_combo_size"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            request.optimizer_min_trades,
+            python_backtest["optimizer_min_trades"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            request.optimizer_mdd_limit,
+            python_backtest["scan_mdd_limit"].as_f64().unwrap()
+        );
+        assert_eq!(
+            request.optimizer_max_duration_seconds,
+            python_backtest["optimizer_max_duration_seconds"]
+                .as_u64()
+                .unwrap()
+        );
+        assert_eq!(
+            request.loop_interval_override,
+            python_execution["loop_interval_override"].as_str().unwrap()
+        );
+        assert_eq!(
+            request.connector_backend,
+            python_backtest["connector_backend"].as_str().unwrap()
+        );
+        assert_eq!(request.selected_exchange, "Binance");
+        assert_eq!(request.symbols, ["BTCUSDT"]);
+        assert_eq!(request.intervals, ["1h"]);
+        assert_eq!(request.indicator_configs["rsi"]["enabled"], true);
     }
 
     #[test]
@@ -1646,6 +1869,7 @@ mod tests {
                     capital: 1_000.0,
                     position_pct: 25.0,
                     position_pct_units: "percent".to_owned(),
+                    leverage: 1.0,
                     fee_bps: 5.0,
                     slippage_bps: 2.0,
                     ..NativeBacktestRequest::default()

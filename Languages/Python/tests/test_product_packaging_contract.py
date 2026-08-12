@@ -233,7 +233,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(runtime_ready_match)
         runtime_ready_label = runtime_ready_match.group(1) if runtime_ready_match else ""
-        self.assertIn("defaultModels", tauri_html)
+        self.assertIn("liveLlmProviders", tauri_html)
+        self.assertIn("refreshLlmProviderCatalog", tauri_html)
+        self.assertIn('id="refresh-llm-catalog-btn"', tauri_html)
         self.assertIn('src="generated-python-parity.js"', tauri_html)
         self.assertIn('src="tauri-ui-behavior.js"', tauri_html)
         for code_language in ("Python", "C++", "Rust"):

@@ -75,6 +75,56 @@ class NativeFullParityContractTests(unittest.TestCase):
             self.assertEqual(normalized_matches(cpp_sections[name]), keys, f"C++ {name} config keys drifted")
             self.assertEqual(normalized_matches(rust_sections[name]), keys, f"Rust {name} config keys drifted")
 
+    def test_cpp_dashboard_defaults_are_consumed_from_python_contract(self):
+        cpp_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_ui.cpp")
+        self.assertIn("pythonSourceDefaultExecutionConfig()", cpp_source)
+        self.assertIn("pythonSourceRiskDefaults()", cpp_source)
+        self.assertIn("pythonSourceUiDefaults()", cpp_source)
+        for key in (
+            "account_type",
+            "account_mode",
+            "leverage",
+            "margin_mode",
+            "position_mode",
+            "assets_mode",
+            "tif",
+            "gtd_minutes",
+            "live_trading_max_leverage",
+            "live_trading_max_position_pct",
+            "live_trading_max_session_orders",
+            "order_audit_enabled",
+            "connector_order_block_pause_threshold",
+            "indicator_use_live_values",
+            "allow_opposite_positions",
+            "stop_loss",
+        ):
+            self.assertIn(
+                f'QStringLiteral("{key}")',
+                cpp_source,
+                f"C++ dashboard default should be keyed by Python contract field {key!r}",
+            )
+        self.assertNotIn(
+            "liveIndicatorValuesCheck->setChecked(true)",
+            cpp_source,
+            "C++ must not reintroduce a hardcoded repainting default",
+        )
+
+    def test_cpp_runtime_fallbacks_use_python_execution_defaults(self):
+        cpp_runtime_sources = (
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_runtime.cpp",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_runtime_lifecycle.cpp",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.positions.cpp",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.account.cpp",
+        )
+        for path in cpp_runtime_sources:
+            source = _read(path)
+            self.assertIn("pythonSourceDefaultExecutionConfig()", source, path)
+            self.assertNotIn(
+                ': QStringLiteral("Live")',
+                source,
+                f"{path.name} must not default a missing runtime control to Live",
+            )
+
     def test_backtest_symbol_source_preserves_python_text_contract(self):
         validated = validate_runtime_config({"backtest": {"symbol_source": "margin"}})
         self.assertEqual(validated["backtest"]["symbol_source"], "margin")
@@ -1376,6 +1426,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("render_tauri_browser_contract", native_source_sync_audit)
         self.assertIn("cpp_backtest_service_api_uses_python_source_routes", native_source_sync_audit)
         self.assertIn("cpp_dashboard_llm_service_api_uses_python_source_routes", native_source_sync_audit)
+        self.assertIn("cpp_llm_catalog_payload_fields_follow_python", native_source_sync_audit)
         self.assertIn("cpp_config_service_api_uses_python_source_routes", native_source_sync_audit)
         self.assertIn("cpp_native_chart_heatmap_uses_python_source_surface", native_source_sync_audit)
         self.assertIn("cpp_positions_uses_python_source_surface", native_source_sync_audit)
@@ -1385,6 +1436,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("rust_config_persistence_uses_python_source_options", native_source_sync_audit)
         self.assertIn("cpp_native_strategy_runtime_uses_python_source_options", native_source_sync_audit)
         self.assertIn("tauri_browser_service_api_uses_python_source_routes", native_source_sync_audit)
+        self.assertIn("tauri_llm_catalog_uses_python_source_route", native_source_sync_audit)
         self.assertIn("tauri_dashboard_stream_backend_uses_python_source_route", native_source_sync_audit)
         self.assertIn("tauri_dashboard_stream_browser_bridge", native_source_sync_audit)
         self.assertIn("extracted_service_route_names", native_source_sync_audit)
@@ -1633,8 +1685,14 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn('selectedValue("backtest-scan-scope")', body)
         self.assertIn('selectedValue("backtest-optimizer-mode")', body)
         self.assertIn('selectedValue("backtest-optimizer-metric")', body)
-        self.assertIn('numberFrom("backtest-optimizer-combo-size", 2)', body)
-        self.assertIn('numberFrom("backtest-optimizer-min-trades", 1)', body)
+        self.assertIn(
+            'numberFrom("backtest-optimizer-combo-size", defaultBacktest.optimizer_combo_size ?? 2)',
+            body,
+        )
+        self.assertIn(
+            'numberFrom("backtest-optimizer-min-trades", defaultBacktest.optimizer_min_trades ?? 1)',
+            body,
+        )
         self.assertIn('const snapshot = usesLocalBacktestBackend()', tauri_html)
         self.assertIn('await pollBacktestUntilIdle("Run backtest")', tauri_html)
         self.assertIn('setText("backtest-scan-status-text", "Backtest cancellation requested...")', tauri_html)
@@ -1995,7 +2053,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn('request.insert(QStringLiteral("scan_scope"), scanScope)', backtest_source)
         self.assertIn('request.insert(QStringLiteral("optimizer_mode"), optimizerMode)', backtest_source)
         self.assertIn('QStringLiteral("optimizer_max_duration_seconds")', backtest_source)
-        self.assertIn('spinValue(backtestOptimizerMaxDurationSpin_, 240) * 60', backtest_source)
+        self.assertIn('backtestDefaults.value(QStringLiteral("optimizer_max_duration_seconds"))', backtest_source)
+        self.assertIn('* 60);', backtest_source)
         self.assertIn('QStringLiteral("queue_if_busy")', backtest_source)
         self.assertIn('backtestQueueIfBusyCheck_ && backtestQueueIfBusyCheck_->isChecked()', backtest_source)
         self.assertIn('request.insert(QStringLiteral("resume_checkpoint"), false)', backtest_source)
@@ -2236,8 +2295,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("Code language tools load the first time you open this tab.", native_desktop_shell_source)
         self.assertIn("start_code_tab_window_suppression", native_desktop_shell_source)
         self.assertIn("dependency_versions_auto_refresh", native_desktop_shell_source)
-        self.assertIn("The C++ runtime owns Binance USD-M and Coin-M Futures execution", native_desktop_shell_source)
-        self.assertIn("binance-usds-and-coin-futures", native_desktop_shell_source)
+        self.assertIn("The C++ runtime owns Binance Spot, USD-M, and Coin-M Futures execution", native_desktop_shell_source)
+        self.assertIn("binance-spot-usds-and-coin-futures", native_desktop_shell_source)
         self.assertIn("unimplemented venues remain evidence-gated", native_desktop_shell_source)
         self.assertIn("startDashboardServiceRuntime", native_runtime_lifecycle_source)
         self.assertIn("stopDashboardServiceRuntime", native_runtime_lifecycle_source)
@@ -2287,7 +2346,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("indicator output key expansion", native_strategy_runtime_source)
         self.assertIn("live-vs-closed candle signal indexing", native_strategy_runtime_source)
         self.assertIn('QStringLiteral("native-cpp")', native_strategy_runtime_source)
-        self.assertIn('QStringLiteral("binance-usds-and-coin-futures")', native_strategy_runtime_source)
+        self.assertIn('QStringLiteral("binance-spot-usds-and-coin-futures")', native_strategy_runtime_source)
         self.assertIn("buildPromptRoutePayload", native_llm_advisory_header)
         self.assertIn("buildLocalModelRoutePayload", native_llm_advisory_header)
         self.assertIn("describeLocalModelStatus", native_llm_advisory_header)

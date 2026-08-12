@@ -277,16 +277,21 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     QSet<QString> waitingSeenThisCycle;
     QSet<QString> accountStopLossConnectors;
     const qint64 cycleNowMs = QDateTime::currentMSecsSinceEpoch();
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QString defaultAccountType = executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures"));
+    const QString defaultMode = executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"));
+    const QString defaultIndicatorSource = executionDefaults.value(QStringLiteral("indicator_source")).toString(QStringLiteral("Binance futures"));
+    const QString defaultPositionMode = executionDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"));
 
     const bool futures = dashboardAccountTypeCombo_
         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith("fut")
-        : true;
-    const QString modeText = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+        : defaultAccountType.trimmed().toLower().startsWith("fut");
+    const QString modeText = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : defaultMode;
     const bool paperTrading = TradingBotWindowSupport::isPaperTradingModeLabel(modeText);
     const bool isTestnet = TradingBotWindowSupport::isTestnetModeLabel(modeText);
     const QString indicatorSourceText = dashboardIndicatorSourceCombo_
         ? dashboardIndicatorSourceCombo_->currentText().trimmed()
-        : QStringLiteral("Binance futures");
+        : defaultIndicatorSource;
     const QString indicatorSourceKey = normalizedIndicatorSourceKey(indicatorSourceText);
     const QString signalFeedText = dashboardSignalFeedCombo_
         ? dashboardSignalFeedCombo_->currentText().trimmed()
@@ -294,7 +299,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     const QString signalFeedKey = normalizedSignalFeedKey(signalFeedText);
     const bool websocketFeedRequested = signalFeedKey == QStringLiteral("websocket");
     const bool useWebSocketFeed = websocketFeedRequested && qtWebSocketsRuntimeAvailable();
-    const int lookback = dashboardLookbackSpin_ ? dashboardLookbackSpin_->value() : 200;
+    const int lookback = dashboardLookbackSpin_
+        ? dashboardLookbackSpin_->value()
+        : executionDefaults.value(QStringLiteral("lookback")).toInt(200);
     const QString defaultConnectorText = dashboardConnectorCombo_
         ? dashboardConnectorCombo_->currentText().trimmed()
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
@@ -305,12 +312,12 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     const bool hasApiCredentials = !apiKey.isEmpty() && !apiSecret.isEmpty();
     const bool hedgeMode = dashboardPositionModeCombo_
         ? dashboardPositionModeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("hedge"))
-        : true;
+        : defaultPositionMode.trimmed().toLower().startsWith(QStringLiteral("hedge"));
     const QString liveActivePnlContextKey = QStringLiteral("%1|%2|%3")
                                                 .arg(apiKey.trimmed(),
                                                      dashboardAccountTypeCombo_
                                                          ? dashboardAccountTypeCombo_->currentText().trimmed().toLower()
-                                                         : QStringLiteral("futures"),
+                                                         : defaultAccountType.trimmed().toLower(),
                                                      modeText.trimmed().toLower());
     QMap<QString, BinanceRestClient::FuturesSymbolFilters> symbolFiltersCache;
     QMap<QString, BinanceRestClient::TickerPriceResult> tickerPriceCache;

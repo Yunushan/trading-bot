@@ -18,6 +18,7 @@ use crate::generated_python_parity::{
     PYTHON_SIDE_CONFIG_CHOICES, PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
     PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES, PYTHON_TIF_CONFIG_CHOICES,
 };
+use crate::python_source_risk_defaults;
 
 pub const SERVICE_CONFIG_FILE_KIND: &str = "trading-bot-service-config";
 pub const SERVICE_CONFIG_FORMAT_VERSION: i64 = 1;
@@ -1627,9 +1628,21 @@ fn validate_stop_loss(
 
 fn normalize_stop_loss_value(value: &Value) -> Value {
     let raw = value.as_object().cloned().unwrap_or_default();
-    let default_mode = PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES
-        .first()
-        .map(|(_, value)| *value)
+    let python_defaults = python_source_risk_defaults();
+    let python_stop_loss = python_defaults
+        .get("stop_loss")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let default_mode = python_stop_loss
+        .get("mode")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES
+                .first()
+                .map(|(_, value)| *value)
+        })
         .unwrap_or("usdt");
     let mode_text = raw
         .get("mode")
@@ -1637,9 +1650,15 @@ fn normalize_stop_loss_value(value: &Value) -> Value {
         .unwrap_or_else(|| default_mode.to_owned());
     let mode = choice_value_from_text(&mode_text, STOP_LOSS_MODE_CHOICES)
         .unwrap_or_else(|| default_mode.to_owned());
-    let default_scope = PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES
-        .first()
-        .map(|(_, value)| *value)
+    let default_scope = python_stop_loss
+        .get("scope")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES
+                .first()
+                .map(|(_, value)| *value)
+        })
         .unwrap_or("per_trade");
     let scope_text = raw
         .get("scope")
@@ -1650,15 +1669,17 @@ fn normalize_stop_loss_value(value: &Value) -> Value {
     let usdt = raw
         .get("usdt")
         .and_then(finite_float)
+        .or_else(|| python_stop_loss.get("usdt").and_then(finite_float))
         .unwrap_or(0.0)
         .max(0.0);
     let percent = raw
         .get("percent")
         .and_then(finite_float)
+        .or_else(|| python_stop_loss.get("percent").and_then(finite_float))
         .unwrap_or(0.0)
         .max(0.0);
     json!({
-        "enabled": raw.get("enabled").and_then(|value| coerce_bool(value, false)).unwrap_or(false),
+        "enabled": raw.get("enabled").and_then(|value| coerce_bool(value, false)).or_else(|| python_stop_loss.get("enabled").and_then(Value::as_bool)).unwrap_or(false),
         "mode": mode,
         "usdt": usdt,
         "percent": percent,

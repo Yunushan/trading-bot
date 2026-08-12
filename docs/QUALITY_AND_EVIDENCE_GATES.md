@@ -129,7 +129,10 @@ committed.
   `Languages/Python/app/native_parity.py` still approves both C++ and Rust
   contract parity. This claim is intentionally separate from runtime
   completion; source synchronization does not prove standalone trading execution
-  readiness.
+  readiness. The same audit emits `feature_option_contract`, which reports the
+  Python feature-domain count, option-catalog count and entry count, and separate
+  C++/Rust generated-contract matches. This is the authoritative feature/options
+  equality result; it must not be interpreted as standalone runtime promotion.
   `tools/verify_all.py --json` mirrors this distinction in its
   `rust_native_runtime_promotion` object: `audit_ok` reports whether the
   consistency audit completed, while `promotion_ready` and

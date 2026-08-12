@@ -6,6 +6,7 @@ use crate::market_data::BinanceKlineCandle;
 use crate::native_indicators::{
     compute_configured_indicator_series, unsupported_enabled_indicator_keys,
 };
+use crate::python_source_default_backtest_config;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeBacktestRequest {
@@ -34,28 +35,91 @@ pub struct NativeBacktestRequest {
 
 impl Default for NativeBacktestRequest {
     fn default() -> Self {
+        let defaults = python_source_default_backtest_config();
+        let stop_loss = defaults
+            .get("stop_loss")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let text_default = |key: &str, fallback: &str| {
+            defaults
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(fallback)
+                .to_owned()
+        };
+        let number_default = |key: &str, fallback: f64| {
+            defaults
+                .get(key)
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite())
+                .unwrap_or(fallback)
+        };
+        let stop_loss_text_default = |key: &str, fallback: &str| {
+            stop_loss
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(fallback)
+                .to_owned()
+        };
+        let stop_loss_number_default = |key: &str, fallback: f64| {
+            stop_loss
+                .get(key)
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite())
+                .unwrap_or(fallback)
+        };
+        let default_symbol = defaults
+            .get("symbols")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let default_interval = defaults
+            .get("intervals")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let indicators = defaults
+            .get("indicators")
+            .and_then(Value::as_object)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
         Self {
-            symbol: String::new(),
-            interval: String::new(),
-            indicators: BTreeMap::new(),
-            logic: "AND".to_owned(),
-            side: "BOTH".to_owned(),
-            capital: 1_000.0,
-            position_pct: 1.0,
-            position_pct_units: String::new(),
-            leverage: 1.0,
-            margin_mode: "Isolated".to_owned(),
-            position_mode: "Hedge".to_owned(),
-            assets_mode: "Single-Asset".to_owned(),
-            account_mode: "Classic Trading".to_owned(),
-            mdd_logic: "per_trade".to_owned(),
-            stop_loss_enabled: false,
-            stop_loss_mode: "usdt".to_owned(),
-            stop_loss_usdt: 0.0,
-            stop_loss_percent: 0.0,
-            stop_loss_scope: "per_trade".to_owned(),
-            fee_bps: 5.0,
-            slippage_bps: 2.0,
+            symbol: default_symbol,
+            interval: default_interval,
+            indicators,
+            logic: text_default("logic", "AND"),
+            side: text_default("side", "BOTH"),
+            capital: number_default("capital", 1_000.0),
+            position_pct: number_default("position_pct", 2.0),
+            position_pct_units: "percent".to_owned(),
+            leverage: number_default("leverage", 20.0),
+            margin_mode: text_default("margin_mode", "Isolated"),
+            position_mode: text_default("position_mode", "Hedge"),
+            assets_mode: text_default("assets_mode", "Single-Asset"),
+            account_mode: text_default("account_mode", "Classic Trading"),
+            mdd_logic: text_default("mdd_logic", "per_trade"),
+            stop_loss_enabled: stop_loss
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            stop_loss_mode: stop_loss_text_default("mode", "usdt"),
+            stop_loss_usdt: stop_loss_number_default("usdt", 0.0),
+            stop_loss_percent: stop_loss_number_default("percent", 0.0),
+            stop_loss_scope: stop_loss_text_default("scope", "per_trade"),
+            fee_bps: number_default("fee_bps", 5.0),
+            slippage_bps: number_default("slippage_bps", 2.0),
         }
     }
 }
@@ -1113,6 +1177,7 @@ where
 mod tests {
     use super::*;
     use crate::generated_python_indicator_reference::PYTHON_INDICATOR_REFERENCE_JSON;
+    use crate::generated_python_parity::PYTHON_DEFAULT_BACKTEST_JSON;
 
     fn text(value: Option<&Value>, fallback: &str) -> String {
         value.and_then(Value::as_str).unwrap_or(fallback).to_owned()
@@ -1137,6 +1202,55 @@ mod tests {
                 volume: number(candle.get("volume"), 0.0),
             })
             .collect()
+    }
+
+    #[test]
+    fn native_backtest_defaults_match_python_backtest_contract() {
+        let python: Value = serde_json::from_str(PYTHON_DEFAULT_BACKTEST_JSON)
+            .expect("generated Python backtest defaults must be valid JSON");
+        let request = NativeBacktestRequest::default();
+        assert_eq!(request.symbol, python["symbols"][0].as_str().unwrap());
+        assert_eq!(request.interval, python["intervals"][0].as_str().unwrap());
+        assert_eq!(request.logic, python["logic"].as_str().unwrap());
+        assert_eq!(request.side, python["side"].as_str().unwrap());
+        assert_eq!(request.capital, python["capital"].as_f64().unwrap());
+        assert_eq!(
+            request.position_pct,
+            python["position_pct"].as_f64().unwrap()
+        );
+        assert_eq!(request.position_pct_units, "percent");
+        assert_eq!(request.leverage, python["leverage"].as_f64().unwrap());
+        assert_eq!(request.margin_mode, python["margin_mode"].as_str().unwrap());
+        assert_eq!(
+            request.position_mode,
+            python["position_mode"].as_str().unwrap()
+        );
+        assert_eq!(request.assets_mode, python["assets_mode"].as_str().unwrap());
+        assert_eq!(
+            request.account_mode,
+            python["account_mode"].as_str().unwrap()
+        );
+        assert_eq!(request.mdd_logic, python["mdd_logic"].as_str().unwrap());
+        assert_eq!(request.fee_bps, python["fee_bps"].as_f64().unwrap());
+        assert_eq!(
+            request.slippage_bps,
+            python["slippage_bps"].as_f64().unwrap()
+        );
+        let stop_loss = &python["stop_loss"];
+        assert_eq!(
+            request.stop_loss_enabled,
+            stop_loss["enabled"].as_bool().unwrap()
+        );
+        assert_eq!(request.stop_loss_mode, stop_loss["mode"].as_str().unwrap());
+        assert_eq!(request.stop_loss_usdt, stop_loss["usdt"].as_f64().unwrap());
+        assert_eq!(
+            request.stop_loss_percent,
+            stop_loss["percent"].as_f64().unwrap()
+        );
+        assert_eq!(
+            request.stop_loss_scope,
+            stop_loss["scope"].as_str().unwrap()
+        );
     }
 
     #[test]

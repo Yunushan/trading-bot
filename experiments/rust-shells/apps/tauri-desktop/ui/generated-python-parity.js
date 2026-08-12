@@ -685,7 +685,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "9adccf010ea1ed7197ad19a20fec5ab53a560601c519b7dfbc2dbb58859e803c",
+  "contractHash": "612035f87f016e6418e6ae8a045f55a7377c7ae101cf16b7f46a4a2c8095d2e5",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -1996,6 +1996,9 @@
   "llmProviders": [
     {
       "api_key_env": "OPENAI_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_OPENAI",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.openai.com/v1",
       "default_model": "gpt-5.5",
       "default_reasoning_effort": "default",
@@ -2033,6 +2036,10 @@
         "gpt-4.1-mini",
         "gpt-4.1-nano"
       ],
+      "notes": [
+        "Uses the OpenAI-compatible chat completions endpoint.",
+        "GPT-5.6 Sol, Terra, and Luna support reasoning levels through max; availability depends on the API account."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -2047,6 +2054,9 @@
     },
     {
       "api_key_env": "ANTHROPIC_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_ANTHROPIC",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.anthropic.com",
       "default_model": "claude-sonnet-4-5-20250929",
       "default_reasoning_effort": "default",
@@ -2067,6 +2077,9 @@
         "claude-opus-4-0",
         "claude-sonnet-4-0"
       ],
+      "notes": [
+        "Uses the Anthropic messages endpoint with the 2023-06-01 API version header."
+      ],
       "protocol": "anthropic-messages",
       "reasoning_efforts": [
         "default",
@@ -2079,6 +2092,9 @@
     },
     {
       "api_key_env": "GEMINI_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_GEMINI",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
       "default_model": "gemini-3-flash-preview",
       "default_reasoning_effort": "default",
@@ -2096,6 +2112,9 @@
         "gemini-2.5-flash-lite",
         "gemini-2.5-flash-lite-preview-09-2025"
       ],
+      "notes": [
+        "Uses the Gemini generateContent endpoint."
+      ],
       "protocol": "gemini-generate-content",
       "reasoning_efforts": [
         "default",
@@ -2107,6 +2126,9 @@
     },
     {
       "api_key_env": "DEEPSEEK_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_DEEPSEEK",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.deepseek.com",
       "default_model": "deepseek-v4-flash",
       "default_reasoning_effort": "default",
@@ -2119,6 +2141,9 @@
         "deepseek-chat",
         "deepseek-reasoner"
       ],
+      "notes": [
+        "DeepSeek documents an OpenAI-compatible chat completions surface."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -2130,6 +2155,9 @@
     },
     {
       "api_key_env": "MISTRAL_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_MISTRAL",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.mistral.ai/v1",
       "default_model": "mistral-small-latest",
       "default_reasoning_effort": "default",
@@ -2143,6 +2171,9 @@
         "codestral-latest",
         "open-mistral-nemo"
       ],
+      "notes": [
+        "Mistral exposes an OpenAI-compatible chat completions API."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -2153,6 +2184,9 @@
     },
     {
       "api_key_env": "XAI_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_GROK",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.x.ai/v1",
       "default_model": "grok-4.3",
       "default_reasoning_effort": "default",
@@ -2168,6 +2202,9 @@
         "grok-4-fast-reasoning",
         "grok-4-fast-non-reasoning"
       ],
+      "notes": [
+        "xAI documents OpenAI-compatible chat completions at /v1/chat/completions."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -2178,6 +2215,9 @@
     },
     {
       "api_key_env": "DASHSCOPE_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_QWEN",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       "default_model": "qwen3.6-plus",
       "default_reasoning_effort": "default",
@@ -2206,6 +2246,10 @@
         "qwen-plus-us",
         "qwen-flash-us"
       ],
+      "notes": [
+        "DashScope provides OpenAI-compatible endpoints for Qwen models.",
+        "The request uses enable_thinking for compatible Qwen chat models; Qwen 3.5/3.6 multimodal and Responses-only features require DashScope's corresponding API surface."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -2219,6 +2263,9 @@
     },
     {
       "api_key_env": "MOONSHOT_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_MOONSHOT",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.moonshot.ai/v1",
       "default_model": "kimi-k3",
       "default_reasoning_effort": "default",
@@ -2232,6 +2279,11 @@
         "kimi-k2.6",
         "kimi-k2.5"
       ],
+      "notes": [
+        "Uses Moonshot's OpenAI-compatible /v1/chat/completions endpoint.",
+        "Kimi K3 supports reasoning_effort=max. Kimi K2.5 and K2.6 use thinking enabled or disabled; K2.7 Code always reasons.",
+        "Use the provider model discovery endpoint or the editable model field for account-specific releases."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -2242,6 +2294,9 @@
     },
     {
       "api_key_env": "LOCAL_LLM_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_LOCAL",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:11434/v1",
       "default_model": "qwen3:8b",
       "default_reasoning_effort": "default",
@@ -2605,6 +2660,10 @@
         "nvidia/Llama-3.1-Nemotron-Super-49B-v1",
         "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
       ],
+      "notes": [
+        "Use this for any local, LAN, private IP, or custom OpenAI-compatible endpoint.",
+        "The model field is intentionally editable so arbitrary Ollama, GGUF, or Hugging Face IDs can be used."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -2619,6 +2678,9 @@
     },
     {
       "api_key_env": "OLLAMA_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_OLLAMA",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:11434/v1",
       "default_model": "qwen3:8b",
       "default_reasoning_effort": "default",
@@ -2744,6 +2806,10 @@
         "mamba",
         "custom-model"
       ],
+      "notes": [
+        "Ollama exposes OpenAI-compatible /v1/chat/completions and /v1/models endpoints.",
+        "Automatic download/start/remove actions are available for localhost Ollama."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -2758,6 +2824,9 @@
     },
     {
       "api_key_env": "VLLM_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_VLLM",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:8000/v1",
       "default_model": "Qwen/Qwen3-8B",
       "default_reasoning_effort": "default",
@@ -3004,6 +3073,10 @@
         "nvidia/Llama-3.1-Nemotron-Super-49B-v1",
         "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
       ],
+      "notes": [
+        "Use this for self-hosted vLLM or SGLang OpenAI-compatible servers.",
+        "Set Base URL / IP to a LAN, private, or remote /v1 endpoint."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -3018,6 +3091,9 @@
     },
     {
       "api_key_env": "LLAMACPP_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_LLAMACPP",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:8080/v1",
       "default_model": "local-model",
       "default_reasoning_effort": "default",
@@ -3281,6 +3357,10 @@
         "nvidia/Llama-3.1-Nemotron-Super-49B-v1",
         "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
       ],
+      "notes": [
+        "Use this for llama.cpp server; the loaded model name is often reported by /v1/models.",
+        "GGUF filenames are accepted as editable model IDs when your server exposes them."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -3295,6 +3375,9 @@
     },
     {
       "api_key_env": "LMSTUDIO_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_LMSTUDIO",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:1234/v1",
       "default_model": "local-model",
       "default_reasoning_effort": "default",
@@ -3542,6 +3625,10 @@
         "nvidia/Llama-3.1-Nemotron-Super-49B-v1",
         "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
       ],
+      "notes": [
+        "Use this for LM Studio local server or a remote LM Studio-compatible /v1 endpoint.",
+        "The model field is editable because LM Studio exposes locally downloaded model IDs."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -3556,6 +3643,9 @@
     },
     {
       "api_key_env": "HUGGINGFACE_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_TGI",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:3000/v1",
       "default_model": "tgi",
       "default_reasoning_effort": "default",
@@ -3803,6 +3893,10 @@
         "nvidia/Llama-3.1-Nemotron-Super-49B-v1",
         "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
       ],
+      "notes": [
+        "Use this for Hugging Face Text Generation Inference Messages API endpoints.",
+        "Remote Hugging Face Inference Endpoints should include /v1 in the base URL."
+      ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
         "default",
@@ -3817,6 +3911,9 @@
     },
     {
       "api_key_env": "OPEN_SOURCE_LLM_API_KEY",
+      "catalog_revision": "2026-07-16",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_OPEN_SOURCE",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:8000/v1",
       "default_model": "Qwen/Qwen3-8B",
       "default_reasoning_effort": "default",
@@ -4179,6 +4276,10 @@
         "bloomz",
         "mamba",
         "custom-model"
+      ],
+      "notes": [
+        "Use this for any OpenAI-compatible open-source runtime, including remote IP or URL endpoints.",
+        "For public endpoints, enable Allow public network endpoint so context is minimized."
       ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
@@ -5053,13 +5154,22 @@
       "provider_label",
       "mode",
       "protocol",
+      "catalog_revision",
+      "catalog_path",
+      "custom_models_env",
+      "custom_models_path_env",
       "model",
       "base_url",
       "api_key_env",
       "api_key_present",
       "allow_public_network",
       "use_for",
-      "reasoning_effort"
+      "reasoning_effort",
+      "default_reasoning_effort",
+      "reasoning_efforts",
+      "model_suggestions",
+      "notes",
+      "execution_policy"
     ],
     "llm_local_model_delete": [
       "ok",
@@ -5109,7 +5219,13 @@
       "api_key_env",
       "model_suggestions",
       "reasoning_efforts",
-      "default_reasoning_effort"
+      "default_reasoning_effort",
+      "catalog_revision",
+      "catalog_path",
+      "custom_models_env",
+      "custom_models_path_env",
+      "catalog_note",
+      "notes"
     ],
     "logs": [
       "sequence_id",
@@ -5827,7 +5943,13 @@
         "api_key_env",
         "model_suggestions",
         "reasoning_efforts",
-        "default_reasoning_effort"
+        "default_reasoning_effort",
+        "catalog_revision",
+        "catalog_path",
+        "custom_models_env",
+        "custom_models_path_env",
+        "catalog_note",
+        "notes"
       ]
     },
     {
@@ -5842,13 +5964,22 @@
         "provider_label",
         "mode",
         "protocol",
+        "catalog_revision",
+        "catalog_path",
+        "custom_models_env",
+        "custom_models_path_env",
         "model",
         "base_url",
         "api_key_env",
         "api_key_present",
         "allow_public_network",
         "use_for",
-        "reasoning_effort"
+        "reasoning_effort",
+        "default_reasoning_effort",
+        "reasoning_efforts",
+        "model_suggestions",
+        "notes",
+        "execution_policy"
       ]
     },
     {
@@ -6454,6 +6585,12 @@
     "7h": "420",
     "8h": "480",
     "9h": "540"
+  },
+  "uiDefaults": {
+    "design": "Classic",
+    "indicator_source": "Binance futures",
+    "selected_exchange": "Binance",
+    "theme": "Dark"
   }
 });
 }());

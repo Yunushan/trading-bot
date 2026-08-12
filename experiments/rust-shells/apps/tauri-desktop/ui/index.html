@@ -525,7 +525,8 @@
               </div>
               <div class="grid-2">
                 <label>Provider:<select id="llm-provider"></select></label>
-                <label>Model:<select id="llm-model"></select></label>
+                <label>Model:<input id="llm-model" list="llm-model-options" autocomplete="off"></label>
+                <datalist id="llm-model-options"></datalist>
               </div>
               <label>Base URL / IP:<input id="llm-base-url" value="https://api.openai.com/v1"></label>
               <div class="grid-2">
@@ -538,6 +539,7 @@
               </div>
               <div class="actions">
                 <button class="action primary" id="apply-llm-btn" type="button">Apply LLM Settings</button>
+                <button class="action" id="refresh-llm-catalog-btn" type="button">Refresh Provider Catalog</button>
                 <button class="action" id="check-local-model-btn" type="button">Check / Download Local Model</button>
                 <button class="action" id="remove-local-model-btn" type="button">Remove Local Model</button>
               </div>
@@ -901,13 +903,76 @@
         key: String(item.key || ""),
         label: String(item.label || item.key || ""),
         mode: String(item.mode || "cloud"),
+        protocol: String(item.protocol || ""),
         baseUrl: String(item.default_base_url || item.defaultBaseUrl || ""),
         defaultModel: String(item.default_model || item.defaultModel || ""),
         apiKeyEnv: String(item.api_key_env || item.apiKeyEnv || ""),
+        defaultReasoningEffort: String(item.default_reasoning_effort || item.defaultReasoningEffort || "default"),
+        catalogRevision: String(item.catalog_revision || item.catalogRevision || ""),
+        customModelsEnv: String(item.custom_models_env || item.customModelsEnv || ""),
+        customModelsPathEnv: String(item.custom_models_path_env || item.customModelsPathEnv || ""),
+        catalogPath: String(item.catalog_path || item.catalogPath || ""),
+        catalogNote: String(item.catalog_note || item.catalogNote || ""),
         modelSuggestions: Array.isArray(item.model_suggestions) ? item.model_suggestions.map(String) : [],
-        reasoningEfforts: Array.isArray(item.reasoning_efforts) ? item.reasoning_efforts.map(String) : ["default"]
+        reasoningEfforts: Array.isArray(item.reasoning_efforts) ? item.reasoning_efforts.map(String) : ["default"],
+        notes: Array.isArray(item.notes) ? item.notes.map(String) : []
       })).filter((item) => item.key && item.label)
     );
+    const liveLlmProviders = new Map(llmProviders.map((item) => [item.key, {
+      ...item,
+      modelSuggestions: [...item.modelSuggestions],
+      reasoningEfforts: [...item.reasoningEfforts],
+      notes: [...item.notes]
+    }]));
+    const llmProviderSpec = (key) => liveLlmProviders.get(String(key || "").trim())
+      || llmProviders.find((item) => item.key === String(key || "").trim());
+    const uniqueLlmStrings = (value, fallback = []) => {
+      if (!Array.isArray(value)) return [...fallback];
+      return [...new Set(value.map((item) => String(item ?? "").trim()).filter(Boolean))];
+    };
+    const mergeLlmProviderSpec = (payload) => {
+      if (!payload || typeof payload !== "object") return null;
+      const key = String(payload.key || "").trim();
+      if (!key) return null;
+      const current = llmProviderSpec(key) || {
+        key,
+        label: key,
+        mode: "local",
+        protocol: "",
+        baseUrl: "",
+        defaultModel: "",
+        apiKeyEnv: "",
+        defaultReasoningEffort: "default",
+        catalogRevision: "",
+        customModelsEnv: "",
+        customModelsPathEnv: "",
+        catalogPath: "",
+        catalogNote: "",
+        modelSuggestions: [],
+        reasoningEfforts: ["default"],
+        notes: []
+      };
+      const merged = {
+        ...current,
+        label: String(payload.label ?? current.label).trim() || current.label,
+        mode: String(payload.mode ?? current.mode).trim() || current.mode,
+        protocol: String(payload.protocol ?? current.protocol).trim(),
+        baseUrl: String(payload.default_base_url ?? current.baseUrl).trim(),
+        defaultModel: String(payload.default_model ?? current.defaultModel).trim(),
+        apiKeyEnv: String(payload.api_key_env ?? current.apiKeyEnv).trim(),
+        defaultReasoningEffort: String(payload.default_reasoning_effort ?? current.defaultReasoningEffort).trim() || "default",
+        catalogRevision: String(payload.catalog_revision ?? current.catalogRevision).trim(),
+        customModelsEnv: String(payload.custom_models_env ?? current.customModelsEnv).trim(),
+        customModelsPathEnv: String(payload.custom_models_path_env ?? current.customModelsPathEnv).trim(),
+        catalogPath: String(payload.catalog_path ?? current.catalogPath).trim(),
+        catalogNote: String(payload.catalog_note ?? current.catalogNote).trim(),
+        modelSuggestions: uniqueLlmStrings(payload.model_suggestions, current.modelSuggestions),
+        reasoningEfforts: uniqueLlmStrings(payload.reasoning_efforts, current.reasoningEfforts),
+        notes: uniqueLlmStrings(payload.notes, current.notes)
+      };
+      liveLlmProviders.set(key, merged);
+      return merged;
+    };
     const textArray = (items) => Object.freeze(
       (Array.isArray(items) ? items : []).map(String).map((item) => item.trim()).filter(Boolean)
     );
@@ -946,6 +1011,7 @@
     const defaultExecution = Object.freeze(pythonParityContract.defaultExecution || {});
     const defaultBacktest = Object.freeze(pythonParityContract.defaultBacktest || {});
     const riskDefaults = Object.freeze(pythonParityContract.riskDefaults || {});
+    const uiDefaults = Object.freeze(pythonParityContract.uiDefaults || {});
     const chartDefaultSymbols = textArray(pythonParityContract.defaultChartSymbols);
     const defaultExecutionSymbols = textArray(pythonParityContract.defaultExecutionSymbols);
     const defaultExecutionIntervals = textArray(pythonParityContract.defaultExecutionIntervals);
@@ -1092,20 +1158,12 @@
     }
     syncWorkspaceNavigation();
 
-    const modelSuggestions = Object.freeze(Object.fromEntries(
-      llmProviders.map((item) => [item.key, item.modelSuggestions])
-    ));
-    const reasoningSuggestions = Object.freeze(Object.fromEntries(
-      llmProviders.map((item) => [item.key, item.reasoningEfforts])
-    ));
-    const defaultModels = Object.freeze(Object.fromEntries(
-      llmProviders.map((item) => [item.key, item.defaultModel])
-    ));
     const llmEnabled = document.getElementById("llm-enabled");
     const llmControls = document.getElementById("llm-controls");
     const llmPublic = document.getElementById("llm-public");
     const provider = document.getElementById("llm-provider");
     const model = document.getElementById("llm-model");
+    const modelOptions = document.getElementById("llm-model-options");
     const reasoning = document.getElementById("llm-reasoning");
     const connectorSelectOptions = connectorOptions.map((item) => ({ key: item.key, label: item.label }));
     populateOptions(
@@ -1116,23 +1174,23 @@
     populateOptions(
       document.getElementById("config-theme"),
       themeOptions,
-      defaultExecution.theme || "Dark"
+      defaultExecution.theme || uiDefaults.theme || "Dark"
     );
     const themeControl = document.getElementById("config-theme");
     themeControl?.addEventListener("change", () => applyThemeMode(themeControl.value));
-    applyThemeMode(themeControl?.value || defaultExecution.theme || "Dark");
+    applyThemeMode(themeControl?.value || defaultExecution.theme || uiDefaults.theme || "Dark");
     populateOptions(
       document.getElementById("config-design"),
       designOptions,
-      defaultExecution.design || "Classic"
+      defaultExecution.design || uiDefaults.design || "Classic"
     );
     const designControl = document.getElementById("config-design");
     designControl?.addEventListener("change", () => applyDesignMode(designControl.value));
-    applyDesignMode(designControl?.value || defaultExecution.design || "Classic");
+    applyDesignMode(designControl?.value || defaultExecution.design || uiDefaults.design || "Classic");
     populateOptions(
       document.getElementById("config-indicator-source"),
       indicatorSourceOptions,
-      defaultExecution.indicator_source || "Binance futures"
+      defaultExecution.indicator_source || uiDefaults.indicator_source || "Binance futures"
     );
     populateOptions(
       document.getElementById("exchange-select"),
@@ -1342,34 +1400,43 @@
       "openai"
     );
     const syncEnabledState = () => { llmControls.disabled = !llmEnabled.checked; };
-    const syncModelOptions = () => {
+    const syncModelOptions = ({ preserveCurrent = false } = {}) => {
       const previous = model.value;
-      const suggestions = modelSuggestions[provider.value] || [];
-      model.replaceChildren(...suggestions.map((name) => {
+      const spec = llmProviderSpec(provider.value);
+      const suggestions = spec?.modelSuggestions || [];
+      modelOptions.replaceChildren(...suggestions.map((name) => {
         const option = document.createElement("option");
         option.value = name;
-        option.textContent = name;
         return option;
       }));
-      const preferred = suggestions.includes(previous) ? previous : defaultModels[provider.value];
-      if (preferred && suggestions.includes(preferred)) model.value = preferred;
+      const preferred = preserveCurrent && previous
+        ? previous
+        : (suggestions.includes(previous) ? previous : spec?.defaultModel);
+      if (preferred) model.value = preferred;
     };
-    const syncReasoningOptions = () => {
-      const suggestions = reasoningSuggestions[provider.value] || ["default"];
+    const syncReasoningOptions = ({ preserveCurrent = false } = {}) => {
+      const spec = llmProviderSpec(provider.value);
+      const previous = reasoning.value;
+      const suggestions = spec?.reasoningEfforts || ["default"];
       reasoning.replaceChildren(...suggestions.map((name) => {
         const option = document.createElement("option");
         option.value = name;
         option.textContent = name;
         return option;
       }));
+      const preferred = preserveCurrent && suggestions.includes(previous)
+        ? previous
+        : (suggestions.includes(spec?.defaultReasoningEffort) ? spec.defaultReasoningEffort : suggestions[0]);
+      if (preferred) reasoning.value = preferred;
     };
-    const syncProviderDefaults = () => {
+    const syncProviderDefaults = ({ preserveModel = false } = {}) => {
       const option = provider.selectedOptions[0];
       if (!option) return;
-      document.getElementById("llm-base-url").value = option.dataset.base || "";
-      document.getElementById("llm-api-env").value = option.dataset.env || "";
-      syncModelOptions();
-      syncReasoningOptions();
+      const spec = llmProviderSpec(provider.value);
+      document.getElementById("llm-base-url").value = spec?.baseUrl || option.dataset.base || "";
+      document.getElementById("llm-api-env").value = spec?.apiKeyEnv || option.dataset.env || "";
+      syncModelOptions({ preserveCurrent: preserveModel });
+      syncReasoningOptions({ preserveCurrent: preserveModel });
     };
     const syncProviderAccess = () => {
       for (const option of provider.options) {
@@ -1617,7 +1684,10 @@
       lightweight: "TradingView Lightweight"
     })[view] || "TradingView";
     const buildChartConfigPatch = () => ({
-      market: selectedValue("chart-market-select") || "Futures",
+      market: selectedValue("chart-market-select")
+        || defaultExecution.account_type
+        || defaultBacktest.symbol_source
+        || "Futures",
       symbol: selectedValue("chart-symbol-select") || defaultChartSymbol,
       interval: selectedValue("chart-interval-select") || defaultChartInterval,
       view_mode: selectedValue("chart-view-select") || "tradingview",
@@ -1702,20 +1772,22 @@
     };
     const stopLossPatchForKind = (kind) => {
       const prefix = kind === "backtest" ? "backtest-" : "";
+      const stopLossDefaults = riskDefaults.stop_loss || {};
+      const enabledControl = $(`${prefix}stop-loss-enabled`);
       return {
-        enabled: Boolean($(`${prefix}stop-loss-enabled`)?.checked),
-        mode: $(`${prefix}stop-loss-mode`)?.value || "usdt",
-        scope: $(`${prefix}stop-loss-scope`)?.value || "per_trade",
-        usdt: numberFrom(`${prefix}stop-loss-usdt`, 0),
-        percent: numberFrom(`${prefix}stop-loss-percent`, 0)
+        enabled: enabledControl ? Boolean(enabledControl.checked) : Boolean(stopLossDefaults.enabled),
+        mode: $(`${prefix}stop-loss-mode`)?.value || stopLossDefaults.mode || "usdt",
+        scope: $(`${prefix}stop-loss-scope`)?.value || stopLossDefaults.scope || "per_trade",
+        usdt: numberFrom(`${prefix}stop-loss-usdt`, stopLossDefaults.usdt ?? 0),
+        percent: numberFrom(`${prefix}stop-loss-percent`, stopLossDefaults.percent ?? 0)
       };
     };
     const strategyControlsForKind = (kind) => {
       if (kind === "backtest") {
         return {
-          side: selectedValue("backtest-side") || "BOTH",
-          leverage: numberFrom("backtest-leverage", 1),
-          loop_interval_override: selectedValue("backtest-loop-interval"),
+          side: selectedValue("backtest-side") || defaultBacktest.side || defaultExecution.side || "BOTH",
+          leverage: numberFrom("backtest-leverage", defaultBacktest.leverage ?? 20),
+          loop_interval_override: selectedValue("backtest-loop-interval") || defaultBacktest.loop_interval_override,
           connector_backend: selectedValue("backtest-connector"),
           margin_mode: selectedText("backtest-margin-mode"),
           position_mode: selectedText("backtest-position-mode"),
@@ -1725,9 +1797,9 @@
         };
       }
       return {
-        side: selectedValue("strategy-side") || "BOTH",
-        leverage: numberFrom("config-leverage", 1),
-        loop_interval_override: selectedValue("loop-interval-select"),
+        side: selectedValue("strategy-side") || defaultExecution.side || "BOTH",
+        leverage: numberFrom("config-leverage", defaultExecution.leverage ?? 1),
+        loop_interval_override: selectedValue("loop-interval-select") || defaultExecution.loop_interval_override,
         connector_backend: selectedValue("config-connector"),
         add_only: Boolean($("add-only-net-direction")?.checked),
         allow_opposite_positions: Boolean($("allow-opposite-positions")?.checked),
@@ -2140,7 +2212,7 @@
         .toLowerCase()
     );
     const nativeBacktestRequestSupported = (request) => {
-      const exchange = String(request?.selected_exchange || "Binance").trim().toLowerCase();
+      const exchange = String(request?.selected_exchange || uiDefaults.selected_exchange || "Binance").trim().toLowerCase();
       const connector = String(request?.connector_backend || "").trim().toLowerCase();
       return (exchange === "" || exchange === "binance")
         && (!connector || connector.includes("binance") || connector === "ccxt");
@@ -2419,7 +2491,10 @@
         "chart-lightweight-state": view === "lightweight" ? "Active" : "Ready"
       };
       for (const [id, label] of Object.entries(states)) setText(id, label);
-      const market = selectedValue("chart-market-select") || "Futures";
+      const market = selectedValue("chart-market-select")
+        || defaultExecution.account_type
+        || defaultBacktest.symbol_source
+        || "Futures";
       const symbol = selectedValue("chart-symbol-select") || defaultChartSymbol;
       const interval = selectedValue("chart-interval-select") || defaultChartInterval;
       setText("chart-status-text", `${chartViewLabel(view)}: ${market} ${symbol} ${interval}`);
@@ -2439,7 +2514,10 @@
       );
       replaceSelectOptions("chart-symbol-select", symbols, chart.symbol || symbols[0] || defaultChartSymbol);
       replaceSelectOptions("chart-interval-select", intervals, chart.interval || intervals[0] || defaultChartInterval);
-      setSelect("chart-market-select", chart.market || config?.account_type || "Futures");
+      setSelect(
+        "chart-market-select",
+        chart.market || config?.account_type || defaultExecution.account_type || defaultBacktest.symbol_source || "Futures"
+      );
       setSelect("chart-view-select", chart.view_mode || "tradingview", true);
       renderChartState();
     };
@@ -2641,6 +2719,50 @@
         };
       }
     };
+    let llmCatalogRefreshPromise = null;
+    let llmCatalogRefreshedAt = 0;
+    const refreshLlmProviderCatalog = async ({ force = false, quiet = false } = {}) => {
+      const now = Date.now();
+      if (!force && now - llmCatalogRefreshedAt < 30_000) {
+        return { ok: true, status: 200, payload: [...liveLlmProviders.values()], cached: true };
+      }
+      if (llmCatalogRefreshPromise) return llmCatalogRefreshPromise;
+      llmCatalogRefreshPromise = (async () => {
+        const result = await serviceRequest("llm_providers", "GET");
+        if (!result.ok) {
+          if (!quiet) appendLog(`[llm] Provider catalog refresh failed - ${result.error || `HTTP ${result.status}`}`);
+          return result;
+        }
+        const providers = Array.isArray(result.payload) ? result.payload : [];
+        let updated = 0;
+        for (const payload of providers) {
+          const spec = mergeLlmProviderSpec(payload);
+          if (!spec) continue;
+          for (const option of provider.options) {
+            if (option.value !== spec.key) continue;
+            option.textContent = spec.label;
+            option.dataset.mode = spec.mode;
+            option.dataset.base = spec.baseUrl;
+            option.dataset.env = spec.apiKeyEnv;
+            updated += 1;
+            break;
+          }
+        }
+        if (updated) {
+          syncModelOptions({ preserveCurrent: true });
+          syncReasoningOptions({ preserveCurrent: true });
+          syncProviderAccess();
+          llmCatalogRefreshedAt = Date.now();
+        }
+        if (!quiet) appendLog(`[llm] Provider catalog refreshed from Python Service API (${updated} providers).`);
+        return { ...result, updated_providers: updated };
+      })();
+      try {
+        return await llmCatalogRefreshPromise;
+      } finally {
+        llmCatalogRefreshPromise = null;
+      }
+    };
     const evaluateNativeRuntimePreview = async ({
       config,
       candles,
@@ -2797,6 +2919,7 @@
         if (result.ok || result.healthy) {
           setServiceStatus(`${result.message || "Service API is reachable."} ${result.pid ? `(pid ${result.pid})` : ""}`.trim(), true);
           appendLog(`[api] ${result.message || "Service API is reachable."}`);
+          await refreshLlmProviderCatalog({ quiet: true });
         } else {
           setServiceStatus(`Service API: ${result.error || "start failed"}`, false);
           appendLog(`[api] Start API failed - ${result.error || "unknown error"}`);
@@ -3127,27 +3250,23 @@
       syncEnabledState();
       setChecked("llm-public", llm.allow_public_network);
       setSelect("llm-provider", llm.provider);
-      if (Array.isArray(llm.model_suggestions) && llm.model_suggestions.length) {
-        model.replaceChildren(...llm.model_suggestions.map((name) => {
-          const option = document.createElement("option");
-          option.value = name;
-          option.textContent = name;
-          return option;
-        }));
-      } else {
-        syncModelOptions();
-      }
-      if (Array.isArray(llm.reasoning_efforts) && llm.reasoning_efforts.length) {
-        reasoning.replaceChildren(...llm.reasoning_efforts.map((name) => {
-          const option = document.createElement("option");
-          option.value = name;
-          option.textContent = name;
-          return option;
-        }));
-      } else {
-        syncReasoningOptions();
-      }
-      setSelect("llm-model", llm.model, true);
+      mergeLlmProviderSpec({
+        key: llm.provider,
+        label: llm.provider_label,
+        mode: llm.mode,
+        protocol: llm.protocol,
+        default_reasoning_effort: llm.default_reasoning_effort,
+        catalog_revision: llm.catalog_revision,
+        custom_models_env: llm.custom_models_env,
+        custom_models_path_env: llm.custom_models_path_env,
+        catalog_path: llm.catalog_path,
+        model_suggestions: llm.model_suggestions,
+        reasoning_efforts: llm.reasoning_efforts,
+        notes: llm.notes
+      });
+      syncModelOptions({ preserveCurrent: true });
+      syncReasoningOptions();
+      setValue("llm-model", llm.model);
       setValue("llm-base-url", llm.base_url);
       setValue("llm-api-env", llm.api_key_env);
       setSelect("llm-use-for", llm.use_for);
@@ -3210,18 +3329,38 @@
         config.operational_portfolio_snapshot_stale_seconds
           ?? defaultExecution.operational_portfolio_snapshot_stale_seconds
       );
-      setValue("max-auto-bump-percent", config.max_auto_bump_percent ?? 5);
-      setValue("auto-bump-percent-multiplier", config.auto_bump_percent_multiplier ?? 10);
-      setChecked("order-audit-enabled", config.order_audit_enabled ?? true);
-      setValue("order-audit-log-path", config.order_audit_log_path);
-      setValue("order-audit-max-bytes", config.order_audit_max_bytes ?? 10485760);
-      setValue("order-audit-backup-count", config.order_audit_backup_count ?? 1);
-      setChecked("connector-order-circuit-enabled", config.connector_order_block_circuit_breaker_enabled ?? true);
-      setValue("connector-order-circuit-threshold", config.connector_order_block_pause_threshold ?? 2);
-      setValue("connector-order-circuit-window-seconds", config.connector_order_block_window_seconds ?? 60);
-      setValue("connector-order-incident-log-path", config.connector_order_circuit_incident_log_path);
-      setValue("connector-order-incident-max-bytes", config.connector_order_circuit_incident_log_max_bytes ?? 2097152);
-      setValue("connector-order-incident-backup-count", config.connector_order_circuit_incident_log_backup_count ?? 1);
+      setValue("max-auto-bump-percent", config.max_auto_bump_percent ?? riskDefaults.max_auto_bump_percent);
+      setValue("auto-bump-percent-multiplier", config.auto_bump_percent_multiplier ?? riskDefaults.auto_bump_percent_multiplier);
+      setChecked("order-audit-enabled", config.order_audit_enabled ?? defaultExecution.order_audit_enabled);
+      setValue("order-audit-log-path", config.order_audit_log_path ?? defaultExecution.order_audit_log_path);
+      setValue("order-audit-max-bytes", config.order_audit_max_bytes ?? defaultExecution.order_audit_max_bytes);
+      setValue("order-audit-backup-count", config.order_audit_backup_count ?? defaultExecution.order_audit_backup_count);
+      setChecked(
+        "connector-order-circuit-enabled",
+        config.connector_order_block_circuit_breaker_enabled
+          ?? defaultExecution.connector_order_block_circuit_breaker_enabled
+      );
+      setValue(
+        "connector-order-circuit-threshold",
+        config.connector_order_block_pause_threshold ?? defaultExecution.connector_order_block_pause_threshold
+      );
+      setValue(
+        "connector-order-circuit-window-seconds",
+        config.connector_order_block_window_seconds ?? defaultExecution.connector_order_block_window_seconds
+      );
+      setValue(
+        "connector-order-incident-log-path",
+        config.connector_order_circuit_incident_log_path ?? defaultExecution.connector_order_circuit_incident_log_path
+      );
+      setValue(
+        "connector-order-incident-max-bytes",
+        config.connector_order_circuit_incident_log_max_bytes ?? defaultExecution.connector_order_circuit_incident_log_max_bytes
+      );
+      setValue(
+        "connector-order-incident-backup-count",
+        config.connector_order_circuit_incident_log_backup_count
+          ?? defaultExecution.connector_order_circuit_incident_log_backup_count
+      );
       setValue("symbols-input", Array.isArray(config.symbols) ? config.symbols.join("\n") : "");
       setValue("intervals-input", Array.isArray(config.intervals) ? config.intervals.join("\n") : "");
       setValue("position-pct-input", config.position_pct);
@@ -3248,12 +3387,15 @@
       }
       if (config.api_key_present || config.credentials_present) $("api-key-input").placeholder = "Configured in service config";
       if (config.api_secret_present || config.credentials_present) $("api-secret-input").placeholder = "Configured in service config";
-      if (config.stop_loss && typeof config.stop_loss === "object") {
-        setChecked("stop-loss-enabled", config.stop_loss.enabled);
-        setSelect("stop-loss-mode", config.stop_loss.mode);
-        setSelect("stop-loss-scope", config.stop_loss.scope);
-        setValue("stop-loss-usdt", config.stop_loss.usdt);
-        setValue("stop-loss-percent", config.stop_loss.percent);
+      const runtimeStopLoss = config.stop_loss && typeof config.stop_loss === "object"
+        ? config.stop_loss
+        : riskDefaults.stop_loss;
+      if (runtimeStopLoss && typeof runtimeStopLoss === "object") {
+        setChecked("stop-loss-enabled", runtimeStopLoss.enabled);
+        setSelect("stop-loss-mode", runtimeStopLoss.mode);
+        setSelect("stop-loss-scope", runtimeStopLoss.scope);
+        setValue("stop-loss-usdt", runtimeStopLoss.usdt);
+        setValue("stop-loss-percent", runtimeStopLoss.percent);
       }
       hydrateLlmControls(config.llm || {
         enabled: config.llm_enabled,
@@ -3279,12 +3421,15 @@
       setSelect("backtest-mdd-logic", backtest.mdd_logic);
       setValue("backtest-position-pct", backtest.position_pct);
       setSelect("backtest-loop-interval", backtest.loop_interval_override);
-      if (backtest.stop_loss && typeof backtest.stop_loss === "object") {
-        setChecked("backtest-stop-loss-enabled", backtest.stop_loss.enabled);
-        setSelect("backtest-stop-loss-mode", backtest.stop_loss.mode);
-        setSelect("backtest-stop-loss-scope", backtest.stop_loss.scope);
-        setValue("backtest-stop-loss-usdt", backtest.stop_loss.usdt);
-        setValue("backtest-stop-loss-percent", backtest.stop_loss.percent);
+      const backtestStopLoss = backtest.stop_loss && typeof backtest.stop_loss === "object"
+        ? backtest.stop_loss
+        : riskDefaults.stop_loss;
+      if (backtestStopLoss && typeof backtestStopLoss === "object") {
+        setChecked("backtest-stop-loss-enabled", backtestStopLoss.enabled);
+        setSelect("backtest-stop-loss-mode", backtestStopLoss.mode);
+        setSelect("backtest-stop-loss-scope", backtestStopLoss.scope);
+        setValue("backtest-stop-loss-usdt", backtestStopLoss.usdt);
+        setValue("backtest-stop-loss-percent", backtestStopLoss.percent);
       }
       setSelect("backtest-side", backtest.side);
       setSelect("backtest-margin-mode", backtest.margin_mode);
@@ -3554,26 +3699,26 @@
     });
     const buildRuntimeConfigPatch = () => {
       const patch = {
-        mode: selectedText("config-mode"),
-        account_type: selectedText("config-account-type"),
-        account_mode: selectedText("config-account-mode"),
-        margin_mode: selectedText("config-margin-mode"),
-        position_mode: selectedText("config-position-mode"),
-        assets_mode: selectedText("config-assets-mode"),
-        connector_backend: selectedValue("config-connector"),
-        selected_exchange: selectedText("exchange-select"),
-        theme: selectedText("config-theme"),
-        design: selectedText("config-design"),
+        mode: selectedText("config-mode") || defaultExecution.mode || "Demo/Testnet",
+        account_type: selectedText("config-account-type") || defaultExecution.account_type || "Futures",
+        account_mode: selectedText("config-account-mode") || defaultExecution.account_mode || "Classic Trading",
+        margin_mode: selectedText("config-margin-mode") || defaultExecution.margin_mode || "Isolated",
+        position_mode: selectedText("config-position-mode") || defaultExecution.position_mode || "Hedge",
+        assets_mode: selectedText("config-assets-mode") || defaultExecution.assets_mode || "Single-Asset",
+        connector_backend: selectedValue("config-connector") || defaultBacktest.connector_backend,
+        selected_exchange: selectedText("exchange-select") || uiDefaults.selected_exchange || "Binance",
+        theme: selectedText("config-theme") || uiDefaults.theme || "Dark",
+        design: selectedText("config-design") || uiDefaults.design || "Classic",
         lookback: numberFrom("config-lookback", defaultExecution.lookback ?? 200),
-        leverage: numberFrom("config-leverage", 1),
-        tif: selectedValue("config-time-in-force"),
-        gtd_minutes: numberFrom("config-gtd-minutes", 30),
-        indicator_source: selectedText("config-indicator-source"),
+        leverage: numberFrom("config-leverage", defaultExecution.leverage ?? 1),
+        tif: selectedValue("config-time-in-force") || defaultExecution.tif || "GTC",
+        gtd_minutes: numberFrom("config-gtd-minutes", defaultExecution.gtd_minutes ?? 30),
+        indicator_source: selectedText("config-indicator-source") || uiDefaults.indicator_source || "Binance futures",
         live_trading_enabled: Boolean($("live-trading-enabled")?.checked),
         live_trading_acknowledgement: $("live-trading-acknowledgement")?.value?.trim() || "",
-        live_trading_max_leverage: numberFrom("live-trading-max-leverage", 20),
-        live_trading_max_position_pct: numberFrom("live-trading-max-position-pct", 10),
-        live_trading_max_session_orders: numberFrom("live-trading-max-session-orders", 100),
+        live_trading_max_leverage: numberFrom("live-trading-max-leverage", defaultExecution.live_trading_max_leverage ?? 20),
+        live_trading_max_position_pct: numberFrom("live-trading-max-position-pct", defaultExecution.live_trading_max_position_pct ?? 10),
+        live_trading_max_session_orders: numberFrom("live-trading-max-session-orders", defaultExecution.live_trading_max_session_orders ?? 100),
         live_allow_auto_bump_to_min_order: Boolean($("live-allow-auto-bump-to-min-order")?.checked),
         operational_connector_snapshot_stale_seconds: numberFrom(
           "operational-connector-stale-seconds",
@@ -3593,18 +3738,30 @@
         ),
         operational_live_start_gate_enabled: Boolean($("operational-live-start-gate-enabled")?.checked),
         operational_live_order_gate_enabled: Boolean($("operational-live-order-gate-enabled")?.checked),
-        max_auto_bump_percent: numberFrom("max-auto-bump-percent", 5),
-        auto_bump_percent_multiplier: numberFrom("auto-bump-percent-multiplier", 10),
+        max_auto_bump_percent: numberFrom("max-auto-bump-percent", riskDefaults.max_auto_bump_percent ?? 5),
+        auto_bump_percent_multiplier: numberFrom("auto-bump-percent-multiplier", riskDefaults.auto_bump_percent_multiplier ?? 10),
         order_audit_enabled: Boolean($("order-audit-enabled")?.checked),
         order_audit_log_path: $("order-audit-log-path")?.value?.trim() || "",
-        order_audit_max_bytes: numberFrom("order-audit-max-bytes", 10485760),
-        order_audit_backup_count: numberFrom("order-audit-backup-count", 1),
+        order_audit_max_bytes: numberFrom("order-audit-max-bytes", defaultExecution.order_audit_max_bytes ?? 10485760),
+        order_audit_backup_count: numberFrom("order-audit-backup-count", defaultExecution.order_audit_backup_count ?? 1),
         connector_order_block_circuit_breaker_enabled: Boolean($("connector-order-circuit-enabled")?.checked),
-        connector_order_block_pause_threshold: numberFrom("connector-order-circuit-threshold", 2),
-        connector_order_block_window_seconds: numberFrom("connector-order-circuit-window-seconds", 60),
+        connector_order_block_pause_threshold: numberFrom(
+          "connector-order-circuit-threshold",
+          defaultExecution.connector_order_block_pause_threshold ?? 2
+        ),
+        connector_order_block_window_seconds: numberFrom(
+          "connector-order-circuit-window-seconds",
+          defaultExecution.connector_order_block_window_seconds ?? 60
+        ),
         connector_order_circuit_incident_log_path: $("connector-order-incident-log-path")?.value?.trim() || "",
-        connector_order_circuit_incident_log_max_bytes: numberFrom("connector-order-incident-max-bytes", 2097152),
-        connector_order_circuit_incident_log_backup_count: numberFrom("connector-order-incident-backup-count", 1),
+        connector_order_circuit_incident_log_max_bytes: numberFrom(
+          "connector-order-incident-max-bytes",
+          defaultExecution.connector_order_circuit_incident_log_max_bytes ?? 2097152
+        ),
+        connector_order_circuit_incident_log_backup_count: numberFrom(
+          "connector-order-incident-backup-count",
+          defaultExecution.connector_order_circuit_incident_log_backup_count ?? 1
+        ),
         indicators: selectedIndicatorsConfigForKind("runtime"),
         chart: buildChartConfigPatch(),
         positions_auto_resize_rows: Boolean($("positions-auto-row-height")?.checked),
@@ -3612,10 +3769,10 @@
         runtime_symbol_interval_pairs: runtimeOverrideRows,
         backtest_symbol_interval_pairs: backtestOverrideRows,
         backtest: buildBacktestConfigPatch(),
-        position_pct: numberFrom("position-pct-input", 2),
-        side: selectedValue("strategy-side") || "BOTH",
+        position_pct: numberFrom("position-pct-input", defaultExecution.position_pct ?? 2),
+        side: selectedValue("strategy-side") || defaultExecution.side || "BOTH",
         order_type: selectedValue("config-order-type") || defaultExecution.order_type || "MARKET",
-        loop_interval_override: selectedValue("loop-interval-select"),
+        loop_interval_override: selectedValue("loop-interval-select") || defaultExecution.loop_interval_override,
         lead_trader_enabled: Boolean($("lead-trader-enabled")?.checked),
         lead_trader_profile: selectedValue("lead-trader-profile"),
         indicator_use_live_values: Boolean($("indicator-live-values")?.checked),
@@ -3627,10 +3784,7 @@
         intervals: linesFrom($("intervals-input")?.value),
         stop_loss: {
           enabled: Boolean($("stop-loss-enabled")?.checked),
-          mode: $("stop-loss-mode")?.value || riskDefaults.stop_loss?.mode || "usdt",
-          scope: $("stop-loss-scope")?.value || riskDefaults.stop_loss?.scope || "per_trade",
-          usdt: numberFrom("stop-loss-usdt", 0),
-          percent: numberFrom("stop-loss-percent", 0)
+          ...stopLossPatchForKind("runtime")
         }
       };
       const apiKey = $("api-key-input")?.value?.trim();
@@ -3874,7 +4028,7 @@
       return result;
     };
     const buildBacktestRequest = () => {
-      const symbolSource = selectedValue("backtest-symbol-source") || "Futures";
+      const symbolSource = selectedValue("backtest-symbol-source") || defaultBacktest.symbol_source || "Futures";
       const backtestStart = $("backtest-start-date")?.value || null;
       const backtestEnd = $("backtest-end-date")?.value || null;
       const apiKey = String($("api-key-input")?.value || "").trim();
@@ -3883,48 +4037,45 @@
         symbols: linesFrom($("backtest-symbols-input")?.value),
         intervals: linesFrom($("backtest-intervals-input")?.value),
         indicators: selectedIndicatorsConfigForKind("backtest"),
-        logic: selectedValue("backtest-logic") || "AND",
+        logic: selectedValue("backtest-logic") || defaultBacktest.logic || "AND",
         symbol_source: symbolSource,
         account_type: symbolSource,
-        selected_exchange: selectedValue("exchange-select") || "Binance",
-        mode: selectedText("config-mode") || "Demo",
+        selected_exchange: selectedValue("exchange-select") || uiDefaults.selected_exchange || "Binance",
+        mode: selectedText("config-mode") || defaultExecution.mode || "Demo/Testnet",
         backtest: true,
         api_key: apiKey,
         api_secret: apiSecret,
-        capital: numberFrom("backtest-capital", 1000),
+        capital: numberFrom("backtest-capital", defaultBacktest.capital ?? 1000),
         start: backtestStart,
         end: backtestEnd,
         start_date: backtestStart,
         end_date: backtestEnd,
-        position_pct: numberFrom("backtest-position-pct", 2),
+        position_pct: numberFrom("backtest-position-pct", defaultBacktest.position_pct ?? 2),
         position_pct_units: "percent",
-        loop_interval_override: selectedValue("backtest-loop-interval"),
-        side: selectedValue("backtest-side") || "BOTH",
-        margin_mode: selectedText("backtest-margin-mode"),
-        position_mode: selectedText("backtest-position-mode"),
-        assets_mode: selectedText("backtest-assets-mode"),
-        account_mode: selectedText("backtest-account-mode"),
-        connector_backend: selectedValue("backtest-connector"),
-        leverage: numberFrom("backtest-leverage", 1),
-        mdd_logic: selectedValue("backtest-mdd-logic"),
-        scan_top_n: numberFrom("backtest-scan-top-n", 200),
-        scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", 10),
-        scan_scope: selectedValue("backtest-scan-scope") || "selected",
-        optimizer_combo_size: numberFrom("backtest-optimizer-combo-size", 2),
-        optimizer_metric: selectedValue("backtest-optimizer-metric") || "roi_percent",
-        optimizer_min_trades: numberFrom("backtest-optimizer-min-trades", 1),
-        optimizer_max_duration_seconds: numberFrom("backtest-optimizer-max-duration", 14400),
-        optimizer_mode: selectedValue("backtest-optimizer-mode") || "current",
+        loop_interval_override: selectedValue("backtest-loop-interval") || defaultBacktest.loop_interval_override,
+        side: selectedValue("backtest-side") || defaultBacktest.side || "BOTH",
+        margin_mode: selectedText("backtest-margin-mode") || defaultBacktest.margin_mode,
+        position_mode: selectedText("backtest-position-mode") || defaultBacktest.position_mode,
+        assets_mode: selectedText("backtest-assets-mode") || defaultBacktest.assets_mode,
+        account_mode: selectedText("backtest-account-mode") || defaultBacktest.account_mode,
+        connector_backend: selectedValue("backtest-connector") || defaultBacktest.connector_backend,
+        leverage: numberFrom("backtest-leverage", defaultBacktest.leverage ?? 20),
+        mdd_logic: selectedValue("backtest-mdd-logic") || defaultBacktest.mdd_logic,
+        scan_top_n: numberFrom("backtest-scan-top-n", defaultBacktest.scan_top_n ?? 200),
+        scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", defaultBacktest.scan_mdd_limit ?? 10),
+        scan_scope: selectedValue("backtest-scan-scope") || defaultBacktest.scan_scope || "selected",
+        optimizer_combo_size: numberFrom("backtest-optimizer-combo-size", defaultBacktest.optimizer_combo_size ?? 2),
+        optimizer_metric: selectedValue("backtest-optimizer-metric") || defaultBacktest.optimizer_metric || "roi_percent",
+        optimizer_min_trades: numberFrom("backtest-optimizer-min-trades", defaultBacktest.optimizer_min_trades ?? 1),
+        optimizer_max_duration_seconds: numberFrom(
+          "backtest-optimizer-max-duration",
+          defaultBacktest.optimizer_max_duration_seconds ?? 14400
+        ),
+        optimizer_mode: selectedValue("backtest-optimizer-mode") || defaultBacktest.optimizer_mode || "current",
         queue_if_busy: Boolean($("backtest-queue-if-busy")?.checked),
         resume_checkpoint: false,
         pair_overrides: overrideRowsForRequest("backtest"),
-        stop_loss: {
-          enabled: Boolean($("backtest-stop-loss-enabled")?.checked),
-          mode: $("backtest-stop-loss-mode")?.value || "usdt",
-          scope: $("backtest-stop-loss-scope")?.value || "per_trade",
-          usdt: numberFrom("backtest-stop-loss-usdt", 0),
-          percent: numberFrom("backtest-stop-loss-percent", 0)
-        },
+        stop_loss: stopLossPatchForKind("backtest"),
         template: {
           enabled: Boolean($("backtest-template-enabled")?.checked),
           name: selectedValue("backtest-template-name") || null
@@ -4220,6 +4371,10 @@
       if (!(await ensureServiceApi())) return;
       const result = await requestAndReport("Apply LLM settings", "llm_config", "PATCH", { config: buildLlmConfigPatch() });
       if (result.ok) await refreshConfigPersistence();
+    });
+    $("refresh-llm-catalog-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await refreshLlmProviderCatalog({ force: true });
     });
     $("run-llm-dry-run-btn")?.addEventListener("click", async () => {
       await runLlmPrompt(true);

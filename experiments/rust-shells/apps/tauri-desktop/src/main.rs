@@ -1277,17 +1277,83 @@ fn first_config_string(config: &Value, key: &str, default: &str) -> String {
     text.to_owned()
 }
 
+fn python_execution_default_i64(key: &str, fallback: i64) -> i64 {
+    trading_bot_core::python_source_default_execution_config()
+        .get(key)
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_f64().map(|number| number.round() as i64))
+                .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+        })
+        .unwrap_or(fallback)
+}
+
+fn python_execution_default_f64(key: &str, fallback: f64) -> f64 {
+    trading_bot_core::python_source_default_execution_config()
+        .get(key)
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_i64().map(|number| number as f64))
+                .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+        })
+        .filter(|value| value.is_finite())
+        .unwrap_or(fallback)
+}
+
+fn python_execution_default_bool(key: &str, fallback: bool) -> bool {
+    trading_bot_core::python_source_default_execution_config()
+        .get(key)
+        .and_then(Value::as_bool)
+        .unwrap_or(fallback)
+}
+
+fn python_execution_default_text(key: &str, fallback: &str) -> String {
+    trading_bot_core::python_source_default_execution_config()
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
+fn python_execution_default_first_text(key: &str, fallback: &str) -> String {
+    trading_bot_core::python_source_default_execution_config()
+        .get(key)
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
+fn python_ui_default_text(key: &str, fallback: &str) -> String {
+    trading_bot_core::python_source_ui_defaults()
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
 fn native_runtime_ownership_error(config: &Value) -> Option<String> {
-    let selected_exchange = first_config_string(config, "selected_exchange", "Binance");
+    let default_exchange = python_ui_default_text("selected_exchange", "Binance");
+    let selected_exchange = first_config_string(config, "selected_exchange", &default_exchange);
     if !selected_exchange.eq_ignore_ascii_case("Binance") {
         return Some(format!(
             "Native Rust runtime coordinates Binance spot/futures only. {selected_exchange} remains Python Service API/provider connector-owned."
         ));
     }
 
+    let default_connector =
+        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
     let connector_backend =
-        first_config_string(config, "connector_backend", DEFAULT_CONNECTOR_BACKEND)
-            .to_ascii_lowercase();
+        first_config_string(config, "connector_backend", &default_connector).to_ascii_lowercase();
     if matches!(
         connector_backend.as_str(),
         "binance-sdk-derivatives-trading-usds-futures"
@@ -1309,15 +1375,17 @@ fn native_runtime_market_poll_spec(config: &Value) -> Result<NativeRuntimeMarket
     if let Some(error) = native_runtime_ownership_error(config) {
         return Err(error);
     }
+    let default_connector =
+        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
     let connector_backend =
-        first_config_string(config, "connector_backend", DEFAULT_CONNECTOR_BACKEND)
-            .to_ascii_lowercase();
+        first_config_string(config, "connector_backend", &default_connector).to_ascii_lowercase();
     let market = match connector_backend.as_str() {
         "binance-sdk-derivatives-trading-usds-futures" => BinanceMarket::Futures,
         "binance-sdk-derivatives-trading-coin-futures" => BinanceMarket::CoinFutures,
         "binance-sdk-spot" => BinanceMarket::Spot,
         "binance-connector" | "ccxt" | "python-binance" => {
-            let account_type = first_config_string(config, "account_type", "Futures");
+            let default_account_type = python_execution_default_text("account_type", "Futures");
+            let account_type = first_config_string(config, "account_type", &default_account_type);
             if account_type.to_ascii_lowercase().contains("spot") {
                 BinanceMarket::Spot
             } else {
@@ -1330,15 +1398,19 @@ fn native_runtime_market_poll_spec(config: &Value) -> Result<NativeRuntimeMarket
             );
         }
     };
+    let default_mode = python_execution_default_text("mode", "Demo/Testnet");
+    let mode = first_config_string(config, "mode", &default_mode);
+    let default_interval = python_execution_default_first_text("intervals", "1m");
     let default_symbol = match market {
-        BinanceMarket::CoinFutures => "BTCUSD_PERP",
-        BinanceMarket::Futures | BinanceMarket::Spot => "BTCUSDT",
+        BinanceMarket::CoinFutures => "BTCUSD_PERP".to_owned(),
+        BinanceMarket::Futures | BinanceMarket::Spot => {
+            python_execution_default_first_text("symbols", "BTCUSDT")
+        }
     };
-    let mode = first_config_string(config, "mode", "Demo/Testnet");
     Ok(NativeRuntimeMarketPollSpec {
         market,
-        symbol: first_config_string(config, "symbols", default_symbol).to_ascii_uppercase(),
-        interval: first_config_string(config, "intervals", "1m"),
+        symbol: first_config_string(config, "symbols", &default_symbol).to_ascii_uppercase(),
+        interval: first_config_string(config, "intervals", &default_interval),
         testnet: python_mode_uses_testnet(&mode),
     })
 }
@@ -1426,8 +1498,9 @@ fn native_runtime_now_iso(now_ms: i64) -> String {
 }
 
 fn native_runtime_order_engine(config: &Value, now_ms: i64) -> RuntimeOrderEngine {
+    let default_mode = python_execution_default_text("mode", "Demo/Testnet");
     let mut engine = RuntimeOrderEngine::new(
-        first_config_string(config, "mode", "Demo/Testnet"),
+        first_config_string(config, "mode", &default_mode),
         native_runtime_order_audit_config(config),
         native_runtime_circuit_breaker_config(config),
         native_runtime_now_iso(now_ms),
@@ -1441,11 +1514,23 @@ fn configure_native_runtime_order_engine(
     config: &Value,
     now_ms: i64,
 ) {
-    engine.mode = first_config_string(config, "mode", "Demo/Testnet");
-    engine.account_type = first_config_string(config, "account_type", "FUTURES");
-    engine.leverage = config_i64(config, "leverage", 5).clamp(1, 125);
+    let default_mode = python_execution_default_text("mode", "Demo/Testnet");
+    let default_account_type = python_execution_default_text("account_type", "Futures");
+    engine.mode = first_config_string(config, "mode", &default_mode);
+    engine.account_type = first_config_string(config, "account_type", &default_account_type);
+    engine.leverage = config_i64(
+        config,
+        "leverage",
+        python_execution_default_i64("leverage", 1),
+    )
+    .clamp(1, 125);
     engine.margin_mode = native_runtime_config(config).margin_mode;
-    engine.position_pct = config_f64(config, "position_pct", 2.0).clamp(0.01, 100.0);
+    engine.position_pct = config_f64(
+        config,
+        "position_pct",
+        python_execution_default_f64("position_pct", 2.0),
+    )
+    .clamp(0.01, 100.0);
     engine.configure_audit_and_circuit(
         native_runtime_order_audit_config(config),
         native_runtime_circuit_breaker_config(config),
@@ -1453,37 +1538,53 @@ fn configure_native_runtime_order_engine(
         config_i64(
             config,
             "connector_order_circuit_incident_log_max_bytes",
-            2 * 1024 * 1024,
+            python_execution_default_i64(
+                "connector_order_circuit_incident_log_max_bytes",
+                2 * 1024 * 1024,
+            ),
         )
         .clamp(1, 1_000_000_000) as u64,
         config_i64(
             config,
             "connector_order_circuit_incident_log_backup_count",
-            1,
+            python_execution_default_i64("connector_order_circuit_incident_log_backup_count", 1),
         )
         .clamp(0, 100) as usize,
         native_runtime_now_iso(now_ms),
     );
     let mut safety = LiveTradingSafetyConfig::default();
-    safety.live_trading_enabled = config_bool(config, "live_trading_enabled", false);
+    safety.live_trading_enabled = config_bool(
+        config,
+        "live_trading_enabled",
+        python_execution_default_bool("live_trading_enabled", false),
+    );
     safety.live_trading_acknowledgement =
         first_config_string(config, "live_trading_acknowledgement", "");
     safety.live_trading_max_leverage = config_i64(
         config,
         "live_trading_max_leverage",
-        safety.live_trading_max_leverage,
+        python_execution_default_i64(
+            "live_trading_max_leverage",
+            safety.live_trading_max_leverage,
+        ),
     )
     .clamp(1, 125);
     safety.live_trading_max_position_pct = config_f64(
         config,
         "live_trading_max_position_pct",
-        safety.live_trading_max_position_pct,
+        python_execution_default_f64(
+            "live_trading_max_position_pct",
+            safety.live_trading_max_position_pct,
+        ),
     )
     .clamp(0.01, 100.0);
     safety.live_trading_max_session_orders = config_i64(
         config,
         "live_trading_max_session_orders",
-        safety.live_trading_max_session_orders,
+        python_execution_default_i64(
+            "live_trading_max_session_orders",
+            safety.live_trading_max_session_orders,
+        ),
     )
     .clamp(1, 100_000);
     engine.dry_run = !rust_trading_execution_supported() || !safety.live_trading_enabled;
@@ -1492,16 +1593,29 @@ fn configure_native_runtime_order_engine(
 
 fn native_runtime_order_audit_config(config: &Value) -> OrderAuditConfig {
     let mut audit = OrderAuditConfig {
-        enabled: config_bool(config, "order_audit_enabled", true),
+        enabled: config_bool(
+            config,
+            "order_audit_enabled",
+            python_execution_default_bool("order_audit_enabled", true),
+        ),
         ..Default::default()
     };
     let configured_path = first_config_string(config, "order_audit_log_path", "");
     if !configured_path.trim().is_empty() {
         audit.path = configured_path;
     }
-    audit.max_bytes = config_i64(config, "order_audit_max_bytes", 10 * 1024 * 1024)
-        .clamp(1, 1_000_000_000) as u64;
-    audit.backup_count = config_i64(config, "order_audit_backup_count", 1).clamp(0, 100) as usize;
+    audit.max_bytes = config_i64(
+        config,
+        "order_audit_max_bytes",
+        python_execution_default_i64("order_audit_max_bytes", 10 * 1024 * 1024),
+    )
+    .clamp(1, 1_000_000_000) as u64;
+    audit.backup_count = config_i64(
+        config,
+        "order_audit_backup_count",
+        python_execution_default_i64("order_audit_backup_count", 1),
+    )
+    .clamp(0, 100) as usize;
     audit
 }
 
@@ -1510,12 +1624,20 @@ fn native_runtime_circuit_breaker_config(config: &Value) -> ConnectorOrderCircui
         enabled: config_bool(
             config,
             "connector_order_block_circuit_breaker_enabled",
-            true,
+            python_execution_default_bool("connector_order_block_circuit_breaker_enabled", true),
         ),
-        block_threshold: config_i64(config, "connector_order_block_pause_threshold", 2)
-            .clamp(1, 100_000) as usize,
-        block_window_seconds: config_f64(config, "connector_order_block_window_seconds", 60.0)
-            .clamp(1.0, 86_400.0),
+        block_threshold: config_i64(
+            config,
+            "connector_order_block_pause_threshold",
+            python_execution_default_i64("connector_order_block_pause_threshold", 2),
+        )
+        .clamp(1, 100_000) as usize,
+        block_window_seconds: config_f64(
+            config,
+            "connector_order_block_window_seconds",
+            python_execution_default_f64("connector_order_block_window_seconds", 60.0),
+        )
+        .clamp(1.0, 86_400.0),
     }
 }
 
@@ -1548,40 +1670,49 @@ fn native_runtime_operational_preflight_input(
         state: "ok".to_owned(),
         source: source.to_owned(),
     };
+    let default_mode = python_execution_default_text("mode", "Demo/Testnet");
     NativeRuntimeOperationalPreflightInput {
-        mode: first_config_string(config, "mode", "Demo/Testnet"),
+        mode: first_config_string(config, "mode", &default_mode),
         health: "ok".to_owned(),
         generated_at_ms: now_ms.max(0),
-        start_gate_enabled: config_bool(config, "operational_live_start_gate_enabled", true),
-        order_gate_enabled: config_bool(config, "operational_live_order_gate_enabled", true),
+        start_gate_enabled: config_bool(
+            config,
+            "operational_live_start_gate_enabled",
+            python_execution_default_bool("operational_live_start_gate_enabled", true),
+        ),
+        order_gate_enabled: config_bool(
+            config,
+            "operational_live_order_gate_enabled",
+            python_execution_default_bool("operational_live_order_gate_enabled", true),
+        ),
         connector_order_circuit_active,
         exchange_connector: fresh(
             now_ms,
             "native_market_refreshed_at_ms",
             "binance-rest",
             "operational_connector_snapshot_stale_seconds",
-            120.0,
+            python_execution_default_f64("operational_connector_snapshot_stale_seconds", 120.0),
         ),
         execution: fresh(
             now_ms,
             "native_execution_refreshed_at_ms",
             "tauri-native-runtime",
             "operational_execution_heartbeat_stale_seconds",
-            10.0,
+            python_execution_default_f64("operational_execution_heartbeat_stale_seconds", 10.0),
         ),
         account: fresh(
             account_refreshed_at_ms,
             "native_account_refreshed_at_ms",
             "binance-signed-rest",
             "operational_account_snapshot_stale_seconds",
-            300.0,
+            python_execution_default_f64("operational_account_snapshot_stale_seconds", 300.0),
         ),
         portfolio: fresh(
             account_refreshed_at_ms,
             "native_portfolio_refreshed_at_ms",
             "native-account-bootstrap",
             "operational_portfolio_snapshot_stale_seconds",
-            300.0,
+            python_execution_default_f64("operational_portfolio_snapshot_stale_seconds", 300.0),
         ),
         account_preflight: Some(account_preflight),
     }
@@ -1619,7 +1750,12 @@ fn native_runtime_exposure_input(
         symbol: spec.symbol.clone(),
         interval: spec.interval.clone(),
         side: "BOTH".to_owned(),
-        position_pct_fraction: (config_f64(config, "position_pct", 2.0) / 100.0).clamp(0.0001, 1.0),
+        position_pct_fraction: (config_f64(
+            config,
+            "position_pct",
+            python_execution_default_f64("position_pct", 2.0),
+        ) / 100.0)
+            .clamp(0.0001, 1.0),
         available_usdt: account.balance.available_balance.max(0.0),
         wallet_usdt: account.balance.total_balance.max(0.0),
         ledger_margin_total: total_margin,
@@ -1636,20 +1772,37 @@ fn native_runtime_exposure_input(
             position.position_amt.is_finite() && position.position_amt.abs() > 1e-10
         }),
         price,
-        leverage: config_i64(config, "leverage", 5).clamp(1, 125),
+        leverage: config_i64(
+            config,
+            "leverage",
+            python_execution_default_i64("leverage", 1),
+        )
+        .clamp(1, 125),
         filter_min_qty: filters.min_qty,
         filter_min_notional: filters.min_notional,
         filter_step_size: filters.step_size,
         flip_close_qty: None,
-        live_mode: first_config_string(config, "mode", "").eq_ignore_ascii_case("live"),
+        live_mode: {
+            let default_mode = python_execution_default_text("mode", "Demo/Testnet");
+            first_config_string(config, "mode", &default_mode).eq_ignore_ascii_case("live")
+        },
         live_allow_auto_bump_to_min_order: config_bool(
             config,
             "live_allow_auto_bump_to_min_order",
-            false,
+            python_execution_default_bool("live_allow_auto_bump_to_min_order", false),
         ),
-        max_auto_bump_percent: config_f64(config, "max_auto_bump_percent", 5.0).clamp(0.0, 100.0),
-        auto_bump_percent_multiplier: config_f64(config, "auto_bump_percent_multiplier", 10.0)
-            .clamp(0.0, 1_000.0),
+        max_auto_bump_percent: config_f64(
+            config,
+            "max_auto_bump_percent",
+            python_execution_default_f64("max_auto_bump_percent", 5.0),
+        )
+        .clamp(0.0, 100.0),
+        auto_bump_percent_multiplier: config_f64(
+            config,
+            "auto_bump_percent_multiplier",
+            python_execution_default_f64("auto_bump_percent_multiplier", 10.0),
+        )
+        .clamp(0.0, 1_000.0),
         margin_over_target_tolerance: 0.0,
         margin_filter_slippage: 0.0,
         add_only: config_bool(config, "add_only", false),
@@ -1709,10 +1862,15 @@ fn native_runtime_risk_positions(
 }
 
 fn native_runtime_config(config: &Value) -> NativeRuntimeLoopConfig {
-    let position_mode = first_config_string(config, "position_mode", "Hedge");
-    let margin_mode = first_config_string(config, "margin_mode", "Isolated");
-    let assets_mode = first_config_string(config, "assets_mode", "Single-Asset Mode");
-    let loop_interval_override = first_config_string(config, "loop_interval_override", "");
+    let default_position_mode = python_execution_default_text("position_mode", "Hedge");
+    let default_margin_mode = python_execution_default_text("margin_mode", "Isolated");
+    let default_assets_mode = python_execution_default_text("assets_mode", "Single-Asset");
+    let default_loop_interval = python_execution_default_text("loop_interval_override", "");
+    let position_mode = first_config_string(config, "position_mode", &default_position_mode);
+    let margin_mode = first_config_string(config, "margin_mode", &default_margin_mode);
+    let assets_mode = first_config_string(config, "assets_mode", &default_assets_mode);
+    let loop_interval_override =
+        first_config_string(config, "loop_interval_override", &default_loop_interval);
     let loop_interval_override = if matches!(
         loop_interval_override.trim().to_ascii_lowercase().as_str(),
         "" | "none" | "default" | "automatic"
@@ -1722,18 +1880,28 @@ fn native_runtime_config(config: &Value) -> NativeRuntimeLoopConfig {
         Some(loop_interval_override)
     };
 
+    let default_connector =
+        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
     let connector_backend =
-        first_config_string(config, "connector_backend", DEFAULT_CONNECTOR_BACKEND)
-            .to_ascii_lowercase();
+        first_config_string(config, "connector_backend", &default_connector).to_ascii_lowercase();
+    let default_account_type = python_execution_default_text("account_type", "Futures");
+    let account_type = first_config_string(config, "account_type", &default_account_type);
+    let futures_account = !connector_backend.eq_ignore_ascii_case("binance-sdk-spot")
+        && !account_type.to_ascii_lowercase().contains("spot");
     let default_symbol = if connector_backend.contains("coin-futures") {
-        "BTCUSD_PERP"
+        "BTCUSD_PERP".to_owned()
     } else {
-        "BTCUSDT"
+        python_execution_default_first_text("symbols", "BTCUSDT")
     };
 
     NativeRuntimeLoopConfig {
-        symbol: first_config_string(config, "symbols", default_symbol).to_ascii_uppercase(),
-        interval: first_config_string(config, "intervals", "1m"),
+        symbol: first_config_string(config, "symbols", &default_symbol).to_ascii_uppercase(),
+        interval: first_config_string(
+            config,
+            "intervals",
+            &python_execution_default_first_text("intervals", "1m"),
+        ),
+        futures_account,
         position_mode: if position_mode.to_ascii_lowercase().contains("one") {
             "One-way".to_owned()
         } else {
@@ -1744,7 +1912,12 @@ fn native_runtime_config(config: &Value) -> NativeRuntimeLoopConfig {
         } else {
             "ISOLATED".to_owned()
         },
-        leverage: config_i64(config, "leverage", 5).clamp(1, 125),
+        leverage: config_i64(
+            config,
+            "leverage",
+            python_execution_default_i64("leverage", 1),
+        )
+        .clamp(1, 125),
         multi_assets_mode: assets_mode.to_ascii_lowercase().contains("multi"),
         indicator_use_live_values: config_bool(config, "indicator_use_live_values", false),
         risk_controls: normalize_strategy_risk_controls(config),
@@ -3926,6 +4099,14 @@ mod tests {
             1_700_000_000_000,
         );
         assert!(spot.ok, "{}", spot.error);
+        assert!(
+            !native_runtime_config(&json!({
+                "selected_exchange": "Binance",
+                "connector_backend": "binance-sdk-spot",
+                "account_type": "Futures"
+            }))
+            .futures_account
+        );
 
         let alias_state = NativeRuntimeState::default();
         let alias = alias_state.start(
@@ -4017,6 +4198,117 @@ mod tests {
         assert!(!response.ok);
         assert_eq!(response.state, "blocked");
         assert_eq!(response.error, "Native Rust runtime is not running.");
+    }
+
+    #[test]
+    fn native_runtime_fallbacks_match_python_execution_defaults() {
+        let runtime = native_runtime_config(&json!({}));
+        let source = trading_bot_core::python_source_default_execution_config();
+        let source_leverage = source
+            .get("leverage")
+            .and_then(Value::as_i64)
+            .expect("Python execution defaults must define leverage");
+        let source_position_mode = source
+            .get("position_mode")
+            .and_then(Value::as_str)
+            .expect("Python execution defaults must define position mode");
+        let source_margin_mode = source
+            .get("margin_mode")
+            .and_then(Value::as_str)
+            .expect("Python execution defaults must define margin mode");
+        let source_mode = source
+            .get("mode")
+            .and_then(Value::as_str)
+            .expect("Python execution defaults must define mode");
+        let source_account_type = source
+            .get("account_type")
+            .and_then(Value::as_str)
+            .expect("Python execution defaults must define account type");
+        let source_position_pct = source
+            .get("position_pct")
+            .and_then(Value::as_f64)
+            .expect("Python execution defaults must define position percentage");
+        let source_live_max_leverage = source
+            .get("live_trading_max_leverage")
+            .and_then(Value::as_i64)
+            .expect("Python execution defaults must define live leverage cap");
+        let source_live_max_position_pct = source
+            .get("live_trading_max_position_pct")
+            .and_then(Value::as_f64)
+            .expect("Python execution defaults must define live position cap");
+        let source_live_max_session_orders = source
+            .get("live_trading_max_session_orders")
+            .and_then(Value::as_i64)
+            .expect("Python execution defaults must define live order cap");
+
+        assert_eq!(runtime.leverage, source_leverage);
+        assert_eq!(runtime.position_mode, source_position_mode);
+        assert_eq!(runtime.margin_mode, source_margin_mode.to_ascii_uppercase());
+
+        let engine = native_runtime_order_engine(&json!({}), 1_700_000_000_000);
+        assert_eq!(engine.leverage, source_leverage);
+        assert_eq!(engine.mode, source_mode);
+        assert_eq!(engine.account_type, source_account_type);
+        assert_eq!(engine.position_pct, source_position_pct);
+        assert_eq!(
+            engine.safety.live_trading_max_leverage,
+            source_live_max_leverage
+        );
+        assert_eq!(
+            engine.safety.live_trading_max_position_pct,
+            source_live_max_position_pct
+        );
+        assert_eq!(
+            engine.safety.live_trading_max_session_orders,
+            source_live_max_session_orders
+        );
+
+        let audit = native_runtime_order_audit_config(&json!({}));
+        assert_eq!(
+            audit.enabled,
+            source
+                .get("order_audit_enabled")
+                .and_then(Value::as_bool)
+                .expect("Python execution defaults must define audit enabled")
+        );
+        assert_eq!(
+            audit.max_bytes,
+            source
+                .get("order_audit_max_bytes")
+                .and_then(Value::as_i64)
+                .expect("Python execution defaults must define audit max bytes") as u64
+        );
+        assert_eq!(
+            audit.backup_count,
+            source
+                .get("order_audit_backup_count")
+                .and_then(Value::as_i64)
+                .expect("Python execution defaults must define audit backups") as usize
+        );
+
+        let circuit = native_runtime_circuit_breaker_config(&json!({}));
+        assert_eq!(
+            circuit.enabled,
+            source
+                .get("connector_order_block_circuit_breaker_enabled")
+                .and_then(Value::as_bool)
+                .expect("Python execution defaults must define circuit enabled")
+        );
+        assert_eq!(
+            circuit.block_threshold,
+            source
+                .get("connector_order_block_pause_threshold")
+                .and_then(Value::as_i64)
+                .expect("Python execution defaults must define circuit threshold")
+                as usize
+        );
+        assert_eq!(
+            circuit.block_window_seconds,
+            source
+                .get("connector_order_block_window_seconds")
+                .and_then(Value::as_f64)
+                .expect("Python execution defaults must define circuit window")
+        );
     }
 
     #[test]

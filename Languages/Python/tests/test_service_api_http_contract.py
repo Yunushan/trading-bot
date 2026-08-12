@@ -305,6 +305,17 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 f"{route_name} should return declared top-level response fields",
             )
 
+        providers_response = client.get(SERVICE_API_ROUTE_PATHS["llm_providers"], headers=headers)
+        self.assertEqual(200, providers_response.status_code, "llm_providers")
+        providers_payload = providers_response.json()
+        self.assertIsInstance(providers_payload, list)
+        self.assertTrue(providers_payload)
+        for provider in providers_payload:
+            self.assertTrue(
+                set(SERVICE_API_ROUTE_SCHEMAS["llm_providers"]["response_fields"]).issubset(provider),
+                "llm_providers items should return every declared dynamic catalog field",
+            )
+
     @unittest.skipUnless(
         FASTAPI_TESTCLIENT_AVAILABLE,
         "FastAPI TestClient optional dependencies are not installed",

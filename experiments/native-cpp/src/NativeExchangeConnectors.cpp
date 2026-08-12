@@ -118,8 +118,8 @@ QStringList supportedExchanges() {
 
 QStringList supportedConnectorBackends() {
     QStringList values;
-    for (const auto &option : PythonParityContract::kPythonConnectorOptions) {
-        values.append(parityString(option.key));
+    for (const std::string_view backend : PythonParityContract::kPythonSupportedConnectorBackends) {
+        values.append(parityString(backend));
     }
     return values;
 }

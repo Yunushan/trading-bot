@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 DEFAULT_CODE_LANGUAGE = "Python (PyQt)"
 DEFAULT_SELECTED_EXCHANGE = "Binance"
+DEFAULT_THEME = "Dark"
 DEFAULT_DESIGN = "Classic"
 
 

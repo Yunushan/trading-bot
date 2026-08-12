@@ -21,6 +21,13 @@ from app.core import indicators as indicator_math  # noqa: E402
 from app.core.backtest.engine import BacktestEngine  # noqa: E402
 from app.core.backtest.models import BacktestRequest, IndicatorDefinition  # noqa: E402
 from app.core.strategy.runtime.strategy_signal_generation import generate_signal  # noqa: E402
+from app.settings.connectors import DEFAULT_CONNECTOR_BACKEND  # noqa: E402
+from app.settings.exchange_support import (  # noqa: E402
+    BROKER_ORDER_ROUTING_BACKENDS,
+    SUPPORTED_BROKERS,
+    SUPPORTED_EXCHANGES,
+    build_exchange_support_payload,
+)
 
 import pandas as pd  # noqa: E402
 
@@ -29,9 +36,21 @@ RUST_OUTPUT = REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "s
 RUST_INDICATOR_REFERENCE_OUTPUT = (
     REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "generated_python_indicator_reference.rs"
 )
+RUST_EXCHANGE_SUPPORT_REFERENCE_OUTPUT = (
+    REPO_ROOT
+    / "experiments"
+    / "rust-shells"
+    / "crates"
+    / "core"
+    / "src"
+    / "generated_python_exchange_support_reference.rs"
+)
 CPP_OUTPUT = REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonParityContract.h"
 CPP_INDICATOR_REFERENCE_OUTPUT = (
     REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonIndicatorReference.h"
+)
+CPP_EXCHANGE_SUPPORT_REFERENCE_OUTPUT = (
+    REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonExchangeSupportReference.h"
 )
 TAURI_BROWSER_OUTPUT = (
     REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "generated-python-parity.js"
@@ -901,6 +920,154 @@ def _live_signal_case_payload(
     }
 
 
+def _exchange_support_input(
+    *,
+    selected_exchange: str = "",
+    connector_backend: str = "",
+    selected_forex_broker: str = "",
+) -> dict[str, str]:
+    return {
+        "selected_exchange": selected_exchange,
+        "connector_backend": connector_backend,
+        "selected_forex_broker": selected_forex_broker,
+    }
+
+
+def _exchange_support_case(
+    name: str,
+    config: dict[str, str],
+    snapshot: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "config": config,
+        "snapshot": snapshot,
+        "expected": build_exchange_support_payload(config=config, snapshot=snapshot),
+    }
+
+
+def _exchange_support_reference_payload() -> dict[str, object]:
+    cases: list[dict[str, object]] = []
+
+    cases.append(_exchange_support_case("empty-input", _exchange_support_input()))
+    cases.append(
+        _exchange_support_case(
+            "binance-default",
+            _exchange_support_input(
+                selected_exchange="Binance",
+                connector_backend=DEFAULT_CONNECTOR_BACKEND,
+            ),
+        )
+    )
+
+    for index, exchange in enumerate(SUPPORTED_EXCHANGES):
+        backend = DEFAULT_CONNECTOR_BACKEND if exchange == "Binance" else "ccxt"
+        cases.append(
+            _exchange_support_case(
+                f"supported-exchange-{index:02d}-{exchange}",
+                _exchange_support_input(
+                    selected_exchange=exchange,
+                    connector_backend=backend,
+                ),
+            )
+        )
+
+    for index, broker in enumerate(SUPPORTED_BROKERS):
+        broker_key = broker.lower().replace("_", "-")
+        backend = BROKER_ORDER_ROUTING_BACKENDS.get(broker_key)
+        if not backend:
+            raise RuntimeError(f"Missing generated broker backend for Python broker {broker!r}")
+        cases.append(
+            _exchange_support_case(
+                f"supported-broker-{index:02d}-{broker}",
+                _exchange_support_input(
+                    selected_exchange="Binance",
+                    connector_backend=backend,
+                    selected_forex_broker=broker,
+                ),
+            )
+        )
+
+    cases.extend(
+        (
+            _exchange_support_case(
+                "snapshot-takes-precedence",
+                _exchange_support_input(
+                    selected_exchange="Binance",
+                    connector_backend=DEFAULT_CONNECTOR_BACKEND,
+                    selected_forex_broker="OANDA",
+                ),
+                _exchange_support_input(
+                    selected_exchange="Bybit",
+                    connector_backend="ccxt",
+                    selected_forex_broker="",
+                ),
+            ),
+            _exchange_support_case(
+                "snapshot-partial-broker-alias",
+                _exchange_support_input(
+                    selected_exchange="Binance",
+                    connector_backend=DEFAULT_CONNECTOR_BACKEND,
+                    selected_forex_broker="OANDA",
+                ),
+                _exchange_support_input(
+                    selected_exchange="",
+                    connector_backend="",
+                    selected_forex_broker="AI Gold",
+                ),
+            ),
+            _exchange_support_case(
+                "ccxt-case-normalization",
+                _exchange_support_input(selected_exchange="gate", connector_backend="CCXT"),
+            ),
+            _exchange_support_case(
+                "ai-gold-alias",
+                _exchange_support_input(
+                    selected_exchange="Binance",
+                    connector_backend="metatrader5",
+                    selected_forex_broker=" AI Gold ",
+                ),
+            ),
+            _exchange_support_case(
+                "phillip-alias",
+                _exchange_support_input(
+                    selected_exchange="Binance",
+                    connector_backend="metatrader5",
+                    selected_forex_broker="Philip Securities",
+                ),
+            ),
+            _exchange_support_case(
+                "wrong-broker-backend",
+                _exchange_support_input(
+                    selected_exchange="Binance",
+                    connector_backend="ccxt",
+                    selected_forex_broker="IG",
+                ),
+            ),
+            _exchange_support_case(
+                "blocked-broker",
+                _exchange_support_input(
+                    selected_exchange="Binance",
+                    connector_backend="ccxt",
+                    selected_forex_broker="Mitrade",
+                ),
+            ),
+            _exchange_support_case(
+                "unknown-exchange-backend-broker",
+                _exchange_support_input(
+                    selected_exchange="Unlisted",
+                    connector_backend="custom-native",
+                    selected_forex_broker="Unknown Broker",
+                ),
+            ),
+        )
+    )
+    return {
+        "python_source_contract_hash": native_python_source_contract_hash(),
+        "exchange_support_cases": cases,
+    }
+
+
 def _indicator_reference_payload() -> dict[str, object]:
     baseline_closes = [100.0, 103.0, 101.0, 106.0, 104.0, 109.0, 105.0, 111.0, 108.0, 114.0, 110.0, 116.0]
     baseline_highs = [101.0, 104.5, 102.5, 107.5, 105.0, 110.5, 106.0, 112.5, 109.5, 115.0, 111.5, 117.0]
@@ -1105,6 +1272,46 @@ def render_cpp_indicator_reference_header() -> str:
             f"    {_cpp_string_chunks(payload)};",
             "",
             "} // namespace PythonIndicatorReference",
+            "",
+        ]
+    )
+
+
+def render_rust_exchange_support_reference_module() -> str:
+    payload = _contract_json(_exchange_support_reference_payload())
+    return "\n".join(
+        [
+            "// This file is generated from Python exchange support resolution.",
+            "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+            "#[rustfmt::skip]",
+            f"pub const PYTHON_EXCHANGE_SUPPORT_REFERENCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
+            "#[rustfmt::skip]",
+            f"pub const PYTHON_EXCHANGE_SUPPORT_REFERENCE_JSON: &str = {_rust_string(payload)};",
+            "",
+        ]
+    )
+
+
+def render_cpp_exchange_support_reference_header() -> str:
+    payload = _contract_json(_exchange_support_reference_payload())
+    return "\n".join(
+        [
+            "// This file is generated from Python exchange support resolution.",
+            "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+            "#pragma once",
+            "",
+            "#include <string_view>",
+            "",
+            "namespace PythonExchangeSupportReference {",
+            "",
+            (
+                "inline constexpr std::string_view kPythonSourceContractHash = "
+                f"{_cpp_string(native_python_source_contract_hash())};"
+            ),
+            "inline constexpr std::string_view kReferenceJson =",
+            f"    {_cpp_string_chunks(payload)};",
+            "",
+            "} // namespace PythonExchangeSupportReference",
             "",
         ]
     )
@@ -1350,6 +1557,10 @@ def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
         "    pub model_suggestions: &'static [&'static str],",
         "    pub reasoning_efforts: &'static [&'static str],",
         "    pub default_reasoning_effort: &'static str,",
+        "    pub catalog_revision: &'static str,",
+        "    pub custom_models_env: &'static str,",
+        "    pub custom_models_path_env: &'static str,",
+        "    pub notes: &'static [&'static str],",
         "}",
         "",
         "pub const PYTHON_LLM_PROVIDERS: &[PythonLlmProvider] = &[",
@@ -1357,6 +1568,7 @@ def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
     for provider in providers:
         models = ", ".join(_rust_string(model) for model in provider["model_suggestions"])
         efforts = ", ".join(_rust_string(effort) for effort in provider["reasoning_efforts"])
+        notes = ", ".join(_rust_string(note) for note in provider.get("notes", []))
         lines.extend(
             [
                 "    PythonLlmProvider {",
@@ -1370,6 +1582,10 @@ def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
                 f"        model_suggestions: &[{models}],",
                 f"        reasoning_efforts: &[{efforts}],",
                 f"        default_reasoning_effort: {_rust_string(provider['default_reasoning_effort'])},",
+                f"        catalog_revision: {_rust_string(provider['catalog_revision'])},",
+                f"        custom_models_env: {_rust_string(provider['custom_models_env'])},",
+                f"        custom_models_path_env: {_rust_string(provider['custom_models_path_env'])},",
+                f"        notes: &[{notes}],",
                 "    },",
             ]
         )
@@ -1598,6 +1814,10 @@ def _cpp_llm_providers(providers: list[dict[str, object]]) -> str:
         "    std::string_view modelSuggestions;",
         "    std::string_view reasoningEfforts;",
         "    std::string_view defaultReasoningEffort;",
+        "    std::string_view catalogRevision;",
+        "    std::string_view customModelsEnv;",
+        "    std::string_view customModelsPathEnv;",
+        "    std::string_view notes;",
         "};",
         "",
         f"inline constexpr std::array<PythonLlmProvider, {len(providers)}> kPythonLlmProviders = {{",
@@ -1605,6 +1825,7 @@ def _cpp_llm_providers(providers: list[dict[str, object]]) -> str:
     for provider in providers:
         models = ",".join(str(model) for model in provider["model_suggestions"])
         efforts = ",".join(str(effort) for effort in provider["reasoning_efforts"])
+        notes = "\n".join(str(note) for note in provider.get("notes", []))
         lines.append(
             "    PythonLlmProvider{"
             f"{_cpp_string(provider['key'])}, "
@@ -1616,7 +1837,11 @@ def _cpp_llm_providers(providers: list[dict[str, object]]) -> str:
             f"{_cpp_string(provider['api_key_env'])}, "
             f"{_cpp_string(models)}, "
             f"{_cpp_string(efforts)}, "
-            f"{_cpp_string(provider['default_reasoning_effort'])}"
+            f"{_cpp_string(provider['default_reasoning_effort'])}, "
+            f"{_cpp_string(provider['catalog_revision'])}, "
+            f"{_cpp_string(provider['custom_models_env'])}, "
+            f"{_cpp_string(provider['custom_models_path_env'])}, "
+            f"{_cpp_string(notes)}"
             "},"
         )
     lines.append("};")
@@ -1773,6 +1998,18 @@ def render_rust_module() -> str:
             "pub const PYTHON_RISK_DEFAULTS_JSON: &str = "
             f"{_rust_string(_contract_json(dict(summary['risk_defaults'])))};"
         ),
+        (
+            "pub const PYTHON_UI_DEFAULTS_JSON: &str = "
+            f"{_rust_string(_contract_json(dict(summary['ui_defaults'])))};"
+        ),
+        (
+            "pub const PYTHON_DEFAULT_EXECUTION_JSON: &str = "
+            f"{_rust_string(_contract_json(dict(summary['default_execution'])))};"
+        ),
+        (
+            "pub const PYTHON_DEFAULT_BACKTEST_JSON: &str = "
+            f"{_rust_string(_contract_json(dict(summary['default_backtest'])))};"
+        ),
         f"pub const PYTHON_SOURCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
         f"pub const CPP_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['cpp_contract_parity'])};",
         f"pub const RUST_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['rust_contract_parity'])};",
@@ -1824,6 +2061,9 @@ def render_rust_module() -> str:
         "",
         _rust_array("PYTHON_LLM_PROVIDER_KEYS", list(summary["llm_provider_keys"])),
         "",
+        f"pub const PYTHON_LLM_PROVIDER_CATALOG_REVISION: &str = {_rust_string(summary['llm_catalog_revision'])};",
+        f"pub const PYTHON_LLM_MODEL_CATALOG_PATH_ENV: &str = {_rust_string(summary['llm_model_catalog_path_env'])};",
+        "",
         _rust_llm_providers(list(summary["llm_providers"])),
         "",
         _rust_llm_provider_choices(list(summary["llm_provider_choices"])),
@@ -1845,6 +2085,11 @@ def render_rust_module() -> str:
         _rust_broker_canonical_names(list(summary["broker_canonical_names"])),
         "",
         _rust_array("PYTHON_SUPPORTED_EXCHANGES", list(summary["supported_exchanges"])),
+        "",
+        _rust_array(
+            "PYTHON_SUPPORTED_CONNECTOR_BACKENDS",
+            list(summary["supported_connector_backends"]),
+        ),
         "",
         _rust_array("PYTHON_CCXT_DIAGNOSTIC_EXCHANGES", list(summary["ccxt_diagnostic_exchanges"])),
         "",
@@ -1933,6 +2178,10 @@ def render_cpp_header() -> str:
             f"{_cpp_string(_contract_json(dict(summary['risk_defaults'])))};"
         ),
         (
+            "inline constexpr std::string_view kPythonUiDefaultsJson = "
+            f"{_cpp_string(_contract_json(dict(summary['ui_defaults'])))};"
+        ),
+        (
             "inline constexpr std::string_view kPythonOrderGuardBehaviorJson = "
             f"{_cpp_string(_contract_json(order_guard_behavior))};"
         ),
@@ -1979,6 +2228,9 @@ def render_cpp_header() -> str:
         "",
         _cpp_array("kPythonLlmProviderKeys", list(summary["llm_provider_keys"])),
         "",
+        f"inline constexpr std::string_view kPythonLlmProviderCatalogRevision = {_cpp_string(summary['llm_catalog_revision'])};",
+        f"inline constexpr std::string_view kPythonLlmModelCatalogPathEnv = {_cpp_string(summary['llm_model_catalog_path_env'])};",
+        "",
         _cpp_llm_providers(list(summary["llm_providers"])),
         "",
         _cpp_llm_provider_choices(list(summary["llm_provider_choices"])),
@@ -2000,6 +2252,11 @@ def render_cpp_header() -> str:
         _cpp_broker_canonical_names(list(summary["broker_canonical_names"])),
         "",
         _cpp_array("kPythonSupportedExchanges", list(summary["supported_exchanges"])),
+        "",
+        _cpp_array(
+            "kPythonSupportedConnectorBackends",
+            list(summary["supported_connector_backends"]),
+        ),
         "",
         _cpp_array("kPythonCcxtDiagnosticExchanges", list(summary["ccxt_diagnostic_exchanges"])),
         "",
@@ -2119,6 +2376,7 @@ def render_tauri_browser_contract() -> str:
         "defaultExecution": dict(summary["default_execution"]),
         "defaultBacktest": dict(summary["default_backtest"]),
         "riskDefaults": dict(summary["risk_defaults"]),
+        "uiDefaults": dict(summary["ui_defaults"]),
         "backtestRunRequestFields": list(summary["backtest_run_request_fields"]),
         "llmProviders": list(summary["llm_providers"]),
         "llmProviderKeys": list(summary["llm_provider_keys"]),
@@ -2162,8 +2420,16 @@ def main() -> int:
     changed = [
         write_if_changed(RUST_OUTPUT, render_rust_module()),
         write_if_changed(RUST_INDICATOR_REFERENCE_OUTPUT, render_rust_indicator_reference_module()),
+        write_if_changed(
+            RUST_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
+            render_rust_exchange_support_reference_module(),
+        ),
         write_if_changed(CPP_OUTPUT, render_cpp_header()),
         write_if_changed(CPP_INDICATOR_REFERENCE_OUTPUT, render_cpp_indicator_reference_header()),
+        write_if_changed(
+            CPP_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
+            render_cpp_exchange_support_reference_header(),
+        ),
         write_if_changed(TAURI_BROWSER_OUTPUT, render_tauri_browser_contract()),
     ]
     print(f"Native parity contracts generated. changed={any(changed)}")

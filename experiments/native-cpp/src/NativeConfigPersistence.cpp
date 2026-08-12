@@ -826,23 +826,32 @@ void validateBool(QJsonObject *cfg, const QString &key, QJsonArray *issues, cons
 
 QJsonObject normalizedStopLossObject(const QJsonValue &value) {
     QJsonObject raw = value.isObject() ? value.toObject() : QJsonObject{};
+    const QJsonObject pythonRiskDefaults = QJsonDocument::fromJson(QByteArray(
+        PythonParityContract::kPythonRiskDefaultsJson.data(),
+        static_cast<int>(PythonParityContract::kPythonRiskDefaultsJson.size()))).object();
+    const QJsonObject pythonStopLossDefaults = pythonRiskDefaults.value(QStringLiteral("stop_loss")).toObject();
     QString mode = choiceValue(raw.value(QStringLiteral("mode")), stopLossModeChoices());
     if (mode.isEmpty()) {
-        mode = QStringLiteral("usdt");
+        mode = choiceValue(pythonStopLossDefaults.value(QStringLiteral("mode")), stopLossModeChoices());
+        if (mode.isEmpty()) mode = QStringLiteral("usdt");
     }
     QString scope = choiceValue(raw.value(QStringLiteral("scope")), stopLossScopeChoices());
     if (scope.isEmpty()) {
-        scope = QStringLiteral("per_trade");
+        scope = choiceValue(pythonStopLossDefaults.value(QStringLiteral("scope")), stopLossScopeChoices());
+        if (scope.isEmpty()) scope = QStringLiteral("per_trade");
     }
     bool enabled = false;
-    coerceLooseBool(raw.value(QStringLiteral("enabled")), false, &enabled);
-    double usdt = 0.0;
+    coerceLooseBool(
+        raw.value(QStringLiteral("enabled")),
+        pythonStopLossDefaults.value(QStringLiteral("enabled")).toBool(false),
+        &enabled);
+    double usdt = pythonStopLossDefaults.value(QStringLiteral("usdt")).toDouble(0.0);
     if (!finiteFloat(raw.value(QStringLiteral("usdt")), &usdt) || usdt < 0.0) {
-        usdt = 0.0;
+        usdt = pythonStopLossDefaults.value(QStringLiteral("usdt")).toDouble(0.0);
     }
-    double percent = 0.0;
+    double percent = pythonStopLossDefaults.value(QStringLiteral("percent")).toDouble(0.0);
     if (!finiteFloat(raw.value(QStringLiteral("percent")), &percent) || percent < 0.0) {
-        percent = 0.0;
+        percent = pythonStopLossDefaults.value(QStringLiteral("percent")).toDouble(0.0);
     }
     return QJsonObject{
         {QStringLiteral("enabled"), enabled},

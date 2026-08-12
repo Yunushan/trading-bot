@@ -1,3 +1,6 @@
+use std::sync::OnceLock;
+
+use serde_json::Value;
 use trading_bot_contracts::AppIdentity;
 
 pub mod account;
@@ -8,6 +11,7 @@ pub mod config_persistence;
 pub mod desktop_shell;
 pub mod diagnostics;
 pub mod exchange_connectors;
+pub mod generated_python_exchange_support_reference;
 pub mod generated_python_indicator_reference;
 pub mod generated_python_parity;
 pub mod llm_advisory;
@@ -123,6 +127,38 @@ pub fn python_source_default_backtest_symbols() -> &'static [&'static str] {
 
 pub fn python_source_default_backtest_intervals() -> &'static [&'static str] {
     generated_python_parity::PYTHON_DEFAULT_BACKTEST_INTERVALS
+}
+
+pub fn python_source_default_backtest_config() -> &'static Value {
+    static CONFIG: OnceLock<Value> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        serde_json::from_str(generated_python_parity::PYTHON_DEFAULT_BACKTEST_JSON)
+            .expect("generated Python backtest defaults must be valid JSON")
+    })
+}
+
+pub fn python_source_default_execution_config() -> &'static Value {
+    static CONFIG: OnceLock<Value> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        serde_json::from_str(generated_python_parity::PYTHON_DEFAULT_EXECUTION_JSON)
+            .expect("generated Python execution defaults must be valid JSON")
+    })
+}
+
+pub fn python_source_risk_defaults() -> &'static Value {
+    static CONFIG: OnceLock<Value> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        serde_json::from_str(generated_python_parity::PYTHON_RISK_DEFAULTS_JSON)
+            .expect("generated Python risk defaults must be valid JSON")
+    })
+}
+
+pub fn python_source_ui_defaults() -> &'static Value {
+    static CONFIG: OnceLock<Value> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        serde_json::from_str(generated_python_parity::PYTHON_UI_DEFAULTS_JSON)
+            .expect("generated Python UI defaults must be valid JSON")
+    })
 }
 
 pub fn python_source_chart_market_options() -> &'static [&'static str] {
@@ -1307,6 +1343,43 @@ mod tests {
                 .contains(&"requested_job_count")
         );
         assert!(control_start.response_fields.contains(&"accepted"));
+
+        let llm_providers =
+            service_api_route_schema("llm_providers").expect("llm_providers schema");
+        for field in [
+            "model_suggestions",
+            "reasoning_efforts",
+            "default_reasoning_effort",
+            "catalog_revision",
+            "catalog_path",
+            "custom_models_env",
+            "custom_models_path_env",
+            "catalog_note",
+            "notes",
+        ] {
+            assert!(
+                llm_providers.response_fields.contains(&field),
+                "missing llm provider field {field}"
+            );
+        }
+
+        let llm_config = service_api_route_schema("llm_config").expect("llm_config schema");
+        for field in [
+            "catalog_revision",
+            "catalog_path",
+            "custom_models_env",
+            "custom_models_path_env",
+            "default_reasoning_effort",
+            "reasoning_efforts",
+            "model_suggestions",
+            "notes",
+            "execution_policy",
+        ] {
+            assert!(
+                llm_config.response_fields.contains(&field),
+                "missing llm config field {field}"
+            );
+        }
 
         assert!(service_api_route_schema("unknown").is_none());
     }

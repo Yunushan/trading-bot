@@ -1975,9 +1975,7 @@ mod tests {
                 ),
                 (None, None) => {}
                 (actual, expected) => {
-                    panic!(
-                        "trigger price presence mismatch for {name}: {actual:?} != {expected:?}"
-                    )
+                    panic!("trigger price presence mismatch for {name}: {actual:?} != {expected:?}")
                 }
             }
             let expected_sources: Vec<String> = expected

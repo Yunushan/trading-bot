@@ -4,6 +4,7 @@
 
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QVector>
 
 namespace {
 
@@ -21,21 +22,75 @@ bool containsAny(const QString &text, const QStringList &phrases) {
     return false;
 }
 
+QString policyScalarText(const QJsonValue &value) {
+    if (value.isString()) {
+        return value.toString().trimmed().toLower();
+    }
+    if (value.isBool()) {
+        return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    }
+    if (value.isDouble()) {
+        return QString::number(value.toDouble(), 'g', 16).trimmed().toLower();
+    }
+    if (value.isObject()) {
+        return QString::fromUtf8(
+                   QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact))
+            .trimmed()
+            .toLower();
+    }
+    if (value.isArray()) {
+        return QString::fromUtf8(
+                   QJsonDocument(value.toArray()).toJson(QJsonDocument::Compact))
+            .trimmed()
+            .toLower();
+    }
+    return value.isNull() ? QStringLiteral("null") : QString();
+}
+
 void scanStructuredPolicyValue(const QJsonValue &value, QStringList &violations) {
     if (value.isObject()) {
         const QJsonObject object = value.toObject();
         for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
-            const QString key = it.key();
-            const QString item = it.value().isString()
-                ? it.value().toString().trimmed().toLower()
-                : QString::fromUtf8(QJsonDocument(it.value().toObject()).toJson(QJsonDocument::Compact)).trimmed().toLower();
-            if (key == QStringLiteral("action")
-                && (item == QStringLiteral("place_order") || item == QStringLiteral("submit_order") || item == QStringLiteral("execute_order"))
-                && !violations.contains(QStringLiteral("direct_order_action"))) {
-                violations.append(QStringLiteral("direct_order_action"));
+            const QString key = it.key().trimmed().toLower();
+            const QString item = policyScalarText(it.value());
+            if (QStringList{
+                    QStringLiteral("action"),
+                    QStringLiteral("command"),
+                    QStringLiteral("intent"),
+                    QStringLiteral("operation"),
+                    QStringLiteral("tool"),
+                }
+                    .contains(key)) {
+                if (QStringList{
+                        QStringLiteral("cancel_order"),
+                        QStringLiteral("change_leverage"),
+                        QStringLiteral("close_position"),
+                        QStringLiteral("create_order"),
+                        QStringLiteral("execute_order"),
+                        QStringLiteral("market_buy"),
+                        QStringLiteral("market_sell"),
+                        QStringLiteral("open_position"),
+                        QStringLiteral("place_order"),
+                        QStringLiteral("set_leverage"),
+                        QStringLiteral("submit_order"),
+                    }
+                        .contains(item)
+                    && !violations.contains(QStringLiteral("direct_order_action"))) {
+                    violations.append(QStringLiteral("direct_order_action"));
+                }
+                if (QStringList{
+                        QStringLiteral("change_leverage"),
+                        QStringLiteral("disable_stop_loss"),
+                        QStringLiteral("override_risk"),
+                        QStringLiteral("set_leverage"),
+                    }
+                        .contains(item)
+                    && !violations.contains(QStringLiteral("risk_override"))) {
+                    violations.append(QStringLiteral("risk_override"));
+                }
             }
             if ((key == QStringLiteral("execution_status") || key == QStringLiteral("order_status") || key == QStringLiteral("status"))
-                && (item == QStringLiteral("executed") || item == QStringLiteral("filled") || item == QStringLiteral("submitted"))
+                && (item == QStringLiteral("executed") || item == QStringLiteral("filled") || item == QStringLiteral("order_executed") || item == QStringLiteral("placed") || item == QStringLiteral("submitted"))
                 && !violations.contains(QStringLiteral("order_execution_claim"))) {
                 violations.append(QStringLiteral("order_execution_claim"));
             }
@@ -70,6 +125,41 @@ QStringList orderedViolations(const QStringList &violations) {
         }
     }
     return out;
+}
+
+QVector<QJsonValue> jsonCandidatesFromText(const QString &text) {
+    const QString raw = text.trimmed();
+    if (raw.isEmpty()) {
+        return {};
+    }
+    QVector<QJsonValue> candidates;
+    const auto appendCandidate = [&candidates](const QString &candidate) {
+        const QJsonDocument document = QJsonDocument::fromJson(candidate.toUtf8());
+        if (document.isNull()) {
+            return;
+        }
+        candidates.append(document.isObject()
+                              ? QJsonValue(document.object())
+                              : QJsonValue(document.array()));
+    };
+    appendCandidate(raw);
+    if (raw.startsWith(QStringLiteral("```"))) {
+        const QStringList lines = raw.split(QChar('\n'));
+        if (lines.size() >= 3 && lines.last().trimmed().startsWith(QStringLiteral("```"))) {
+            appendCandidate(lines.mid(1, lines.size() - 2).join(QChar('\n')).trimmed());
+        }
+    }
+    const int objectStart = raw.indexOf(QChar('{'));
+    const int objectEnd = raw.lastIndexOf(QChar('}'));
+    if (objectStart >= 0 && objectEnd > objectStart) {
+        appendCandidate(raw.mid(objectStart, objectEnd - objectStart + 1));
+    }
+    const int arrayStart = raw.indexOf(QChar('['));
+    const int arrayEnd = raw.lastIndexOf(QChar(']'));
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+        appendCandidate(raw.mid(arrayStart, arrayEnd - arrayStart + 1));
+    }
+    return candidates;
 }
 
 } // namespace
@@ -149,9 +239,8 @@ QStringList outputPolicyViolations(const QString &text) {
         return {};
     }
     QStringList violations;
-    const QJsonDocument document = QJsonDocument::fromJson(text.toUtf8());
-    if (!document.isNull()) {
-        scanStructuredPolicyValue(document.isObject() ? QJsonValue(document.object()) : QJsonValue(document.array()), violations);
+    for (const QJsonValue &candidate : jsonCandidatesFromText(text)) {
+        scanStructuredPolicyValue(candidate, violations);
     }
     if (containsAny(lower, {
             QStringLiteral("order executed"),
