@@ -29,6 +29,10 @@ use trading_bot_core::{
         load_service_config_file, service_config_file_status, write_service_config_file,
     },
     exchange_connectors::DEFAULT_CONNECTOR_BACKEND,
+    generated_python_parity::{
+        PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS, PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER,
+        PYTHON_NATIVE_RUNTIME_EXCHANGES,
+    },
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
     native_runtime::{
@@ -2073,30 +2077,31 @@ fn python_ui_default_text(key: &str, fallback: &str) -> String {
 fn native_runtime_ownership_error(config: &Value) -> Option<String> {
     let default_exchange = python_ui_default_text("selected_exchange", "Binance");
     let selected_exchange = first_config_string(config, "selected_exchange", &default_exchange);
-    if !selected_exchange.eq_ignore_ascii_case("Binance") {
+    let exchange_is_native = PYTHON_NATIVE_RUNTIME_EXCHANGES
+        .iter()
+        .any(|exchange| exchange.eq_ignore_ascii_case(&selected_exchange));
+    if !exchange_is_native {
         return Some(format!(
-            "Native Rust runtime coordinates Binance spot/futures only. {selected_exchange} remains Python Service API/provider connector-owned."
+            "Native Rust runtime coordinates the Python-owned native exchange boundary only. {selected_exchange} remains {PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER}-owned."
         ));
     }
 
     let default_connector =
         python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
-    let connector_backend =
-        first_config_string(config, "connector_backend", &default_connector).to_ascii_lowercase();
-    if matches!(
-        connector_backend.as_str(),
-        "binance-sdk-derivatives-trading-usds-futures"
-            | "binance-sdk-derivatives-trading-coin-futures"
-            | "binance-sdk-spot"
-            | "binance-connector"
-            | "ccxt"
-            | "python-binance"
-    ) {
+    let connector_backend = first_config_string(config, "connector_backend", &default_connector);
+    let connector_backend_key = connector_backend
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    if PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS
+        .iter()
+        .any(|backend| backend.eq_ignore_ascii_case(&connector_backend_key))
+    {
         return None;
     }
 
     Some(format!(
-        "Native Rust runtime coordinates only Python's supported Binance spot/futures connector keys and aliases; '{connector_backend}' remains Python Service API/provider connector-owned."
+        "Native Rust runtime coordinates only the Python-owned native connector boundary; '{connector_backend}' remains {PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER}-owned."
     ))
 }
 
@@ -5223,16 +5228,16 @@ mod tests {
             "connector_backend": "python-binance",
             "account_type": "Futures"
         }))
-        .expect("python-binance alias poll spec");
-        assert_eq!(python_binance_alias.market, BinanceMarket::Futures);
+        .expect_err("python-binance provider alias should delegate to Python");
+        assert!(python_binance_alias.contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER));
 
         let ccxt_alias = native_runtime_market_poll_spec(&json!({
             "selected_exchange": "Binance",
             "connector_backend": "ccxt",
             "account_type": "Spot"
         }))
-        .expect("Binance CCXT alias poll spec");
-        assert_eq!(ccxt_alias.market, BinanceMarket::Spot);
+        .expect_err("Binance CCXT provider alias should delegate to Python");
+        assert!(ccxt_alias.contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER));
     }
 
     #[test]

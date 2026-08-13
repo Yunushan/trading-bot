@@ -1,4 +1,7 @@
 use crate::generated_python_parity::{
+    PYTHON_LIVE_TRADING_ACK_ENV, PYTHON_LIVE_TRADING_ACK_ENV_LEGACY,
+    PYTHON_LIVE_TRADING_ENABLED_ENV, PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV,
+    PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV, PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
     PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
     PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES,
     PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES,
@@ -13,6 +16,63 @@ pub const DEFAULT_LIVE_MAX_POSITION_PCT: f64 = 10.0;
 pub const DEFAULT_LIVE_MAX_SESSION_ORDERS: i64 = 100;
 pub const MAX_LIVE_MAX_SESSION_ORDERS: i64 = 100_000;
 pub const BINANCE_MAX_FUTURES_LEVERAGE: i64 = 125;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LiveTradingEnvironment {
+    enabled: Option<String>,
+    acknowledgement: Option<String>,
+    legacy_acknowledgement: Option<String>,
+    max_leverage: Option<String>,
+    max_position_pct: Option<String>,
+    max_session_orders: Option<String>,
+}
+
+fn process_live_trading_environment() -> LiveTradingEnvironment {
+    let value = |key: &str| {
+        std::env::var(key)
+            .ok()
+            .map(|raw| raw.trim().to_owned())
+            .filter(|raw| !raw.is_empty())
+    };
+    LiveTradingEnvironment {
+        enabled: value(PYTHON_LIVE_TRADING_ENABLED_ENV),
+        acknowledgement: value(PYTHON_LIVE_TRADING_ACK_ENV),
+        legacy_acknowledgement: value(PYTHON_LIVE_TRADING_ACK_ENV_LEGACY),
+        max_leverage: value(PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV),
+        max_position_pct: value(PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV),
+        max_session_orders: value(PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV),
+    }
+}
+
+fn environment_bool(value: Option<&str>) -> bool {
+    matches!(
+        value.unwrap_or_default().trim().to_lowercase().as_str(),
+        "1" | "true" | "yes" | "y" | "on"
+    )
+}
+
+fn configured_float(config_value: f64, environment_value: Option<&String>, default: f64) -> f64 {
+    if let Some(raw) = environment_value {
+        return raw
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .unwrap_or(default);
+    }
+    if config_value.is_finite() {
+        config_value
+    } else {
+        default
+    }
+}
+
+fn configured_integer(config_value: i64, environment_value: Option<&String>, default: i64) -> i64 {
+    let value = configured_float(config_value as f64, environment_value, default as f64);
+    if !value.is_finite() || value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return default;
+    }
+    value as i64
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrderSubmitIntent {
@@ -271,7 +331,10 @@ pub fn validate_order_filter_constraints(
         ));
     }
 
-    let price = intent.price.or(last_price).filter(|value| *value > 0.0);
+    let price = intent
+        .price
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .or_else(|| last_price.filter(|value| value.is_finite() && *value > 0.0));
     if filters.tick_size > 0.0
         && price
             .map(|value| !aligned_to_step(value, filters.tick_size))
@@ -306,6 +369,49 @@ pub fn validate_order_filter_constraints(
     errors
 }
 
+/// Preserve Python's distinction between an omitted number and a supplied
+/// non-finite number before the parsed intent drops the raw value.
+fn validate_order_numeric_params(
+    intent: &OrderSubmitIntent,
+    params: &[(String, String)],
+) -> Vec<String> {
+    if intent.symbol.is_empty() {
+        return Vec::new();
+    }
+
+    if let Some(raw_quantity) = param_value(params, &["quantity"])
+        && !raw_quantity.trim().is_empty()
+        && !matches!(
+            float_param(Some(raw_quantity.as_str())),
+            Some(value) if value.is_finite()
+        )
+    {
+        return vec![format!(
+            "order quantity must be a finite number for {}",
+            intent.symbol
+        )];
+    }
+
+    // Python returns after a missing/empty quantity, so a malformed price is
+    // only reported once a quantity reached the filter-validation stage.
+    if intent.quantity.is_none() {
+        return Vec::new();
+    }
+    if let Some(raw_price) = param_value(params, &["price"])
+        && !raw_price.trim().is_empty()
+        && !matches!(
+            float_param(Some(raw_price.as_str())),
+            Some(value) if value.is_finite()
+        )
+    {
+        return vec![format!(
+            "order price must be a finite number for {}",
+            intent.symbol
+        )];
+    }
+    Vec::new()
+}
+
 pub fn is_live_trading_mode(mode: impl AsRef<str>) -> bool {
     let text = mode.as_ref().trim().to_lowercase();
     if text.is_empty() {
@@ -317,56 +423,82 @@ pub fn is_live_trading_mode(mode: impl AsRef<str>) -> bool {
 }
 
 pub fn validate_live_trading_safety(input: &LiveTradingSafetyInput) -> Vec<String> {
+    let environment = process_live_trading_environment();
+    validate_live_trading_safety_with_environment(input, &environment)
+}
+
+fn validate_live_trading_safety_with_environment(
+    input: &LiveTradingSafetyInput,
+    environment: &LiveTradingEnvironment,
+) -> Vec<String> {
     if !is_live_trading_mode(&input.mode) {
         return Vec::new();
     }
 
     let mut errors = Vec::new();
     let cfg = &input.config;
-    if !cfg.live_trading_enabled
-        || cfg.live_trading_acknowledgement.trim() != LIVE_TRADING_ACKNOWLEDGEMENT
-    {
+    let environment_acknowledgement = environment
+        .acknowledgement
+        .as_deref()
+        .or(environment.legacy_acknowledgement.as_deref())
+        .unwrap_or_default();
+    let confirmed_by_config = cfg.live_trading_enabled
+        && cfg.live_trading_acknowledgement.trim() == LIVE_TRADING_ACKNOWLEDGEMENT;
+    let confirmed_by_environment = environment_bool(environment.enabled.as_deref())
+        && environment_acknowledgement == LIVE_TRADING_ACKNOWLEDGEMENT;
+    if !confirmed_by_config && !confirmed_by_environment {
         errors.push(format!(
-            "set live_trading_enabled=true and live_trading_acknowledgement={LIVE_TRADING_ACKNOWLEDGEMENT:?}"
+            "set live_trading_enabled=true and live_trading_acknowledgement='{LIVE_TRADING_ACKNOWLEDGEMENT}' or set {PYTHON_LIVE_TRADING_ENABLED_ENV}=true and {PYTHON_LIVE_TRADING_ACK_ENV}='{LIVE_TRADING_ACKNOWLEDGEMENT}'"
         ));
     }
     if !credential_is_real(&input.api_key) || !credential_is_real(&input.api_secret) {
         errors.push("provide non-placeholder Binance API credentials".to_owned());
     }
-    if cfg.live_trading_max_leverage < 1
-        || cfg.live_trading_max_leverage > BINANCE_MAX_FUTURES_LEVERAGE
-    {
+    let max_leverage = configured_integer(
+        cfg.live_trading_max_leverage,
+        environment.max_leverage.as_ref(),
+        DEFAULT_LIVE_MAX_LEVERAGE,
+    );
+    if max_leverage < 1 || max_leverage > BINANCE_MAX_FUTURES_LEVERAGE {
         errors.push(format!(
             "live_trading_max_leverage must be between 1 and {BINANCE_MAX_FUTURES_LEVERAGE}"
         ));
     }
-    if cfg.live_trading_max_position_pct <= 0.0 || cfg.live_trading_max_position_pct > 100.0 {
+    let max_position_pct = configured_float(
+        cfg.live_trading_max_position_pct,
+        environment.max_position_pct.as_ref(),
+        DEFAULT_LIVE_MAX_POSITION_PCT,
+    );
+    if max_position_pct <= 0.0 || max_position_pct > 100.0 {
         errors.push("live_trading_max_position_pct must be > 0 and <= 100".to_owned());
     }
-    if cfg.live_trading_max_session_orders < 1
-        || cfg.live_trading_max_session_orders > MAX_LIVE_MAX_SESSION_ORDERS
-    {
+    let max_session_orders = configured_integer(
+        cfg.live_trading_max_session_orders,
+        environment.max_session_orders.as_ref(),
+        DEFAULT_LIVE_MAX_SESSION_ORDERS,
+    );
+    if max_session_orders < 1 || max_session_orders > MAX_LIVE_MAX_SESSION_ORDERS {
         errors.push(format!(
             "live_trading_max_session_orders must be between 1 and {MAX_LIVE_MAX_SESSION_ORDERS}"
         ));
     }
     if input.position_pct <= 0.0 || input.position_pct > 100.0 {
         errors.push("position_pct must be > 0 and <= 100 for live trading".to_owned());
-    } else if input.position_pct > cfg.live_trading_max_position_pct {
+    } else if input.position_pct > max_position_pct {
         errors.push(format!(
             "position_pct {}% exceeds live cap {}%",
             decimal_text(input.position_pct),
-            decimal_text(cfg.live_trading_max_position_pct)
+            decimal_text(max_position_pct)
         ));
     }
 
     if input.account_type.trim().to_uppercase().starts_with("FUT") {
         if input.leverage < 1 {
             errors.push("leverage must be >= 1 for live futures trading".to_owned());
-        } else if input.leverage > cfg.live_trading_max_leverage {
+        } else if input.leverage > max_leverage {
             errors.push(format!(
                 "leverage {} exceeds live cap {}",
-                input.leverage, cfg.live_trading_max_leverage
+                input.leverage, max_leverage
             ));
         }
 
@@ -391,16 +523,20 @@ pub fn guard_live_order_submit(
     // connector health, and audit path. Credential/acknowledgement checks are
     // specific to an actual live submission.
     if live_mode {
-        errors.extend(validate_live_trading_safety(&LiveTradingSafetyInput {
-            mode: input.mode.clone(),
-            api_key: input.api_key.clone(),
-            api_secret: input.api_secret.clone(),
-            account_type: input.account_type.clone(),
-            leverage: input.leverage,
-            margin_mode: input.margin_mode.clone(),
-            position_pct: input.position_pct,
-            config: input.config.clone(),
-        }));
+        let environment = process_live_trading_environment();
+        errors.extend(validate_live_trading_safety_with_environment(
+            &LiveTradingSafetyInput {
+                mode: input.mode.clone(),
+                api_key: input.api_key.clone(),
+                api_secret: input.api_secret.clone(),
+                account_type: input.account_type.clone(),
+                leverage: input.leverage,
+                margin_mode: input.margin_mode.clone(),
+                position_pct: input.position_pct,
+                config: input.config.clone(),
+            },
+            &environment,
+        ));
     }
 
     if (live_mode || PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES)
@@ -424,26 +560,33 @@ pub fn guard_live_order_submit(
     if live_mode || PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES {
         errors.extend(validate_order_submit_intent(&intent));
     }
-    if (live_mode || PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES)
-        && !intent.symbol.is_empty()
-        && intent.quantity.is_some()
-        && matches!(intent.market.as_str(), "futures" | "spot")
-    {
-        match &input.filters {
-            Some(filters) => errors.extend(validate_order_filter_constraints(
-                &intent,
-                filters,
-                input.last_price,
-            )),
-            None => errors.push(format!(
-                "{} symbol filters unavailable for {}",
-                intent.market, intent.symbol
-            )),
+    if live_mode || PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES {
+        errors.extend(validate_order_numeric_params(&intent, &input.params));
+        if !intent.symbol.is_empty()
+            && intent.quantity.is_some()
+            && matches!(intent.market.as_str(), "futures" | "spot")
+        {
+            match &input.filters {
+                Some(filters) => errors.extend(validate_order_filter_constraints(
+                    &intent,
+                    filters,
+                    input.last_price,
+                )),
+                None => errors.push(format!(
+                    "{} symbol filters unavailable for {}",
+                    intent.market, intent.symbol
+                )),
+            }
         }
     }
 
     if live_mode {
-        let max_session_orders = input.config.live_trading_max_session_orders;
+        let environment = process_live_trading_environment();
+        let max_session_orders = configured_integer(
+            input.config.live_trading_max_session_orders,
+            environment.max_session_orders.as_ref(),
+            DEFAULT_LIVE_MAX_SESSION_ORDERS,
+        );
         if current_count >= max_session_orders {
             errors.push(format!(
                 "live session order cap {max_session_orders} reached"
@@ -507,7 +650,7 @@ fn float_param(value: Option<&str>) -> Option<f64> {
     if text.is_empty() {
         return None;
     }
-    text.parse::<f64>().ok().filter(|value| value.is_finite())
+    text.parse::<f64>().ok()
 }
 
 fn aligned_to_step(value: f64, step: f64) -> bool {
@@ -649,6 +792,62 @@ mod tests {
     }
 
     #[test]
+    fn preserves_python_non_finite_order_number_errors() {
+        let quantity_result = guard_live_order_submit(&BinanceOrderSubmitGuardInput {
+            mode: "demo".to_owned(),
+            params: vec![
+                ("symbol".to_owned(), "ETHUSDT".to_owned()),
+                ("side".to_owned(), "BUY".to_owned()),
+                ("type".to_owned(), "MARKET".to_owned()),
+                ("quantity".to_owned(), "NaN".to_owned()),
+            ],
+            filters: Some(futures_filters()),
+            last_price: Some(100.0),
+            connector_state: "ready".to_owned(),
+            connector_health: "ok".to_owned(),
+            ..Default::default()
+        });
+        assert!(
+            quantity_result
+                .errors
+                .iter()
+                .any(|error| { error == "order quantity must be a finite number for ETHUSDT" })
+        );
+        assert!(
+            !quantity_result
+                .errors
+                .contains(&"order quantity must be > 0".to_owned())
+        );
+
+        let price_result = guard_live_order_submit(&BinanceOrderSubmitGuardInput {
+            mode: "demo".to_owned(),
+            params: vec![
+                ("symbol".to_owned(), "ETHUSDT".to_owned()),
+                ("side".to_owned(), "BUY".to_owned()),
+                ("type".to_owned(), "LIMIT".to_owned()),
+                ("quantity".to_owned(), "0.10".to_owned()),
+                ("price".to_owned(), "Infinity".to_owned()),
+            ],
+            filters: Some(futures_filters()),
+            last_price: Some(100.0),
+            connector_state: "ready".to_owned(),
+            connector_health: "ok".to_owned(),
+            ..Default::default()
+        });
+        assert!(
+            price_result
+                .errors
+                .iter()
+                .any(|error| { error == "order price must be a finite number for ETHUSDT" })
+        );
+        assert!(
+            !price_result
+                .errors
+                .contains(&"limit order price must be > 0".to_owned())
+        );
+    }
+
+    #[test]
     fn risk_reducing_exit_skips_min_qty_and_notional_but_not_step() {
         let params = build_futures_market_order_params("BTCUSDT", "SELL", 0.0015, true, "")
             .expect("reduce-only params");
@@ -694,6 +893,32 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("live_trading_enabled=true"))
         );
+    }
+
+    #[test]
+    fn live_safety_accepts_python_environment_overrides() {
+        let environment = LiveTradingEnvironment {
+            enabled: Some("true".to_owned()),
+            acknowledgement: Some(LIVE_TRADING_ACKNOWLEDGEMENT.to_owned()),
+            legacy_acknowledgement: None,
+            max_leverage: Some("5".to_owned()),
+            max_position_pct: Some("4".to_owned()),
+            max_session_orders: Some("1".to_owned()),
+        };
+        let errors = validate_live_trading_safety_with_environment(
+            &LiveTradingSafetyInput {
+                mode: "live".to_owned(),
+                api_key: "real-api-key".to_owned(),
+                api_secret: "real-api-secret".to_owned(),
+                account_type: "FUTURES".to_owned(),
+                leverage: 5,
+                margin_mode: "Isolated".to_owned(),
+                position_pct: 4.0,
+                config: LiveTradingSafetyConfig::default(),
+            },
+            &environment,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]

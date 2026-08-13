@@ -706,6 +706,74 @@ int main(int argc, char **argv) {
     check(paperValidResult.nextSubmitAttemptCount == 3,
           QStringLiteral("paper order guard should preserve the live session order count"));
 
+    NativeOrderSafety::LiveOrderGuardInput nonFiniteQuantity = paperValidOrder;
+    nonFiniteQuantity.params = {
+        {QStringLiteral("symbol"), QStringLiteral("ETHUSDT")},
+        {QStringLiteral("side"), QStringLiteral("BUY")},
+        {QStringLiteral("type"), QStringLiteral("MARKET")},
+        {QStringLiteral("quantity"), QStringLiteral("NaN")},
+    };
+    const NativeOrderSafety::LiveOrderGuardResult nonFiniteQuantityResult =
+        NativeOrderSafety::guardLiveOrderSubmit(nonFiniteQuantity);
+    check(nonFiniteQuantityResult.errors.contains(
+              QStringLiteral("order quantity must be a finite number for ETHUSDT")),
+          QStringLiteral("C++ order guard should preserve Python non-finite quantity errors"));
+    check(!nonFiniteQuantityResult.errors.contains(QStringLiteral("order quantity must be > 0")),
+          QStringLiteral("C++ order guard should not treat Python NaN as an omitted quantity"));
+
+    NativeOrderSafety::LiveOrderGuardInput nonFinitePrice = paperValidOrder;
+    nonFinitePrice.params = {
+        {QStringLiteral("symbol"), QStringLiteral("ETHUSDT")},
+        {QStringLiteral("side"), QStringLiteral("BUY")},
+        {QStringLiteral("type"), QStringLiteral("LIMIT")},
+        {QStringLiteral("quantity"), QStringLiteral("0.10")},
+        {QStringLiteral("price"), QStringLiteral("Infinity")},
+    };
+    const NativeOrderSafety::LiveOrderGuardResult nonFinitePriceResult =
+        NativeOrderSafety::guardLiveOrderSubmit(nonFinitePrice);
+    check(nonFinitePriceResult.errors.contains(
+              QStringLiteral("order price must be a finite number for ETHUSDT")),
+          QStringLiteral("C++ order guard should preserve Python non-finite price errors"));
+    check(!nonFinitePriceResult.errors.contains(QStringLiteral("limit order price must be > 0")),
+          QStringLiteral("C++ order guard should not treat Python Infinity as an omitted price"));
+
+    qputenv("BOT_ENABLE_LIVE_TRADING", QByteArray("true"));
+    qputenv("BOT_LIVE_TRADING_ACKNOWLEDGEMENT", QByteArray("I_UNDERSTAND_LIVE_TRADING_RISK"));
+    qputenv("BOT_LIVE_MAX_LEVERAGE", QByteArray("5"));
+    qputenv("BOT_LIVE_MAX_POSITION_PCT", QByteArray("4"));
+    qputenv("BOT_LIVE_MAX_SESSION_ORDERS", QByteArray("1"));
+    NativeOrderSafety::LiveOrderGuardInput environmentConfirmedOrder;
+    environmentConfirmedOrder.mode = QStringLiteral("Live");
+    environmentConfirmedOrder.apiKey = QStringLiteral("real-api-key");
+    environmentConfirmedOrder.apiSecret = QStringLiteral("real-api-secret");
+    environmentConfirmedOrder.accountType = QStringLiteral("FUTURES");
+    environmentConfirmedOrder.leverage = 5;
+    environmentConfirmedOrder.marginMode = QStringLiteral("Isolated");
+    environmentConfirmedOrder.positionPct = 4.0;
+    environmentConfirmedOrder.params = {
+        {QStringLiteral("symbol"), QStringLiteral("ETHUSDT")},
+        {QStringLiteral("side"), QStringLiteral("BUY")},
+        {QStringLiteral("type"), QStringLiteral("MARKET")},
+        {QStringLiteral("quantity"), QStringLiteral("0.10")},
+    };
+    environmentConfirmedOrder.hasFilters = true;
+    environmentConfirmedOrder.filters = {0.001, 0.1, 0.01, 5.0};
+    environmentConfirmedOrder.hasLastPrice = true;
+    environmentConfirmedOrder.lastPrice = 100.0;
+    environmentConfirmedOrder.connectorState = QStringLiteral("ready");
+    environmentConfirmedOrder.connectorHealth = QStringLiteral("ok");
+    const NativeOrderSafety::LiveOrderGuardResult environmentConfirmedResult =
+        NativeOrderSafety::guardLiveOrderSubmit(environmentConfirmedOrder);
+    check(environmentConfirmedResult.allowed,
+          QStringLiteral("C++ order guard should honor Python live-safety environment overrides"));
+    check(environmentConfirmedResult.nextSubmitAttemptCount == 1,
+          QStringLiteral("C++ order guard should apply the Python environment session cap"));
+    qunsetenv("BOT_ENABLE_LIVE_TRADING");
+    qunsetenv("BOT_LIVE_TRADING_ACKNOWLEDGEMENT");
+    qunsetenv("BOT_LIVE_MAX_LEVERAGE");
+    qunsetenv("BOT_LIVE_MAX_POSITION_PCT");
+    qunsetenv("BOT_LIVE_MAX_SESSION_ORDERS");
+
     NativeOrderSafety::MinimumOrderAutoBumpGuardInput liveAutoBump;
     liveAutoBump.mode = QStringLiteral("Live");
     liveAutoBump.requestedQuantity = 0.001;

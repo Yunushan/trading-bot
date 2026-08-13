@@ -75,6 +75,14 @@ from .settings.indicators import (
     build_backtest_indicator_defaults,
     build_runtime_indicator_defaults,
 )
+from .settings.live_safety import (
+    LIVE_TRADING_ACK_ENV,
+    LIVE_TRADING_ACK_ENV_LEGACY,
+    LIVE_TRADING_ENABLED_ENV,
+    LIVE_TRADING_MAX_LEVERAGE_ENV,
+    LIVE_TRADING_MAX_POSITION_PCT_ENV,
+    LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
+)
 from .settings.risk import RiskManagementSettings, STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS
 from .settings.ui import DEFAULT_DESIGN, DEFAULT_SELECTED_EXCHANGE, DEFAULT_THEME
 from .settings.validation import (
@@ -109,6 +117,26 @@ INDICATOR_SOURCE_OPTIONS = (
     "Binance spot",
     "Binance futures",
 )
+
+# Native shells must derive their direct-execution boundary from Python as well
+# as their option catalogs. Anything outside this deliberately small surface is
+# coordinated by the Python Service API/provider connector until native runtime
+# promotion has matching implementation and external evidence.
+NATIVE_RUNTIME_OWNERSHIP = {
+    "direct_exchanges": ("Binance",),
+    "direct_connector_backends": (
+        "binance-sdk-derivatives-trading-usds-futures",
+        "binance-sdk-derivatives-trading-coin-futures",
+        "binance-sdk-spot",
+        "binance-connector",
+    ),
+    "direct_market_families": (
+        "usd-m-futures",
+        "coin-m-futures",
+        "spot",
+    ),
+    "delegated_owner": "Python Service API/provider connector",
+}
 LLM_USE_FOR_OPTIONS = (
     ("Advisory", "advisory"),
     ("Signal confirmation", "signal_confirmation"),
@@ -137,6 +165,14 @@ ORDER_GUARD_BEHAVIOR = {
         "session_order_cap",
         "session_order_count_increment",
     ),
+    "live_safety_environment": {
+        "enabled": LIVE_TRADING_ENABLED_ENV,
+        "acknowledgement": LIVE_TRADING_ACK_ENV,
+        "legacy_acknowledgement": LIVE_TRADING_ACK_ENV_LEGACY,
+        "max_leverage": LIVE_TRADING_MAX_LEVERAGE_ENV,
+        "max_position_pct": LIVE_TRADING_MAX_POSITION_PCT_ENV,
+        "max_session_orders": LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
+    },
 }
 
 # Canonical runtime-series keys for every user-selectable indicator.  Python's
@@ -896,6 +932,12 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             **ORDER_GUARD_BEHAVIOR,
             "live_only_requirements": list(ORDER_GUARD_BEHAVIOR["live_only_requirements"]),
         },
+        "native_runtime_ownership": {
+            "direct_exchanges": list(NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"]),
+            "direct_connector_backends": list(NATIVE_RUNTIME_OWNERSHIP["direct_connector_backends"]),
+            "direct_market_families": list(NATIVE_RUNTIME_OWNERSHIP["direct_market_families"]),
+            "delegated_owner": str(NATIVE_RUNTIME_OWNERSHIP["delegated_owner"]),
+        },
         "domains": [_domain_payload(domain) for domain in NATIVE_PARITY_DOMAINS],
         "service_api": {
             **service_api_contract_payload(),
@@ -1033,6 +1075,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "source": payload["source"],
         "contract_hash": native_python_source_contract_hash(),
         "order_guard_behavior": dict(payload["order_guard_behavior"]),
+        "native_runtime_ownership": dict(payload["native_runtime_ownership"]),
         "domains": list(payload["domains"]),
         "domain_keys": [domain["key"] for domain in payload["domains"]],
         "route_names": list(SERVICE_API_ROUTE_SUFFIXES),

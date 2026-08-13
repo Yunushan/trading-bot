@@ -685,7 +685,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "b2d6c7ce206556c2f4a422cabbee5114a2b0935f722966a863d5b1ecc09cb4d0",
+  "contractHash": "2eb8641b91111b5fa1d095b3a8cc8f905cdb06fc735f002363f3efa5e8ff339a",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -4342,6 +4342,23 @@
       "label": "Entire Account MDD"
     }
   ],
+  "nativeRuntimeOwnership": {
+    "delegated_owner": "Python Service API/provider connector",
+    "direct_connector_backends": [
+      "binance-sdk-derivatives-trading-usds-futures",
+      "binance-sdk-derivatives-trading-coin-futures",
+      "binance-sdk-spot",
+      "binance-connector"
+    ],
+    "direct_exchanges": [
+      "Binance"
+    ],
+    "direct_market_families": [
+      "usd-m-futures",
+      "coin-m-futures",
+      "spot"
+    ]
+  },
   "optimizerMetricOptions": [
     {
       "key": "roi_percent",
@@ -4393,6 +4410,14 @@
       "session_order_cap",
       "session_order_count_increment"
     ],
+    "live_safety_environment": {
+      "acknowledgement": "BOT_LIVE_TRADING_ACKNOWLEDGEMENT",
+      "enabled": "BOT_ENABLE_LIVE_TRADING",
+      "legacy_acknowledgement": "BOT_LIVE_TRADING_ACK",
+      "max_leverage": "BOT_LIVE_MAX_LEVERAGE",
+      "max_position_pct": "BOT_LIVE_MAX_POSITION_PCT",
+      "max_session_orders": "BOT_LIVE_MAX_SESSION_ORDERS"
+    },
     "validate_audit_enabled_all_modes": true,
     "validate_audit_writable_all_modes": true,
     "validate_connector_health_all_modes": true,

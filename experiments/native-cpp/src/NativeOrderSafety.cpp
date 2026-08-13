@@ -13,11 +13,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
 constexpr int kDefaultOrderAuditMaxBytes = 10 * 1024 * 1024;
 constexpr int kDefaultOrderAuditBackupCount = 1;
+constexpr int kDefaultLiveMaxLeverage = 20;
+constexpr double kDefaultLiveMaxPositionPct = 10.0;
+constexpr int kDefaultLiveMaxSessionOrders = 100;
 constexpr int kMaxLiveSessionOrders = 100000;
 constexpr int kBinanceMaxFuturesLeverage = 125;
 QJsonObject gOrderAuditStatus;
@@ -69,9 +73,24 @@ bool boolParam(const QString &value) {
 }
 
 bool doubleParam(const QString &value, double *out) {
+    const QString text = value.trimmed().toLower();
     bool ok = false;
-    const double parsed = value.trimmed().toDouble(&ok);
-    if (!ok || !qIsFinite(parsed)) {
+    double parsed = text.toDouble(&ok);
+    if (!ok) {
+        if (text == QStringLiteral("nan") || text == QStringLiteral("+nan")
+            || text == QStringLiteral("-nan")) {
+            parsed = qQNaN();
+            ok = true;
+        } else if (text == QStringLiteral("inf") || text == QStringLiteral("+inf")
+                   || text == QStringLiteral("infinity") || text == QStringLiteral("+infinity")) {
+            parsed = qInf();
+            ok = true;
+        } else if (text == QStringLiteral("-inf") || text == QStringLiteral("-infinity")) {
+            parsed = -qInf();
+            ok = true;
+        }
+    }
+    if (!ok) {
         return false;
     }
     if (out) {
@@ -172,6 +191,45 @@ bool envBool(QString value, bool defaultValue = false) {
         || value == QStringLiteral("yes")
         || value == QStringLiteral("y")
         || value == QStringLiteral("on");
+}
+
+QString generatedEnvValue(std::string_view name) {
+    return envValue(name.data());
+}
+
+double configuredEnvironmentDouble(double configValue, std::string_view name, double defaultValue) {
+    const QString environment = generatedEnvValue(name);
+    if (!environment.isEmpty()) {
+        bool ok = false;
+        const double parsed = environment.toDouble(&ok);
+        return ok && qIsFinite(parsed) ? parsed : defaultValue;
+    }
+    return qIsFinite(configValue) ? configValue : defaultValue;
+}
+
+int configuredEnvironmentInteger(int configValue, std::string_view name, int defaultValue) {
+    const double parsed = configuredEnvironmentDouble(
+        static_cast<double>(configValue), name, static_cast<double>(defaultValue));
+    if (!qIsFinite(parsed)
+        || parsed < static_cast<double>(std::numeric_limits<int>::min())
+        || parsed > static_cast<double>(std::numeric_limits<int>::max())) {
+        return defaultValue;
+    }
+    return static_cast<int>(parsed);
+}
+
+bool liveTradingConfirmationPresent(const NativeOrderSafety::LiveOrderGuardInput &input) {
+    const bool configConfirmed = input.config.liveTradingEnabled
+        && input.config.liveTradingAcknowledgement.trimmed()
+            == QString::fromLatin1(NativeOrderSafety::LiveTradingAcknowledgement);
+    if (configConfirmed) {
+        return true;
+    }
+    const QString environmentAck = generatedEnvValue(PythonParityContract::kPythonLiveTradingAckEnv).isEmpty()
+        ? generatedEnvValue(PythonParityContract::kPythonLiveTradingAckEnvLegacy)
+        : generatedEnvValue(PythonParityContract::kPythonLiveTradingAckEnv);
+    return envBool(generatedEnvValue(PythonParityContract::kPythonLiveTradingEnabledEnv))
+        && environmentAck == QString::fromLatin1(NativeOrderSafety::LiveTradingAcknowledgement);
 }
 
 NativeOrderSafety::OrderAuditLogConfig sanitizedOrderAuditConfig(
@@ -431,6 +489,37 @@ OrderSubmitIntent orderSubmitIntentFromParams(
     return intent;
 }
 
+QStringList validateOrderNumericParams(
+    const OrderSubmitIntent &intent,
+    const QVector<QPair<QString, QString>> &params) {
+    if (intent.symbol.isEmpty()) {
+        return {};
+    }
+
+    const QString rawQuantity = paramValue(params, {QStringLiteral("quantity")});
+    double parsed = 0.0;
+    if (!rawQuantity.trimmed().isEmpty()
+        && (!doubleParam(rawQuantity, &parsed) || !qIsFinite(parsed))) {
+        return {
+            QStringLiteral("order quantity must be a finite number for %1").arg(intent.symbol),
+        };
+    }
+
+    // Python returns after a missing/empty quantity, so a malformed price is
+    // only reported once a quantity reached the filter-validation stage.
+    if (!intent.hasQuantity) {
+        return {};
+    }
+    const QString rawPrice = paramValue(params, {QStringLiteral("price")});
+    if (!rawPrice.trimmed().isEmpty()
+        && (!doubleParam(rawPrice, &parsed) || !qIsFinite(parsed))) {
+        return {
+            QStringLiteral("order price must be a finite number for %1").arg(intent.symbol),
+        };
+    }
+    return {};
+}
+
 QStringList validateOrderSubmitIntent(const OrderSubmitIntent &intent) {
     QStringList errors;
     if (intent.market != QStringLiteral("futures") && intent.market != QStringLiteral("spot")) {
@@ -496,8 +585,10 @@ QStringList validateOrderFilterConstraints(
             QStringLiteral("order quantity %1 is not aligned to %2 stepSize %3")
                 .arg(normalizedDecimal(intent.quantity), intent.symbol, normalizedDecimal(filters.stepSize)));
     }
-    const double price = intent.hasPrice ? intent.price : (hasLastPrice ? lastPrice : 0.0);
-    const bool hasPrice = price > 0.0;
+    const double price = (intent.hasPrice && qIsFinite(intent.price))
+        ? intent.price
+        : (hasLastPrice && qIsFinite(lastPrice) ? lastPrice : 0.0);
+    const bool hasPrice = qIsFinite(price) && price > 0.0;
     if (filters.tickSize > 0.0 && hasPrice && !alignedToStep(price, filters.tickSize)) {
         errors.append(
             QStringLiteral("order price %1 is not aligned to %2 tickSize %3")
@@ -541,39 +632,52 @@ QStringList validateLiveTradingSafety(const LiveOrderGuardInput &input) {
         return {};
     }
     QStringList errors;
-    if (!input.config.liveTradingEnabled
-        || input.config.liveTradingAcknowledgement.trimmed() != QString::fromLatin1(LiveTradingAcknowledgement)) {
-        errors.append(QStringLiteral("set live_trading_enabled=true and live_trading_acknowledgement=\"%1\"")
-                          .arg(QString::fromLatin1(LiveTradingAcknowledgement)));
+    if (!liveTradingConfirmationPresent(input)) {
+        errors.append(
+            QStringLiteral("set live_trading_enabled=true and live_trading_acknowledgement='%1' or set %2=true and %3='%1'")
+                .arg(QString::fromLatin1(LiveTradingAcknowledgement),
+                     QString::fromLatin1(PythonParityContract::kPythonLiveTradingEnabledEnv.data()),
+                     QString::fromLatin1(PythonParityContract::kPythonLiveTradingAckEnv.data())));
     }
     if (!credentialIsReal(input.apiKey) || !credentialIsReal(input.apiSecret)) {
         errors.append(QStringLiteral("provide non-placeholder Binance API credentials"));
     }
-    if (input.config.liveTradingMaxLeverage < 1 || input.config.liveTradingMaxLeverage > kBinanceMaxFuturesLeverage) {
+    const int maxLeverage = configuredEnvironmentInteger(
+        input.config.liveTradingMaxLeverage,
+        PythonParityContract::kPythonLiveTradingMaxLeverageEnv,
+        kDefaultLiveMaxLeverage);
+    if (maxLeverage < 1 || maxLeverage > kBinanceMaxFuturesLeverage) {
         errors.append(QStringLiteral("live_trading_max_leverage must be between 1 and %1").arg(kBinanceMaxFuturesLeverage));
     }
-    if (input.config.liveTradingMaxPositionPct <= 0.0 || input.config.liveTradingMaxPositionPct > 100.0) {
+    const double maxPositionPct = configuredEnvironmentDouble(
+        input.config.liveTradingMaxPositionPct,
+        PythonParityContract::kPythonLiveTradingMaxPositionPctEnv,
+        kDefaultLiveMaxPositionPct);
+    if (maxPositionPct <= 0.0 || maxPositionPct > 100.0) {
         errors.append(QStringLiteral("live_trading_max_position_pct must be > 0 and <= 100"));
     }
-    if (input.config.liveTradingMaxSessionOrders < 1
-        || input.config.liveTradingMaxSessionOrders > kMaxLiveSessionOrders) {
+    const int maxSessionOrders = configuredEnvironmentInteger(
+        input.config.liveTradingMaxSessionOrders,
+        PythonParityContract::kPythonLiveTradingMaxSessionOrdersEnv,
+        kDefaultLiveMaxSessionOrders);
+    if (maxSessionOrders < 1 || maxSessionOrders > kMaxLiveSessionOrders) {
         errors.append(QStringLiteral("live_trading_max_session_orders must be between 1 and %1").arg(kMaxLiveSessionOrders));
     }
     if (input.positionPct <= 0.0 || input.positionPct > 100.0) {
         errors.append(QStringLiteral("position_pct must be > 0 and <= 100 for live trading"));
-    } else if (input.positionPct > input.config.liveTradingMaxPositionPct) {
+    } else if (input.positionPct > maxPositionPct) {
         errors.append(
             QStringLiteral("position_pct %1% exceeds live cap %2%")
-                .arg(normalizedDecimal(input.positionPct), normalizedDecimal(input.config.liveTradingMaxPositionPct)));
+                .arg(normalizedDecimal(input.positionPct), normalizedDecimal(maxPositionPct)));
     }
     if (input.accountType.trimmed().toUpper().startsWith(QStringLiteral("FUT"))) {
         if (input.leverage < 1) {
             errors.append(QStringLiteral("leverage must be >= 1 for live futures trading"));
-        } else if (input.leverage > input.config.liveTradingMaxLeverage) {
+        } else if (input.leverage > maxLeverage) {
             errors.append(
                 QStringLiteral("leverage %1 exceeds live cap %2")
                     .arg(input.leverage)
-                    .arg(input.config.liveTradingMaxLeverage));
+                    .arg(maxLeverage));
         }
         const QString margin = input.marginMode.trimmed().toUpper();
         if (!margin.isEmpty() && margin != QStringLiteral("ISOLATED") && margin != QStringLiteral("CROSS")) {
@@ -607,18 +711,26 @@ LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
     if (liveMode || PythonParityContract::kPythonOrderGuardValidateIntentAllModes) {
         errors.append(validateOrderSubmitIntent(intent));
     }
-    if ((liveMode || PythonParityContract::kPythonOrderGuardValidateExchangeFiltersAllModes)
-        && !intent.symbol.isEmpty()
-        && intent.hasQuantity
-        && (intent.market == QStringLiteral("futures") || intent.market == QStringLiteral("spot"))) {
-        if (input.hasFilters) {
-            errors.append(validateOrderFilterConstraints(intent, input.filters, input.hasLastPrice, input.lastPrice));
-        } else {
-            errors.append(QStringLiteral("%1 symbol filters unavailable for %2").arg(intent.market, intent.symbol));
+    if (liveMode || PythonParityContract::kPythonOrderGuardValidateExchangeFiltersAllModes) {
+        errors.append(validateOrderNumericParams(intent, input.params));
+        if (!intent.symbol.isEmpty()
+            && intent.hasQuantity
+            && (intent.market == QStringLiteral("futures") || intent.market == QStringLiteral("spot"))) {
+            if (input.hasFilters) {
+                errors.append(validateOrderFilterConstraints(intent, input.filters, input.hasLastPrice, input.lastPrice));
+            } else {
+                errors.append(QStringLiteral("%1 symbol filters unavailable for %2").arg(intent.market, intent.symbol));
+            }
         }
     }
-    if (liveMode && currentCount >= input.config.liveTradingMaxSessionOrders) {
-        errors.append(QStringLiteral("live session order cap %1 reached").arg(input.config.liveTradingMaxSessionOrders));
+    if (liveMode) {
+        const int maxSessionOrders = configuredEnvironmentInteger(
+            input.config.liveTradingMaxSessionOrders,
+            PythonParityContract::kPythonLiveTradingMaxSessionOrdersEnv,
+            kDefaultLiveMaxSessionOrders);
+        if (currentCount >= maxSessionOrders) {
+            errors.append(QStringLiteral("live session order cap %1 reached").arg(maxSessionOrders));
+        }
     }
     const bool allowed = errors.isEmpty();
     return {allowed, errors, allowed && liveMode ? currentCount + 1 : currentCount};

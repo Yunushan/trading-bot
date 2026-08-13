@@ -2053,6 +2053,8 @@ def _cpp_tradingview_interval_map(interval_map: dict[str, object]) -> str:
 def render_rust_module() -> str:
     summary = native_python_source_contract_summary()
     order_guard_behavior = dict(summary["order_guard_behavior"])
+    live_safety_environment = dict(order_guard_behavior["live_safety_environment"])
+    native_runtime_ownership = dict(summary["native_runtime_ownership"])
     parts = [
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
@@ -2080,6 +2082,46 @@ def render_rust_module() -> str:
         f"pub const CPP_FULL_PARITY_READY: bool = {_rust_bool(summary['cpp_full_parity'])};",
         f"pub const RUST_FULL_PARITY_READY: bool = {_rust_bool(summary['rust_full_parity'])};",
         (f"pub const PYTHON_ORDER_GUARD_BEHAVIOR_JSON: &str = {_rust_string(_contract_json(order_guard_behavior))};"),
+        (
+            "pub const PYTHON_LIVE_TRADING_ENABLED_ENV: &str = "
+            f"{_rust_string(live_safety_environment['enabled'])};"
+        ),
+        (
+            "pub const PYTHON_LIVE_TRADING_ACK_ENV: &str = "
+            f"{_rust_string(live_safety_environment['acknowledgement'])};"
+        ),
+        (
+            "pub const PYTHON_LIVE_TRADING_ACK_ENV_LEGACY: &str = "
+            f"{_rust_string(live_safety_environment['legacy_acknowledgement'])};"
+        ),
+        (
+            "pub const PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV: &str = "
+            f"{_rust_string(live_safety_environment['max_leverage'])};"
+        ),
+        (
+            "pub const PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV: &str = "
+            f"{_rust_string(live_safety_environment['max_position_pct'])};"
+        ),
+        (
+            "pub const PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV: &str = "
+            f"{_rust_string(live_safety_environment['max_session_orders'])};"
+        ),
+        _rust_array(
+            "PYTHON_NATIVE_RUNTIME_EXCHANGES",
+            list(native_runtime_ownership["direct_exchanges"]),
+        ),
+        _rust_array(
+            "PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS",
+            list(native_runtime_ownership["direct_connector_backends"]),
+        ),
+        _rust_array(
+            "PYTHON_NATIVE_RUNTIME_MARKET_FAMILIES",
+            list(native_runtime_ownership["direct_market_families"]),
+        ),
+        (
+            "pub const PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER: &str = "
+            f"{_rust_string(native_runtime_ownership['delegated_owner'])};"
+        ),
         (
             "pub const PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES: bool = "
             f"{_rust_bool(order_guard_behavior['validate_intent_all_modes'])};"
@@ -2202,6 +2244,8 @@ def render_rust_module() -> str:
 def render_cpp_header() -> str:
     summary = native_python_source_contract_summary()
     order_guard_behavior = dict(summary["order_guard_behavior"])
+    live_safety_environment = dict(order_guard_behavior["live_safety_environment"])
+    native_runtime_ownership = dict(summary["native_runtime_ownership"])
     parts = [
         "// This file is generated from Languages/Python/app/native_parity.py.",
         "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
@@ -2246,6 +2290,46 @@ def render_cpp_header() -> str:
         (
             "inline constexpr std::string_view kPythonOrderGuardBehaviorJson = "
             f"{_cpp_string(_contract_json(order_guard_behavior))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLiveTradingEnabledEnv = "
+            f"{_cpp_string(live_safety_environment['enabled'])};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLiveTradingAckEnv = "
+            f"{_cpp_string(live_safety_environment['acknowledgement'])};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLiveTradingAckEnvLegacy = "
+            f"{_cpp_string(live_safety_environment['legacy_acknowledgement'])};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLiveTradingMaxLeverageEnv = "
+            f"{_cpp_string(live_safety_environment['max_leverage'])};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLiveTradingMaxPositionPctEnv = "
+            f"{_cpp_string(live_safety_environment['max_position_pct'])};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLiveTradingMaxSessionOrdersEnv = "
+            f"{_cpp_string(live_safety_environment['max_session_orders'])};"
+        ),
+        _cpp_array(
+            "kPythonNativeRuntimeExchanges",
+            list(native_runtime_ownership["direct_exchanges"]),
+        ),
+        _cpp_array(
+            "kPythonNativeRuntimeConnectorBackends",
+            list(native_runtime_ownership["direct_connector_backends"]),
+        ),
+        _cpp_array(
+            "kPythonNativeRuntimeMarketFamilies",
+            list(native_runtime_ownership["direct_market_families"]),
+        ),
+        (
+            "inline constexpr std::string_view kPythonNativeRuntimeDelegatedOwner = "
+            f"{_cpp_string(native_runtime_ownership['delegated_owner'])};"
         ),
         (
             "inline constexpr bool kPythonOrderGuardValidateIntentAllModes = "
@@ -2382,6 +2466,7 @@ def render_tauri_browser_contract() -> str:
         "cppFullParityReady": bool(summary["cpp_full_parity"]),
         "rustFullParityReady": bool(summary["rust_full_parity"]),
         "orderGuardBehavior": dict(summary["order_guard_behavior"]),
+        "nativeRuntimeOwnership": dict(summary["native_runtime_ownership"]),
         "indicatorCatalog": [
             {
                 "key": str(indicator["key"]),
@@ -2474,7 +2559,9 @@ def write_if_changed(path: Path, content: str) -> bool:
     if old == content:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8", newline="\n")
+    # ``newline=""`` preserves generated LF bytes on Windows and remains
+    # accepted by the Python 3.14 pathlib implementation.
+    path.write_text(content, encoding="utf-8", newline="")
     return True
 
 

@@ -120,8 +120,10 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_config_persistence_uses_python_source_options",
     "rust_native_exchange_connectors_use_python_source_connectors",
     "rust_native_exchange_connectors_use_python_reference_fixture",
+    "rust_native_runtime_ownership_uses_python_source_policy",
     "python_order_guard_implements_behavior_contract",
     "rust_order_guard_uses_python_behavior_contract",
+    "rust_order_guard_uses_python_live_safety_environment",
     "cpp_support_consumes_generated_contract",
     "cpp_support_exposes_generated_contract",
     "cpp_config_persistence_uses_python_source_options",
@@ -142,12 +144,14 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_account_uses_python_service_api",
     "cpp_native_exchange_connectors_use_python_source_connectors",
     "cpp_native_exchange_connectors_use_python_reference_fixture",
+    "cpp_native_runtime_ownership_uses_python_source_policy",
     "cpp_native_strategy_runtime_uses_python_source_options",
     "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
     "cpp_native_indicator_runtime_uses_python_reference_fixture",
     "cpp_native_backtest_runtime_uses_python_reference_fixture",
     "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline",
     "cpp_order_guard_uses_python_behavior_contract",
+    "cpp_order_guard_uses_python_live_safety_environment",
     "cpp_dashboard_runtime_enforces_live_order_safety",
     "tauri_browser_consumes_generated_contract",
     "tauri_browser_service_api_uses_python_source_routes",
@@ -608,6 +612,17 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "rust_native_runtime_ownership_uses_python_source_policy",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "main.rs",
+            (
+                "PYTHON_NATIVE_RUNTIME_EXCHANGES",
+                "PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS",
+                "PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER",
+                "native_runtime_ownership_error",
+                "native_runtime_market_poll_spec_for_config",
+            ),
+        ),
+        ConsumerRequirement(
             "python_order_guard_implements_behavior_contract",
             REPO_ROOT
             / "Languages"
@@ -633,6 +648,20 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES",
                 "PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES",
                 "PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_order_guard_uses_python_live_safety_environment",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "order_guard.rs",
+            (
+                "PYTHON_LIVE_TRADING_ENABLED_ENV",
+                "PYTHON_LIVE_TRADING_ACK_ENV",
+                "PYTHON_LIVE_TRADING_ACK_ENV_LEGACY",
+                "PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV",
+                "PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV",
+                "PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV",
+                "process_live_trading_environment",
+                "validate_live_trading_safety_with_environment",
             ),
         ),
         ConsumerRequirement(
@@ -989,6 +1018,16 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "cpp_native_runtime_ownership_uses_python_source_policy",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindowSupport.cpp",
+            (
+                "PythonParityContract::kPythonNativeRuntimeExchanges",
+                "PythonParityContract::kPythonNativeRuntimeConnectorBackends",
+                "exchangeUsesBinanceApi",
+                "nativeRuntimeOwnsBinanceFuturesConnector",
+            ),
+        ),
+        ConsumerRequirement(
             "cpp_native_strategy_runtime_uses_python_source_options",
             REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeStrategyRuntime.cpp",
             (
@@ -1072,6 +1111,20 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonOrderGuardValidateExchangeFiltersAllModes",
                 "PythonParityContract::kPythonOrderGuardValidateConnectorHealthAllModes",
                 "PythonParityContract::kPythonOrderGuardValidateAuditWritableAllModes",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_order_guard_uses_python_live_safety_environment",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeOrderSafety.cpp",
+            (
+                "PythonParityContract::kPythonLiveTradingEnabledEnv",
+                "PythonParityContract::kPythonLiveTradingAckEnv",
+                "PythonParityContract::kPythonLiveTradingAckEnvLegacy",
+                "PythonParityContract::kPythonLiveTradingMaxLeverageEnv",
+                "PythonParityContract::kPythonLiveTradingMaxPositionPctEnv",
+                "PythonParityContract::kPythonLiveTradingMaxSessionOrdersEnv",
+                "generatedEnvValue",
+                "liveTradingConfirmationPresent",
             ),
         ),
         ConsumerRequirement(

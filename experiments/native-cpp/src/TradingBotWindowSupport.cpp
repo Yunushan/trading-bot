@@ -327,7 +327,13 @@ QString selectedDashboardExchange(const QComboBox *combo) {
 }
 
 bool exchangeUsesBinanceApi(const QString &exchangeKey) {
-    return normalizeExchangeKey(exchangeKey).compare(QStringLiteral("Binance"), Qt::CaseInsensitive) == 0;
+    const QString normalized = normalizeExchangeKey(exchangeKey);
+    for (const std::string_view directExchange : PythonParityContract::kPythonNativeRuntimeExchanges) {
+        if (normalized.compare(parityString(directExchange), Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures) {
@@ -1250,19 +1256,20 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
 bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText) {
     const QString selected = connectorText.trimmed();
     const QString key = normalizeConnectorBackend(selected);
-    const bool nativeBinanceKey = key == kConnectorUsdsFutures
-        || key == kConnectorCoinFutures
-        || key == kConnectorSpot
-        || key == kConnectorBinanceConnector
-        || key == kConnectorCcxt
-        || key == kConnectorPyBinance;
+    bool nativeBinanceKey = false;
+    for (const std::string_view directBackend : PythonParityContract::kPythonNativeRuntimeConnectorBackends) {
+        if (key.compare(parityString(directBackend), Qt::CaseInsensitive) == 0) {
+            nativeBinanceKey = true;
+            break;
+        }
+    }
     if (!nativeBinanceKey) {
         return false;
     }
 
-    // resolveConnectorConfig() maps the Python Binance-compatible aliases to the
-    // native REST route. Accept them here too so generated options are reachable;
-    // the selected-exchange guard still rejects non-Binance CCXT.
+    // Only backends listed by Python's generated native-ownership policy may
+    // enter the direct C++ loop. Provider aliases remain service-owned even
+    // when they target the Binance exchange.
     for (const ConnectorOption &option : pythonConnectorOptions()) {
         if (option.key != key) {
             continue;
