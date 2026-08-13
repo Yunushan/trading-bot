@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "2eb8641b91111b5fa1d095b3a8cc8f905cdb06fc735f002363f3efa5e8ff339a";
+inline constexpr std::string_view kPythonSourceContractHash = "38c083a537228c8ff331b9d89721a7cc0913b646237fab85024b7e25ee5f57c5";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -987,6 +987,13 @@ inline constexpr std::array<PythonStringPair, 14> kPythonCcxtExchangeIds = {
     PythonStringPair{"cryptocom", "cryptocom"},
     PythonStringPair{"kraken", "kraken"},
     PythonStringPair{"bitfinex", "bitfinex"},
+};
+
+inline constexpr std::array<PythonStringPair, 4> kPythonNativeRuntimeIndicatorSourceMarketFamilies = {
+    PythonStringPair{"binance_spot", "spot"},
+    PythonStringPair{"binance_futures", "usd-m-futures"},
+    PythonStringPair{"spot", "spot"},
+    PythonStringPair{"futures", "usd-m-futures"},
 };
 
 inline constexpr std::array<std::string_view, 38> kPythonBacktestIntervals = {

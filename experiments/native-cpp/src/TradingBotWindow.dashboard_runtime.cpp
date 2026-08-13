@@ -825,8 +825,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             }
         }
 
-        const bool indicatorUsesBinanceFutures = indicatorSourceKey == QStringLiteral("binance_futures");
-        const bool indicatorUsesBinanceSpot = indicatorSourceKey == QStringLiteral("binance_spot");
+        const QString indicatorMarketFamily = nativeIndicatorMarketFamily(indicatorSourceText);
+        const bool indicatorUsesBinanceFutures = indicatorMarketFamily == QStringLiteral("usd-m-futures");
+        const bool indicatorUsesBinanceSpot = indicatorMarketFamily == QStringLiteral("spot");
         if (!indicatorUsesBinanceFutures && !indicatorUsesBinanceSpot) {
             const QString warningKey = QStringLiteral("indicator-source|unsupported|%1").arg(indicatorSourceKey);
             if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {

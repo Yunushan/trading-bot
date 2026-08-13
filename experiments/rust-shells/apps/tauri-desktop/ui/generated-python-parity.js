@@ -685,7 +685,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "2eb8641b91111b5fa1d095b3a8cc8f905cdb06fc735f002363f3efa5e8ff339a",
+  "contractHash": "38c083a537228c8ff331b9d89721a7cc0913b646237fab85024b7e25ee5f57c5",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -4357,6 +4357,24 @@
       "usd-m-futures",
       "coin-m-futures",
       "spot"
+    ],
+    "indicator_source_market_families": [
+      {
+        "key": "binance_spot",
+        "value": "spot"
+      },
+      {
+        "key": "binance_futures",
+        "value": "usd-m-futures"
+      },
+      {
+        "key": "spot",
+        "value": "spot"
+      },
+      {
+        "key": "futures",
+        "value": "usd-m-futures"
+      }
     ]
   },
   "optimizerMetricOptions": [

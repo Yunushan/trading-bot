@@ -31,7 +31,7 @@ use trading_bot_core::{
     exchange_connectors::DEFAULT_CONNECTOR_BACKEND,
     generated_python_parity::{
         PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS, PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER,
-        PYTHON_NATIVE_RUNTIME_EXCHANGES,
+        PYTHON_NATIVE_RUNTIME_EXCHANGES, PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
     },
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
@@ -2105,6 +2105,35 @@ fn native_runtime_ownership_error(config: &Value) -> Option<String> {
     ))
 }
 
+fn normalized_native_indicator_source_key(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(' ', "_")
+        .replace('-', "_")
+}
+
+fn native_runtime_configured_indicator_source(config: &Value) -> Option<String> {
+    let value = config_root(config).get("indicator_source")?;
+    value
+        .as_array()
+        .and_then(|items| items.first())
+        .unwrap_or(value)
+        .as_str()
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn native_runtime_indicator_source_market_family(config: &Value) -> Option<&'static str> {
+    let source = native_runtime_configured_indicator_source(config)?;
+    let normalized = normalized_native_indicator_source_key(&source);
+    PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES
+        .iter()
+        .find(|(candidate, _)| normalized_native_indicator_source_key(candidate) == normalized)
+        .map(|(_, market_family)| *market_family)
+}
+
 fn native_runtime_market_poll_spec(config: &Value) -> Result<NativeRuntimeMarketPollSpec, String> {
     let effective_config = native_runtime_primary_pair_config(config)?;
     native_runtime_market_poll_spec_for_config(&effective_config)
@@ -2118,19 +2147,35 @@ fn native_runtime_market_poll_spec_for_config(
     }
     let default_connector =
         python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
-    let connector_backend =
-        first_config_string(config, "connector_backend", &default_connector).to_ascii_lowercase();
+    let connector_backend = first_config_string(config, "connector_backend", &default_connector)
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    let default_indicator_source = python_ui_default_text("indicator_source", "Binance futures");
+    let configured_indicator_source = native_runtime_configured_indicator_source(config);
+    let indicator_source = configured_indicator_source
+        .as_deref()
+        .unwrap_or(&default_indicator_source);
+    let indicator_market_family = if configured_indicator_source.is_some() {
+        Some(native_runtime_indicator_source_market_family(config).ok_or_else(|| {
+            format!(
+                "Native Rust runtime does not own indicator source '{indicator_source}'; it remains {PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER}-owned."
+            )
+        })?)
+    } else {
+        None
+    };
     let market = match connector_backend.as_str() {
         "binance-sdk-derivatives-trading-usds-futures" => BinanceMarket::Futures,
         "binance-sdk-derivatives-trading-coin-futures" => BinanceMarket::CoinFutures,
         "binance-sdk-spot" => BinanceMarket::Spot,
-        "binance-connector" | "ccxt" | "python-binance" => {
+        "binance-connector" => {
             let default_account_type = python_execution_default_text("account_type", "Futures");
             let account_type = first_config_string(config, "account_type", &default_account_type);
-            if account_type.to_ascii_lowercase().contains("spot") {
-                BinanceMarket::Spot
-            } else {
-                BinanceMarket::Futures
+            match indicator_market_family {
+                Some("spot") => BinanceMarket::Spot,
+                Some("usd-m-futures") => BinanceMarket::Futures,
+                _ if account_type.to_ascii_lowercase().contains("spot") => BinanceMarket::Spot,
+                _ => BinanceMarket::Futures,
             }
         }
         _ => {
@@ -5223,6 +5268,29 @@ mod tests {
         .expect("Binance Connector alias poll spec");
         assert_eq!(connector_alias.market, BinanceMarket::Spot);
         assert_eq!(connector_alias.symbol, "SOLUSDT");
+
+        let connector_source_spot = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "binance-connector",
+            "account_type": "Futures",
+            "indicator_source": "Binance spot"
+        }))
+        .expect("Python indicator source market family");
+        assert_eq!(connector_source_spot.market, BinanceMarket::Spot);
+
+        let connector_source_futures = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "binance-connector",
+            "account_type": "Spot",
+            "indicator_source": "Binance futures"
+        }))
+        .expect("Python indicator source futures market family");
+        assert_eq!(connector_source_futures.market, BinanceMarket::Futures);
+
+        let unsupported_source = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "binance-connector",
+            "indicator_source": "TradingView"
+        }))
+        .expect_err("unsupported indicator source should delegate");
+        assert!(unsupported_source.contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER));
 
         let python_binance_alias = native_runtime_market_poll_spec(&json!({
             "connector_backend": "python-binance",

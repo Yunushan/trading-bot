@@ -221,15 +221,24 @@ def _rust_string_pairs(name: str, values: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
-def _cpp_string_pairs(name: str, values: list[dict[str, object]]) -> str:
-    lines = [
-        "struct PythonStringPair {",
-        "    std::string_view key;",
-        "    std::string_view value;",
-        "};",
-        "",
-        f"inline constexpr std::array<PythonStringPair, {len(values)}> {name} = {{",
-    ]
+def _cpp_string_pairs(
+    name: str,
+    values: list[dict[str, object]],
+    *,
+    include_struct: bool = True,
+) -> str:
+    lines = []
+    if include_struct:
+        lines.extend(
+            [
+                "struct PythonStringPair {",
+                "    std::string_view key;",
+                "    std::string_view value;",
+                "};",
+                "",
+            ]
+        )
+    lines.append(f"inline constexpr std::array<PythonStringPair, {len(values)}> {name} = {{")
     lines.extend(
         "    PythonStringPair{"
         f"{_cpp_string(value['key'])}, {_cpp_string(value['value'])}"
@@ -2055,6 +2064,7 @@ def render_rust_module() -> str:
     order_guard_behavior = dict(summary["order_guard_behavior"])
     live_safety_environment = dict(order_guard_behavior["live_safety_environment"])
     native_runtime_ownership = dict(summary["native_runtime_ownership"])
+    indicator_source_market_families = list(native_runtime_ownership["indicator_source_market_families"])
     parts = [
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
@@ -2117,6 +2127,10 @@ def render_rust_module() -> str:
         _rust_array(
             "PYTHON_NATIVE_RUNTIME_MARKET_FAMILIES",
             list(native_runtime_ownership["direct_market_families"]),
+        ),
+        _rust_string_pairs(
+            "PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES",
+            indicator_source_market_families,
         ),
         (
             "pub const PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER: &str = "
@@ -2246,6 +2260,7 @@ def render_cpp_header() -> str:
     order_guard_behavior = dict(summary["order_guard_behavior"])
     live_safety_environment = dict(order_guard_behavior["live_safety_environment"])
     native_runtime_ownership = dict(summary["native_runtime_ownership"])
+    indicator_source_market_families = list(native_runtime_ownership["indicator_source_market_families"])
     parts = [
         "// This file is generated from Languages/Python/app/native_parity.py.",
         "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
@@ -2411,6 +2426,12 @@ def render_cpp_header() -> str:
         _cpp_array("kPythonOrderExecutionExchanges", list(summary["order_execution_exchanges"])),
         "",
         _cpp_string_pairs("kPythonCcxtExchangeIds", list(summary["ccxt_exchange_ids"])),
+        "",
+        _cpp_string_pairs(
+            "kPythonNativeRuntimeIndicatorSourceMarketFamilies",
+            indicator_source_market_families,
+            include_struct=False,
+        ),
         "",
         _cpp_array("kPythonBacktestIntervals", list(summary["intervals"])),
         "",

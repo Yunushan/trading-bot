@@ -135,6 +135,12 @@ NATIVE_RUNTIME_OWNERSHIP = {
         "coin-m-futures",
         "spot",
     ),
+    "indicator_source_market_families": (
+        ("binance_spot", "spot"),
+        ("binance_futures", "usd-m-futures"),
+        ("spot", "spot"),
+        ("futures", "usd-m-futures"),
+    ),
     "delegated_owner": "Python Service API/provider connector",
 }
 LLM_USE_FOR_OPTIONS = (
@@ -936,6 +942,10 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "direct_exchanges": list(NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"]),
             "direct_connector_backends": list(NATIVE_RUNTIME_OWNERSHIP["direct_connector_backends"]),
             "direct_market_families": list(NATIVE_RUNTIME_OWNERSHIP["direct_market_families"]),
+            "indicator_source_market_families": [
+                {"key": key, "value": value}
+                for key, value in NATIVE_RUNTIME_OWNERSHIP["indicator_source_market_families"]
+            ],
             "delegated_owner": str(NATIVE_RUNTIME_OWNERSHIP["delegated_owner"]),
         },
         "domains": [_domain_payload(domain) for domain in NATIVE_PARITY_DOMAINS],

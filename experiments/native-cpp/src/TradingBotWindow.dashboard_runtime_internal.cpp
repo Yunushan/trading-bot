@@ -1,6 +1,7 @@
 #include "TradingBotWindow.dashboard_runtime_internal.h"
 
 #include "TradingBotWindow.dashboard_runtime_shared.h"
+#include "generated/PythonParityContract.h"
 
 #include <QMap>
 #include <QRegularExpression>
@@ -327,6 +328,19 @@ QString normalizedIndicatorSourceKey(const QString &sourceText) {
         return QStringLiteral("kraken");
     }
     return sourceNorm;
+}
+
+QString nativeIndicatorMarketFamily(const QString &sourceText) {
+    const QString sourceKey = normalizedIndicatorSourceKey(sourceText);
+    for (const PythonParityContract::PythonStringPair &mapping
+         : PythonParityContract::kPythonNativeRuntimeIndicatorSourceMarketFamilies) {
+        if (sourceKey.compare(QString::fromUtf8(mapping.key.data(), static_cast<int>(mapping.key.size())),
+                              Qt::CaseInsensitive)
+            == 0) {
+            return QString::fromUtf8(mapping.value.data(), static_cast<int>(mapping.value.size()));
+        }
+    }
+    return QString();
 }
 
 QString runtimeKeyFor(const QString &symbol, const QString &interval, const QString &connectorToken) {

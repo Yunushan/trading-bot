@@ -125,6 +125,7 @@ bool appendOpenPositionRow(QTableWidget *table, qint64 &rowSequenceCounter, cons
 void markPositionClosedRow(QTableWidget *table, bool cumulativeView, int row, const QString &closedAtText);
 void applyCloseToPositionRow(QTableWidget *table, bool cumulativeView, int row, const PositionTableCloseRowData &data);
 QString normalizedIndicatorSourceKey(const QString &sourceText);
+QString nativeIndicatorMarketFamily(const QString &sourceText);
 QString runtimeKeyFor(const QString &symbol, const QString &interval, const QString &connectorToken = QString());
 qint64 loopSecondsFromText(QString loopText);
 qint64 intervalTokenToSeconds(QString intervalText);

@@ -918,8 +918,10 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("evaluate_native_runtime_preview", tauri_main)
         self.assertIn("PYTHON_NATIVE_RUNTIME_EXCHANGES", tauri_main)
         self.assertIn("PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS", tauri_main)
+        self.assertIn("PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES", tauri_main)
         self.assertIn("PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER", tauri_main)
         self.assertIn("native_runtime_ownership_error", tauri_main)
+        self.assertIn("native_runtime_indicator_source_market_family", tauri_main)
         self.assertIn("Python-owned native exchange boundary", tauri_main)
         self.assertIn("Python Service API/provider connector", tauri_main)
         self.assertIn("poll_native_runtime_market", tauri_main)
@@ -1761,6 +1763,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         dashboard_ui = _read(cpp_root / "TradingBotWindow.dashboard_ui.cpp")
         dashboard_overrides = _read(cpp_root / "TradingBotWindow.dashboard_overrides.cpp")
         dashboard_runtime = _read(cpp_root / "TradingBotWindow.dashboard_runtime.cpp")
+        dashboard_runtime_internal = _read(cpp_root / "TradingBotWindow.dashboard_runtime_internal.cpp")
         backtest_source = _read(cpp_root / "TradingBotWindow.backtest.cpp")
         backtest_batch_header = _read(cpp_root / "NativeBacktestBatchRuntime.h")
         backtest_batch_source = _read(cpp_root / "NativeBacktestBatchRuntime.cpp")
@@ -1826,6 +1829,13 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("pythonSourceDefaultBacktestConfig", support_header)
         self.assertIn("PythonParityContract::kPythonDefaultExecutionJson", support_source)
         self.assertIn("PythonParityContract::kPythonDefaultBacktestJson", support_source)
+        self.assertIn(
+            "PythonParityContract::kPythonNativeRuntimeIndicatorSourceMarketFamilies",
+            dashboard_runtime_internal,
+        )
+        self.assertIn("nativeIndicatorMarketFamily", dashboard_runtime_internal)
+        self.assertIn('indicatorMarketFamily == QStringLiteral("usd-m-futures")', dashboard_runtime)
+        self.assertIn('indicatorMarketFamily == QStringLiteral("spot")', dashboard_runtime)
         self.assertIn('config.insert(QStringLiteral("backtest"), buildBacktestServiceConfig())', runtime_builder)
         self.assertIn("hydrateBacktestServiceConfig", dashboard_overrides)
         self.assertIn("hydrateBacktestSymbolIntervalPairs", dashboard_overrides)

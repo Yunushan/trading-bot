@@ -145,6 +145,8 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_native_exchange_connectors_use_python_source_connectors",
     "cpp_native_exchange_connectors_use_python_reference_fixture",
     "cpp_native_runtime_ownership_uses_python_source_policy",
+    "cpp_native_indicator_source_uses_python_source_policy",
+    "cpp_native_indicator_runtime_uses_python_source_policy",
     "cpp_native_strategy_runtime_uses_python_source_options",
     "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
     "cpp_native_indicator_runtime_uses_python_reference_fixture",
@@ -617,8 +619,10 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             (
                 "PYTHON_NATIVE_RUNTIME_EXCHANGES",
                 "PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS",
+                "PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES",
                 "PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER",
                 "native_runtime_ownership_error",
+                "native_runtime_indicator_source_market_family",
                 "native_runtime_market_poll_spec_for_config",
             ),
         ),
@@ -1025,6 +1029,29 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonNativeRuntimeConnectorBackends",
                 "exchangeUsesBinanceApi",
                 "nativeRuntimeOwnsBinanceFuturesConnector",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_indicator_source_uses_python_source_policy",
+            REPO_ROOT
+            / "experiments"
+            / "native-cpp"
+            / "src"
+            / "TradingBotWindow.dashboard_runtime_internal.cpp",
+            (
+                "PythonParityContract::kPythonNativeRuntimeIndicatorSourceMarketFamilies",
+                "nativeIndicatorMarketFamily",
+                "normalizedIndicatorSourceKey",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_indicator_runtime_uses_python_source_policy",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_runtime.cpp",
+            (
+                "nativeIndicatorMarketFamily",
+                "indicatorUsesBinanceFutures",
+                "indicatorUsesBinanceSpot",
+                "indicatorMarketFamily",
             ),
         ),
         ConsumerRequirement(
