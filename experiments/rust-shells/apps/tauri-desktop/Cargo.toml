@@ -9,6 +9,7 @@ build = "build.rs"
 tauri-build.workspace = true
 
 [dependencies]
+chrono.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

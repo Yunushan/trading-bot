@@ -14,6 +14,8 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from app.native_parity import (  # noqa: E402
     INDICATOR_RUNTIME_OUTPUT_KEYS,
+    NATIVE_POSITION_RECONCILIATION_REFERENCE_SCHEMA_VERSION,
+    native_position_reconciliation_reference_cases,
     native_python_source_contract_hash,
     native_python_source_contract_summary,
 )
@@ -45,12 +47,24 @@ RUST_EXCHANGE_SUPPORT_REFERENCE_OUTPUT = (
     / "src"
     / "generated_python_exchange_support_reference.rs"
 )
+RUST_PORTFOLIO_REFERENCE_OUTPUT = (
+    REPO_ROOT
+    / "experiments"
+    / "rust-shells"
+    / "crates"
+    / "core"
+    / "src"
+    / "generated_python_portfolio_reference.rs"
+)
 CPP_OUTPUT = REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonParityContract.h"
 CPP_INDICATOR_REFERENCE_OUTPUT = (
     REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonIndicatorReference.h"
 )
 CPP_EXCHANGE_SUPPORT_REFERENCE_OUTPUT = (
     REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonExchangeSupportReference.h"
+)
+CPP_PORTFOLIO_REFERENCE_OUTPUT = (
+    REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated" / "PythonPortfolioReference.h"
 )
 TAURI_BROWSER_OUTPUT = (
     REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "generated-python-parity.js"
@@ -1068,6 +1082,14 @@ def _exchange_support_reference_payload() -> dict[str, object]:
     }
 
 
+def _portfolio_reference_payload() -> dict[str, object]:
+    return {
+        "python_source_contract_hash": native_python_source_contract_hash(),
+        "schema_version": NATIVE_POSITION_RECONCILIATION_REFERENCE_SCHEMA_VERSION,
+        "position_reconciliation_cases": native_position_reconciliation_reference_cases(),
+    }
+
+
 def _indicator_reference_payload() -> dict[str, object]:
     baseline_closes = [100.0, 103.0, 101.0, 106.0, 104.0, 109.0, 105.0, 111.0, 108.0, 114.0, 110.0, 116.0]
     baseline_highs = [101.0, 104.5, 102.5, 107.5, 105.0, 110.5, 106.0, 112.5, 109.5, 115.0, 111.5, 117.0]
@@ -1312,6 +1334,46 @@ def render_cpp_exchange_support_reference_header() -> str:
             f"    {_cpp_string_chunks(payload)};",
             "",
             "} // namespace PythonExchangeSupportReference",
+            "",
+        ]
+    )
+
+
+def render_rust_portfolio_reference_module() -> str:
+    payload = _contract_json(_portfolio_reference_payload())
+    return "\n".join(
+        [
+            "// This file is generated from Python position reconciliation behavior.",
+            "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+            "#[rustfmt::skip]",
+            f"pub const PYTHON_PORTFOLIO_REFERENCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
+            "#[rustfmt::skip]",
+            f"pub const PYTHON_PORTFOLIO_REFERENCE_JSON: &str = {_rust_string(payload)};",
+            "",
+        ]
+    )
+
+
+def render_cpp_portfolio_reference_header() -> str:
+    payload = _contract_json(_portfolio_reference_payload())
+    return "\n".join(
+        [
+            "// This file is generated from Python position reconciliation behavior.",
+            "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+            "#pragma once",
+            "",
+            "#include <string_view>",
+            "",
+            "namespace PythonPortfolioReference {",
+            "",
+            (
+                "inline constexpr std::string_view kPythonSourceContractHash = "
+                f"{_cpp_string(native_python_source_contract_hash())};"
+            ),
+            "inline constexpr std::string_view kReferenceJson =",
+            f"    {_cpp_string_chunks(payload)};",
+            "",
+            "} // namespace PythonPortfolioReference",
             "",
         ]
     )
@@ -2424,12 +2486,14 @@ def main() -> int:
             RUST_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
             render_rust_exchange_support_reference_module(),
         ),
+        write_if_changed(RUST_PORTFOLIO_REFERENCE_OUTPUT, render_rust_portfolio_reference_module()),
         write_if_changed(CPP_OUTPUT, render_cpp_header()),
         write_if_changed(CPP_INDICATOR_REFERENCE_OUTPUT, render_cpp_indicator_reference_header()),
         write_if_changed(
             CPP_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
             render_cpp_exchange_support_reference_header(),
         ),
+        write_if_changed(CPP_PORTFOLIO_REFERENCE_OUTPUT, render_cpp_portfolio_reference_header()),
         write_if_changed(TAURI_BROWSER_OUTPUT, render_tauri_browser_contract()),
     ]
     print(f"Native parity contracts generated. changed={any(changed)}")

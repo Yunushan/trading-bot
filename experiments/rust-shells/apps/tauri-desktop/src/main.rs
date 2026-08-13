@@ -2,10 +2,11 @@
 
 mod native_backtest;
 
+use chrono::{DateTime, Utc};
 use native_backtest::NativeBacktestState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -31,9 +32,8 @@ use trading_bot_core::{
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
     native_runtime::{
-        NativeRuntimeAccountPreflightInput, NativeRuntimeAccountPreflightSnapshot,
-        NativeRuntimeClosePlanningInput, NativeRuntimeCycleInput, NativeRuntimeExposureGuardInput,
-        NativeRuntimeFreshnessInput, NativeRuntimeFuturesSettingsInput,
+        NativeRuntimeAccountPreflightSnapshot, NativeRuntimeClosePlanningInput,
+        NativeRuntimeCycleInput, NativeRuntimeExposureGuardInput, NativeRuntimeFreshnessInput,
         NativeRuntimeGuardedExecutionCycleInput, NativeRuntimeGuardedExecutionCycleSnapshot,
         NativeRuntimeLoop, NativeRuntimeLoopConfig, NativeRuntimeOperationalPreflightInput,
         NativeRuntimeReadOnlyMarketCycleInput, NativeRuntimeRiskPositionInput,
@@ -41,12 +41,26 @@ use trading_bot_core::{
     order_audit::{ConnectorOrderCircuitBreakerConfig, OrderAuditConfig},
     order_guard::{LiveTradingSafetyConfig, OrderSymbolFilters},
     orders::BinanceFuturesSymbolFilters,
-    python_source_contract_hash, python_source_rust_environment_dependencies,
+    portfolio::{
+        MissingPositionPolicy, PortfolioPositionRecord, PortfolioReconciliationState,
+        reconcile_missing_position_state,
+    },
+    python_source_contract_hash, python_source_risk_defaults,
+    python_source_rust_environment_dependencies,
     runtime_order_engine::RuntimeOrderEngine,
     rust_trading_execution_supported, service_api_route_path, service_api_route_supports_method,
     service_api_route_supports_query_field, service_api_route_supports_request_field,
-    strategy_runtime::normalize_strategy_risk_controls,
+    strategy_runtime::{normalize_strategy_controls, normalize_strategy_risk_controls},
+    streams::{
+        BinanceKlineStreamCandle, BinanceStreamEvent, BinanceStreamRead, BinanceWebSocketClient,
+        StreamReconnectPolicy, build_stream_reconnect_decision,
+    },
     supported_frameworks,
+};
+
+#[cfg(test)]
+use trading_bot_core::native_runtime::{
+    NativeRuntimeAccountPreflightInput, NativeRuntimeFuturesSettingsInput,
 };
 
 #[cfg(target_os = "windows")]
@@ -114,12 +128,174 @@ struct ServiceProcessState {
     child: Mutex<Option<Child>>,
 }
 
-#[derive(Default)]
-struct NativeRuntimeManagedState {
+const NATIVE_STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const NATIVE_STREAM_READ_TIMEOUT: Duration = Duration::from_millis(500);
+
+enum NativeRuntimeStreamMessage {
+    Event(BinanceStreamEvent),
+    Closed,
+    Error(String),
+}
+
+struct NativeRuntimeStreamWorker {
+    pending: Arc<Mutex<Option<NativeRuntimeStreamMessage>>>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl NativeRuntimeStreamWorker {
+    fn start(spec: &NativeRuntimeMarketPollSpec) -> Self {
+        let pending = Arc::new(Mutex::new(None));
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_pending = Arc::clone(&pending);
+        let worker_shutdown = Arc::clone(&shutdown);
+        let worker_spec = spec.clone();
+        let join = thread::spawn(move || {
+            native_runtime_stream_worker_loop(worker_spec, worker_pending, worker_shutdown);
+        });
+        Self {
+            pending,
+            shutdown,
+            join: Some(join),
+        }
+    }
+
+    fn take_pending(&self) -> Option<NativeRuntimeStreamMessage> {
+        self.pending.lock().ok()?.take()
+    }
+}
+
+impl Drop for NativeRuntimeStreamWorker {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn publish_native_runtime_stream_message(
+    pending: &Arc<Mutex<Option<NativeRuntimeStreamMessage>>>,
+    message: NativeRuntimeStreamMessage,
+) -> bool {
+    let Ok(mut slot) = pending.lock() else {
+        return false;
+    };
+    *slot = Some(message);
+    true
+}
+
+fn wait_for_native_runtime_stream_reconnect(
+    shutdown: &std::sync::atomic::AtomicBool,
+    delay_ms: u64,
+) {
+    let mut remaining_ms = delay_ms;
+    while remaining_ms > 0 && !shutdown.load(Ordering::SeqCst) {
+        let slice_ms = remaining_ms.min(100);
+        thread::sleep(Duration::from_millis(slice_ms));
+        remaining_ms = remaining_ms.saturating_sub(slice_ms);
+    }
+}
+
+fn native_runtime_stream_worker_loop(
+    spec: NativeRuntimeMarketPollSpec,
+    pending: Arc<Mutex<Option<NativeRuntimeStreamMessage>>>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let client = BinanceWebSocketClient::new();
+    let subscription = match BinanceWebSocketClient::kline_subscription(
+        spec.market,
+        &spec.symbol,
+        &spec.interval,
+        spec.testnet,
+    ) {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            let _ = publish_native_runtime_stream_message(
+                &pending,
+                NativeRuntimeStreamMessage::Error(error.to_string()),
+            );
+            return;
+        }
+    };
+    let policy = StreamReconnectPolicy::default();
+    let mut reconnect_attempts = 0usize;
+
+    while !shutdown.load(Ordering::SeqCst) {
+        match client.connect_subscription_with_timeout(&subscription, NATIVE_STREAM_CONNECT_TIMEOUT)
+        {
+            Ok(mut socket) => {
+                reconnect_attempts = 0;
+                while !shutdown.load(Ordering::SeqCst) {
+                    match BinanceWebSocketClient::read_next_event_with_timeout(
+                        &mut socket,
+                        NATIVE_STREAM_READ_TIMEOUT,
+                    ) {
+                        Ok(BinanceStreamRead::Event(event)) => {
+                            if !publish_native_runtime_stream_message(
+                                &pending,
+                                NativeRuntimeStreamMessage::Event(event),
+                            ) {
+                                return;
+                            }
+                        }
+                        Ok(BinanceStreamRead::Idle) => {}
+                        Ok(BinanceStreamRead::Closed) => {
+                            let _ = publish_native_runtime_stream_message(
+                                &pending,
+                                NativeRuntimeStreamMessage::Closed,
+                            );
+                            break;
+                        }
+                        Err(error) => {
+                            if !publish_native_runtime_stream_message(
+                                &pending,
+                                NativeRuntimeStreamMessage::Error(
+                                    trading_bot_core::order_audit::redact_text(error.to_string()),
+                                ),
+                            ) {
+                                return;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                if !publish_native_runtime_stream_message(
+                    &pending,
+                    NativeRuntimeStreamMessage::Error(trading_bot_core::order_audit::redact_text(
+                        error.to_string(),
+                    )),
+                ) {
+                    return;
+                }
+            }
+        }
+
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        let decision = build_stream_reconnect_decision(true, reconnect_attempts, None, &policy);
+        reconnect_attempts = decision.next_attempt;
+        wait_for_native_runtime_stream_reconnect(&shutdown, decision.delay_ms);
+    }
+}
+
+struct NativeRuntimePairState {
     runtime: Option<NativeRuntimeLoop>,
     order_engine: Option<RuntimeOrderEngine>,
     market_poll_spec: Option<NativeRuntimeMarketPollSpec>,
     account_bootstrap: Option<NativeRuntimeAccountBootstrapState>,
+    stream_worker: Option<NativeRuntimeStreamWorker>,
+    latest_stream_event: Option<BinanceStreamEvent>,
+    stream_error: Option<String>,
+    portfolio: PortfolioReconciliationState,
+}
+
+#[derive(Default)]
+struct NativeRuntimeManagedState {
+    pairs: Vec<NativeRuntimePairState>,
     account_snapshot_max_age_ms: i64,
     started_at_ms: Option<i64>,
     running: bool,
@@ -129,6 +305,16 @@ struct NativeRuntimeManagedState {
 #[derive(Default)]
 struct NativeRuntimeState {
     inner: Mutex<NativeRuntimeManagedState>,
+}
+
+fn native_runtime_pair_index(
+    managed: &NativeRuntimeManagedState,
+    spec: &NativeRuntimeMarketPollSpec,
+) -> Option<usize> {
+    managed
+        .pairs
+        .iter()
+        .position(|pair| pair.market_poll_spec.as_ref() == Some(spec))
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +335,7 @@ struct NativeRuntimeMarketPollSpec {
     market: BinanceMarket,
     symbol: String,
     interval: String,
+    lookback: usize,
     testnet: bool,
 }
 
@@ -167,6 +354,8 @@ struct NativeRuntimeMarketPollResponse {
     trading_execution_supported: bool,
     status_message: String,
     error: String,
+    pair_count: usize,
+    pair_results: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +380,8 @@ struct NativeRuntimeAccountPollResponse {
     total_balance: f64,
     available_balance: f64,
     open_positions_count: usize,
+    closed_position_count: usize,
+    missing_position_waiting_count: usize,
     configured_symbol_position_found: bool,
     configured_symbol_open_position_amt: f64,
     symbol_settings_observed: bool,
@@ -201,6 +392,8 @@ struct NativeRuntimeAccountPollResponse {
     signal_evaluation_allowed: bool,
     status_message: String,
     error: String,
+    pair_count: usize,
+    pair_results: Vec<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -216,6 +409,8 @@ struct NativeRuntimeExecutionResponse {
     promotion_required: bool,
     message: String,
     error: String,
+    pair_count: usize,
+    pair_results: Vec<Value>,
 }
 
 impl NativeRuntimeMarketPollResponse {
@@ -234,7 +429,40 @@ impl NativeRuntimeMarketPollResponse {
             trading_execution_supported: rust_trading_execution_supported(),
             status_message: String::new(),
             error: error.into(),
+            pair_count: 0,
+            pair_results: Vec::new(),
         }
+    }
+
+    fn aggregate(results: Vec<Self>) -> Self {
+        let pair_count = results.len();
+        let pair_results = results
+            .iter()
+            .map(|result| serde_json::to_value(result).unwrap_or_else(|_| json!({})))
+            .collect::<Vec<_>>();
+        let all_ok = !results.is_empty() && results.iter().all(|result| result.ok);
+        let first_error = results
+            .iter()
+            .find(|result| !result.error.is_empty())
+            .map(|result| result.error.clone())
+            .unwrap_or_default();
+        let mut aggregate = results
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Self::error("Native runtime has no effective pair results."));
+        aggregate.ok = all_ok;
+        aggregate.pair_count = pair_count;
+        aggregate.pair_results = pair_results;
+        if !all_ok && aggregate.error.is_empty() {
+            aggregate.error = first_error;
+        }
+        if pair_count > 1 {
+            aggregate.status_message = format!(
+                "{pair_count} configured native runtime pairs evaluated. {}",
+                aggregate.status_message
+            );
+        }
+        aggregate
     }
 }
 
@@ -249,6 +477,8 @@ impl NativeRuntimeAccountPollResponse {
             total_balance: 0.0,
             available_balance: 0.0,
             open_positions_count: 0,
+            closed_position_count: 0,
+            missing_position_waiting_count: 0,
             configured_symbol_position_found: false,
             configured_symbol_open_position_amt: 0.0,
             symbol_settings_observed: false,
@@ -259,7 +489,40 @@ impl NativeRuntimeAccountPollResponse {
             signal_evaluation_allowed: false,
             status_message: String::new(),
             error: error.into(),
+            pair_count: 0,
+            pair_results: Vec::new(),
         }
+    }
+
+    fn aggregate(results: Vec<Self>) -> Self {
+        let pair_count = results.len();
+        let pair_results = results
+            .iter()
+            .map(|result| serde_json::to_value(result).unwrap_or_else(|_| json!({})))
+            .collect::<Vec<_>>();
+        let all_ok = !results.is_empty() && results.iter().all(|result| result.ok);
+        let first_error = results
+            .iter()
+            .find(|result| !result.error.is_empty())
+            .map(|result| result.error.clone())
+            .unwrap_or_default();
+        let mut aggregate = results
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Self::error("Native runtime has no effective pair results."));
+        aggregate.ok = all_ok;
+        aggregate.pair_count = pair_count;
+        aggregate.pair_results = pair_results;
+        if !all_ok && aggregate.error.is_empty() {
+            aggregate.error = first_error;
+        }
+        if pair_count > 1 {
+            aggregate.status_message = format!(
+                "{pair_count} configured native runtime pairs evaluated. {}",
+                aggregate.status_message
+            );
+        }
+        aggregate
     }
 }
 
@@ -277,6 +540,8 @@ impl NativeRuntimeExecutionResponse {
             promotion_required: !rust_trading_execution_supported(),
             message: String::new(),
             error: error.into(),
+            pair_count: 0,
+            pair_results: Vec::new(),
         }
     }
 
@@ -310,7 +575,40 @@ impl NativeRuntimeExecutionResponse {
             promotion_required: !snapshot.trading_execution_supported,
             message: snapshot.status_message,
             error: String::new(),
+            pair_count: 1,
+            pair_results: Vec::new(),
         }
+    }
+
+    fn aggregate(results: Vec<Self>) -> Self {
+        let pair_count = results.len();
+        let pair_results = results
+            .iter()
+            .map(|result| serde_json::to_value(result).unwrap_or_else(|_| json!({})))
+            .collect::<Vec<_>>();
+        let all_ok = !results.is_empty() && results.iter().all(|result| result.ok);
+        let first_error = results
+            .iter()
+            .find(|result| !result.error.is_empty())
+            .map(|result| result.error.clone())
+            .unwrap_or_default();
+        let mut aggregate = results
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Self::error("Native runtime has no effective pair results."));
+        aggregate.ok = all_ok;
+        aggregate.pair_count = pair_count;
+        aggregate.pair_results = pair_results;
+        if !all_ok && aggregate.error.is_empty() {
+            aggregate.error = first_error;
+        }
+        if pair_count > 1 {
+            aggregate.message = format!(
+                "{pair_count} configured native runtime pairs evaluated. {}",
+                aggregate.message
+            );
+        }
+        aggregate
     }
 }
 
@@ -336,10 +634,33 @@ impl NativeRuntimeControlResponse {
 
 impl NativeRuntimeState {
     fn start(&self, config: &Value, now_ms: i64) -> NativeRuntimeControlResponse {
-        let market_poll_spec = match native_runtime_market_poll_spec(config) {
-            Ok(spec) => spec,
+        let pair_configs = match native_runtime_pair_configs(config) {
+            Ok(configs) => configs,
             Err(error) => return NativeRuntimeControlResponse::error(error),
         };
+        let mut pairs = Vec::with_capacity(pair_configs.len());
+        for pair_config in pair_configs {
+            let market_poll_spec = match native_runtime_market_poll_spec_for_config(&pair_config) {
+                Ok(spec) => spec,
+                Err(error) => return NativeRuntimeControlResponse::error(error),
+            };
+            let mut runtime =
+                NativeRuntimeLoop::new(native_runtime_config_for_effective_config(&pair_config));
+            runtime.start();
+            pairs.push(NativeRuntimePairState {
+                runtime: Some(runtime),
+                order_engine: Some(native_runtime_order_engine_for_effective_config(
+                    &pair_config,
+                    now_ms,
+                )),
+                market_poll_spec: Some(market_poll_spec),
+                account_bootstrap: None,
+                stream_worker: None,
+                latest_stream_event: None,
+                stream_error: None,
+                portfolio: PortfolioReconciliationState::default(),
+            });
+        }
         let mut managed = match self.inner.lock() {
             Ok(value) => value,
             Err(_) => {
@@ -356,12 +677,7 @@ impl NativeRuntimeState {
             );
         }
 
-        let mut runtime = NativeRuntimeLoop::new(native_runtime_config(config));
-        runtime.start();
-        managed.runtime = Some(runtime);
-        managed.order_engine = Some(native_runtime_order_engine(config, now_ms));
-        managed.market_poll_spec = Some(market_poll_spec);
-        managed.account_bootstrap = None;
+        managed.pairs = pairs;
         managed.account_snapshot_max_age_ms =
             config_duration_ms(config, "operational_account_snapshot_stale_seconds", 300.0);
         managed.started_at_ms = Some(now_ms);
@@ -406,12 +722,19 @@ impl NativeRuntimeState {
         if !managed.running {
             return NativeRuntimeControlResponse::error("Native Rust runtime is not running.");
         }
-        let Some(runtime) = managed.runtime.as_mut() else {
+        if managed.pairs.is_empty() {
             return NativeRuntimeControlResponse::error(
                 "Native Rust runtime state is unavailable.",
             );
-        };
-        runtime.set_global_pause(paused);
+        }
+        for pair in &mut managed.pairs {
+            let Some(runtime) = pair.runtime.as_mut() else {
+                return NativeRuntimeControlResponse::error(
+                    "Native Rust runtime state is unavailable.",
+                );
+            };
+            runtime.set_global_pause(paused);
+        }
         managed.paused = paused;
         native_runtime_snapshot(
             &mut managed,
@@ -447,7 +770,7 @@ impl NativeRuntimeState {
                 "Native Rust runtime is already idle.",
             );
         }
-        if managed.runtime.is_none() {
+        if managed.pairs.is_empty() {
             return NativeRuntimeControlResponse::error(
                 "Native Rust runtime state is unavailable.",
             );
@@ -483,25 +806,25 @@ impl NativeRuntimeState {
                 }
             }
         };
-        let Some(runtime) = managed.runtime.as_mut() else {
-            return NativeRuntimeControlResponse::error(
-                "Native Rust runtime state is unavailable.",
+        for pair in &mut managed.pairs {
+            let Some(runtime) = pair.runtime.as_mut() else {
+                return NativeRuntimeControlResponse::error(
+                    "Native Rust runtime state is unavailable.",
+                );
+            };
+            let stop = runtime.request_stop(
+                close_dispatched,
+                "tauri-native-runtime",
+                true,
+                if !close_status_message.is_empty() {
+                    &close_status_message
+                } else {
+                    "Native runtime stop accepted."
+                },
             );
-        };
-        let stop = runtime.request_stop(
-            close_dispatched,
-            "tauri-native-runtime",
-            true,
-            if !close_status_message.is_empty() {
-                &close_status_message
-            } else {
-                "Native runtime stop accepted."
-            },
-        );
-        runtime.mark_idle_after_stop("tauri-native-runtime", &stop.status_message);
-        managed.market_poll_spec = None;
-        managed.account_bootstrap = None;
-        managed.order_engine = None;
+            runtime.mark_idle_after_stop("tauri-native-runtime", &stop.status_message);
+        }
+        managed.pairs.clear();
         managed.running = false;
         managed.paused = false;
         managed.started_at_ms = None;
@@ -517,12 +840,26 @@ impl NativeRuntimeState {
     }
 
     fn poll_market(&self, config: &Value, now_ms: i64) -> NativeRuntimeMarketPollResponse {
-        let spec = match native_runtime_market_poll_spec(config) {
+        let pair_configs = match native_runtime_pair_configs(config) {
+            Ok(configs) => configs,
+            Err(error) => return NativeRuntimeMarketPollResponse::error(error),
+        };
+        NativeRuntimeMarketPollResponse::aggregate(
+            pair_configs
+                .iter()
+                .map(|pair_config| self.poll_market_single(pair_config, now_ms))
+                .collect(),
+        )
+    }
+
+    fn poll_market_single(&self, config: &Value, now_ms: i64) -> NativeRuntimeMarketPollResponse {
+        let effective_config = config.clone();
+        let spec = match native_runtime_market_poll_spec_for_config(&effective_config) {
             Ok(spec) => spec,
             Err(error) => return NativeRuntimeMarketPollResponse::error(error),
         };
         {
-            let managed = match self.inner.lock() {
+            let mut managed = match self.inner.lock() {
                 Ok(value) => value,
                 Err(_) => {
                     return NativeRuntimeMarketPollResponse::error(
@@ -535,16 +872,21 @@ impl NativeRuntimeState {
                     "Native Rust runtime is not running.",
                 );
             }
-            if managed.market_poll_spec.as_ref() != Some(&spec) {
+            let Some(pair_index) = native_runtime_pair_index(&managed, &spec) else {
                 return NativeRuntimeMarketPollResponse::error(
                     "Native runtime market configuration changed; stop and restart the runtime before polling.",
                 );
-            }
+            };
+            ensure_native_runtime_stream_worker(
+                &mut managed.pairs[pair_index],
+                &effective_config,
+                &spec,
+            );
         }
         let mut input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
             now_ms,
             Vec::new(),
-            config,
+            &effective_config,
             false,
         ) {
             Ok(input) => input,
@@ -554,7 +896,7 @@ impl NativeRuntimeState {
             Ok(client) => client,
             Err(error) => return NativeRuntimeMarketPollResponse::error(error.to_string()),
         };
-        let candles = match client.fetch_klines(&spec.symbol, &spec.interval, 500) {
+        let mut candles = match client.fetch_klines(&spec.symbol, &spec.interval, spec.lookback) {
             Ok(candles) => candles,
             Err(error) => return NativeRuntimeMarketPollResponse::error(error.to_string()),
         };
@@ -571,14 +913,28 @@ impl NativeRuntimeState {
         if !managed.running {
             return NativeRuntimeMarketPollResponse::error("Native Rust runtime is not running.");
         }
-        if managed.market_poll_spec.as_ref() != Some(&spec) {
+        let Some(pair_index) = native_runtime_pair_index(&managed, &spec) else {
             return NativeRuntimeMarketPollResponse::error(
                 "Native runtime market configuration changed; stop and restart the runtime before polling.",
             );
-        }
-        let account_bootstrap = managed.account_bootstrap.clone();
-        let account_snapshot_max_age_ms =
-            config_duration_ms(config, "operational_account_snapshot_stale_seconds", 300.0);
+        };
+        let stream_kline = {
+            let pair = &mut managed.pairs[pair_index];
+            let stream_kline = consume_native_runtime_stream(pair, &spec, now_ms);
+            if let Some(stream_candle) = stream_kline.as_ref() {
+                merge_native_runtime_stream_candle(&mut candles, stream_candle, spec.lookback);
+                input.candles = candles.clone();
+                input.last_candle_is_closed = stream_candle.is_closed;
+            }
+            stream_kline
+        };
+        let stream_error = managed.pairs[pair_index].stream_error.clone();
+        let account_bootstrap = managed.pairs[pair_index].account_bootstrap.clone();
+        let account_snapshot_max_age_ms = config_duration_ms(
+            &effective_config,
+            "operational_account_snapshot_stale_seconds",
+            300.0,
+        );
         let account_ready = account_bootstrap
             .as_ref()
             .filter(|snapshot| {
@@ -589,7 +945,7 @@ impl NativeRuntimeState {
                 )
             })
             .filter(|snapshot| snapshot.signal_evaluation_allowed);
-        let Some(runtime) = managed.runtime.as_mut() else {
+        let Some(runtime) = managed.pairs[pair_index].runtime.as_mut() else {
             return NativeRuntimeMarketPollResponse::error(
                 "Native Rust runtime state is unavailable.",
             );
@@ -613,6 +969,8 @@ impl NativeRuntimeState {
                 error: ingestion
                     .poll_error
                     .unwrap_or_else(|| "REST market poll failed.".to_owned()),
+                pair_count: 1,
+                pair_results: Vec::new(),
             };
         }
         let Some(account_bootstrap) = account_ready else {
@@ -635,9 +993,15 @@ impl NativeRuntimeState {
                 signal: None,
                 trading_execution_supported: rust_trading_execution_supported(),
                 status_message: format!(
-                    "Read-only native market data refreshed; signal evaluation is withheld until a fresh account bootstrap passes: {account_status}"
+                    "Read-only native market data refreshed; signal evaluation is withheld until a fresh account bootstrap passes: {account_status}{}",
+                    stream_error
+                        .as_deref()
+                        .map(|error| format!(" {error}"))
+                        .unwrap_or_default()
                 ),
                 error: String::new(),
+                pair_count: 1,
+                pair_results: Vec::new(),
             };
         };
         match runtime.run_read_only_market_cycle(input) {
@@ -648,7 +1012,11 @@ impl NativeRuntimeState {
                 interval: spec.interval,
                 testnet: spec.testnet,
                 candle_count: candles.len(),
-                poll_status: ingestion.poll_status,
+                poll_status: if stream_kline.is_some() {
+                    "websocket_kline".to_owned()
+                } else {
+                    ingestion.poll_status
+                },
                 signal_evaluation_allowed: snapshot.cycle.signal_evaluation_allowed
                     && account_bootstrap.signal_evaluation_allowed,
                 strategy_evaluated: snapshot.strategy_evaluated,
@@ -656,8 +1024,14 @@ impl NativeRuntimeState {
                     .strategy_decision
                     .and_then(|decision| decision.signal),
                 trading_execution_supported: snapshot.trading_execution_supported,
-                status_message: snapshot.status_message,
+                status_message: if let Some(stream_error) = stream_error {
+                    format!("{} {stream_error}", snapshot.status_message)
+                } else {
+                    snapshot.status_message
+                },
                 error: String::new(),
+                pair_count: 1,
+                pair_results: Vec::new(),
             },
             Err(error) => NativeRuntimeMarketPollResponse::error(error.to_string()),
         }
@@ -670,7 +1044,34 @@ impl NativeRuntimeState {
         api_secret: String,
         now_ms: i64,
     ) -> NativeRuntimeAccountPollResponse {
-        let spec = match native_runtime_market_poll_spec(config) {
+        let pair_configs = match native_runtime_pair_configs(config) {
+            Ok(configs) => configs,
+            Err(error) => return NativeRuntimeAccountPollResponse::error(error),
+        };
+        NativeRuntimeAccountPollResponse::aggregate(
+            pair_configs
+                .iter()
+                .map(|pair_config| {
+                    self.poll_account_single(
+                        pair_config,
+                        api_key.clone(),
+                        api_secret.clone(),
+                        now_ms,
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn poll_account_single(
+        &self,
+        config: &Value,
+        api_key: String,
+        api_secret: String,
+        now_ms: i64,
+    ) -> NativeRuntimeAccountPollResponse {
+        let effective_config = config.clone();
+        let spec = match native_runtime_market_poll_spec_for_config(&effective_config) {
             Ok(spec) => spec,
             Err(error) => return NativeRuntimeAccountPollResponse::error(error),
         };
@@ -688,7 +1089,7 @@ impl NativeRuntimeState {
                     "Native Rust runtime is not running.",
                 );
             }
-            if managed.market_poll_spec.as_ref() != Some(&spec) {
+            if native_runtime_pair_index(&managed, &spec).is_none() {
                 return NativeRuntimeAccountPollResponse::error(
                     "Native runtime market configuration changed; stop and restart the runtime before polling.",
                 );
@@ -779,31 +1180,62 @@ impl NativeRuntimeState {
         if !managed.running {
             return NativeRuntimeAccountPollResponse::error("Native Rust runtime is not running.");
         }
-        if managed.market_poll_spec.as_ref() != Some(&spec) {
+        let Some(pair_index) = native_runtime_pair_index(&managed, &spec) else {
             return NativeRuntimeAccountPollResponse::error(
                 "Native runtime market configuration changed; stop and restart the runtime before polling.",
             );
-        }
-        let Some(runtime) = managed.runtime.as_ref() else {
-            return NativeRuntimeAccountPollResponse::error(
-                "Native Rust runtime state is unavailable.",
-            );
         };
-        let snapshot = runtime.bootstrap_read_only_account_with_symbol_settings(
-            &balance,
-            &positions,
-            Some(&position_mode),
-            Some(&multi_assets_mode),
-            symbol_settings.as_ref(),
-        );
+        let snapshot = {
+            let Some(runtime) = managed.pairs[pair_index].runtime.as_ref() else {
+                return NativeRuntimeAccountPollResponse::error(
+                    "Native Rust runtime state is unavailable.",
+                );
+            };
+            runtime.bootstrap_read_only_account_with_symbol_settings(
+                &balance,
+                &positions,
+                Some(&position_mode),
+                Some(&multi_assets_mode),
+                symbol_settings.as_ref(),
+            )
+        };
+        let reconciliation = {
+            let portfolio = &mut managed.pairs[pair_index].portfolio;
+            reconcile_missing_position_state(
+                portfolio,
+                native_runtime_position_records(&positions),
+                &native_runtime_missing_position_policy(&effective_config),
+                now_ms.max(0) as f64 / 1_000.0,
+                native_runtime_now_iso(now_ms),
+                500,
+            )
+        };
         let total_balance = balance.total_balance;
         let available_balance = balance.available_balance;
         let position_mode_label = position_mode.position_mode.clone();
         let multi_assets_enabled = multi_assets_mode.multi_assets_margin;
-        managed.account_bootstrap = Some(NativeRuntimeAccountBootstrapState {
+        let closed_position_count = managed.pairs[pair_index]
+            .portfolio
+            .closed_position_records
+            .len();
+        let status_message = if reconciliation.closed_keys.is_empty()
+            && reconciliation.dropped_keys.is_empty()
+            && reconciliation.waiting_keys.is_empty()
+        {
+            snapshot.status_message.clone()
+        } else {
+            format!(
+                "{} Position reconciliation: {} closed, {} dropped, {} waiting.",
+                snapshot.status_message,
+                reconciliation.closed_keys.len(),
+                reconciliation.dropped_keys.len(),
+                reconciliation.waiting_keys.len(),
+            )
+        };
+        managed.pairs[pair_index].account_bootstrap = Some(NativeRuntimeAccountBootstrapState {
             refreshed_at_ms: now_ms.max(0),
             signal_evaluation_allowed: snapshot.signal_evaluation_allowed,
-            status_message: snapshot.status_message.clone(),
+            status_message: status_message.clone(),
             balance,
             positions,
             symbol_settings: symbol_settings.clone(),
@@ -819,6 +1251,8 @@ impl NativeRuntimeState {
             total_balance,
             available_balance,
             open_positions_count: snapshot.open_positions_count,
+            closed_position_count,
+            missing_position_waiting_count: reconciliation.waiting_keys.len(),
             configured_symbol_position_found: snapshot.configured_symbol_position_found,
             configured_symbol_open_position_amt: snapshot.configured_symbol_open_position_amt,
             symbol_settings_observed: symbol_settings.is_some(),
@@ -831,8 +1265,10 @@ impl NativeRuntimeState {
             position_mode: position_mode_label,
             multi_assets_mode: multi_assets_enabled,
             signal_evaluation_allowed: snapshot.signal_evaluation_allowed,
-            status_message: snapshot.status_message,
+            status_message,
             error: String::new(),
+            pair_count: 1,
+            pair_results: Vec::new(),
         }
     }
 
@@ -843,12 +1279,39 @@ impl NativeRuntimeState {
         api_secret: String,
         now_ms: i64,
     ) -> NativeRuntimeExecutionResponse {
-        let spec = match native_runtime_market_poll_spec(config) {
+        let pair_configs = match native_runtime_pair_configs(config) {
+            Ok(configs) => configs,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error),
+        };
+        NativeRuntimeExecutionResponse::aggregate(
+            pair_configs
+                .iter()
+                .map(|pair_config| {
+                    self.execute_guarded_cycle_single(
+                        pair_config,
+                        api_key.clone(),
+                        api_secret.clone(),
+                        now_ms,
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn execute_guarded_cycle_single(
+        &self,
+        config: &Value,
+        api_key: String,
+        api_secret: String,
+        now_ms: i64,
+    ) -> NativeRuntimeExecutionResponse {
+        let effective_config = config.clone();
+        let spec = match native_runtime_market_poll_spec_for_config(&effective_config) {
             Ok(spec) => spec,
             Err(error) => return NativeRuntimeExecutionResponse::error(error),
         };
         {
-            let managed = match self.inner.lock() {
+            let mut managed = match self.inner.lock() {
                 Ok(value) => value,
                 Err(_) => {
                     return NativeRuntimeExecutionResponse::error(
@@ -861,11 +1324,16 @@ impl NativeRuntimeState {
                     "Native Rust runtime is not running.",
                 );
             }
-            if managed.market_poll_spec.as_ref() != Some(&spec) {
+            let Some(pair_index) = native_runtime_pair_index(&managed, &spec) else {
                 return NativeRuntimeExecutionResponse::error(
                     "Native runtime market configuration changed; stop and restart the runtime before executing.",
                 );
-            }
+            };
+            ensure_native_runtime_stream_worker(
+                &mut managed.pairs[pair_index],
+                &effective_config,
+                &spec,
+            );
         }
         if api_key.trim().is_empty() || api_secret.trim().is_empty() {
             return NativeRuntimeExecutionResponse::error(
@@ -882,10 +1350,11 @@ impl NativeRuntimeState {
             Ok(client) => client,
             Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
         };
-        let candles = match market_client.fetch_klines(&spec.symbol, &spec.interval, 500) {
-            Ok(candles) => candles,
-            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
-        };
+        let mut candles =
+            match market_client.fetch_klines(&spec.symbol, &spec.interval, spec.lookback) {
+                Ok(candles) => candles,
+                Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+            };
         let ticker = match market_client.fetch_ticker_price(&spec.symbol) {
             Ok(ticker) if ticker.price.is_finite() && ticker.price > 0.0 => ticker,
             Ok(_) => {
@@ -903,16 +1372,6 @@ impl NativeRuntimeState {
             Ok(filters) => filters,
             Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
         };
-        let market_input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
-            now_ms,
-            candles.clone(),
-            config,
-            false,
-        ) {
-            Ok(input) => input,
-            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
-        };
-
         let mut managed = match self.inner.lock() {
             Ok(value) => value,
             Err(_) => {
@@ -924,12 +1383,33 @@ impl NativeRuntimeState {
         if !managed.running {
             return NativeRuntimeExecutionResponse::error("Native Rust runtime is not running.");
         }
-        if managed.market_poll_spec.as_ref() != Some(&spec) {
+        let Some(pair_index) = native_runtime_pair_index(&managed, &spec) else {
             return NativeRuntimeExecutionResponse::error(
                 "Native runtime market configuration changed; stop and restart the runtime before executing.",
             );
-        }
-        let Some(account_bootstrap) = managed.account_bootstrap.clone() else {
+        };
+        let stream_kline = {
+            let pair = &mut managed.pairs[pair_index];
+            let stream_kline = consume_native_runtime_stream(pair, &spec, now_ms);
+            if let Some(stream_candle) = stream_kline.as_ref() {
+                merge_native_runtime_stream_candle(&mut candles, stream_candle, spec.lookback);
+            }
+            stream_kline
+        };
+        let last_candle_is_closed = stream_kline
+            .as_ref()
+            .map(|candle| candle.is_closed)
+            .unwrap_or(false);
+        let market_input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
+            now_ms,
+            candles.clone(),
+            &effective_config,
+            last_candle_is_closed,
+        ) {
+            Ok(input) => input,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+        };
+        let Some(account_bootstrap) = managed.pairs[pair_index].account_bootstrap.clone() else {
             return NativeRuntimeExecutionResponse::error(
                 "A fresh native account bootstrap is required before guarded execution.",
             );
@@ -937,7 +1417,11 @@ impl NativeRuntimeState {
         if !native_runtime_account_bootstrap_is_fresh_with_max_age(
             &account_bootstrap,
             now_ms,
-            config_duration_ms(config, "operational_account_snapshot_stale_seconds", 300.0),
+            config_duration_ms(
+                &effective_config,
+                "operational_account_snapshot_stale_seconds",
+                300.0,
+            ),
         ) || !account_bootstrap.signal_evaluation_allowed
         {
             return NativeRuntimeExecutionResponse::error(format!(
@@ -946,11 +1430,8 @@ impl NativeRuntimeState {
             ));
         }
 
-        let NativeRuntimeManagedState {
-            runtime,
-            order_engine,
-            ..
-        } = &mut *managed;
+        let pair = &mut managed.pairs[pair_index];
+        let (runtime, order_engine) = (&mut pair.runtime, &mut pair.order_engine);
         let (Some(runtime), Some(engine)) = (runtime.as_mut(), order_engine.as_mut()) else {
             return NativeRuntimeExecutionResponse::error(
                 "Native runtime execution state is unavailable.",
@@ -963,7 +1444,11 @@ impl NativeRuntimeState {
             ));
         }
 
-        configure_native_runtime_order_engine(engine, config, now_ms);
+        configure_native_runtime_order_engine_for_effective_config(
+            engine,
+            &effective_config,
+            now_ms,
+        );
         engine.api_key = api_key;
         engine.api_secret = api_secret;
         let account_snapshot = runtime.bootstrap_read_only_account_with_symbol_settings(
@@ -976,7 +1461,7 @@ impl NativeRuntimeState {
         let execution_input = NativeRuntimeGuardedExecutionCycleInput {
             market_cycle: market_input,
             exposure: native_runtime_exposure_input(
-                config,
+                &effective_config,
                 &spec,
                 &account_bootstrap,
                 ticker.price,
@@ -998,7 +1483,7 @@ impl NativeRuntimeState {
             connector_health: "ok".to_owned(),
             operational_preflight: runtime.build_operational_preflight(
                 native_runtime_operational_preflight_input(
-                    config,
+                    &effective_config,
                     now_ms,
                     account_bootstrap.refreshed_at_ms,
                     account_snapshot.account_preflight,
@@ -1050,9 +1535,9 @@ impl NativeRuntimeState {
     fn clear_account_bootstrap(&self, spec: &NativeRuntimeMarketPollSpec) {
         if let Ok(mut managed) = self.inner.lock()
             && managed.running
-            && managed.market_poll_spec.as_ref() == Some(spec)
+            && let Some(pair_index) = native_runtime_pair_index(&managed, spec)
         {
-            managed.account_bootstrap = None;
+            managed.pairs[pair_index].account_bootstrap = None;
         }
     }
 }
@@ -1065,12 +1550,12 @@ fn dispatch_native_runtime_position_closes(
     now_ms: i64,
 ) -> Result<String, String> {
     let spec = native_runtime_market_poll_spec(config)?;
-    if managed.market_poll_spec.as_ref() != Some(&spec) {
+    let Some(pair_index) = native_runtime_pair_index(managed, &spec) else {
         return Err(
             "Native runtime market configuration changed; stop and restart the runtime before closing positions."
                 .to_owned(),
         );
-    }
+    };
     if api_key.trim().is_empty() || api_secret.trim().is_empty() {
         return Err(
             "API key and API secret are required for native guarded position close.".to_owned(),
@@ -1167,7 +1652,8 @@ fn dispatch_native_runtime_position_closes(
         step_size_by_symbol.insert(position.symbol.clone(), filters.step_size);
     }
 
-    let Some(runtime) = managed.runtime.as_mut() else {
+    let pair = &mut managed.pairs[pair_index];
+    let Some(runtime) = pair.runtime.as_mut() else {
         return Err("Native Rust runtime state is unavailable.".to_owned());
     };
     let close_position_context: Vec<(String, String)> = positions
@@ -1200,7 +1686,7 @@ fn dispatch_native_runtime_position_closes(
             prefer_close_position: false,
         })
         .map_err(|error| error.to_string())?;
-    let Some(engine) = managed.order_engine.as_mut() else {
+    let Some(engine) = pair.order_engine.as_mut() else {
         return Err("Native runtime order engine is unavailable.".to_owned());
     };
     configure_native_runtime_order_engine(engine, config, now_ms);
@@ -1252,6 +1738,249 @@ fn floor_spot_quantity(quantity: f64, step_size: f64) -> f64 {
         return quantity;
     }
     (quantity / step_size).floor() * step_size
+}
+
+#[derive(Debug, Default)]
+struct NativeRuntimePairAccumulator {
+    symbol: String,
+    interval: String,
+    indicators: BTreeSet<String>,
+    has_indicator_override: bool,
+    controls: BTreeMap<String, Value>,
+}
+
+fn native_runtime_pair_indicator_keys(value: Option<&Value>) -> BTreeSet<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flat_map(|items| items.iter())
+        .filter_map(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn native_runtime_format_interval_amount(amount: f64) -> String {
+    if amount.fract() == 0.0 {
+        return (amount as i64).to_string();
+    }
+    let mut text = format!("{amount}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    text
+}
+
+fn native_runtime_canonical_interval(value: Option<&Value>) -> Option<String> {
+    let raw = value
+        .and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| value.as_f64().map(|number| number.to_string()))
+        })?
+        .trim()
+        .to_owned();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw == "1M" {
+        return Some(raw);
+    }
+
+    let split_at = raw
+        .find(|character: char| character.is_ascii_alphabetic())
+        .unwrap_or(raw.len());
+    let (amount_text, suffix) = raw.split_at(split_at);
+    let amount = amount_text.trim().parse::<f64>().ok()?;
+    if !amount.is_finite() || amount <= 0.0 || suffix.chars().any(|ch| !ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    let suffix_lower = suffix.trim().to_ascii_lowercase();
+    if suffix.trim() == "M"
+        || matches!(
+            suffix_lower.as_str(),
+            "mo" | "mon" | "mons" | "month" | "months"
+        )
+    {
+        return Some(format!(
+            "{}M",
+            native_runtime_format_interval_amount(amount)
+        ));
+    }
+
+    let (unit, seconds_per_unit) = match suffix_lower.as_str() {
+        "" | "m" | "min" | "mins" | "minute" | "minutes" => ("m", 60.0),
+        "s" | "sec" | "secs" | "second" | "seconds" => ("s", 1.0),
+        "h" | "hr" | "hrs" | "hour" | "hours" => ("h", 3_600.0),
+        "d" | "day" | "days" => ("d", 86_400.0),
+        "w" | "wk" | "wks" | "week" | "weeks" => ("w", 604_800.0),
+        _ => return None,
+    };
+    let seconds = amount * seconds_per_unit;
+    for (canonical_seconds, canonical) in [
+        (60.0, "1m"),
+        (180.0, "3m"),
+        (300.0, "5m"),
+        (900.0, "15m"),
+        (1_800.0, "30m"),
+        (3_600.0, "1h"),
+        (7_200.0, "2h"),
+        (14_400.0, "4h"),
+        (21_600.0, "6h"),
+        (28_800.0, "8h"),
+        (43_200.0, "12h"),
+        (86_400.0, "1d"),
+        (259_200.0, "3d"),
+        (604_800.0, "1w"),
+    ] {
+        if (seconds - canonical_seconds).abs() < 0.000_001 {
+            return Some(canonical.to_owned());
+        }
+    }
+    Some(format!(
+        "{}{}",
+        native_runtime_format_interval_amount(amount),
+        unit
+    ))
+}
+
+fn native_runtime_apply_indicator_override(
+    object: &mut serde_json::Map<String, Value>,
+    indicators: &BTreeSet<String>,
+) {
+    let Some(Value::Object(indicator_configs)) = object.get_mut("indicators") else {
+        return;
+    };
+    for (key, config) in indicator_configs {
+        if let Some(indicator) = config.as_object_mut() {
+            indicator.insert(
+                "enabled".to_owned(),
+                Value::Bool(indicators.contains(&key.to_ascii_lowercase())),
+            );
+        }
+    }
+}
+
+fn native_runtime_pair_configs(config: &Value) -> Result<Vec<Value>, String> {
+    let root = config_root(config);
+    let Some(raw_pairs) = root.get("runtime_symbol_interval_pairs") else {
+        return Ok(vec![config.clone()]);
+    };
+    let Some(entries) = raw_pairs.as_array() else {
+        if raw_pairs.is_null() {
+            return Ok(vec![config.clone()]);
+        }
+        return Err(
+            "Native runtime pair overrides must be a list of symbol/interval objects.".to_owned(),
+        );
+    };
+    if entries.is_empty() {
+        return Ok(vec![config.clone()]);
+    }
+    let Some(base_object) = root.as_object() else {
+        return Err("Native runtime configuration must be a JSON object.".to_owned());
+    };
+
+    let mut accumulators = Vec::<NativeRuntimePairAccumulator>::new();
+    for entry in entries {
+        let Some(entry_object) = entry.as_object() else {
+            continue;
+        };
+        let symbol = entry_object
+            .get("symbol")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_uppercase);
+        let interval = native_runtime_canonical_interval(entry_object.get("interval"));
+        let (Some(symbol), Some(interval)) = (symbol, interval) else {
+            continue;
+        };
+        let indicators = native_runtime_pair_indicator_keys(entry_object.get("indicators"));
+        let normalized_controls = normalize_strategy_controls(
+            "runtime",
+            entry_object
+                .get("strategy_controls")
+                .unwrap_or(&Value::Null),
+        );
+        let controls = normalized_controls.as_object().cloned().unwrap_or_default();
+        let Some(accumulator) = accumulators
+            .iter_mut()
+            .find(|item| item.symbol == symbol && item.interval == interval)
+        else {
+            let mut accumulator = NativeRuntimePairAccumulator {
+                symbol,
+                interval,
+                ..Default::default()
+            };
+            accumulator.has_indicator_override = entry_object.get("indicators").is_some();
+            accumulator.indicators = indicators;
+            accumulator.controls = controls
+                .into_iter()
+                .filter(|(_, value)| !value.is_null())
+                .collect();
+            accumulators.push(accumulator);
+            continue;
+        };
+        accumulator.has_indicator_override |= entry_object.get("indicators").is_some();
+        accumulator.indicators.extend(indicators);
+        for (key, value) in controls {
+            if !value.is_null() {
+                accumulator.controls.insert(key, value);
+            }
+        }
+    }
+    if accumulators.is_empty() {
+        return Err("Native runtime has no valid symbol/interval pair overrides.".to_owned());
+    }
+
+    let mut effective_configs = Vec::with_capacity(accumulators.len());
+    for accumulator in accumulators {
+        let mut object = base_object.clone();
+        object.insert(
+            "symbol".to_owned(),
+            Value::String(accumulator.symbol.clone()),
+        );
+        object.insert(
+            "interval".to_owned(),
+            Value::String(accumulator.interval.clone()),
+        );
+        object.insert(
+            "symbols".to_owned(),
+            Value::Array(vec![Value::String(accumulator.symbol)]),
+        );
+        object.insert(
+            "intervals".to_owned(),
+            Value::Array(vec![Value::String(accumulator.interval)]),
+        );
+        if accumulator.has_indicator_override {
+            native_runtime_apply_indicator_override(&mut object, &accumulator.indicators);
+        }
+        for key in [
+            "position_pct",
+            "position_pct_units",
+            "side",
+            "leverage",
+            "stop_loss",
+            "account_mode",
+            "add_only",
+            "loop_interval_override",
+        ] {
+            if let Some(value) = accumulator.controls.get(key) {
+                object.insert(key.to_owned(), value.clone());
+            }
+        }
+        effective_configs.push(Value::Object(object));
+    }
+    Ok(effective_configs)
+}
+
+fn native_runtime_primary_pair_config(config: &Value) -> Result<Value, String> {
+    native_runtime_pair_configs(config)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Native runtime has no effective pair configuration.".to_owned())
 }
 
 fn config_root(config: &Value) -> &Value {
@@ -1372,6 +2101,13 @@ fn native_runtime_ownership_error(config: &Value) -> Option<String> {
 }
 
 fn native_runtime_market_poll_spec(config: &Value) -> Result<NativeRuntimeMarketPollSpec, String> {
+    let effective_config = native_runtime_primary_pair_config(config)?;
+    native_runtime_market_poll_spec_for_config(&effective_config)
+}
+
+fn native_runtime_market_poll_spec_for_config(
+    config: &Value,
+) -> Result<NativeRuntimeMarketPollSpec, String> {
     if let Some(error) = native_runtime_ownership_error(config) {
         return Err(error);
     }
@@ -1411,8 +2147,163 @@ fn native_runtime_market_poll_spec(config: &Value) -> Result<NativeRuntimeMarket
         market,
         symbol: first_config_string(config, "symbols", &default_symbol).to_ascii_uppercase(),
         interval: first_config_string(config, "intervals", &default_interval),
+        lookback: config_lookback(config),
         testnet: python_mode_uses_testnet(&mode),
     })
+}
+
+fn python_env_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "y" => Some(true),
+        "0" | "false" | "no" | "off" | "n" => Some(false),
+        _ => None,
+    }
+}
+
+/// Python starts its Binance futures kline WebSocket when live indicator data
+/// is enabled.  The environment override intentionally matches Python's
+/// BINANCE_INDICATOR_LIVE_DATA policy, including its testnet default.
+fn native_runtime_stream_requested(
+    config: &Value,
+    spec: &NativeRuntimeMarketPollSpec,
+    environment_override: Option<&str>,
+) -> bool {
+    if spec.market != BinanceMarket::Futures
+        || !config_bool(config, "indicator_use_live_values", false)
+    {
+        return false;
+    }
+    environment_override
+        .and_then(python_env_bool)
+        .or_else(|| {
+            env::var("BINANCE_INDICATOR_LIVE_DATA")
+                .ok()
+                .as_deref()
+                .and_then(python_env_bool)
+        })
+        .unwrap_or(spec.testnet)
+}
+
+fn ensure_native_runtime_stream_worker(
+    pair: &mut NativeRuntimePairState,
+    config: &Value,
+    spec: &NativeRuntimeMarketPollSpec,
+) {
+    if native_runtime_stream_requested(config, spec, None) {
+        if pair.stream_worker.is_none() {
+            pair.stream_worker = Some(NativeRuntimeStreamWorker::start(spec));
+        }
+    } else {
+        pair.stream_worker = None;
+        pair.latest_stream_event = None;
+        pair.stream_error = None;
+    }
+}
+
+fn consume_native_runtime_stream(
+    pair: &mut NativeRuntimePairState,
+    spec: &NativeRuntimeMarketPollSpec,
+    now_ms: i64,
+) -> Option<BinanceKlineStreamCandle> {
+    let message = pair
+        .stream_worker
+        .as_ref()
+        .and_then(NativeRuntimeStreamWorker::take_pending);
+    if let Some(message) = message {
+        match message {
+            NativeRuntimeStreamMessage::Event(event) => {
+                if let BinanceStreamEvent::Kline(candle) = event {
+                    if candle.symbol.eq_ignore_ascii_case(&spec.symbol)
+                        && candle.interval.eq_ignore_ascii_case(&spec.interval)
+                    {
+                        let runtime_event = BinanceStreamEvent::Kline(candle.clone());
+                        if let Some(runtime) = pair.runtime.as_mut() {
+                            let _ = runtime.run_stream_ingestion_cycle(now_ms, || {
+                                Ok(Some(runtime_event.clone()))
+                            });
+                        }
+                        pair.latest_stream_event = Some(runtime_event);
+                        pair.stream_error = None;
+                    }
+                }
+            }
+            NativeRuntimeStreamMessage::Closed => {
+                pair.latest_stream_event = None;
+                pair.stream_error =
+                    Some("WebSocket stream closed; REST fallback is active.".to_owned());
+                if let Some(runtime) = pair.runtime.as_mut() {
+                    let _ = runtime.run_stream_ingestion_cycle(now_ms, || Ok(None));
+                }
+            }
+            NativeRuntimeStreamMessage::Error(error) => {
+                pair.latest_stream_event = None;
+                pair.stream_error = Some(format!(
+                    "WebSocket stream unavailable; REST fallback is active: {error}"
+                ));
+                if let Some(runtime) = pair.runtime.as_mut() {
+                    let _ = runtime.run_stream_ingestion_cycle(now_ms, || Ok(None));
+                }
+            }
+        }
+    }
+
+    let stale_after_ms = pair
+        .runtime
+        .as_ref()
+        .map(|runtime| runtime.config.stream_stale_after_ms.max(1))
+        .unwrap_or(30_000);
+    match pair.latest_stream_event.as_ref() {
+        Some(BinanceStreamEvent::Kline(candle))
+            if candle.symbol.eq_ignore_ascii_case(&spec.symbol)
+                && candle.interval.eq_ignore_ascii_case(&spec.interval)
+                && now_ms.saturating_sub(candle.event_time_ms).max(0) <= stale_after_ms =>
+        {
+            Some(candle.clone())
+        }
+        _ => None,
+    }
+}
+
+fn merge_native_runtime_stream_candle(
+    candles: &mut Vec<BinanceKlineCandle>,
+    stream_candle: &BinanceKlineStreamCandle,
+    lookback: usize,
+) {
+    if stream_candle.open_time_ms < 0
+        || ![
+            stream_candle.open,
+            stream_candle.high,
+            stream_candle.low,
+            stream_candle.close,
+            stream_candle.volume,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return;
+    }
+    let candle = BinanceKlineCandle {
+        open_time_ms: stream_candle.open_time_ms,
+        open: stream_candle.open,
+        high: stream_candle.high,
+        low: stream_candle.low,
+        close: stream_candle.close,
+        volume: stream_candle.volume,
+    };
+    if let Some(existing) = candles
+        .iter_mut()
+        .find(|existing| existing.open_time_ms == candle.open_time_ms)
+    {
+        *existing = candle;
+    } else {
+        candles.push(candle);
+    }
+    candles.sort_by_key(|candle| candle.open_time_ms);
+    let max_candles = lookback.max(1);
+    if candles.len() > max_candles {
+        let overflow = candles.len() - max_candles;
+        candles.drain(0..overflow);
+    }
 }
 
 fn python_mode_uses_testnet(mode: &str) -> bool {
@@ -1430,6 +2321,7 @@ fn native_runtime_market_label(market: BinanceMarket) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn native_runtime_account_bootstrap_is_fresh(
     bootstrap: &NativeRuntimeAccountBootstrapState,
     now_ms: i64,
@@ -1454,6 +2346,15 @@ fn config_i64(config: &Value, key: &str, default: i64) -> i64 {
         .or_else(|| value.as_f64().map(|value| value.round() as i64))
         .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
         .unwrap_or(default)
+}
+
+fn config_lookback(config: &Value) -> usize {
+    config_i64(
+        config,
+        "lookback",
+        python_execution_default_i64("lookback", 200),
+    )
+    .clamp(1, 1_000_000) as usize
 }
 
 fn config_f64(config: &Value, key: &str, default: f64) -> f64 {
@@ -1497,7 +2398,17 @@ fn native_runtime_now_iso(now_ms: i64) -> String {
     format!("native-runtime-{}", now_ms.max(0))
 }
 
+#[cfg(test)]
 fn native_runtime_order_engine(config: &Value, now_ms: i64) -> RuntimeOrderEngine {
+    let effective_config =
+        native_runtime_primary_pair_config(config).unwrap_or_else(|_| config.clone());
+    native_runtime_order_engine_for_effective_config(&effective_config, now_ms)
+}
+
+fn native_runtime_order_engine_for_effective_config(
+    config: &Value,
+    now_ms: i64,
+) -> RuntimeOrderEngine {
     let default_mode = python_execution_default_text("mode", "Demo/Testnet");
     let mut engine = RuntimeOrderEngine::new(
         first_config_string(config, "mode", &default_mode),
@@ -1505,11 +2416,21 @@ fn native_runtime_order_engine(config: &Value, now_ms: i64) -> RuntimeOrderEngin
         native_runtime_circuit_breaker_config(config),
         native_runtime_now_iso(now_ms),
     );
-    configure_native_runtime_order_engine(&mut engine, config, now_ms);
+    configure_native_runtime_order_engine_for_effective_config(&mut engine, config, now_ms);
     engine
 }
 
 fn configure_native_runtime_order_engine(
+    engine: &mut RuntimeOrderEngine,
+    config: &Value,
+    now_ms: i64,
+) {
+    let effective_config =
+        native_runtime_primary_pair_config(config).unwrap_or_else(|_| config.clone());
+    configure_native_runtime_order_engine_for_effective_config(engine, &effective_config, now_ms);
+}
+
+fn configure_native_runtime_order_engine_for_effective_config(
     engine: &mut RuntimeOrderEngine,
     config: &Value,
     now_ms: i64,
@@ -1524,7 +2445,7 @@ fn configure_native_runtime_order_engine(
         python_execution_default_i64("leverage", 1),
     )
     .clamp(1, 125);
-    engine.margin_mode = native_runtime_config(config).margin_mode;
+    engine.margin_mode = native_runtime_config_for_effective_config(config).margin_mode;
     engine.position_pct = config_f64(
         config,
         "position_pct",
@@ -1811,6 +2732,114 @@ fn native_runtime_exposure_input(
     }
 }
 
+fn native_runtime_position_side_key(position: &BinanceFuturesPosition) -> Option<String> {
+    let side = match position.position_side.trim().to_ascii_uppercase().as_str() {
+        "LONG" => "L",
+        "SHORT" => "S",
+        "BOTH" | "" if position.position_amt > 0.0 => "L",
+        "BOTH" | "" if position.position_amt < 0.0 => "S",
+        _ => return None,
+    };
+    Some(side.to_owned())
+}
+
+fn native_runtime_position_records(
+    positions: &[BinanceFuturesPosition],
+) -> BTreeMap<(String, String), PortfolioPositionRecord> {
+    positions
+        .iter()
+        .filter_map(|position| {
+            let quantity = position.position_amt.abs();
+            if position.symbol.trim().is_empty() || !quantity.is_finite() || quantity <= 1e-10 {
+                return None;
+            }
+            let symbol = position.symbol.trim().to_ascii_uppercase();
+            let side_key = native_runtime_position_side_key(position)?;
+            let margin = if position.initial_margin.is_finite() && position.initial_margin > 0.0 {
+                Some(position.initial_margin)
+            } else if position.position_initial_margin.is_finite()
+                && position.position_initial_margin > 0.0
+            {
+                Some(position.position_initial_margin)
+            } else {
+                None
+            };
+            let open_time = DateTime::<Utc>::from_timestamp_millis(position.update_time_ms)
+                .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                .unwrap_or_default();
+            let roi_percent = margin
+                .filter(|value| *value > 0.0)
+                .filter(|_| position.unrealized_profit.is_finite())
+                .map(|value| position.unrealized_profit / value * 100.0);
+            let key = (symbol.clone(), side_key.clone());
+            Some((
+                key,
+                PortfolioPositionRecord {
+                    symbol,
+                    side_key,
+                    interval: String::new(),
+                    quantity: Some(quantity),
+                    mark_price: finite_positive(position.mark_price),
+                    size_usdt: finite_positive(position.notional.abs()),
+                    margin_usdt: margin,
+                    pnl_value: finite_number(position.unrealized_profit),
+                    roi_percent,
+                    leverage: finite_positive(position.leverage).map(|value| value.round() as i64),
+                    liquidation_price: finite_positive(position.liquidation_price),
+                    status: "Active".to_owned(),
+                    stop_loss_enabled: false,
+                    open_time,
+                    close_time: "-".to_owned(),
+                    allocations: Vec::new(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn finite_number(value: f64) -> Option<f64> {
+    value.is_finite().then_some(value)
+}
+
+fn finite_positive(value: f64) -> Option<f64> {
+    value
+        .is_finite()
+        .then_some(value)
+        .filter(|value| *value > 0.0)
+}
+
+fn native_runtime_missing_position_policy(config: &Value) -> MissingPositionPolicy {
+    let defaults = python_source_risk_defaults();
+    MissingPositionPolicy {
+        threshold: config_i64(
+            config,
+            "positions_missing_threshold",
+            defaults
+                .get("positions_missing_threshold")
+                .and_then(Value::as_i64)
+                .unwrap_or(2),
+        )
+        .max(1) as usize,
+        grace_seconds: config_f64(
+            config,
+            "positions_missing_grace_seconds",
+            defaults
+                .get("positions_missing_grace_seconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(30.0),
+        )
+        .max(0.0),
+        autoclose: config_bool(
+            config,
+            "positions_missing_autoclose",
+            defaults
+                .get("positions_missing_autoclose")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        ),
+    }
+}
+
 fn native_runtime_risk_positions(
     positions: &[BinanceFuturesPosition],
     dual_side: bool,
@@ -1861,7 +2890,14 @@ fn native_runtime_risk_positions(
         .collect()
 }
 
+#[cfg(test)]
 fn native_runtime_config(config: &Value) -> NativeRuntimeLoopConfig {
+    let effective_config =
+        native_runtime_primary_pair_config(config).unwrap_or_else(|_| config.clone());
+    native_runtime_config_for_effective_config(&effective_config)
+}
+
+fn native_runtime_config_for_effective_config(config: &Value) -> NativeRuntimeLoopConfig {
     let default_position_mode = python_execution_default_text("position_mode", "Hedge");
     let default_margin_mode = python_execution_default_text("margin_mode", "Isolated");
     let default_assets_mode = python_execution_default_text("assets_mode", "Single-Asset");
@@ -1901,6 +2937,7 @@ fn native_runtime_config(config: &Value) -> NativeRuntimeLoopConfig {
             "intervals",
             &python_execution_default_first_text("intervals", "1m"),
         ),
+        lookback: config_lookback(config),
         futures_account,
         position_mode: if position_mode.to_ascii_lowercase().contains("one") {
             "One-way".to_owned()
@@ -1945,9 +2982,9 @@ fn native_runtime_snapshot(
     message: impl Into<String>,
 ) -> NativeRuntimeControlResponse {
     let trading_execution_supported = rust_trading_execution_supported();
-    let account_bootstrap = managed.account_bootstrap.as_ref();
+    let pair_count = managed.pairs.len();
     let active_duration = format_active_duration(managed.started_at_ms, now_ms, managed.running);
-    let Some(runtime) = managed.runtime.as_mut() else {
+    let Some(pair) = managed.pairs.first_mut() else {
         return NativeRuntimeControlResponse {
             ok: true,
             execution_backend: "native-rust".to_owned(),
@@ -1957,6 +2994,7 @@ fn native_runtime_snapshot(
                 "active_time": active_duration,
                 "lifecycle_phase": "idle",
                 "paused": false,
+                "pair_count": 0,
                 "account_bootstrap_fresh": false,
                 "execution_owner": "native-rust-coordinator"
             }),
@@ -1972,6 +3010,10 @@ fn native_runtime_snapshot(
             message: message.into(),
             error: String::new(),
         };
+    };
+    let account_bootstrap = pair.account_bootstrap.as_ref();
+    let Some(runtime) = pair.runtime.as_mut() else {
+        return NativeRuntimeControlResponse::error("Native Rust runtime state is unavailable.");
     };
 
     let cycle = runtime.run_cycle(NativeRuntimeCycleInput {
@@ -2023,6 +3065,7 @@ fn native_runtime_snapshot(
             "active_time": active_duration,
             "lifecycle_phase": lifecycle_phase,
             "paused": managed.paused,
+            "pair_count": pair_count,
             "account_bootstrap_fresh": account_bootstrap
                 .map(|snapshot| {
                     native_runtime_account_bootstrap_is_fresh_with_max_age(
@@ -3473,16 +4516,20 @@ fn evaluate_native_runtime_preview(
             volume: candle.volume,
         })
         .collect::<Vec<_>>();
+    let effective_config = match native_runtime_primary_pair_config(&config) {
+        Ok(config) => config,
+        Err(error) => return NativeRuntimePreviewResponse::error(error),
+    };
     let input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
         now_ms,
         candles,
-        &config,
+        &effective_config,
         last_candle_is_closed,
     ) {
         Ok(input) => input,
         Err(error) => return NativeRuntimePreviewResponse::error(error.to_string()),
     };
-    let mut runtime_config = native_runtime_config(&config);
+    let mut runtime_config = native_runtime_config_for_effective_config(&effective_config);
     runtime_config.symbol = symbol.trim().to_ascii_uppercase();
     runtime_config.interval = interval.trim().to_owned();
     let mut runtime = NativeRuntimeLoop::new(runtime_config);
@@ -4131,7 +5178,17 @@ mod tests {
         assert_eq!(usds.market, BinanceMarket::Futures);
         assert_eq!(usds.symbol, "ETHUSDT");
         assert_eq!(usds.interval, "5m");
+        assert_eq!(
+            usds.lookback,
+            python_execution_default_i64("lookback", 200) as usize
+        );
         assert!(!usds.testnet);
+
+        let overridden = native_runtime_market_poll_spec(&json!({
+            "lookback": 37
+        }))
+        .expect("lookback override poll spec");
+        assert_eq!(overridden.lookback, 37);
 
         let coin = native_runtime_market_poll_spec(&json!({
             "connector_backend": "binance-sdk-derivatives-trading-coin-futures",
@@ -4179,6 +5236,289 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_stream_activation_matches_python_live_data_policy() {
+        let futures_spec = NativeRuntimeMarketPollSpec {
+            market: BinanceMarket::Futures,
+            symbol: "BTCUSDT".to_owned(),
+            interval: "1m".to_owned(),
+            lookback: 200,
+            testnet: true,
+        };
+        let live_values = json!({"indicator_use_live_values": true});
+        assert!(native_runtime_stream_requested(
+            &live_values,
+            &futures_spec,
+            Some("true")
+        ));
+        assert!(!native_runtime_stream_requested(
+            &live_values,
+            &futures_spec,
+            Some("false")
+        ));
+        assert!(!native_runtime_stream_requested(
+            &json!({"indicator_use_live_values": false}),
+            &futures_spec,
+            Some("true")
+        ));
+
+        let spot_spec = NativeRuntimeMarketPollSpec {
+            market: BinanceMarket::Spot,
+            ..futures_spec
+        };
+        assert!(!native_runtime_stream_requested(
+            &live_values,
+            &spot_spec,
+            Some("true")
+        ));
+    }
+
+    #[test]
+    fn native_runtime_stream_candle_merge_replaces_open_candle_and_bounds_history() {
+        let mut candles = vec![
+            BinanceKlineCandle {
+                open_time_ms: 1,
+                open: 1.0,
+                high: 2.0,
+                low: 0.5,
+                close: 1.5,
+                volume: 10.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 2,
+                open: 2.0,
+                high: 3.0,
+                low: 1.5,
+                close: 2.5,
+                volume: 20.0,
+            },
+        ];
+        merge_native_runtime_stream_candle(
+            &mut candles,
+            &BinanceKlineStreamCandle {
+                symbol: "BTCUSDT".to_owned(),
+                interval: "1m".to_owned(),
+                open_time_ms: 2,
+                open: 2.0,
+                high: 4.0,
+                low: 1.5,
+                close: 3.5,
+                volume: 25.0,
+                is_closed: false,
+                event_time_ms: 3,
+            },
+            2,
+        );
+        assert_eq!(candles.len(), 2);
+        assert_eq!(candles[1].open_time_ms, 2);
+        assert_eq!(candles[1].high, 4.0);
+        assert_eq!(candles[1].close, 3.5);
+        assert_eq!(candles[1].volume, 25.0);
+
+        merge_native_runtime_stream_candle(
+            &mut candles,
+            &BinanceKlineStreamCandle {
+                symbol: "BTCUSDT".to_owned(),
+                interval: "1m".to_owned(),
+                open_time_ms: 3,
+                open: 3.0,
+                high: 4.0,
+                low: 2.5,
+                close: 3.5,
+                volume: 30.0,
+                is_closed: true,
+                event_time_ms: 4,
+            },
+            2,
+        );
+        assert_eq!(
+            candles
+                .iter()
+                .map(|candle| candle.open_time_ms)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn native_runtime_pair_expansion_matches_python_dedupe_and_control_merge() {
+        let configs = native_runtime_pair_configs(&json!({
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1m"],
+            "indicators": {
+                "ema": {"enabled": false, "length": 20},
+                "rsi": {"enabled": true, "length": 14},
+                "volume": {"enabled": false, "length": 20}
+            },
+            "runtime_symbol_interval_pairs": [
+                {
+                    "symbol": "btcusdt",
+                    "interval": "60m",
+                    "indicators": ["ema"],
+                    "strategy_controls": {
+                        "side": "BUY",
+                        "leverage": "3",
+                        "position_pct": "12.5",
+                        "loop_interval_override": "15 m",
+                        "stop_loss": {"enabled": true, "mode": "percent", "percent": 2.5}
+                    }
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "interval": "1h",
+                    "indicators": ["rsi"],
+                    "strategy_controls": {
+                        "side": "SELL",
+                        "leverage": "4",
+                        "add_only": true
+                    }
+                },
+                {
+                    "symbol": "ethusdt",
+                    "interval": "5 minutes",
+                    "indicators": ["volume"]
+                }
+            ]
+        }))
+        .expect("valid runtime pair overrides");
+
+        assert_eq!(configs.len(), 2);
+        let first = &configs[0];
+        assert_eq!(first["symbol"], "BTCUSDT");
+        assert_eq!(first["interval"], "1h");
+        assert_eq!(first["symbols"], json!(["BTCUSDT"]));
+        assert_eq!(first["intervals"], json!(["1h"]));
+        assert_eq!(first["side"], "SELL");
+        assert_eq!(first["leverage"], 4);
+        assert_eq!(first["position_pct"], 12.5);
+        assert_eq!(first["loop_interval_override"], "15m");
+        assert_eq!(first["add_only"], true);
+        assert_eq!(first["stop_loss"]["enabled"], true);
+        assert_eq!(first["indicators"]["ema"]["enabled"], true);
+        assert_eq!(first["indicators"]["rsi"]["enabled"], true);
+        assert_eq!(first["indicators"]["volume"]["enabled"], false);
+
+        let second = &configs[1];
+        assert_eq!(second["symbol"], "ETHUSDT");
+        assert_eq!(second["interval"], "5m");
+        assert_eq!(second["indicators"]["volume"]["enabled"], true);
+        assert_eq!(second["indicators"]["rsi"]["enabled"], false);
+    }
+
+    #[test]
+    fn native_runtime_pair_expansion_falls_back_to_top_level_config_without_overrides() {
+        let config = json!({
+            "symbols": ["ethusdt", "btcusdt"],
+            "intervals": ["5m", "1h"],
+            "runtime_symbol_interval_pairs": []
+        });
+        let configs = native_runtime_pair_configs(&config).expect("top-level config fallback");
+        assert_eq!(configs, vec![config]);
+    }
+
+    #[test]
+    fn native_runtime_pair_expansion_rejects_non_object_pair_payloads() {
+        let error = native_runtime_pair_configs(&json!({
+            "runtime_symbol_interval_pairs": ["BTCUSDT@1m"]
+        }))
+        .expect_err("malformed pair payload must fail closed");
+        assert!(error.contains("no valid symbol/interval"), "{error}");
+    }
+
+    #[test]
+    fn native_runtime_controller_starts_one_runtime_per_python_pair() {
+        let state = NativeRuntimeState::default();
+        let config = json!({
+            "connector_backend": "binance-sdk-spot",
+            "runtime_symbol_interval_pairs": [
+                {"symbol": "btcusdt", "interval": "1m"},
+                {"symbol": "ethusdt", "interval": "5 minutes"}
+            ]
+        });
+
+        let started = state.start(&config, 1_700_000_000_000);
+        assert!(started.ok, "{}", started.error);
+        assert_eq!(started.status["pair_count"], 2);
+        let managed = state.inner.lock().expect("runtime state lock");
+        assert_eq!(managed.pairs.len(), 2);
+        assert_eq!(
+            managed.pairs[0]
+                .market_poll_spec
+                .as_ref()
+                .expect("first pair spec")
+                .symbol,
+            "BTCUSDT"
+        );
+        assert_eq!(
+            managed.pairs[1]
+                .market_poll_spec
+                .as_ref()
+                .expect("second pair spec")
+                .interval,
+            "5m"
+        );
+        drop(managed);
+
+        let stopped = state.stop_with_close_request(
+            false,
+            config,
+            String::new(),
+            String::new(),
+            1_700_000_001_000,
+        );
+        assert!(stopped.ok, "{}", stopped.error);
+        assert_eq!(stopped.status["runtime_active"], false);
+    }
+
+    #[test]
+    fn native_runtime_pair_aggregation_preserves_each_result() {
+        let first = NativeRuntimeMarketPollResponse {
+            ok: true,
+            market: "spot".to_owned(),
+            symbol: "BTCUSDT".to_owned(),
+            interval: "1m".to_owned(),
+            testnet: true,
+            candle_count: 10,
+            poll_status: "rest_closed_kline".to_owned(),
+            signal_evaluation_allowed: false,
+            strategy_evaluated: false,
+            signal: None,
+            trading_execution_supported: false,
+            status_message: "BTC refreshed".to_owned(),
+            error: String::new(),
+            pair_count: 1,
+            pair_results: Vec::new(),
+        };
+        let second = NativeRuntimeMarketPollResponse {
+            ok: false,
+            market: "spot".to_owned(),
+            symbol: "ETHUSDT".to_owned(),
+            interval: "5m".to_owned(),
+            testnet: true,
+            candle_count: 0,
+            poll_status: String::new(),
+            signal_evaluation_allowed: false,
+            strategy_evaluated: false,
+            signal: None,
+            trading_execution_supported: false,
+            status_message: String::new(),
+            error: "ETH refresh failed".to_owned(),
+            pair_count: 1,
+            pair_results: Vec::new(),
+        };
+
+        let aggregate = NativeRuntimeMarketPollResponse::aggregate(vec![first, second]);
+        assert!(!aggregate.ok);
+        assert_eq!(aggregate.pair_count, 2);
+        assert_eq!(aggregate.pair_results.len(), 2);
+        assert_eq!(aggregate.error, "ETH refresh failed");
+        assert!(
+            aggregate
+                .status_message
+                .contains("2 configured native runtime pairs")
+        );
+    }
+
+    #[test]
     fn native_runtime_market_poll_rejects_idle_runtime_before_network_access() {
         let state = NativeRuntimeState::default();
         let response = state.poll_market(&json!({}), 1_700_000_000_000);
@@ -4208,6 +5548,10 @@ mod tests {
             .get("leverage")
             .and_then(Value::as_i64)
             .expect("Python execution defaults must define leverage");
+        let source_lookback = source
+            .get("lookback")
+            .and_then(Value::as_u64)
+            .expect("Python execution defaults must define lookback");
         let source_position_mode = source
             .get("position_mode")
             .and_then(Value::as_str)
@@ -4242,6 +5586,7 @@ mod tests {
             .expect("Python execution defaults must define live order cap");
 
         assert_eq!(runtime.leverage, source_leverage);
+        assert_eq!(runtime.lookback, source_lookback as usize);
         assert_eq!(runtime.position_mode, source_position_mode);
         assert_eq!(runtime.margin_mode, source_margin_mode.to_ascii_uppercase());
 
@@ -4262,6 +5607,10 @@ mod tests {
             engine.safety.live_trading_max_session_orders,
             source_live_max_session_orders
         );
+
+        let overridden = native_runtime_config(&json!({"lookback": 37}));
+        assert_eq!(overridden.lookback, 37);
+        assert_eq!(native_runtime_config(&json!({"lookback": 0})).lookback, 1);
 
         let audit = native_runtime_order_audit_config(&json!({}));
         assert_eq!(
@@ -4447,7 +5796,7 @@ mod tests {
         assert!(started.ok, "{}", started.error);
         {
             let mut managed = state.inner.lock().expect("runtime state lock");
-            managed.account_bootstrap =
+            managed.pairs[0].account_bootstrap =
                 Some(account_bootstrap(1_700_000_000_000, true, "account ready"));
         }
 
@@ -4455,7 +5804,7 @@ mod tests {
         assert!(!response.ok);
         assert!(response.error.contains("API key and API secret"));
         let managed = state.inner.lock().expect("runtime state lock");
-        assert!(managed.account_bootstrap.is_none());
+        assert!(managed.pairs[0].account_bootstrap.is_none());
     }
 
     #[test]

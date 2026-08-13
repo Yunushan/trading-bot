@@ -2,11 +2,24 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
+use crate::generated_python_parity::{
+    PYTHON_MDD_LOGIC_CONFIG_CHOICES, PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
+    PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+};
 use crate::market_data::BinanceKlineCandle;
 use crate::native_indicators::{
     compute_configured_indicator_series, unsupported_enabled_indicator_keys,
 };
 use crate::python_source_default_backtest_config;
+
+fn normalize_config_choice(value: &str, choices: &[(&str, &str)], default_value: &str) -> String {
+    let text = value.trim().to_ascii_lowercase();
+    choices
+        .iter()
+        .find(|(key, canonical)| *key == text || *canonical == text)
+        .map(|(_, canonical)| (*canonical).to_owned())
+        .unwrap_or_else(|| default_value.to_owned())
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeBacktestRequest {
@@ -174,21 +187,21 @@ impl NativeBacktestResult {
             "BUY" | "SELL" | "BOTH" => requested_side,
             _ => "BOTH".to_owned(),
         };
-        let requested_mdd_logic = request.mdd_logic.trim().to_ascii_lowercase();
-        let mdd_logic = match requested_mdd_logic.as_str() {
-            "per_trade" | "cumulative" | "entire_account" => requested_mdd_logic,
-            _ => "per_trade".to_owned(),
-        };
-        let requested_stop_mode = request.stop_loss_mode.trim().to_ascii_lowercase();
-        let stop_loss_mode = match requested_stop_mode.as_str() {
-            "usdt" | "percent" | "both" => requested_stop_mode,
-            _ => "usdt".to_owned(),
-        };
-        let requested_stop_scope = request.stop_loss_scope.trim().to_ascii_lowercase();
-        let stop_loss_scope = match requested_stop_scope.as_str() {
-            "per_trade" | "cumulative" | "entire_account" => requested_stop_scope,
-            _ => "per_trade".to_owned(),
-        };
+        let mdd_logic = normalize_config_choice(
+            &request.mdd_logic,
+            PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+            "per_trade",
+        );
+        let stop_loss_mode = normalize_config_choice(
+            &request.stop_loss_mode,
+            PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
+            "usdt",
+        );
+        let stop_loss_scope = normalize_config_choice(
+            &request.stop_loss_scope,
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+            "per_trade",
+        );
         let position_units = request.position_pct_units.trim().to_ascii_lowercase();
         let mut position_pct = request.position_pct;
         if matches!(position_units.as_str(), "percent" | "%" | "perc") {

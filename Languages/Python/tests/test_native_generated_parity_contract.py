@@ -31,7 +31,9 @@ from app.service.api_contract import (  # noqa: E402
 from app.settings.exchange_support import SUPPORTED_CONNECTOR_BACKENDS  # noqa: E402
 from tools.generate_native_parity_contracts import (  # noqa: E402
     CPP_OUTPUT,
+    CPP_PORTFOLIO_REFERENCE_OUTPUT,
     RUST_OUTPUT,
+    RUST_PORTFOLIO_REFERENCE_OUTPUT,
     TAURI_BROWSER_OUTPUT,
     _cpp_string,
     _exchange_support_reference_payload,
@@ -41,6 +43,8 @@ from tools.generate_native_parity_contracts import (  # noqa: E402
     render_cpp_exchange_support_reference_header,
     render_rust_module,
     render_rust_exchange_support_reference_module,
+    render_cpp_portfolio_reference_header,
+    render_rust_portfolio_reference_module,
     render_tauri_browser_contract,
 )
 
@@ -144,6 +148,40 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertEqual(render_rust_module(), _read(RUST_OUTPUT))
         self.assertEqual(render_cpp_header(), _read(CPP_OUTPUT))
         self.assertEqual(render_tauri_browser_contract(), _read(TAURI_BROWSER_OUTPUT))
+        self.assertEqual(
+            render_rust_portfolio_reference_module(),
+            _read(RUST_PORTFOLIO_REFERENCE_OUTPUT),
+        )
+        self.assertEqual(
+            render_cpp_portfolio_reference_header(),
+            _read(CPP_PORTFOLIO_REFERENCE_OUTPUT),
+        )
+
+    def test_position_reconciliation_reference_covers_python_policy_paths(self):
+        from app.native_parity import native_position_reconciliation_reference_cases
+
+        cases = native_position_reconciliation_reference_cases()
+        self.assertGreaterEqual(len(cases), 5)
+        self.assertEqual(
+            {
+                "live-recovery-preserves-python-metadata",
+                "threshold-autoclose-after-two-misses",
+                "grace-period-waits-before-close",
+                "autoclose-disabled-drops-record",
+                "pending-close-bypasses-threshold-and-grace",
+            },
+            {case["name"] for case in cases},
+        )
+        for case in cases:
+            self.assertEqual(len(case["steps"]), len(case["expected_steps"]))
+            for step, expected in zip(case["steps"], case["expected_steps"]):
+                self.assertEqual(
+                    set(expected["summary"]),
+                    {"closed_keys", "dropped_keys", "waiting_keys", "live_keys"},
+                )
+                self.assertIn("open_position_records", expected["state"])
+                self.assertIn("closed_position_records", expected["state"])
+                self.assertIn("positions_missing_threshold", step["policy"])
 
     def test_exchange_support_reference_covers_python_resolution_matrix(self):
         payload = _exchange_support_reference_payload()

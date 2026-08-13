@@ -80,6 +80,7 @@ fn python_default_text(
 pub struct NativeRuntimeLoopConfig {
     pub symbol: String,
     pub interval: String,
+    pub lookback: usize,
     pub futures_account: bool,
     pub indicator_use_live_values: bool,
     pub risk_controls: Value,
@@ -110,11 +111,17 @@ impl Default for NativeRuntimeLoopConfig {
             .and_then(Value::as_str)
             .unwrap_or("1m")
             .to_owned();
+        let lookback = defaults
+            .get("lookback")
+            .and_then(Value::as_u64)
+            .unwrap_or(200)
+            .clamp(1, 1_000_000) as usize;
         let assets_mode = python_default_text(&defaults, "assets_mode", "Single-Asset");
         let loop_interval_override = python_default_text(&defaults, "loop_interval_override", "1m");
         Self {
             symbol,
             interval,
+            lookback,
             futures_account: true,
             indicator_use_live_values: risk_controls
                 .get("indicator_use_live_values")
@@ -3063,6 +3070,10 @@ mod tests {
         assert_eq!(config.symbol, python["symbols"][0].as_str().unwrap());
         assert_eq!(config.interval, python["intervals"][0].as_str().unwrap());
         assert_eq!(
+            config.lookback,
+            python["lookback"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
             config.position_mode,
             python["position_mode"].as_str().unwrap()
         );
@@ -3093,6 +3104,7 @@ mod tests {
         NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
             symbol: "btcusdt".to_owned(),
             interval: "1m".to_owned(),
+            lookback: 200,
             futures_account: true,
             indicator_use_live_values: false,
             risk_controls: normalize_strategy_risk_controls(&Value::Null),

@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-pub const STOP_LOSS_MODE_ORDER: &[&str] = &["usdt", "percent", "both"];
-pub const STOP_LOSS_SCOPE_OPTIONS: &[&str] = &["per_trade", "cumulative", "entire_account"];
+use crate::generated_python_parity::{
+    PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+};
+
+pub const STOP_LOSS_MODE_ORDER: &[(&str, &str)] = PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES;
+pub const STOP_LOSS_SCOPE_OPTIONS: &[(&str, &str)] = PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StopLossSettings {
@@ -778,13 +782,13 @@ fn close_opposite_plan(
     }
 }
 
-fn normalize_choice(value: &str, choices: &[&str], default_value: &str) -> String {
+fn normalize_choice(value: &str, choices: &[(&str, &str)], default_value: &str) -> String {
     let text = value.trim().to_lowercase();
-    if choices.iter().any(|choice| *choice == text) {
-        text
-    } else {
-        default_value.to_owned()
-    }
+    choices
+        .iter()
+        .find(|(key, canonical)| *key == text || *canonical == text)
+        .map(|(_, canonical)| (*canonical).to_owned())
+        .unwrap_or_else(|| default_value.to_owned())
 }
 
 fn normalize_trade_side(value: &str) -> String {
@@ -825,6 +829,18 @@ struct CumulativeSideTotals {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generated_python_parity::{
+        PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+    };
+
+    #[test]
+    fn stop_loss_options_are_the_generated_python_config_choices() {
+        assert_eq!(STOP_LOSS_MODE_ORDER, PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES);
+        assert_eq!(
+            STOP_LOSS_SCOPE_OPTIONS,
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES
+        );
+    }
 
     fn stop_ctx(mode: &str, scope: &str, usdt: f64, percent: f64) -> StopLossRuntimeContext {
         build_stop_loss_runtime_context(

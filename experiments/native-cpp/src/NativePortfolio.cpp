@@ -519,4 +519,158 @@ QJsonObject applyCloseAllToPositionState(
     });
 }
 
+QJsonObject reconcileMissingPositionState(
+    QJsonObject &openPositionRecords,
+    QJsonObject &entryAllocations,
+    QJsonArray &closedPositionRecords,
+    QJsonObject &missingCounts,
+    QJsonObject &pendingCloseTimes,
+    const QJsonObject &livePositionRecords,
+    const QJsonObject &config,
+    const QString &nowText,
+    int maxHistory) {
+    const int configuredThreshold = std::max(
+        1,
+        config.value(QStringLiteral("positions_missing_threshold")).toInt(2));
+    const double configuredGrace = std::max(
+        0.0,
+        config.value(QStringLiteral("positions_missing_grace_seconds")).toDouble(30.0));
+    const bool allowAutoClose = config.value(QStringLiteral("positions_missing_autoclose"))
+        .isUndefined()
+        ? true
+        : config.value(QStringLiteral("positions_missing_autoclose")).toBool(true);
+    const QDateTime now = QDateTime::fromString(nowText, Qt::ISODateWithMs).isValid()
+        ? QDateTime::fromString(nowText, Qt::ISODateWithMs)
+        : QDateTime::fromString(nowText, Qt::ISODate);
+
+    QJsonArray closedKeys;
+    QJsonArray droppedKeys;
+    QJsonArray waitingKeys;
+    QJsonArray liveKeys;
+
+    for (auto it = livePositionRecords.constBegin(); it != livePositionRecords.constEnd(); ++it) {
+        const QString key = it.key();
+        liveKeys.append(key);
+        missingCounts.remove(key);
+        pendingCloseTimes.remove(key);
+        if (!it.value().isObject()) {
+            continue;
+        }
+        QJsonObject record = it.value().toObject();
+        const QJsonObject previous = openPositionRecords.value(key).toObject();
+        if (!record.contains(QStringLiteral("open_time")) || record.value(QStringLiteral("open_time")).toString().trimmed().isEmpty()) {
+            const QString previousOpen = previous.value(QStringLiteral("open_time")).toString().trimmed();
+            if (!previousOpen.isEmpty()) {
+                record.insert(QStringLiteral("open_time"), previousOpen);
+            }
+        }
+        QJsonObject mergedData = previous.value(QStringLiteral("data")).toObject();
+        const QJsonObject liveData = record.value(QStringLiteral("data")).toObject();
+        for (auto dataIt = liveData.constBegin(); dataIt != liveData.constEnd(); ++dataIt) {
+            mergedData.insert(dataIt.key(), dataIt.value());
+        }
+        if (!mergedData.isEmpty()) {
+            record.insert(QStringLiteral("data"), mergedData);
+        }
+        if (record.value(QStringLiteral("interval")).toString().trimmed().isEmpty()) {
+            const QString previousInterval = previous.value(QStringLiteral("interval")).toString().trimmed();
+            if (!previousInterval.isEmpty()) {
+                record.insert(QStringLiteral("interval"), previousInterval);
+            }
+        }
+        if (record.value(QStringLiteral("allocations")).toArray().isEmpty()) {
+            const QJsonArray previousAllocations = previous.value(QStringLiteral("allocations")).toArray();
+            if (!previousAllocations.isEmpty()) {
+                record.insert(QStringLiteral("allocations"), previousAllocations);
+            }
+        }
+        if ((!record.contains(QStringLiteral("stop_loss_enabled"))
+             || !record.value(QStringLiteral("stop_loss_enabled")).toBool())
+            && previous.contains(QStringLiteral("stop_loss_enabled"))
+            && previous.value(QStringLiteral("stop_loss_enabled")).toBool()) {
+            record.insert(QStringLiteral("stop_loss_enabled"), previous.value(QStringLiteral("stop_loss_enabled")));
+        }
+        if (!record.contains(QStringLiteral("close_time"))
+            && previous.contains(QStringLiteral("close_time"))) {
+            record.insert(QStringLiteral("close_time"), previous.value(QStringLiteral("close_time")));
+        }
+        openPositionRecords.insert(key, record);
+    }
+
+    const QStringList previousKeys = openPositionRecords.keys();
+    for (const QString &key : previousKeys) {
+        if (livePositionRecords.contains(key)) {
+            continue;
+        }
+        const int count = missingCounts.value(key).toInt(0) + 1;
+        missingCounts.insert(key, count);
+        const int threshold = pendingCloseTimes.contains(key) ? 1 : configuredThreshold;
+        if (count < threshold) {
+            waitingKeys.append(key);
+            continue;
+        }
+
+        const QJsonObject record = openPositionRecords.value(key).toObject();
+        bool withinGrace = false;
+        if (configuredGrace > 0.0 && !pendingCloseTimes.contains(key) && now.isValid()) {
+            QString openText = record.value(QStringLiteral("open_time")).toString().trimmed();
+            if (openText.isEmpty()) {
+                openText = record.value(QStringLiteral("data")).toObject()
+                    .value(QStringLiteral("open_time")).toString().trimmed();
+            }
+            QDateTime opened = QDateTime::fromString(openText, Qt::ISODateWithMs);
+            if (!opened.isValid()) {
+                opened = QDateTime::fromString(openText, Qt::ISODate);
+            }
+            if (!opened.isValid()) {
+                opened = QDateTime::fromString(openText, QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            }
+            if (opened.isValid()) {
+                const double ageSeconds = opened.msecsTo(now) / 1000.0;
+                withinGrace = ageSeconds >= 0.0 && ageSeconds < configuredGrace;
+            }
+        }
+        if (withinGrace) {
+            waitingKeys.append(key);
+            continue;
+        }
+
+        if (allowAutoClose) {
+            QJsonObject closed = record;
+            closed.insert(QStringLiteral("status"), QStringLiteral("Closed"));
+            closed.insert(QStringLiteral("close_time"), nowText.trimmed().isEmpty() ? nowIso() : nowText.trimmed());
+            const QJsonArray allocations = entryAllocations.value(key).toArray();
+            if (!allocations.isEmpty()) {
+                closed.insert(QStringLiteral("allocations"), allocations);
+            }
+            QJsonArray next;
+            next.append(closed);
+            for (const QJsonValue &existing : closedPositionRecords) {
+                if (next.size() >= std::max(1, maxHistory)) {
+                    break;
+                }
+                next.append(existing);
+            }
+            closedPositionRecords = next;
+            closedKeys.append(key);
+        } else {
+            droppedKeys.append(key);
+        }
+        openPositionRecords.remove(key);
+        entryAllocations.remove(key);
+        missingCounts.remove(key);
+        pendingCloseTimes.remove(key);
+    }
+
+    return compactObject({
+        {QStringLiteral("closed_keys"), closedKeys},
+        {QStringLiteral("dropped_keys"), droppedKeys},
+        {QStringLiteral("waiting_keys"), waitingKeys},
+        {QStringLiteral("live_keys"), liveKeys},
+        {QStringLiteral("closed_count"), closedKeys.size()},
+        {QStringLiteral("dropped_count"), droppedKeys.size()},
+        {QStringLiteral("waiting_count"), waitingKeys.size()},
+    });
+}
+
 } // namespace NativePortfolio

@@ -33,7 +33,6 @@ const MARKET_SMOKE_WEBSOCKET_TIMEOUT_MS: u64 = 20_000;
 const MARKET_SMOKE_WEBSOCKET_READ_TIMEOUT: Duration =
     Duration::from_millis(MARKET_SMOKE_WEBSOCKET_TIMEOUT_MS);
 // The Python-owned default RSI needs a meaningful completed-candle history.
-const NATIVE_RUNTIME_MARKET_CYCLE_CANDLE_LIMIT: usize = 64;
 const ACCOUNT_SMOKE_MAX_ATTEMPTS: usize = 3;
 const ACCOUNT_SMOKE_RETRY_DELAY: Duration = Duration::from_millis(750);
 const PROMOTION_SOURCE_TREE_IGNORED_PATHS: &[&str] = &[
@@ -599,8 +598,8 @@ fn collect_market_smoke_evidence<C: MarketSmokeClient + ?Sized>(
 ) -> Result<MarketSmokeEvidence, Box<dyn std::error::Error>> {
     let symbols = market_client.fetch_usdt_symbols(false, Some(5))?;
     println!("market symbols fetched: {}", symbols.len());
-    let candles =
-        market_client.fetch_klines(symbol, interval, NATIVE_RUNTIME_MARKET_CYCLE_CANDLE_LIMIT)?;
+    let runtime_defaults = NativeRuntimeLoopConfig::default();
+    let candles = market_client.fetch_klines(symbol, interval, runtime_defaults.lookback)?;
     println!("klines fetched: {}", candles.len());
     let ticker = market_client.fetch_ticker_price(symbol)?;
     println!("ticker fetched: {} @ {}", ticker.symbol, ticker.price);

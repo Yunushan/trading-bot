@@ -14,6 +14,7 @@ pub mod exchange_connectors;
 pub mod generated_python_exchange_support_reference;
 pub mod generated_python_indicator_reference;
 pub mod generated_python_parity;
+pub mod generated_python_portfolio_reference;
 pub mod llm_advisory;
 pub mod market_data;
 pub mod native_indicators;
@@ -86,6 +87,18 @@ pub fn python_source_llm_provider_keys() -> &'static [&'static str] {
 
 pub fn python_source_llm_providers() -> &'static [NativePythonLlmProvider] {
     generated_python_parity::PYTHON_LLM_PROVIDERS
+}
+
+/// Return the Python source-of-truth default model for every LLM provider.
+///
+/// Keeping this projection in the shared Rust core makes the default-model
+/// field part of the native API surface instead of leaving it reachable only
+/// through the generated implementation module.
+pub fn python_source_llm_provider_default_models() -> Vec<(&'static str, &'static str)> {
+    python_source_llm_providers()
+        .iter()
+        .map(|provider| (provider.key, provider.default_model))
+        .collect()
 }
 
 pub fn python_source_connector_keys() -> &'static [&'static str] {
@@ -1110,212 +1123,39 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
     ]
 }
 
-pub struct LlmProviderOption {
-    pub key: &'static str,
-    pub label: &'static str,
-    pub mode: &'static str,
-    pub default_base_url: &'static str,
-    pub default_model: &'static str,
-    pub api_key_env: &'static str,
-    pub model_suggestions: &'static [&'static str],
-    pub reasoning_efforts: &'static [&'static str],
-}
+/// Compatibility alias for callers of the former hand-maintained catalog.
+/// The returned slice is the generated Python source-of-truth catalog.
+pub type LlmProviderOption = generated_python_parity::PythonLlmProvider;
 
 pub fn llm_provider_options() -> &'static [LlmProviderOption] {
-    &[
-        LlmProviderOption {
-            key: "openai",
-            label: "OpenAI / ChatGPT",
-            mode: "cloud",
-            default_base_url: "https://api.openai.com/v1",
-            default_model: "gpt-5.5",
-            api_key_env: "OPENAI_API_KEY",
-            model_suggestions: &[
-                "gpt-5.5",
-                "gpt-5.5-2026-04-23",
-                "gpt-5.5-pro",
-                "gpt-5.5-pro-2026-04-23",
-                "gpt-5.4",
-                "gpt-5.4-2026-03-05",
-                "gpt-5.4-pro",
-                "gpt-5.4-pro-2026-03-05",
-                "gpt-5.4-mini",
-                "gpt-5.4-mini-2026-03-17",
-                "gpt-5.4-nano",
-                "gpt-5.4-nano-2026-03-17",
-                "gpt-5.3-chat-latest",
-                "gpt-5.3-codex",
-                "gpt-5.2",
-                "gpt-5.2-codex",
-                "gpt-5.2-chat-latest",
-                "gpt-5.2-pro",
-                "gpt-5.1",
-                "gpt-5-codex",
-                "gpt-5-mini",
-                "gpt-5-nano",
-                "gpt-4.1",
-                "gpt-4.1-mini",
-                "gpt-4.1-nano",
-            ],
-            reasoning_efforts: &[
-                "default", "none", "minimal", "low", "medium", "high", "xhigh",
-            ],
-        },
-        LlmProviderOption {
-            key: "anthropic",
-            label: "Anthropic Claude",
-            mode: "cloud",
-            default_base_url: "https://api.anthropic.com",
-            default_model: "claude-sonnet-4-5-20250929",
-            api_key_env: "ANTHROPIC_API_KEY",
-            model_suggestions: &[
-                "claude-sonnet-4-5-20250929",
-                "claude-haiku-4-5-20251001",
-                "claude-opus-4-5-20251101",
-                "claude-opus-4-1-20250805",
-                "claude-opus-4-20250514",
-                "claude-sonnet-4-20250514",
-                "claude-sonnet-4-5",
-                "claude-haiku-4-5",
-                "claude-opus-4-5",
-                "claude-opus-4-1",
-                "claude-opus-4-0",
-                "claude-sonnet-4-0",
-            ],
-            reasoning_efforts: &["default", "disabled", "enabled", "low", "medium", "high"],
-        },
-        LlmProviderOption {
-            key: "gemini",
-            label: "Google Gemini",
-            mode: "cloud",
-            default_base_url: "https://generativelanguage.googleapis.com/v1beta",
-            default_model: "gemini-3-flash-preview",
-            api_key_env: "GEMINI_API_KEY",
-            model_suggestions: &[
-                "gemini-3.1-pro-preview",
-                "gemini-3.1-pro-preview-customtools",
-                "gemini-3-flash-preview",
-                "gemini-3.1-flash-lite-preview",
-                "gemini-2.5-pro",
-                "gemini-2.5-flash",
-                "gemini-2.5-flash-preview-09-2025",
-                "gemini-2.5-flash-lite",
-                "gemini-2.5-flash-lite-preview-09-2025",
-            ],
-            reasoning_efforts: &["default", "minimal", "low", "medium", "high"],
-        },
-        LlmProviderOption {
-            key: "deepseek",
-            label: "DeepSeek",
-            mode: "cloud",
-            default_base_url: "https://api.deepseek.com",
-            default_model: "deepseek-v4-flash",
-            api_key_env: "DEEPSEEK_API_KEY",
-            model_suggestions: &[
-                "deepseek-v4-flash",
-                "deepseek-v4-pro",
-                "deepseek-chat",
-                "deepseek-reasoner",
-            ],
-            reasoning_efforts: &["default", "disabled", "enabled", "high", "max"],
-        },
-        LlmProviderOption {
-            key: "mistral",
-            label: "Mistral AI",
-            mode: "cloud",
-            default_base_url: "https://api.mistral.ai/v1",
-            default_model: "mistral-small-latest",
-            api_key_env: "MISTRAL_API_KEY",
-            model_suggestions: &[
-                "mistral-large-latest",
-                "mistral-medium-latest",
-                "mistral-small-latest",
-                "codestral-latest",
-                "open-mistral-nemo",
-            ],
-            reasoning_efforts: &["default", "low", "medium", "high"],
-        },
-        LlmProviderOption {
-            key: "grok",
-            label: "xAI Grok",
-            mode: "cloud",
-            default_base_url: "https://api.x.ai/v1",
-            default_model: "grok-4.3",
-            api_key_env: "XAI_API_KEY",
-            model_suggestions: &[
-                "grok-4.3",
-                "grok-4.3-latest",
-                "grok-4.20",
-                "grok-4.20-reasoning",
-                "grok-4.20-non-reasoning",
-                "grok-4-fast-reasoning",
-                "grok-4-fast-non-reasoning",
-            ],
-            reasoning_efforts: &["default", "low", "medium", "high"],
-        },
-        LlmProviderOption {
-            key: "qwen",
-            label: "Alibaba Qwen / DashScope",
-            mode: "cloud",
-            default_base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-            default_model: "qwen3.6-plus",
-            api_key_env: "DASHSCOPE_API_KEY",
-            model_suggestions: &[
-                "qwen3.6-max-preview",
-                "qwen3.6-plus",
-                "qwen3.6-plus-2026-04-02",
-                "qwen3.6-flash",
-                "qwen3.6-flash-2026-04-16",
-                "qwen3-max",
-                "qwen3-max-2026-01-23",
-                "qwen3-max-2025-09-23",
-                "qwen3-max-preview",
-                "qwen3.5-plus",
-                "qwen3.5-plus-2026-02-15",
-                "qwen3.5-flash",
-                "qwen3.5-flash-2026-02-23",
-                "qwen3-coder-plus",
-                "qwen3-coder-flash",
-                "qwen-plus-us",
-                "qwen-flash-us",
-            ],
-            reasoning_efforts: &["default", "low", "medium", "high"],
-        },
-        LlmProviderOption {
-            key: "local",
-            label: "Local / Custom OpenAI-Compatible",
-            mode: "local",
-            default_base_url: "http://127.0.0.1:11434/v1",
-            default_model: "qwen3:8b",
-            api_key_env: "LOCAL_LLM_API_KEY",
-            model_suggestions: &[
-                "qwen3:0.6b",
-                "qwen3:1.7b",
-                "qwen3:4b",
-                "qwen3:8b",
-                "qwen3:14b",
-                "qwen3:30b-a3b",
-                "qwen3:32b",
-                "qwen3",
-                "gpt-oss:20b",
-                "gpt-oss:latest",
-                "llama3.3",
-                "llama3.1:8b",
-                "llama3.2:3b",
-                "llama3.2:1b",
-                "mistral-small3.2",
-                "deepseek-r1:8b",
-                "gemma3:4b",
-                "custom-model",
-            ],
-            reasoning_efforts: &["default", "none", "low", "medium", "high", "xhigh"],
-        },
-    ]
+    python_source_llm_providers()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_llm_provider_view_is_the_generated_python_catalog() {
+        assert!(std::ptr::eq(
+            llm_provider_options().as_ptr(),
+            python_source_llm_providers().as_ptr()
+        ));
+        assert_eq!(llm_provider_options().len(), 15);
+        assert!(
+            llm_provider_options()
+                .iter()
+                .any(|provider| provider.key == "ollama")
+        );
+    }
+
+    #[test]
+    fn llm_default_model_projection_matches_generated_python_catalog() {
+        let defaults = python_source_llm_provider_default_models();
+        assert_eq!(defaults.len(), python_source_llm_providers().len());
+        assert!(defaults.contains(&("local", "qwen3:8b")));
+        assert!(defaults.contains(&("open-source", "Qwen/Qwen3-8B")));
+    }
 
     #[test]
     fn service_api_route_schemas_are_generated_from_python_source() {

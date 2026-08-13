@@ -11,6 +11,8 @@ ownership plus external evidence.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from copy import deepcopy
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from typing import Any
@@ -99,6 +101,7 @@ NATIVE_PARITY_SCHEMA_VERSION = 1
 NATIVE_PARITY_SOURCE = "Languages/Python"
 CPP_STANDALONE_RUNTIME_READY = False
 RUST_STANDALONE_RUNTIME_READY = False
+NATIVE_POSITION_RECONCILIATION_REFERENCE_SCHEMA_VERSION = 1
 
 CONFIG_MODE_OPTIONS = ("Live", "Demo", "Testnet")
 THEME_OPTIONS = ("Light", "Dark", "Blue", "Yellow", "Green", "Red")
@@ -304,6 +307,371 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         rust_full_parity=True,
     ),
 )
+
+
+def _native_position_reference_allocation(
+    ledger_id: str,
+    interval: str,
+    *,
+    qty: float = 1.0,
+) -> dict[str, object]:
+    return {
+        "ledger_id": ledger_id,
+        "interval": interval,
+        "interval_display": interval,
+        "trigger_indicators": ["rsi"],
+        "trade_id": f"trade-{ledger_id}",
+        "client_order_id": f"client-{ledger_id}",
+        "order_id": f"order-{ledger_id}",
+        "event_uid": f"event-{ledger_id}",
+        "slot_id": f"slot-{ledger_id}",
+        "context_key": f"context-{ledger_id}",
+        "open_time": "2026-01-01T00:00:00Z",
+        "close_time": "",
+        "qty": qty,
+        "margin_usdt": 100.0,
+        "notional": 100.0,
+        "pnl_value": None,
+        "status": "Open",
+        "close_price": None,
+        "entry_price": 100.0,
+        "leverage": 1,
+    }
+
+
+def _native_position_reference_record(
+    symbol: str,
+    side_key: str,
+    interval: str,
+    *,
+    open_time: str = "",
+    stop_loss_enabled: bool = False,
+    allocations: list[dict[str, object]] | None = None,
+    quantity: float | None = None,
+) -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "side_key": side_key,
+        "interval": interval,
+        "quantity": quantity,
+        "mark_price": 100.0 if quantity is not None else None,
+        "size_usdt": 100.0 if quantity is not None else None,
+        "margin_usdt": 100.0 if quantity is not None else None,
+        "pnl_value": 0.0 if quantity is not None else None,
+        "roi_percent": 0.0 if quantity is not None else None,
+        "leverage": 1 if quantity is not None else None,
+        "liquidation_price": None,
+        "status": "Active",
+        "stop_loss_enabled": stop_loss_enabled,
+        "open_time": open_time,
+        "close_time": "",
+        "allocations": deepcopy(allocations or []),
+    }
+
+
+def _native_position_reference_state(
+    *,
+    open_position_records: dict[str, dict[str, object]],
+    entry_allocations: dict[str, list[dict[str, object]]] | None = None,
+    closed_position_records: list[dict[str, object]] | None = None,
+    missing_counts: dict[str, int] | None = None,
+    pending_close_times: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "entry_allocations": deepcopy(entry_allocations or {}),
+        "open_position_records": deepcopy(open_position_records),
+        "closed_position_records": deepcopy(closed_position_records or []),
+        "missing_counts": deepcopy(missing_counts or {}),
+        "pending_close_times": deepcopy(pending_close_times or {}),
+    }
+
+
+def _native_position_reference_epoch(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _native_position_reference_reconcile_step(
+    state: dict[str, object],
+    live_position_records: dict[str, dict[str, object]],
+    policy: dict[str, object],
+    *,
+    now_epoch_seconds: float,
+    close_time: str,
+    max_history: int,
+) -> tuple[dict[str, object], dict[str, list[str]]]:
+    """Apply the deterministic portion of Python's missing-position policy.
+
+    The GUI still performs the exchange freshness lookup and liquidation lookup
+    around this state transition. This pure case runner is the Python oracle for
+    the same state transition that native runtimes execute after those lookups.
+    """
+
+    next_state = deepcopy(state)
+    open_records = next_state["open_position_records"]
+    entry_allocations = next_state["entry_allocations"]
+    closed_records = next_state["closed_position_records"]
+    missing_counts = next_state["missing_counts"]
+    pending_close_times = next_state["pending_close_times"]
+    assert isinstance(open_records, dict)
+    assert isinstance(entry_allocations, dict)
+    assert isinstance(closed_records, list)
+    assert isinstance(missing_counts, dict)
+    assert isinstance(pending_close_times, dict)
+
+    live_keys: list[str] = []
+    for key in sorted(live_position_records):
+        live_keys.append(key)
+        record = deepcopy(live_position_records[key])
+        previous = open_records.get(key)
+        if not isinstance(previous, dict):
+            previous = {}
+        if not str(record.get("open_time") or "").strip():
+            previous_open = str(previous.get("open_time") or "").strip()
+            if previous_open:
+                record["open_time"] = previous_open
+        if not str(record.get("interval") or "").strip():
+            previous_interval = str(previous.get("interval") or "").strip()
+            if previous_interval:
+                record["interval"] = previous_interval
+        if not record.get("allocations"):
+            previous_allocations = previous.get("allocations")
+            if previous_allocations:
+                record["allocations"] = deepcopy(previous_allocations)
+        if not bool(record.get("stop_loss_enabled")) and bool(previous.get("stop_loss_enabled")):
+            record["stop_loss_enabled"] = True
+        if not str(record.get("status") or "").strip():
+            record["status"] = "Active"
+        missing_counts.pop(key, None)
+        pending_close_times.pop(key, None)
+        open_records[key] = record
+
+    try:
+        threshold = int(policy.get("positions_missing_threshold") or 2)
+    except (TypeError, ValueError):
+        threshold = 2
+    threshold = max(1, threshold)
+    try:
+        grace_seconds = float(policy.get("positions_missing_grace_seconds") or 30.0)
+    except (TypeError, ValueError):
+        grace_seconds = 0.0
+    if grace_seconds != grace_seconds or grace_seconds < 0.0:
+        grace_seconds = 0.0
+    allow_autoclose = bool(policy.get("positions_missing_autoclose", True))
+    summary = {
+        "closed_keys": [],
+        "dropped_keys": [],
+        "waiting_keys": [],
+        "live_keys": live_keys,
+    }
+
+    for key in sorted(open_records):
+        if key in live_position_records:
+            continue
+        count = int(missing_counts.get(key, 0) or 0) + 1
+        missing_counts[key] = count
+        required = 1 if key in pending_close_times else threshold
+        if count < required:
+            summary["waiting_keys"].append(key)
+            continue
+
+        within_grace = False
+        if grace_seconds > 0.0 and key not in pending_close_times:
+            record = open_records.get(key)
+            open_value = record.get("open_time") if isinstance(record, dict) else None
+            opened = _native_position_reference_epoch(open_value)
+            if opened is not None:
+                age_seconds = now_epoch_seconds - opened
+                within_grace = 0.0 <= age_seconds < grace_seconds
+        if within_grace:
+            summary["waiting_keys"].append(key)
+            continue
+
+        if allow_autoclose:
+            record = deepcopy(open_records.pop(key))
+            record["status"] = "Closed"
+            record["close_time"] = close_time.strip() or str(record.get("close_time") or "")
+            allocations = entry_allocations.get(key)
+            if allocations:
+                record["allocations"] = deepcopy(allocations)
+            closed_records.insert(0, record)
+            del closed_records[max(1, int(max_history)) :]
+            summary["closed_keys"].append(key)
+        else:
+            open_records.pop(key, None)
+            entry_allocations.pop(key, None)
+            summary["dropped_keys"].append(key)
+        missing_counts.pop(key, None)
+        pending_close_times.pop(key, None)
+
+    for key in summary:
+        summary[key].sort()
+    return next_state, summary
+
+
+def native_position_reconciliation_reference_cases() -> list[dict[str, object]]:
+    allocation = _native_position_reference_allocation("ledger-btc", "5m")
+    cases: list[dict[str, object]] = [
+        {
+            "name": "live-recovery-preserves-python-metadata",
+            "initial_state": _native_position_reference_state(
+                open_position_records={
+                    "BTCUSDT:L": _native_position_reference_record(
+                        "BTCUSDT",
+                        "L",
+                        "5m",
+                        open_time="2026-01-01T00:00:00Z",
+                        stop_loss_enabled=True,
+                        allocations=[allocation],
+                    )
+                },
+                entry_allocations={"BTCUSDT:L": [allocation]},
+                missing_counts={"BTCUSDT:L": 2},
+                pending_close_times={"BTCUSDT:L": "2026-01-01T00:00:01Z"},
+            ),
+            "steps": [
+                {
+                    "live_position_records": {
+                        "BTCUSDT:L": _native_position_reference_record(
+                            "BTCUSDT", "L", "", quantity=1.0
+                        )
+                    },
+                    "policy": {
+                        "positions_missing_threshold": 2,
+                        "positions_missing_grace_seconds": 30.0,
+                        "positions_missing_autoclose": True,
+                    },
+                    "now_epoch_seconds": 1_767_225_602.0,
+                    "close_time": "2026-01-01T00:00:02Z",
+                    "max_history": 10,
+                }
+            ],
+        },
+        {
+            "name": "threshold-autoclose-after-two-misses",
+            "initial_state": _native_position_reference_state(
+                open_position_records={
+                    "ETHUSDT:S": _native_position_reference_record("ETHUSDT", "S", "1m")
+                }
+            ),
+            "steps": [
+                {
+                    "live_position_records": {},
+                    "policy": {
+                        "positions_missing_threshold": 2,
+                        "positions_missing_grace_seconds": 0.0,
+                        "positions_missing_autoclose": True,
+                    },
+                    "now_epoch_seconds": 1_767_225_660.0,
+                    "close_time": "2026-01-01T00:01:00Z",
+                    "max_history": 10,
+                },
+                {
+                    "live_position_records": {},
+                    "policy": {
+                        "positions_missing_threshold": 2,
+                        "positions_missing_grace_seconds": 0.0,
+                        "positions_missing_autoclose": True,
+                    },
+                    "now_epoch_seconds": 1_767_225_661.0,
+                    "close_time": "2026-01-01T00:01:01Z",
+                    "max_history": 10,
+                },
+            ],
+        },
+        {
+            "name": "grace-period-waits-before-close",
+            "initial_state": _native_position_reference_state(
+                open_position_records={
+                    "XRPUSDT:L": _native_position_reference_record(
+                        "XRPUSDT", "L", "5m", open_time="2026-01-01T00:00:00Z"
+                    )
+                }
+            ),
+            "steps": [
+                {
+                    "live_position_records": {},
+                    "policy": {
+                        "positions_missing_threshold": 1,
+                        "positions_missing_grace_seconds": 120.0,
+                        "positions_missing_autoclose": True,
+                    },
+                    "now_epoch_seconds": 1_767_225_660.0,
+                    "close_time": "2026-01-01T00:01:00Z",
+                    "max_history": 10,
+                }
+            ],
+        },
+        {
+            "name": "autoclose-disabled-drops-record",
+            "initial_state": _native_position_reference_state(
+                open_position_records={
+                    "SOLUSDT:S": _native_position_reference_record("SOLUSDT", "S", "1m")
+                }
+            ),
+            "steps": [
+                {
+                    "live_position_records": {},
+                    "policy": {
+                        "positions_missing_threshold": 1,
+                        "positions_missing_grace_seconds": 0.0,
+                        "positions_missing_autoclose": False,
+                    },
+                    "now_epoch_seconds": 1_767_225_660.0,
+                    "close_time": "2026-01-01T00:01:00Z",
+                    "max_history": 10,
+                }
+            ],
+        },
+        {
+            "name": "pending-close-bypasses-threshold-and-grace",
+            "initial_state": _native_position_reference_state(
+                open_position_records={
+                    "ADAUSDT:L": _native_position_reference_record(
+                        "ADAUSDT", "L", "1m", open_time="2026-01-01T00:00:00Z"
+                    )
+                },
+                pending_close_times={"ADAUSDT:L": "2026-01-01T00:00:10Z"},
+            ),
+            "steps": [
+                {
+                    "live_position_records": {},
+                    "policy": {
+                        "positions_missing_threshold": 2,
+                        "positions_missing_grace_seconds": 120.0,
+                        "positions_missing_autoclose": True,
+                    },
+                    "now_epoch_seconds": 1_767_225_660.0,
+                    "close_time": "2026-01-01T00:01:00Z",
+                    "max_history": 10,
+                }
+            ],
+        },
+    ]
+
+    for case in cases:
+        state = deepcopy(case["initial_state"])
+        expected_steps: list[dict[str, object]] = []
+        for step in case["steps"]:
+            state, summary = _native_position_reference_reconcile_step(
+                state,
+                step["live_position_records"],
+                step["policy"],
+                now_epoch_seconds=float(step["now_epoch_seconds"]),
+                close_time=str(step["close_time"]),
+                max_history=int(step["max_history"]),
+            )
+            expected_steps.append({"summary": summary, "state": deepcopy(state)})
+        case["expected_steps"] = expected_steps
+    return cases
 
 
 def _domain_payload(domain: NativeParityDomain) -> dict[str, Any]:
@@ -619,6 +987,10 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "supported_forex_brokers": list(SUPPORTED_FOREX_BROKERS),
             "broker_order_routing_backends": broker_backends,
             "broker_canonical_names": _broker_canonical_name_payload(),
+        },
+        "position_reconciliation_reference": {
+            "schema_version": NATIVE_POSITION_RECONCILIATION_REFERENCE_SCHEMA_VERSION,
+            "cases": native_position_reconciliation_reference_cases(),
         },
     }
 

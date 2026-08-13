@@ -42,6 +42,16 @@ pub enum BinanceStreamEvent {
     Kline(BinanceKlineStreamCandle),
 }
 
+/// Result of one bounded WebSocket read.  `Idle` is distinct from `Closed` so
+/// a poll-driven caller can keep the connection alive when no event arrived
+/// during its short read window.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinanceStreamRead {
+    Event(BinanceStreamEvent),
+    Idle,
+    Closed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinanceStreamKind {
     BookTicker,
@@ -295,6 +305,42 @@ impl BinanceWebSocketClient {
                 }
                 Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
                 Message::Close(_) => return Ok(None),
+            }
+        }
+    }
+
+    /// Read one event without turning a bounded socket timeout into a stream
+    /// failure.  Background native runtime workers use this to remain
+    /// responsive between Binance kline messages.
+    pub fn read_next_event_with_timeout(
+        socket: &mut BinanceWebSocket,
+        timeout: Duration,
+    ) -> Result<BinanceStreamRead> {
+        if timeout.is_zero() {
+            bail!("Binance WebSocket read timeout must be greater than zero");
+        }
+        Self::set_read_timeout(socket, Some(timeout))?;
+        loop {
+            match socket.read() {
+                Ok(Message::Text(text)) => {
+                    return parse_stream_event(text.as_str()).map(BinanceStreamRead::Event);
+                }
+                Ok(Message::Binary(bytes)) => {
+                    let text =
+                        std::str::from_utf8(&bytes).context("decode Binance WebSocket binary")?;
+                    return parse_stream_event(text).map(BinanceStreamRead::Event);
+                }
+                Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => continue,
+                Ok(Message::Close(_)) => return Ok(BinanceStreamRead::Closed),
+                Err(tungstenite::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    return Ok(BinanceStreamRead::Idle);
+                }
+                Err(error) => return Err(anyhow!(error).context("read Binance WebSocket message")),
             }
         }
     }

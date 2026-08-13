@@ -42,6 +42,17 @@ QJsonObject applyCloseAllToPositionState(
     const QString &closeTime,
     int maxHistory = 500);
 
+QJsonObject reconcileMissingPositionState(
+    QJsonObject &openPositionRecords,
+    QJsonObject &entryAllocations,
+    QJsonArray &closedPositionRecords,
+    QJsonObject &missingCounts,
+    QJsonObject &pendingCloseTimes,
+    const QJsonObject &livePositionRecords,
+    const QJsonObject &config,
+    const QString &nowText,
+    int maxHistory = 500);
+
 QString serializePositionKey(const QString &symbol, const QString &sideKey);
 QString sideLabel(const QString &sideKey);
 

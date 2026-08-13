@@ -15,6 +15,7 @@
 #include "../src/generated/PythonExchangeSupportReference.h"
 #include "../src/generated/PythonIndicatorReference.h"
 #include "../src/generated/PythonParityContract.h"
+#include "../src/generated/PythonPortfolioReference.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -156,6 +157,101 @@ int main(int argc, char **argv) {
         const QJsonObject expected = exchangeSupportCase.value(QStringLiteral("expected")).toObject();
         check(actual == expected,
               QStringLiteral("native C++ exchange support payload should exactly match Python case %1").arg(caseName));
+    }
+
+    const QString portfolioReferenceHash = QString::fromUtf8(
+        PythonPortfolioReference::kPythonSourceContractHash.data(),
+        static_cast<qsizetype>(PythonPortfolioReference::kPythonSourceContractHash.size()));
+    check(portfolioReferenceHash == parityContractHash,
+          QStringLiteral("generated C++ portfolio reference should match the Python source contract hash"));
+    const QByteArray portfolioReferenceJson(
+        PythonPortfolioReference::kReferenceJson.data(),
+        static_cast<qsizetype>(PythonPortfolioReference::kReferenceJson.size()));
+    QJsonParseError portfolioReferenceParseError;
+    const QJsonDocument portfolioReferenceDocument = QJsonDocument::fromJson(
+        portfolioReferenceJson,
+        &portfolioReferenceParseError);
+    check(portfolioReferenceParseError.error == QJsonParseError::NoError
+              && portfolioReferenceDocument.isObject(),
+          QStringLiteral("generated C++ portfolio reference should contain valid JSON"));
+    const QJsonObject portfolioReference = portfolioReferenceDocument.object();
+    check(portfolioReference.value(QStringLiteral("python_source_contract_hash")).toString()
+              == parityContractHash,
+          QStringLiteral("portfolio fixture should identify the active Python source contract"));
+    const QJsonArray portfolioCases = portfolioReference
+        .value(QStringLiteral("position_reconciliation_cases"))
+        .toArray();
+    check(portfolioCases.size() >= 5,
+          QStringLiteral("generated Python portfolio reference should cover the missing-position policy paths"));
+    for (qsizetype caseIndex = 0; caseIndex < portfolioCases.size(); ++caseIndex) {
+        const QJsonObject portfolioCase = portfolioCases.at(caseIndex).toObject();
+        const QString caseName = portfolioCase.value(QStringLiteral("name")).toString(
+            QStringLiteral("portfolio-fixture-%1").arg(caseIndex));
+        const QJsonObject initialState = portfolioCase.value(QStringLiteral("initial_state")).toObject();
+        QJsonObject openRecords = initialState.value(QStringLiteral("open_position_records")).toObject();
+        QJsonObject entryAllocations = initialState.value(QStringLiteral("entry_allocations")).toObject();
+        QJsonArray closedRecords = initialState.value(QStringLiteral("closed_position_records")).toArray();
+        QJsonObject missingCounts = initialState.value(QStringLiteral("missing_counts")).toObject();
+        QJsonObject pendingCloseTimes = initialState.value(QStringLiteral("pending_close_times")).toObject();
+        const QJsonArray steps = portfolioCase.value(QStringLiteral("steps")).toArray();
+        const QJsonArray expectedSteps = portfolioCase.value(QStringLiteral("expected_steps")).toArray();
+        check(steps.size() == expectedSteps.size(),
+              QStringLiteral("Python portfolio fixture should provide one expected state per step for %1")
+                  .arg(caseName));
+        const qsizetype stepCount = std::min(steps.size(), expectedSteps.size());
+        for (qsizetype stepIndex = 0; stepIndex < stepCount; ++stepIndex) {
+            const QJsonObject step = steps.at(stepIndex).toObject();
+            const QJsonObject policy = step.value(QStringLiteral("policy")).toObject();
+            const QJsonObject actualSummary = NativePortfolio::reconcileMissingPositionState(
+                openRecords,
+                entryAllocations,
+                closedRecords,
+                missingCounts,
+                pendingCloseTimes,
+                step.value(QStringLiteral("live_position_records")).toObject(),
+                policy,
+                step.value(QStringLiteral("close_time")).toString(),
+                step.value(QStringLiteral("max_history")).toInt(500));
+            const QJsonObject expectedStep = expectedSteps.at(stepIndex).toObject();
+            const QJsonObject expectedSummary = expectedStep.value(QStringLiteral("summary")).toObject();
+            for (const QString &summaryKey : {QStringLiteral("closed_keys"),
+                                               QStringLiteral("dropped_keys"),
+                                               QStringLiteral("waiting_keys"),
+                                               QStringLiteral("live_keys")}) {
+                check(actualSummary.value(summaryKey).toArray()
+                          == expectedSummary.value(summaryKey).toArray(),
+                      QStringLiteral("native C++ portfolio summary diverged from Python for %1 step %2/%3")
+                          .arg(caseName, QString::number(stepIndex), summaryKey));
+            }
+            check(actualSummary.value(QStringLiteral("closed_count")).toInt()
+                      == expectedSummary.value(QStringLiteral("closed_keys")).toArray().size(),
+                  QStringLiteral("native C++ portfolio closed count diverged from Python for %1 step %2")
+                      .arg(caseName).arg(stepIndex));
+            check(actualSummary.value(QStringLiteral("dropped_count")).toInt()
+                      == expectedSummary.value(QStringLiteral("dropped_keys")).toArray().size(),
+                  QStringLiteral("native C++ portfolio dropped count diverged from Python for %1 step %2")
+                      .arg(caseName).arg(stepIndex));
+            check(actualSummary.value(QStringLiteral("waiting_count")).toInt()
+                      == expectedSummary.value(QStringLiteral("waiting_keys")).toArray().size(),
+                  QStringLiteral("native C++ portfolio waiting count diverged from Python for %1 step %2")
+                      .arg(caseName).arg(stepIndex));
+            const QJsonObject expectedState = expectedStep.value(QStringLiteral("state")).toObject();
+            check(openRecords == expectedState.value(QStringLiteral("open_position_records")).toObject(),
+                  QStringLiteral("native C++ open portfolio state diverged from Python for %1 step %2")
+                      .arg(caseName).arg(stepIndex));
+            check(entryAllocations == expectedState.value(QStringLiteral("entry_allocations")).toObject(),
+                  QStringLiteral("native C++ allocation state diverged from Python for %1 step %2")
+                      .arg(caseName).arg(stepIndex));
+            check(closedRecords == expectedState.value(QStringLiteral("closed_position_records")).toArray(),
+                  QStringLiteral("native C++ closed portfolio history diverged from Python for %1 step %2")
+                      .arg(caseName).arg(stepIndex));
+            check(missingCounts == expectedState.value(QStringLiteral("missing_counts")).toObject(),
+                  QStringLiteral("native C++ missing-count state diverged from Python for %1 step %2")
+                      .arg(caseName).arg(stepIndex));
+            check(pendingCloseTimes == expectedState.value(QStringLiteral("pending_close_times")).toObject(),
+                  QStringLiteral("native C++ pending-close state diverged from Python for %1 step %2")
+                      .arg(caseName).arg(stepIndex));
+        }
     }
 
     QJsonArray indicatorCases = indicatorReference.value(QStringLiteral("indicator_cases")).toArray();
@@ -1661,11 +1757,21 @@ int main(int argc, char **argv) {
     check(normalizedRuntimeControls.value(QStringLiteral("stop_loss")).toObject().value(QStringLiteral("scope")).toString() == QStringLiteral("per_trade"),
           QStringLiteral("native strategy controls should normalize invalid stop-loss scope"));
 
+    const QJsonObject normalizedBacktestControls = NativeStrategyRuntime::normalizeStrategyControls(
+        QStringLiteral("backtest"),
+        QJsonObject{
+            {QStringLiteral("loop_interval_override"), QStringLiteral(" 1 h ")},
+            {QStringLiteral("leverage"), QStringLiteral("3")},
+        });
+    check(normalizedBacktestControls.value(QStringLiteral("loop_interval_override")).toString() == QStringLiteral("1h"),
+          QStringLiteral("native backtest controls should preserve Python loop interval overrides"));
+
     const QJsonObject normalizedRiskControls = NativeStrategyRuntime::normalizeStrategyRiskControls(
         QJsonObject{
             {QStringLiteral("indicator_use_live_values"), QStringLiteral("true")},
             {QStringLiteral("allow_opposite_positions"), false},
             {QStringLiteral("indicator_flip_cooldown_bars"), QStringLiteral("4")},
+            {QStringLiteral("positions_missing_grace_seconds"), QStringLiteral("12.75")},
             {QStringLiteral("stop_loss"), QJsonObject{
                 {QStringLiteral("enabled"), QStringLiteral("true")},
                 {QStringLiteral("mode"), QStringLiteral("both")},
@@ -1679,6 +1785,10 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ native risk normalization should consume Python opposite-position controls"));
     check(normalizedRiskControls.value(QStringLiteral("indicator_flip_cooldown_bars")).toInt() == 4,
           QStringLiteral("C++ native risk normalization should preserve Python cooldown bars"));
+    check(qFuzzyCompare(
+              normalizedRiskControls.value(QStringLiteral("positions_missing_grace_seconds")).toDouble(),
+              12.75),
+          QStringLiteral("C++ native risk normalization should preserve Python fractional missing-position grace"));
     check(normalizedRiskControls.value(QStringLiteral("stop_loss")).toObject()
               .value(QStringLiteral("enabled")).toBool(),
           QStringLiteral("C++ native risk normalization should preserve Python stop-loss enablement"));
@@ -2300,6 +2410,133 @@ int main(int argc, char **argv) {
           QStringLiteral("native close-all reconciliation should remove closed allocations"));
     check(closeAllHistory.at(0).toObject().value(QStringLiteral("status")).toString() == QStringLiteral("Closed"),
           QStringLiteral("native close-all reconciliation should add closed history snapshot"));
+
+    QJsonObject metadataOpenRecords{
+        {QStringLiteral("BTCUSDT:L"), QJsonObject{
+            {QStringLiteral("symbol"), QStringLiteral("BTCUSDT")},
+            {QStringLiteral("side_key"), QStringLiteral("L")},
+            {QStringLiteral("status"), QStringLiteral("Active")},
+            {QStringLiteral("interval"), QStringLiteral("5m")},
+            {QStringLiteral("open_time"), QStringLiteral("2026-06-18T12:00:00Z")},
+            {QStringLiteral("stop_loss_enabled"), true},
+            {QStringLiteral("data"), QJsonObject{{QStringLiteral("trigger_desc"), QStringLiteral("RSI")}}},
+            {QStringLiteral("allocations"), QJsonArray{QJsonObject{
+                {QStringLiteral("ledger_id"), QStringLiteral("ledger-1")},
+                {QStringLiteral("interval"), QStringLiteral("5m")},
+            }}},
+        }},
+    };
+    QJsonObject metadataAllocations;
+    QJsonArray metadataHistory;
+    QJsonObject metadataMissingCounts;
+    QJsonObject metadataPendingClose{
+        {QStringLiteral("BTCUSDT:L"), QStringLiteral("2026-06-18T12:00:01Z")},
+    };
+    const QJsonObject metadataLiveRecords{
+        {QStringLiteral("BTCUSDT:L"), QJsonObject{
+            {QStringLiteral("symbol"), QStringLiteral("BTCUSDT")},
+            {QStringLiteral("side_key"), QStringLiteral("L")},
+            {QStringLiteral("status"), QStringLiteral("Active")},
+            {QStringLiteral("data"), QJsonObject{{QStringLiteral("qty"), 1.0}}},
+        }},
+    };
+    const QJsonObject metadataPolicy{
+        {QStringLiteral("positions_missing_threshold"), 2},
+        {QStringLiteral("positions_missing_grace_seconds"), 30.0},
+        {QStringLiteral("positions_missing_autoclose"), true},
+    };
+    NativePortfolio::reconcileMissingPositionState(
+        metadataOpenRecords,
+        metadataAllocations,
+        metadataHistory,
+        metadataMissingCounts,
+        metadataPendingClose,
+        metadataLiveRecords,
+        metadataPolicy,
+        QStringLiteral("2026-06-18T12:00:02Z"));
+    const QJsonObject metadataCurrent = metadataOpenRecords.value(QStringLiteral("BTCUSDT:L")).toObject();
+    check(!metadataPendingClose.contains(QStringLiteral("BTCUSDT:L")),
+          QStringLiteral("native live reconciliation should clear a recovered pending close"));
+    check(metadataCurrent.value(QStringLiteral("interval")).toString() == QStringLiteral("5m")
+              && metadataCurrent.value(QStringLiteral("stop_loss_enabled")).toBool(false),
+          QStringLiteral("native live reconciliation should preserve position metadata"));
+    check(metadataCurrent.value(QStringLiteral("data")).toObject().value(QStringLiteral("trigger_desc")).toString()
+              == QStringLiteral("RSI"),
+          QStringLiteral("native live reconciliation should merge prior position data"));
+    check(metadataCurrent.value(QStringLiteral("allocations")).toArray().size() == 1,
+          QStringLiteral("native live reconciliation should preserve position allocations"));
+
+    QJsonObject missingOpenRecords{
+        {QStringLiteral("BTCUSDT:L"), QJsonObject{
+            {QStringLiteral("symbol"), QStringLiteral("BTCUSDT")},
+            {QStringLiteral("side_key"), QStringLiteral("L")},
+            {QStringLiteral("status"), QStringLiteral("Active")},
+            {QStringLiteral("open_time"), QStringLiteral("2026-06-18T12:00:00Z")},
+        }},
+    };
+    QJsonObject missingCounts;
+    QJsonObject pendingCloseTimes;
+    QJsonArray missingHistory;
+    QJsonObject emptyAllocations;
+    const QJsonObject missingPolicy{
+        {QStringLiteral("positions_missing_threshold"), 2},
+        {QStringLiteral("positions_missing_grace_seconds"), 30.0},
+        {QStringLiteral("positions_missing_autoclose"), true},
+    };
+    const QJsonObject missingFirst = NativePortfolio::reconcileMissingPositionState(
+        missingOpenRecords,
+        emptyAllocations,
+        missingHistory,
+        missingCounts,
+        pendingCloseTimes,
+        {},
+        missingPolicy,
+        QStringLiteral("2026-06-18T12:01:00Z"));
+    check(missingFirst.value(QStringLiteral("waiting_count")).toInt() == 1,
+          QStringLiteral("native missing-position policy should wait for Python threshold"));
+    check(missingOpenRecords.contains(QStringLiteral("BTCUSDT:L")),
+          QStringLiteral("native missing-position policy should preserve a below-threshold record"));
+    const QJsonObject missingSecond = NativePortfolio::reconcileMissingPositionState(
+        missingOpenRecords,
+        emptyAllocations,
+        missingHistory,
+        missingCounts,
+        pendingCloseTimes,
+        {},
+        missingPolicy,
+        QStringLiteral("2026-06-18T12:01:01Z"));
+    check(missingSecond.value(QStringLiteral("closed_count")).toInt() == 1,
+          QStringLiteral("native missing-position policy should close at Python threshold"));
+    check(missingHistory.size() == 1 && !missingOpenRecords.contains(QStringLiteral("BTCUSDT:L")),
+          QStringLiteral("native missing-position policy should move confirmed rows to closed history"));
+
+    QJsonObject graceOpenRecords{
+        {QStringLiteral("ETHUSDT:S"), QJsonObject{
+            {QStringLiteral("symbol"), QStringLiteral("ETHUSDT")},
+            {QStringLiteral("side_key"), QStringLiteral("S")},
+            {QStringLiteral("status"), QStringLiteral("Active")},
+            {QStringLiteral("open_time"), QStringLiteral("2026-06-18T12:00:00Z")},
+        }},
+    };
+    missingCounts = {};
+    missingHistory = {};
+    const QJsonObject gracePolicy{
+        {QStringLiteral("positions_missing_threshold"), 1},
+        {QStringLiteral("positions_missing_grace_seconds"), 120.0},
+        {QStringLiteral("positions_missing_autoclose"), true},
+    };
+    const QJsonObject graceResult = NativePortfolio::reconcileMissingPositionState(
+        graceOpenRecords,
+        emptyAllocations,
+        missingHistory,
+        missingCounts,
+        pendingCloseTimes,
+        {},
+        gracePolicy,
+        QStringLiteral("2026-06-18T12:01:00Z"));
+    check(graceResult.value(QStringLiteral("waiting_count")).toInt() == 1
+              && missingHistory.isEmpty(),
+          QStringLiteral("native missing-position policy should honor Python grace seconds"));
 
     QJsonObject serviceConfig{
         {QStringLiteral("symbols"), QJsonArray{QStringLiteral("ETHUSDT")}},

@@ -1,6 +1,7 @@
 #include "TradingBotWindow.h"
 #include "TradingBotWindow.dashboard_runtime_shared.h"
 #include "TradingBotWindowSupport.h"
+#include "NativePortfolio.h"
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -394,11 +395,34 @@ QWidget *TradingBotWindow::createPositionsTab() {
         }
 
         QSet<QString> liveSymbols;
+        QJsonObject livePositionRecords;
         for (const auto &pos : livePositions.positions) {
             const QString sym = pos.symbol.trimmed().toUpper();
-            if (!sym.isEmpty()) {
-                liveSymbols.insert(sym);
+            if (sym.isEmpty() || !qIsFinite(pos.positionAmt) || std::fabs(pos.positionAmt) <= 1e-10) {
+                continue;
             }
+            liveSymbols.insert(sym);
+            const QString positionSide = pos.positionSide.trimmed().toUpper();
+            const QString sideKey = positionSide == QStringLiteral("LONG")
+                ? QStringLiteral("L")
+                : positionSide == QStringLiteral("SHORT")
+                    ? QStringLiteral("S")
+                    : (pos.positionAmt > 0.0 ? QStringLiteral("L") : QStringLiteral("S"));
+            const QString key = NativePortfolio::serializePositionKey(sym, sideKey);
+            livePositionRecords.insert(key, QJsonObject{
+                {QStringLiteral("symbol"), sym},
+                {QStringLiteral("side_key"), sideKey},
+                {QStringLiteral("status"), QStringLiteral("Active")},
+                {QStringLiteral("data"), QJsonObject{
+                    {QStringLiteral("qty"), std::fabs(pos.positionAmt)},
+                    {QStringLiteral("mark"), pos.markPrice},
+                    {QStringLiteral("size_usdt"), std::fabs(pos.notional)},
+                    {QStringLiteral("margin_usdt"), pos.initialMargin},
+                    {QStringLiteral("pnl_value"), pos.unrealizedProfit},
+                    {QStringLiteral("entry_price"), pos.entryPrice},
+                    {QStringLiteral("leverage"), pos.leverage},
+                }},
+            });
         }
 
         auto setOrCreateCell = [table](int row, int col, const QString &text) {
@@ -412,8 +436,6 @@ QWidget *TradingBotWindow::createPositionsTab() {
             item->setData(Qt::UserRole, text);
         };
 
-        int closedCount = 0;
-        QSet<QString> staleSymbols;
         const QString nowText = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
         for (int row = 0; row < table->rowCount(); ++row) {
             const QString status = table->item(row, 16) ? table->item(row, 16)->text().trimmed().toUpper() : QString();
@@ -421,32 +443,90 @@ QWidget *TradingBotWindow::createPositionsTab() {
                 continue;
             }
             const QString symbol = table->item(row, 0) ? table->item(row, 0)->text().trimmed().toUpper() : QString();
-            if (symbol.isEmpty() || liveSymbols.contains(symbol)) {
+            const QString sideKey = canonicalPositionSideKey(
+                table->item(row, 12) ? table->item(row, 12)->text() : QString());
+            if (symbol.isEmpty() || sideKey.isEmpty()) {
                 continue;
             }
-            staleSymbols.insert(symbol);
+            const QString key = NativePortfolio::serializePositionKey(symbol, sideKey);
+            QJsonObject record = positionsOpenRecords_.value(key).toObject();
+            record.insert(QStringLiteral("symbol"), symbol);
+            record.insert(QStringLiteral("side_key"), sideKey);
+            record.insert(QStringLiteral("status"), QStringLiteral("Active"));
+            const QString interval = table->item(row, 8) ? table->item(row, 8)->text().trimmed() : QString();
+            if (!interval.isEmpty() && interval != QStringLiteral("-")) {
+                record.insert(QStringLiteral("interval"), interval);
+            }
+            const QString openText = table->item(row, 13) ? table->item(row, 13)->text().trimmed() : QString();
+            if (!openText.isEmpty() && openText != QStringLiteral("-")) {
+                record.insert(QStringLiteral("open_time"), openText);
+            }
+            const QString stopLoss = table->item(row, 15) ? table->item(row, 15)->text().trimmed() : QString();
+            if (!stopLoss.isEmpty() && stopLoss != QStringLiteral("-")) {
+                record.insert(QStringLiteral("stop_loss_enabled"), stopLoss.compare(QStringLiteral("Enabled"), Qt::CaseInsensitive) == 0);
+            }
+            positionsOpenRecords_.insert(key, record);
+        }
+
+        const QJsonObject reconciliation = NativePortfolio::reconcileMissingPositionState(
+            positionsOpenRecords_,
+            positionsEntryAllocations_,
+            positionsClosedHistory_,
+            positionsMissingCounts_,
+            positionsPendingCloseTimes_,
+            livePositionRecords,
+            TradingBotWindowSupport::pythonSourceRiskDefaults(),
+            nowText);
+        QSet<QString> closedKeys;
+        for (const QJsonValue &value : reconciliation.value(QStringLiteral("closed_keys")).toArray()) {
+            closedKeys.insert(value.toString());
+        }
+        QSet<QString> droppedKeys;
+        for (const QJsonValue &value : reconciliation.value(QStringLiteral("dropped_keys")).toArray()) {
+            droppedKeys.insert(value.toString());
+        }
+        int closedCount = closedKeys.size();
+        for (int row = table->rowCount() - 1; row >= 0; --row) {
+            const QString status = table->item(row, 16) ? table->item(row, 16)->text().trimmed().toUpper() : QString();
+            if (status != QStringLiteral("OPEN")) {
+                continue;
+            }
+            const QString symbol = table->item(row, 0) ? table->item(row, 0)->text().trimmed().toUpper() : QString();
+            const QString sideKey = canonicalPositionSideKey(
+                table->item(row, 12) ? table->item(row, 12)->text() : QString());
+            const QString key = NativePortfolio::serializePositionKey(symbol, sideKey);
+            if (droppedKeys.contains(key)) {
+                table->removeRow(row);
+                continue;
+            }
+            if (!closedKeys.contains(key)) {
+                continue;
+            }
             setOrCreateCell(row, 16, QStringLiteral("CLOSED"));
             const QString existingClose = table->item(row, 14) ? table->item(row, 14)->text().trimmed() : QString();
             if (existingClose.isEmpty() || existingClose == QStringLiteral("-")) {
                 setOrCreateCell(row, 14, nowText);
             }
-            ++closedCount;
         }
 
-        if (!staleSymbols.isEmpty()) {
+        if (!closedKeys.isEmpty() || !droppedKeys.isEmpty()) {
             QList<QString> runtimeKeys = dashboardRuntimeOpenPositions_.keys();
             for (const QString &runtimeKey : runtimeKeys) {
                 const QString symbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
-                if (staleSymbols.contains(symbol)) {
+                const RuntimePosition position = dashboardRuntimeOpenPositions_.value(runtimeKey);
+                const QString sideKey = canonicalPositionSideKey(position.side);
+                const QString key = NativePortfolio::serializePositionKey(symbol, sideKey);
+                if (closedKeys.contains(key) || droppedKeys.contains(key)) {
                     dashboardRuntimeOpenPositions_.remove(runtimeKey);
                 }
             }
         }
 
         updateStatusMessage(
-            QString("Positions synced from Binance: %1 live symbol(s), %2 stale local row(s) closed.")
+            QString("Positions synced from Binance: %1 live symbol(s), %2 stale local row(s) closed, %3 waiting for reconciliation.")
                 .arg(liveSymbols.size())
-                .arg(closedCount));
+                .arg(closedCount)
+                .arg(reconciliation.value(QStringLiteral("waiting_count")).toInt(0)));
         applyPositionsViewMode();
     });
     connect(closeSelectedBtn, &QPushButton::clicked, this, [=]() {
@@ -548,6 +628,18 @@ QWidget *TradingBotWindow::createPositionsTab() {
                 }
                 setCellText(row, 14, closeTime);
                 setCellText(row, 16, QStringLiteral("CLOSED"));
+                const QString rowSymbol = cellText(row, 0, true).trimmed().toUpper();
+                const QString rowSideKey = canonicalPositionSideKey(cellText(row, 12, true));
+                if (!rowSymbol.isEmpty() && !rowSideKey.isEmpty()) {
+                    const QString key = NativePortfolio::serializePositionKey(rowSymbol, rowSideKey);
+                    QJsonObject record = positionsOpenRecords_.value(key).toObject();
+                    record.insert(QStringLiteral("symbol"), rowSymbol);
+                    record.insert(QStringLiteral("side_key"), rowSideKey);
+                    record.insert(QStringLiteral("status"), QStringLiteral("Closing"));
+                    positionsOpenRecords_.insert(key, record);
+                    positionsPendingCloseTimes_.insert(key, closeTime);
+                    positionsMissingCounts_.insert(key, 0);
+                }
             }
             removeMatchingRuntimePositions();
             applyPositionsViewMode();
@@ -596,6 +688,15 @@ QWidget *TradingBotWindow::createPositionsTab() {
                 updateStatusMessage(QStringLiteral("Selected position close rejected: %1").arg(detail));
                 return;
             }
+            const QString closeTime = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+            const QString stateKey = NativePortfolio::serializePositionKey(symbol, sideKey);
+            QJsonObject stateRecord = positionsOpenRecords_.value(stateKey).toObject();
+            stateRecord.insert(QStringLiteral("symbol"), symbol);
+            stateRecord.insert(QStringLiteral("side_key"), sideKey);
+            stateRecord.insert(QStringLiteral("status"), QStringLiteral("Closing"));
+            positionsOpenRecords_.insert(stateKey, stateRecord);
+            positionsPendingCloseTimes_.insert(stateKey, closeTime);
+            positionsMissingCounts_.insert(stateKey, 0);
             setCellText(selectedRow, 16, QStringLiteral("CLOSING"));
             updateStatusMessage(QStringLiteral("Selected position close accepted by Python runtime: %1 %2.")
                                     .arg(symbol, sideLabel));
@@ -719,14 +820,62 @@ QWidget *TradingBotWindow::createPositionsTab() {
     });
     connect(closeAllBtn, &QPushButton::clicked, this, [=]() {
         const int localRowCount = table->rowCount();
+        const auto recordCloseAllSuccess = [this, table](const QStringList &symbols) {
+            QJsonArray closeResults;
+            QSet<QString> targetSymbols;
+            for (const QString &rawSymbol : symbols) {
+                const QString symbol = rawSymbol.trimmed().toUpper();
+                if (symbol.isEmpty() || targetSymbols.contains(symbol)) {
+                    continue;
+                }
+                targetSymbols.insert(symbol);
+                closeResults.append(QJsonObject{
+                    {QStringLiteral("symbol"), symbol},
+                    {QStringLiteral("ok"), true},
+                });
+            }
+            const QString closeTime = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+            NativePortfolio::applyCloseAllToPositionState(
+                positionsOpenRecords_,
+                positionsEntryAllocations_,
+                positionsClosedHistory_,
+                closeResults,
+                closeTime);
+            for (int row = 0; row < table->rowCount(); ++row) {
+                const QString symbol = table->item(row, 0)
+                    ? table->item(row, 0)->text().trimmed().toUpper()
+                    : QString();
+                if (table->item(row, 16)
+                    && table->item(row, 16)->text().trimmed().compare(QStringLiteral("OPEN"), Qt::CaseInsensitive) == 0
+                    && (targetSymbols.isEmpty() || targetSymbols.contains(symbol))) {
+                    if (!table->item(row, 14)) {
+                        table->setItem(row, 14, new QTableWidgetItem());
+                    }
+                    table->item(row, 14)->setText(closeTime);
+                    table->item(row, 14)->setData(Qt::UserRole, closeTime);
+                    if (!table->item(row, 16)) {
+                        table->setItem(row, 16, new QTableWidgetItem());
+                    }
+                    table->item(row, 16)->setText(QStringLiteral("CLOSED"));
+                    table->item(row, 16)->setData(Qt::UserRole, QStringLiteral("CLOSED"));
+                }
+            }
+            const QList<QString> runtimeKeys = dashboardRuntimeOpenPositions_.keys();
+            for (const QString &runtimeKey : runtimeKeys) {
+                const QString symbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
+                if (targetSymbols.isEmpty() || targetSymbols.contains(symbol)) {
+                    dashboardRuntimeOpenPositions_.remove(runtimeKey);
+                }
+            }
+        };
         const QString mode = dashboardModeCombo_
             ? dashboardModeCombo_->currentText()
             : TradingBotWindowSupport::pythonSourceDefaultExecutionConfig()
                   .value(QStringLiteral("mode"))
                   .toString(QStringLiteral("Demo/Testnet"));
         if (TradingBotWindowSupport::isPaperTradingModeLabel(mode)) {
+            recordCloseAllSuccess({});
             table->setRowCount(0);
-            dashboardRuntimeOpenPositions_.clear();
             updateStatusMessage(QString("Cleared %1 local paper position row(s).").arg(localRowCount));
             applyPositionsViewMode();
             return;
@@ -771,6 +920,7 @@ QWidget *TradingBotWindow::createPositionsTab() {
             int skipped = 0;
             int succeeded = 0;
             int failed = 0;
+            QStringList successfulSymbols;
             QStringList failures;
             for (const auto &balance : balances.balances) {
                 const QString asset = balance.asset.trimmed().toUpper();
@@ -849,10 +999,13 @@ QWidget *TradingBotWindow::createPositionsTab() {
                     continue;
                 }
                 ++succeeded;
+                successfulSymbols.push_back(symbol);
+            }
+            if (!successfulSymbols.isEmpty()) {
+                recordCloseAllSuccess(successfulSymbols);
             }
             if (failed == 0) {
                 table->setRowCount(0);
-                dashboardRuntimeOpenPositions_.clear();
             }
             updateStatusMessage(
                 QString("Spot close-all evaluated %1 balance(s): %2 order(s) succeeded, %3 failed, %4 skipped%5.")
@@ -882,6 +1035,7 @@ QWidget *TradingBotWindow::createPositionsTab() {
         int requested = 0;
         int succeeded = 0;
         int failed = 0;
+        QStringList successfulSymbols;
         QStringList failures;
         for (const auto &pos : livePositions.positions) {
             if (!qIsFinite(pos.positionAmt) || std::fabs(pos.positionAmt) <= 1e-10) {
@@ -912,6 +1066,7 @@ QWidget *TradingBotWindow::createPositionsTab() {
                 referencePrice);
             if (order.ok) {
                 ++succeeded;
+                successfulSymbols.push_back(symbol);
             } else {
                 ++failed;
                 failures.push_back(QStringLiteral("%1: %2").arg(symbol, order.error));
@@ -919,15 +1074,17 @@ QWidget *TradingBotWindow::createPositionsTab() {
         }
 
         if (requested == 0) {
+            recordCloseAllSuccess({});
             table->setRowCount(0);
-            dashboardRuntimeOpenPositions_.clear();
             updateStatusMessage("Market close-all found no live futures positions; local open rows were cleared.");
             applyPositionsViewMode();
             return;
         }
+        if (!successfulSymbols.isEmpty()) {
+            recordCloseAllSuccess(successfulSymbols);
+        }
         if (failed == 0) {
             table->setRowCount(0);
-            dashboardRuntimeOpenPositions_.clear();
         }
         updateStatusMessage(
             QString("Market close-all requested %1 live position(s): %2 succeeded, %3 failed%4.")
@@ -969,8 +1126,16 @@ QWidget *TradingBotWindow::createPositionsTab() {
             };
             const QString symbol = rawText(row, 0).trimmed().toUpper();
             const QString interval = rawText(row, 8).trimmed().toLower();
+            const QString sideKey = canonicalPositionSideKey(rawText(row, 12));
             if (!symbol.isEmpty() && !interval.isEmpty()) {
                 clearedPrefixes.insert(QStringLiteral("%1|%2|").arg(symbol, interval));
+            }
+            if (!symbol.isEmpty() && !sideKey.isEmpty()) {
+                const QString stateKey = NativePortfolio::serializePositionKey(symbol, sideKey);
+                positionsOpenRecords_.remove(stateKey);
+                positionsEntryAllocations_.remove(stateKey);
+                positionsMissingCounts_.remove(stateKey);
+                positionsPendingCloseTimes_.remove(stateKey);
             }
         }
         if (!clearedPrefixes.isEmpty()) {
@@ -996,6 +1161,10 @@ QWidget *TradingBotWindow::createPositionsTab() {
         const int rowCount = table->rowCount();
         table->setRowCount(0);
         dashboardRuntimeOpenPositions_.clear();
+        positionsOpenRecords_ = {};
+        positionsEntryAllocations_ = {};
+        positionsMissingCounts_ = {};
+        positionsPendingCloseTimes_ = {};
         updateStatusMessage(QString("Positions cleared: %1 total row(s).").arg(rowCount));
         applyPositionsViewMode();
     });
@@ -1054,6 +1223,54 @@ void TradingBotWindow::hydrateDashboardServicePortfolio(const QJsonObject &portf
     }
 
     const QJsonArray positions = portfolio.value(QStringLiteral("positions")).toArray();
+    QJsonObject serviceOpenRecords;
+    for (const QJsonValue &value : positions) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject position = value.toObject();
+        const QString symbol = position.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        const QString sideKey = canonicalPositionSideKey(
+            position.value(QStringLiteral("side_key")).toString());
+        if (symbol.isEmpty() || sideKey.isEmpty()) {
+            continue;
+        }
+        const QString key = NativePortfolio::serializePositionKey(symbol, sideKey);
+        QJsonObject record = positionsOpenRecords_.value(key).toObject();
+        record.insert(QStringLiteral("symbol"), symbol);
+        record.insert(QStringLiteral("side_key"), sideKey);
+        record.insert(QStringLiteral("status"), QStringLiteral("Active"));
+        for (const QString &field : {
+                 QStringLiteral("interval"),
+                 QStringLiteral("open_time"),
+                 QStringLiteral("close_time"),
+                 QStringLiteral("stop_loss_enabled")}) {
+            if (position.contains(field)) {
+                record.insert(field, position.value(field));
+            }
+        }
+        QJsonObject data = record.value(QStringLiteral("data")).toObject();
+        for (const QString &field : {
+                 QStringLiteral("quantity"),
+                 QStringLiteral("mark_price"),
+                 QStringLiteral("size_usdt"),
+                 QStringLiteral("margin_usdt"),
+                 QStringLiteral("pnl_value"),
+                 QStringLiteral("roi_percent"),
+                 QStringLiteral("leverage"),
+                 QStringLiteral("liquidation_price")}) {
+            if (position.contains(field)) {
+                data.insert(field, position.value(field));
+            }
+        }
+        if (!data.isEmpty()) {
+            record.insert(QStringLiteral("data"), data);
+        }
+        serviceOpenRecords.insert(key, record);
+    }
+    positionsOpenRecords_ = serviceOpenRecords;
+    positionsMissingCounts_ = {};
+    positionsPendingCloseTimes_ = {};
     ScopedTableUpdatesPause updatesPause(positionsTable_);
     const bool sortingWasEnabled = positionsTable_->isSortingEnabled();
     positionsTable_->setSortingEnabled(false);

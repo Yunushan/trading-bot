@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "612035f87f016e6418e6ae8a045f55a7377c7ae101cf16b7f46a4a2c8095d2e5";
+inline constexpr std::string_view kPythonSourceContractHash = "b2d6c7ce206556c2f4a422cabbee5114a2b0935f722966a863d5b1ecc09cb4d0";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;

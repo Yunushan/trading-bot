@@ -3838,6 +3838,7 @@ dependencies = [
 name = "trading-bot-tauri-desktop"
 version = "1.0.36"
 dependencies = [
+ "chrono",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

@@ -781,7 +781,6 @@ pub fn normalize_strategy_risk_controls(controls: &Value) -> Value {
         ("indicator_reentry_cooldown_bars", 0),
         ("indicator_flip_confirmation_bars", 1),
         ("positions_missing_threshold", 1),
-        ("positions_missing_grace_seconds", 0),
         ("futures_flat_purge_miss_threshold", 1),
     ];
     for (key, minimum) in INTEGER_KEYS {
@@ -794,6 +793,7 @@ pub fn normalize_strategy_risk_controls(controls: &Value) -> Value {
         "indicator_flip_cooldown_seconds",
         "indicator_min_position_hold_seconds",
         "indicator_reentry_cooldown_seconds",
+        "positions_missing_grace_seconds",
         "futures_flat_purge_grace_seconds",
         "max_auto_bump_percent",
         "auto_bump_percent_multiplier",
@@ -2163,6 +2163,7 @@ mod tests {
             "indicator_use_live_values": "true",
             "allow_opposite_positions": false,
             "indicator_flip_cooldown_bars": "4",
+            "positions_missing_grace_seconds": "12.75",
             "stop_loss": {
                 "enabled": "true",
                 "mode": "both",
@@ -2174,6 +2175,7 @@ mod tests {
         assert_eq!(controls["indicator_use_live_values"], true);
         assert_eq!(controls["allow_opposite_positions"], false);
         assert_eq!(controls["indicator_flip_cooldown_bars"], 4);
+        assert_eq!(controls["positions_missing_grace_seconds"], 12.75);
         assert_eq!(controls["stop_loss"]["enabled"], true);
         assert_eq!(controls["stop_loss"]["scope"], "entire_account");
         assert_eq!(controls["stop_loss"]["percent"], 2.5);

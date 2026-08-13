@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use chrono::{DateTime, NaiveDateTime};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,6 +161,32 @@ pub struct PortfolioReconciliationState {
     pub open_position_records: BTreeMap<(String, String), PortfolioPositionRecord>,
     pub closed_position_records: Vec<PortfolioPositionRecord>,
     pub pending_close_times: BTreeMap<(String, String), String>,
+    pub missing_counts: BTreeMap<(String, String), usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissingPositionPolicy {
+    pub threshold: usize,
+    pub grace_seconds: f64,
+    pub autoclose: bool,
+}
+
+impl Default for MissingPositionPolicy {
+    fn default() -> Self {
+        Self {
+            threshold: 2,
+            grace_seconds: 30.0,
+            autoclose: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MissingPositionReconciliationSummary {
+    pub closed_keys: Vec<(String, String)>,
+    pub dropped_keys: Vec<(String, String)>,
+    pub waiting_keys: Vec<(String, String)>,
+    pub live_keys: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -606,6 +634,134 @@ pub fn apply_close_all_to_position_state(
     }
 }
 
+pub fn reconcile_missing_position_state(
+    state: &mut PortfolioReconciliationState,
+    live_records: BTreeMap<(String, String), PortfolioPositionRecord>,
+    policy: &MissingPositionPolicy,
+    now_epoch_seconds: f64,
+    close_time: impl AsRef<str>,
+    max_history: usize,
+) -> MissingPositionReconciliationSummary {
+    let mut summary = MissingPositionReconciliationSummary::default();
+    let previous_keys = state
+        .open_position_records
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for (raw_key, mut record) in live_records {
+        let key = (
+            normalized_symbol(&raw_key.0),
+            normalized_side_key(&raw_key.1),
+        );
+        state.missing_counts.remove(&key);
+        state.pending_close_times.remove(&key);
+        if let Some(previous) = state.open_position_records.get(&key) {
+            if record.open_time.trim().is_empty() {
+                record.open_time = previous.open_time.clone();
+            }
+            if record.interval.trim().is_empty() {
+                record.interval = previous.interval.clone();
+            }
+            if record.allocations.is_empty() {
+                record.allocations = previous.allocations.clone();
+            }
+            if !record.stop_loss_enabled {
+                record.stop_loss_enabled = previous.stop_loss_enabled;
+            }
+        }
+        if record.status.trim().is_empty() {
+            record.status = "Active".to_owned();
+        }
+        state.open_position_records.insert(key.clone(), record);
+        summary.live_keys.push(key);
+    }
+
+    let threshold = policy.threshold.max(1);
+    let grace_seconds = if policy.grace_seconds.is_finite() {
+        policy.grace_seconds.max(0.0)
+    } else {
+        0.0
+    };
+    let close_time = close_time.as_ref().trim();
+
+    for key in previous_keys {
+        if summary.live_keys.contains(&key) {
+            continue;
+        }
+        let count = state.missing_counts.entry(key.clone()).or_insert(0);
+        *count = count.saturating_add(1);
+        let required = if state.pending_close_times.contains_key(&key) {
+            1
+        } else {
+            threshold
+        };
+        if *count < required {
+            summary.waiting_keys.push(key);
+            continue;
+        }
+
+        let within_grace = if grace_seconds > 0.0
+            && !state.pending_close_times.contains_key(&key)
+            && now_epoch_seconds.is_finite()
+        {
+            state
+                .open_position_records
+                .get(&key)
+                .and_then(|record| {
+                    let open_text = if !record.open_time.trim().is_empty() {
+                        record.open_time.trim()
+                    } else {
+                        ""
+                    };
+                    parse_epoch_seconds(open_text)
+                })
+                .map(|opened| {
+                    let age = now_epoch_seconds - opened;
+                    (0.0..grace_seconds).contains(&age)
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if within_grace {
+            summary.waiting_keys.push(key);
+            continue;
+        }
+
+        if policy.autoclose {
+            if let Some(mut record) = state.open_position_records.remove(&key) {
+                record.status = "Closed".to_owned();
+                record.close_time = if !close_time.is_empty() {
+                    close_time.to_owned()
+                } else {
+                    record.close_time.clone()
+                };
+                if let Some(allocations) = state.entry_allocations.remove(&key) {
+                    record.allocations = allocations;
+                }
+                state.closed_position_records.insert(0, record);
+                state.closed_position_records.truncate(max_history.max(1));
+            } else {
+                state.entry_allocations.remove(&key);
+            }
+            summary.closed_keys.push(key.clone());
+        } else {
+            state.open_position_records.remove(&key);
+            state.entry_allocations.remove(&key);
+            summary.dropped_keys.push(key.clone());
+        }
+        state.missing_counts.remove(&key);
+        state.pending_close_times.remove(&key);
+    }
+
+    summary.live_keys.sort();
+    summary.closed_keys.sort();
+    summary.dropped_keys.sort();
+    summary.waiting_keys.sort();
+    summary
+}
+
 pub fn serialize_allocation_key(key: &(String, String)) -> String {
     format!("{}:{}", key.0, key.1)
 }
@@ -939,9 +1095,147 @@ fn finite_option(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
 }
 
+fn parse_epoch_seconds(value: &str) -> Option<f64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Some(parsed.timestamp_millis() as f64 / 1_000.0);
+    }
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|parsed| parsed.and_utc().timestamp_millis() as f64 / 1_000.0)
+        .or_else(|| {
+            DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f%:z")
+                .ok()
+                .map(|parsed| parsed.timestamp_millis() as f64 / 1_000.0)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+
+    fn fixture_state(value: &Value) -> PortfolioReconciliationState {
+        let mut state = PortfolioReconciliationState::default();
+        if let Some(records) = value
+            .get("open_position_records")
+            .and_then(Value::as_object)
+        {
+            for (key, record) in records {
+                state.open_position_records.insert(
+                    deserialize_allocation_key(key),
+                    serde_json::from_value(record.clone()).expect("fixture open record"),
+                );
+            }
+        }
+        if let Some(allocations) = value.get("entry_allocations").and_then(Value::as_object) {
+            for (key, entries) in allocations {
+                state.entry_allocations.insert(
+                    deserialize_allocation_key(key),
+                    serde_json::from_value(entries.clone()).expect("fixture allocations"),
+                );
+            }
+        }
+        if let Some(records) = value
+            .get("closed_position_records")
+            .and_then(Value::as_array)
+        {
+            state.closed_position_records = serde_json::from_value(Value::Array(records.clone()))
+                .expect("fixture closed records");
+        }
+        if let Some(counts) = value.get("missing_counts").and_then(Value::as_object) {
+            for (key, count) in counts {
+                state.missing_counts.insert(
+                    deserialize_allocation_key(key),
+                    count.as_u64().expect("fixture missing count") as usize,
+                );
+            }
+        }
+        if let Some(pending) = value.get("pending_close_times").and_then(Value::as_object) {
+            for (key, close_time) in pending {
+                state.pending_close_times.insert(
+                    deserialize_allocation_key(key),
+                    close_time
+                        .as_str()
+                        .expect("fixture pending close time")
+                        .to_owned(),
+                );
+            }
+        }
+        state
+    }
+
+    fn fixture_live_records(value: &Value) -> BTreeMap<(String, String), PortfolioPositionRecord> {
+        value
+            .as_object()
+            .expect("fixture live records")
+            .iter()
+            .map(|(key, record)| {
+                (
+                    deserialize_allocation_key(key),
+                    serde_json::from_value(record.clone()).expect("fixture live record"),
+                )
+            })
+            .collect()
+    }
+
+    fn fixture_state_value(state: &PortfolioReconciliationState) -> Value {
+        let open_position_records = state
+            .open_position_records
+            .iter()
+            .map(|(key, record)| {
+                (
+                    serialize_allocation_key(key),
+                    serde_json::to_value(record).expect("serialize fixture open record"),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let entry_allocations = state
+            .entry_allocations
+            .iter()
+            .map(|(key, allocations)| {
+                (
+                    serialize_allocation_key(key),
+                    serde_json::to_value(allocations).expect("serialize fixture allocations"),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let missing_counts = state
+            .missing_counts
+            .iter()
+            .map(|(key, count)| (serialize_allocation_key(key), json!(count)))
+            .collect::<serde_json::Map<_, _>>();
+        let pending_close_times = state
+            .pending_close_times
+            .iter()
+            .map(|(key, close_time)| (serialize_allocation_key(key), json!(close_time)))
+            .collect::<serde_json::Map<_, _>>();
+        json!({
+            "entry_allocations": entry_allocations,
+            "open_position_records": open_position_records,
+            "closed_position_records": state.closed_position_records,
+            "missing_counts": missing_counts,
+            "pending_close_times": pending_close_times,
+        })
+    }
+
+    fn fixture_summary_value(summary: &MissingPositionReconciliationSummary) -> Value {
+        let keys = |values: &[(String, String)]| {
+            values
+                .iter()
+                .map(serialize_allocation_key)
+                .collect::<Vec<_>>()
+        };
+        json!({
+            "closed_keys": keys(&summary.closed_keys),
+            "dropped_keys": keys(&summary.dropped_keys),
+            "waiting_keys": keys(&summary.waiting_keys),
+            "live_keys": keys(&summary.live_keys),
+        })
+    }
 
     fn allocation(id: &str, interval: &str, qty: f64, margin: f64) -> PortfolioAllocation {
         PortfolioAllocation {
@@ -1261,5 +1555,176 @@ mod tests {
             state.closed_position_records[0].allocations[0].trigger_indicators,
             vec!["rsi".to_owned()]
         );
+    }
+
+    #[test]
+    fn missing_position_reconciliation_matches_every_python_generated_reference_case() {
+        let fixture: Value = serde_json::from_str(
+            crate::generated_python_portfolio_reference::PYTHON_PORTFOLIO_REFERENCE_JSON,
+        )
+        .expect("generated Python portfolio reference should be valid JSON");
+        assert_eq!(
+            fixture["python_source_contract_hash"].as_str(),
+            Some(crate::generated_python_parity::PYTHON_SOURCE_CONTRACT_HASH),
+        );
+        assert_eq!(
+            crate::generated_python_portfolio_reference::PYTHON_PORTFOLIO_REFERENCE_CONTRACT_HASH,
+            crate::generated_python_parity::PYTHON_SOURCE_CONTRACT_HASH,
+        );
+        let cases = fixture["position_reconciliation_cases"]
+            .as_array()
+            .expect("generated Python portfolio cases should be an array");
+        assert!(cases.len() >= 5);
+
+        for case in cases {
+            let case_name = case["name"].as_str().unwrap_or("unnamed portfolio case");
+            let mut state = fixture_state(&case["initial_state"]);
+            let steps = case["steps"].as_array().expect("portfolio fixture steps");
+            let expected_steps = case["expected_steps"]
+                .as_array()
+                .expect("portfolio fixture expected steps");
+            assert_eq!(steps.len(), expected_steps.len(), "{case_name}: step count");
+            for (step, expected) in steps.iter().zip(expected_steps) {
+                let policy_value = &step["policy"];
+                let policy = MissingPositionPolicy {
+                    threshold: policy_value["positions_missing_threshold"]
+                        .as_u64()
+                        .expect("fixture threshold") as usize,
+                    grace_seconds: policy_value["positions_missing_grace_seconds"]
+                        .as_f64()
+                        .expect("fixture grace seconds"),
+                    autoclose: policy_value["positions_missing_autoclose"]
+                        .as_bool()
+                        .expect("fixture autoclose"),
+                };
+                let summary = reconcile_missing_position_state(
+                    &mut state,
+                    fixture_live_records(&step["live_position_records"]),
+                    &policy,
+                    step["now_epoch_seconds"].as_f64().expect("fixture now"),
+                    step["close_time"].as_str().expect("fixture close time"),
+                    step["max_history"].as_u64().expect("fixture history limit") as usize,
+                );
+                assert_eq!(
+                    fixture_summary_value(&summary),
+                    expected["summary"],
+                    "{case_name}: summary diverged from Python",
+                );
+                assert_eq!(
+                    fixture_state_value(&state),
+                    expected["state"],
+                    "{case_name}: state diverged from Python",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn missing_position_reconciliation_matches_python_threshold_and_grace() {
+        let mut state = PortfolioReconciliationState::default();
+        state.open_position_records.insert(
+            ("BTCUSDT".to_owned(), "L".to_owned()),
+            record("BTCUSDT", "L", "1m"),
+        );
+        let policy = MissingPositionPolicy {
+            threshold: 2,
+            grace_seconds: 30.0,
+            autoclose: true,
+        };
+
+        let first = reconcile_missing_position_state(
+            &mut state,
+            BTreeMap::new(),
+            &policy,
+            1_767_225_660.0,
+            "2026-01-01T00:01:00Z",
+            10,
+        );
+        assert_eq!(first.waiting_keys.len(), 1);
+        assert!(
+            state
+                .open_position_records
+                .contains_key(&("BTCUSDT".to_owned(), "L".to_owned()))
+        );
+
+        let second = reconcile_missing_position_state(
+            &mut state,
+            BTreeMap::new(),
+            &policy,
+            1_767_225_661.0,
+            "2026-01-01T00:01:01Z",
+            10,
+        );
+        assert_eq!(second.closed_keys.len(), 1);
+        assert_eq!(state.closed_position_records.len(), 1);
+        assert!(
+            !state
+                .open_position_records
+                .contains_key(&("BTCUSDT".to_owned(), "L".to_owned()))
+        );
+
+        let mut grace_state = PortfolioReconciliationState::default();
+        grace_state.open_position_records.insert(
+            ("ETHUSDT".to_owned(), "S".to_owned()),
+            record("ETHUSDT", "S", "5m"),
+        );
+        let grace_policy = MissingPositionPolicy {
+            threshold: 1,
+            grace_seconds: 120.0,
+            autoclose: true,
+        };
+        let grace = reconcile_missing_position_state(
+            &mut grace_state,
+            BTreeMap::new(),
+            &grace_policy,
+            1_767_225_610.0,
+            "2026-01-01T00:00:10Z",
+            10,
+        );
+        assert_eq!(grace.waiting_keys.len(), 1);
+        assert!(grace_state.closed_position_records.is_empty());
+    }
+
+    #[test]
+    fn live_reconciliation_preserves_python_position_metadata_and_clears_pending_close() {
+        let key = ("BTCUSDT".to_owned(), "L".to_owned());
+        let mut state = PortfolioReconciliationState::default();
+        let mut previous = record("BTCUSDT", "L", "5m");
+        previous.stop_loss_enabled = true;
+        previous.open_time = "2026-01-01T00:00:00Z".to_owned();
+        previous.allocations = vec![PortfolioAllocation {
+            ledger_id: "ledger-1".to_owned(),
+            interval: "5m".to_owned(),
+            qty: 1.0,
+            ..PortfolioAllocation::default()
+        }];
+        state.open_position_records.insert(key.clone(), previous);
+        state
+            .pending_close_times
+            .insert(key.clone(), "2026-01-01T00:00:01Z".to_owned());
+
+        let mut live = record("BTCUSDT", "L", "");
+        live.open_time.clear();
+        live.stop_loss_enabled = false;
+        live.allocations.clear();
+        let mut live_records = BTreeMap::new();
+        live_records.insert(key.clone(), live);
+
+        let summary = reconcile_missing_position_state(
+            &mut state,
+            live_records,
+            &MissingPositionPolicy::default(),
+            1_767_225_600.0,
+            "2026-01-01T00:00:00Z",
+            10,
+        );
+        assert_eq!(summary.live_keys, vec![key.clone()]);
+        assert!(!state.pending_close_times.contains_key(&key));
+        let current = state.open_position_records.get(&key).expect("live record");
+        assert_eq!(current.interval, "5m");
+        assert_eq!(current.open_time, "2026-01-01T00:00:00Z");
+        assert!(current.stop_loss_enabled);
+        assert_eq!(current.allocations.len(), 1);
+        assert_eq!(current.allocations[0].ledger_id, "ledger-1");
     }
 }

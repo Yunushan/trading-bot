@@ -378,5 +378,10 @@ private:
     QTableWidget *positionsTable_;
     QCheckBox *positionsAutoRowHeightCheck_;
     QCheckBox *positionsAutoColumnWidthCheck_;
+    QJsonObject positionsOpenRecords_;
+    QJsonObject positionsEntryAllocations_;
+    QJsonObject positionsMissingCounts_;
+    QJsonObject positionsPendingCloseTimes_;
+    QJsonArray positionsClosedHistory_;
     qint64 positionsRowSequenceCounter_ = 1;
 };

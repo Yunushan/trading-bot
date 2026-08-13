@@ -266,6 +266,7 @@ if (BUILD_TESTING)
         src/TradingBotWindowSupport.cpp
         src/TradingBotWindowSupport.h
         src/generated/PythonParityContract.h
+        src/generated/PythonPortfolioReference.h
     )
     target_link_libraries(native_order_safety_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Network)
     if (MSVC)

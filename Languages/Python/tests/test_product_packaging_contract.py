@@ -340,7 +340,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "deepseek-r1:8b",
             "gemma3:4b",
         ):
-            self.assertIn(llm_text, core)
+            self.assertIn(llm_text, core + "\n" + generated_core)
             self.assertIn(llm_text, tauri_browser_surface)
         for source in (tauri_html,):
             for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):

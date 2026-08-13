@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <string_view>
 #include <tuple>
 
 namespace {
@@ -1364,6 +1365,8 @@ QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &co
         if (!assets.isEmpty()) out.insert(QStringLiteral("assets_mode"), assets);
         const QString account = normalizeAccountMode(controls.value(QStringLiteral("account_mode")));
         if (!account.isEmpty()) out.insert(QStringLiteral("account_mode"), account);
+        const QString loop = normalizeLoop(controls.value(QStringLiteral("loop_interval_override")));
+        if (!loop.isEmpty()) out.insert(QStringLiteral("loop_interval_override"), loop);
         if (auto lev = intOf(controls.value(QStringLiteral("leverage")))) out.insert(QStringLiteral("leverage"), integerValue(*lev));
     }
     if (controls.value(QStringLiteral("stop_loss")).isObject()) out.insert(QStringLiteral("stop_loss"), normalizeStopLoss(controls.value(QStringLiteral("stop_loss")).toObject()));
@@ -1404,7 +1407,6 @@ QJsonObject normalizeStrategyRiskControls(const QJsonObject &controls) {
         QStringLiteral("indicator_reentry_cooldown_bars"),
         QStringLiteral("indicator_flip_confirmation_bars"),
         QStringLiteral("positions_missing_threshold"),
-        QStringLiteral("positions_missing_grace_seconds"),
         QStringLiteral("futures_flat_purge_miss_threshold"),
     };
     for (const QString &key : integerKeys) {
@@ -1422,6 +1424,7 @@ QJsonObject normalizeStrategyRiskControls(const QJsonObject &controls) {
         QStringLiteral("indicator_flip_cooldown_seconds"),
         QStringLiteral("indicator_min_position_hold_seconds"),
         QStringLiteral("indicator_reentry_cooldown_seconds"),
+        QStringLiteral("positions_missing_grace_seconds"),
         QStringLiteral("futures_flat_purge_grace_seconds"),
         QStringLiteral("max_auto_bump_percent"),
         QStringLiteral("auto_bump_percent_multiplier"),
