@@ -16,6 +16,8 @@ pub struct BinanceFuturesSymbolFilters {
     pub min_notional: f64,
     pub quantity_precision: i64,
     pub price_precision: i64,
+    pub quote_asset_precision: i64,
+    pub max_leverage: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +29,90 @@ pub struct BinanceFuturesOrderResult {
     pub status: String,
     pub executed_qty: f64,
     pub avg_price: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceFuturesOpenOrder {
+    pub symbol: String,
+    pub order_id: String,
+    pub client_order_id: String,
+    pub status: String,
+    pub side: String,
+    pub order_type: String,
+    pub position_side: String,
+    pub orig_qty: f64,
+    pub executed_qty: f64,
+    pub price: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceFuturesCancelResult {
+    pub symbol: String,
+    pub order_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceFuturesTrade {
+    pub symbol: String,
+    pub trade_id: String,
+    pub order_id: String,
+    pub price: f64,
+    pub quantity: f64,
+    pub quote_quantity: f64,
+    pub realized_pnl: f64,
+    pub commission: f64,
+    pub commission_asset: String,
+    pub time_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceFuturesLeverageBracket {
+    pub symbol: String,
+    pub initial_leverage: i64,
+    pub notional_cap: f64,
+    pub notional_floor: f64,
+    pub maint_margin_ratio: f64,
+    pub cum: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceFuturesForceOrder {
+    pub symbol: String,
+    pub order_id: String,
+    pub side: String,
+    pub position_side: String,
+    pub status: String,
+    pub order_type: String,
+    pub avg_price: f64,
+    pub executed_qty: f64,
+    pub orig_qty: f64,
+    pub price: f64,
+    pub time_ms: i64,
+    pub update_time_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceSpotTrade {
+    pub symbol: String,
+    pub trade_id: String,
+    pub order_id: String,
+    pub price: f64,
+    pub quantity: f64,
+    pub quote_quantity: f64,
+    pub commission: f64,
+    pub commission_asset: String,
+    pub is_buyer: bool,
+    pub is_maker: bool,
+    pub is_best_match: bool,
+    pub time_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceSpotPositionCost {
+    pub symbol: String,
+    pub quantity: f64,
+    pub cost: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,6 +250,206 @@ impl BinanceSignedRestClient {
             &order_params.position_side,
         )
     }
+
+    pub fn fetch_open_futures_orders(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: Option<impl AsRef<str>>,
+    ) -> Result<Vec<BinanceFuturesOpenOrder>> {
+        self.require_futures_market()?;
+        let requested_symbol = symbol
+            .as_ref()
+            .map(|value| normalize_symbol(value.as_ref()))
+            .transpose()?;
+        let mut params = Vec::new();
+        if let Some(symbol) = requested_symbol.as_ref() {
+            params.push(("symbol", symbol.clone()));
+        }
+        let payload = self.signed_get_json(
+            &self.futures_v1_path("/openOrders"),
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+        )?;
+        parse_futures_open_orders(&payload, requested_symbol.as_deref())
+    }
+
+    pub fn cancel_all_open_futures_orders(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: impl AsRef<str>,
+    ) -> Result<BinanceFuturesCancelResult> {
+        self.require_futures_market()?;
+        let symbol = normalize_symbol(symbol.as_ref())?;
+        let params = vec![("symbol", symbol.clone())];
+        let payload = self.signed_delete_json(
+            &self.futures_v1_path("/allOpenOrders"),
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+            FUTURES_ORDER_RECV_WINDOW_MS,
+        )?;
+        parse_futures_cancel_result(&payload, &symbol, "")
+    }
+
+    pub fn cancel_futures_order(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: impl AsRef<str>,
+        order_id: impl AsRef<str>,
+    ) -> Result<BinanceFuturesCancelResult> {
+        self.require_futures_market()?;
+        let symbol = normalize_symbol(symbol.as_ref())?;
+        let order_id = order_id.as_ref().trim().to_owned();
+        if order_id.is_empty() {
+            bail!("Order ID is required");
+        }
+        let params = vec![("symbol", symbol.clone()), ("orderId", order_id.clone())];
+        let payload = self.signed_delete_json(
+            &self.futures_v1_path("/order"),
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+            FUTURES_ORDER_RECV_WINDOW_MS,
+        )?;
+        parse_futures_cancel_result(&payload, &symbol, &order_id)
+    }
+
+    pub fn fetch_futures_trades(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: impl AsRef<str>,
+        order_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<BinanceFuturesTrade>> {
+        self.require_futures_market()?;
+        let symbol = normalize_symbol(symbol.as_ref())?;
+        let limit = limit.clamp(1, 1_000).to_string();
+        let mut params = vec![("symbol", symbol.clone()), ("limit", limit)];
+        if let Some(order_id) = order_id.map(str::trim).filter(|value| !value.is_empty()) {
+            params.push(("orderId", order_id.to_owned()));
+        }
+        let payload = self.signed_get_json(
+            &self.futures_v1_path("/userTrades"),
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+        )?;
+        parse_futures_trades(&payload, &symbol)
+    }
+
+    pub fn fetch_futures_leverage_brackets(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: Option<&str>,
+    ) -> Result<Vec<BinanceFuturesLeverageBracket>> {
+        self.require_futures_market()?;
+        let requested_symbol = symbol.map(normalize_symbol).transpose()?;
+        let params = requested_symbol
+            .as_ref()
+            .map(|symbol| vec![("symbol", symbol.clone())])
+            .unwrap_or_default();
+        let payload = self.signed_get_json(
+            &self.futures_v1_path("/leverageBracket"),
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+        )?;
+        parse_futures_leverage_brackets(&payload, requested_symbol.as_deref())
+    }
+
+    pub fn fetch_futures_max_leverage(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: impl AsRef<str>,
+        fallback_max_leverage: i64,
+    ) -> Result<i64> {
+        self.require_futures_market()?;
+        let configured_cap = fallback_max_leverage.max(1);
+        let raw_symbol = symbol.as_ref().trim();
+        if raw_symbol.is_empty() {
+            return Ok(configured_cap);
+        }
+        let symbol = normalize_symbol(raw_symbol)?;
+        if let Ok(brackets) = self.fetch_futures_leverage_brackets(credentials, Some(&symbol))
+            && let Ok(maximum) = max_futures_leverage_from_brackets(&brackets, configured_cap)
+        {
+            return Ok(maximum);
+        }
+        let exchange_info_max = self
+            .fetch_futures_symbol_filters(&symbol)
+            .ok()
+            .map(|filters| filters.max_leverage)
+            .filter(|value| *value > 0)
+            .unwrap_or(configured_cap);
+        Ok(exchange_info_max.clamp(1, configured_cap))
+    }
+
+    pub fn fetch_futures_force_orders(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: Option<&str>,
+        start_time_ms: Option<i64>,
+        end_time_ms: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<BinanceFuturesForceOrder>> {
+        self.require_futures_market()?;
+        let requested_symbol = symbol.map(normalize_symbol).transpose()?;
+        let mut params = Vec::new();
+        if let Some(symbol) = requested_symbol.as_ref() {
+            params.push(("symbol", symbol.clone()));
+        }
+        if let Some(start_time_ms) = start_time_ms.filter(|value| *value > 0) {
+            params.push(("startTime", start_time_ms.to_string()));
+        }
+        if let Some(end_time_ms) = end_time_ms.filter(|value| *value > 0) {
+            params.push(("endTime", end_time_ms.to_string()));
+        }
+        params.push(("limit", limit.clamp(1, 1_000).to_string()));
+        let payload = self.signed_get_json(
+            &self.futures_v1_path("/forceOrders"),
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+        )?;
+        parse_futures_force_orders(&payload, requested_symbol.as_deref())
+    }
+
+    pub fn fetch_spot_trades(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: impl AsRef<str>,
+        limit: usize,
+    ) -> Result<Vec<BinanceSpotTrade>> {
+        self.require_spot_market()?;
+        let symbol = normalize_symbol(symbol.as_ref())?;
+        let params = vec![
+            ("symbol", symbol.clone()),
+            ("limit", limit.clamp(1, 1_000).to_string()),
+        ];
+        let payload = self.signed_get_json(
+            "/api/v3/myTrades",
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+        )?;
+        parse_spot_trades(&payload, &symbol)
+    }
+
+    pub fn fetch_spot_position_cost(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: impl AsRef<str>,
+        limit: usize,
+    ) -> Result<Option<BinanceSpotPositionCost>> {
+        self.require_spot_market()?;
+        let symbol = normalize_symbol(symbol.as_ref())?;
+        if !symbol.ends_with("USDT") {
+            return Ok(None);
+        }
+        let trades = self.fetch_spot_trades(credentials, &symbol, limit)?;
+        calculate_spot_position_cost(&symbol, &trades)
+    }
 }
 
 pub fn build_futures_market_order_params(
@@ -296,6 +582,14 @@ pub fn parse_futures_symbol_filters(
             price_precision: parse_json_i64(row.get("pricePrecision"))
                 .unwrap_or(0)
                 .max(0),
+            quote_asset_precision: parse_json_i64(row.get("quoteAssetPrecision"))
+                .or_else(|| parse_json_i64(row.get("quotePrecision")))
+                .unwrap_or(0)
+                .max(0),
+            max_leverage: parse_json_i64(row.get("maxLeverage"))
+                .or_else(|| parse_json_i64(row.get("max_leverage")))
+                .unwrap_or(0)
+                .max(0),
         };
         let mut lot_step_size = 0.0;
         let mut lot_min_qty = 0.0;
@@ -338,6 +632,12 @@ pub fn parse_futures_symbol_filters(
                 }
                 "PRICE_FILTER" => {
                     price_tick_size = first_f64(filter, &["tickSize"]).unwrap_or(0.0);
+                }
+                "LEVERAGE" => {
+                    result.max_leverage = first_f64(filter, &["maxLeverage", "max_leverage"])
+                        .map(|value| value.trunc() as i64)
+                        .filter(|value| *value > 0)
+                        .unwrap_or(result.max_leverage);
                 }
                 _ => {}
             }
@@ -472,6 +772,440 @@ pub fn parse_futures_order_result(
     })
 }
 
+pub fn parse_futures_open_orders(
+    payload: &Value,
+    requested_symbol: Option<&str>,
+) -> Result<Vec<BinanceFuturesOpenOrder>> {
+    ensure_not_binance_error(payload)?;
+    let requested_symbol = requested_symbol.map(normalize_symbol).transpose()?;
+    let rows = if let Some(rows) = payload.as_array() {
+        rows
+    } else if let Some(object) = payload.as_object() {
+        object
+            .get("orders")
+            .or_else(|| object.get("data"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("futures open-orders response missing orders array"))?
+    } else {
+        bail!("futures open-orders response must be an array or object")
+    };
+
+    let mut orders = Vec::with_capacity(rows.len());
+    for value in rows {
+        let object = value
+            .as_object()
+            .ok_or_else(|| anyhow!("futures open-orders response contained a malformed row"))?;
+        let symbol = object
+            .get("symbol")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_uppercase)
+            .ok_or_else(|| anyhow!("futures open-order row is missing symbol"))?;
+        let order_id = json_value_to_string(object.get("orderId"))
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("futures open-order row is missing orderId"))?;
+        let order = BinanceFuturesOpenOrder {
+            symbol: symbol.clone(),
+            order_id,
+            client_order_id: object
+                .get("clientOrderId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
+            status: object
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_uppercase(),
+            side: object
+                .get("side")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_uppercase(),
+            order_type: object
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_uppercase(),
+            position_side: object
+                .get("positionSide")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_uppercase(),
+            orig_qty: first_f64(object, &["origQty"]).unwrap_or(0.0),
+            executed_qty: first_f64(object, &["executedQty"]).unwrap_or(0.0),
+            price: first_f64(object, &["price"]).unwrap_or(0.0),
+        };
+        if requested_symbol
+            .as_deref()
+            .is_none_or(|requested| requested == symbol)
+        {
+            orders.push(order);
+        }
+    }
+    Ok(orders)
+}
+
+pub fn parse_futures_cancel_result(
+    payload: &Value,
+    fallback_symbol: &str,
+    fallback_order_id: &str,
+) -> Result<BinanceFuturesCancelResult> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| anyhow!("futures cancel response must be an object"))?;
+    if let Some(code_value) = object.get("code") {
+        let code = parse_json_i64(Some(code_value))
+            .ok_or_else(|| anyhow!("futures cancel response has an invalid code"))?;
+        if !matches!(code, 0 | 200 | 20_000) {
+            let message = object
+                .get("msg")
+                .and_then(Value::as_str)
+                .unwrap_or("Binance cancel request failed");
+            bail!("{message}");
+        }
+    }
+    let symbol = object
+        .get("symbol")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_symbol);
+    let symbol = normalize_symbol(symbol)?;
+    let order_id = json_value_to_string(object.get("orderId"))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback_order_id.trim().to_owned());
+    let status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_uppercase)
+        .unwrap_or_else(|| "CANCELED".to_owned());
+    Ok(BinanceFuturesCancelResult {
+        symbol,
+        order_id,
+        status,
+    })
+}
+
+pub fn parse_futures_trades(
+    payload: &Value,
+    requested_symbol: &str,
+) -> Result<Vec<BinanceFuturesTrade>> {
+    ensure_not_binance_error(payload)?;
+    let requested_symbol = normalize_symbol(requested_symbol)?;
+    let rows = if let Some(rows) = payload.as_array() {
+        rows
+    } else if let Some(object) = payload.as_object() {
+        object
+            .get("trades")
+            .or_else(|| object.get("data"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("futures trade response missing trades array"))?
+    } else {
+        bail!("futures trade response must be an array or object")
+    };
+
+    let mut trades = Vec::with_capacity(rows.len());
+    for value in rows {
+        let object = value
+            .as_object()
+            .ok_or_else(|| anyhow!("futures trade response contained a malformed row"))?;
+        let row_symbol = object
+            .get("symbol")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_uppercase)
+            .unwrap_or_else(|| requested_symbol.clone());
+        if row_symbol != requested_symbol {
+            continue;
+        }
+        let order_id = json_value_to_string(object.get("orderId"))
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("futures trade row is missing orderId"))?;
+        let price = first_f64(object, &["price"]).unwrap_or(0.0);
+        let quantity = first_f64(object, &["qty", "quantity"]).unwrap_or(0.0);
+        let quote_quantity = first_f64(object, &["quoteQty"])
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or_else(|| price * quantity);
+        trades.push(BinanceFuturesTrade {
+            symbol: row_symbol,
+            trade_id: json_value_to_string(object.get("id"))
+                .or_else(|| json_value_to_string(object.get("tradeId")))
+                .unwrap_or_default(),
+            order_id,
+            price,
+            quantity,
+            quote_quantity,
+            realized_pnl: first_f64(object, &["realizedPnl"]).unwrap_or(0.0),
+            commission: first_f64(object, &["commission"]).unwrap_or(0.0),
+            commission_asset: object
+                .get("commissionAsset")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_uppercase(),
+            time_ms: parse_json_i64(object.get("time"))
+                .or_else(|| parse_json_i64(object.get("T")))
+                .unwrap_or(0),
+        });
+    }
+    Ok(trades)
+}
+
+pub fn parse_futures_leverage_brackets(
+    payload: &Value,
+    requested_symbol: Option<&str>,
+) -> Result<Vec<BinanceFuturesLeverageBracket>> {
+    ensure_not_binance_error(payload)?;
+    let requested_symbol = requested_symbol.map(normalize_symbol).transpose()?;
+    let records = if let Some(records) = payload.as_array() {
+        records
+    } else if let Some(object) = payload.as_object() {
+        if let Some(records) = object.get("data").and_then(Value::as_array) {
+            records
+        } else {
+            std::slice::from_ref(payload)
+        }
+    } else {
+        bail!("futures leverage-bracket response must be an array or object")
+    };
+
+    let mut brackets = Vec::new();
+    for record_value in records {
+        let record = record_value.as_object().ok_or_else(|| {
+            anyhow!("futures leverage-bracket response contained a malformed record")
+        })?;
+        let record_symbol = record
+            .get("symbol")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_uppercase)
+            .or_else(|| requested_symbol.clone())
+            .unwrap_or_default();
+        if requested_symbol
+            .as_deref()
+            .is_some_and(|requested| !record_symbol.is_empty() && requested != record_symbol)
+        {
+            continue;
+        }
+        let bracket_rows = record
+            .get("brackets")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("futures leverage-bracket record missing brackets array"))?;
+        for bracket_value in bracket_rows {
+            let bracket = bracket_value
+                .as_object()
+                .ok_or_else(|| anyhow!("futures leverage-bracket row is malformed"))?;
+            let initial_leverage = parse_json_i64(bracket.get("initialLeverage"))
+                .filter(|value| *value > 0)
+                .ok_or_else(|| anyhow!("futures leverage-bracket row missing initialLeverage"))?;
+            brackets.push(BinanceFuturesLeverageBracket {
+                symbol: record_symbol.clone(),
+                initial_leverage,
+                notional_cap: first_f64(bracket, &["notionalCap"]).unwrap_or(0.0),
+                notional_floor: first_f64(bracket, &["notionalFloor"]).unwrap_or(0.0),
+                maint_margin_ratio: first_f64(bracket, &["maintMarginRatio"]).unwrap_or(0.0),
+                cum: first_f64(bracket, &["cum"]).unwrap_or(0.0),
+            });
+        }
+    }
+    if brackets.is_empty() {
+        bail!("futures leverage-bracket response contained no valid brackets");
+    }
+    Ok(brackets)
+}
+
+pub fn max_futures_leverage_from_brackets(
+    brackets: &[BinanceFuturesLeverageBracket],
+    fallback_max_leverage: i64,
+) -> Result<i64> {
+    let configured_cap = fallback_max_leverage.max(1);
+    let maximum = brackets
+        .iter()
+        .map(|bracket| bracket.initial_leverage)
+        .filter(|value| *value > 0)
+        .max()
+        .ok_or_else(|| anyhow!("futures leverage-bracket response contained no usable leverage"))?;
+    Ok(maximum.min(configured_cap))
+}
+
+pub fn clamp_futures_leverage(
+    requested_leverage: Option<f64>,
+    configured_max_leverage: i64,
+    symbol_max_leverage: Option<i64>,
+    futures_account: bool,
+) -> i64 {
+    let configured_cap = configured_max_leverage.max(1);
+    let desired = match requested_leverage {
+        None => 5,
+        Some(value) if value.is_finite() => value.trunc() as i64,
+        Some(_) => 1,
+    }
+    .max(1)
+    .min(configured_cap);
+    if !futures_account {
+        return desired;
+    }
+    let symbol_cap = symbol_max_leverage
+        .filter(|value| *value > 0)
+        .unwrap_or(configured_cap)
+        .clamp(1, configured_cap);
+    desired.min(symbol_cap)
+}
+
+pub fn parse_futures_force_orders(
+    payload: &Value,
+    requested_symbol: Option<&str>,
+) -> Result<Vec<BinanceFuturesForceOrder>> {
+    ensure_not_binance_error(payload)?;
+    let requested_symbol = requested_symbol.map(normalize_symbol).transpose()?;
+    let rows = if let Some(rows) = payload.as_array() {
+        rows
+    } else if let Some(object) = payload.as_object() {
+        ["rows", "data", "forceOrders", "orders", "list"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(Value::as_array))
+            .ok_or_else(|| anyhow!("futures force-order response missing rows array"))?
+    } else {
+        bail!("futures force-order response must be an array or object")
+    };
+
+    let mut orders = Vec::with_capacity(rows.len());
+    for value in rows {
+        let Some(object) = value.as_object() else {
+            continue;
+        };
+        let row_symbol = object
+            .get("symbol")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_uppercase)
+            .or_else(|| requested_symbol.clone())
+            .unwrap_or_default();
+        if requested_symbol
+            .as_deref()
+            .is_some_and(|requested| requested != row_symbol)
+        {
+            continue;
+        }
+        orders.push(BinanceFuturesForceOrder {
+            symbol: row_symbol,
+            order_id: json_value_to_string(object.get("orderId")).unwrap_or_default(),
+            side: upper_string(object, "side"),
+            position_side: upper_string(object, "positionSide"),
+            status: upper_string(object, "status"),
+            order_type: upper_string(object, "type"),
+            avg_price: first_f64(object, &["avgPrice"]).unwrap_or(0.0),
+            executed_qty: first_f64(object, &["executedQty"]).unwrap_or(0.0),
+            orig_qty: first_f64(object, &["origQty"]).unwrap_or(0.0),
+            price: first_f64(object, &["price"]).unwrap_or(0.0),
+            time_ms: parse_json_i64(object.get("time")).unwrap_or(0),
+            update_time_ms: parse_json_i64(object.get("updateTime")).unwrap_or(0),
+        });
+    }
+    Ok(orders)
+}
+
+pub fn parse_spot_trades(payload: &Value, requested_symbol: &str) -> Result<Vec<BinanceSpotTrade>> {
+    ensure_not_binance_error(payload)?;
+    let requested_symbol = normalize_symbol(requested_symbol)?;
+    let rows = if let Some(rows) = payload.as_array() {
+        rows
+    } else if let Some(object) = payload.as_object() {
+        ["data", "rows", "trades"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(Value::as_array))
+            .ok_or_else(|| anyhow!("spot trade response missing trades array"))?
+    } else {
+        bail!("spot trade response must be an array or object")
+    };
+
+    let mut trades = Vec::with_capacity(rows.len());
+    for value in rows {
+        let Some(object) = value.as_object() else {
+            continue;
+        };
+        let row_symbol = object
+            .get("symbol")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_uppercase)
+            .unwrap_or_else(|| requested_symbol.clone());
+        if row_symbol != requested_symbol {
+            continue;
+        }
+        let price = first_f64(object, &["price"]).unwrap_or(0.0);
+        let quantity = first_f64(object, &["qty", "executedQty"]).unwrap_or(0.0);
+        trades.push(BinanceSpotTrade {
+            symbol: row_symbol,
+            trade_id: json_value_to_string(object.get("id"))
+                .or_else(|| json_value_to_string(object.get("tradeId")))
+                .unwrap_or_default(),
+            order_id: json_value_to_string(object.get("orderId")).unwrap_or_default(),
+            price,
+            quantity,
+            quote_quantity: first_f64(object, &["quoteQty"])
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or_else(|| price * quantity),
+            commission: first_f64(object, &["commission"]).unwrap_or(0.0),
+            commission_asset: upper_string(object, "commissionAsset"),
+            is_buyer: coerce_bool_value(object.get("isBuyer")),
+            is_maker: coerce_bool_value(object.get("isMaker")),
+            is_best_match: coerce_bool_value(object.get("isBestMatch")),
+            time_ms: parse_json_i64(object.get("time")).unwrap_or(0),
+        });
+    }
+    Ok(trades)
+}
+
+pub fn calculate_spot_position_cost(
+    symbol: &str,
+    trades: &[BinanceSpotTrade],
+) -> Result<Option<BinanceSpotPositionCost>> {
+    let symbol = normalize_symbol(symbol)?;
+    let mut quantity = 0.0;
+    let mut cost = 0.0;
+    for trade in trades {
+        if trade.symbol != symbol
+            || !trade.price.is_finite()
+            || trade.price < 0.0
+            || !trade.quantity.is_finite()
+            || trade.quantity < 0.0
+            || !trade.quote_quantity.is_finite()
+            || trade.quote_quantity < 0.0
+        {
+            bail!("spot trade history contained invalid cost-basis data")
+        }
+        if trade.is_buyer {
+            quantity += trade.quantity;
+            cost += trade.quote_quantity;
+        } else {
+            quantity -= trade.quantity;
+            cost -= trade.quote_quantity;
+        }
+    }
+    if quantity <= 0.0 || cost <= 0.0 {
+        return Ok(None);
+    }
+    Ok(Some(BinanceSpotPositionCost {
+        symbol,
+        quantity,
+        cost,
+    }))
+}
+
 pub fn parse_spot_order_result(
     payload: &Value,
     fallback_symbol: &str,
@@ -583,6 +1317,26 @@ fn json_value_to_string(value: Option<&Value>) -> Option<String> {
     }
 }
 
+fn upper_string(row: &Map<String, Value>, key: &str) -> String {
+    row.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_uppercase()
+}
+
+fn coerce_bool_value(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::Number(number)) => number.as_i64().unwrap_or(0) != 0,
+        Some(Value::String(text)) => matches!(
+            text.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "y"
+        ),
+        _ => false,
+    }
+}
+
 fn positive_or_zero(value: f64) -> f64 {
     if value.is_finite() && value > 0.0 {
         value
@@ -618,9 +1372,14 @@ fn ensure_not_binance_order_error(value: &Value) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
     use serde_json::json;
 
-    use crate::account::signed_query_string;
+    use crate::account::{BinanceApiCredentials, signed_query_string};
+    use crate::market_data::BinanceMarket;
 
     use super::*;
 
@@ -636,7 +1395,8 @@ mod tests {
                         {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001", "maxQty": "100"},
                         {"filterType": "MARKET_LOT_SIZE", "stepSize": "0.01", "minQty": "0.02", "maxQty": "50"},
                         {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
-                        {"filterType": "MIN_NOTIONAL", "notional": "5"}
+                        {"filterType": "MIN_NOTIONAL", "notional": "5"},
+                        {"filterType": "LEVERAGE", "maxLeverage": "50"}
                     ]
                 }
             ]
@@ -648,6 +1408,7 @@ mod tests {
         assert_eq!(filters.max_qty, 50.0);
         assert_eq!(filters.tick_size, 0.10);
         assert_eq!(filters.min_notional, 5.0);
+        assert_eq!(filters.max_leverage, 50);
         assert_eq!(filters.quantity_precision, 3);
         assert_eq!(filters.price_precision, 2);
     }
@@ -760,6 +1521,455 @@ mod tests {
         assert_eq!(result.status, "FILLED");
         assert_eq!(result.executed_qty, 0.2);
         assert_eq!(result.avg_price, 21000.5);
+    }
+
+    #[test]
+    fn parses_open_futures_orders_and_applies_symbol_filter() {
+        let payload = json!([
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 12345,
+                "clientOrderId": "client-1",
+                "status": "NEW",
+                "side": "SELL",
+                "type": "LIMIT",
+                "positionSide": "LONG",
+                "origQty": "0.2",
+                "executedQty": "0",
+                "price": "21000.5"
+            },
+            {
+                "symbol": "ETHUSDT",
+                "orderId": "67890",
+                "status": "PARTIALLY_FILLED",
+                "side": "BUY",
+                "type": "STOP",
+                "origQty": "1",
+                "executedQty": "0.25",
+                "price": "2000"
+            }
+        ]);
+        let orders = parse_futures_open_orders(&payload, Some("btcusdt")).expect("open orders");
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].symbol, "BTCUSDT");
+        assert_eq!(orders[0].order_id, "12345");
+        assert_eq!(orders[0].client_order_id, "client-1");
+        assert_eq!(orders[0].order_type, "LIMIT");
+        assert_eq!(orders[0].position_side, "LONG");
+        assert_eq!(orders[0].orig_qty, 0.2);
+        assert_eq!(orders[0].price, 21000.5);
+    }
+
+    #[test]
+    fn open_futures_order_parser_rejects_malformed_rows() {
+        assert!(parse_futures_open_orders(&json!([{"symbol": "BTCUSDT"}]), None).is_err());
+        assert!(parse_futures_open_orders(&json!(["not-an-order"]), None).is_err());
+        assert!(parse_futures_open_orders(&json!({"orders": "not-an-array"}), None).is_err());
+    }
+
+    #[test]
+    fn parses_futures_cancel_success_and_rejects_error_codes() {
+        let bulk = parse_futures_cancel_result(
+            &json!({"code": 200, "msg": "The liquidation is successful."}),
+            "btcusdt",
+            "",
+        )
+        .expect("bulk cancel");
+        assert_eq!(bulk.symbol, "BTCUSDT");
+        assert!(bulk.order_id.is_empty());
+        assert_eq!(bulk.status, "CANCELED");
+
+        let single = parse_futures_cancel_result(
+            &json!({"symbol": "BTCUSDT", "orderId": 12345, "status": "CANCELED"}),
+            "ETHUSDT",
+            "999",
+        )
+        .expect("single cancel");
+        assert_eq!(single.symbol, "BTCUSDT");
+        assert_eq!(single.order_id, "12345");
+        assert_eq!(single.status, "CANCELED");
+
+        assert!(
+            parse_futures_cancel_result(
+                &json!({"code": -2011, "msg": "Unknown order sent."}),
+                "BTCUSDT",
+                "12345",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_futures_trades_like_python_fill_summary_input() {
+        let trades = parse_futures_trades(
+            &json!([
+                {
+                    "symbol": "btcusdt",
+                    "id": 1,
+                    "orderId": 123,
+                    "price": "40000",
+                    "qty": "2",
+                    "quoteQty": "80000",
+                    "realizedPnl": "4",
+                    "commission": "0.1",
+                    "commissionAsset": "usdt",
+                    "time": 1700000000000_i64
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "orderId": 456,
+                    "price": "2000",
+                    "qty": "1"
+                }
+            ]),
+            "BTCUSDT",
+        )
+        .expect("trade rows");
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].trade_id, "1");
+        assert_eq!(trades[0].order_id, "123");
+        assert_eq!(trades[0].quantity, 2.0);
+        assert_eq!(trades[0].quote_quantity, 80000.0);
+        assert_eq!(trades[0].realized_pnl, 4.0);
+        assert_eq!(trades[0].commission_asset, "USDT");
+        assert_eq!(trades[0].time_ms, 1700000000000);
+        assert!(parse_futures_trades(&json!([{"symbol": "BTCUSDT"}]), "BTCUSDT").is_err());
+    }
+
+    #[test]
+    fn parses_futures_leverage_brackets_like_python_max_leverage_lookup() {
+        let brackets = parse_futures_leverage_brackets(
+            &json!([
+                {
+                    "symbol": "BTCUSDT",
+                    "brackets": [
+                        {
+                            "initialLeverage": 50,
+                            "notionalCap": "100000",
+                            "notionalFloor": "0",
+                            "maintMarginRatio": "0.01",
+                            "cum": "0"
+                        }
+                    ]
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "brackets": [{"initialLeverage": 25}]
+                }
+            ]),
+            Some("btcusdt"),
+        )
+        .expect("leverage brackets");
+        assert_eq!(brackets.len(), 1);
+        assert_eq!(brackets[0].symbol, "BTCUSDT");
+        assert_eq!(brackets[0].initial_leverage, 50);
+        assert_eq!(brackets[0].notional_cap, 100000.0);
+        assert_eq!(brackets[0].maint_margin_ratio, 0.01);
+        assert_eq!(
+            max_futures_leverage_from_brackets(&brackets, 125).unwrap(),
+            50
+        );
+        assert_eq!(
+            max_futures_leverage_from_brackets(&brackets, 20).unwrap(),
+            20
+        );
+        assert!(max_futures_leverage_from_brackets(&[], 125).is_err());
+        assert_eq!(clamp_futures_leverage(None, 125, Some(50), true), 5);
+        assert_eq!(clamp_futures_leverage(Some(80.0), 125, Some(50), true), 50);
+        assert_eq!(clamp_futures_leverage(Some(80.0), 20, None, false), 20);
+        assert_eq!(clamp_futures_leverage(Some(f64::NAN), 20, None, true), 1);
+        assert!(parse_futures_leverage_brackets(&json!([]), Some("BTCUSDT")).is_err());
+    }
+
+    #[test]
+    fn parses_futures_force_orders_like_python_history_metadata() {
+        let orders = parse_futures_force_orders(
+            &json!({
+                "forceOrders": [{
+                    "symbol": "BTCUSDT",
+                    "orderId": 123,
+                    "side": "SELL",
+                    "positionSide": "LONG",
+                    "status": "FILLED",
+                    "type": "LIMIT",
+                    "avgPrice": "40000",
+                    "executedQty": "0.2",
+                    "origQty": "0.2",
+                    "price": "39900",
+                    "time": 1700000000000_i64,
+                    "updateTime": 1700000001000_i64
+                }]
+            }),
+            Some("btcusdt"),
+        )
+        .expect("force orders");
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].symbol, "BTCUSDT");
+        assert_eq!(orders[0].order_id, "123");
+        assert_eq!(orders[0].position_side, "LONG");
+        assert_eq!(orders[0].executed_qty, 0.2);
+        assert_eq!(orders[0].time_ms, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn parses_spot_trades_like_python_cost_basis_input() {
+        let trades = parse_spot_trades(
+            &json!([
+                {
+                    "symbol": "ETHUSDT",
+                    "id": 1,
+                    "orderId": 11,
+                    "price": "2000",
+                    "qty": "0.25",
+                    "quoteQty": "500",
+                    "commission": "0.001",
+                    "commissionAsset": "ETH",
+                    "isBuyer": true,
+                    "isMaker": false,
+                    "isBestMatch": true,
+                    "time": 1700000000000_i64
+                }
+            ]),
+            "ethusdt",
+        )
+        .expect("spot trades");
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].symbol, "ETHUSDT");
+        assert_eq!(trades[0].order_id, "11");
+        assert_eq!(trades[0].quantity, 0.25);
+        assert_eq!(trades[0].quote_quantity, 500.0);
+        assert!(trades[0].is_buyer);
+        assert_eq!(trades[0].commission_asset, "ETH");
+        let cost = calculate_spot_position_cost("ethusdt", &trades)
+            .expect("spot cost basis")
+            .expect("open spot position");
+        assert_eq!(cost.symbol, "ETHUSDT");
+        assert_eq!(cost.quantity, 0.25);
+        assert_eq!(cost.cost, 500.0);
+        let sold = BinanceSpotTrade {
+            is_buyer: false,
+            ..trades[0].clone()
+        };
+        assert!(
+            calculate_spot_position_cost("ETHUSDT", &[sold])
+                .expect("closed spot position")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn signed_futures_order_lifecycle_uses_python_cpp_equivalent_http_paths() {
+        fn serve_request(mut stream: TcpStream, expected_prefix: &str, body: &str) {
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read request");
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request_line = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(
+                request_line.starts_with(expected_prefix),
+                "unexpected request line: {request_line}"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local Binance fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let responses = [
+                (
+                    "GET /fapi/v1/openOrders?symbol=BTCUSDT&",
+                    r#"[{"symbol":"BTCUSDT","orderId":123,"status":"NEW"}]"#,
+                ),
+                (
+                    "DELETE /fapi/v1/allOpenOrders?symbol=BTCUSDT&",
+                    r#"{"code":200,"msg":"The liquidation is successful."}"#,
+                ),
+                (
+                    "DELETE /fapi/v1/order?symbol=BTCUSDT&orderId=123&",
+                    r#"{"symbol":"BTCUSDT","orderId":123,"status":"CANCELED"}"#,
+                ),
+                (
+                    "GET /fapi/v1/userTrades?symbol=BTCUSDT&limit=100&orderId=123&",
+                    r#"[{"symbol":"BTCUSDT","id":1,"orderId":123,"price":"40000","qty":"2","quoteQty":"80000","realizedPnl":"4","commission":"0.1","commissionAsset":"USDT","time":1700000000000}]"#,
+                ),
+                (
+                    "GET /fapi/v1/leverageBracket?symbol=BTCUSDT&",
+                    r#"[{"symbol":"BTCUSDT","brackets":[{"initialLeverage":50,"notionalCap":"100000","notionalFloor":"0","maintMarginRatio":"0.01","cum":"0"}]}]"#,
+                ),
+                (
+                    "GET /fapi/v1/leverageBracket?symbol=BTCUSDT&",
+                    r#"[{"symbol":"BTCUSDT","brackets":[{"initialLeverage":50,"notionalCap":"100000","notionalFloor":"0","maintMarginRatio":"0.01","cum":"0"}]}]"#,
+                ),
+                (
+                    "GET /fapi/v1/forceOrders?symbol=BTCUSDT&startTime=1700000000000&endTime=1700000001000&limit=20&",
+                    r#"{"forceOrders":[{"symbol":"BTCUSDT","orderId":456,"side":"SELL","positionSide":"LONG","status":"FILLED","type":"LIMIT","avgPrice":"40000","executedQty":"2","origQty":"2","price":"39900","time":1700000000000,"updateTime":1700000001000}]}"#,
+                ),
+                (
+                    "POST /fapi/v1/positionMargin?symbol=BTCUSDT&amount=1.25&type=1&positionSide=LONG&",
+                    r#"{"code":200,"msg":"success"}"#,
+                ),
+            ];
+            for (expected_prefix, body) in responses {
+                let (stream, _) = listener.accept().expect("accept Binance fixture request");
+                serve_request(stream, expected_prefix, body);
+            }
+        });
+
+        let http = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("proxy-free fixture client");
+        let client = BinanceSignedRestClient::with_http_client(
+            BinanceMarket::Futures,
+            format!("http://{}", address),
+            http,
+        )
+        .expect("futures fixture client");
+        let credentials = BinanceApiCredentials::new("key", "secret");
+        let open_orders = client
+            .fetch_open_futures_orders(&credentials, Some("btcusdt"))
+            .expect("open orders request");
+        assert_eq!(open_orders.len(), 1);
+        assert_eq!(open_orders[0].order_id, "123");
+        assert_eq!(
+            client
+                .cancel_all_open_futures_orders(&credentials, "btcusdt")
+                .expect("bulk cancellation")
+                .status,
+            "CANCELED"
+        );
+        assert_eq!(
+            client
+                .cancel_futures_order(&credentials, "btcusdt", "123")
+                .expect("individual cancellation")
+                .order_id,
+            "123"
+        );
+        let trades = client
+            .fetch_futures_trades(&credentials, "btcusdt", Some("123"), 100)
+            .expect("trade history");
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].order_id, "123");
+        assert_eq!(trades[0].quantity, 2.0);
+        let brackets = client
+            .fetch_futures_leverage_brackets(&credentials, Some("btcusdt"))
+            .expect("leverage brackets");
+        assert_eq!(brackets.len(), 1);
+        assert_eq!(brackets[0].initial_leverage, 50);
+        assert_eq!(
+            client
+                .fetch_futures_max_leverage(&credentials, "btcusdt", 125)
+                .expect("maximum leverage"),
+            50
+        );
+        let force_orders = client
+            .fetch_futures_force_orders(
+                &credentials,
+                Some("btcusdt"),
+                Some(1_700_000_000_000),
+                Some(1_700_000_001_000),
+                20,
+            )
+            .expect("force orders");
+        assert_eq!(force_orders.len(), 1);
+        assert_eq!(force_orders[0].order_id, "456");
+        assert_eq!(force_orders[0].position_side, "LONG");
+        assert_eq!(force_orders[0].executed_qty, 2.0);
+        let position_margin = client
+            .change_futures_position_margin(&credentials, "btcusdt", 1.25, Some("long"))
+            .expect("position margin");
+        assert_eq!(position_margin.symbol, "BTCUSDT");
+        assert_eq!(position_margin.position_side, "LONG");
+        assert_eq!(position_margin.amount, 1.25);
+        server.join().expect("Binance fixture server");
+    }
+
+    #[test]
+    fn signed_spot_trade_history_uses_python_equivalent_my_trades_path() {
+        fn serve_request(mut stream: TcpStream) {
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read request");
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request_line = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(request_line.starts_with("GET /api/v3/myTrades?symbol=ETHUSDT&limit=1000&"));
+            let body = r#"[{"symbol":"ETHUSDT","id":7,"orderId":42,"price":"2000","qty":"0.25","quoteQty":"500","commission":"0.001","commissionAsset":"ETH","isBuyer":true,"isMaker":false,"isBestMatch":true,"time":1700000000000}]"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind spot fixture");
+        let address = listener.local_addr().expect("spot fixture address");
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().expect("accept spot fixture request");
+                serve_request(stream);
+            }
+        });
+        let http = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("proxy-free spot fixture client");
+        let client = BinanceSignedRestClient::with_http_client(
+            BinanceMarket::Spot,
+            format!("http://{}", address),
+            http,
+        )
+        .expect("spot fixture client");
+        let trades = client
+            .fetch_spot_trades(
+                &BinanceApiCredentials::new("key", "secret"),
+                "ethusdt",
+                1000,
+            )
+            .expect("spot trade history");
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].order_id, "42");
+        assert_eq!(trades[0].quote_quantity, 500.0);
+        assert!(trades[0].is_buyer);
+        let cost = client
+            .fetch_spot_position_cost(
+                &BinanceApiCredentials::new("key", "secret"),
+                "ethusdt",
+                1000,
+            )
+            .expect("spot cost basis")
+            .expect("open spot position");
+        assert_eq!(cost.symbol, "ETHUSDT");
+        assert_eq!(cost.quantity, 0.25);
+        assert_eq!(cost.cost, 500.0);
+        server.join().expect("spot fixture server");
     }
 
     #[test]

@@ -119,6 +119,55 @@ bool parseJsonNumber(const QJsonValue &value, double *out) {
     return true;
 }
 
+bool parseJsonBool(const QJsonValue &value, bool *out) {
+    if (!out) {
+        return false;
+    }
+    if (value.isBool()) {
+        *out = value.toBool();
+        return true;
+    }
+    const QString text = value.toString().trimmed().toLower();
+    if (text == QStringLiteral("true") || text == QStringLiteral("1")) {
+        *out = true;
+        return true;
+    }
+    if (text == QStringLiteral("false") || text == QStringLiteral("0")) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+bool parseSuccessfulBinanceMutation(
+    const QJsonObject &object,
+    const QString &operation,
+    QString *error) {
+    if (object.contains(QStringLiteral("code"))) {
+        bool codeOk = false;
+        const int code = object.value(QStringLiteral("code")).toVariant().toInt(&codeOk);
+        if (!codeOk || (code != 0 && code != 200)) {
+            if (error) {
+                *error = QStringLiteral("Binance %1 error: %2")
+                             .arg(operation,
+                                  object.value(QStringLiteral("msg"))
+                                      .toString(QStringLiteral("unknown")));
+            }
+            return false;
+        }
+    }
+    if (object.contains(QStringLiteral("error"))) {
+        if (error) {
+            *error = QStringLiteral("Binance %1 error: %2")
+                         .arg(operation,
+                              object.value(QStringLiteral("error"))
+                                  .toString(QStringLiteral("unknown")));
+        }
+        return false;
+    }
+    return true;
+}
+
 bool parseFirstNumber(
     const QJsonObject &obj,
     std::initializer_list<const char *> keys,
@@ -305,6 +354,82 @@ QString BinanceRestClient::hmacSha256Hex(const QString &secret, const QString &m
     const QByteArray sig = QMessageAuthenticationCode::hash(
         message.toUtf8(), secret.toUtf8(), QCryptographicHash::Sha256);
     return QString::fromLatin1(sig.toHex());
+}
+
+QJsonDocument BinanceRestClient::signedFuturesRequestJson(
+    const QString &method,
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool testnet,
+    const QString &baseUrlOverride,
+    const QString &endpoint,
+    const QList<QPair<QString, QString>> &params,
+    int timeoutMs,
+    QString *error) {
+    if (apiKey.trimmed().isEmpty() || apiSecret.trimmed().isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("Missing API credentials");
+        }
+        return {};
+    }
+
+    QUrlQuery query;
+    for (const auto &param : params) {
+        query.addQueryItem(param.first, param.second);
+    }
+    query.addQueryItem(QStringLiteral("timestamp"), QString::number(QDateTime::currentMSecsSinceEpoch()));
+    query.addQueryItem(QStringLiteral("recvWindow"), QStringLiteral("5000"));
+
+    const QString queryString = query.toString(QUrl::FullyEncoded);
+    const QString signature = hmacSha256Hex(apiSecret, queryString);
+    const QString overrideBase = baseUrlOverride.trimmed();
+    const QString url = QStringLiteral("%1%2?%3&signature=%4")
+                            .arg(futuresBaseUrl(testnet, overrideBase),
+                                 futuresApiPath(overrideBase, endpoint),
+                                 queryString,
+                                 signature);
+    return httpRequestJson(
+        method,
+        url,
+        {{QByteArrayLiteral("X-MBX-APIKEY"), apiKey.toUtf8()}},
+        timeoutMs,
+        error);
+}
+
+QJsonDocument BinanceRestClient::signedSpotRequestJson(
+    const QString &method,
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool testnet,
+    const QString &baseUrlOverride,
+    const QString &endpoint,
+    const QList<QPair<QString, QString>> &params,
+    int timeoutMs,
+    QString *error) {
+    if (apiKey.trimmed().isEmpty() || apiSecret.trimmed().isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("Missing API credentials");
+        }
+        return {};
+    }
+
+    QUrlQuery query;
+    for (const auto &param : params) {
+        query.addQueryItem(param.first, param.second);
+    }
+    query.addQueryItem(QStringLiteral("timestamp"), QString::number(QDateTime::currentMSecsSinceEpoch()));
+    query.addQueryItem(QStringLiteral("recvWindow"), QStringLiteral("10000"));
+
+    const QString queryString = query.toString(QUrl::FullyEncoded);
+    const QString signature = hmacSha256Hex(apiSecret, queryString);
+    const QString url = QStringLiteral("%1%2?%3&signature=%4")
+                            .arg(spotBaseUrl(testnet, baseUrlOverride), endpoint, queryString, signature);
+    return httpRequestJson(
+        method,
+        url,
+        {{QByteArrayLiteral("X-MBX-APIKEY"), apiKey.toUtf8()}},
+        timeoutMs,
+        error);
 }
 
 QJsonDocument BinanceRestClient::httpGetJson(
@@ -635,13 +760,163 @@ BinanceRestClient::SpotBalancesResult BinanceRestClient::fetchSpotBalances(
         const QJsonObject balance = entry.toObject();
         SpotBalanceRow row;
         row.asset = balance.value(QStringLiteral("asset")).toString().trimmed().toUpper();
+        if (row.asset.isEmpty()) {
+            continue;
+        }
         if (!parseJsonNumber(balance.value(QStringLiteral("free")), &row.free)) {
             row.free = std::numeric_limits<double>::quiet_NaN();
         }
         parseJsonNumber(balance.value(QStringLiteral("locked")), &row.locked);
+        row.total = qIsFinite(row.free) && qIsFinite(row.locked)
+            ? row.free + row.locked
+            : std::numeric_limits<double>::quiet_NaN();
         result.balances.append(row);
     }
     result.ok = true;
+    return result;
+}
+
+BinanceRestClient::BalanceRowsResult BinanceRestClient::fetchBalanceRows(
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool futures,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    if (!futures) {
+        return fetchSpotBalances(apiKey, apiSecret, testnet, timeoutMs, baseUrlOverride);
+    }
+
+    BalanceRowsResult result;
+    if (apiKey.trimmed().isEmpty() || apiSecret.trimmed().isEmpty()) {
+        result.error = QStringLiteral("Missing API credentials");
+        return result;
+    }
+
+    const QString overrideBase = baseUrlOverride.trimmed();
+    const QString base = futuresBaseUrl(testnet, overrideBase);
+    const QString query = QStringLiteral("timestamp=%1&recvWindow=10000")
+                              .arg(QDateTime::currentMSecsSinceEpoch());
+    const QString signature = hmacSha256Hex(apiSecret, query);
+    const QString url = QStringLiteral("%1%2?%3&signature=%4")
+                            .arg(base,
+                                 futuresApiPath(overrideBase, QStringLiteral("/v1/balance")),
+                                 query,
+                                 signature);
+    QString requestError;
+    const QJsonDocument document = httpGetJson(
+        url,
+        {{QByteArrayLiteral("X-MBX-APIKEY"), apiKey.toUtf8()}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull()) {
+        result.error = requestError.isEmpty()
+            ? QStringLiteral("Unexpected Binance futures balance response")
+            : requestError;
+        return result;
+    }
+
+    const QJsonArray entries = extractBalanceEntries(document);
+    if (entries.isEmpty()) {
+        result.error = QStringLiteral("Binance futures balance response missing balance rows");
+        return result;
+    }
+    for (const QJsonValue &entry : entries) {
+        const QJsonObject balance = entry.toObject();
+        const QString asset = balance.value(QStringLiteral("asset")).toString().trimmed().toUpper();
+        if (asset.isEmpty()) {
+            continue;
+        }
+        double free = 0.0;
+        double total = 0.0;
+        const bool hasFree = parseFirstNumber(
+            balance,
+            {"availableBalance", "balance", "walletBalance", "maxWithdrawAmount"},
+            &free);
+        const bool hasTotal = parseFirstNumber(
+            balance,
+            {"walletBalance", "balance", "crossWalletBalance"},
+            &total);
+        if (!hasFree && !hasTotal) {
+            continue;
+        }
+        if (!hasTotal) {
+            total = free;
+        }
+        if (!hasFree) {
+            free = total;
+        }
+        SpotBalanceRow row;
+        row.asset = asset;
+        row.free = free;
+        row.total = total;
+        row.locked = std::max(0.0, total - free);
+        result.balances.append(row);
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::SpotAssetBalanceResult BinanceRestClient::fetchSpotBalance(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &asset,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    SpotAssetBalanceResult result;
+    result.asset = asset.trimmed().toUpper();
+    const SpotBalancesResult balances = fetchSpotBalances(
+        apiKey,
+        apiSecret,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!balances.ok) {
+        result.error = balances.error;
+        return result;
+    }
+    for (const SpotBalanceRow &row : balances.balances) {
+        if (row.asset.compare(result.asset, Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+        result.free = row.free;
+        result.locked = row.locked;
+        result.total = row.total;
+        result.ok = true;
+        return result;
+    }
+    // Python get_spot_balance returns 0.0 for a missing asset.
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::SpotBalancesResult BinanceRestClient::fetchSpotNonUsdtBalances(
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    SpotBalancesResult result = fetchSpotBalances(
+        apiKey,
+        apiSecret,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!result.ok) {
+        return result;
+    }
+    QVector<SpotBalanceRow> filtered;
+    filtered.reserve(result.balances.size());
+    for (const SpotBalanceRow &row : result.balances) {
+        if (row.asset.compare(QStringLiteral("USDT"), Qt::CaseInsensitive) == 0
+            || !qIsFinite(row.free)
+            || row.free <= 0.0) {
+            continue;
+        }
+        filtered.append(row);
+    }
+    result.balances = filtered;
     return result;
 }
 
@@ -1015,6 +1290,65 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlinesRange(
     return result;
 }
 
+BinanceRestClient::FuturesBookTickerResult BinanceRestClient::fetchFuturesBookTicker(
+    const QString &symbol,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesBookTickerResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+
+    const QString overrideBase = baseUrlOverride.trimmed();
+    QUrl url(QStringLiteral("%1%2").arg(
+        futuresBaseUrl(testnet, overrideBase),
+        futuresApiPath(overrideBase, QStringLiteral("/v1/ticker/bookTicker"))));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("symbol"), result.symbol);
+    url.setQuery(query);
+    QString requestError;
+    const QJsonDocument document = httpGetJson(
+        url.toString(QUrl::FullyEncoded), {}, timeoutMs, &requestError);
+    if (document.isNull()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance book-ticker response")
+                                              : requestError;
+        return result;
+    }
+    QJsonObject object;
+    if (document.isObject()) {
+        object = document.object();
+    } else if (document.isArray() && !document.array().isEmpty()
+               && document.array().first().isObject()) {
+        object = document.array().first().toObject();
+    }
+    if (object.isEmpty()) {
+        result.error = QStringLiteral("Binance book-ticker response must contain an object");
+        return result;
+    }
+    if (object.contains(QStringLiteral("code")) || object.contains(QStringLiteral("msg"))) {
+        result.error = object.value(QStringLiteral("msg")).toString(QStringLiteral("Binance API error"));
+        return result;
+    }
+    const QString responseSymbol = object.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+    if (!responseSymbol.isEmpty()) {
+        result.symbol = responseSymbol;
+    }
+    if (!parseJsonNumber(object.value(QStringLiteral("bidPrice")), &result.bidPrice)
+        || !parseJsonNumber(object.value(QStringLiteral("bidQty")), &result.bidQty)
+        || !parseJsonNumber(object.value(QStringLiteral("askPrice")), &result.askPrice)
+        || !parseJsonNumber(object.value(QStringLiteral("askQty")), &result.askQty)
+        || result.bidPrice <= 0.0 || result.askPrice <= 0.0
+        || result.bidQty < 0.0 || result.askQty < 0.0) {
+        result.error = QStringLiteral("Binance book-ticker response is missing valid bid/ask data");
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
+
 BinanceRestClient::FuturesPositionsResult BinanceRestClient::fetchOpenFuturesPositions(
     const QString &apiKey,
     const QString &apiSecret,
@@ -1108,6 +1442,7 @@ BinanceRestClient::FuturesPositionsResult BinanceRestClient::fetchOpenFuturesPos
         FuturesPosition pos;
         pos.symbol = symbol;
         pos.positionSide = obj.value(QStringLiteral("positionSide")).toString().trimmed().toUpper();
+        pos.marginType = obj.value(QStringLiteral("marginType")).toString().trimmed().toUpper();
         pos.positionAmt = positionAmt;
         parseJsonNumber(obj.value(QStringLiteral("notional")), &pos.notional);
         parseJsonNumber(obj.value(QStringLiteral("initialMargin")), &pos.initialMargin);
@@ -1135,6 +1470,9 @@ BinanceRestClient::FuturesPositionsResult BinanceRestClient::fetchOpenFuturesPos
             accountLookupKey,
             accountPositionMap.value(QStringLiteral("%1|BOTH").arg(symbol)));
         if (!accountPos.isEmpty()) {
+            if (pos.marginType.isEmpty()) {
+                pos.marginType = accountPos.value(QStringLiteral("marginType")).toString().trimmed().toUpper();
+            }
             auto mergePositiveNumber = [&](const QString &field, double *target) {
                 if (!target) {
                     return;
@@ -1279,6 +1617,997 @@ BinanceRestClient::FuturesPositionsResult BinanceRestClient::fetchOpenFuturesPos
     return result;
 }
 
+BinanceRestClient::FuturesOpenOrdersResult BinanceRestClient::fetchOpenFuturesOrders(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesOpenOrdersResult result;
+    const QString requestedSymbol = symbol.trimmed().toUpper();
+    QList<QPair<QString, QString>> queryParams;
+    if (!requestedSymbol.isEmpty()) {
+        queryParams.append({QStringLiteral("symbol"), requestedSymbol});
+    }
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("GET"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/openOrders"),
+        queryParams,
+        timeoutMs,
+        &requestError);
+    if (document.isNull()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance open-orders response") : requestError;
+        return result;
+    }
+
+    QJsonArray rows;
+    if (document.isArray()) {
+        rows = document.array();
+    } else if (document.isObject()) {
+        const QJsonObject object = document.object();
+        if (object.contains(QStringLiteral("code")) || object.contains(QStringLiteral("msg"))) {
+            result.error = QStringLiteral("Binance open-orders error: %1")
+                               .arg(object.value(QStringLiteral("msg")).toString(QStringLiteral("unknown")));
+            return result;
+        }
+        for (const QString &key : {QStringLiteral("orders"), QStringLiteral("data")}) {
+            if (object.value(key).isArray()) {
+                rows = object.value(key).toArray();
+                break;
+            }
+        }
+    }
+    if (!document.isArray() && rows.isEmpty() && document.isObject()
+        && !document.object().contains(QStringLiteral("orders"))
+        && !document.object().contains(QStringLiteral("data"))) {
+        result.error = QStringLiteral("Binance open-orders response did not contain an order array");
+        return result;
+    }
+
+    result.orders.reserve(rows.size());
+    for (const QJsonValue &value : rows) {
+        if (!value.isObject()) {
+            result.error = QStringLiteral("Binance open-orders response contained a malformed row");
+            result.orders.clear();
+            return result;
+        }
+        const QJsonObject object = value.toObject();
+        FuturesOpenOrder order;
+        order.symbol = object.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        order.orderId = object.value(QStringLiteral("orderId")).toVariant().toString().trimmed();
+        order.clientOrderId = object.value(QStringLiteral("clientOrderId")).toString().trimmed();
+        order.status = object.value(QStringLiteral("status")).toString().trimmed().toUpper();
+        order.side = object.value(QStringLiteral("side")).toString().trimmed().toUpper();
+        order.type = object.value(QStringLiteral("type")).toString().trimmed().toUpper();
+        order.positionSide = object.value(QStringLiteral("positionSide")).toString().trimmed().toUpper();
+        parseJsonNumber(object.value(QStringLiteral("origQty")), &order.origQty);
+        parseJsonNumber(object.value(QStringLiteral("executedQty")), &order.executedQty);
+        parseJsonNumber(object.value(QStringLiteral("price")), &order.price);
+        if (order.symbol.isEmpty() || order.orderId.isEmpty()) {
+            result.error = QStringLiteral("Binance open-orders response contained an order without symbol or orderId");
+            result.orders.clear();
+            return result;
+        }
+        if (!requestedSymbol.isEmpty() && order.symbol != requestedSymbol) {
+            continue;
+        }
+        result.orders.append(order);
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesCancelResult BinanceRestClient::cancelAllOpenFuturesOrders(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesCancelResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("DELETE"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/allOpenOrders"),
+        {{QStringLiteral("symbol"), result.symbol}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance cancel-all response") : requestError;
+        return result;
+    }
+
+    const QJsonObject object = document.object();
+    if (object.contains(QStringLiteral("code"))) {
+        bool codeOk = false;
+        const int code = object.value(QStringLiteral("code")).toVariant().toInt(&codeOk);
+        if (!codeOk || (code != 0 && code != 200)) {
+            result.error = QStringLiteral("Binance cancel-all error: %1")
+                               .arg(object.value(QStringLiteral("msg")).toString(QStringLiteral("unknown")));
+            return result;
+        }
+    } else if (object.contains(QStringLiteral("error"))) {
+        result.error = object.value(QStringLiteral("error")).toString(QStringLiteral("Binance cancel-all failed"));
+        return result;
+    }
+    result.status = object.value(QStringLiteral("status")).toString().trimmed().toUpper();
+    if (result.status.isEmpty()) {
+        result.status = QStringLiteral("CANCELED");
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesCancelResult BinanceRestClient::cancelFuturesOrder(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    const QString &orderId,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesCancelResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    result.orderId = orderId.trimmed();
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+    if (result.orderId.isEmpty()) {
+        result.error = QStringLiteral("Order ID is required");
+        return result;
+    }
+
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("DELETE"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/order"),
+        {{QStringLiteral("symbol"), result.symbol}, {QStringLiteral("orderId"), result.orderId}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance cancel response") : requestError;
+        return result;
+    }
+
+    const QJsonObject object = document.object();
+    if (object.contains(QStringLiteral("code"))) {
+        bool codeOk = false;
+        const int code = object.value(QStringLiteral("code")).toVariant().toInt(&codeOk);
+        if (!codeOk || (code != 0 && code != 200)) {
+            result.error = QStringLiteral("Binance cancel error: %1")
+                               .arg(object.value(QStringLiteral("msg")).toString(QStringLiteral("unknown")));
+            return result;
+        }
+    } else if (object.contains(QStringLiteral("error"))) {
+        result.error = object.value(QStringLiteral("error")).toString(QStringLiteral("Binance cancel failed"));
+        return result;
+    }
+    const QString responseOrderId = object.value(QStringLiteral("orderId")).toVariant().toString().trimmed();
+    if (!responseOrderId.isEmpty()) {
+        result.orderId = responseOrderId;
+    }
+    result.status = object.value(QStringLiteral("status")).toString().trimmed().toUpper();
+    if (result.status.isEmpty()) {
+        result.status = QStringLiteral("CANCELED");
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesTradesResult BinanceRestClient::fetchFuturesTrades(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    const QString &orderId,
+    int limit,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesTradesResult result;
+    const QString requestedSymbol = symbol.trimmed().toUpper();
+    if (requestedSymbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+    QList<QPair<QString, QString>> queryParams{
+        {QStringLiteral("symbol"), requestedSymbol},
+        {QStringLiteral("limit"), QString::number(std::max(1, std::min(1000, limit)))},
+    };
+    if (!orderId.trimmed().isEmpty()) {
+        queryParams.append({QStringLiteral("orderId"), orderId.trimmed()});
+    }
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("GET"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/userTrades"),
+        queryParams,
+        timeoutMs,
+        &requestError);
+    if (document.isNull()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance trade response") : requestError;
+        return result;
+    }
+    QJsonArray rows;
+    if (document.isArray()) {
+        rows = document.array();
+    } else if (document.isObject()) {
+        const QJsonObject object = document.object();
+        if (object.contains(QStringLiteral("code")) || object.contains(QStringLiteral("msg"))) {
+            result.error = object.value(QStringLiteral("msg")).toString(QStringLiteral("Binance API error"));
+            return result;
+        }
+        for (const QString &key : {QStringLiteral("trades"), QStringLiteral("data")}) {
+            if (object.value(key).isArray()) {
+                rows = object.value(key).toArray();
+                break;
+            }
+        }
+    }
+    if (!document.isArray() && rows.isEmpty() && document.isObject()
+        && !document.object().contains(QStringLiteral("trades"))
+        && !document.object().contains(QStringLiteral("data"))) {
+        result.error = QStringLiteral("Binance trade response did not contain a trade array");
+        return result;
+    }
+    result.trades.reserve(rows.size());
+    for (const QJsonValue &value : rows) {
+        if (!value.isObject()) {
+            result.error = QStringLiteral("Binance trade response contained a malformed row");
+            result.trades.clear();
+            return result;
+        }
+        const QJsonObject object = value.toObject();
+        FuturesTrade trade;
+        trade.symbol = object.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        if (trade.symbol.isEmpty()) {
+            trade.symbol = requestedSymbol;
+        }
+        trade.tradeId = object.value(QStringLiteral("id")).toVariant().toString().trimmed();
+        if (trade.tradeId.isEmpty()) {
+            trade.tradeId = object.value(QStringLiteral("tradeId")).toVariant().toString().trimmed();
+        }
+        trade.orderId = object.value(QStringLiteral("orderId")).toVariant().toString().trimmed();
+        if (trade.orderId.isEmpty()) {
+            result.error = QStringLiteral("Binance trade response contained a row without orderId");
+            result.trades.clear();
+            return result;
+        }
+        parseJsonNumber(object.value(QStringLiteral("price")), &trade.price);
+        if (!parseJsonNumber(object.value(QStringLiteral("qty")), &trade.quantity)) {
+            parseJsonNumber(object.value(QStringLiteral("quantity")), &trade.quantity);
+        }
+        parseJsonNumber(object.value(QStringLiteral("quoteQty")), &trade.quoteQuantity);
+        if (trade.quoteQuantity <= 0.0) {
+            trade.quoteQuantity = trade.price * trade.quantity;
+        }
+        parseJsonNumber(object.value(QStringLiteral("realizedPnl")), &trade.realizedPnl);
+        parseJsonNumber(object.value(QStringLiteral("commission")), &trade.commission);
+        trade.commissionAsset = object.value(QStringLiteral("commissionAsset")).toString().trimmed().toUpper();
+        trade.timeMs = object.value(QStringLiteral("time")).toVariant().toLongLong();
+        if (trade.timeMs <= 0) {
+            trade.timeMs = object.value(QStringLiteral("T")).toVariant().toLongLong();
+        }
+        if (trade.symbol != requestedSymbol) {
+            continue;
+        }
+        result.trades.append(trade);
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesLeverageBracketsResult BinanceRestClient::fetchFuturesLeverageBrackets(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesLeverageBracketsResult result;
+    const QString requestedSymbol = symbol.trimmed().toUpper();
+    QList<QPair<QString, QString>> queryParams;
+    if (!requestedSymbol.isEmpty()) {
+        queryParams.append({QStringLiteral("symbol"), requestedSymbol});
+    }
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("GET"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/leverageBracket"),
+        queryParams,
+        timeoutMs,
+        &requestError);
+    if (document.isNull()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance leverage-bracket response")
+                                              : requestError;
+        return result;
+    }
+    QJsonArray records;
+    if (document.isArray()) {
+        records = document.array();
+    } else if (document.isObject()) {
+        const QJsonObject object = document.object();
+        if (object.contains(QStringLiteral("code")) || object.contains(QStringLiteral("msg"))) {
+            result.error = object.value(QStringLiteral("msg")).toString(QStringLiteral("Binance API error"));
+            return result;
+        }
+        if (object.value(QStringLiteral("data")).isArray()) {
+            records = object.value(QStringLiteral("data")).toArray();
+        } else {
+            records.append(object);
+        }
+    } else {
+        result.error = QStringLiteral("Binance leverage-bracket response must be an array or object");
+        return result;
+    }
+    for (const QJsonValue &recordValue : records) {
+        if (!recordValue.isObject()) {
+            result.error = QStringLiteral("Binance leverage-bracket response contained a malformed record");
+            result.brackets.clear();
+            return result;
+        }
+        const QJsonObject record = recordValue.toObject();
+        const QString recordSymbol = record.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        if (!requestedSymbol.isEmpty() && !recordSymbol.isEmpty() && recordSymbol != requestedSymbol) {
+            continue;
+        }
+        const QJsonArray bracketRows = record.value(QStringLiteral("brackets")).toArray();
+        for (const QJsonValue &bracketValue : bracketRows) {
+            if (!bracketValue.isObject()) {
+                continue;
+            }
+            const QJsonObject bracketObject = bracketValue.toObject();
+            bool leverageOk = false;
+            const int leverage = bracketObject.value(QStringLiteral("initialLeverage")).toVariant().toInt(&leverageOk);
+            if (!leverageOk || leverage <= 0) {
+                continue;
+            }
+            FuturesLeverageBracket bracket;
+            bracket.symbol = recordSymbol.isEmpty() ? requestedSymbol : recordSymbol;
+            bracket.initialLeverage = leverage;
+            parseJsonNumber(bracketObject.value(QStringLiteral("notionalCap")), &bracket.notionalCap);
+            parseJsonNumber(bracketObject.value(QStringLiteral("notionalFloor")), &bracket.notionalFloor);
+            parseJsonNumber(bracketObject.value(QStringLiteral("maintMarginRatio")), &bracket.maintMarginRatio);
+            parseJsonNumber(bracketObject.value(QStringLiteral("cum")), &bracket.cum);
+            result.brackets.append(bracket);
+        }
+    }
+    if (result.brackets.isEmpty()) {
+        result.error = QStringLiteral("Binance leverage-bracket response contained no valid brackets");
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesMaxLeverageResult BinanceRestClient::fetchFuturesMaxLeverage(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    int fallbackMaxLeverage,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesMaxLeverageResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    const int configuredCap = std::max(1, fallbackMaxLeverage);
+    if (result.symbol.isEmpty()) {
+        result.maxLeverage = configuredCap;
+        result.ok = true;
+        return result;
+    }
+
+    const FuturesLeverageBracketsResult brackets = fetchFuturesLeverageBrackets(
+        apiKey,
+        apiSecret,
+        result.symbol,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (brackets.ok) {
+        for (const FuturesLeverageBracket &bracket : brackets.brackets) {
+            if (bracket.symbol.isEmpty()
+                || bracket.symbol.compare(result.symbol, Qt::CaseInsensitive) == 0) {
+                result.maxLeverage = std::max(result.maxLeverage, bracket.initialLeverage);
+            }
+        }
+    }
+    if (result.maxLeverage <= 0) {
+        const FuturesSymbolFilters filters = fetchFuturesSymbolFilters(
+            result.symbol,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (filters.ok && filters.maxLeverage > 0) {
+            result.maxLeverage = filters.maxLeverage;
+        }
+    }
+    if (result.maxLeverage <= 0) {
+        // Python falls back to its configured global cap when both metadata paths fail.
+        result.maxLeverage = configuredCap;
+    }
+    result.maxLeverage = std::min(result.maxLeverage, configuredCap);
+    result.ok = true;
+    return result;
+}
+
+int BinanceRestClient::clampFuturesLeverage(
+    int requestedLeverage,
+    int configuredMaxLeverage,
+    int symbolMaxLeverage,
+    bool futuresAccount) {
+    const int configuredCap = std::max(1, configuredMaxLeverage);
+    const int desired = std::max(1, requestedLeverage);
+    if (!futuresAccount) {
+        return std::min(desired, configuredCap);
+    }
+    const int symbolCap = symbolMaxLeverage > 0
+        ? std::min(symbolMaxLeverage, configuredCap)
+        : configuredCap;
+    return std::min(desired, std::max(1, symbolCap));
+}
+
+BinanceRestClient::FuturesPositionModeResult BinanceRestClient::fetchFuturesPositionMode(
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesPositionModeResult result;
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("GET"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/positionSide/dual"),
+        {},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance position-mode response")
+                                              : requestError;
+        return result;
+    }
+    const QJsonObject object = document.object();
+    if (!parseSuccessfulBinanceMutation(object, QStringLiteral("position-mode"), &result.error)) {
+        return result;
+    }
+    if (!parseJsonBool(object.value(QStringLiteral("dualSidePosition")), &result.dualSidePosition)) {
+        result.error = QStringLiteral("Binance position-mode response did not contain dualSidePosition");
+        return result;
+    }
+    result.positionMode = result.dualSidePosition ? QStringLiteral("HEDGE") : QStringLiteral("ONE_WAY");
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesPositionModeResult BinanceRestClient::changeFuturesPositionMode(
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool dualSidePosition,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesPositionModeResult result;
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("POST"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/positionSide/dual"),
+        {{QStringLiteral("dualSidePosition"), dualSidePosition ? QStringLiteral("true") : QStringLiteral("false")}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance position-mode mutation response")
+                                              : requestError;
+        return result;
+    }
+    if (!parseSuccessfulBinanceMutation(
+            document.object(), QStringLiteral("position-mode mutation"), &result.error)) {
+        return result;
+    }
+    result.dualSidePosition = dualSidePosition;
+    result.positionMode = dualSidePosition ? QStringLiteral("HEDGE") : QStringLiteral("ONE_WAY");
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesMarginModeResult BinanceRestClient::changeFuturesMarginType(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    const QString &marginType,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesMarginModeResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+    const QString requestedMarginType = marginType.trimmed().toUpper();
+    if (requestedMarginType == QStringLiteral("ISOLATED")) {
+        result.marginType = requestedMarginType;
+    } else if (requestedMarginType == QStringLiteral("CROSS")
+               || requestedMarginType == QStringLiteral("CROSSED")) {
+        result.marginType = QStringLiteral("CROSSED");
+    } else {
+        result.error = QStringLiteral("Margin type must be ISOLATED or CROSSED");
+        return result;
+    }
+
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("POST"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/marginType"),
+        {{QStringLiteral("symbol"), result.symbol}, {QStringLiteral("marginType"), result.marginType}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance margin-type response")
+                                              : requestError;
+        return result;
+    }
+    if (!parseSuccessfulBinanceMutation(
+            document.object(), QStringLiteral("margin-type mutation"), &result.error)) {
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesLeverageResult BinanceRestClient::changeFuturesLeverage(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    int leverage,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesLeverageResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+    if (leverage <= 0) {
+        result.error = QStringLiteral("Leverage must be positive");
+        return result;
+    }
+
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("POST"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/leverage"),
+        {{QStringLiteral("symbol"), result.symbol}, {QStringLiteral("leverage"), QString::number(leverage)}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance leverage response")
+                                              : requestError;
+        return result;
+    }
+    const QJsonObject object = document.object();
+    if (!parseSuccessfulBinanceMutation(object, QStringLiteral("leverage mutation"), &result.error)) {
+        return result;
+    }
+    bool leverageOk = false;
+    result.leverage = object.value(QStringLiteral("leverage")).toVariant().toInt(&leverageOk);
+    if (!leverageOk || result.leverage <= 0) {
+        result.error = QStringLiteral("Binance leverage response did not contain a positive leverage");
+        return result;
+    }
+    const QString responseSymbol = object.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+    if (!responseSymbol.isEmpty()) {
+        result.symbol = responseSymbol;
+    }
+    parseJsonNumber(object.value(QStringLiteral("maxNotionalValue")), &result.maxNotionalValue);
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesMultiAssetsModeResult BinanceRestClient::fetchFuturesMultiAssetsMode(
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesMultiAssetsModeResult result;
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("GET"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/multiAssetsMargin"),
+        {},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance multi-assets-mode response")
+                                              : requestError;
+        return result;
+    }
+    const QJsonObject object = document.object();
+    if (!parseSuccessfulBinanceMutation(object, QStringLiteral("multi-assets mode"), &result.error)) {
+        return result;
+    }
+    if (!parseJsonBool(object.value(QStringLiteral("multiAssetsMargin")), &result.multiAssetsMargin)) {
+        result.error = QStringLiteral("Binance multi-assets-mode response did not contain multiAssetsMargin");
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesMultiAssetsModeResult BinanceRestClient::changeFuturesMultiAssetsMode(
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool enabled,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesMultiAssetsModeResult result;
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("POST"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/multiAssetsMargin"),
+        {{QStringLiteral("multiAssetsMargin"), enabled ? QStringLiteral("true") : QStringLiteral("false")}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance multi-assets-mode mutation response")
+                                              : requestError;
+        return result;
+    }
+    if (!parseSuccessfulBinanceMutation(
+            document.object(), QStringLiteral("multi-assets mode mutation"), &result.error)) {
+        return result;
+    }
+    result.multiAssetsMargin = enabled;
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesForceOrdersResult BinanceRestClient::fetchFuturesForceOrders(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    qint64 startTimeMs,
+    qint64 endTimeMs,
+    int limit,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesForceOrdersResult result;
+    const QString requestedSymbol = symbol.trimmed().toUpper();
+    QList<QPair<QString, QString>> queryParams;
+    if (!requestedSymbol.isEmpty()) {
+        queryParams.append({QStringLiteral("symbol"), requestedSymbol});
+    }
+    if (startTimeMs > 0) {
+        queryParams.append({QStringLiteral("startTime"), QString::number(startTimeMs)});
+    }
+    if (endTimeMs > 0) {
+        queryParams.append({QStringLiteral("endTime"), QString::number(endTimeMs)});
+    }
+    queryParams.append({QStringLiteral("limit"), QString::number(std::clamp(limit, 1, 1000))});
+
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("GET"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/forceOrders"),
+        queryParams,
+        timeoutMs,
+        &requestError);
+    if (document.isNull()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance force-order response")
+                                              : requestError;
+        return result;
+    }
+
+    QJsonArray rows;
+    if (document.isArray()) {
+        rows = document.array();
+    } else if (document.isObject()) {
+        const QJsonObject object = document.object();
+        if (object.contains(QStringLiteral("code")) || object.contains(QStringLiteral("msg"))) {
+            result.error = object.value(QStringLiteral("msg")).toString(QStringLiteral("Binance API error"));
+            return result;
+        }
+        for (const QString &key : {QStringLiteral("rows"), QStringLiteral("data"),
+                                   QStringLiteral("forceOrders"), QStringLiteral("orders"),
+                                   QStringLiteral("list")}) {
+            if (object.value(key).isArray()) {
+                rows = object.value(key).toArray();
+                break;
+            }
+        }
+    } else {
+        result.error = QStringLiteral("Binance force-order response must be an array or object");
+        return result;
+    }
+
+    result.orders.reserve(rows.size());
+    for (const QJsonValue &value : rows) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject object = value.toObject();
+        FuturesForceOrder order;
+        order.symbol = object.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        if (order.symbol.isEmpty()) {
+            order.symbol = requestedSymbol;
+        }
+        if (!requestedSymbol.isEmpty() && order.symbol != requestedSymbol) {
+            continue;
+        }
+        order.orderId = object.value(QStringLiteral("orderId")).toVariant().toString().trimmed();
+        order.side = object.value(QStringLiteral("side")).toString().trimmed().toUpper();
+        order.positionSide = object.value(QStringLiteral("positionSide")).toString().trimmed().toUpper();
+        order.status = object.value(QStringLiteral("status")).toString().trimmed().toUpper();
+        order.type = object.value(QStringLiteral("type")).toString().trimmed().toUpper();
+        parseJsonNumber(object.value(QStringLiteral("avgPrice")), &order.avgPrice);
+        parseJsonNumber(object.value(QStringLiteral("executedQty")), &order.executedQty);
+        parseJsonNumber(object.value(QStringLiteral("origQty")), &order.origQty);
+        parseJsonNumber(object.value(QStringLiteral("price")), &order.price);
+        order.timeMs = object.value(QStringLiteral("time")).toVariant().toLongLong();
+        order.updateTimeMs = object.value(QStringLiteral("updateTime")).toVariant().toLongLong();
+        result.orders.append(order);
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesPositionMarginResult BinanceRestClient::changeFuturesPositionMargin(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    double amount,
+    const QString &positionSide,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesPositionMarginResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    result.positionSide = positionSide.trimmed().toUpper();
+    result.amount = amount;
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+    if (!qIsFinite(amount) || amount <= 0.0) {
+        result.error = QStringLiteral("Position-margin amount must be positive");
+        return result;
+    }
+
+    QList<QPair<QString, QString>> queryParams{
+        {QStringLiteral("symbol"), result.symbol},
+        {QStringLiteral("amount"), formatDecimalForOrder(amount)},
+        {QStringLiteral("type"), QStringLiteral("1")},
+    };
+    if (!result.positionSide.isEmpty() && result.positionSide != QStringLiteral("BOTH")) {
+        queryParams.append({QStringLiteral("positionSide"), result.positionSide});
+    }
+
+    QString requestError;
+    const QJsonDocument document = signedFuturesRequestJson(
+        QStringLiteral("POST"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/v1/positionMargin"),
+        queryParams,
+        timeoutMs,
+        &requestError);
+    if (document.isNull() || !document.isObject() || document.object().isEmpty()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance position-margin response")
+                                              : requestError;
+        return result;
+    }
+    if (!parseSuccessfulBinanceMutation(
+            document.object(), QStringLiteral("position-margin mutation"), &result.error)) {
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::SpotTradesResult BinanceRestClient::fetchSpotTrades(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    int limit,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    SpotTradesResult result;
+    const QString requestedSymbol = symbol.trimmed().toUpper();
+    if (requestedSymbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+
+    QString requestError;
+    const QJsonDocument document = signedSpotRequestJson(
+        QStringLiteral("GET"),
+        apiKey,
+        apiSecret,
+        testnet,
+        baseUrlOverride,
+        QStringLiteral("/api/v3/myTrades"),
+        {{QStringLiteral("symbol"), requestedSymbol},
+         {QStringLiteral("limit"), QString::number(std::clamp(limit, 1, 1000))}},
+        timeoutMs,
+        &requestError);
+    if (document.isNull()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance spot-trades response")
+                                              : requestError;
+        return result;
+    }
+
+    QJsonArray rows;
+    if (document.isArray()) {
+        rows = document.array();
+    } else if (document.isObject()) {
+        const QJsonObject object = document.object();
+        if (object.contains(QStringLiteral("code")) || object.contains(QStringLiteral("msg"))) {
+            result.error = object.value(QStringLiteral("msg")).toString(QStringLiteral("Binance API error"));
+            return result;
+        }
+        for (const QString &key : {QStringLiteral("data"), QStringLiteral("rows"), QStringLiteral("trades")}) {
+            if (object.value(key).isArray()) {
+                rows = object.value(key).toArray();
+                break;
+            }
+        }
+    } else {
+        result.error = QStringLiteral("Binance spot-trades response must be an array or object");
+        return result;
+    }
+
+    result.trades.reserve(rows.size());
+    for (const QJsonValue &value : rows) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject object = value.toObject();
+        SpotTrade trade;
+        trade.symbol = object.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        if (trade.symbol.isEmpty()) {
+            trade.symbol = requestedSymbol;
+        }
+        if (trade.symbol != requestedSymbol) {
+            continue;
+        }
+        trade.tradeId = object.value(QStringLiteral("id")).toVariant().toString().trimmed();
+        if (trade.tradeId.isEmpty()) {
+            trade.tradeId = object.value(QStringLiteral("tradeId")).toVariant().toString().trimmed();
+        }
+        trade.orderId = object.value(QStringLiteral("orderId")).toVariant().toString().trimmed();
+        parseJsonNumber(object.value(QStringLiteral("price")), &trade.price);
+        parseJsonNumber(object.value(QStringLiteral("qty")), &trade.quantity);
+        if (!parseJsonNumber(object.value(QStringLiteral("quoteQty")), &trade.quoteQuantity)) {
+            trade.quoteQuantity = trade.price * trade.quantity;
+        }
+        parseJsonNumber(object.value(QStringLiteral("commission")), &trade.commission);
+        trade.commissionAsset = object.value(QStringLiteral("commissionAsset"))
+                                    .toString().trimmed().toUpper();
+        parseJsonBool(object.value(QStringLiteral("isBuyer")), &trade.isBuyer);
+        parseJsonBool(object.value(QStringLiteral("isMaker")), &trade.isMaker);
+        parseJsonBool(object.value(QStringLiteral("isBestMatch")), &trade.isBestMatch);
+        trade.timeMs = object.value(QStringLiteral("time")).toVariant().toLongLong();
+        result.trades.append(trade);
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::SpotPositionCostResult BinanceRestClient::fetchSpotPositionCost(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    int limit,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    SpotPositionCostResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    if (!result.symbol.endsWith(QStringLiteral("USDT"))) {
+        result.ok = true;
+        return result;
+    }
+
+    const SpotTradesResult trades = fetchSpotTrades(
+        apiKey,
+        apiSecret,
+        result.symbol,
+        limit,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!trades.ok) {
+        result.error = trades.error;
+        return result;
+    }
+
+    for (const SpotTrade &trade : trades.trades) {
+        if (!qIsFinite(trade.quantity) || trade.quantity < 0.0
+            || !qIsFinite(trade.price) || trade.price < 0.0
+            || !qIsFinite(trade.quoteQuantity) || trade.quoteQuantity < 0.0) {
+            result.error = QStringLiteral("Spot trade history contained invalid non-finite cost data");
+            return result;
+        }
+        if (trade.isBuyer) {
+            result.quantity += trade.quantity;
+            result.cost += trade.quoteQuantity;
+        } else {
+            result.quantity -= trade.quantity;
+            result.cost -= trade.quoteQuantity;
+        }
+    }
+    if (result.quantity > 0.0 && result.cost > 0.0) {
+        result.hasPosition = true;
+    } else {
+        result.quantity = 0.0;
+        result.cost = 0.0;
+    }
+    result.ok = true;
+    return result;
+}
+
 BinanceRestClient::FuturesSymbolFilters BinanceRestClient::fetchFuturesSymbolFilters(
     const QString &symbol,
     bool testnet,
@@ -1316,6 +2645,11 @@ BinanceRestClient::FuturesSymbolFilters BinanceRestClient::fetchFuturesSymbolFil
         bool ppOk = false;
         const int pricePrecision = symObj.value(QStringLiteral("pricePrecision")).toVariant().toInt(&ppOk);
         result.pricePrecision = ppOk ? std::max(0, pricePrecision) : 0;
+        double symbolMaxLeverage = 0.0;
+        if (parseJsonNumber(symObj.value(QStringLiteral("maxLeverage")), &symbolMaxLeverage)
+            && symbolMaxLeverage > 0.0) {
+            result.maxLeverage = static_cast<int>(symbolMaxLeverage);
+        }
 
         double lotStepSize = 0.0;
         double lotMinQty = 0.0;
@@ -1343,6 +2677,14 @@ BinanceRestClient::FuturesSymbolFilters BinanceRestClient::fetchFuturesSymbolFil
                 }
             } else if (filterType == QStringLiteral("PRICE_FILTER")) {
                 parseJsonNumber(f.value(QStringLiteral("tickSize")), &priceTickSize);
+            } else if (filterType == QStringLiteral("LEVERAGE")) {
+                double maxLeverage = 0.0;
+                if (!parseJsonNumber(f.value(QStringLiteral("maxLeverage")), &maxLeverage)) {
+                    parseJsonNumber(f.value(QStringLiteral("max_leverage")), &maxLeverage);
+                }
+                if (maxLeverage > 0.0) {
+                    result.maxLeverage = static_cast<int>(maxLeverage);
+                }
             }
         }
 
@@ -1397,6 +2739,16 @@ BinanceRestClient::SpotSymbolFilters BinanceRestClient::fetchSpotSymbolFilters(
         result.status = symObj.value(QStringLiteral("status")).toString().trimmed().toUpper();
         result.baseAsset = symObj.value(QStringLiteral("baseAsset")).toString().trimmed().toUpper();
         result.quoteAsset = symObj.value(QStringLiteral("quoteAsset")).toString().trimmed().toUpper();
+        bool quoteAssetPrecisionOk = false;
+        result.quoteAssetPrecision = symObj.value(QStringLiteral("quoteAssetPrecision"))
+                                         .toVariant()
+                                         .toInt(&quoteAssetPrecisionOk);
+        if (!quoteAssetPrecisionOk) {
+            result.quoteAssetPrecision = symObj.value(QStringLiteral("quotePrecision"))
+                                             .toVariant()
+                                             .toInt(&quoteAssetPrecisionOk);
+        }
+        result.quoteAssetPrecision = quoteAssetPrecisionOk ? std::max(0, result.quoteAssetPrecision) : 0;
         bool precisionOk = false;
         result.quantityPrecision = symObj.value(QStringLiteral("quantityPrecision")).toVariant().toInt(&precisionOk);
         if (!precisionOk) {

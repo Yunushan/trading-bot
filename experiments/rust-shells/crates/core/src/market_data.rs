@@ -29,6 +29,15 @@ pub struct BinanceTickerPrice {
     pub price: f64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceBookTicker {
+    pub symbol: String,
+    pub bid_price: f64,
+    pub bid_qty: f64,
+    pub ask_price: f64,
+    pub ask_qty: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct BinanceRestMarketDataClient {
     http: Client,
@@ -98,6 +107,14 @@ impl BinanceMarket {
             Self::Spot => "/api/v3/ticker/price",
         }
     }
+
+    fn ticker_book_path(self) -> &'static str {
+        match self {
+            Self::Futures => "/fapi/v1/ticker/bookTicker",
+            Self::CoinFutures => "/dapi/v1/ticker/bookTicker",
+            Self::Spot => "/api/v3/ticker/bookTicker",
+        }
+    }
 }
 
 impl BinanceRestMarketDataClient {
@@ -145,6 +162,10 @@ impl BinanceRestMarketDataClient {
 
     pub fn ticker_price_url(&self) -> String {
         self.url_for_path(self.market.ticker_price_path())
+    }
+
+    pub fn ticker_book_url(&self) -> String {
+        self.url_for_path(self.market.ticker_book_path())
     }
 
     fn max_klines_limit(&self) -> usize {
@@ -331,6 +352,15 @@ impl BinanceRestMarketDataClient {
             &[("symbol", clean_symbol.as_str())],
         )?;
         parse_ticker_price(&payload)
+    }
+
+    pub fn fetch_book_ticker(&self, symbol: impl AsRef<str>) -> Result<BinanceBookTicker> {
+        let clean_symbol = normalize_symbol(symbol.as_ref())?;
+        let payload = self.get_json(
+            &self.ticker_book_url(),
+            &[("symbol", clean_symbol.as_str())],
+        )?;
+        parse_book_ticker(&payload)
     }
 
     fn url_for_path(&self, path: &str) -> String {
@@ -595,6 +625,49 @@ pub fn parse_ticker_price(payload: &Value) -> Result<BinanceTickerPrice> {
     Ok(BinanceTickerPrice { symbol, price })
 }
 
+pub fn parse_book_ticker(payload: &Value) -> Result<BinanceBookTicker> {
+    ensure_not_binance_error(payload)?;
+    let obj = if let Some(object) = payload.as_object() {
+        object
+    } else if let Some(row) = payload
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(Value::as_object)
+    {
+        row
+    } else {
+        bail!("book ticker response must be an object or non-empty array")
+    };
+    let symbol = obj
+        .get("symbol")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_uppercase();
+    if symbol.is_empty() {
+        bail!("book ticker response missing symbol");
+    }
+    let bid_price = parse_json_f64(obj.get("bidPrice"))
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .ok_or_else(|| anyhow!("book ticker missing a valid bid price for {symbol}"))?;
+    let bid_qty = parse_json_f64(obj.get("bidQty"))
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| anyhow!("book ticker missing a valid bid quantity for {symbol}"))?;
+    let ask_price = parse_json_f64(obj.get("askPrice"))
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .ok_or_else(|| anyhow!("book ticker missing a valid ask price for {symbol}"))?;
+    let ask_qty = parse_json_f64(obj.get("askQty"))
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| anyhow!("book ticker missing a valid ask quantity for {symbol}"))?;
+    Ok(BinanceBookTicker {
+        symbol,
+        bid_price,
+        bid_qty,
+        ask_price,
+        ask_qty,
+    })
+}
+
 fn normalize_base_url(value: String) -> Result<String> {
     let trimmed = value.trim().trim_end_matches('/').to_owned();
     if trimmed.is_empty() {
@@ -708,6 +781,11 @@ fn ensure_not_binance_error(value: &Value) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    use reqwest::blocking::Client;
     use serde_json::json;
 
     use super::*;
@@ -773,6 +851,18 @@ mod tests {
         assert_eq!(
             futures.ticker_price_url(),
             "https://example.test/fapi/v1/ticker/price"
+        );
+        assert_eq!(
+            futures.ticker_book_url(),
+            "https://example.test/fapi/v1/ticker/bookTicker"
+        );
+        assert_eq!(
+            coin.ticker_book_url(),
+            "https://coin.test/dapi/v1/ticker/bookTicker"
+        );
+        assert_eq!(
+            spot.ticker_book_url(),
+            "https://spot.test/api/v3/ticker/bookTicker"
         );
         assert_eq!(
             futures.ticker_24h_url(),
@@ -949,5 +1039,97 @@ mod tests {
         let error = parse_ticker_price(&json!({"code": -1121, "msg": "Invalid symbol."}))
             .expect_err("Binance errors should fail");
         assert!(error.to_string().contains("Invalid symbol"));
+    }
+
+    #[test]
+    fn parses_book_ticker_object_and_array_forms_like_python_wrappers() {
+        let object = parse_book_ticker(&json!({
+            "symbol": "btcusdt",
+            "bidPrice": "65000.25",
+            "bidQty": "1.5",
+            "askPrice": "65000.50",
+            "askQty": "2"
+        }))
+        .expect("book ticker object");
+        assert_eq!(
+            object,
+            BinanceBookTicker {
+                symbol: "BTCUSDT".to_owned(),
+                bid_price: 65000.25,
+                bid_qty: 1.5,
+                ask_price: 65000.50,
+                ask_qty: 2.0,
+            }
+        );
+
+        let array = parse_book_ticker(&json!([
+            {
+                "symbol": "ETHUSDT",
+                "bidPrice": "2000",
+                "bidQty": "0",
+                "askPrice": "2001",
+                "askQty": "3"
+            }
+        ]))
+        .expect("book ticker array");
+        assert_eq!(array.symbol, "ETHUSDT");
+        assert_eq!(array.bid_qty, 0.0);
+        assert!(parse_book_ticker(&json!({"code": -1121, "msg": "Invalid symbol."})).is_err());
+        assert!(parse_book_ticker(&json!({"symbol": "BTCUSDT"})).is_err());
+    }
+
+    #[test]
+    fn fetches_coin_book_ticker_through_the_python_cpp_equivalent_http_path() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local Binance fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Binance fixture request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read request");
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request_line = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(
+                request_line
+                    .starts_with("GET /dapi/v1/ticker/bookTicker?symbol=BTCUSD_PERP HTTP/1.1"),
+                "unexpected request line: {request_line}"
+            );
+            let body = r#"{"symbol":"BTCUSD_PERP","bidPrice":"40000","bidQty":"2","askPrice":"40001","askQty":"3"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write Binance fixture response");
+        });
+
+        let http = Client::builder()
+            .no_proxy()
+            .build()
+            .expect("proxy-free fixture client");
+        let client = BinanceRestMarketDataClient::with_http_client(
+            BinanceMarket::CoinFutures,
+            format!("http://{}", address),
+            http,
+        )
+        .expect("Coin-M fixture client");
+        let ticker = client
+            .fetch_book_ticker("btcusd_perp")
+            .expect("book ticker request");
+        assert_eq!(ticker.symbol, "BTCUSD_PERP");
+        assert_eq!(ticker.bid_price, 40000.0);
+        assert_eq!(ticker.ask_qty, 3.0);
+        server.join().expect("Binance fixture server");
     }
 }

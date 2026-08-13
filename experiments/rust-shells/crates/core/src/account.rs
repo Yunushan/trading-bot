@@ -120,6 +120,14 @@ pub struct BinanceFuturesMultiAssetsMode {
     pub multi_assets_margin: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceFuturesPositionMarginChange {
+    pub symbol: String,
+    pub position_side: String,
+    pub amount: f64,
+    pub margin_type: i64,
+}
+
 impl Default for BinanceFuturesPosition {
     fn default() -> Self {
         Self {
@@ -309,6 +317,44 @@ impl BinanceSignedRestClient {
         parse_spot_balance_rows(&account_payload)
     }
 
+    pub fn fetch_balance_rows(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<Vec<BinanceBalanceRow>> {
+        match self.market {
+            BinanceMarket::Spot => self.fetch_spot_balance_rows(credentials),
+            BinanceMarket::Futures | BinanceMarket::CoinFutures => {
+                self.require_futures_market()?;
+                let payload = self.signed_get_json(
+                    &self.futures_balance_path(),
+                    credentials,
+                    &[],
+                    current_timestamp_ms()?,
+                )?;
+                parse_futures_balance_rows(&payload)
+            }
+        }
+    }
+
+    pub fn fetch_spot_balance(
+        &self,
+        credentials: &BinanceApiCredentials,
+        asset: impl AsRef<str>,
+    ) -> Result<f64> {
+        self.require_spot_market()?;
+        let rows = self.fetch_spot_balance_rows(credentials)?;
+        Ok(select_balance_free(&rows, asset))
+    }
+
+    pub fn list_spot_non_usdt_balances(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<Vec<BinanceBalanceRow>> {
+        self.require_spot_market()?;
+        let rows = self.fetch_spot_balance_rows(credentials)?;
+        Ok(non_usdt_balance_rows(&rows))
+    }
+
     pub fn fetch_open_futures_positions(
         &self,
         credentials: &BinanceApiCredentials,
@@ -480,6 +526,25 @@ impl BinanceSignedRestClient {
         })
     }
 
+    pub fn change_futures_position_margin(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: &str,
+        amount: f64,
+        position_side: Option<&str>,
+    ) -> Result<BinanceFuturesPositionMarginChange> {
+        self.require_futures_market()?;
+        let params = build_futures_position_margin_params(symbol, amount, position_side)?;
+        let payload = self.signed_post_json(
+            &self.futures_v1_path("/positionMargin"),
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+            self.recv_window_ms,
+        )?;
+        parse_futures_position_margin_change(&payload, symbol, amount, position_side)
+    }
+
     fn require_market(&self, expected: BinanceMarket) -> Result<()> {
         if self.market != expected {
             bail!(
@@ -595,6 +660,24 @@ impl BinanceSignedRestClient {
         )
     }
 
+    pub(crate) fn signed_delete_json(
+        &self,
+        path: &str,
+        credentials: &BinanceApiCredentials,
+        params: &[(&str, String)],
+        timestamp_ms: i64,
+        recv_window_ms: u64,
+    ) -> Result<Value> {
+        self.signed_request_json(
+            "DELETE",
+            path,
+            credentials,
+            params,
+            timestamp_ms,
+            recv_window_ms,
+        )
+    }
+
     fn signed_request_json(
         &self,
         method: &str,
@@ -611,17 +694,25 @@ impl BinanceSignedRestClient {
             recv_window_ms,
             params,
         );
-        let url = format!("{}{}?{}", self.base_url, path, query);
+        let endpoint = if path.starts_with("http://") || path.starts_with("https://") {
+            path.to_owned()
+        } else {
+            format!("{}{}", self.base_url, path)
+        };
+        let url = format!("{endpoint}?{query}");
         let method = method.trim().to_uppercase();
         let request = match method.as_str() {
             "GET" => self.http.get(&url),
             "POST" => self.http.post(&url),
+            "DELETE" => self.http.delete(&url),
             _ => bail!("unsupported signed Binance REST method {method}"),
         };
         let response = request
             .header("X-MBX-APIKEY", credentials.api_key.trim())
             .send()
-            .with_context(|| format!("{method} signed Binance REST {path}"))?;
+            .with_context(|| {
+                format!("{method} signed Binance REST {path} via {}", self.base_url)
+            })?;
         let status = response.status();
         let payload = response
             .text()
@@ -729,6 +820,28 @@ pub fn build_futures_multi_assets_mode_params(enabled: bool) -> Vec<(&'static st
     )]
 }
 
+pub fn build_futures_position_margin_params(
+    symbol: &str,
+    amount: f64,
+    position_side: Option<&str>,
+) -> Result<Vec<(&'static str, String)>> {
+    if !amount.is_finite() || amount <= 0.0 {
+        bail!("position-margin amount must be positive");
+    }
+    let mut params = vec![
+        ("symbol", normalize_required_symbol(symbol)?),
+        ("amount", format_position_margin_amount(amount)),
+        ("type", "1".to_owned()),
+    ];
+    if let Some(position_side) = position_side
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("BOTH"))
+    {
+        params.push(("positionSide", position_side.to_uppercase()));
+    }
+    Ok(params)
+}
+
 pub fn parse_futures_position_mode(payload: &Value) -> Result<BinanceFuturesPositionMode> {
     ensure_not_binance_error(payload)?;
     let value = dual_side_position_value(payload)
@@ -799,6 +912,43 @@ pub fn parse_futures_multi_assets_mode(payload: &Value) -> Result<BinanceFutures
         .ok_or_else(|| anyhow!("futures multi-assets response missing multiAssetsMargin"))?;
     Ok(BinanceFuturesMultiAssetsMode {
         multi_assets_margin: coerce_bool_flag(value),
+    })
+}
+
+pub fn parse_futures_position_margin_change(
+    payload: &Value,
+    fallback_symbol: &str,
+    amount: f64,
+    fallback_position_side: Option<&str>,
+) -> Result<BinanceFuturesPositionMarginChange> {
+    ensure_not_binance_error(payload)?;
+    if !amount.is_finite() || amount <= 0.0 {
+        bail!("position-margin amount must be positive");
+    }
+    let row = first_payload_object(payload)
+        .ok_or_else(|| anyhow!("futures position-margin response must be an object"))?;
+    let symbol = row
+        .get("symbol")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback_symbol);
+    let position_side = row
+        .get("positionSide")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            fallback_position_side
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("BOTH")
+        .to_uppercase();
+    Ok(BinanceFuturesPositionMarginChange {
+        symbol: normalize_required_symbol(symbol)?,
+        position_side,
+        amount: first_f64(row, &["amount"]).unwrap_or(amount),
+        margin_type: parse_json_i64(row.get("type")).unwrap_or(1),
     })
 }
 
@@ -1107,6 +1257,23 @@ pub fn parse_spot_balance_rows(account_payload: &Value) -> Result<Vec<BinanceBal
         }
     }
     Ok(balances)
+}
+
+pub fn select_balance_free(rows: &[BinanceBalanceRow], asset: impl AsRef<str>) -> f64 {
+    let asset = asset.as_ref().trim().to_uppercase();
+    rows.iter()
+        .find(|row| row.asset.eq_ignore_ascii_case(&asset))
+        .map(|row| row.free)
+        .unwrap_or(0.0)
+}
+
+pub fn non_usdt_balance_rows(rows: &[BinanceBalanceRow]) -> Vec<BinanceBalanceRow> {
+    rows.iter()
+        .filter(|row| {
+            !row.asset.eq_ignore_ascii_case("USDT") && row.free.is_finite() && row.free > 0.0
+        })
+        .cloned()
+        .collect()
 }
 
 pub fn parse_open_futures_positions(
@@ -1650,6 +1817,17 @@ fn normalize_margin_ratio_percent(value: f64) -> f64 {
     if value <= 1.0 { value * 100.0 } else { value }
 }
 
+fn format_position_margin_amount(value: f64) -> String {
+    let mut text = format!("{value:.8}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
 fn ensure_not_binance_error(value: &Value) -> Result<()> {
     let Some(obj) = value.as_object() else {
         return Ok(());
@@ -1753,6 +1931,14 @@ mod tests {
             "https://example.test/fapi/v1/order"
         );
         assert_eq!(
+            futures.futures_v1_path("/openOrders"),
+            "https://example.test/fapi/v1/openOrders"
+        );
+        assert_eq!(
+            futures.futures_v1_path("/allOpenOrders"),
+            "https://example.test/fapi/v1/allOpenOrders"
+        );
+        assert_eq!(
             coin.futures_balance_url(),
             "https://coin.test/dapi/v1/balance"
         );
@@ -1771,6 +1957,14 @@ mod tests {
         assert_eq!(
             coin.futures_v1_path("/order"),
             "https://coin.test/dapi/v1/order"
+        );
+        assert_eq!(
+            coin.futures_v1_path("/openOrders"),
+            "https://coin.test/dapi/v1/openOrders"
+        );
+        assert_eq!(
+            coin.futures_v1_path("/allOpenOrders"),
+            "https://coin.test/dapi/v1/allOpenOrders"
         );
         assert_eq!(spot.spot_account_url(), "https://spot.test/api/v3/account");
     }
@@ -1871,10 +2065,20 @@ mod tests {
             build_futures_multi_assets_mode_params(true),
             vec![("multiAssetsMargin", "true".to_owned())]
         );
+        assert_eq!(
+            build_futures_position_margin_params("btcusdt", 1.25, Some("long")).unwrap(),
+            vec![
+                ("symbol", "BTCUSDT".to_owned()),
+                ("amount", "1.25".to_owned()),
+                ("type", "1".to_owned()),
+                ("positionSide", "LONG".to_owned())
+            ]
+        );
         assert!(build_futures_margin_type_params("", "isolated").is_err());
         assert!(build_futures_margin_type_params("BTCUSDT", "portfolio").is_err());
         assert!(build_futures_leverage_params("BTCUSDT", 0).is_err());
         assert!(build_futures_leverage_params("BTCUSDT", 126).is_err());
+        assert!(build_futures_position_margin_params("BTCUSDT", 0.0, None).is_err());
     }
 
     #[test]
@@ -1898,6 +2102,23 @@ mod tests {
         assert_eq!(leverage.symbol, "ETHUSDT");
         assert_eq!(leverage.leverage, 21);
         assert_eq!(leverage.max_notional_value, Some(1_000_000.0));
+
+        let margin_change = parse_futures_position_margin_change(
+            &json!({"code": 200, "msg": "success"}),
+            "btcusdt",
+            1.25,
+            Some("long"),
+        )
+        .expect("position margin change");
+        assert_eq!(
+            margin_change,
+            BinanceFuturesPositionMarginChange {
+                symbol: "BTCUSDT".to_owned(),
+                position_side: "LONG".to_owned(),
+                amount: 1.25,
+                margin_type: 1,
+            }
+        );
 
         let multi = parse_futures_multi_assets_mode(&json!({"multiAssetsMargin": "true"}))
             .expect("multi assets mode");
@@ -2028,6 +2249,34 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].asset, "USDT");
         assert_eq!(rows[0].locked, 2.25);
+        assert_eq!(select_balance_free(&rows, "usdt"), 10.5);
+        assert_eq!(select_balance_free(&rows, "BTC"), 0.0);
+        assert!(non_usdt_balance_rows(&rows).is_empty());
+
+        let mixed_rows = vec![
+            BinanceBalanceRow {
+                asset: "USDT".to_owned(),
+                free: 100.0,
+                locked: 0.0,
+                total: 100.0,
+            },
+            BinanceBalanceRow {
+                asset: "ETH".to_owned(),
+                free: 0.25,
+                locked: 0.05,
+                total: 0.30,
+            },
+            BinanceBalanceRow {
+                asset: "BTC".to_owned(),
+                free: 0.0,
+                locked: 0.1,
+                total: 0.1,
+            },
+        ];
+        let non_usdt = non_usdt_balance_rows(&mixed_rows);
+        assert_eq!(non_usdt.len(), 1);
+        assert_eq!(non_usdt[0].asset, "ETH");
+        assert_eq!(non_usdt[0].free, 0.25);
     }
 
     #[test]

@@ -57,8 +57,9 @@ entry points, message parsing, and supervised stream cache/reconnect evidence
 for stale-feed fail-closed planning; `BinanceSignedRestClient` for signed USDT
 balance snapshots, normalized balance rows, open futures position parsing
 with account-position overlays, futures position-mode get/change request
-foundations, and futures margin-type/leverage/multi-assets request and parser
-foundations; signed market/limit order request/result foundations
+foundations, futures margin-type/leverage/multi-assets request and parser
+foundations, signed futures force-order history and isolated position-margin
+cleanup, and signed Spot trade history; signed market/limit order request/result foundations
 and Binance futures symbol filters; order submit guard foundations for Python's
 intent, live-safety, audit, connector-health, filter, and session-cap checks;
 order audit/circuit-breaker foundations for redacted JSONL events, snapshots,

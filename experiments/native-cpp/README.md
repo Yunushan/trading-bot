@@ -9,7 +9,7 @@ Today it is a C++ desktop re-platforming path with source-contract parity agains
 - Native Qt Widgets desktop shell
 - C++23 / Qt 6 build target
 - Dashboard, chart, positions, backtest, and web/runtime slices under active restructuring
-- Native exchange connectivity experiments, with Binance USD-M Futures, Coin-M Futures, and Spot as the current implemented connector paths inside the C++ tree
+- Native exchange connectivity experiments, with Binance USD-M Futures, Coin-M Futures, and Spot as the current implemented connector paths inside the C++ tree, including signed account settings, force-order history, position-margin cleanup, and Spot trade history
 - Dashboard LLM settings for cloud providers and local/private OpenAI-compatible endpoints
 
 ## Current status
@@ -39,7 +39,7 @@ platform/installer/credential-gated evidence.
 | Strategy runtime | Complete indicator output keys, signal threshold/index semantics, controls normalization, override provenance, and worker lifecycle parity helpers/tests | Complete for this domain |
 | Exchange connectors | Complete connector support metadata, Python backend catalog, non-Binance rejection reasons, rate-limit/backoff, and diagnostic health snapshots | Complete for this domain |
 | Account, portfolio, and positions | Complete portfolio DTOs, history/allocation ledgers, close-all cache reconciliation, and native parity tests | Complete for this domain |
-| Order execution and risk | Complete native Binance USD-M/Coin-M Futures and Spot order audit, preflight, circuit breaker, exchange filters, signed market/limit or Spot market submission, retry/fallback, close/stop/shutdown guards, and risk behavior | Complete for the implemented Binance market scope; other venues remain gated |
+| Order execution and risk | Complete native Binance USD-M/Coin-M Futures and Spot order audit, preflight, circuit breaker, exchange filters, signed market/limit or Spot market submission, account settings, force-order history, position-margin cleanup, retry/fallback, close/stop/shutdown guards, and risk behavior | Complete for the implemented Binance market scope; other venues remain gated |
 | Backtest engine | Native C++ historical simulator and batch optimizer are the default local backend, with generated Python indicator defaults, paginated Binance candle loading, cancellation, bounded ranking, dashboard import, and a Python Service API compatibility backend | Complete for the implemented Binance backtest domain; live-trading ownership remains separate |
 | Charts and heatmaps | Complete chart state payloads, TradingView interval aliases, lightweight asset fallbacks, safe-mode guards, and liquidation provider catalog tests | Complete for this domain |
 | Logs, terminal, diagnostics | Complete controlled terminal UI delegated to the Python Service API, service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests | Complete for this domain |

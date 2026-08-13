@@ -1074,6 +1074,8 @@ mod tests {
             min_notional: 5.0,
             quantity_precision: 3,
             price_precision: 1,
+            quote_asset_precision: 8,
+            max_leverage: 0,
         };
         assert_eq!(
             OrderSymbolFilters::from(&filters),

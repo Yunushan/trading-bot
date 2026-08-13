@@ -1474,9 +1474,26 @@ impl NativeRuntimeLoop {
         &mut self,
         engine: &mut RuntimeOrderEngine,
         input: NativeRuntimeGuardedExecutionCycleInput,
+        execute: F,
+    ) -> Result<NativeRuntimeGuardedExecutionCycleSnapshot>
+    where
+        F: FnMut(&BinanceFuturesOrderParams) -> Result<BinanceFuturesOrderResult>,
+    {
+        self.run_guarded_execution_cycle_with_close_prepare(engine, input, |_| Ok(()), execute)
+    }
+
+    /// Variant of guarded execution that lets a live connector prepare the
+    /// exchange before a close order is submitted. The hook is invoked only
+    /// for close directives and is bypassed for dry-run close execution.
+    pub fn run_guarded_execution_cycle_with_close_prepare<F, P>(
+        &mut self,
+        engine: &mut RuntimeOrderEngine,
+        input: NativeRuntimeGuardedExecutionCycleInput,
+        mut prepare_close: P,
         mut execute: F,
     ) -> Result<NativeRuntimeGuardedExecutionCycleSnapshot>
     where
+        P: FnMut(&BinanceFuturesCloseDirective) -> Result<()>,
         F: FnMut(&BinanceFuturesOrderParams) -> Result<BinanceFuturesOrderResult>,
     {
         let risk_positions = input.risk_positions.clone();
@@ -1538,6 +1555,7 @@ impl NativeRuntimeLoop {
                 &input.now_iso,
                 "native-runtime-stop-loss",
                 |close_directive| {
+                    prepare_close(close_directive)?;
                     let params = close_directive.to_order_params()?;
                     execute(&params)
                 },
@@ -1758,6 +1776,7 @@ impl NativeRuntimeLoop {
                 input.now_iso.clone(),
                 "native-runtime-close-opposite",
                 |close_directive| {
+                    prepare_close(close_directive)?;
                     let params = close_directive.to_order_params()?;
                     execute(&params)
                 },

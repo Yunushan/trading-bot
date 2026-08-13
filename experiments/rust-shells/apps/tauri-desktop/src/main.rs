@@ -1498,36 +1498,62 @@ impl NativeRuntimeState {
             now_epoch_seconds: now_ms.max(0) as f64 / 1_000.0,
             source: "tauri-native-runtime".to_owned(),
         };
-        let result = runtime.run_guarded_execution_cycle(engine, execution_input, |params| {
-            let quantity = params
-                .params
-                .iter()
-                .find(|(key, _)| *key == "quantity")
-                .and_then(|(_, value)| value.parse::<f64>().ok())
-                .filter(|value| value.is_finite() && *value > 0.0)
-                .unwrap_or(0.0);
-            let reduce_only = params
-                .params
-                .iter()
-                .any(|(key, value)| *key == "reduceOnly" && value.eq_ignore_ascii_case("true"));
-            if spec.market == BinanceMarket::Spot {
-                account_client.place_spot_market_order(
-                    &credentials,
-                    &params.symbol,
-                    &params.side,
-                    quantity,
-                )
-            } else {
-                account_client.place_futures_market_order(
-                    &credentials,
-                    &params.symbol,
-                    &params.side,
-                    quantity,
-                    reduce_only,
-                    &params.position_side,
-                )
-            }
-        });
+        let result = runtime.run_guarded_execution_cycle_with_close_prepare(
+            engine,
+            execution_input,
+            |close_directive| {
+                if spec.market == BinanceMarket::Spot {
+                    return Ok(());
+                }
+                if account_client
+                    .cancel_all_open_futures_orders(&credentials, &close_directive.symbol)
+                    .is_err()
+                {
+                    let open_orders = account_client.fetch_open_futures_orders(
+                        &credentials,
+                        Some(close_directive.symbol.as_str()),
+                    )?;
+                    for open_order in open_orders {
+                        account_client.cancel_futures_order(
+                            &credentials,
+                            &open_order.symbol,
+                            &open_order.order_id,
+                        )?;
+                    }
+                }
+                Ok(())
+            },
+            |params| {
+                let quantity = params
+                    .params
+                    .iter()
+                    .find(|(key, _)| *key == "quantity")
+                    .and_then(|(_, value)| value.parse::<f64>().ok())
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                    .unwrap_or(0.0);
+                let reduce_only = params
+                    .params
+                    .iter()
+                    .any(|(key, value)| *key == "reduceOnly" && value.eq_ignore_ascii_case("true"));
+                if spec.market == BinanceMarket::Spot {
+                    account_client.place_spot_market_order(
+                        &credentials,
+                        &params.symbol,
+                        &params.side,
+                        quantity,
+                    )
+                } else {
+                    account_client.place_futures_market_order(
+                        &credentials,
+                        &params.symbol,
+                        &params.side,
+                        quantity,
+                        reduce_only,
+                        &params.position_side,
+                    )
+                }
+            },
+        );
         engine.api_key.clear();
         engine.api_secret.clear();
         match result {
@@ -1704,6 +1730,20 @@ fn dispatch_native_runtime_position_closes(
         native_runtime_now_iso(now_ms),
         "tauri-native-runtime-stop",
         |directive| {
+            if account_client
+                .cancel_all_open_futures_orders(&credentials, &directive.symbol)
+                .is_err()
+            {
+                let open_orders = account_client
+                    .fetch_open_futures_orders(&credentials, Some(directive.symbol.as_str()))?;
+                for open_order in open_orders {
+                    account_client.cancel_futures_order(
+                        &credentials,
+                        &open_order.symbol,
+                        &open_order.order_id,
+                    )?;
+                }
+            }
             account_client.place_futures_market_order(
                 &credentials,
                 &directive.symbol,

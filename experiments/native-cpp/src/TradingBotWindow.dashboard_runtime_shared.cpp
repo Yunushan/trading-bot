@@ -949,6 +949,46 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
         return aggregated;
     }
 
+    // Match Python's close safety rule: a resting entry order must not be able
+    // to refill the position after a close is accepted. Prefer the bulk
+    // endpoint, then fall back to confirmed per-order cancellation.
+    const auto bulkCancellation = BinanceRestClient::cancelAllOpenFuturesOrders(
+        apiKey,
+        apiSecret,
+        aggregated.symbol,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!bulkCancellation.ok) {
+        const auto openOrders = BinanceRestClient::fetchOpenFuturesOrders(
+            apiKey,
+            apiSecret,
+            aggregated.symbol,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (!openOrders.ok) {
+            aggregated.error = QStringLiteral("Open-order cancellation failed: %1; snapshot failed: %2")
+                                   .arg(bulkCancellation.error, openOrders.error);
+            return aggregated;
+        }
+        for (const auto &openOrder : openOrders.orders) {
+            const auto cancellation = BinanceRestClient::cancelFuturesOrder(
+                apiKey,
+                apiSecret,
+                openOrder.symbol,
+                openOrder.orderId,
+                testnet,
+                timeoutMs,
+                baseUrlOverride);
+            if (!cancellation.ok) {
+                aggregated.error = QStringLiteral("Open-order cancellation failed for %1: %2")
+                                       .arg(openOrder.orderId, cancellation.error);
+                return aggregated;
+            }
+        }
+    }
+
     constexpr double kQtyEpsilon = 1e-10;
 
     const auto filters = BinanceRestClient::fetchFuturesSymbolFilters(

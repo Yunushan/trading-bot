@@ -37,11 +37,21 @@ public:
         QString asset;
         double free = 0.0;
         double locked = 0.0;
+        double total = 0.0;
     };
 
     struct SpotBalancesResult {
         bool ok = false;
         QVector<SpotBalanceRow> balances;
+        QString error;
+    };
+
+    struct SpotAssetBalanceResult {
+        bool ok = false;
+        QString asset;
+        double free = 0.0;
+        double locked = 0.0;
+        double total = 0.0;
         QString error;
     };
 
@@ -64,6 +74,16 @@ public:
         QString error;
     };
 
+    struct FuturesBookTickerResult {
+        bool ok = false;
+        QString symbol;
+        double bidPrice = 0.0;
+        double bidQty = 0.0;
+        double askPrice = 0.0;
+        double askQty = 0.0;
+        QString error;
+    };
+
     struct FuturesPosition {
         QString symbol;
         QString positionSide;
@@ -83,6 +103,7 @@ public:
         double entryPrice = 0.0;
         double markPrice = 0.0;
         double liquidationPrice = 0.0;
+        QString marginType;
     };
 
     struct FuturesPositionsResult {
@@ -96,6 +117,7 @@ public:
         QString status;
         QString baseAsset;
         QString quoteAsset;
+        int quoteAssetPrecision = 0;
         double stepSize = 0.0;
         double tickSize = 0.0;
         double minQty = 0.0;
@@ -103,6 +125,7 @@ public:
         double minNotional = 0.0;
         int quantityPrecision = 0;
         int pricePrecision = 0;
+        int maxLeverage = 0;
         QString error;
     };
 
@@ -118,6 +141,162 @@ public:
         QString error;
     };
 
+    struct FuturesOpenOrder {
+        QString symbol;
+        QString orderId;
+        QString clientOrderId;
+        QString status;
+        QString side;
+        QString type;
+        QString positionSide;
+        double origQty = 0.0;
+        double executedQty = 0.0;
+        double price = 0.0;
+    };
+
+    struct FuturesOpenOrdersResult {
+        bool ok = false;
+        QVector<FuturesOpenOrder> orders;
+        QString error;
+    };
+
+    struct FuturesCancelResult {
+        bool ok = false;
+        QString symbol;
+        QString orderId;
+        QString status;
+        QString error;
+    };
+
+    struct FuturesTrade {
+        QString symbol;
+        QString tradeId;
+        QString orderId;
+        double price = 0.0;
+        double quantity = 0.0;
+        double quoteQuantity = 0.0;
+        double realizedPnl = 0.0;
+        double commission = 0.0;
+        QString commissionAsset;
+        qint64 timeMs = 0;
+    };
+
+    struct FuturesTradesResult {
+        bool ok = false;
+        QVector<FuturesTrade> trades;
+        QString error;
+    };
+
+    struct FuturesLeverageBracket {
+        QString symbol;
+        int initialLeverage = 0;
+        double notionalCap = 0.0;
+        double notionalFloor = 0.0;
+        double maintMarginRatio = 0.0;
+        double cum = 0.0;
+    };
+
+    struct FuturesLeverageBracketsResult {
+        bool ok = false;
+        QVector<FuturesLeverageBracket> brackets;
+        QString error;
+    };
+
+    struct FuturesMaxLeverageResult {
+        bool ok = false;
+        QString symbol;
+        int maxLeverage = 0;
+        QString error;
+    };
+
+    struct FuturesPositionModeResult {
+        bool ok = false;
+        bool dualSidePosition = false;
+        QString positionMode;
+        QString error;
+    };
+
+    struct FuturesMarginModeResult {
+        bool ok = false;
+        QString symbol;
+        QString marginType;
+        QString error;
+    };
+
+    struct FuturesLeverageResult {
+        bool ok = false;
+        QString symbol;
+        int leverage = 0;
+        double maxNotionalValue = 0.0;
+        QString error;
+    };
+
+    struct FuturesMultiAssetsModeResult {
+        bool ok = false;
+        bool multiAssetsMargin = false;
+        QString error;
+    };
+
+    struct FuturesForceOrder {
+        QString symbol;
+        QString orderId;
+        QString side;
+        QString positionSide;
+        QString status;
+        QString type;
+        double avgPrice = 0.0;
+        double executedQty = 0.0;
+        double origQty = 0.0;
+        double price = 0.0;
+        qint64 timeMs = 0;
+        qint64 updateTimeMs = 0;
+    };
+
+    struct FuturesForceOrdersResult {
+        bool ok = false;
+        QVector<FuturesForceOrder> orders;
+        QString error;
+    };
+
+    struct FuturesPositionMarginResult {
+        bool ok = false;
+        QString symbol;
+        QString positionSide;
+        double amount = 0.0;
+        int type = 1;
+        QString error;
+    };
+
+    struct SpotTrade {
+        QString symbol;
+        QString tradeId;
+        QString orderId;
+        double price = 0.0;
+        double quantity = 0.0;
+        double quoteQuantity = 0.0;
+        double commission = 0.0;
+        QString commissionAsset;
+        bool isBuyer = false;
+        bool isMaker = false;
+        bool isBestMatch = false;
+        qint64 timeMs = 0;
+    };
+
+    struct SpotTradesResult {
+        bool ok = false;
+        QVector<SpotTrade> trades;
+        QString error;
+    };
+
+    struct SpotPositionCostResult {
+        bool ok = false;
+        bool hasPosition = false;
+        QString symbol;
+        double quantity = 0.0;
+        double cost = 0.0;
+        QString error;
+    };
+
     using SpotSymbolFilters = FuturesSymbolFilters;
     using SpotOrderResult = FuturesOrderResult;
 
@@ -130,6 +309,33 @@ public:
         const QString &baseUrlOverride = {});
 
     static SpotBalancesResult fetchSpotBalances(
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    // Normalized balance helpers mirror Python get_balances/get_spot_balance
+    // while retaining one common row shape for Spot and Futures accounts.
+    using BalanceRowsResult = SpotBalancesResult;
+
+    static BalanceRowsResult fetchBalanceRows(
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool futures,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static SpotAssetBalanceResult fetchSpotBalance(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &asset = QStringLiteral("USDT"),
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static SpotBalancesResult fetchSpotNonUsdtBalances(
         const QString &apiKey,
         const QString &apiSecret,
         bool testnet,
@@ -174,10 +380,161 @@ public:
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 
+    static FuturesBookTickerResult fetchFuturesBookTicker(
+        const QString &symbol,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
     static FuturesPositionsResult fetchOpenFuturesPositions(
         const QString &apiKey,
         const QString &apiSecret,
         bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesOpenOrdersResult fetchOpenFuturesOrders(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol = {},
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesCancelResult cancelAllOpenFuturesOrders(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesCancelResult cancelFuturesOrder(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        const QString &orderId,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesTradesResult fetchFuturesTrades(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        const QString &orderId = {},
+        int limit = 100,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesLeverageBracketsResult fetchFuturesLeverageBrackets(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol = {},
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesMaxLeverageResult fetchFuturesMaxLeverage(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        int fallbackMaxLeverage = 125,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static int clampFuturesLeverage(
+        int requestedLeverage,
+        int configuredMaxLeverage = 125,
+        int symbolMaxLeverage = 0,
+        bool futuresAccount = true);
+
+    static FuturesPositionModeResult fetchFuturesPositionMode(
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesPositionModeResult changeFuturesPositionMode(
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool dualSidePosition,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesMarginModeResult changeFuturesMarginType(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        const QString &marginType,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesLeverageResult changeFuturesLeverage(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        int leverage,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesMultiAssetsModeResult fetchFuturesMultiAssetsMode(
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesMultiAssetsModeResult changeFuturesMultiAssetsMode(
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool enabled,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesForceOrdersResult fetchFuturesForceOrders(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol = {},
+        qint64 startTimeMs = 0,
+        qint64 endTimeMs = 0,
+        int limit = 20,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesPositionMarginResult changeFuturesPositionMargin(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        double amount,
+        const QString &positionSide = {},
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static SpotTradesResult fetchSpotTrades(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        int limit = 1000,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static SpotPositionCostResult fetchSpotPositionCost(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        int limit = 1000,
+        bool testnet = false,
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 
@@ -231,6 +588,26 @@ public:
 
 private:
     static QString hmacSha256Hex(const QString &secret, const QString &message);
+    static QJsonDocument signedFuturesRequestJson(
+        const QString &method,
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool testnet,
+        const QString &baseUrlOverride,
+        const QString &endpoint,
+        const QList<QPair<QString, QString>> &params,
+        int timeoutMs,
+        QString *error);
+    static QJsonDocument signedSpotRequestJson(
+        const QString &method,
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool testnet,
+        const QString &baseUrlOverride,
+        const QString &endpoint,
+        const QList<QPair<QString, QString>> &params,
+        int timeoutMs,
+        QString *error);
     static QJsonDocument httpGetJson(
         const QString &url,
         const QList<QPair<QByteArray, QByteArray>> &headers,

@@ -349,6 +349,357 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ Coin-M balance should expose canonical available collateral"));
     check(observedCoinBalanceRequest.startsWith("GET /dapi/v1/balance?"),
           QStringLiteral("C++ Coin-M balance should request the DAPI balance endpoint"));
+    const auto coinBalanceRows = BinanceRestClient::fetchBalanceRows(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        true,
+        false,
+        5000,
+        QStringLiteral("http://127.0.0.1:%1/dapi").arg(coinBalanceServer.serverPort()));
+    check(coinBalanceRows.ok && coinBalanceRows.balances.size() == 1
+              && coinBalanceRows.balances.first().asset == QStringLiteral("BTC")
+              && std::abs(coinBalanceRows.balances.first().free - 0.50) < 1e-12
+              && std::abs(coinBalanceRows.balances.first().total - 0.75) < 1e-12,
+          QStringLiteral("C++ normalized futures balance rows should match Python free/total semantics"));
+
+    QTcpServer coinOrderLifecycleServer;
+    check(coinOrderLifecycleServer.listen(QHostAddress::LocalHost, 0),
+          QStringLiteral("local Coin-M order lifecycle HTTP test server should listen"));
+    QByteArray observedCoinOpenOrdersRequest;
+    QByteArray observedCoinCancelAllRequest;
+    QByteArray observedCoinCancelOneRequest;
+    QByteArray observedCoinBookTickerRequest;
+    QByteArray observedCoinTradesRequest;
+    QByteArray observedCoinLeverageBracketRequest;
+    QByteArray observedCoinPositionModeGetRequest;
+    QByteArray observedCoinPositionModeChangeRequest;
+    QByteArray observedCoinMarginTypeRequest;
+    QByteArray observedCoinLeverageRequest;
+    QByteArray observedCoinMultiAssetsGetRequest;
+    QByteArray observedCoinMultiAssetsChangeRequest;
+    QByteArray observedCoinForceOrdersRequest;
+    QByteArray observedCoinPositionMarginRequest;
+    QObject::connect(&coinOrderLifecycleServer, &QTcpServer::newConnection,
+                     [&coinOrderLifecycleServer, &observedCoinOpenOrdersRequest,
+                      &observedCoinCancelAllRequest, &observedCoinCancelOneRequest,
+                      &observedCoinBookTickerRequest, &observedCoinTradesRequest,
+                      &observedCoinLeverageBracketRequest, &observedCoinPositionModeGetRequest,
+                      &observedCoinPositionModeChangeRequest, &observedCoinMarginTypeRequest,
+                      &observedCoinLeverageRequest, &observedCoinMultiAssetsGetRequest,
+                      &observedCoinMultiAssetsChangeRequest, &observedCoinForceOrdersRequest,
+                      &observedCoinPositionMarginRequest]() {
+                         QTcpSocket *socket = coinOrderLifecycleServer.nextPendingConnection();
+                         QObject::connect(socket, &QTcpSocket::readyRead,
+                                          [socket, &observedCoinOpenOrdersRequest,
+                                           &observedCoinCancelAllRequest,
+                                           &observedCoinCancelOneRequest,
+                                           &observedCoinBookTickerRequest,
+                                           &observedCoinTradesRequest,
+                                           &observedCoinLeverageBracketRequest,
+                                           &observedCoinPositionModeGetRequest,
+                                           &observedCoinPositionModeChangeRequest,
+                                           &observedCoinMarginTypeRequest,
+                                           &observedCoinLeverageRequest,
+                                           &observedCoinMultiAssetsGetRequest,
+                                           &observedCoinMultiAssetsChangeRequest,
+                                           &observedCoinForceOrdersRequest,
+                                           &observedCoinPositionMarginRequest]() {
+                                              const QByteArray request = socket->readAll();
+                                              if (!request.contains("\r\n\r\n")) {
+                                                  return;
+                                              }
+                                              const QByteArray requestLine =
+                                                  request.left(request.indexOf('\n')).trimmed();
+                                              if (requestLine.startsWith("GET /dapi/v1/openOrders?")) {
+                                                  observedCoinOpenOrdersRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"([{"symbol":"BTCUSD_PERP","orderId":123,"clientOrderId":"client-1","status":"NEW","side":"SELL","type":"LIMIT","positionSide":"LONG","origQty":"2","executedQty":"0","price":"40000"}])");
+                                              } else if (requestLine.startsWith(
+                                                             "DELETE /dapi/v1/allOpenOrders?")) {
+                                                  observedCoinCancelAllRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"code":200,"msg":"The liquidation is successful."})");
+                                              } else if (requestLine.startsWith("DELETE /dapi/v1/order?")) {
+                                                  observedCoinCancelOneRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"symbol":"BTCUSD_PERP","orderId":123,"status":"CANCELED"})");
+                                              } else if (requestLine.startsWith("GET /dapi/v1/ticker/bookTicker?")) {
+                                                  observedCoinBookTickerRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"symbol":"BTCUSD_PERP","bidPrice":"40000","bidQty":"2","askPrice":"40001","askQty":"3"})");
+                                              } else if (requestLine.startsWith("GET /dapi/v1/userTrades?")) {
+                                                  observedCoinTradesRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"([{"symbol":"BTCUSD_PERP","id":1,"orderId":123,"price":"40000","qty":"2","quoteQty":"80000","realizedPnl":"4","commission":"0.1","commissionAsset":"USDT","time":1700000000000}])");
+                                              } else if (requestLine.startsWith("GET /dapi/v1/leverageBracket?")) {
+                                                  observedCoinLeverageBracketRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"([{"symbol":"BTCUSD_PERP","brackets":[{"initialLeverage":50,"notionalCap":"100000","notionalFloor":"0","maintMarginRatio":"0.01","cum":"0"}]}])");
+                                              } else if (requestLine.startsWith(
+                                                             "GET /dapi/v1/positionSide/dual?")) {
+                                                  observedCoinPositionModeGetRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"dualSidePosition":true})");
+                                              } else if (requestLine.startsWith(
+                                                             "POST /dapi/v1/positionSide/dual?")) {
+                                                  observedCoinPositionModeChangeRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"code":200,"msg":"success"})");
+                                              } else if (requestLine.startsWith("POST /dapi/v1/marginType?")) {
+                                                  observedCoinMarginTypeRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"code":200,"msg":"success"})");
+                                              } else if (requestLine.startsWith("POST /dapi/v1/leverage?")) {
+                                                  observedCoinLeverageRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"symbol":"BTCUSD_PERP","leverage":25,"maxNotionalValue":"100000"})");
+                                              } else if (requestLine.startsWith(
+                                                             "GET /dapi/v1/multiAssetsMargin?")) {
+                                                  observedCoinMultiAssetsGetRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"multiAssetsMargin":false})");
+                                              } else if (requestLine.startsWith(
+                                                             "POST /dapi/v1/multiAssetsMargin?")) {
+                                                  observedCoinMultiAssetsChangeRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"code":200,"msg":"success"})");
+                                              } else if (requestLine.startsWith("GET /dapi/v1/forceOrders?")) {
+                                                  observedCoinForceOrdersRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"forceOrders":[{"symbol":"BTCUSD_PERP","orderId":456,"side":"SELL","positionSide":"LONG","status":"FILLED","type":"LIMIT","avgPrice":"40000","executedQty":"2","origQty":"2","price":"39900","time":1700000000000,"updateTime":1700000001000}]})");
+                                              } else if (requestLine.startsWith("POST /dapi/v1/positionMargin?")) {
+                                                  observedCoinPositionMarginRequest = requestLine;
+                                                  writeJsonResponseAndClose(
+                                                      socket,
+                                                      R"({"code":200,"msg":"success"})");
+                                              }
+                                          });
+                     });
+    const QString coinOrderLifecycleBaseUrl =
+        QStringLiteral("http://127.0.0.1:%1/dapi").arg(coinOrderLifecycleServer.serverPort());
+    const auto coinOpenOrders = BinanceRestClient::fetchOpenFuturesOrders(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("btcusd_perp"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinOpenOrders.ok && coinOpenOrders.orders.size() == 1,
+          QStringLiteral("C++ Coin-M open-orders endpoint should parse a symbol-scoped row"));
+    check(coinOpenOrders.ok && coinOpenOrders.orders.first().orderId == QStringLiteral("123")
+              && coinOpenOrders.orders.first().positionSide == QStringLiteral("LONG"),
+          QStringLiteral("C++ Coin-M open-orders parser should preserve order identity and hedge leg"));
+    check(observedCoinOpenOrdersRequest.startsWith("GET /dapi/v1/openOrders?"),
+          QStringLiteral("C++ Coin-M open-orders request should use the DAPI endpoint"));
+
+    const auto coinCancelAll = BinanceRestClient::cancelAllOpenFuturesOrders(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSD_PERP"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinCancelAll.ok && coinCancelAll.status == QStringLiteral("CANCELED"),
+          QStringLiteral("C++ Coin-M bulk cancellation should accept Binance success code 200"));
+    check(observedCoinCancelAllRequest.startsWith("DELETE /dapi/v1/allOpenOrders?"),
+          QStringLiteral("C++ Coin-M bulk cancellation should use the DAPI endpoint"));
+
+    const auto coinCancelOne = BinanceRestClient::cancelFuturesOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSD_PERP"),
+        QStringLiteral("123"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinCancelOne.ok && coinCancelOne.orderId == QStringLiteral("123")
+              && coinCancelOne.status == QStringLiteral("CANCELED"),
+          QStringLiteral("C++ Coin-M individual cancellation should parse the acknowledged order"));
+    check(observedCoinCancelOneRequest.startsWith("DELETE /dapi/v1/order?"),
+          QStringLiteral("C++ Coin-M individual cancellation should use the DAPI endpoint"));
+
+    const auto coinBookTicker = BinanceRestClient::fetchFuturesBookTicker(
+        QStringLiteral("BTCUSD_PERP"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinBookTicker.ok && coinBookTicker.symbol == QStringLiteral("BTCUSD_PERP")
+              && std::abs(coinBookTicker.bidPrice - 40000.0) < 1e-9
+              && std::abs(coinBookTicker.askPrice - 40001.0) < 1e-9,
+          QStringLiteral("C++ Coin-M book ticker should preserve Python bid/ask fields"));
+    check(observedCoinBookTickerRequest.startsWith("GET /dapi/v1/ticker/bookTicker?"),
+          QStringLiteral("C++ Coin-M book ticker should use the DAPI public endpoint"));
+
+    const auto coinTrades = BinanceRestClient::fetchFuturesTrades(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSD_PERP"),
+        QStringLiteral("123"),
+        100,
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinTrades.ok && coinTrades.trades.size() == 1
+              && coinTrades.trades.first().orderId == QStringLiteral("123")
+              && std::abs(coinTrades.trades.first().quantity - 2.0) < 1e-9
+              && std::abs(coinTrades.trades.first().realizedPnl - 4.0) < 1e-9,
+          QStringLiteral("C++ Coin-M trade history should preserve Python fill fields"));
+    check(observedCoinTradesRequest.startsWith("GET /dapi/v1/userTrades?"),
+          QStringLiteral("C++ Coin-M trade history should use the signed DAPI endpoint"));
+
+    const auto coinLeverageBrackets = BinanceRestClient::fetchFuturesLeverageBrackets(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSD_PERP"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinLeverageBrackets.ok && coinLeverageBrackets.brackets.size() == 1
+              && coinLeverageBrackets.brackets.first().initialLeverage == 50
+              && std::abs(coinLeverageBrackets.brackets.first().maintMarginRatio - 0.01) < 1e-12,
+          QStringLiteral("C++ Coin-M leverage brackets should preserve Python risk metadata"));
+    check(observedCoinLeverageBracketRequest.startsWith("GET /dapi/v1/leverageBracket?"),
+          QStringLiteral("C++ Coin-M leverage brackets should use the signed DAPI endpoint"));
+
+    const auto coinMaxLeverage = BinanceRestClient::fetchFuturesMaxLeverage(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSD_PERP"),
+        125,
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinMaxLeverage.ok && coinMaxLeverage.symbol == QStringLiteral("BTCUSD_PERP")
+              && coinMaxLeverage.maxLeverage == 50,
+          QStringLiteral("C++ Coin-M max leverage should match Python leverage-bracket selection"));
+    check(BinanceRestClient::clampFuturesLeverage(80, 125, 50, true) == 50
+              && BinanceRestClient::clampFuturesLeverage(80, 20, 0, false) == 20
+              && BinanceRestClient::clampFuturesLeverage(0, 125, 0, true) == 1,
+          QStringLiteral("C++ leverage clamping should match Python configured and symbol caps"));
+
+    const auto coinPositionMode = BinanceRestClient::fetchFuturesPositionMode(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinPositionMode.ok && coinPositionMode.dualSidePosition
+              && coinPositionMode.positionMode == QStringLiteral("HEDGE"),
+          QStringLiteral("C++ Coin-M position mode should preserve Python hedge-mode state"));
+    check(observedCoinPositionModeGetRequest.startsWith("GET /dapi/v1/positionSide/dual?"),
+          QStringLiteral("C++ Coin-M position mode should use the signed DAPI endpoint"));
+
+    const auto changedCoinPositionMode = BinanceRestClient::changeFuturesPositionMode(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        false,
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(changedCoinPositionMode.ok && !changedCoinPositionMode.dualSidePosition
+              && changedCoinPositionMode.positionMode == QStringLiteral("ONE_WAY")
+              && observedCoinPositionModeChangeRequest.contains("dualSidePosition=false"),
+          QStringLiteral("C++ Coin-M position-mode mutation should mirror Python request options"));
+
+    const auto changedCoinMarginType = BinanceRestClient::changeFuturesMarginType(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("btcusd_perp"),
+        QStringLiteral("cross"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(changedCoinMarginType.ok && changedCoinMarginType.symbol == QStringLiteral("BTCUSD_PERP")
+              && changedCoinMarginType.marginType == QStringLiteral("CROSSED")
+              && observedCoinMarginTypeRequest.contains("symbol=BTCUSD_PERP")
+              && observedCoinMarginTypeRequest.contains("marginType=CROSSED"),
+          QStringLiteral("C++ Coin-M margin mode should normalize and send Python-compatible options"));
+
+    const auto changedCoinLeverage = BinanceRestClient::changeFuturesLeverage(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSD_PERP"),
+        25,
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(changedCoinLeverage.ok && changedCoinLeverage.leverage == 25
+              && std::abs(changedCoinLeverage.maxNotionalValue - 100000.0) < 1e-9
+              && observedCoinLeverageRequest.contains("symbol=BTCUSD_PERP")
+              && observedCoinLeverageRequest.contains("leverage=25"),
+          QStringLiteral("C++ Coin-M leverage mutation should preserve Python risk settings"));
+
+    const auto coinMultiAssetsMode = BinanceRestClient::fetchFuturesMultiAssetsMode(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinMultiAssetsMode.ok && !coinMultiAssetsMode.multiAssetsMargin
+              && observedCoinMultiAssetsGetRequest.startsWith("GET /dapi/v1/multiAssetsMargin?"),
+          QStringLiteral("C++ Coin-M multi-assets mode should parse the Python account setting"));
+
+    const auto changedCoinMultiAssetsMode = BinanceRestClient::changeFuturesMultiAssetsMode(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        true,
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(changedCoinMultiAssetsMode.ok && changedCoinMultiAssetsMode.multiAssetsMargin
+              && observedCoinMultiAssetsChangeRequest.contains("multiAssetsMargin=true"),
+          QStringLiteral("C++ Coin-M multi-assets mutation should mirror Python request options"));
+
+    const auto coinForceOrders = BinanceRestClient::fetchFuturesForceOrders(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSD_PERP"),
+        1'700'000'000'000,
+        1'700'000'001'000,
+        20,
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinForceOrders.ok && coinForceOrders.orders.size() == 1
+              && coinForceOrders.orders.first().orderId == QStringLiteral("456")
+              && coinForceOrders.orders.first().positionSide == QStringLiteral("LONG")
+              && std::abs(coinForceOrders.orders.first().executedQty - 2.0) < 1e-9,
+          QStringLiteral("C++ Coin-M force-order history should preserve Python liquidation metadata"));
+    check(observedCoinForceOrdersRequest.startsWith("GET /dapi/v1/forceOrders?")
+              && observedCoinForceOrdersRequest.contains("symbol=BTCUSD_PERP")
+              && observedCoinForceOrdersRequest.contains("startTime=1700000000000")
+              && observedCoinForceOrdersRequest.contains("endTime=1700000001000"),
+          QStringLiteral("C++ Coin-M force-order history should use the signed DAPI request options"));
+
+    const auto coinPositionMargin = BinanceRestClient::changeFuturesPositionMargin(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSD_PERP"),
+        1.25,
+        QStringLiteral("LONG"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinPositionMargin.ok && coinPositionMargin.symbol == QStringLiteral("BTCUSD_PERP")
+              && std::abs(coinPositionMargin.amount - 1.25) < 1e-9
+              && observedCoinPositionMarginRequest.contains("symbol=BTCUSD_PERP")
+              && observedCoinPositionMarginRequest.contains("amount=1.25")
+              && observedCoinPositionMarginRequest.contains("type=1")
+              && observedCoinPositionMarginRequest.contains("positionSide=LONG"),
+          QStringLiteral("C++ Coin-M position-margin cleanup should mirror Python signed options"));
 
     QTcpServer spotServer;
     check(spotServer.listen(QHostAddress::LocalHost, 0),
@@ -356,11 +707,14 @@ int main(int argc, char **argv) {
     QByteArray observedSpotExchangeInfoRequest;
     QByteArray observedSpotBalanceRequest;
     QByteArray observedSpotOrderRequest;
+    QByteArray observedSpotTradesRequest;
     QObject::connect(&spotServer, &QTcpServer::newConnection,
-                     [&spotServer, &observedSpotExchangeInfoRequest, &observedSpotBalanceRequest, &observedSpotOrderRequest]() {
+                     [&spotServer, &observedSpotExchangeInfoRequest, &observedSpotBalanceRequest,
+                      &observedSpotOrderRequest, &observedSpotTradesRequest]() {
         QTcpSocket *socket = spotServer.nextPendingConnection();
         QObject::connect(socket, &QTcpSocket::readyRead,
-                         [socket, &observedSpotExchangeInfoRequest, &observedSpotBalanceRequest, &observedSpotOrderRequest]() {
+                         [socket, &observedSpotExchangeInfoRequest, &observedSpotBalanceRequest,
+                          &observedSpotOrderRequest, &observedSpotTradesRequest]() {
             const QByteArray request = socket->readAll();
             if (!request.contains("\r\n\r\n")) {
                 return;
@@ -371,6 +725,11 @@ int main(int argc, char **argv) {
                 writeJsonResponseAndClose(
                     socket,
                     R"({"balances":[{"asset":"USDT","free":"100","locked":"0"},{"asset":"ETH","free":"0.25","locked":"0"}]})");
+            } else if (requestLine.startsWith("GET /api/v3/myTrades?")) {
+                observedSpotTradesRequest = requestLine;
+                writeJsonResponseAndClose(
+                    socket,
+                    R"([{"symbol":"ETHUSDT","id":7,"orderId":42,"price":"2000","qty":"0.25","quoteQty":"500","commission":"0.001","commissionAsset":"ETH","isBuyer":true,"isMaker":false,"isBestMatch":true,"time":1700000000000}])");
             } else if (requestLine.startsWith("GET /api/v3/exchangeInfo")) {
                 observedSpotExchangeInfoRequest = requestLine;
                 writeJsonResponseAndClose(
@@ -398,6 +757,32 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ Spot account should preserve free asset quantities"));
     check(observedSpotBalanceRequest.startsWith("GET /api/v3/account?"),
           QStringLiteral("C++ Spot account should request the signed Spot account endpoint"));
+    const auto usdtBalance = BinanceRestClient::fetchSpotBalance(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("usdt"),
+        false,
+        5000,
+        spotBaseUrl);
+    const auto missingSpotBalance = BinanceRestClient::fetchSpotBalance(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("ADA"),
+        false,
+        5000,
+        spotBaseUrl);
+    const auto nonUsdtBalances = BinanceRestClient::fetchSpotNonUsdtBalances(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        false,
+        5000,
+        spotBaseUrl);
+    check(usdtBalance.ok && std::abs(usdtBalance.free - 100.0) < 1e-12
+              && std::abs(usdtBalance.total - 100.0) < 1e-12
+              && missingSpotBalance.ok && std::abs(missingSpotBalance.free) < 1e-12
+              && nonUsdtBalances.ok && nonUsdtBalances.balances.size() == 1
+              && nonUsdtBalances.balances.first().asset == QStringLiteral("ETH"),
+          QStringLiteral("C++ Spot balance helpers should match Python selection and non-USDT filtering"));
     const auto spotFilters = BinanceRestClient::fetchSpotSymbolFilters(
         QStringLiteral("ethusdt"), false, 5000, spotBaseUrl);
     check(spotFilters.ok, QStringLiteral("C++ Spot exchangeInfo should parse symbol filters"));
@@ -411,6 +796,8 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ Spot filters should preserve symbol trading metadata"));
     check(spotFilters.quantityPrecision == 8,
           QStringLiteral("C++ Spot filters should fall back to baseAssetPrecision"));
+    check(spotFilters.quoteAssetPrecision == 8,
+          QStringLiteral("C++ Spot filters should preserve Python quote-asset precision"));
     check(observedSpotExchangeInfoRequest.startsWith("GET /api/v3/exchangeInfo "),
           QStringLiteral("C++ Spot filters should request the Spot exchangeInfo endpoint"));
 
@@ -431,6 +818,38 @@ int main(int argc, char **argv) {
     check(!observedSpotOrderRequest.contains("positionSide")
               && !observedSpotOrderRequest.contains("reduceOnly"),
           QStringLiteral("C++ Spot order should not send Futures-only fields"));
+
+    const auto spotTrades = BinanceRestClient::fetchSpotTrades(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("ethusdt"),
+        1000,
+        false,
+        5000,
+        spotBaseUrl);
+    check(spotTrades.ok && spotTrades.trades.size() == 1
+              && spotTrades.trades.first().orderId == QStringLiteral("42")
+              && std::abs(spotTrades.trades.first().quantity - 0.25) < 1e-12
+              && std::abs(spotTrades.trades.first().quoteQuantity - 500.0) < 1e-12
+              && spotTrades.trades.first().isBuyer,
+          QStringLiteral("C++ Spot trade history should preserve Python cost-basis fields"));
+    check(observedSpotTradesRequest.startsWith("GET /api/v3/myTrades?")
+              && observedSpotTradesRequest.contains("symbol=ETHUSDT")
+              && observedSpotTradesRequest.contains("limit=1000"),
+          QStringLiteral("C++ Spot trade history should use the signed myTrades request"));
+
+    const auto spotPositionCost = BinanceRestClient::fetchSpotPositionCost(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("ethusdt"),
+        1000,
+        false,
+        5000,
+        spotBaseUrl);
+    check(spotPositionCost.ok && spotPositionCost.hasPosition
+              && std::abs(spotPositionCost.quantity - 0.25) < 1e-12
+              && std::abs(spotPositionCost.cost - 500.0) < 1e-12,
+          QStringLiteral("C++ Spot cost basis should aggregate Python buyer trades"));
 
     const QStringList dashboardResponseFields =
         TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("dashboard"));
