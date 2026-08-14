@@ -138,6 +138,13 @@ pub struct BinanceSpotSymbolMetadata {
     pub filters: BinanceSpotSymbolFilters,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceQuantityAdjustment {
+    pub ok: bool,
+    pub quantity: f64,
+    pub error: Option<String>,
+}
+
 impl BinanceSignedRestClient {
     pub fn fetch_futures_symbol_filters(
         &self,
@@ -165,6 +172,32 @@ impl BinanceSignedRestClient {
         self.require_spot_market()?;
         let payload = self.public_get_json("/api/v3/exchangeInfo", &[])?;
         parse_spot_symbol_metadata(&payload, symbol.as_ref())
+    }
+
+    pub fn adjust_spot_quantity_to_filters(
+        &self,
+        symbol: impl AsRef<str>,
+        quantity: f64,
+        estimated_price: f64,
+    ) -> Result<BinanceQuantityAdjustment> {
+        let filters = self.fetch_spot_symbol_filters(symbol)?;
+        Ok(adjust_spot_quantity_to_filters(
+            &filters,
+            quantity,
+            estimated_price,
+        ))
+    }
+
+    pub fn adjust_futures_quantity_to_filters(
+        &self,
+        symbol: impl AsRef<str>,
+        quantity: f64,
+        price: Option<f64>,
+    ) -> Result<BinanceQuantityAdjustment> {
+        let filters = self.fetch_futures_symbol_filters(symbol)?;
+        Ok(adjust_futures_quantity_to_filters(
+            &filters, quantity, price,
+        ))
     }
 
     pub fn place_futures_market_order(
@@ -1244,6 +1277,224 @@ pub fn format_decimal_for_order(value: f64, precision_hint: usize) -> String {
     }
 }
 
+pub fn floor_to_step(value: f64, step: f64) -> f64 {
+    if step <= 0.0 || !value.is_finite() || !step.is_finite() {
+        return value;
+    }
+    (value / step).trunc() * step
+}
+
+pub fn ceil_to_step(value: f64, step: f64) -> f64 {
+    if step <= 0.0 || !value.is_finite() || !step.is_finite() {
+        return value;
+    }
+    (value / step).ceil() * step
+}
+
+pub fn floor_to_decimals(value: f64, decimals: i32) -> f64 {
+    if decimals < 0 || !value.is_finite() {
+        return value;
+    }
+    let scale = 10_f64.powi(decimals);
+    if !scale.is_finite() || scale <= 0.0 {
+        return value;
+    }
+    (value * scale).trunc() / scale
+}
+
+pub fn ceil_to_decimals(value: f64, decimals: i32) -> f64 {
+    if decimals < 0 || !value.is_finite() {
+        return value;
+    }
+    let scale = 10_f64.powi(decimals);
+    if !scale.is_finite() || scale <= 0.0 {
+        return value;
+    }
+    let scaled = value * scale;
+    // Python's Decimal(ROUND_UP) rounds away from zero for negative values.
+    if value < 0.0 {
+        scaled.floor() / scale
+    } else {
+        scaled.ceil() / scale
+    }
+}
+
+pub fn adjust_spot_quantity_to_filters(
+    filters: &BinanceSpotSymbolFilters,
+    quantity: f64,
+    estimated_price: f64,
+) -> BinanceQuantityAdjustment {
+    if !quantity.is_finite() {
+        return failed_quantity_adjustment("qty must be a finite number");
+    }
+    if quantity <= 0.0 {
+        return failed_quantity_adjustment("qty<=0");
+    }
+    if !estimated_price.is_finite() {
+        return failed_quantity_adjustment("price must be a finite number");
+    }
+    if let Some(error) = validate_quantity_filters(filters) {
+        return failed_quantity_adjustment(&error);
+    }
+
+    let mut adjusted = quantity;
+    if filters.step_size > 0.0 {
+        adjusted = floor_to_step(adjusted, filters.step_size);
+    }
+    if filters.min_qty > 0.0 && adjusted < filters.min_qty {
+        adjusted = filters.min_qty;
+    }
+    if filters.min_notional > 0.0 && estimated_price > 0.0 {
+        let mut needed = filters.min_notional / estimated_price;
+        if filters.step_size > 0.0 {
+            needed = ceil_to_step(needed, filters.step_size);
+        }
+        if filters.min_qty > 0.0 {
+            needed = needed.max(filters.min_qty);
+        }
+        if adjusted < needed {
+            adjusted = needed;
+        }
+    }
+    if estimated_price > 0.0
+        && filters.min_notional > 0.0
+        && adjusted * estimated_price < filters.min_notional
+    {
+        let mut needed = filters.min_notional / estimated_price;
+        if filters.step_size > 0.0 {
+            needed = floor_to_step(needed + filters.step_size, filters.step_size);
+        }
+        if needed < filters.min_qty {
+            needed = filters.min_qty;
+            if filters.step_size > 0.0 {
+                needed = floor_to_step(needed, filters.step_size);
+            }
+        }
+        adjusted = needed;
+        if adjusted * estimated_price < filters.min_notional {
+            return failed_quantity_adjustment(&format!(
+                "below_minNotional({adjusted:.8}<{:.8})",
+                filters.min_notional
+            ));
+        }
+    }
+    if !adjusted.is_finite() || adjusted <= 0.0 {
+        return failed_quantity_adjustment("adj<=0");
+    }
+    BinanceQuantityAdjustment {
+        ok: true,
+        quantity: adjusted,
+        error: None,
+    }
+}
+
+pub fn adjust_futures_quantity_to_filters(
+    filters: &BinanceFuturesSymbolFilters,
+    quantity: f64,
+    price: Option<f64>,
+) -> BinanceQuantityAdjustment {
+    if !quantity.is_finite() {
+        return failed_quantity_adjustment("qty must be a finite number");
+    }
+    let normalized_price = price.unwrap_or(0.0);
+    if !normalized_price.is_finite() {
+        return failed_quantity_adjustment("price must be a finite number");
+    }
+    if let Some(error) = validate_quantity_filters(filters) {
+        return failed_quantity_adjustment(&error);
+    }
+
+    let mut adjusted = quantity;
+    if filters.step_size > 0.0 {
+        adjusted = floor_to_step(adjusted, filters.step_size);
+    }
+    if filters.min_qty > 0.0 && adjusted < filters.min_qty {
+        adjusted = filters.min_qty;
+    }
+    if filters.min_notional > 0.0 && normalized_price > 0.0 {
+        let mut needed = filters.min_notional / normalized_price;
+        if filters.step_size > 0.0 {
+            needed = ceil_to_step(needed, filters.step_size);
+        }
+        if adjusted < needed {
+            adjusted = needed;
+        }
+    }
+    if !adjusted.is_finite() || adjusted <= 0.0 {
+        return failed_quantity_adjustment("adj<=0");
+    }
+    BinanceQuantityAdjustment {
+        ok: true,
+        quantity: adjusted,
+        error: None,
+    }
+}
+
+pub fn required_percent_for_symbol(
+    price: f64,
+    filters: &BinanceFuturesSymbolFilters,
+    futures_balance: f64,
+    leverage: f64,
+) -> f64 {
+    if !price.is_finite()
+        || price <= 0.0
+        || !futures_balance.is_finite()
+        || futures_balance <= 0.0
+        || !leverage.is_finite()
+        || leverage <= 0.0
+    {
+        return 0.0;
+    }
+    let step = if filters.step_size.is_finite() && filters.step_size > 0.0 {
+        filters.step_size
+    } else {
+        0.001
+    };
+    let min_qty = if filters.min_qty.is_finite() && filters.min_qty > 0.0 {
+        filters.min_qty
+    } else {
+        step
+    };
+    let min_notional = if filters.min_notional.is_finite() && filters.min_notional > 0.0 {
+        filters.min_notional
+    } else {
+        5.0
+    };
+    let mut needed_qty = min_qty.max(min_notional / price);
+    let units = (needed_qty / step).trunc();
+    if (needed_qty - units * step).abs() > 1e-12 {
+        needed_qty = (units + 1.0) * step;
+    }
+    if !needed_qty.is_finite() || needed_qty <= 0.0 {
+        return 0.0;
+    }
+    let required = ((needed_qty * price) / leverage / futures_balance) * 100.0;
+    if required.is_finite() { required } else { 0.0 }
+}
+
+fn failed_quantity_adjustment(error: &str) -> BinanceQuantityAdjustment {
+    BinanceQuantityAdjustment {
+        ok: false,
+        quantity: 0.0,
+        error: Some(error.to_owned()),
+    }
+}
+
+fn validate_quantity_filters(filters: &BinanceFuturesSymbolFilters) -> Option<String> {
+    for (name, value) in [
+        ("stepSize", filters.step_size),
+        ("minQty", filters.min_qty),
+        ("minNotional", filters.min_notional),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            return Some(format!(
+                "filters_error: {name} must be a finite non-negative number"
+            ));
+        }
+    }
+    None
+}
+
 fn normalize_symbol(value: &str) -> Result<String> {
     let symbol = value.trim().to_uppercase();
     if symbol.is_empty() {
@@ -1411,6 +1662,130 @@ mod tests {
         assert_eq!(filters.max_leverage, 50);
         assert_eq!(filters.quantity_precision, 3);
         assert_eq!(filters.price_precision, 2);
+    }
+
+    #[test]
+    fn quantity_adjustment_helpers_match_python_filter_sizing() {
+        let fixture: Value = serde_json::from_str(
+            crate::generated_python_parity::PYTHON_ORDER_SIZING_REFERENCE_JSON,
+        )
+        .expect("generated Python order-sizing fixture");
+        assert_eq!(fixture["schema_version"].as_i64(), Some(1));
+        let cases = fixture["cases"].as_array().expect("fixture cases");
+        assert!(cases.len() >= 5);
+        for case in cases {
+            let filters_value = case["filters"].as_object().expect("fixture filters");
+            let filters = BinanceFuturesSymbolFilters {
+                symbol: "BTCUSDT".to_owned(),
+                step_size: filters_value["stepSize"].as_f64().expect("step size"),
+                tick_size: 0.1,
+                min_qty: filters_value["minQty"].as_f64().expect("min qty"),
+                max_qty: 50.0,
+                min_notional: filters_value["minNotional"].as_f64().expect("min notional"),
+                quantity_precision: 3,
+                price_precision: 2,
+                quote_asset_precision: 8,
+                max_leverage: 125,
+            };
+            let case_name = case["name"].as_str().expect("case name");
+            if let Some(expected_percent) = case.get("expected_percent").and_then(Value::as_f64) {
+                let actual = required_percent_for_symbol(
+                    case["price"].as_f64().expect("price"),
+                    &filters,
+                    case["balance"].as_f64().expect("balance"),
+                    case["leverage"].as_f64().expect("leverage"),
+                );
+                assert!((actual - expected_percent).abs() < 1e-12, "{case_name}");
+                continue;
+            }
+            let adjustment = if case["market"].as_str() == Some("spot") {
+                adjust_spot_quantity_to_filters(
+                    &filters,
+                    case["quantity"].as_f64().expect("quantity"),
+                    case["price"].as_f64().expect("price"),
+                )
+            } else {
+                adjust_futures_quantity_to_filters(
+                    &filters,
+                    case["quantity"].as_f64().expect("quantity"),
+                    Some(case["price"].as_f64().expect("price")),
+                )
+            };
+            let expected_error = case["expected_error"].as_str();
+            assert_eq!(adjustment.ok, expected_error.is_none(), "{case_name}");
+            assert_eq!(adjustment.error.as_deref(), expected_error, "{case_name}");
+            assert!(
+                (adjustment.quantity
+                    - case["expected_quantity"]
+                        .as_f64()
+                        .expect("expected quantity"))
+                .abs()
+                    < 1e-12,
+                "{case_name}"
+            );
+        }
+
+        assert!((floor_to_step(1.239, 0.01) - 1.23).abs() < 1e-12);
+        assert!((ceil_to_step(1.231, 0.01) - 1.24).abs() < 1e-12);
+        assert!((floor_to_decimals(1.239, 2) - 1.23).abs() < 1e-12);
+        assert!((ceil_to_decimals(1.231, 2) - 1.24).abs() < 1e-12);
+        let rounding_cases = fixture["rounding_cases"]
+            .as_array()
+            .expect("rounding fixture cases");
+        assert!(rounding_cases.len() >= 3);
+        for case in rounding_cases {
+            let value = case["value"].as_f64().expect("rounding value");
+            let decimals = case["decimals"].as_i64().expect("rounding decimals") as i32;
+            let name = case["name"].as_str().expect("rounding case name");
+            assert!(
+                (floor_to_decimals(value, decimals)
+                    - case["expected_floor"].as_f64().expect("expected floor"))
+                .abs()
+                    < 1e-12,
+                "{name} floor"
+            );
+            assert!(
+                (ceil_to_decimals(value, decimals)
+                    - case["expected_ceil"].as_f64().expect("expected ceil"))
+                .abs()
+                    < 1e-12,
+                "{name} ceil"
+            );
+        }
+    }
+
+    #[test]
+    fn quantity_adjustment_helpers_fail_closed_for_invalid_inputs() {
+        let filters = BinanceFuturesSymbolFilters {
+            symbol: "BTCUSDT".to_owned(),
+            step_size: 0.01,
+            tick_size: 0.1,
+            min_qty: 0.02,
+            max_qty: 50.0,
+            min_notional: 5.0,
+            quantity_precision: 3,
+            price_precision: 2,
+            quote_asset_precision: 8,
+            max_leverage: 125,
+        };
+        let invalid_qty = adjust_spot_quantity_to_filters(&filters, f64::NAN, 100.0);
+        assert!(!invalid_qty.ok);
+        assert_eq!(
+            invalid_qty.error.as_deref(),
+            Some("qty must be a finite number")
+        );
+        let invalid_filter = BinanceFuturesSymbolFilters {
+            step_size: f64::NAN,
+            ..filters
+        };
+        let result = adjust_futures_quantity_to_filters(&invalid_filter, 1.0, Some(100.0));
+        assert!(!result.ok);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("stepSize"))
+        );
     }
 
     #[test]

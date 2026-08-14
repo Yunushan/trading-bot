@@ -297,6 +297,12 @@ public:
         QString error;
     };
 
+    struct QuantityAdjustmentResult {
+        bool ok = false;
+        double quantity = 0.0;
+        QString error;
+    };
+
     using SpotSymbolFilters = FuturesSymbolFilters;
     using SpotOrderResult = FuturesOrderResult;
 
@@ -450,6 +456,29 @@ public:
         int configuredMaxLeverage = 125,
         int symbolMaxLeverage = 0,
         bool futuresAccount = true);
+
+    // These pure helpers mirror Python order_sizing_runtime.py. Keeping the
+    // filter-adjustment step explicit lets callers test sizing before submit.
+    static double floorToStep(double value, double step);
+    static double ceilToStep(double value, double step);
+    static double floorToDecimals(double value, int decimals);
+    static double ceilToDecimals(double value, int decimals);
+
+    static QuantityAdjustmentResult adjustSpotQuantityToFilters(
+        const SpotSymbolFilters &filters,
+        double quantity,
+        double estimatedPrice);
+
+    static QuantityAdjustmentResult adjustFuturesQuantityToFilters(
+        const FuturesSymbolFilters &filters,
+        double quantity,
+        double price = 0.0);
+
+    static double requiredPercentForSymbol(
+        double price,
+        const FuturesSymbolFilters &filters,
+        double futuresBalance,
+        double leverage = 5.0);
 
     static FuturesPositionModeResult fetchFuturesPositionMode(
         const QString &apiKey,

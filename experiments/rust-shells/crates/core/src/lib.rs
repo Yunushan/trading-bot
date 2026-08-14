@@ -37,6 +37,7 @@ pub use generated_python_parity::{
     PythonParityDomain as NativePythonAppParityDomain,
     PythonRustEnvironmentDependency as NativePythonRustEnvironmentDependency,
     PythonServiceRoute as ServiceApiRoute, PythonServiceRouteSchema as ServiceApiRouteSchema,
+    PythonStarterOption as NativePythonStarterOption,
     PythonTradingViewInterval as NativePythonTradingViewInterval,
     PythonUiOption as NativePythonUiOption,
 };
@@ -222,8 +223,24 @@ pub fn python_source_indicator_source_options() -> &'static [NativePythonUiOptio
     generated_python_parity::PYTHON_INDICATOR_SOURCE_OPTIONS
 }
 
+pub fn python_source_indicator_ma_type_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_INDICATOR_MA_TYPE_OPTIONS
+}
+
 pub fn python_source_exchange_options() -> &'static [NativePythonUiOption] {
     generated_python_parity::PYTHON_EXCHANGE_OPTIONS
+}
+
+pub fn python_source_code_language_options() -> &'static [NativePythonStarterOption] {
+    generated_python_parity::PYTHON_CODE_LANGUAGE_OPTIONS
+}
+
+pub fn python_source_rust_framework_options() -> &'static [NativePythonStarterOption] {
+    generated_python_parity::PYTHON_RUST_FRAMEWORK_OPTIONS
+}
+
+pub fn python_source_starter_market_options() -> &'static [NativePythonStarterOption] {
+    generated_python_parity::PYTHON_STARTER_MARKET_OPTIONS
 }
 
 pub fn python_source_account_type_options() -> &'static [NativePythonUiOption] {
@@ -366,11 +383,11 @@ pub struct RustNativeRuntimeCapability {
 pub const SERVICE_API_BASE_PATH: &str = "/api/v1";
 
 pub fn rust_trading_execution_supported() -> bool {
-    false
+    python_source_rust_full_parity_ready()
 }
 
 pub fn rust_native_trading_runtime_ready() -> bool {
-    false
+    python_source_rust_full_parity_ready()
 }
 
 pub fn cpp_entire_python_app_contract_parity_ready() -> bool {
@@ -1155,6 +1172,38 @@ mod tests {
         assert_eq!(defaults.len(), python_source_llm_providers().len());
         assert!(defaults.contains(&("local", "qwen3:8b")));
         assert!(defaults.contains(&("open-source", "Qwen/Qwen3-8B")));
+    }
+
+    #[test]
+    fn starter_catalogs_match_python_shape_and_expected_choices() {
+        for option in python_source_code_language_options()
+            .iter()
+            .chain(python_source_rust_framework_options())
+            .chain(python_source_starter_market_options())
+        {
+            assert!(!option.key.is_empty());
+            assert!(!option.title.is_empty());
+            assert!(!option.subtitle.is_empty());
+        }
+        assert_eq!(python_source_code_language_options().len(), 3);
+        assert_eq!(
+            python_source_rust_framework_options()
+                .first()
+                .map(|option| option.key),
+            Some("Tauri")
+        );
+        assert_eq!(python_source_starter_market_options().len(), 2);
+    }
+
+    #[test]
+    fn moving_average_options_match_python_source_catalog() {
+        assert_eq!(
+            python_source_indicator_ma_type_options()
+                .iter()
+                .map(|option| option.key)
+                .collect::<Vec<_>>(),
+            vec!["SMA", "EMA"]
+        );
     }
 
     #[test]

@@ -21,11 +21,12 @@ from app.gui.runtime.composition.module_state_constants import (  # noqa: E402
     DEFAULT_CHART_SYMBOLS,
     _connector_options,
 )
-from app.settings.indicators import INDICATOR_CATALOG  # noqa: E402
+from app.settings.indicators import INDICATOR_CATALOG, MOVING_AVERAGE_TYPE_OPTIONS  # noqa: E402
 from tools import audit_native_source_sync  # noqa: E402
 
 
 CPP_SRC = REPO_ROOT / "experiments" / "native-cpp" / "src"
+CPP_GENERATED_PARITY = CPP_SRC / "generated" / "PythonParityContract.h"
 RUST_CORE = REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "lib.rs"
 RUST_TAURI_HTML = REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html"
 RUST_TAURI_GENERATED = (
@@ -44,7 +45,8 @@ def _read(path: Path) -> str:
 
 
 def _read_cpp_sources() -> str:
-    return "\n".join(_read(path) for path in sorted(CPP_SRC.glob("TradingBotWindow*.cpp")))
+    source_paths = [*sorted(CPP_SRC.glob("TradingBotWindow*.cpp")), CPP_GENERATED_PARITY]
+    return "\n".join(_read(path) for path in source_paths)
 
 
 class NativeOptionParityTests(unittest.TestCase):
@@ -143,6 +145,28 @@ class NativeOptionParityTests(unittest.TestCase):
 
         self.assert_all_present(runtime_text, indicator_keys, "C++ indicator normalization keys")
         self.assert_all_present(dialog_text + runtime_text, indicator_keys, "C++ indicator dialog keys")
+
+    def test_cpp_indicator_dialog_uses_python_moving_average_options(self):
+        dialog_text = _read(CPP_SRC / "TradingBotWindow.dashboard_indicator_dialog.cpp")
+        self.assertIn("PythonParityContract::kPythonIndicatorMaTypeOptions", dialog_text)
+        self.assertIn("pythonSourceMovingAverageTypeOptions", dialog_text)
+        for option in MOVING_AVERAGE_TYPE_OPTIONS:
+            with self.subTest(option=option):
+                self.assertIn(option, dialog_text + _read(CPP_GENERATED_PARITY))
+        self.assertNotIn('QStringLiteral("WMA")', dialog_text)
+        self.assertNotIn('QStringLiteral("VWMA")', dialog_text)
+
+    def test_cpp_does_not_expose_native_only_signal_feed_option(self):
+        dashboard_text = _read(CPP_SRC / "TradingBotWindow.dashboard_ui.cpp")
+        runtime_text = _read(CPP_SRC / "TradingBotWindow.dashboard_runtime.cpp")
+        lifecycle_text = _read(CPP_SRC / "TradingBotWindow.dashboard_runtime_lifecycle.cpp")
+        shared_text = _read(CPP_SRC / "TradingBotWindow.dashboard_runtime_shared.cpp")
+
+        self.assertNotIn("Signal Feed:", dashboard_text)
+        self.assertNotIn("dashboardSignalFeedCombo_", dashboard_text + runtime_text + lifecycle_text)
+        self.assertIn('BINANCE_WS_INDICATORS', shared_text)
+        self.assertIn('BINANCE_INDICATOR_LIVE_DATA', shared_text)
+        self.assertIn("pythonSourceUseWebSocketFeed", runtime_text + lifecycle_text)
 
     def test_rust_surfaces_expose_python_intervals_symbols_and_indicators(self):
         indicator_names = [definition.display_name for definition in INDICATOR_CATALOG]

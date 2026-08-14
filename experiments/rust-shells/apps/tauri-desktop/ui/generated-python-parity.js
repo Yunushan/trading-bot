@@ -476,6 +476,41 @@
       "value": "lightweight"
     }
   ],
+  "codeLanguageOptions": [
+    {
+      "accent": "#3b82f6",
+      "badge": "Recommended",
+      "disabled": false,
+      "key": "Python (PyQt)",
+      "launch_note": "",
+      "operational": false,
+      "operational_status": "",
+      "subtitle": "Fast to build - Huge ecosystem",
+      "title": "Python"
+    },
+    {
+      "accent": "#38bdf8",
+      "badge": "Experiment",
+      "disabled": false,
+      "key": "C++ (Qt/C++23)",
+      "launch_note": "",
+      "operational": false,
+      "operational_status": "",
+      "subtitle": "Qt native desktop experiment",
+      "title": "C++"
+    },
+    {
+      "accent": "#fb923c",
+      "badge": "Experiment",
+      "disabled": false,
+      "key": "Rust",
+      "launch_note": "",
+      "operational": false,
+      "operational_status": "",
+      "subtitle": "Service API client + guarded runtime (promotion-gated)",
+      "title": "Rust"
+    }
+  ],
   "configChoiceMaps": {
     "account_mode": {
       "classic trading": "Classic Trading",
@@ -685,7 +720,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "38c083a537228c8ff331b9d89721a7cc0913b646237fab85024b7e25ee5f57c5",
+  "contractHash": "d0cf11267e597c05bc0900672e9fde942015c19e0ba1f4bc1f992da0ea8d8b0c",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -1571,6 +1606,18 @@
     "supertrend",
     "ema",
     "stochastic"
+  ],
+  "indicatorMaTypeOptions": [
+    {
+      "key": "SMA",
+      "label": "SMA",
+      "value": "SMA"
+    },
+    {
+      "key": "EMA",
+      "label": "EMA",
+      "value": "EMA"
+    }
   ],
   "indicatorSourceOptions": [
     {
@@ -4348,7 +4395,47 @@
       "binance-sdk-derivatives-trading-usds-futures",
       "binance-sdk-derivatives-trading-coin-futures",
       "binance-sdk-spot",
-      "binance-connector"
+      "binance-connector",
+      "ccxt",
+      "python-binance"
+    ],
+    "direct_connector_market_families": [
+      {
+        "key": "binance-sdk-derivatives-trading-usds-futures",
+        "value": "usd-m-futures"
+      },
+      {
+        "key": "binance-sdk-derivatives-trading-coin-futures",
+        "value": "coin-m-futures"
+      },
+      {
+        "key": "binance-sdk-spot",
+        "value": "spot"
+      },
+      {
+        "key": "binance-connector",
+        "value": "usd-m-futures"
+      },
+      {
+        "key": "binance-connector",
+        "value": "spot"
+      },
+      {
+        "key": "ccxt",
+        "value": "usd-m-futures"
+      },
+      {
+        "key": "ccxt",
+        "value": "spot"
+      },
+      {
+        "key": "python-binance",
+        "value": "usd-m-futures"
+      },
+      {
+        "key": "python-binance",
+        "value": "spot"
+      }
     ],
     "direct_exchanges": [
       "Binance"
@@ -4561,6 +4648,19 @@
       "latest": "",
       "path": "experiments/rust-shells/apps/tauri-desktop/Cargo.toml",
       "usage": "Active"
+    }
+  ],
+  "rustFrameworkOptions": [
+    {
+      "accent": "#f59e0b",
+      "badge": "Primary",
+      "disabled": false,
+      "key": "Tauri",
+      "launch_note": "Tauri can manage/connect to the local Python Service API, but Python still owns strategy, risk, account, order, and exchange execution.",
+      "operational": true,
+      "operational_status": "Interactive Service API client",
+      "subtitle": "Operational Service API client",
+      "title": "Tauri"
     }
   ],
   "rustFullParityReady": false,
@@ -6417,6 +6517,30 @@
     }
   ],
   "source": "Languages/Python",
+  "starterMarketOptions": [
+    {
+      "accent": "#34d399",
+      "badge": "",
+      "disabled": false,
+      "key": "crypto",
+      "launch_note": "",
+      "operational": false,
+      "operational_status": "",
+      "subtitle": "Binance, Bybit, KuCoin",
+      "title": "Crypto Exchange"
+    },
+    {
+      "accent": "#93c5fd",
+      "badge": "Evidence required",
+      "disabled": false,
+      "key": "forex",
+      "launch_note": "",
+      "operational": false,
+      "operational_status": "",
+      "subtitle": "REST, MT4 bridge, MetaTrader 5, and scoped provider APIs",
+      "title": "Forex Exchange"
+    }
+  ],
   "stopLossModes": [
     {
       "key": "usdt",

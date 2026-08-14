@@ -14,8 +14,11 @@ class QTableWidgetItem;
 
 namespace TradingBotWindowDashboardRuntime {
 
-QString normalizedSignalFeedKey(const QString &feedText);
 bool qtWebSocketsRuntimeAvailable();
+bool pythonSourceWebSocketIndicatorsEnabled();
+bool pythonSourceLiveIndicatorDataEnabled(bool testnetMode);
+bool pythonSourceUseWebSocketFeed(const QString &indicatorSourceText, bool testnetMode);
+bool pythonSourceIndicatorDataUsesTestnet(const QString &indicatorSourceText, bool testnetMode);
 bool loopTextRequestsInstant(const QString &text);
 int dashboardRuntimePollIntervalMs(const QTableWidget *table, bool useWebSocketFeed);
 void clearRuntimeSignalSockets(QMap<QString, BinanceWsClient *> &sockets);

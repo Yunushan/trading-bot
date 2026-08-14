@@ -9,14 +9,15 @@ use std::time::UNIX_EPOCH;
 use crate::generated_python_parity::{
     PYTHON_ACCOUNT_MODE_CONFIG_CHOICES, PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES,
     PYTHON_ASSETS_MODE_CONFIG_CHOICES, PYTHON_BACKTEST_EXECUTION_BACKEND_CONFIG_CHOICES,
-    PYTHON_CHART_VIEW_MODE_CONFIG_CHOICES, PYTHON_LLM_PROVIDER_CHOICES,
-    PYTHON_LLM_REASONING_EFFORT_CONFIG_CHOICES, PYTHON_LLM_USE_FOR_CONFIG_CHOICES,
-    PYTHON_LOGIC_CONFIG_CHOICES, PYTHON_MARGIN_MODE_CONFIG_CHOICES,
-    PYTHON_MDD_LOGIC_CONFIG_CHOICES, PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES,
-    PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES, PYTHON_ORDER_TYPE_CONFIG_CHOICES,
-    PYTHON_POSITION_MODE_CONFIG_CHOICES, PYTHON_SCAN_SCOPE_CONFIG_CHOICES,
-    PYTHON_SIDE_CONFIG_CHOICES, PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
-    PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES, PYTHON_TIF_CONFIG_CHOICES,
+    PYTHON_CHART_MARKET_OPTIONS, PYTHON_CHART_VIEW_MODE_CONFIG_CHOICES,
+    PYTHON_LLM_PROVIDER_CHOICES, PYTHON_LLM_REASONING_EFFORT_CONFIG_CHOICES,
+    PYTHON_LLM_USE_FOR_CONFIG_CHOICES, PYTHON_LOGIC_CONFIG_CHOICES,
+    PYTHON_MARGIN_MODE_CONFIG_CHOICES, PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+    PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES, PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES,
+    PYTHON_ORDER_TYPE_CONFIG_CHOICES, PYTHON_POSITION_MODE_CONFIG_CHOICES,
+    PYTHON_SCAN_SCOPE_CONFIG_CHOICES, PYTHON_SIDE_CONFIG_CHOICES,
+    PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+    PYTHON_TIF_CONFIG_CHOICES,
 };
 use crate::python_source_risk_defaults;
 
@@ -1062,10 +1063,10 @@ const BACKTEST_ALLOWED_KEYS: &[&str] = &[
 #[derive(Clone, Copy)]
 enum ChoiceList {
     ConfigOptions(&'static [(&'static str, &'static str)]),
+    TextOptions(&'static [&'static str]),
 }
 
-const CHART_MARKET_CHOICES: ChoiceList =
-    ChoiceList::ConfigOptions(PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES);
+const CHART_MARKET_CHOICES: ChoiceList = ChoiceList::TextOptions(PYTHON_CHART_MARKET_OPTIONS);
 const ACCOUNT_TYPE_CHOICES: ChoiceList =
     ChoiceList::ConfigOptions(PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES);
 const MARGIN_MODE_CHOICES: ChoiceList =
@@ -1286,8 +1287,13 @@ fn choice_value_from_text(text: &str, choices: ChoiceList) -> Option<String> {
     if raw_lower.is_empty() {
         return None;
     }
-    let ChoiceList::ConfigOptions(options) = choices;
-    config_choice_value_from_text(text, options)
+    match choices {
+        ChoiceList::ConfigOptions(options) => config_choice_value_from_text(text, options),
+        ChoiceList::TextOptions(options) => options
+            .iter()
+            .find(|candidate| raw_lower == candidate.trim().to_ascii_lowercase())
+            .map(|candidate| (*candidate).to_owned()),
+    }
 }
 
 fn choice_value(value: &Value, choices: ChoiceList) -> Option<String> {
@@ -1296,8 +1302,12 @@ fn choice_value(value: &Value, choices: ChoiceList) -> Option<String> {
 
 fn allowed_choice_text(choices: ChoiceList) -> String {
     let mut values = BTreeSet::new();
-    let ChoiceList::ConfigOptions(options) = choices;
-    values.extend(options.iter().map(|(_, normalized)| *normalized));
+    match choices {
+        ChoiceList::ConfigOptions(options) => {
+            values.extend(options.iter().map(|(_, normalized)| *normalized))
+        }
+        ChoiceList::TextOptions(options) => values.extend(options.iter().copied()),
+    }
     values.into_iter().collect::<Vec<_>>().join(", ")
 }
 
@@ -2490,6 +2500,141 @@ mod tests {
         assert!(message.contains("llm_provider: must be one of:"));
         assert!(message.contains("chart.view_mode: must be one of:"));
         assert!(!message.contains("backtest.symbol_source:"));
+    }
+
+    #[test]
+    fn every_generated_config_choice_normalizes_like_python() {
+        let check_group = |field: &str, choices: &[(&str, &str)], section: Option<&str>| {
+            for &(raw, expected) in choices {
+                if raw.is_empty() {
+                    continue;
+                }
+                let mut target = Map::new();
+                target.insert(field.to_owned(), Value::String(raw.to_owned()));
+                let config = if let Some(section) = section {
+                    let mut root = Map::new();
+                    root.insert(section.to_owned(), Value::Object(target));
+                    Value::Object(root)
+                } else {
+                    Value::Object(target)
+                };
+                let (validated, issues) = validate_service_runtime_config_state(&config);
+                assert!(issues.is_empty(), "{field}={raw}: {issues:?}");
+                let validated = Value::Object(validated.expect("validated config"));
+                let actual = section
+                    .and_then(|section| validated.get(section))
+                    .and_then(Value::as_object)
+                    .and_then(|object| object.get(field))
+                    .or_else(|| validated.get(field))
+                    .and_then(Value::as_str);
+                assert_eq!(actual, Some(expected), "{field}={raw}");
+            }
+        };
+        let check_text_group = |field: &str, choices: &[&str], section: Option<&str>| {
+            for &raw in choices {
+                if raw.is_empty() {
+                    continue;
+                }
+                let mut target = Map::new();
+                target.insert(field.to_owned(), Value::String(raw.to_owned()));
+                let config = if let Some(section) = section {
+                    let mut root = Map::new();
+                    root.insert(section.to_owned(), Value::Object(target));
+                    Value::Object(root)
+                } else {
+                    Value::Object(target)
+                };
+                let (validated, issues) = validate_service_runtime_config_state(&config);
+                assert!(issues.is_empty(), "{field}={raw}: {issues:?}");
+                let validated = Value::Object(validated.expect("validated config"));
+                let actual = section
+                    .and_then(|section| validated.get(section))
+                    .and_then(Value::as_object)
+                    .and_then(|object| object.get(field))
+                    .or_else(|| validated.get(field))
+                    .and_then(Value::as_str);
+                assert_eq!(actual, Some(raw), "{field}={raw}");
+            }
+        };
+
+        check_group("account_type", PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES, None);
+        check_group("margin_mode", PYTHON_MARGIN_MODE_CONFIG_CHOICES, None);
+        check_group("position_mode", PYTHON_POSITION_MODE_CONFIG_CHOICES, None);
+        check_group("assets_mode", PYTHON_ASSETS_MODE_CONFIG_CHOICES, None);
+        check_group("account_mode", PYTHON_ACCOUNT_MODE_CONFIG_CHOICES, None);
+        check_group("side", PYTHON_SIDE_CONFIG_CHOICES, None);
+        check_group("order_type", PYTHON_ORDER_TYPE_CONFIG_CHOICES, None);
+        check_group("tif", PYTHON_TIF_CONFIG_CHOICES, None);
+        check_group("llm_provider", PYTHON_LLM_PROVIDER_CHOICES, None);
+        check_group("llm_use_for", PYTHON_LLM_USE_FOR_CONFIG_CHOICES, None);
+        check_group(
+            "llm_reasoning_effort",
+            PYTHON_LLM_REASONING_EFFORT_CONFIG_CHOICES,
+            None,
+        );
+        check_text_group("market", PYTHON_CHART_MARKET_OPTIONS, Some("chart"));
+        check_group(
+            "view_mode",
+            PYTHON_CHART_VIEW_MODE_CONFIG_CHOICES,
+            Some("chart"),
+        );
+        check_group(
+            "execution_backend",
+            PYTHON_BACKTEST_EXECUTION_BACKEND_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group("logic", PYTHON_LOGIC_CONFIG_CHOICES, Some("backtest"));
+        check_group("side", PYTHON_SIDE_CONFIG_CHOICES, Some("backtest"));
+        check_group(
+            "margin_mode",
+            PYTHON_MARGIN_MODE_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group(
+            "position_mode",
+            PYTHON_POSITION_MODE_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group(
+            "assets_mode",
+            PYTHON_ASSETS_MODE_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group(
+            "account_mode",
+            PYTHON_ACCOUNT_MODE_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group(
+            "mdd_logic",
+            PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group(
+            "scan_scope",
+            PYTHON_SCAN_SCOPE_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group(
+            "optimizer_mode",
+            PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group(
+            "optimizer_metric",
+            PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES,
+            Some("backtest"),
+        );
+        check_group(
+            "mode",
+            PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
+            Some("stop_loss"),
+        );
+        check_group(
+            "scope",
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+            Some("stop_loss"),
+        );
     }
 
     #[test]

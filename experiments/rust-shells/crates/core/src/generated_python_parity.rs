@@ -9,7 +9,8 @@ mod generated {
     pub const PYTHON_UI_DEFAULTS_JSON: &str = "{\"design\":\"Classic\",\"indicator_source\":\"Binance futures\",\"selected_exchange\":\"Binance\",\"theme\":\"Dark\"}";
     pub const PYTHON_DEFAULT_EXECUTION_JSON: &str = "{\"account_mode\":\"Classic Trading\",\"account_type\":\"Futures\",\"assets_mode\":\"Single-Asset\",\"backtest_symbol_interval_pairs\":[],\"connector_order_block_circuit_breaker_enabled\":true,\"connector_order_block_pause_threshold\":2,\"connector_order_block_window_seconds\":60.0,\"connector_order_circuit_incident_log_backup_count\":1,\"connector_order_circuit_incident_log_max_bytes\":2097152,\"connector_order_circuit_incident_log_path\":\"\",\"gtd_minutes\":30,\"intervals\":[\"1m\"],\"lead_trader_enabled\":false,\"lead_trader_profile\":null,\"leverage\":1,\"live_allow_auto_bump_to_min_order\":false,\"live_trading_acknowledgement\":\"\",\"live_trading_enabled\":false,\"live_trading_max_leverage\":20,\"live_trading_max_position_pct\":10.0,\"live_trading_max_session_orders\":100,\"lookback\":200,\"loop_interval_override\":\"1m\",\"margin_mode\":\"Isolated\",\"mode\":\"Demo/Testnet\",\"operational_account_snapshot_stale_seconds\":300.0,\"operational_connector_snapshot_stale_seconds\":120.0,\"operational_execution_heartbeat_stale_seconds\":10.0,\"operational_live_order_gate_enabled\":true,\"operational_live_start_gate_enabled\":true,\"operational_portfolio_snapshot_stale_seconds\":300.0,\"order_audit_backup_count\":1,\"order_audit_enabled\":true,\"order_audit_log_path\":\"\",\"order_audit_max_bytes\":10485760,\"order_type\":\"MARKET\",\"position_mode\":\"Hedge\",\"position_pct\":2.0,\"runtime_symbol_interval_pairs\":[],\"side\":\"BOTH\",\"symbols\":[\"BTCUSDT\"],\"tif\":\"GTC\"}";
     pub const PYTHON_DEFAULT_BACKTEST_JSON: &str = "{\"account_mode\":\"Classic Trading\",\"assets_mode\":\"Single-Asset\",\"capital\":1000.0,\"connector_backend\":\"binance-sdk-derivatives-trading-usds-futures\",\"end_date\":null,\"execution_backend\":\"local\",\"fee_bps\":5.0,\"indicators\":{\"adx\":{\"buy_value\":20,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_role\":\"filter\"},\"ao\":{\"buy_value\":0,\"enabled\":false,\"fast\":5,\"sell_value\":0,\"slow\":34},\"aroon\":{\"buy_value\":50,\"enabled\":false,\"length\":25,\"sell_value\":-50},\"atr\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_mode\":\"percent_of_close\",\"signal_role\":\"filter\"},\"bb\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\",\"std\":2},\"bbw\":{\"buy_value\":5.0,\"enabled\":false,\"length\":20,\"sell_value\":2.0,\"std\":2},\"cci\":{\"buy_value\":-100,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":100},\"chop\":{\"buy_value\":38.2,\"enabled\":false,\"length\":14,\"sell_value\":61.8},\"cmf\":{\"buy_value\":0.05,\"enabled\":false,\"length\":20,\"sell_value\":-0.05},\"dmi\":{\"buy_value\":0,\"enabled\":false,\"length\":14,\"sell_value\":0},\"donchian\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"ema\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"ichimoku\":{\"base_length\":26,\"buy_value\":0,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":0,\"span_b_length\":52},\"keltner\":{\"atr_length\":10,\"buy_value\":0,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"kst\":{\"buy_value\":0,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":0,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15},\"ma\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\",\"type\":\"SMA\"},\"macd\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"mfi\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80},\"natr\":{\"buy_value\":2.0,\"enabled\":false,\"length\":14,\"sell_value\":1.0},\"obv\":{\"buy_value\":0,\"enabled\":false,\"length\":3,\"sell_value\":0,\"signal_mode\":\"slope\"},\"ppo\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"psar\":{\"af\":0.02,\"buy_value\":0,\"enabled\":false,\"max_af\":0.2,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"roc\":{\"buy_value\":0,\"enabled\":false,\"length\":12,\"sell_value\":0},\"rsi\":{\"buy_value\":30,\"enabled\":true,\"length\":14,\"sell_value\":70},\"rvol\":{\"buy_value\":1.5,\"enabled\":false,\"length\":20,\"sell_value\":0.75},\"stoch_rsi\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"stochastic\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"supertrend\":{\"atr_period\":10,\"buy_value\":0,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"trix\":{\"buy_value\":0,\"enabled\":false,\"length\":15,\"sell_value\":0},\"uo\":{\"buy_value\":30,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":70,\"short\":7},\"volume\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":20,\"sell_value\":null,\"signal_mode\":\"relative_to_sma\",\"signal_role\":\"filter\"},\"vwap\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"willr\":{\"buy_value\":-80,\"enabled\":false,\"length\":14,\"sell_value\":-20}},\"intervals\":[\"1h\"],\"leverage\":20,\"logic\":\"AND\",\"margin_mode\":\"Isolated\",\"mdd_logic\":\"per_trade\",\"optimizer_combo_size\":2,\"optimizer_max_duration_seconds\":14400,\"optimizer_metric\":\"roi_percent\",\"optimizer_min_trades\":1,\"optimizer_mode\":\"current\",\"position_mode\":\"Hedge\",\"position_pct\":2.0,\"scan_auto_apply\":false,\"scan_mdd_limit\":10.0,\"scan_scope\":\"selected\",\"scan_top_n\":200,\"side\":\"BOTH\",\"slippage_bps\":2.0,\"start_date\":null,\"stop_loss\":{\"enabled\":false,\"mode\":\"usdt\",\"percent\":0.0,\"scope\":\"per_trade\",\"usdt\":0.0},\"symbol_source\":\"Futures\",\"symbols\":[\"BTCUSDT\"],\"template\":{\"enabled\":false,\"name\":null}}";
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "38c083a537228c8ff331b9d89721a7cc0913b646237fab85024b7e25ee5f57c5";
+    pub const PYTHON_ORDER_SIZING_REFERENCE_JSON: &str = "{\"cases\":[{\"expected_error\":null,\"expected_quantity\":0.05,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"spot\",\"name\":\"spot_min_notional_bump\",\"price\":100.0,\"quantity\":0.023},{\"expected_error\":null,\"expected_quantity\":0.05,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"futures\",\"name\":\"futures_min_notional_bump\",\"price\":100.0,\"quantity\":0.023},{\"expected_error\":\"qty<=0\",\"expected_quantity\":0.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"spot\",\"name\":\"spot_rejects_zero_quantity\",\"price\":100.0,\"quantity\":0.0},{\"expected_error\":\"filters_error: stepSize must be a finite non-negative number\",\"expected_quantity\":0.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":-0.01},\"market\":\"futures\",\"name\":\"futures_invalid_step_filter\",\"price\":100.0,\"quantity\":1.0},{\"balance\":100.0,\"expected_percent\":1.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"leverage\":5.0,\"market\":\"futures\",\"name\":\"futures_required_percent\",\"price\":100.0}],\"rounding_cases\":[{\"decimals\":2,\"expected_ceil\":1.24,\"expected_floor\":1.23,\"name\":\"positive_decimal\",\"value\":1.231},{\"decimals\":2,\"expected_ceil\":-1.24,\"expected_floor\":-1.23,\"name\":\"negative_decimal\",\"value\":-1.231},{\"decimals\":0,\"expected_ceil\":-2.0,\"expected_floor\":-1.0,\"name\":\"negative_integer_precision\",\"value\":-1.9}],\"schema_version\":1}";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "d0cf11267e597c05bc0900672e9fde942015c19e0ba1f4bc1f992da0ea8d8b0c";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -31,11 +32,24 @@ mod generated {
     "binance-sdk-derivatives-trading-coin-futures",
     "binance-sdk-spot",
     "binance-connector",
+    "ccxt",
+    "python-binance",
 ];
     pub const PYTHON_NATIVE_RUNTIME_MARKET_FAMILIES: &[&str] = &[
     "usd-m-futures",
     "coin-m-futures",
     "spot",
+];
+    pub const PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES: &[(&str, &str)] = &[
+    ("binance-sdk-derivatives-trading-usds-futures", "usd-m-futures"),
+    ("binance-sdk-derivatives-trading-coin-futures", "coin-m-futures"),
+    ("binance-sdk-spot", "spot"),
+    ("binance-connector", "usd-m-futures"),
+    ("binance-connector", "spot"),
+    ("ccxt", "usd-m-futures"),
+    ("ccxt", "spot"),
+    ("python-binance", "usd-m-futures"),
+    ("python-binance", "spot"),
 ];
     pub const PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES: &[(&str, &str)] = &[
     ("binance_spot", "spot"),
@@ -2420,6 +2434,19 @@ pub const PYTHON_INDICATOR_SOURCE_OPTIONS: &[PythonUiOption] = &[
     },
 ];
 
+pub const PYTHON_INDICATOR_MA_TYPE_OPTIONS: &[PythonUiOption] = &[
+    PythonUiOption {
+        key: "SMA",
+        label: "SMA",
+        disabled: false,
+    },
+    PythonUiOption {
+        key: "EMA",
+        label: "EMA",
+        disabled: false,
+    },
+];
+
 pub const PYTHON_EXCHANGE_OPTIONS: &[PythonUiOption] = &[
     PythonUiOption {
         key: "Binance",
@@ -2743,6 +2770,93 @@ pub const PYTHON_POSITIONS_VIEW_OPTIONS: &[PythonUiOption] = &[
         key: "per_trade",
         label: "Per Trade View",
         disabled: false,
+    },
+];
+
+    pub struct PythonStarterOption {
+    pub key: &'static str,
+    pub title: &'static str,
+    pub subtitle: &'static str,
+    pub accent: &'static str,
+    pub badge: &'static str,
+    pub disabled: bool,
+    pub operational: bool,
+    pub operational_status: &'static str,
+    pub launch_note: &'static str,
+}
+
+pub const PYTHON_CODE_LANGUAGE_OPTIONS: &[PythonStarterOption] = &[
+    PythonStarterOption {
+        key: "Python (PyQt)",
+        title: "Python",
+        subtitle: "Fast to build - Huge ecosystem",
+        accent: "#3b82f6",
+        badge: "Recommended",
+        disabled: false,
+        operational: false,
+        operational_status: "",
+        launch_note: "",
+    },
+    PythonStarterOption {
+        key: "C++ (Qt/C++23)",
+        title: "C++",
+        subtitle: "Qt native desktop experiment",
+        accent: "#38bdf8",
+        badge: "Experiment",
+        disabled: false,
+        operational: false,
+        operational_status: "",
+        launch_note: "",
+    },
+    PythonStarterOption {
+        key: "Rust",
+        title: "Rust",
+        subtitle: "Service API client + guarded runtime (promotion-gated)",
+        accent: "#fb923c",
+        badge: "Experiment",
+        disabled: false,
+        operational: false,
+        operational_status: "",
+        launch_note: "",
+    },
+];
+
+pub const PYTHON_RUST_FRAMEWORK_OPTIONS: &[PythonStarterOption] = &[
+    PythonStarterOption {
+        key: "Tauri",
+        title: "Tauri",
+        subtitle: "Operational Service API client",
+        accent: "#f59e0b",
+        badge: "Primary",
+        disabled: false,
+        operational: true,
+        operational_status: "Interactive Service API client",
+        launch_note: "Tauri can manage/connect to the local Python Service API, but Python still owns strategy, risk, account, order, and exchange execution.",
+    },
+];
+
+pub const PYTHON_STARTER_MARKET_OPTIONS: &[PythonStarterOption] = &[
+    PythonStarterOption {
+        key: "crypto",
+        title: "Crypto Exchange",
+        subtitle: "Binance, Bybit, KuCoin",
+        accent: "#34d399",
+        badge: "",
+        disabled: false,
+        operational: false,
+        operational_status: "",
+        launch_note: "",
+    },
+    PythonStarterOption {
+        key: "forex",
+        title: "Forex Exchange",
+        subtitle: "REST, MT4 bridge, MetaTrader 5, and scoped provider APIs",
+        accent: "#93c5fd",
+        badge: "Evidence required",
+        disabled: false,
+        operational: false,
+        operational_status: "",
+        launch_note: "",
     },
 ];
 

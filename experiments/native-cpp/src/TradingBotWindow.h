@@ -232,7 +232,6 @@ private:
     QComboBox *dashboardConnectorCombo_;
     QComboBox *dashboardExchangeCombo_;
     QComboBox *dashboardIndicatorSourceCombo_;
-    QComboBox *dashboardSignalFeedCombo_;
     QComboBox *dashboardTemplateCombo_;
     QComboBox *dashboardMarginModeCombo_;
     QComboBox *dashboardPositionModeCombo_;

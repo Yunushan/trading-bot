@@ -2075,6 +2075,216 @@ int BinanceRestClient::clampFuturesLeverage(
     return std::min(desired, std::max(1, symbolCap));
 }
 
+double BinanceRestClient::floorToStep(double value, double step) {
+    if (step <= 0.0 || !qIsFinite(value) || !qIsFinite(step)) {
+        return value;
+    }
+    const long double units = std::trunc(
+        static_cast<long double>(value) / static_cast<long double>(step));
+    return static_cast<double>(units * static_cast<long double>(step));
+}
+
+double BinanceRestClient::ceilToStep(double value, double step) {
+    if (step <= 0.0 || !qIsFinite(value) || !qIsFinite(step)) {
+        return value;
+    }
+    const long double units = std::ceil(
+        static_cast<long double>(value) / static_cast<long double>(step));
+    return static_cast<double>(units * static_cast<long double>(step));
+}
+
+double BinanceRestClient::floorToDecimals(double value, int decimals) {
+    if (decimals < 0 || !qIsFinite(value)) {
+        return value;
+    }
+    const long double scale = std::pow(10.0L, static_cast<long double>(decimals));
+    if (!std::isfinite(scale) || scale <= 0.0L) {
+        return value;
+    }
+    return static_cast<double>(std::trunc(static_cast<long double>(value) * scale) / scale);
+}
+
+double BinanceRestClient::ceilToDecimals(double value, int decimals) {
+    if (decimals < 0 || !qIsFinite(value)) {
+        return value;
+    }
+    const long double scale = std::pow(10.0L, static_cast<long double>(decimals));
+    if (!std::isfinite(scale) || scale <= 0.0L) {
+        return value;
+    }
+    const long double scaled = static_cast<long double>(value) * scale;
+    // Python's Decimal(ROUND_UP) rounds away from zero for negative values.
+    const long double rounded = value < 0.0 ? std::floor(scaled) : std::ceil(scaled);
+    return static_cast<double>(rounded / scale);
+}
+
+BinanceRestClient::QuantityAdjustmentResult BinanceRestClient::adjustSpotQuantityToFilters(
+    const SpotSymbolFilters &filters,
+    double quantity,
+    double estimatedPrice) {
+    QuantityAdjustmentResult result;
+    if (!qIsFinite(quantity)) {
+        result.error = QStringLiteral("qty must be a finite number");
+        return result;
+    }
+    if (quantity <= 0.0) {
+        result.error = QStringLiteral("qty<=0");
+        return result;
+    }
+    if (!qIsFinite(estimatedPrice)) {
+        result.error = QStringLiteral("price must be a finite number");
+        return result;
+    }
+
+    const auto validFilter = [&result](double value, const QString &name) {
+        if (!qIsFinite(value) || value < 0.0) {
+            result.error = QStringLiteral("filters_error: %1 must be a finite non-negative number")
+                               .arg(name);
+            return false;
+        }
+        return true;
+    };
+    if (!validFilter(filters.stepSize, QStringLiteral("stepSize"))
+        || !validFilter(filters.minQty, QStringLiteral("minQty"))
+        || !validFilter(filters.minNotional, QStringLiteral("minNotional"))) {
+        return result;
+    }
+
+    double adjusted = quantity;
+    if (filters.stepSize > 0.0) {
+        adjusted = floorToStep(adjusted, filters.stepSize);
+    }
+    if (filters.minQty > 0.0 && adjusted < filters.minQty) {
+        adjusted = filters.minQty;
+    }
+    if (filters.minNotional > 0.0 && estimatedPrice > 0.0) {
+        double needed = filters.minNotional / estimatedPrice;
+        if (filters.stepSize > 0.0) {
+            needed = ceilToStep(needed, filters.stepSize);
+        }
+        if (filters.minQty > 0.0) {
+            needed = std::max(needed, filters.minQty);
+        }
+        if (adjusted < needed) {
+            adjusted = needed;
+        }
+    }
+    if (estimatedPrice > 0.0 && filters.minNotional > 0.0
+        && adjusted * estimatedPrice < filters.minNotional) {
+        double needed = filters.minNotional / estimatedPrice;
+        if (filters.stepSize > 0.0) {
+            needed = floorToStep(needed + filters.stepSize, filters.stepSize);
+        }
+        if (needed < filters.minQty) {
+            needed = filters.minQty;
+            if (filters.stepSize > 0.0) {
+                needed = floorToStep(needed, filters.stepSize);
+            }
+        }
+        adjusted = needed;
+        if (adjusted * estimatedPrice < filters.minNotional) {
+            result.error = QStringLiteral("below_minNotional(%1<%2)")
+                               .arg(adjusted * estimatedPrice, 0, 'f', 8)
+                               .arg(filters.minNotional, 0, 'f', 8);
+            return result;
+        }
+    }
+    if (!qIsFinite(adjusted) || adjusted <= 0.0) {
+        result.error = QStringLiteral("adj<=0");
+        return result;
+    }
+    result.ok = true;
+    result.quantity = adjusted;
+    return result;
+}
+
+BinanceRestClient::QuantityAdjustmentResult BinanceRestClient::adjustFuturesQuantityToFilters(
+    const FuturesSymbolFilters &filters,
+    double quantity,
+    double price) {
+    QuantityAdjustmentResult result;
+    if (!qIsFinite(quantity)) {
+        result.error = QStringLiteral("qty must be a finite number");
+        return result;
+    }
+    if (!qIsFinite(price)) {
+        result.error = QStringLiteral("price must be a finite number");
+        return result;
+    }
+
+    const auto validFilter = [&result](double value, const QString &name) {
+        if (!qIsFinite(value) || value < 0.0) {
+            result.error = QStringLiteral("filters_error: %1 must be a finite non-negative number")
+                               .arg(name);
+            return false;
+        }
+        return true;
+    };
+    if (!validFilter(filters.stepSize, QStringLiteral("stepSize"))
+        || !validFilter(filters.minQty, QStringLiteral("minQty"))
+        || !validFilter(filters.minNotional, QStringLiteral("minNotional"))) {
+        return result;
+    }
+
+    double adjusted = quantity;
+    if (filters.stepSize > 0.0) {
+        adjusted = floorToStep(adjusted, filters.stepSize);
+    }
+    if (filters.minQty > 0.0 && adjusted < filters.minQty) {
+        adjusted = filters.minQty;
+    }
+    if (filters.minNotional > 0.0 && price > 0.0) {
+        double needed = filters.minNotional / price;
+        if (filters.stepSize > 0.0) {
+            needed = ceilToStep(needed, filters.stepSize);
+        }
+        if (adjusted < needed) {
+            adjusted = needed;
+        }
+    }
+    if (!qIsFinite(adjusted) || adjusted <= 0.0) {
+        result.error = QStringLiteral("adj<=0");
+        return result;
+    }
+    result.ok = true;
+    result.quantity = adjusted;
+    return result;
+}
+
+double BinanceRestClient::requiredPercentForSymbol(
+    double price,
+    const FuturesSymbolFilters &filters,
+    double futuresBalance,
+    double leverage) {
+    if (!qIsFinite(price) || price <= 0.0 || !qIsFinite(futuresBalance)
+        || futuresBalance <= 0.0 || !qIsFinite(leverage) || leverage <= 0.0) {
+        return 0.0;
+    }
+    const double step = (qIsFinite(filters.stepSize) && filters.stepSize > 0.0)
+        ? filters.stepSize
+        : 0.001;
+    const double minQty = (qIsFinite(filters.minQty) && filters.minQty > 0.0)
+        ? filters.minQty
+        : step;
+    const double minNotional = (qIsFinite(filters.minNotional) && filters.minNotional > 0.0)
+        ? filters.minNotional
+        : 5.0;
+    double neededQty = std::max(minQty, minNotional / price);
+    if (step > 0.0 && neededQty > 0.0) {
+        const long double units = std::trunc(
+            static_cast<long double>(neededQty) / static_cast<long double>(step));
+        if (std::fabs(neededQty - static_cast<double>(units * static_cast<long double>(step))) > 1e-12) {
+            neededQty = static_cast<double>((units + 1.0L) * static_cast<long double>(step));
+        }
+    }
+    if (!qIsFinite(neededQty) || neededQty <= 0.0) {
+        return 0.0;
+    }
+    const double marginNeeded = (neededQty * price) / leverage;
+    const double result = (marginNeeded / futuresBalance) * 100.0;
+    return qIsFinite(result) ? result : 0.0;
+}
+
 BinanceRestClient::FuturesPositionModeResult BinanceRestClient::fetchFuturesPositionMode(
     const QString &apiKey,
     const QString &apiSecret,

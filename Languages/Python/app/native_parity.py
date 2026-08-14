@@ -19,7 +19,10 @@ from typing import Any
 
 from .gui.code.code_language_catalog import (
     EXCHANGE_PATHS,
+    RUST_FRAMEWORK_OPTIONS,
     STARTER_CRYPTO_EXCHANGES,
+    STARTER_LANGUAGE_OPTIONS,
+    STARTER_MARKET_OPTIONS,
     _rust_dependency_targets_for_config,
 )
 from .gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
@@ -72,6 +75,7 @@ from .settings.exchange_support import (
 )
 from .settings.indicators import (
     INDICATOR_CATALOG,
+    MOVING_AVERAGE_TYPE_OPTIONS,
     build_backtest_indicator_defaults,
     build_runtime_indicator_defaults,
 )
@@ -129,11 +133,27 @@ NATIVE_RUNTIME_OWNERSHIP = {
         "binance-sdk-derivatives-trading-coin-futures",
         "binance-sdk-spot",
         "binance-connector",
+        # These Python adapters use Binance's Spot/USD-M API shapes. Native
+        # shells may use the same normalized REST boundary when Binance is
+        # selected; CCXT remains delegated for every other exchange.
+        "ccxt",
+        "python-binance",
     ),
     "direct_market_families": (
         "usd-m-futures",
         "coin-m-futures",
         "spot",
+    ),
+    "direct_connector_market_families": (
+        ("binance-sdk-derivatives-trading-usds-futures", "usd-m-futures"),
+        ("binance-sdk-derivatives-trading-coin-futures", "coin-m-futures"),
+        ("binance-sdk-spot", "spot"),
+        ("binance-connector", "usd-m-futures"),
+        ("binance-connector", "spot"),
+        ("ccxt", "usd-m-futures"),
+        ("ccxt", "spot"),
+        ("python-binance", "usd-m-futures"),
+        ("python-binance", "spot"),
     ),
     "indicator_source_market_families": (
         ("binance_spot", "spot"),
@@ -838,6 +858,35 @@ def _exchange_payload() -> list[dict[str, object]]:
     ]
 
 
+def _starter_catalog_payload(
+    options: list[dict[str, object]],
+    *,
+    key_field: str = "key",
+) -> list[dict[str, object]]:
+    """Normalize Python starter catalogs for every native destination.
+
+    The Python code-language and starter-market catalogs use slightly different
+    key field names, while their presentation and capability metadata share the
+    same shape. Normalize that source shape once so generated C++, Rust, and
+    browser consumers cannot drift independently.
+    """
+
+    return [
+        {
+            "key": str(option.get(key_field) or option.get("key") or ""),
+            "title": str(option.get("title") or ""),
+            "subtitle": str(option.get("subtitle") or ""),
+            "accent": str(option.get("accent") or ""),
+            "badge": str(option.get("badge") or ""),
+            "disabled": bool(option.get("disabled", False)),
+            "operational": bool(option.get("operational", False)),
+            "operational_status": str(option.get("operational_status") or ""),
+            "launch_note": str(option.get("launch_note") or ""),
+        }
+        for option in options
+    ]
+
+
 def _rust_environment_dependency_payload() -> list[dict[str, str]]:
     targets = _rust_dependency_targets_for_config({"selected_rust_framework": "Tauri"})
     payload: list[dict[str, str]] = []
@@ -875,6 +924,128 @@ def native_python_risk_defaults() -> dict[str, object]:
     defaults = RiskManagementSettings().to_config_dict()
     defaults["indicator_use_live_values"] = False
     return defaults
+
+
+def native_order_sizing_reference_cases() -> list[dict[str, object]]:
+    """Return order-sizing cases evaluated by the Python source implementation.
+
+    Native order helpers consume this generated fixture so their rounding and
+    filter behavior is checked against Python's actual runtime functions,
+    rather than against duplicated expected literals in each language.
+    """
+
+    from .integrations.exchanges.binance.orders.order_sizing_runtime import (
+        _ceil_to_step as _source_ceil_to_step,
+        _floor_to_step as _source_floor_to_step,
+        adjust_qty_to_filters_futures,
+        adjust_qty_to_filters_spot,
+        required_percent_for_symbol,
+    )
+
+    class _FixtureWrapper:
+        def __init__(self, filters: dict[str, float], price: float, balance: float = 100.0) -> None:
+            self._filters = dict(filters)
+            self._price = price
+            self._balance = balance
+
+        def get_spot_symbol_filters(self, _symbol: str) -> dict[str, float]:
+            return dict(self._filters)
+
+        def get_futures_symbol_filters(self, _symbol: str) -> dict[str, float]:
+            return dict(self._filters)
+
+        def get_last_price(self, _symbol: str) -> float:
+            return self._price
+
+        def futures_get_usdt_balance(self) -> float:
+            return self._balance
+
+        def _ceil_to_step(self, value: float, step: float) -> float:
+            return _source_ceil_to_step(self, value, step)
+
+        _floor_to_step = staticmethod(_source_floor_to_step)
+
+    filters = {
+        "stepSize": 0.01,
+        "minQty": 0.02,
+        "minNotional": 5.0,
+    }
+    cases: list[dict[str, object]] = []
+
+    def adjustment_case(
+        name: str,
+        market: str,
+        quantity: float,
+        price: float,
+        case_filters: dict[str, float] | None = None,
+    ) -> None:
+        wrapper = _FixtureWrapper(case_filters or filters, price)
+        if market == "spot":
+            actual, error = adjust_qty_to_filters_spot(wrapper, "BTCUSDT", quantity, price)
+        else:
+            actual, error = adjust_qty_to_filters_futures(wrapper, "BTCUSDT", quantity, price)
+        cases.append(
+            {
+                "name": name,
+                "market": market,
+                "filters": dict(case_filters or filters),
+                "quantity": quantity,
+                "price": price,
+                "expected_quantity": float(actual),
+                "expected_error": error,
+            }
+        )
+
+    adjustment_case("spot_min_notional_bump", "spot", 0.023, 100.0)
+    adjustment_case("futures_min_notional_bump", "futures", 0.023, 100.0)
+    adjustment_case("spot_rejects_zero_quantity", "spot", 0.0, 100.0)
+    adjustment_case(
+        "futures_invalid_step_filter",
+        "futures",
+        1.0,
+        100.0,
+        {"stepSize": -0.01, "minQty": 0.02, "minNotional": 5.0},
+    )
+
+    required_wrapper = _FixtureWrapper(filters, 100.0, 100.0)
+    cases.append(
+        {
+            "name": "futures_required_percent",
+            "market": "futures",
+            "filters": dict(filters),
+            "price": 100.0,
+            "balance": 100.0,
+            "leverage": 5.0,
+            "expected_percent": float(required_percent_for_symbol(required_wrapper, "BTCUSDT", 5.0)),
+        }
+    )
+    return cases
+
+
+def native_order_sizing_rounding_reference_cases() -> list[dict[str, object]]:
+    """Return Python-owned decimal rounding cases for native order helpers."""
+
+    from .integrations.exchanges.binance.orders.order_sizing_runtime import (
+        ceil_to_decimals as _source_ceil_to_decimals,
+        floor_to_decimals as _source_floor_to_decimals,
+    )
+
+    cases: list[dict[str, object]] = []
+    for name, value, decimals in (
+        ("positive_decimal", 1.231, 2),
+        ("negative_decimal", -1.231, 2),
+        ("negative_integer_precision", -1.9, 0),
+    ):
+        cases.append(
+            {
+                "name": name,
+                "value": value,
+                "decimals": decimals,
+                "expected_floor": float(_source_floor_to_decimals(value, decimals)),
+                "expected_ceil": float(_source_ceil_to_decimals(value, decimals)),
+            }
+        )
+    return cases
 
 
 def _broker_identity_key(value: object) -> str:
@@ -942,6 +1113,10 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "direct_exchanges": list(NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"]),
             "direct_connector_backends": list(NATIVE_RUNTIME_OWNERSHIP["direct_connector_backends"]),
             "direct_market_families": list(NATIVE_RUNTIME_OWNERSHIP["direct_market_families"]),
+            "direct_connector_market_families": [
+                {"key": key, "value": value}
+                for key, value in NATIVE_RUNTIME_OWNERSHIP["direct_connector_market_families"]
+            ],
             "indicator_source_market_families": [
                 {"key": key, "value": value}
                 for key, value in NATIVE_RUNTIME_OWNERSHIP["indicator_source_market_families"]
@@ -969,7 +1144,14 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "theme_options": _value_option_payload(list(THEME_OPTIONS)),
             "design_options": _value_option_payload(list(DESIGN_OPTIONS)),
             "indicator_source_options": _value_option_payload(list(INDICATOR_SOURCE_OPTIONS)),
+            "indicator_ma_type_options": _value_option_payload(list(MOVING_AVERAGE_TYPE_OPTIONS)),
             "exchange_options": _exchange_payload(),
+            "code_language_options": _starter_catalog_payload(
+                STARTER_LANGUAGE_OPTIONS,
+                key_field="config_key",
+            ),
+            "rust_framework_options": _starter_catalog_payload(RUST_FRAMEWORK_OPTIONS),
+            "starter_market_options": _starter_catalog_payload(STARTER_MARKET_OPTIONS),
             "dashboard_loop_choices": _choice_payload(DASHBOARD_LOOP_CHOICES),
             "lead_trader_options": _choice_payload(LEAD_TRADER_OPTIONS),
             "llm_use_for_options": _choice_payload(LLM_USE_FOR_OPTIONS),
@@ -1043,6 +1225,11 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         "position_reconciliation_reference": {
             "schema_version": NATIVE_POSITION_RECONCILIATION_REFERENCE_SCHEMA_VERSION,
             "cases": native_position_reconciliation_reference_cases(),
+        },
+        "order_sizing_reference": {
+            "schema_version": 1,
+            "cases": native_order_sizing_reference_cases(),
+            "rounding_cases": native_order_sizing_rounding_reference_cases(),
         },
     }
 
@@ -1130,7 +1317,11 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "theme_options": list(payload["ui_options"]["theme_options"]),
         "design_options": list(payload["ui_options"]["design_options"]),
         "indicator_source_options": list(payload["ui_options"]["indicator_source_options"]),
+        "indicator_ma_type_options": list(payload["ui_options"]["indicator_ma_type_options"]),
         "exchange_options": list(payload["ui_options"]["exchange_options"]),
+        "code_language_options": list(payload["ui_options"]["code_language_options"]),
+        "rust_framework_options": list(payload["ui_options"]["rust_framework_options"]),
+        "starter_market_options": list(payload["ui_options"]["starter_market_options"]),
         "dashboard_loop_choices": list(payload["ui_options"]["dashboard_loop_choices"]),
         "lead_trader_options": list(payload["ui_options"]["lead_trader_options"]),
         "llm_use_for_options": list(payload["ui_options"]["llm_use_for_options"]),
@@ -1159,6 +1350,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "default_backtest": dict(payload["default_backtest"]),
         "risk_defaults": dict(payload["risk_defaults"]),
         "ui_defaults": dict(payload["ui_defaults"]),
+        "order_sizing_reference": dict(payload["order_sizing_reference"]),
         "cpp_contract_parity": payload["contract_parity"]["cpp"],
         "rust_contract_parity": payload["contract_parity"]["rust"],
         "cpp_standalone_runtime_ready": payload["standalone_runtime_ready"]["cpp"],

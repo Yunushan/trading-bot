@@ -342,11 +342,19 @@ class NativeFullParityContractTests(unittest.TestCase):
         tauri_behavior_tests = _read(rust_root / "apps" / "tauri-desktop" / "ui" / "tauri-ui-behavior.test.cjs")
         rust_readme = _read(rust_root / "README.md")
         runtime_ready_match = re.search(
-            r"pub fn rust_native_trading_runtime_ready\(\) -> bool \{\s*(true|false)\s*\}",
+            r"pub fn rust_native_trading_runtime_ready\(\) -> bool \{\s*(?P<body>.*?)\s*\}",
             core,
+            re.DOTALL,
         )
         self.assertIsNotNone(runtime_ready_match)
-        runtime_ready_label = runtime_ready_match.group(1) if runtime_ready_match else ""
+        runtime_ready_body = runtime_ready_match.group("body").strip() if runtime_ready_match else ""
+        self.assertEqual("python_source_rust_full_parity_ready()", runtime_ready_body)
+        runtime_ready_flag_match = re.search(
+            r"pub const RUST_FULL_PARITY_READY: bool = (true|false);",
+            generated,
+        )
+        self.assertIsNotNone(runtime_ready_flag_match)
+        runtime_ready_label = runtime_ready_flag_match.group(1) if runtime_ready_flag_match else ""
         runtime_ready_policy = json.loads(rust_runtime_evidence_manifest)["policy"]["runtime_ready_flag"]
 
         self.assertIn("PythonParityDomain as NativePythonAppParityDomain", core)
@@ -918,6 +926,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("evaluate_native_runtime_preview", tauri_main)
         self.assertIn("PYTHON_NATIVE_RUNTIME_EXCHANGES", tauri_main)
         self.assertIn("PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS", tauri_main)
+        self.assertIn("PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES", tauri_main)
         self.assertIn("PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES", tauri_main)
         self.assertIn("PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER", tauri_main)
         self.assertIn("native_runtime_ownership_error", tauri_main)

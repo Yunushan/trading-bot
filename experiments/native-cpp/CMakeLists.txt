@@ -277,6 +277,8 @@ if (BUILD_TESTING)
         tests/NativeServiceApiContractTests.cpp
         src/BinanceRestClient.cpp
         src/BinanceRestClient.h
+        src/NativeConfigPersistence.cpp
+        src/NativeConfigPersistence.h
         src/TradingBotWindowSupport.cpp
         src/TradingBotWindowSupport.h
         src/generated/PythonParityContract.h

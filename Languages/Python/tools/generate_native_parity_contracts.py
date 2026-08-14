@@ -1712,6 +1712,7 @@ def _rust_ui_option_catalogs(summary: dict[str, object]) -> str:
         ("PYTHON_THEME_OPTIONS", list(summary["theme_options"])),
         ("PYTHON_DESIGN_OPTIONS", list(summary["design_options"])),
         ("PYTHON_INDICATOR_SOURCE_OPTIONS", list(summary["indicator_source_options"])),
+        ("PYTHON_INDICATOR_MA_TYPE_OPTIONS", list(summary["indicator_ma_type_options"])),
         ("PYTHON_EXCHANGE_OPTIONS", list(summary["exchange_options"])),
         ("PYTHON_ACCOUNT_TYPE_OPTIONS", list(summary["account_type_options"])),
         ("PYTHON_MARGIN_MODE_OPTIONS", list(summary["margin_mode_options"])),
@@ -1753,6 +1754,47 @@ def _rust_ui_option_catalogs(summary: dict[str, object]) -> str:
                 ]
             )
         lines.append("];")
+    return "\n".join(lines)
+
+
+def _rust_starter_catalogs(summary: dict[str, object]) -> str:
+    option_groups = [
+        ("PYTHON_CODE_LANGUAGE_OPTIONS", list(summary["code_language_options"])),
+        ("PYTHON_RUST_FRAMEWORK_OPTIONS", list(summary["rust_framework_options"])),
+        ("PYTHON_STARTER_MARKET_OPTIONS", list(summary["starter_market_options"])),
+    ]
+    lines = [
+        "pub struct PythonStarterOption {",
+        "    pub key: &'static str,",
+        "    pub title: &'static str,",
+        "    pub subtitle: &'static str,",
+        "    pub accent: &'static str,",
+        "    pub badge: &'static str,",
+        "    pub disabled: bool,",
+        "    pub operational: bool,",
+        "    pub operational_status: &'static str,",
+        "    pub launch_note: &'static str,",
+        "}",
+    ]
+    for name, options in option_groups:
+        lines.extend(["", f"pub const {name}: &[PythonStarterOption] = &["])
+        for option in options:
+            lines.extend(
+                [
+                    "    PythonStarterOption {",
+                    f"        key: {_rust_string(option['key'])},",
+                    f"        title: {_rust_string(option['title'])},",
+                    f"        subtitle: {_rust_string(option['subtitle'])},",
+                    f"        accent: {_rust_string(option['accent'])},",
+                    f"        badge: {_rust_string(option['badge'])},",
+                    f"        disabled: {_rust_bool(option['disabled'])},",
+                    f"        operational: {_rust_bool(option['operational'])},",
+                    f"        operational_status: {_rust_string(option['operational_status'])},",
+                    f"        launch_note: {_rust_string(option['launch_note'])},",
+                    "    },",
+                ]
+            )
+        lines.append("];" )
     return "\n".join(lines)
 
 
@@ -1972,6 +2014,7 @@ def _cpp_ui_option_catalogs(summary: dict[str, object]) -> str:
         ("kPythonThemeOptions", list(summary["theme_options"])),
         ("kPythonDesignOptions", list(summary["design_options"])),
         ("kPythonIndicatorSourceOptions", list(summary["indicator_source_options"])),
+        ("kPythonIndicatorMaTypeOptions", list(summary["indicator_ma_type_options"])),
         ("kPythonExchangeOptions", list(summary["exchange_options"])),
         ("kPythonAccountTypeOptions", list(summary["account_type_options"])),
         ("kPythonMarginModeOptions", list(summary["margin_mode_options"])),
@@ -2007,6 +2050,46 @@ def _cpp_ui_option_catalogs(summary: dict[str, object]) -> str:
                 "    PythonUiOption{"
                 f"{_cpp_string(_ui_option_key(option))}, {_cpp_string(option['label'])}, "
                 f"{str(bool(option.get('disabled', False))).lower()}"
+                "},"
+            )
+        lines.append("};")
+    return "\n".join(lines)
+
+
+def _cpp_starter_catalogs(summary: dict[str, object]) -> str:
+    option_groups = [
+        ("kPythonCodeLanguageOptions", list(summary["code_language_options"])),
+        ("kPythonRustFrameworkOptions", list(summary["rust_framework_options"])),
+        ("kPythonStarterMarketOptions", list(summary["starter_market_options"])),
+    ]
+    lines = [
+        "struct PythonStarterOption {",
+        "    std::string_view key;",
+        "    std::string_view title;",
+        "    std::string_view subtitle;",
+        "    std::string_view accent;",
+        "    std::string_view badge;",
+        "    bool disabled;",
+        "    bool operational;",
+        "    std::string_view operationalStatus;",
+        "    std::string_view launchNote;",
+        "};",
+    ]
+    for name, options in option_groups:
+        lines.extend(
+            [
+                "",
+                f"inline constexpr std::array<PythonStarterOption, {len(options)}> {name} = {{",
+            ]
+        )
+        for option in options:
+            lines.append(
+                "    PythonStarterOption{"
+                f"{_cpp_string(option['key'])}, {_cpp_string(option['title'])}, "
+                f"{_cpp_string(option['subtitle'])}, {_cpp_string(option['accent'])}, "
+                f"{_cpp_string(option['badge'])}, {_rust_bool(option['disabled'])}, "
+                f"{_rust_bool(option['operational'])}, {_cpp_string(option['operational_status'])}, "
+                f"{_cpp_string(option['launch_note'])}"
                 "},"
             )
         lines.append("};")
@@ -2065,6 +2148,7 @@ def render_rust_module() -> str:
     live_safety_environment = dict(order_guard_behavior["live_safety_environment"])
     native_runtime_ownership = dict(summary["native_runtime_ownership"])
     indicator_source_market_families = list(native_runtime_ownership["indicator_source_market_families"])
+    connector_market_families = list(native_runtime_ownership["direct_connector_market_families"])
     parts = [
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
@@ -2083,6 +2167,10 @@ def render_rust_module() -> str:
         (
             "pub const PYTHON_DEFAULT_BACKTEST_JSON: &str = "
             f"{_rust_string(_contract_json(dict(summary['default_backtest'])))};"
+        ),
+        (
+            "pub const PYTHON_ORDER_SIZING_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(dict(summary['order_sizing_reference'])))};"
         ),
         f"pub const PYTHON_SOURCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
         f"pub const CPP_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['cpp_contract_parity'])};",
@@ -2127,6 +2215,10 @@ def render_rust_module() -> str:
         _rust_array(
             "PYTHON_NATIVE_RUNTIME_MARKET_FAMILIES",
             list(native_runtime_ownership["direct_market_families"]),
+        ),
+        _rust_string_pairs(
+            "PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES",
+            connector_market_families,
         ),
         _rust_string_pairs(
             "PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES",
@@ -2237,6 +2329,8 @@ def render_rust_module() -> str:
         "",
         _rust_ui_option_catalogs(summary),
         "",
+        _rust_starter_catalogs(summary),
+        "",
     ]
     body = [f"    {line}" if line else "" for line in parts]
     return "\n".join(
@@ -2261,6 +2355,7 @@ def render_cpp_header() -> str:
     live_safety_environment = dict(order_guard_behavior["live_safety_environment"])
     native_runtime_ownership = dict(summary["native_runtime_ownership"])
     indicator_source_market_families = list(native_runtime_ownership["indicator_source_market_families"])
+    connector_market_families = list(native_runtime_ownership["direct_connector_market_families"])
     parts = [
         "// This file is generated from Languages/Python/app/native_parity.py.",
         "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
@@ -2293,6 +2388,10 @@ def render_cpp_header() -> str:
         (
             "inline constexpr std::string_view kPythonDefaultBacktestJson = "
             f"{_cpp_string(_contract_json(dict(summary['default_backtest'])))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonOrderSizingReferenceJson = "
+            f"{_cpp_string(_contract_json(dict(summary['order_sizing_reference'])))};"
         ),
         (
             "inline constexpr std::string_view kPythonRiskDefaultsJson = "
@@ -2341,6 +2440,10 @@ def render_cpp_header() -> str:
         _cpp_array(
             "kPythonNativeRuntimeMarketFamilies",
             list(native_runtime_ownership["direct_market_families"]),
+        ),
+        _cpp_string_pairs(
+            "kPythonNativeRuntimeConnectorMarketFamilies",
+            connector_market_families,
         ),
         (
             "inline constexpr std::string_view kPythonNativeRuntimeDelegatedOwner = "
@@ -2425,7 +2528,11 @@ def render_cpp_header() -> str:
         "",
         _cpp_array("kPythonOrderExecutionExchanges", list(summary["order_execution_exchanges"])),
         "",
-        _cpp_string_pairs("kPythonCcxtExchangeIds", list(summary["ccxt_exchange_ids"])),
+        _cpp_string_pairs(
+            "kPythonCcxtExchangeIds",
+            list(summary["ccxt_exchange_ids"]),
+            include_struct=False,
+        ),
         "",
         _cpp_string_pairs(
             "kPythonNativeRuntimeIndicatorSourceMarketFamilies",
@@ -2452,6 +2559,8 @@ def render_cpp_header() -> str:
         _cpp_array("kPythonAccountModeOptions", list(summary["account_mode_options"])),
         "",
         _cpp_ui_option_catalogs(summary),
+        "",
+        _cpp_starter_catalogs(summary),
         "",
         "} // namespace PythonParityContract",
         "",
@@ -2522,7 +2631,11 @@ def render_tauri_browser_contract() -> str:
         "themeOptions": list(summary["theme_options"]),
         "designOptions": list(summary["design_options"]),
         "indicatorSourceOptions": list(summary["indicator_source_options"]),
+        "indicatorMaTypeOptions": list(summary["indicator_ma_type_options"]),
         "exchangeOptions": list(summary["exchange_options"]),
+        "codeLanguageOptions": list(summary["code_language_options"]),
+        "rustFrameworkOptions": list(summary["rust_framework_options"]),
+        "starterMarketOptions": list(summary["starter_market_options"]),
         "accountTypeOptions": list(summary["account_type_options"]),
         "marginModeOptions": list(summary["margin_mode_options"]),
         "positionModeOptions": list(summary["position_mode_options"]),

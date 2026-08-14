@@ -179,16 +179,27 @@ def _read(path: Path) -> str:
         return ""
 
 
-def _runtime_ready_source_state(core_source: str) -> bool | None:
+def _runtime_ready_source_state(core_source: str, generated_source: str = "") -> bool | None:
     pattern = re.compile(
         rf"pub\s+fn\s+{re.escape(RUNTIME_READY_FUNCTION)}\s*\(\s*\)\s*->\s*bool\s*"
-        r"\{\s*(true|false)\s*\}",
-        re.MULTILINE,
+        r"\{\s*(?P<body>.*?)\s*\}",
+        re.DOTALL | re.MULTILINE,
     )
     match = pattern.search(core_source)
     if not match:
         return None
-    return match.group(1) == "true"
+    body = match.group("body").strip()
+    if body in {"true", "false"}:
+        return body == "true"
+    if body != "python_source_rust_full_parity_ready()":
+        return None
+    generated_match = re.search(
+        r"pub\s+const\s+RUST_FULL_PARITY_READY\s*:\s*bool\s*=\s*(true|false)\s*;",
+        generated_source,
+    )
+    if not generated_match:
+        return None
+    return generated_match.group(1) == "true"
 
 
 def _contains_all(source: str, needles: tuple[str, ...]) -> list[str]:
@@ -1220,7 +1231,7 @@ def _source_contract_audit(root: Path) -> dict[str, Any]:
     tauri_html = _read(rust_root / "apps" / "tauri-desktop" / "ui" / "index.html")
     rust_main = _read(rust_root / "src" / "main.rs")
     readme = _read(rust_root / "README.md")
-    runtime_ready = _runtime_ready_source_state(core)
+    runtime_ready = _runtime_ready_source_state(core, generated)
     runtime_ready_label = str(runtime_ready).lower() if runtime_ready is not None else "<unknown>"
 
     missing: list[str] = []

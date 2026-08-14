@@ -1,4 +1,5 @@
 #include "NativeBacktestRuntime.h"
+#include "NativePythonParityChoices.h"
 #include "generated/PythonParityContract.h"
 
 #include <QJsonArray>
@@ -318,8 +319,10 @@ Request::Request() {
     }
     symbol = symbols.isEmpty() ? QString() : symbols.first().toString();
     interval = intervals.isEmpty() ? QString() : intervals.first().toString();
-    logic = defaults.value(QStringLiteral("logic")).toString(QStringLiteral("AND"));
-    side = defaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"));
+    logic = defaults.value(QStringLiteral("logic")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonLogicConfigChoices));
+    side = defaults.value(QStringLiteral("side")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonSideConfigChoices));
     capital = defaults.value(QStringLiteral("capital")).toDouble(1000.0);
     positionPct = defaults.value(QStringLiteral("position_pct")).toDouble(2.0);
     positionPctUnits = QStringLiteral("percent");
@@ -328,12 +331,15 @@ Request::Request() {
     positionMode = defaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"));
     assetsMode = defaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"));
     accountMode = defaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"));
-    mddLogic = defaults.value(QStringLiteral("mdd_logic")).toString(QStringLiteral("per_trade"));
+    mddLogic = defaults.value(QStringLiteral("mdd_logic")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonMddLogicConfigChoices));
     stopLossEnabled = stopLoss.value(QStringLiteral("enabled")).toBool(false);
-    stopLossMode = stopLoss.value(QStringLiteral("mode")).toString(QStringLiteral("usdt"));
+    stopLossMode = stopLoss.value(QStringLiteral("mode")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonStopLossModeConfigChoices));
     stopLossUsdt = stopLoss.value(QStringLiteral("usdt")).toDouble(0.0);
     stopLossPercent = stopLoss.value(QStringLiteral("percent")).toDouble(0.0);
-    stopLossScope = stopLoss.value(QStringLiteral("scope")).toString(QStringLiteral("per_trade"));
+    stopLossScope = stopLoss.value(QStringLiteral("scope")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonStopLossScopeConfigChoices));
     feeBps = defaults.value(QStringLiteral("fee_bps")).toDouble(5.0);
     slippageBps = defaults.value(QStringLiteral("slippage_bps")).toDouble(2.0);
 }
@@ -385,25 +391,35 @@ Result run(
     Result result;
     result.symbol = request.symbol.trimmed().toUpper();
     result.interval = request.interval.trimmed();
-    result.logic = request.logic.trimmed().toUpper();
-    if (result.logic != QStringLiteral("AND")) result.logic = QStringLiteral("OR");
-    result.side = request.side.trimmed().toUpper();
-    if (!QStringList{QStringLiteral("BUY"), QStringLiteral("SELL"), QStringLiteral("BOTH")}.contains(result.side)) result.side = QStringLiteral("BOTH");
+    result.logic = NativePythonParity::canonicalConfigChoice(
+        request.logic,
+        PythonParityContract::kPythonLogicConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonLogicConfigChoices));
+    result.side = NativePythonParity::canonicalConfigChoice(
+        request.side,
+        PythonParityContract::kPythonSideConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonSideConfigChoices));
     result.capital = request.capital;
     result.leverage = std::max(1.0, request.leverage);
     result.marginMode = request.marginMode.trimmed().toUpper();
     result.positionMode = request.positionMode.trimmed();
     result.assetsMode = request.assetsMode.trimmed();
     result.accountMode = request.accountMode.trimmed();
-    result.mddLogic = request.mddLogic.trimmed().toLower();
-    if (!QStringList{QStringLiteral("per_trade"), QStringLiteral("cumulative"), QStringLiteral("entire_account")}.contains(result.mddLogic)) result.mddLogic = QStringLiteral("per_trade");
+    result.mddLogic = NativePythonParity::canonicalConfigChoice(
+        request.mddLogic,
+        PythonParityContract::kPythonMddLogicConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonMddLogicConfigChoices));
     result.stopLossEnabled = request.stopLossEnabled;
-    result.stopLossMode = request.stopLossMode.trimmed().toLower();
-    if (!QStringList{QStringLiteral("usdt"), QStringLiteral("percent"), QStringLiteral("both")}.contains(result.stopLossMode)) result.stopLossMode = QStringLiteral("usdt");
+    result.stopLossMode = NativePythonParity::canonicalConfigChoice(
+        request.stopLossMode,
+        PythonParityContract::kPythonStopLossModeConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonStopLossModeConfigChoices));
     result.stopLossUsdt = std::max(0.0, request.stopLossUsdt);
     result.stopLossPercent = std::max(0.0, request.stopLossPercent);
-    result.stopLossScope = request.stopLossScope.trimmed().toLower();
-    if (!QStringList{QStringLiteral("per_trade"), QStringLiteral("cumulative"), QStringLiteral("entire_account")}.contains(result.stopLossScope)) result.stopLossScope = QStringLiteral("per_trade");
+    result.stopLossScope = NativePythonParity::canonicalConfigChoice(
+        request.stopLossScope,
+        PythonParityContract::kPythonStopLossScopeConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonStopLossScopeConfigChoices));
     result.feeBps = std::max(0.0, request.feeBps);
     result.slippageBps = std::max(0.0, request.slippageBps);
     const double feeRate = result.feeBps / 10000.0;

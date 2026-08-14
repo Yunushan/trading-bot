@@ -30,8 +30,9 @@ use trading_bot_core::{
     },
     exchange_connectors::DEFAULT_CONNECTOR_BACKEND,
     generated_python_parity::{
-        PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS, PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER,
-        PYTHON_NATIVE_RUNTIME_EXCHANGES, PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
+        PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS, PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES,
+        PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER, PYTHON_NATIVE_RUNTIME_EXCHANGES,
+        PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
     },
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
@@ -883,7 +884,6 @@ impl NativeRuntimeState {
             };
             ensure_native_runtime_stream_worker(
                 &mut managed.pairs[pair_index],
-                &effective_config,
                 &spec,
             );
         }
@@ -896,7 +896,10 @@ impl NativeRuntimeState {
             Ok(input) => input,
             Err(error) => return NativeRuntimeMarketPollResponse::error(error.to_string()),
         };
-        let client = match BinanceRestMarketDataClient::new(spec.market, spec.testnet) {
+        let client = match BinanceRestMarketDataClient::new(
+            spec.market,
+            native_runtime_indicator_data_testnet(&spec, None),
+        ) {
             Ok(client) => client,
             Err(error) => return NativeRuntimeMarketPollResponse::error(error.to_string()),
         };
@@ -1335,7 +1338,6 @@ impl NativeRuntimeState {
             };
             ensure_native_runtime_stream_worker(
                 &mut managed.pairs[pair_index],
-                &effective_config,
                 &spec,
             );
         }
@@ -2174,6 +2176,26 @@ fn native_runtime_indicator_source_market_family(config: &Value) -> Option<&'sta
         .map(|(_, market_family)| *market_family)
 }
 
+fn native_runtime_connector_market_families(connector_backend: &str) -> Vec<&'static str> {
+    PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES
+        .iter()
+        .filter_map(|(backend, market_family)| {
+            backend
+                .eq_ignore_ascii_case(connector_backend)
+                .then_some(*market_family)
+        })
+        .collect()
+}
+
+fn native_runtime_market_for_family(market_family: &str) -> Option<BinanceMarket> {
+    match market_family {
+        "usd-m-futures" => Some(BinanceMarket::Futures),
+        "coin-m-futures" => Some(BinanceMarket::CoinFutures),
+        "spot" => Some(BinanceMarket::Spot),
+        _ => None,
+    }
+}
+
 fn native_runtime_market_poll_spec(config: &Value) -> Result<NativeRuntimeMarketPollSpec, String> {
     let effective_config = native_runtime_primary_pair_config(config)?;
     native_runtime_market_poll_spec_for_config(&effective_config)
@@ -2204,24 +2226,54 @@ fn native_runtime_market_poll_spec_for_config(
     } else {
         None
     };
-    let market = match connector_backend.as_str() {
-        "binance-sdk-derivatives-trading-usds-futures" => BinanceMarket::Futures,
-        "binance-sdk-derivatives-trading-coin-futures" => BinanceMarket::CoinFutures,
-        "binance-sdk-spot" => BinanceMarket::Spot,
-        "binance-connector" => {
+    let connector_market_families = native_runtime_connector_market_families(&connector_backend);
+    if connector_market_families.is_empty() {
+        return Err(
+            "Native Rust runtime requires a Python-declared Binance spot or futures connector."
+                .to_owned(),
+        );
+    }
+    let market = if connector_market_families.len() == 1 {
+        native_runtime_market_for_family(connector_market_families[0]).ok_or_else(|| {
+            format!(
+                "Python native connector market family '{}' is not implemented by Rust.",
+                connector_market_families[0]
+            )
+        })?
+    } else {
+        // A multi-market connector (currently Binance Connector) follows the
+        // same Python precedence: an explicit indicator source wins, then the
+        // account type selects spot versus USD-M futures.
+        let has_spot = connector_market_families.contains(&"spot");
+        let has_usd_futures = connector_market_families.contains(&"usd-m-futures");
+        let has_coin_futures = connector_market_families.contains(&"coin-m-futures");
+        if !has_spot && !has_usd_futures && !has_coin_futures {
+            return Err(
+                "Python native connector market families have no supported Rust market.".to_owned(),
+            );
+        }
+        {
             let default_account_type = python_execution_default_text("account_type", "Futures");
             let account_type = first_config_string(config, "account_type", &default_account_type);
             match indicator_market_family {
-                Some("spot") => BinanceMarket::Spot,
-                Some("usd-m-futures") => BinanceMarket::Futures,
-                _ if account_type.to_ascii_lowercase().contains("spot") => BinanceMarket::Spot,
-                _ => BinanceMarket::Futures,
+                Some("spot") if has_spot => BinanceMarket::Spot,
+                Some("usd-m-futures") if has_usd_futures => BinanceMarket::Futures,
+                Some("coin-m-futures") if has_coin_futures => BinanceMarket::CoinFutures,
+                _ if account_type.to_ascii_lowercase().contains("spot") && has_spot => {
+                    BinanceMarket::Spot
+                }
+                _ if account_type.to_ascii_lowercase().contains("coin") && has_coin_futures => {
+                    BinanceMarket::CoinFutures
+                }
+                _ if has_usd_futures => BinanceMarket::Futures,
+                _ if has_coin_futures => BinanceMarket::CoinFutures,
+                _ if has_spot => BinanceMarket::Spot,
+                _ => {
+                    return Err(
+                        "Python native connector cannot select a supported Rust market.".to_owned(),
+                    );
+                }
             }
-        }
-        _ => {
-            return Err(
-                "Native Rust runtime requires a Binance spot or futures connector.".to_owned(),
-            );
         }
     };
     let default_mode = python_execution_default_text("mode", "Demo/Testnet");
@@ -2250,20 +2302,31 @@ fn python_env_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// Python starts its Binance futures kline WebSocket when live indicator data
-/// is enabled.  The environment override intentionally matches Python's
-/// BINANCE_INDICATOR_LIVE_DATA policy, including its testnet default.
+/// Mirror Python's two independent transport flags.  `indicator_use_live_values`
+/// controls whether strategy signals may use the open candle; it does not
+/// enable a WebSocket.  Python starts this stream only when
+/// `BINANCE_WS_INDICATORS` is enabled and live futures indicator data is active.
 fn native_runtime_stream_requested(
-    config: &Value,
     spec: &NativeRuntimeMarketPollSpec,
-    environment_override: Option<&str>,
+    websocket_environment_override: Option<&str>,
+    live_data_environment_override: Option<&str>,
 ) -> bool {
-    if spec.market != BinanceMarket::Futures
-        || !config_bool(config, "indicator_use_live_values", false)
-    {
+    if spec.market != BinanceMarket::Futures {
         return false;
     }
-    environment_override
+    let websocket_enabled = websocket_environment_override
+        .and_then(python_env_bool)
+        .or_else(|| {
+            env::var("BINANCE_WS_INDICATORS")
+                .ok()
+                .as_deref()
+                .and_then(python_env_bool)
+        })
+        .unwrap_or(false);
+    if !websocket_enabled {
+        return false;
+    }
+    live_data_environment_override
         .and_then(python_env_bool)
         .or_else(|| {
             env::var("BINANCE_INDICATOR_LIVE_DATA")
@@ -2274,14 +2337,34 @@ fn native_runtime_stream_requested(
         .unwrap_or(spec.testnet)
 }
 
+fn native_runtime_indicator_data_testnet(
+    spec: &NativeRuntimeMarketPollSpec,
+    live_data_environment_override: Option<&str>,
+) -> bool {
+    if spec.market != BinanceMarket::Futures {
+        return spec.testnet;
+    }
+    let live_data_enabled = live_data_environment_override
+        .and_then(python_env_bool)
+        .or_else(|| {
+            env::var("BINANCE_INDICATOR_LIVE_DATA")
+                .ok()
+                .as_deref()
+                .and_then(python_env_bool)
+        })
+        .unwrap_or(spec.testnet);
+    spec.testnet && !live_data_enabled
+}
+
 fn ensure_native_runtime_stream_worker(
     pair: &mut NativeRuntimePairState,
-    config: &Value,
     spec: &NativeRuntimeMarketPollSpec,
 ) {
-    if native_runtime_stream_requested(config, spec, None) {
+    if native_runtime_stream_requested(spec, None, None) {
         if pair.stream_worker.is_none() {
-            pair.stream_worker = Some(NativeRuntimeStreamWorker::start(spec));
+            let mut stream_spec = spec.clone();
+            stream_spec.testnet = native_runtime_indicator_data_testnet(&stream_spec, None);
+            pair.stream_worker = Some(NativeRuntimeStreamWorker::start(&stream_spec));
         }
     } else {
         pair.stream_worker = None;
@@ -2758,6 +2841,12 @@ fn native_runtime_exposure_input(
         .filter(|value| value.is_finite())
         .sum();
     NativeRuntimeExposureGuardInput {
+        market: match spec.market {
+            BinanceMarket::Spot => "spot",
+            BinanceMarket::Futures => "futures",
+            BinanceMarket::CoinFutures => "coin-futures",
+        }
+        .to_owned(),
         symbol: spec.symbol.clone(),
         interval: spec.interval.clone(),
         side: "BOTH".to_owned(),
@@ -5290,6 +5379,42 @@ mod tests {
         assert_eq!(coin.interval, "1m");
         assert!(coin.testnet);
 
+        for backend in PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS {
+            assert!(
+                PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES
+                    .iter()
+                    .any(|(candidate, _)| candidate.eq_ignore_ascii_case(backend)),
+                "Python native connector backend {backend} must declare a market family"
+            );
+        }
+        for (backend, market_family) in PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES {
+            let account_type = if *market_family == "spot" {
+                "Spot"
+            } else {
+                "Futures"
+            };
+            let spec = native_runtime_market_poll_spec(&json!({
+                "connector_backend": backend,
+                "account_type": account_type,
+            }))
+            .unwrap_or_else(|error| {
+                panic!("Python native connector mapping {backend}/{market_family} failed: {error}")
+            });
+            let expected_market = match *market_family {
+                "usd-m-futures" => BinanceMarket::Futures,
+                "coin-m-futures" => BinanceMarket::CoinFutures,
+                "spot" => BinanceMarket::Spot,
+                other => panic!("unsupported generated Python native market family: {other}"),
+            };
+            if *backend == "binance-connector" && *market_family == "spot" {
+                assert_eq!(spec.market, BinanceMarket::Spot);
+            } else if *backend == "binance-connector" && *market_family == "usd-m-futures" {
+                assert_eq!(spec.market, BinanceMarket::Futures);
+            } else {
+                assert_eq!(spec.market, expected_market);
+            }
+        }
+
         let spot = native_runtime_market_poll_spec(&json!({
             "connector_backend": "binance-sdk-spot",
             "symbols": ["ethusdt"],
@@ -5336,20 +5461,20 @@ mod tests {
             "connector_backend": "python-binance",
             "account_type": "Futures"
         }))
-        .expect_err("python-binance provider alias should delegate to Python");
-        assert!(python_binance_alias.contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER));
+        .expect("Binance python-binance provider alias should use the native REST boundary");
+        assert_eq!(python_binance_alias.market, BinanceMarket::Futures);
 
         let ccxt_alias = native_runtime_market_poll_spec(&json!({
             "selected_exchange": "Binance",
             "connector_backend": "ccxt",
             "account_type": "Spot"
         }))
-        .expect_err("Binance CCXT provider alias should delegate to Python");
-        assert!(ccxt_alias.contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER));
+        .expect("Binance CCXT provider alias should use the native REST boundary");
+        assert_eq!(ccxt_alias.market, BinanceMarket::Spot);
     }
 
     #[test]
-    fn native_runtime_stream_activation_matches_python_live_data_policy() {
+    fn native_runtime_stream_activation_matches_python_transport_policy() {
         let futures_spec = NativeRuntimeMarketPollSpec {
             market: BinanceMarket::Futures,
             symbol: "BTCUSDT".to_owned(),
@@ -5357,30 +5482,32 @@ mod tests {
             lookback: 200,
             testnet: true,
         };
-        let live_values = json!({"indicator_use_live_values": true});
         assert!(native_runtime_stream_requested(
-            &live_values,
             &futures_spec,
+            Some("true"),
             Some("true")
         ));
         assert!(!native_runtime_stream_requested(
-            &live_values,
             &futures_spec,
+            Some("false"),
+            Some("true")
+        ));
+        assert!(!native_runtime_stream_requested(
+            &futures_spec,
+            Some("true"),
             Some("false")
         ));
-        assert!(!native_runtime_stream_requested(
-            &json!({"indicator_use_live_values": false}),
-            &futures_spec,
-            Some("true")
-        ));
+        assert!(!native_runtime_stream_requested(&futures_spec, None, None));
+        assert!(!native_runtime_indicator_data_testnet(&futures_spec, Some("true")));
+        assert!(native_runtime_indicator_data_testnet(&futures_spec, Some("false")));
 
         let spot_spec = NativeRuntimeMarketPollSpec {
             market: BinanceMarket::Spot,
             ..futures_spec
         };
         assert!(!native_runtime_stream_requested(
-            &live_values,
             &spot_spec,
+            Some("true"),
             Some("true")
         ));
     }

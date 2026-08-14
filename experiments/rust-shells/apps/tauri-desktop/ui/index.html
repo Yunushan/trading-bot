@@ -779,17 +779,13 @@
         <div class="section-head"><div><h2>Code Languages</h2><p class="muted">Select your preferred code language. Folders for each language are created automatically inside the project so you can keep related assets organized.</p></div></div>
         <section class="panel">
           <h3>Choose your language</h3>
-          <div class="cards" id="code-language-cards">
-            <button class="metric card-button code-language-card" data-code-language="Python" type="button" aria-pressed="false"><span class="pill">Recommended</span><strong>Python</strong><span>Fast to build - Huge ecosystem</span></button>
-            <button class="metric card-button code-language-card" data-code-language="C++" type="button" aria-pressed="false"><span class="pill">Experiment</span><strong>C++</strong><span>Qt native desktop experiment</span></button>
-            <button class="metric card-button code-language-card selected" data-code-language="Rust" type="button" aria-pressed="true"><span class="pill">Experiment</span><strong>Rust</strong><span>Service API client and fail-closed native coordinator</span></button>
-          </div>
+          <div class="cards" id="code-language-cards"></div>
           <p class="muted" id="code-language-status-text">Selected language: Rust (Tauri shell).</p>
         </section>
         <section class="panel" id="rust-framework-panel">
           <h3>Rust desktop framework</h3>
           <p class="muted">Tauri is the only user-selectable Rust desktop shell for this project.</p>
-          <div class="cards"><button class="metric card-button selected" data-rust-framework="Tauri" type="button" aria-pressed="true"><span class="pill">Operational</span><strong>Tauri</strong><span>Managed Service API client and native runtime controller</span></button></div>
+          <div class="cards" id="rust-framework-cards"></div>
         </section>
         <section class="panel" id="rust-native-runtime-gap">
           <h3>Native Rust Runtime Gap</h3>
@@ -1494,25 +1490,95 @@
       const el = $(id);
       if (el && value !== undefined && value !== null) el.textContent = String(value);
     };
-    const codeLanguageStatusText = Object.freeze({
-      "Python": "Selected language: Python (PyQt).",
-      "C++": "Selected language: C++ (Qt/C++23 preview).",
-      "Rust": "Selected language: Rust (Tauri shell)."
+    const normalizeStarterOption = (item) => ({
+      key: String(item?.key || "").trim(),
+      title: String(item?.title || item?.key || "").trim(),
+      subtitle: String(item?.subtitle || "").trim(),
+      accent: String(item?.accent || "").trim(),
+      badge: String(item?.badge || "").trim(),
+      disabled: Boolean(item?.disabled),
+      operational: Boolean(item?.operational),
+      operationalStatus: String(item?.operational_status || "").trim(),
+      launchNote: String(item?.launch_note || "").trim()
     });
-    const codeLanguageLaunchDetails = Object.freeze({
-      "Python": {
-        title: "Open Python desktop?",
-        body: "This will open the Python PyQt trading bot desktop from apps/desktop-pyqt/main.py."
-      },
-      "C++": {
-        title: "Open C++ desktop?",
-        body: "This will open the C++ Qt trading bot desktop if a built Trading-Bot-C++ executable is available."
+    const codeLanguageOptions = Object.freeze(
+      (pythonParityContract.codeLanguageOptions || [])
+        .map(normalizeStarterOption)
+        .filter((option) => option.key && option.title)
+    );
+    const rustFrameworkOptions = Object.freeze(
+      (pythonParityContract.rustFrameworkOptions || [])
+        .map(normalizeStarterOption)
+        .filter((option) => option.key && option.title)
+    );
+    const starterMarketOptions = Object.freeze(
+      (pythonParityContract.starterMarketOptions || [])
+        .map(normalizeStarterOption)
+        .filter((option) => option.key && option.title)
+    );
+    const appendStarterCard = (container, option, attributeName, selected = false) => {
+      if (!container) return;
+      const card = document.createElement("button");
+      card.className = "metric card-button";
+      card.type = "button";
+      card.dataset[attributeName] = option.key;
+      card.setAttribute("aria-pressed", selected ? "true" : "false");
+      card.disabled = option.disabled;
+      if (selected) card.classList.add("selected");
+      if (option.accent) card.style.setProperty("--catalog-accent", option.accent);
+      if (option.badge) {
+        const badge = document.createElement("span");
+        badge.className = "pill";
+        badge.textContent = option.badge;
+        card.appendChild(badge);
       }
-    });
+      const title = document.createElement("strong");
+      title.textContent = option.title;
+      card.appendChild(title);
+      const subtitle = document.createElement("span");
+      subtitle.textContent = option.subtitle;
+      card.appendChild(subtitle);
+      container.appendChild(card);
+    };
+    const rustCodeLanguageKey = codeLanguageOptions.find(
+      (option) => option.title.toLowerCase() === "rust"
+    )?.key || "Rust";
+    const renderCodeLanguageCatalog = () => {
+      const languageCards = $("code-language-cards");
+      const frameworkCards = $("rust-framework-cards");
+      if (languageCards) languageCards.replaceChildren();
+      if (frameworkCards) frameworkCards.replaceChildren();
+      for (const option of codeLanguageOptions) appendStarterCard(languageCards, option, "codeLanguage");
+      for (const option of rustFrameworkOptions) appendStarterCard(frameworkCards, option, "rustFramework", true);
+      // Keep the catalog alive in the page state even when the shell has no market picker.
+      document.documentElement.dataset.starterMarketOptionCount = String(starterMarketOptions.length);
+    };
+    renderCodeLanguageCatalog();
+    const codeLanguageStatusText = Object.freeze(Object.fromEntries(
+      codeLanguageOptions.map((option) => [option.key, `Selected language: ${option.title}.`])
+    ));
+    const codeLanguageLaunchDetails = Object.freeze(Object.fromEntries(
+      codeLanguageOptions.map((option) => {
+        const title = option.title.toLowerCase();
+        if (title === "python") {
+          return [option.key, {
+            title: "Open Python desktop?",
+            body: "This will open the Python PyQt trading bot desktop from apps/desktop-pyqt/main.py."
+          }];
+        }
+        if (title === "c++") {
+          return [option.key, {
+            title: "Open C++ desktop?",
+            body: "This will open the C++ Qt trading bot desktop if a built Trading-Bot-C++ executable is available."
+          }];
+        }
+        return [option.key, { title: `Open ${option.title}?`, body: option.subtitle }];
+      })
+    ));
     const applyCodeLanguageSelection = (language, { log = false } = {}) => {
       const nextLanguage = Object.prototype.hasOwnProperty.call(codeLanguageStatusText, language)
         ? language
-        : "Rust";
+        : rustCodeLanguageKey;
       for (const card of document.querySelectorAll("[data-code-language]")) {
         const selected = card.dataset.codeLanguage === nextLanguage;
         card.classList.toggle("selected", selected);
@@ -1532,8 +1598,8 @@
     const selectCodeLanguage = async (language, { log = false } = {}) => {
       const nextLanguage = Object.prototype.hasOwnProperty.call(codeLanguageStatusText, language)
         ? language
-        : "Rust";
-      if (nextLanguage === "Rust") {
+        : rustCodeLanguageKey;
+      if (nextLanguage === rustCodeLanguageKey) {
         applyCodeLanguageSelection(nextLanguage, { log });
         return;
       }
@@ -1575,9 +1641,9 @@
       card.addEventListener("click", () => selectCodeLanguage(card.dataset.codeLanguage, { log: true }));
     }
     for (const card of document.querySelectorAll("[data-rust-framework]")) {
-      card.addEventListener("click", () => selectCodeLanguage("Rust", { log: true }));
+      card.addEventListener("click", () => selectCodeLanguage(rustCodeLanguageKey, { log: true }));
     }
-    applyCodeLanguageSelection("Rust");
+    applyCodeLanguageSelection(rustCodeLanguageKey);
     const escapeHtml = (value) => String(value ?? "--").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;",
       "<": "&lt;",

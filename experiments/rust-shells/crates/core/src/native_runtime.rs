@@ -17,8 +17,9 @@ use crate::native_indicators::{
 use crate::order_audit::redact_text;
 use crate::order_guard::OrderSymbolFilters;
 use crate::orders::{
-    BinanceFuturesOrderParams, BinanceFuturesOrderResult, build_futures_market_order_params,
-    build_spot_market_order_params,
+    BinanceFuturesOrderParams, BinanceFuturesOrderResult, BinanceFuturesSymbolFilters,
+    adjust_futures_quantity_to_filters, adjust_spot_quantity_to_filters,
+    build_futures_market_order_params, build_spot_market_order_params,
 };
 use crate::position_close::{BinanceFuturesCloseDirective, plan_futures_position_close};
 use crate::risk::{
@@ -478,6 +479,7 @@ pub struct NativeRuntimeOperationalPreflightSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeRuntimeExposureGuardInput {
+    pub market: String,
     pub symbol: String,
     pub interval: String,
     pub side: String,
@@ -2754,16 +2756,40 @@ pub fn evaluate_native_exposure_guard(
     } else {
         target_margin * leverage / input.price
     };
-    let mut quantity_estimate = adjust_quantity_to_min_filters(
-        quantity_before_filter_adjustment,
-        input.price,
-        input.filter_min_qty,
-        input.filter_min_notional,
-        input.filter_step_size,
-    );
-    if quantity_estimate <= 0.0 {
-        return exposure_block("capital guard: quantity <= 0 after filter adjustment");
+    let native_filters = BinanceFuturesSymbolFilters {
+        symbol: input.symbol.clone(),
+        step_size: input.filter_step_size,
+        tick_size: 0.0,
+        min_qty: input.filter_min_qty,
+        max_qty: 0.0,
+        min_notional: input.filter_min_notional,
+        quantity_precision: 0,
+        price_precision: 0,
+        quote_asset_precision: 0,
+        max_leverage: 0,
+    };
+    let quantity_adjustment = if input.market.eq_ignore_ascii_case("spot") {
+        adjust_spot_quantity_to_filters(
+            &native_filters,
+            quantity_before_filter_adjustment,
+            input.price,
+        )
+    } else {
+        adjust_futures_quantity_to_filters(
+            &native_filters,
+            quantity_before_filter_adjustment,
+            Some(input.price),
+        )
+    };
+    if !quantity_adjustment.ok {
+        return exposure_block(format!(
+            "capital guard: quantity filter adjustment failed: {}",
+            quantity_adjustment
+                .error
+                .unwrap_or_else(|| "unknown quantity adjustment error".to_owned())
+        ));
     }
+    let mut quantity_estimate = quantity_adjustment.quantity;
 
     // Python only permits a live order to be enlarged to satisfy exchange filters
     // after an explicit opt-in.  The same cap also prevents a small requested
@@ -3024,24 +3050,6 @@ fn filter_min_margin(min_qty: f64, min_notional: f64, price: f64, leverage: f64)
     min_qty_margin.max(min_notional_margin)
 }
 
-fn adjust_quantity_to_min_filters(
-    quantity: f64,
-    price: f64,
-    min_qty: f64,
-    min_notional: f64,
-    step_size: f64,
-) -> f64 {
-    let mut adjusted = finite_non_negative(quantity);
-    adjusted = adjusted.max(finite_non_negative(min_qty));
-    if price > 0.0 && min_notional > 0.0 {
-        adjusted = adjusted.max(min_notional / price);
-    }
-    if step_size.is_finite() && step_size > 0.0 {
-        adjusted = (adjusted / step_size).ceil() * step_size;
-    }
-    adjusted
-}
-
 fn non_empty_or(value: &str, fallback: &str) -> String {
     let value = value.trim();
     if value.is_empty() {
@@ -3238,6 +3246,7 @@ mod tests {
 
     fn exposure_input() -> NativeRuntimeExposureGuardInput {
         NativeRuntimeExposureGuardInput {
+            market: "futures".to_owned(),
             symbol: "BTCUSDT".to_owned(),
             interval: "1m".to_owned(),
             side: "BUY".to_owned(),
@@ -3609,6 +3618,7 @@ mod tests {
         let (mut engine, directory) = dry_run_engine();
         let mut input = guarded_execution_input(&runtime);
         input.market = "spot".to_owned();
+        input.exposure.market = "spot".to_owned();
 
         let snapshot = runtime
             .run_guarded_execution_cycle(&mut engine, input, |_| {

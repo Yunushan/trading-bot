@@ -1,5 +1,6 @@
 #include "../src/TradingBotWindowSupport.h"
 #include "../src/BinanceRestClient.h"
+#include "../src/NativeConfigPersistence.h"
 #include "../src/generated/PythonParityContract.h"
 
 #include <QByteArray>
@@ -92,6 +93,45 @@ int main(int argc, char **argv) {
         check(TradingBotWindowSupport::canonicalPythonExchangeKey(label) == key,
               QStringLiteral("native exchange label should normalize to Python key: %1").arg(key));
     }
+    const auto checkStarterCatalog = [&check](const auto &options, const QString &catalogName) {
+        check(!options.empty(), QStringLiteral("Python starter catalog should not be empty: %1").arg(catalogName));
+        for (const auto &option : options) {
+            const QString key = parityString(option.key);
+            check(!key.isEmpty(), QStringLiteral("Python starter catalog key should be present: %1").arg(catalogName));
+            check(!parityString(option.title).isEmpty(),
+                  QStringLiteral("Python starter catalog title should be present: %1").arg(key));
+            check(!parityString(option.subtitle).isEmpty(),
+                  QStringLiteral("Python starter catalog subtitle should be present: %1").arg(key));
+        }
+    };
+    checkStarterCatalog(
+        PythonParityContract::kPythonCodeLanguageOptions,
+        QStringLiteral("code languages"));
+    checkStarterCatalog(
+        PythonParityContract::kPythonRustFrameworkOptions,
+        QStringLiteral("Rust frameworks"));
+    checkStarterCatalog(
+        PythonParityContract::kPythonStarterMarketOptions,
+        QStringLiteral("starter markets"));
+    check(PythonParityContract::kPythonCodeLanguageOptions.size() == 3,
+          QStringLiteral("Python code-language catalog should expose Python, C++, and Rust"));
+    check(PythonParityContract::kPythonRustFrameworkOptions.size() == 1
+              && parityString(PythonParityContract::kPythonRustFrameworkOptions.front().key)
+                     == QStringLiteral("Tauri"),
+          QStringLiteral("Python Rust framework catalog should expose Tauri"));
+    check(PythonParityContract::kPythonStarterMarketOptions.size() == 2,
+          QStringLiteral("Python starter-market catalog should expose crypto and forex"));
+    check(TradingBotWindowSupport::pythonSourceCodeLanguageOptionKeys().size() == 3
+              && TradingBotWindowSupport::pythonSourceCodeLanguageOptionLabels().size() == 3,
+          QStringLiteral("C++ code-language accessors should expose the generated Python catalog"));
+    check(TradingBotWindowSupport::pythonSourceRustFrameworkOptionKeys()
+              == QStringList{QStringLiteral("Tauri")}
+              && TradingBotWindowSupport::pythonSourceRustFrameworkOptionLabels()
+                     == QStringList{QStringLiteral("Tauri")},
+          QStringLiteral("C++ Rust-framework accessors should expose Python's Tauri option"));
+    check(TradingBotWindowSupport::pythonSourceStarterMarketOptionKeys()
+              == QStringList{QStringLiteral("crypto"), QStringLiteral("forex")},
+          QStringLiteral("C++ starter-market accessors should expose Python's crypto and forex options"));
     check(!TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Bybit")),
           QStringLiteral("native exchange guard should reject non-Binance selections"));
     check(
@@ -103,14 +143,14 @@ int main(int argc, char **argv) {
             QStringLiteral("Binance SDK Derivatives Trading COIN-M Futures")),
         QStringLiteral("C++ native runtime should own Python's Coin-M futures connector label"));
     check(
-        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("ccxt")),
-        QStringLiteral("C++ native runtime should delegate Python's CCXT provider alias"));
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("ccxt")),
+        QStringLiteral("C++ native runtime should own Python's Binance CCXT provider alias"));
     check(
         TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("binance-connector")),
         QStringLiteral("C++ native runtime should accept Python's Binance Connector alias"));
     check(
-        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("python-binance")),
-        QStringLiteral("C++ native runtime should delegate Python's python-binance provider alias"));
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("python-binance")),
+        QStringLiteral("C++ native runtime should own Python's python-binance provider alias"));
     check(
         !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("custom")),
         QStringLiteral("C++ native runtime should reject unknown connector providers"));
@@ -118,6 +158,144 @@ int main(int argc, char **argv) {
         TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
             QStringLiteral("binance-sdk-spot")),
         QStringLiteral("C++ native runtime should own Python's Binance Spot connector"));
+    for (const auto &mapping : PythonParityContract::kPythonNativeRuntimeConnectorMarketFamilies) {
+        const QString backend = parityString(mapping.key);
+        check(
+            TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(backend),
+            QStringLiteral("every Python-declared native connector market mapping should be owned: %1")
+                .arg(backend));
+    }
+    for (const auto &option : PythonParityContract::kPythonConnectorOptions) {
+        const QString key = parityString(option.key);
+        const QString label = parityString(option.label);
+        const bool declaredNative = std::any_of(
+            PythonParityContract::kPythonNativeRuntimeConnectorBackends.begin(),
+            PythonParityContract::kPythonNativeRuntimeConnectorBackends.end(),
+            [&key](const std::string_view backend) {
+                return parityString(backend).compare(key, Qt::CaseInsensitive) == 0;
+            });
+        check(
+            TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(label) == declaredNative,
+            QStringLiteral("C++ connector ownership should match Python for option: %1").arg(key));
+    }
+
+    const auto checkGeneratedChoiceGroup = [&failures, &check](
+        const QString &field,
+        const auto &choices,
+        const QString &section = QString()) {
+        for (const auto &choice : choices) {
+            if (parityString(choice.key).isEmpty()) {
+                continue;
+            }
+            QJsonObject target;
+            target.insert(field, parityString(choice.key));
+            QJsonObject config;
+            if (section.isEmpty()) {
+                config = target;
+            } else {
+                config.insert(section, target);
+            }
+            const NativeConfigPersistence::ServiceConfigValidationResult result =
+                NativeConfigPersistence::validateServiceRuntimeConfig(config);
+            check(result.ok,
+                  QStringLiteral("C++ Python config choice should validate: %1=%2")
+                      .arg(field, parityString(choice.key)));
+            if (!result.ok) {
+                continue;
+            }
+            const QJsonObject normalized = section.isEmpty()
+                ? result.config
+                : result.config.value(section).toObject();
+            check(normalized.value(field).toString() == parityString(choice.value),
+                  QStringLiteral("C++ Python config choice should normalize: %1=%2")
+                      .arg(field, parityString(choice.key)));
+        }
+    };
+    checkGeneratedChoiceGroup(QStringLiteral("account_type"), PythonParityContract::kPythonAccountTypeConfigChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("margin_mode"), PythonParityContract::kPythonMarginModeConfigChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("position_mode"), PythonParityContract::kPythonPositionModeConfigChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("assets_mode"), PythonParityContract::kPythonAssetsModeConfigChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("account_mode"), PythonParityContract::kPythonAccountModeConfigChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("side"), PythonParityContract::kPythonSideConfigChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("order_type"), PythonParityContract::kPythonOrderTypeConfigChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("tif"), PythonParityContract::kPythonTifConfigChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("llm_provider"), PythonParityContract::kPythonLlmProviderChoices);
+    checkGeneratedChoiceGroup(QStringLiteral("llm_use_for"), PythonParityContract::kPythonLlmUseForConfigChoices);
+    checkGeneratedChoiceGroup(
+        QStringLiteral("llm_reasoning_effort"),
+        PythonParityContract::kPythonLlmReasoningEffortConfigChoices);
+    for (const std::string_view market : PythonParityContract::kPythonChartMarketOptions) {
+        const QString marketValue = parityString(market);
+        QJsonObject chartConfig;
+        chartConfig.insert(QStringLiteral("market"), marketValue);
+        const NativeConfigPersistence::ServiceConfigValidationResult result =
+            NativeConfigPersistence::validateServiceRuntimeConfig(
+                QJsonObject{{QStringLiteral("chart"), chartConfig}});
+        check(result.ok,
+              QStringLiteral("C++ Python chart market choice should validate: %1").arg(marketValue));
+        if (!result.ok) {
+            continue;
+        }
+        const QJsonObject normalized = result.config.value(QStringLiteral("chart")).toObject();
+        check(normalized.value(QStringLiteral("market")).toString() == marketValue,
+              QStringLiteral("C++ Python chart market choice should normalize: %1").arg(marketValue));
+    }
+    checkGeneratedChoiceGroup(
+        QStringLiteral("view_mode"),
+        PythonParityContract::kPythonChartViewModeConfigChoices,
+        QStringLiteral("chart"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("execution_backend"),
+        PythonParityContract::kPythonBacktestExecutionBackendConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("logic"),
+        PythonParityContract::kPythonLogicConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("side"),
+        PythonParityContract::kPythonSideConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("margin_mode"),
+        PythonParityContract::kPythonMarginModeConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("position_mode"),
+        PythonParityContract::kPythonPositionModeConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("assets_mode"),
+        PythonParityContract::kPythonAssetsModeConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("account_mode"),
+        PythonParityContract::kPythonAccountModeConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("mdd_logic"),
+        PythonParityContract::kPythonMddLogicConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("scan_scope"),
+        PythonParityContract::kPythonScanScopeConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("optimizer_mode"),
+        PythonParityContract::kPythonOptimizerModeConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("optimizer_metric"),
+        PythonParityContract::kPythonOptimizerMetricConfigChoices,
+        QStringLiteral("backtest"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("mode"),
+        PythonParityContract::kPythonStopLossModeConfigChoices,
+        QStringLiteral("stop_loss"));
+    checkGeneratedChoiceGroup(
+        QStringLiteral("scope"),
+        PythonParityContract::kPythonStopLossScopeConfigChoices,
+        QStringLiteral("stop_loss"));
 
     const QMap<QString, QJsonObject> backtestConfigs =
         TradingBotWindowSupport::pythonSourceBacktestIndicatorConfigs();
@@ -590,6 +768,68 @@ int main(int argc, char **argv) {
               && BinanceRestClient::clampFuturesLeverage(0, 125, 0, true) == 1,
           QStringLiteral("C++ leverage clamping should match Python configured and symbol caps"));
 
+    const QJsonObject orderSizingReference = QJsonDocument::fromJson(
+        QByteArray(PythonParityContract::kPythonOrderSizingReferenceJson.data(),
+                   static_cast<qsizetype>(PythonParityContract::kPythonOrderSizingReferenceJson.size())))
+                                                       .object();
+    const QJsonArray orderSizingCases = orderSizingReference.value(QStringLiteral("cases")).toArray();
+    check(orderSizingReference.value(QStringLiteral("schema_version")).toInt() == 1
+              && orderSizingCases.size() >= 5,
+          QStringLiteral("generated Python order-sizing fixture should expose its complete case set"));
+    for (const QJsonValue &caseValue : orderSizingCases) {
+        const QJsonObject sizingCase = caseValue.toObject();
+        const QString caseName = sizingCase.value(QStringLiteral("name")).toString();
+        const QJsonObject filterObject = sizingCase.value(QStringLiteral("filters")).toObject();
+        BinanceRestClient::FuturesSymbolFilters sizingFilters;
+        sizingFilters.stepSize = filterObject.value(QStringLiteral("stepSize")).toDouble();
+        sizingFilters.minQty = filterObject.value(QStringLiteral("minQty")).toDouble();
+        sizingFilters.minNotional = filterObject.value(QStringLiteral("minNotional")).toDouble();
+        const QString market = sizingCase.value(QStringLiteral("market")).toString();
+        if (sizingCase.contains(QStringLiteral("expected_percent"))) {
+            const double actual = BinanceRestClient::requiredPercentForSymbol(
+                sizingCase.value(QStringLiteral("price")).toDouble(),
+                sizingFilters,
+                sizingCase.value(QStringLiteral("balance")).toDouble(),
+                sizingCase.value(QStringLiteral("leverage")).toDouble());
+            check(std::abs(actual - sizingCase.value(QStringLiteral("expected_percent")).toDouble()) < 1e-12,
+                  QStringLiteral("C++ required-percent sizing should match Python fixture: %1").arg(caseName));
+            continue;
+        }
+        const auto adjustment = market == QStringLiteral("spot")
+            ? BinanceRestClient::adjustSpotQuantityToFilters(
+                  sizingFilters,
+                  sizingCase.value(QStringLiteral("quantity")).toDouble(),
+                  sizingCase.value(QStringLiteral("price")).toDouble())
+            : BinanceRestClient::adjustFuturesQuantityToFilters(
+                  sizingFilters,
+                  sizingCase.value(QStringLiteral("quantity")).toDouble(),
+                  sizingCase.value(QStringLiteral("price")).toDouble());
+        const QString expectedError = sizingCase.value(QStringLiteral("expected_error")).toString();
+        const double expectedQuantity = sizingCase.value(QStringLiteral("expected_quantity")).toDouble();
+        check(adjustment.ok == expectedError.isEmpty()
+                  && std::abs(adjustment.quantity - expectedQuantity) < 1e-12
+                  && (expectedError.isEmpty() || adjustment.error == expectedError),
+              QStringLiteral("C++ quantity adjustment should match Python fixture: %1").arg(caseName));
+    }
+    check(std::abs(BinanceRestClient::floorToStep(1.239, 0.01) - 1.23) < 1e-12
+              && std::abs(BinanceRestClient::ceilToStep(1.231, 0.01) - 1.24) < 1e-12
+              && std::abs(BinanceRestClient::floorToDecimals(1.239, 2) - 1.23) < 1e-12
+              && std::abs(BinanceRestClient::ceilToDecimals(1.231, 2) - 1.24) < 1e-12,
+          QStringLiteral("C++ decimal and step helpers should match Python rounding semantics"));
+    const QJsonArray roundingCases = orderSizingReference.value(QStringLiteral("rounding_cases")).toArray();
+    check(roundingCases.size() >= 3,
+          QStringLiteral("generated Python order-sizing fixture should expose decimal rounding cases"));
+    for (const QJsonValue &caseValue : roundingCases) {
+        const QJsonObject roundingCase = caseValue.toObject();
+        const double value = roundingCase.value(QStringLiteral("value")).toDouble();
+        const int decimals = roundingCase.value(QStringLiteral("decimals")).toInt();
+        const double actualFloor = BinanceRestClient::floorToDecimals(value, decimals);
+        const double actualCeil = BinanceRestClient::ceilToDecimals(value, decimals);
+        check(std::abs(actualFloor - roundingCase.value(QStringLiteral("expected_floor")).toDouble()) < 1e-12
+                  && std::abs(actualCeil - roundingCase.value(QStringLiteral("expected_ceil")).toDouble()) < 1e-12,
+              QStringLiteral("C++ decimal rounding should match Python fixture: %1")
+                  .arg(roundingCase.value(QStringLiteral("name")).toString()));
+    }
     const auto coinPositionMode = BinanceRestClient::fetchFuturesPositionMode(
         QStringLiteral("key"),
         QStringLiteral("secret"),

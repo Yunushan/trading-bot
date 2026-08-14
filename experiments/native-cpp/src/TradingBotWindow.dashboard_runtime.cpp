@@ -293,12 +293,11 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         ? dashboardIndicatorSourceCombo_->currentText().trimmed()
         : defaultIndicatorSource;
     const QString indicatorSourceKey = normalizedIndicatorSourceKey(indicatorSourceText);
-    const QString signalFeedText = dashboardSignalFeedCombo_
-        ? dashboardSignalFeedCombo_->currentText().trimmed()
-        : QStringLiteral("REST Poll");
-    const QString signalFeedKey = normalizedSignalFeedKey(signalFeedText);
-    const bool websocketFeedRequested = signalFeedKey == QStringLiteral("websocket");
-    const bool useWebSocketFeed = websocketFeedRequested && qtWebSocketsRuntimeAvailable();
+    // Python does not expose a separate signal-feed setting. Its native
+    // connector enables this path only through the two environment flags.
+    const bool websocketFeedRequested = pythonSourceUseWebSocketFeed(indicatorSourceText, isTestnet);
+    const bool useWebSocketFeed = websocketFeedRequested;
+    const bool signalDataTestnet = pythonSourceIndicatorDataUsesTestnet(indicatorSourceText, isTestnet);
     const int lookback = dashboardLookbackSpin_
         ? dashboardLookbackSpin_->value()
         : executionDefaults.value(QStringLiteral("lookback")).toInt(200);
@@ -487,7 +486,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         }
     }
     const auto ensureSignalStreamForKey =
-        [this, useWebSocketFeed, isTestnet, lookback]
+        [this, useWebSocketFeed, signalDataTestnet, lookback]
         (const QString &signalKey,
          const QString &symbol,
          const QString &requestInterval,
@@ -502,7 +501,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 symbol,
                 requestInterval,
                 signalUsesFutures,
-                isTestnet && signalUsesFutures,
+                signalDataTestnet,
                 lookback,
                 10000,
                 baseUrl);
@@ -573,18 +572,11 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             }
         });
         dashboardRuntimeSignalSockets_.insert(signalKey, client);
-        client->connectKline(symbol, requestInterval, signalUsesFutures, isTestnet && signalUsesFutures);
+        client->connectKline(symbol, requestInterval, signalUsesFutures, signalDataTestnet);
         return dashboardRuntimeSignalCandles_.contains(signalKey)
             && !dashboardRuntimeSignalCandles_.value(signalKey).isEmpty();
     };
 
-    if (websocketFeedRequested && !useWebSocketFeed) {
-        const QString warningKey = QStringLiteral("signal-feed|websocket-unavailable");
-        if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
-            dashboardRuntimeConnectorWarnings_.insert(warningKey);
-            appendDashboardAllLog("Signal feed warning: WebSocket Stream requested but Qt WebSockets runtime is unavailable. Falling back to REST Poll.");
-        }
-    }
     if (!hasApiCredentials && !paperTrading) {
         const QString warningKey = QStringLiteral("runtime-auth|missing-credentials");
         if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
@@ -870,7 +862,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 symbol,
                 requestInterval,
                 indicatorUsesBinanceFutures,
-                isTestnet && indicatorUsesBinanceFutures,
+                signalDataTestnet,
                 lookback,
                 10000,
                 rowConnectorCfg.baseUrl);
@@ -1135,15 +1127,25 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 cappedRequestedQty,
                 symbolFilters.stepSize,
                 symbolFilters.quantityPrecision);
-            const double orderQty = normalizeFuturesOrderQuantity(cappedRequestedQty, orderSizingPrice, symbolFilters);
+            const BinanceRestClient::QuantityAdjustmentResult quantityAdjustment = futures
+                ? BinanceRestClient::adjustFuturesQuantityToFilters(
+                      symbolFilters,
+                      cappedRequestedQty,
+                      orderSizingPrice)
+                : BinanceRestClient::adjustSpotQuantityToFilters(
+                      symbolFilters,
+                      cappedRequestedQty,
+                      orderSizingPrice);
+            const double orderQty = quantityAdjustment.ok ? quantityAdjustment.quantity : 0.0;
             if (!qIsFinite(orderQty) || orderQty <= 0.0) {
                 appendDashboardPositionLog(
-                    QString("%1 %2@%3 blocked: normalized order quantity is invalid (requested=%4, sizingPrice=%5).")
+                    QString("%1 %2@%3 blocked: Python-parity order quantity is invalid (requested=%4, sizingPrice=%5): %6")
                         .arg(openSide,
                              symbol,
                              interval,
                              QString::number(cappedRequestedQty, 'f', 8),
-                             QString::number(orderSizingPrice, 'f', 8)));
+                             QString::number(orderSizingPrice, 'f', 8),
+                             quantityAdjustment.error));
                 touchWaitingEntry(key, nowMs);
                 continue;
             }

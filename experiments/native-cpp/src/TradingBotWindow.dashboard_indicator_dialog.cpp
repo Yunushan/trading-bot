@@ -1,5 +1,6 @@
 #include "TradingBotWindow.h"
 #include "TradingBotWindow.dashboard_runtime_shared.h"
+#include "generated/PythonParityContract.h"
 
 #include <QComboBox>
 #include <QDialog>
@@ -7,6 +8,7 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLineEdit>
+#include <QStringList>
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QVector>
@@ -29,6 +31,14 @@ struct IndicatorDialogBoundField {
     QWidget *widget = nullptr;
     bool nullableText = false;
 };
+
+QStringList pythonSourceMovingAverageTypeOptions() {
+    QStringList options;
+    for (const auto &option : PythonParityContract::kPythonIndicatorMaTypeOptions) {
+        options.push_back(QString::fromUtf8(option.key.data(), static_cast<int>(option.key.size())));
+    }
+    return options;
+}
 
 QVector<IndicatorDialogFieldSpec> indicatorDialogFieldSpecs(const QString &indicatorKey) {
     QVector<IndicatorDialogFieldSpec> fields;
@@ -58,7 +68,7 @@ QVector<IndicatorDialogFieldSpec> indicatorDialogFieldSpecs(const QString &indic
     if (indicatorKey == QStringLiteral("ma")) {
         fields = {
             {QStringLiteral("length"), QStringLiteral("length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 20, {}},
-            {QStringLiteral("type"), QStringLiteral("type"), IndicatorDialogFieldSpec::ComboField, 0, 0, 0, QStringLiteral("SMA"), {QStringLiteral("SMA"), QStringLiteral("EMA"), QStringLiteral("WMA"), QStringLiteral("VWMA")}},
+            {QStringLiteral("type"), QStringLiteral("type"), IndicatorDialogFieldSpec::ComboField, 0, 0, 0, QStringLiteral("SMA"), pythonSourceMovingAverageTypeOptions()},
         };
         addBuySell();
     } else if (indicatorKey == QStringLiteral("donchian")) {

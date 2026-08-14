@@ -228,25 +228,40 @@ class ProductPackagingContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         runtime_ready_match = re.search(
-            r"pub fn rust_native_trading_runtime_ready\(\) -> bool \{\s*(true|false)\s*\}",
+            r"pub fn rust_native_trading_runtime_ready\(\) -> bool \{\s*(?P<body>.*?)\s*\}",
             core,
+            re.DOTALL,
         )
         self.assertIsNotNone(runtime_ready_match)
-        runtime_ready_label = runtime_ready_match.group(1) if runtime_ready_match else ""
+        runtime_ready_body = runtime_ready_match.group("body").strip() if runtime_ready_match else ""
+        self.assertEqual("python_source_rust_full_parity_ready()", runtime_ready_body)
+        runtime_ready_flag_match = re.search(
+            r"pub const RUST_FULL_PARITY_READY: bool = (true|false);",
+            generated_core,
+        )
+        self.assertIsNotNone(runtime_ready_flag_match)
+        runtime_ready_label = runtime_ready_flag_match.group(1) if runtime_ready_flag_match else ""
         self.assertIn("liveLlmProviders", tauri_html)
         self.assertIn("refreshLlmProviderCatalog", tauri_html)
         self.assertIn('id="refresh-llm-catalog-btn"', tauri_html)
         self.assertIn('src="generated-python-parity.js"', tauri_html)
         self.assertIn('src="tauri-ui-behavior.js"', tauri_html)
-        for code_language in ("Python", "C++", "Rust"):
-            self.assertIn(f'data-code-language="{code_language}"', tauri_html)
+        self.assertIn('id="code-language-cards"', tauri_html)
+        self.assertIn('id="rust-framework-cards"', tauri_html)
+        self.assertIn("pythonParityContract.codeLanguageOptions", tauri_html)
+        self.assertIn("pythonParityContract.rustFrameworkOptions", tauri_html)
+        self.assertIn("pythonParityContract.starterMarketOptions", tauri_html)
+        self.assertIn("renderCodeLanguageCatalog", tauri_html)
+        self.assertIn("normalizeStarterOption", tauri_html)
+        self.assertNotIn('data-code-language="Python"', tauri_html)
+        self.assertNotIn('data-code-language="C++"', tauri_html)
+        self.assertNotIn('data-code-language="Rust"', tauri_html)
         self.assertIn("selectCodeLanguage", tauri_html)
         self.assertIn("Open Python desktop?", tauri_html)
         self.assertIn("Open C++ desktop?", tauri_html)
         self.assertIn('invoke("launch_desktop_language"', tauri_html)
         self.assertIn("code-language-status-text", tauri_html)
         self.assertIn('id="rust-framework-panel"', tauri_html)
-        self.assertIn('data-rust-framework="Tauri"', tauri_html)
         self.assertIn("window.PythonParityContract", generated_tauri)
         self.assertIn('"connectorOptions"', generated_tauri)
         self.assertIn('"llmProviders"', generated_tauri)
@@ -263,6 +278,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('"designOptions"', generated_tauri)
         self.assertIn('"indicatorSourceOptions"', generated_tauri)
         self.assertIn('"exchangeOptions"', generated_tauri)
+        self.assertIn('"codeLanguageOptions"', generated_tauri)
+        self.assertIn('"rustFrameworkOptions"', generated_tauri)
+        self.assertIn('"starterMarketOptions"', generated_tauri)
         self.assertIn('"accountTypeOptions"', generated_tauri)
         self.assertIn('"marginModeOptions"', generated_tauri)
         self.assertIn('"positionModeOptions"', generated_tauri)

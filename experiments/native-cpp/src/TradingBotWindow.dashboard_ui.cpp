@@ -24,7 +24,6 @@
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
-#include <QStandardItemModel>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -225,16 +224,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     TradingBotWindowSupport::rebuildConnectorComboForAccount(connectorCombo, true, true);
     connectorCombo->setProperty(
         "pythonConnectorParityKeys",
-        QStringList{
-            QStringLiteral("oanda-rest"),
-            QStringLiteral("fxcmpy"),
-            QStringLiteral("ig-rest"),
-            QStringLiteral("citic-ctp"),
-            QStringLiteral("metatrader4-bridge"),
-            QStringLiteral("metatrader5"),
-            QStringLiteral("trading212-public-api"),
-            QStringLiteral("moomoo-opend"),
-        });
+        TradingBotWindowSupport::pythonSourceConnectorKeys());
     connectorCombo->setToolTip(
         "Matches Python connector options.\n"
         "The C++ native runtime owns Binance USD-M, Coin-M Futures, and Spot.\n"
@@ -339,26 +329,6 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     dashboardIndicatorSourceCombo_ = indicatorSourceCombo;
     registerDashboardRuntimeLockWidget(indicatorSourceCombo);
     addPair(3, col, "Indicator Source:", indicatorSourceCombo, 2);
-
-    auto *signalFeedCombo = new QComboBox(accountBox);
-    signalFeedCombo->addItem("REST Poll");
-    signalFeedCombo->addItem("WebSocket Stream");
-    signalFeedCombo->setCurrentText("REST Poll");
-    signalFeedCombo->setToolTip(
-        "Choose how the dashboard runtime gets signal candles.\n"
-        "REST Poll: scheduled REST requests.\n"
-        "WebSocket Stream: stream-driven Binance kline updates with local candle cache.");
-    if (!TradingBotWindowDashboardRuntime::qtWebSocketsRuntimeAvailable()) {
-        if (auto *model = qobject_cast<QStandardItemModel *>(signalFeedCombo->model())) {
-            if (QStandardItem *item = model->item(1)) {
-                item->setEnabled(false);
-            }
-        }
-        signalFeedCombo->setToolTip(signalFeedCombo->toolTip() + QStringLiteral("\nQt WebSockets runtime is not available in this build."));
-    }
-    dashboardSignalFeedCombo_ = signalFeedCombo;
-    registerDashboardRuntimeLockWidget(signalFeedCombo);
-    addPair(3, col, "Signal Feed:", signalFeedCombo);
 
     auto *tifCombo = new QComboBox(accountBox);
     TradingBotWindowSupport::populateComboFromPythonSourceOptions(
@@ -1757,7 +1727,6 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardConnectorCombo_ = nullptr;
     dashboardExchangeCombo_ = nullptr;
     dashboardIndicatorSourceCombo_ = nullptr;
-    dashboardSignalFeedCombo_ = nullptr;
     dashboardTemplateCombo_ = nullptr;
     dashboardMarginModeCombo_ = nullptr;
     dashboardPositionModeCombo_ = nullptr;

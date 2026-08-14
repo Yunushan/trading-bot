@@ -128,6 +128,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_support_exposes_generated_contract",
     "cpp_config_persistence_uses_python_source_options",
     "cpp_dashboard_uses_python_source_surface",
+    "cpp_indicator_dialog_uses_python_ma_options",
     "cpp_backtest_uses_python_source_surface",
     "cpp_native_backtest_pair_overrides_match_python",
     "cpp_backtest_service_api_uses_python_source_routes",
@@ -156,6 +157,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_order_guard_uses_python_live_safety_environment",
     "cpp_dashboard_runtime_enforces_live_order_safety",
     "tauri_browser_consumes_generated_contract",
+    "tauri_browser_consumes_generated_starter_catalogs",
     "tauri_browser_service_api_uses_python_source_routes",
     "tauri_llm_catalog_uses_python_source_route",
     "tauri_dashboard_stream_backend_uses_python_source_route",
@@ -348,6 +350,132 @@ def _surface_contract(
     }
 
 
+def _percentage(matched: int, total: int) -> float:
+    if total <= 0:
+        return 100.0
+    return round((max(0, min(matched, total)) / total) * 100.0, 2)
+
+
+def _set_contract_percentage(expected: object, actual: object) -> float:
+    expected_set = {str(value) for value in expected} if isinstance(expected, (list, tuple, set)) else set()
+    actual_set = {str(value) for value in actual} if isinstance(actual, (list, tuple, set)) else set()
+    union = expected_set | actual_set
+    return _percentage(len(expected_set & actual_set), len(union))
+
+
+def _config_contract_percentages(config_key_contract: dict[str, object]) -> dict[str, float]:
+    surfaces = config_key_contract.get("surfaces", {})
+    if not isinstance(surfaces, dict):
+        return {"cpp": 0.0, "rust": 0.0}
+    percentages: dict[str, float] = {}
+    for target in ("cpp", "rust"):
+        target_surface = surfaces.get(target, {})
+        if not isinstance(target_surface, dict):
+            percentages[target] = 0.0
+            continue
+        matched = 0
+        total = 0
+        for section in target_surface.values():
+            if not isinstance(section, dict):
+                continue
+            expected = section.get("expected", [])
+            actual = section.get("actual", [])
+            expected_set = {str(value) for value in expected} if isinstance(expected, list) else set()
+            actual_set = {str(value) for value in actual} if isinstance(actual, list) else set()
+            total += len(expected_set | actual_set)
+            matched += len(expected_set & actual_set)
+        percentages[target] = _percentage(matched, total)
+    return percentages
+
+
+def _native_contract_percentages(
+    payload: dict[str, object],
+    feature_option_contract: dict[str, object],
+    config_key_contract: dict[str, object],
+    surface_contract: dict[str, object],
+    generated: list[dict[str, object]],
+) -> dict[str, object]:
+    domains = payload.get("domains", [])
+    domain_count = len(domains) if isinstance(domains, list) else 0
+    domain_percentages = {
+        target: _percentage(
+            sum(1 for domain in domains if isinstance(domain, dict) and bool(domain.get(f"{target}_full_parity"))),
+            domain_count,
+        )
+        for target in ("cpp", "rust")
+    }
+
+    option_catalog_count = int(feature_option_contract.get("option_catalog_count", 0))
+    option_entry_count = int(feature_option_contract.get("option_catalog_entry_count", 0))
+    generated_matches = feature_option_contract.get("generated_native_contracts_match_python", {})
+    generated_match_percentages = {
+        target: _percentage(
+            1 if isinstance(generated_matches, dict) and bool(generated_matches.get(target)) else 0,
+            1,
+        )
+        for target in ("cpp", "rust")
+    }
+    config_percentages = _config_contract_percentages(config_key_contract)
+
+    required_artifacts = surface_contract.get("required_generated_artifact_names", [])
+    actual_artifacts = surface_contract.get("actual_generated_artifact_names", [])
+    artifact_percentages: dict[str, float] = {}
+    for target, prefix in (("cpp", "cpp_"), ("rust", ("rust_", "tauri_"))):
+        expected = [
+            name
+            for name in required_artifacts
+            if isinstance(name, str)
+            and (name.startswith(prefix) if isinstance(prefix, str) else name.startswith(prefix))
+        ]
+        actual = [
+            name
+            for name in actual_artifacts
+            if isinstance(name, str)
+            and (name.startswith(prefix) if isinstance(prefix, str) else name.startswith(prefix))
+        ]
+        artifact_percentages[target] = _set_contract_percentage(expected, actual)
+
+    consumer_percentage = _set_contract_percentage(
+        surface_contract.get("required_consumer_surface_names", []),
+        surface_contract.get("actual_consumer_surface_names", []),
+    )
+    contract_percentages: dict[str, dict[str, float]] = {}
+    for target in ("cpp", "rust"):
+        components = {
+            "feature_domains": domain_percentages[target],
+            "option_catalogs": generated_match_percentages[target],
+            "option_entries": generated_match_percentages[target],
+            "config_keys": config_percentages[target],
+            "generated_artifacts": artifact_percentages[target],
+            "consumer_surfaces": consumer_percentage,
+        }
+        components["contract_surface_total"] = round(sum(components.values()) / len(components), 2)
+        contract_percentages[target] = components
+
+    standalone = payload.get("standalone_runtime_ready", {})
+    full = payload.get("full_parity", {})
+    return {
+        "scope": "Feature, option, config, generated-contract, and consumer-surface equality; runtime promotion is separate.",
+        "cpp": contract_percentages["cpp"],
+        "rust": contract_percentages["rust"],
+        "standalone_runtime": {
+            "cpp": _percentage(1 if isinstance(standalone, dict) and bool(standalone.get("cpp")) else 0, 1),
+            "rust": _percentage(1 if isinstance(standalone, dict) and bool(standalone.get("rust")) else 0, 1),
+        },
+        "full_parity": {
+            "cpp": _percentage(1 if isinstance(full, dict) and bool(full.get("cpp")) else 0, 1),
+            "rust": _percentage(1 if isinstance(full, dict) and bool(full.get("rust")) else 0, 1),
+        },
+        "generated_artifact_checks": {
+            str(item.get("name")): bool(item.get("ok"))
+            for item in generated
+            if isinstance(item, dict) and item.get("name")
+        },
+        "option_catalog_count": option_catalog_count,
+        "option_catalog_entry_count": option_entry_count,
+    }
+
+
 def _extract_service_routes(text: str, extractors: tuple[str, ...]) -> tuple[list[str], list[str]]:
     route_names: list[str] = []
     unknown_extractors: list[str] = []
@@ -412,12 +540,20 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "generated_python_parity::PYTHON_SERVICE_ROUTES",
                 "generated_python_parity::PYTHON_SERVICE_ROUTE_SCHEMAS",
                 "generated_python_parity::PYTHON_INDICATOR_CATALOG",
+                "generated_python_parity::PYTHON_INDICATOR_MA_TYPE_OPTIONS",
                 "generated_python_parity::PYTHON_LLM_PROVIDERS",
                 "generated_python_parity::PYTHON_CONNECTOR_OPTIONS",
+                "generated_python_parity::PYTHON_CODE_LANGUAGE_OPTIONS",
+                "generated_python_parity::PYTHON_RUST_FRAMEWORK_OPTIONS",
+                "generated_python_parity::PYTHON_STARTER_MARKET_OPTIONS",
                 "generated_python_parity::PYTHON_BACKTEST_INTERVALS",
                 "python_source_indicator_catalog",
+                "python_source_indicator_ma_type_options",
                 "python_source_llm_provider_keys",
                 "python_source_connector_keys",
+                "python_source_code_language_options",
+                "python_source_rust_framework_options",
+                "python_source_starter_market_options",
                 "python_source_rust_environment_dependencies",
                 "python_source_backtest_templates",
                 "python_source_dashboard_strategy_templates",
@@ -619,6 +755,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             (
                 "PYTHON_NATIVE_RUNTIME_EXCHANGES",
                 "PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS",
+                "PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES",
                 "PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES",
                 "PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER",
                 "native_runtime_ownership_error",
@@ -680,6 +817,9 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonIndicatorCatalog",
                 "PythonParityContract::kPythonLlmProviders",
                 "PythonParityContract::kPythonConnectorOptions",
+                "PythonParityContract::kPythonCodeLanguageOptions",
+                "PythonParityContract::kPythonRustFrameworkOptions",
+                "PythonParityContract::kPythonStarterMarketOptions",
                 "PythonParityContract::kPythonBacktestIntervals",
                 "PythonParityContract::kPythonBacktestTemplates",
                 "PythonParityContract::kPythonDefaultExecutionJson",
@@ -703,6 +843,9 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "pythonSourceIndicatorKeys",
                 "pythonSourceLlmProviderKeys",
                 "pythonSourceConnectorKeys",
+                "pythonSourceCodeLanguageOptionKeys",
+                "pythonSourceRustFrameworkOptionKeys",
+                "pythonSourceStarterMarketOptionKeys",
                 "pythonSourceBacktestIntervals",
                 "pythonSourceBacktestTemplateKeys",
                 "pythonSourceDefaultExecutionConfig",
@@ -774,6 +917,15 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "dashboardConnectorOrderCircuitResetBtn_",
             ),
             forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
+        ),
+        ConsumerRequirement(
+            "cpp_indicator_dialog_uses_python_ma_options",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_indicator_dialog.cpp",
+            (
+                '#include "generated/PythonParityContract.h"',
+                "PythonParityContract::kPythonIndicatorMaTypeOptions",
+                "pythonSourceMovingAverageTypeOptions",
+            ),
         ),
         ConsumerRequirement(
             "cpp_backtest_uses_python_source_surface",
@@ -1027,7 +1179,9 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             (
                 "PythonParityContract::kPythonNativeRuntimeExchanges",
                 "PythonParityContract::kPythonNativeRuntimeConnectorBackends",
+                "PythonParityContract::kPythonNativeRuntimeConnectorMarketFamilies",
                 "exchangeUsesBinanceApi",
+                "connectorAllowedForAccount",
                 "nativeRuntimeOwnsBinanceFuturesConnector",
             ),
         ),
@@ -1199,6 +1353,19 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 'hydrateBacktestControls(result.config?.backtest)',
             ),
             forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
+        ),
+        ConsumerRequirement(
+            "tauri_browser_consumes_generated_starter_catalogs",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html",
+            (
+                "pythonParityContract.codeLanguageOptions",
+                "pythonParityContract.rustFrameworkOptions",
+                "pythonParityContract.starterMarketOptions",
+                "normalizeStarterOption",
+                "renderCodeLanguageCatalog",
+                "appendStarterCard",
+                "rustCodeLanguageKey",
+            ),
         ),
         ConsumerRequirement(
             "tauri_browser_service_api_uses_python_source_routes",
@@ -1661,6 +1828,13 @@ def audit_native_source_sync() -> dict[str, object]:
         _check_generated_artifact(artifact, contract_hash)
         for artifact in generated_artifact_requirements
     ]
+    parity_percentages = _native_contract_percentages(
+        native_python_source_contract_payload(),
+        feature_option_contract,
+        config_key_contract,
+        surface_contract,
+        generated,
+    )
     consumers = [_check_consumer(requirement) for requirement in consumer_requirements]
     surface_contract_issues = [str(issue) for issue in surface_contract["issues"]]
     surface_wiring_issues = [
@@ -1679,6 +1853,7 @@ def audit_native_source_sync() -> dict[str, object]:
         "surface_contract": surface_contract,
         "config_key_contract": config_key_contract,
         "feature_option_contract": feature_option_contract,
+        "parity_percentages": parity_percentages,
         "generated": generated,
         "consumers": consumers,
         "issues": issues,

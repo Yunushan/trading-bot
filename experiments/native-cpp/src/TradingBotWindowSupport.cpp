@@ -15,7 +15,6 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
-#include <QSet>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QTableWidgetItem>
@@ -49,25 +48,6 @@ const QString kConnectorCcxt = QStringLiteral("ccxt");
 const QString kConnectorPyBinance = QStringLiteral("python-binance");
 const QString kConnectorLegacyGateway = QStringLiteral("gateway");
 const QString kConnectorLegacyCustom = QStringLiteral("custom");
-
-const QSet<QString> kFuturesConnectorKeys = {
-    kConnectorUsdsFutures,
-    kConnectorCoinFutures,
-    kConnectorBinanceConnector,
-    kConnectorCcxt,
-    kConnectorPyBinance,
-};
-
-const QSet<QString> kSpotConnectorKeys = {
-    kConnectorSpot,
-    kConnectorBinanceConnector,
-    kConnectorCcxt,
-    kConnectorPyBinance,
-};
-
-bool connectorAllowedForAccount(const QString &connectorKey, bool futures) {
-    return futures ? kFuturesConnectorKeys.contains(connectorKey) : kSpotConnectorKeys.contains(connectorKey);
-}
 
 QString normalizeConnectorBackend(const QString &value) {
     const QString textRaw = value.trimmed();
@@ -211,6 +191,23 @@ bool pythonConnectorOptionExists(const QString &key) {
     return false;
 }
 
+bool connectorAllowedForAccount(const QString &connectorKey, bool futures) {
+    const QString normalized = connectorKey.trimmed().toLower();
+    for (const auto &mapping : PythonParityContract::kPythonNativeRuntimeConnectorMarketFamilies) {
+        if (parityString(mapping.key).compare(normalized, Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+        const QString marketFamily = parityString(mapping.value).toLower();
+        if (futures && marketFamily.endsWith(QStringLiteral("-futures"))) {
+            return true;
+        }
+        if (!futures && marketFamily == QStringLiteral("spot")) {
+            return true;
+        }
+    }
+    return false;
+}
+
 template <std::size_t N>
 QStringList parityStringList(const std::array<std::string_view, N> &values) {
     QStringList result;
@@ -241,6 +238,26 @@ QStringList parityUiOptionLabels(const OptionArray &options) {
     result.reserve(static_cast<int>(options.size()));
     for (const auto &option : options) {
         result.append(parityString(option.label));
+    }
+    return result;
+}
+
+template <typename OptionArray>
+QStringList parityStarterOptionKeys(const OptionArray &options) {
+    QStringList result;
+    result.reserve(static_cast<int>(options.size()));
+    for (const auto &option : options) {
+        result.append(parityString(option.key));
+    }
+    return result;
+}
+
+template <typename OptionArray>
+QStringList parityStarterOptionLabels(const OptionArray &options) {
+    QStringList result;
+    result.reserve(static_cast<int>(options.size()));
+    for (const auto &option : options) {
+        result.append(parityString(option.title));
     }
     return result;
 }
@@ -903,6 +920,30 @@ QStringList pythonSourceExchangeOptionLabels() {
     return parityUiOptionLabels(PythonParityContract::kPythonExchangeOptions);
 }
 
+QStringList pythonSourceCodeLanguageOptionKeys() {
+    return parityStarterOptionKeys(PythonParityContract::kPythonCodeLanguageOptions);
+}
+
+QStringList pythonSourceCodeLanguageOptionLabels() {
+    return parityStarterOptionLabels(PythonParityContract::kPythonCodeLanguageOptions);
+}
+
+QStringList pythonSourceRustFrameworkOptionKeys() {
+    return parityStarterOptionKeys(PythonParityContract::kPythonRustFrameworkOptions);
+}
+
+QStringList pythonSourceRustFrameworkOptionLabels() {
+    return parityStarterOptionLabels(PythonParityContract::kPythonRustFrameworkOptions);
+}
+
+QStringList pythonSourceStarterMarketOptionKeys() {
+    return parityStarterOptionKeys(PythonParityContract::kPythonStarterMarketOptions);
+}
+
+QStringList pythonSourceStarterMarketOptionLabels() {
+    return parityStarterOptionLabels(PythonParityContract::kPythonStarterMarketOptions);
+}
+
 QStringList pythonSourceExchangeOptionDisabledLabels() {
     QStringList labels;
     for (const auto &option : PythonParityContract::kPythonExchangeOptions) {
@@ -1097,7 +1138,16 @@ bool rustPythonSourceParityReady() {
 }
 
 QString recommendedConnectorKey(bool futures) {
-    return futures ? kConnectorUsdsFutures : kConnectorSpot;
+    const QString preferredFamily = futures ? QStringLiteral("usd-m-futures") : QStringLiteral("spot");
+    for (const auto &mapping : PythonParityContract::kPythonNativeRuntimeConnectorMarketFamilies) {
+        if (parityString(mapping.value).compare(preferredFamily, Qt::CaseInsensitive) == 0) {
+            return parityString(mapping.key);
+        }
+    }
+    if (!PythonParityContract::kPythonNativeRuntimeConnectorBackends.empty()) {
+        return parityString(PythonParityContract::kPythonNativeRuntimeConnectorBackends.front());
+    }
+    return kConnectorUsdsFutures;
 }
 
 QString connectorLabelForKey(const QString &connectorKey) {
@@ -1126,11 +1176,10 @@ void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceD
 
     const QSignalBlocker blocker(combo);
     combo->clear();
-    const QSet<QString> &allowed = futures ? kFuturesConnectorKeys : kSpotConnectorKeys;
     for (const auto &option : pythonConnectorOptions()) {
         combo->addItem(option.label, option.key);
         const int row = combo->count() - 1;
-        const bool nativeOwned = allowed.contains(option.key);
+        const bool nativeOwned = connectorAllowedForAccount(option.key, futures);
         combo->setItemData(
             row,
             nativeOwned
@@ -1268,8 +1317,9 @@ bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText) {
     }
 
     // Only backends listed by Python's generated native-ownership policy may
-    // enter the direct C++ loop. Provider aliases remain service-owned even
-    // when they target the Binance exchange.
+    // enter the direct C++ loop. Binance aliases are normalized to the same
+    // REST boundary; non-Binance exchange selection is still rejected by the
+    // exchange ownership guard before this function is used.
     for (const ConnectorOption &option : pythonConnectorOptions()) {
         if (option.key != key) {
             continue;

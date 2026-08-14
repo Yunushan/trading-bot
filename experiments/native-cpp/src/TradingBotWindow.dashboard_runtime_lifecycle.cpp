@@ -233,9 +233,14 @@ void TradingBotWindow::startDashboardRuntime() {
         dashboardRuntimeTimer_ = new QTimer(this);
         connect(dashboardRuntimeTimer_, &QTimer::timeout, this, &TradingBotWindow::runDashboardRuntimeCycle);
     }
-    const bool useWebSocketFeed = dashboardSignalFeedCombo_
-        && normalizedSignalFeedKey(dashboardSignalFeedCombo_->currentText()) == QStringLiteral("websocket")
-        && qtWebSocketsRuntimeAvailable();
+    const QString indicatorSourceText = dashboardIndicatorSourceCombo_
+        ? dashboardIndicatorSourceCombo_->currentText().trimmed()
+        : QStringLiteral("Binance futures");
+    const QString modeText = dashboardModeCombo_
+        ? dashboardModeCombo_->currentText().trimmed()
+        : QStringLiteral("Demo/Testnet");
+    const bool isTestnet = TradingBotWindowSupport::isTestnetModeLabel(modeText);
+    const bool useWebSocketFeed = pythonSourceUseWebSocketFeed(indicatorSourceText, isTestnet);
     const ConnectorRuntimeConfig defaultConnectorCfg = TradingBotWindowSupport::resolveConnectorConfig(defaultConnectorText, futures);
     dashboardRuntimeTimer_->setInterval(dashboardRuntimePollIntervalMs(dashboardOverridesTable_, useWebSocketFeed));
     dashboardRuntimeLastEvalMs_.clear();
@@ -439,11 +444,8 @@ void TradingBotWindow::startDashboardRuntime() {
     appendDashboardAllLog(
         QString("Signal feed: %1")
             .arg(useWebSocketFeed
-                     ? QStringLiteral("WebSocket Stream")
-                     : ((dashboardSignalFeedCombo_
-                             && normalizedSignalFeedKey(dashboardSignalFeedCombo_->currentText()) == QStringLiteral("websocket"))
-                            ? QStringLiteral("REST Poll (WebSocket unavailable fallback)")
-                            : QStringLiteral("REST Poll"))));
+                     ? QStringLiteral("WebSocket Stream (Python environment policy)")
+                     : QStringLiteral("REST Poll (Python default/policy)")));
     if (dashboardConnectorCombo_) {
         appendDashboardAllLog(QString("Active default connector: %1").arg(dashboardConnectorCombo_->currentText().trimmed()));
     }

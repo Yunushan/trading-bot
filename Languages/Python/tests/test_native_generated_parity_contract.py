@@ -275,6 +275,31 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertFalse(summary["rust_standalone_runtime_ready"])
         self.assertFalse(summary["cpp_full_parity"])
         self.assertFalse(summary["rust_full_parity"])
+        ownership = summary["native_runtime_ownership"]
+        direct_backends = set(ownership["direct_connector_backends"])
+        connector_market_families = ownership["direct_connector_market_families"]
+        self.assertEqual(
+            direct_backends,
+            {mapping["key"] for mapping in connector_market_families},
+        )
+        self.assertTrue(
+            {"ccxt", "python-binance"}.issubset(direct_backends),
+            "Python Binance connector aliases must remain in the native ownership contract",
+        )
+        for alias in ("ccxt", "python-binance"):
+            with self.subTest(alias=alias):
+                self.assertEqual(
+                    {"spot", "usd-m-futures"},
+                    {
+                        mapping["value"]
+                        for mapping in connector_market_families
+                        if mapping["key"] == alias
+                    },
+                )
+        self.assertTrue(connector_market_families)
+        self.assertTrue(
+            all(mapping["value"] in ownership["direct_market_families"] for mapping in connector_market_families)
+        )
         self.assertEqual(
             summary["supported_brokers"],
             [mapping["broker"] for mapping in summary["broker_order_routing_backends"]],
@@ -396,6 +421,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("python_source_theme_options", rust_core)
         self.assertIn("python_source_design_options", rust_core)
         self.assertIn("python_source_indicator_source_options", rust_core)
+        self.assertIn("python_source_indicator_ma_type_options", rust_core)
         self.assertIn("python_source_exchange_options", rust_core)
         self.assertIn("python_source_account_type_options", rust_core)
         self.assertIn("python_source_margin_mode_options", rust_core)
@@ -576,6 +602,17 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             {"cpp": True, "rust": True},
             feature_option_contract["generated_native_contracts_match_python"],
         )
+        parity_percentages = report["parity_percentages"]
+        for target in ("cpp", "rust"):
+            self.assertEqual(100.0, parity_percentages[target]["feature_domains"])
+            self.assertEqual(100.0, parity_percentages[target]["option_catalogs"])
+            self.assertEqual(100.0, parity_percentages[target]["option_entries"])
+            self.assertEqual(100.0, parity_percentages[target]["config_keys"])
+            self.assertEqual(100.0, parity_percentages[target]["generated_artifacts"])
+            self.assertEqual(100.0, parity_percentages[target]["consumer_surfaces"])
+            self.assertEqual(100.0, parity_percentages[target]["contract_surface_total"])
+        self.assertEqual({"cpp": 0.0, "rust": 0.0}, parity_percentages["standalone_runtime"])
+        self.assertEqual({"cpp": 0.0, "rust": 0.0}, parity_percentages["full_parity"])
         self.assertTrue(report["surface_contract"]["ok"], report["surface_contract"])
         self.assertEqual(
             list(audit.REQUIRED_GENERATED_ARTIFACT_NAMES),
@@ -1098,6 +1135,11 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
                 "kPythonIndicatorSourceOptions",
                 "indicatorSourceOptions",
             ),
+            "indicator_ma_type_options": (
+                "PYTHON_INDICATOR_MA_TYPE_OPTIONS",
+                "kPythonIndicatorMaTypeOptions",
+                "indicatorMaTypeOptions",
+            ),
             "exchange_options": (
                 "PYTHON_EXCHANGE_OPTIONS",
                 "kPythonExchangeOptions",
@@ -1231,6 +1273,42 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
                 self.assertIn(f'"{key}": {json.dumps(value)}', tauri_generated)
         for key, value in summary["ui_defaults"].items():
             self.assertIn(f'"{key}": {json.dumps(value)}', tauri_generated)
+
+    def test_generated_starter_catalogs_match_python_source_contract(self):
+        summary = native_python_source_contract_summary()
+        rust_generated = _read(RUST_OUTPUT)
+        cpp_generated = _read(CPP_OUTPUT)
+        tauri_generated = _read(TAURI_BROWSER_OUTPUT)
+        catalogs = {
+            "code_language_options": (
+                "PYTHON_CODE_LANGUAGE_OPTIONS",
+                "kPythonCodeLanguageOptions",
+                "codeLanguageOptions",
+            ),
+            "rust_framework_options": (
+                "PYTHON_RUST_FRAMEWORK_OPTIONS",
+                "kPythonRustFrameworkOptions",
+                "rustFrameworkOptions",
+            ),
+            "starter_market_options": (
+                "PYTHON_STARTER_MARKET_OPTIONS",
+                "kPythonStarterMarketOptions",
+                "starterMarketOptions",
+            ),
+        }
+        self.assertIn("pub struct PythonStarterOption", rust_generated)
+        self.assertIn("struct PythonStarterOption", cpp_generated)
+        for summary_key, (rust_name, cpp_name, js_name) in catalogs.items():
+            with self.subTest(summary_key=summary_key):
+                self.assertIn(rust_name, rust_generated)
+                self.assertIn(cpp_name, cpp_generated)
+                self.assertIn(f'"{js_name}"', tauri_generated)
+                for option in summary[summary_key]:
+                    for field in ("key", "title", "subtitle", "accent", "badge"):
+                        value = str(option[field])
+                        self.assertIn(value, rust_generated)
+                        self.assertIn(value, cpp_generated)
+                        self.assertIn(json.dumps(value), tauri_generated)
 
 
 if __name__ == "__main__":

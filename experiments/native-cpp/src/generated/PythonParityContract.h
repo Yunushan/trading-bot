@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "38c083a537228c8ff331b9d89721a7cc0913b646237fab85024b7e25ee5f57c5";
+inline constexpr std::string_view kPythonSourceContractHash = "d0cf11267e597c05bc0900672e9fde942015c19e0ba1f4bc1f992da0ea8d8b0c";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -18,6 +18,7 @@ inline constexpr bool kCppFullParityReady = false;
 inline constexpr bool kRustFullParityReady = false;
 inline constexpr std::string_view kPythonDefaultExecutionJson = "{\"account_mode\":\"Classic Trading\",\"account_type\":\"Futures\",\"assets_mode\":\"Single-Asset\",\"backtest_symbol_interval_pairs\":[],\"connector_order_block_circuit_breaker_enabled\":true,\"connector_order_block_pause_threshold\":2,\"connector_order_block_window_seconds\":60.0,\"connector_order_circuit_incident_log_backup_count\":1,\"connector_order_circuit_incident_log_max_bytes\":2097152,\"connector_order_circuit_incident_log_path\":\"\",\"gtd_minutes\":30,\"intervals\":[\"1m\"],\"lead_trader_enabled\":false,\"lead_trader_profile\":null,\"leverage\":1,\"live_allow_auto_bump_to_min_order\":false,\"live_trading_acknowledgement\":\"\",\"live_trading_enabled\":false,\"live_trading_max_leverage\":20,\"live_trading_max_position_pct\":10.0,\"live_trading_max_session_orders\":100,\"lookback\":200,\"loop_interval_override\":\"1m\",\"margin_mode\":\"Isolated\",\"mode\":\"Demo/Testnet\",\"operational_account_snapshot_stale_seconds\":300.0,\"operational_connector_snapshot_stale_seconds\":120.0,\"operational_execution_heartbeat_stale_seconds\":10.0,\"operational_live_order_gate_enabled\":true,\"operational_live_start_gate_enabled\":true,\"operational_portfolio_snapshot_stale_seconds\":300.0,\"order_audit_backup_count\":1,\"order_audit_enabled\":true,\"order_audit_log_path\":\"\",\"order_audit_max_bytes\":10485760,\"order_type\":\"MARKET\",\"position_mode\":\"Hedge\",\"position_pct\":2.0,\"runtime_symbol_interval_pairs\":[],\"side\":\"BOTH\",\"symbols\":[\"BTCUSDT\"],\"tif\":\"GTC\"}";
 inline constexpr std::string_view kPythonDefaultBacktestJson = "{\"account_mode\":\"Classic Trading\",\"assets_mode\":\"Single-Asset\",\"capital\":1000.0,\"connector_backend\":\"binance-sdk-derivatives-trading-usds-futures\",\"end_date\":null,\"execution_backend\":\"local\",\"fee_bps\":5.0,\"indicators\":{\"adx\":{\"buy_value\":20,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_role\":\"filter\"},\"ao\":{\"buy_value\":0,\"enabled\":false,\"fast\":5,\"sell_value\":0,\"slow\":34},\"aroon\":{\"buy_value\":50,\"enabled\":false,\"length\":25,\"sell_value\":-50},\"atr\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_mode\":\"percent_of_close\",\"signal_role\":\"filter\"},\"bb\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\",\"std\":2},\"bbw\":{\"buy_value\":5.0,\"enabled\":false,\"length\":20,\"sell_value\":2.0,\"std\":2},\"cci\":{\"buy_value\":-100,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":100},\"chop\":{\"buy_value\":38.2,\"enabled\":false,\"length\":14,\"sell_value\":61.8},\"cmf\":{\"buy_value\":0.05,\"enabled\":false,\"length\":20,\"sell_value\":-0.05},\"dmi\":{\"buy_value\":0,\"enabled\":false,\"length\":14,\"sell_value\":0},\"donchian\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"ema\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"ichimoku\":{\"base_length\":26,\"buy_value\":0,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":0,\"span_b_length\":52},\"keltner\":{\"atr_length\":10,\"buy_value\":0,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"kst\":{\"buy_value\":0,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":0,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15},\"ma\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\",\"type\":\"SMA\"},\"macd\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"mfi\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80},\"natr\":{\"buy_value\":2.0,\"enabled\":false,\"length\":14,\"sell_value\":1.0},\"obv\":{\"buy_value\":0,\"enabled\":false,\"length\":3,\"sell_value\":0,\"signal_mode\":\"slope\"},\"ppo\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"psar\":{\"af\":0.02,\"buy_value\":0,\"enabled\":false,\"max_af\":0.2,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"roc\":{\"buy_value\":0,\"enabled\":false,\"length\":12,\"sell_value\":0},\"rsi\":{\"buy_value\":30,\"enabled\":true,\"length\":14,\"sell_value\":70},\"rvol\":{\"buy_value\":1.5,\"enabled\":false,\"length\":20,\"sell_value\":0.75},\"stoch_rsi\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"stochastic\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"supertrend\":{\"atr_period\":10,\"buy_value\":0,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"trix\":{\"buy_value\":0,\"enabled\":false,\"length\":15,\"sell_value\":0},\"uo\":{\"buy_value\":30,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":70,\"short\":7},\"volume\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":20,\"sell_value\":null,\"signal_mode\":\"relative_to_sma\",\"signal_role\":\"filter\"},\"vwap\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"willr\":{\"buy_value\":-80,\"enabled\":false,\"length\":14,\"sell_value\":-20}},\"intervals\":[\"1h\"],\"leverage\":20,\"logic\":\"AND\",\"margin_mode\":\"Isolated\",\"mdd_logic\":\"per_trade\",\"optimizer_combo_size\":2,\"optimizer_max_duration_seconds\":14400,\"optimizer_metric\":\"roi_percent\",\"optimizer_min_trades\":1,\"optimizer_mode\":\"current\",\"position_mode\":\"Hedge\",\"position_pct\":2.0,\"scan_auto_apply\":false,\"scan_mdd_limit\":10.0,\"scan_scope\":\"selected\",\"scan_top_n\":200,\"side\":\"BOTH\",\"slippage_bps\":2.0,\"start_date\":null,\"stop_loss\":{\"enabled\":false,\"mode\":\"usdt\",\"percent\":0.0,\"scope\":\"per_trade\",\"usdt\":0.0},\"symbol_source\":\"Futures\",\"symbols\":[\"BTCUSDT\"],\"template\":{\"enabled\":false,\"name\":null}}";
+inline constexpr std::string_view kPythonOrderSizingReferenceJson = "{\"cases\":[{\"expected_error\":null,\"expected_quantity\":0.05,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"spot\",\"name\":\"spot_min_notional_bump\",\"price\":100.0,\"quantity\":0.023},{\"expected_error\":null,\"expected_quantity\":0.05,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"futures\",\"name\":\"futures_min_notional_bump\",\"price\":100.0,\"quantity\":0.023},{\"expected_error\":\"qty<=0\",\"expected_quantity\":0.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"spot\",\"name\":\"spot_rejects_zero_quantity\",\"price\":100.0,\"quantity\":0.0},{\"expected_error\":\"filters_error: stepSize must be a finite non-negative number\",\"expected_quantity\":0.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":-0.01},\"market\":\"futures\",\"name\":\"futures_invalid_step_filter\",\"price\":100.0,\"quantity\":1.0},{\"balance\":100.0,\"expected_percent\":1.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"leverage\":5.0,\"market\":\"futures\",\"name\":\"futures_required_percent\",\"price\":100.0}],\"rounding_cases\":[{\"decimals\":2,\"expected_ceil\":1.24,\"expected_floor\":1.23,\"name\":\"positive_decimal\",\"value\":1.231},{\"decimals\":2,\"expected_ceil\":-1.24,\"expected_floor\":-1.23,\"name\":\"negative_decimal\",\"value\":-1.231},{\"decimals\":0,\"expected_ceil\":-2.0,\"expected_floor\":-1.0,\"name\":\"negative_integer_precision\",\"value\":-1.9}],\"schema_version\":1}";
 inline constexpr std::string_view kPythonRiskDefaultsJson = "{\"allow_close_ignoring_hold\":false,\"allow_indicator_close_without_signal\":false,\"allow_multi_indicator_close\":false,\"allow_opposite_positions\":true,\"auto_bump_percent_multiplier\":10.0,\"auto_flip_on_close\":true,\"close_on_exit\":false,\"futures_flat_purge_grace_seconds\":12.0,\"futures_flat_purge_miss_threshold\":2,\"hedge_preserve_opposites\":false,\"indicator_flip_confirmation_bars\":1,\"indicator_flip_cooldown_bars\":1,\"indicator_flip_cooldown_seconds\":0.0,\"indicator_min_position_hold_bars\":1,\"indicator_min_position_hold_seconds\":0.0,\"indicator_reentry_cooldown_bars\":1,\"indicator_reentry_cooldown_seconds\":0.0,\"indicator_reentry_requires_signal_reset\":true,\"indicator_use_live_values\":false,\"max_auto_bump_percent\":5.0,\"positions_missing_autoclose\":true,\"positions_missing_grace_seconds\":30,\"positions_missing_threshold\":2,\"require_indicator_flip_signal\":true,\"stop_loss\":{\"enabled\":false,\"mode\":\"usdt\",\"percent\":0.0,\"scope\":\"per_trade\",\"usdt\":0.0},\"strict_indicator_flip_enforcement\":true}";
 inline constexpr std::string_view kPythonUiDefaultsJson = "{\"design\":\"Classic\",\"indicator_source\":\"Binance futures\",\"selected_exchange\":\"Binance\",\"theme\":\"Dark\"}";
 inline constexpr std::string_view kPythonOrderGuardBehaviorJson = "{\"live_only_requirements\":[\"credentials\",\"live_acknowledgement\",\"session_order_cap\",\"session_order_count_increment\"],\"live_safety_environment\":{\"acknowledgement\":\"BOT_LIVE_TRADING_ACKNOWLEDGEMENT\",\"enabled\":\"BOT_ENABLE_LIVE_TRADING\",\"legacy_acknowledgement\":\"BOT_LIVE_TRADING_ACK\",\"max_leverage\":\"BOT_LIVE_MAX_LEVERAGE\",\"max_position_pct\":\"BOT_LIVE_MAX_POSITION_PCT\",\"max_session_orders\":\"BOT_LIVE_MAX_SESSION_ORDERS\"},\"validate_audit_enabled_all_modes\":true,\"validate_audit_writable_all_modes\":true,\"validate_connector_health_all_modes\":true,\"validate_exchange_filters_all_modes\":true,\"validate_intent_all_modes\":true}";
@@ -30,16 +31,34 @@ inline constexpr std::string_view kPythonLiveTradingMaxSessionOrdersEnv = "BOT_L
 inline constexpr std::array<std::string_view, 1> kPythonNativeRuntimeExchanges = {
     "Binance",
 };
-inline constexpr std::array<std::string_view, 4> kPythonNativeRuntimeConnectorBackends = {
+inline constexpr std::array<std::string_view, 6> kPythonNativeRuntimeConnectorBackends = {
     "binance-sdk-derivatives-trading-usds-futures",
     "binance-sdk-derivatives-trading-coin-futures",
     "binance-sdk-spot",
     "binance-connector",
+    "ccxt",
+    "python-binance",
 };
 inline constexpr std::array<std::string_view, 3> kPythonNativeRuntimeMarketFamilies = {
     "usd-m-futures",
     "coin-m-futures",
     "spot",
+};
+struct PythonStringPair {
+    std::string_view key;
+    std::string_view value;
+};
+
+inline constexpr std::array<PythonStringPair, 9> kPythonNativeRuntimeConnectorMarketFamilies = {
+    PythonStringPair{"binance-sdk-derivatives-trading-usds-futures", "usd-m-futures"},
+    PythonStringPair{"binance-sdk-derivatives-trading-coin-futures", "coin-m-futures"},
+    PythonStringPair{"binance-sdk-spot", "spot"},
+    PythonStringPair{"binance-connector", "usd-m-futures"},
+    PythonStringPair{"binance-connector", "spot"},
+    PythonStringPair{"ccxt", "usd-m-futures"},
+    PythonStringPair{"ccxt", "spot"},
+    PythonStringPair{"python-binance", "usd-m-futures"},
+    PythonStringPair{"python-binance", "spot"},
 };
 inline constexpr std::string_view kPythonNativeRuntimeDelegatedOwner = "Python Service API/provider connector";
 inline constexpr bool kPythonOrderGuardValidateIntentAllModes = true;
@@ -967,11 +986,6 @@ inline constexpr std::array<std::string_view, 1> kPythonOrderExecutionExchanges 
     "Binance",
 };
 
-struct PythonStringPair {
-    std::string_view key;
-    std::string_view value;
-};
-
 inline constexpr std::array<PythonStringPair, 14> kPythonCcxtExchangeIds = {
     PythonStringPair{"bybit", "bybit"},
     PythonStringPair{"okx", "okx"},
@@ -1200,6 +1214,11 @@ inline constexpr std::array<PythonUiOption, 2> kPythonIndicatorSourceOptions = {
     PythonUiOption{"Binance futures", "Binance futures", false},
 };
 
+inline constexpr std::array<PythonUiOption, 2> kPythonIndicatorMaTypeOptions = {
+    PythonUiOption{"SMA", "SMA", false},
+    PythonUiOption{"EMA", "EMA", false},
+};
+
 inline constexpr std::array<PythonUiOption, 11> kPythonExchangeOptions = {
     PythonUiOption{"Binance", "Binance", false},
     PythonUiOption{"Bybit", "Bybit (ccxt order routing)", false},
@@ -1304,6 +1323,33 @@ inline constexpr std::array<PythonUiOption, 3> kPythonChartViewOptions = {
 inline constexpr std::array<PythonUiOption, 2> kPythonPositionsViewOptions = {
     PythonUiOption{"cumulative", "Cumulative View", false},
     PythonUiOption{"per_trade", "Per Trade View", false},
+};
+
+struct PythonStarterOption {
+    std::string_view key;
+    std::string_view title;
+    std::string_view subtitle;
+    std::string_view accent;
+    std::string_view badge;
+    bool disabled;
+    bool operational;
+    std::string_view operationalStatus;
+    std::string_view launchNote;
+};
+
+inline constexpr std::array<PythonStarterOption, 3> kPythonCodeLanguageOptions = {
+    PythonStarterOption{"Python (PyQt)", "Python", "Fast to build - Huge ecosystem", "#3b82f6", "Recommended", false, false, "", ""},
+    PythonStarterOption{"C++ (Qt/C++23)", "C++", "Qt native desktop experiment", "#38bdf8", "Experiment", false, false, "", ""},
+    PythonStarterOption{"Rust", "Rust", "Service API client + guarded runtime (promotion-gated)", "#fb923c", "Experiment", false, false, "", ""},
+};
+
+inline constexpr std::array<PythonStarterOption, 1> kPythonRustFrameworkOptions = {
+    PythonStarterOption{"Tauri", "Tauri", "Operational Service API client", "#f59e0b", "Primary", false, true, "Interactive Service API client", "Tauri can manage/connect to the local Python Service API, but Python still owns strategy, risk, account, order, and exchange execution."},
+};
+
+inline constexpr std::array<PythonStarterOption, 2> kPythonStarterMarketOptions = {
+    PythonStarterOption{"crypto", "Crypto Exchange", "Binance, Bybit, KuCoin", "#34d399", "", false, false, "", ""},
+    PythonStarterOption{"forex", "Forex Exchange", "REST, MT4 bridge, MetaTrader 5, and scoped provider APIs", "#93c5fd", "Evidence required", false, false, "", ""},
 };
 
 } // namespace PythonParityContract

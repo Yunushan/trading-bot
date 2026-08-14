@@ -32,19 +32,60 @@
 
 
 namespace TradingBotWindowDashboardRuntime {
-QString normalizedSignalFeedKey(const QString &feedText) {
-    const QString feedNorm = feedText.trimmed().toLower();
-    if (feedNorm.contains(QStringLiteral("websocket")) || feedNorm.contains(QStringLiteral("stream"))) {
-        return QStringLiteral("websocket");
+namespace {
+
+bool pythonEnvironmentFlag(const char *name, bool fallback) {
+    const QString value = qEnvironmentVariable(name).trimmed().toLower();
+    if (value.isEmpty()) {
+        return fallback;
     }
-    return QStringLiteral("rest");
+    if (value == QStringLiteral("1") || value == QStringLiteral("true")
+        || value == QStringLiteral("yes") || value == QStringLiteral("on")) {
+        return true;
+    }
+    if (value == QStringLiteral("0") || value == QStringLiteral("false")
+        || value == QStringLiteral("no") || value == QStringLiteral("off")) {
+        return false;
+    }
+    return fallback;
 }
+
+bool pythonIndicatorSourceUsesFutures(const QString &indicatorSourceText) {
+    return indicatorSourceText.trimmed().toLower().contains(QStringLiteral("future"));
+}
+
+} // namespace
 
 bool qtWebSocketsRuntimeAvailable() {
     const QDir appDir(QCoreApplication::applicationDirPath());
     const bool hasQtWebSocketsDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6WebSockets.dll")))
         || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6WebSocketsd.dll")));
     return (HAS_QT_WEBSOCKETS != 0) && hasQtWebSocketsDll;
+}
+
+bool pythonSourceWebSocketIndicatorsEnabled() {
+    return pythonEnvironmentFlag("BINANCE_WS_INDICATORS", false);
+}
+
+bool pythonSourceLiveIndicatorDataEnabled(bool testnetMode) {
+    return pythonEnvironmentFlag("BINANCE_INDICATOR_LIVE_DATA", testnetMode);
+}
+
+bool pythonSourceUseWebSocketFeed(const QString &indicatorSourceText, bool testnetMode) {
+    return pythonIndicatorSourceUsesFutures(indicatorSourceText)
+        && pythonSourceLiveIndicatorDataEnabled(testnetMode)
+        && pythonSourceWebSocketIndicatorsEnabled()
+        && qtWebSocketsRuntimeAvailable();
+}
+
+bool pythonSourceIndicatorDataUsesTestnet(const QString &indicatorSourceText, bool testnetMode) {
+    if (!testnetMode) {
+        return false;
+    }
+    if (!pythonIndicatorSourceUsesFutures(indicatorSourceText)) {
+        return true;
+    }
+    return !pythonSourceLiveIndicatorDataEnabled(testnetMode);
 }
 
 bool loopTextRequestsInstant(const QString &text) {

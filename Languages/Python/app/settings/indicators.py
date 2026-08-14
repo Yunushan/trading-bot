@@ -4,6 +4,11 @@ import copy
 from dataclasses import dataclass, field
 
 
+# Python's moving-average selector is intentionally limited to the two
+# implementations used by the live, chart, and backtest runtimes.
+MOVING_AVERAGE_TYPE_OPTIONS = ("SMA", "EMA")
+
+
 def _deep_merge_defaults(
     base: dict[str, object],
     overrides: dict[str, object] | None = None,
