@@ -686,11 +686,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest-dev@sha256:7b253a0b7cbe886469db59e4cca6d86fffb48d3263d36b374bc0c946c2c5d9dd AS builder",
+            "FROM cgr.dev/chainguard/python:latest-dev@sha256:5167939066134c84bc52d0e7a84ca3ade7b79866dc1f4a7b5ca9f654c2948a88 AS builder",
             dockerfile,
         )
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest@sha256:69437de912cc3b5d36a2480b8fb0c3f658f151d8bc1978d19a6412be3a4983d5",
+            "FROM cgr.dev/chainguard/python:latest@sha256:54d936802bbb82c517b4d535af7bc211a44a8ec418297142df2898b32c550193",
             dockerfile,
         )
         self.assertIn("COPY --chown=65532:65532 apps/service-api /app/apps/service-api", dockerfile)
@@ -1344,6 +1344,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("npm ci --omit=dev --ignore-scripts", workflow)
         self.assertIn("CTest did not discover any tests.", native_cpp_checker)
         self.assertIn('"--no-require-webengine"', verify_all)
+        self.assertIn('"--disable-webengine"', verify_all)
         self.assertIn('"--no-enable-qt-deploy-script"', verify_all)
         self.assertIn('"--smoke-targets-only"', verify_all)
         self.assertIn('"6.4.0"', verify_all)
@@ -1432,6 +1433,10 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("windeployqt failed with exit code", workflow)
         self.assertIn("Copy-MsvcRuntimeToBundle.ps1", workflow)
         self.assertIn("$compilerRuntimeArchitecture", workflow)
+        self.assertIn("$qtArm64ConfigCandidates", workflow)
+        self.assertIn("$qtArm64Prefix", workflow)
+        self.assertIn('"QT_ARM64_PREFIX=$qtArm64Prefix"', workflow)
+        self.assertIn('"-DTB_ENABLE_QT_WEBENGINE=OFF"', workflow)
         self.assertIn("Test-NativeCppWindowsBundle.ps1", workflow)
         self.assertIn("-RequireCompilerRuntime", workflow)
         self.assertIn("-RequireQtWebEngine:($env:TB_REQUIRE_QT_WEBENGINE -eq \"ON\")", workflow)
@@ -1790,11 +1795,13 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("QtConcurrent.framework", macos_release_workflow)
         self.assertIn("embedded-framework LC_RPATH", macos_release_workflow)
         self.assertIn("install_name_tool -add_rpath", macos_release_workflow)
+        self.assertIn("has_embedded_rpath()", macos_release_workflow)
+        self.assertIn('awk -v expected="$2"', macos_release_workflow)
+        self.assertIn('"@rpath/QtConcurrent.framework/"', macos_release_workflow)
         self.assertIn(
             "git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas",
             macos_release_workflow,
         )
-        self.assertIn('grep -A2 -F "cmd LC_RPATH"', macos_release_workflow)
         self.assertNotIn("mapfile -t artifacts", macos_release_workflow)
         self.assertIn("for artifact in release/*; do", macos_release_workflow)
         self.assertIn('artifacts+=("${artifact}")', macos_release_workflow)
@@ -1813,7 +1820,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("win64_msvc2022_arm64", windows_release_workflow)
         self.assertIn('"install-qt", "windows_arm64", "desktop", "6.10.3"', windows_release_workflow)
         self.assertNotIn('"--autodesktop"', windows_release_workflow)
-        self.assertIn('$qtArm64Cmake = Join-Path $qtOutputDir', windows_release_workflow)
+        self.assertIn('$qtArm64ConfigCandidates = Get-ChildItem -Path $qtOutputDir', windows_release_workflow)
+        self.assertIn('$qtArm64Prefix = Split-Path', windows_release_workflow)
         self.assertIn('Native ARM64 Qt CMake package was not installed', windows_release_workflow)
         self.assertIn('Qt6WebSocketsConfig.cmake', windows_release_workflow)
         self.assertIn("Join-Path $env:RUNNER_TEMP \"qt\"", windows_release_workflow)
@@ -1827,9 +1835,12 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('BUILD_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
         self.assertIn('INSTALL_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
         self.assertIn("BUILD_WITH_INSTALL_RPATH TRUE", native_cpp_cmake)
+        self.assertIn("MACOSX_RPATH TRUE", native_cpp_cmake)
         self.assertIn('INSTALL_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
+        self.assertIn("TB_ENABLE_QT_WEBENGINE", native_cpp_cmake)
         self.assertIn("find_package(Qt6WebEngineWidgets", native_cpp_cmake)
         self.assertIn('HINTS "${Qt6_DIR}/.."', native_cpp_cmake)
+        self.assertIn("--disable-webengine", ci_workflow)
         release_platform_workflow = (
             REPO_ROOT / ".github" / "workflows" / "release-platform-real-tests.yml"
         ).read_text(encoding="utf-8")

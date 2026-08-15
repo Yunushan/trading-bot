@@ -13,8 +13,8 @@ from pathlib import Path
 SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
 DEFAULT_PYTHON_VERSION = "3.14"
 PYTHON_REQUIRES = ">=3.10,<3.15"
-DOCKER_PYTHON_BUILDER_IMAGE = "cgr.dev/chainguard/python:latest-dev@sha256:7b253a0b7cbe886469db59e4cca6d86fffb48d3263d36b374bc0c946c2c5d9dd"
-DOCKER_PYTHON_RUNTIME_IMAGE = "cgr.dev/chainguard/python:latest@sha256:69437de912cc3b5d36a2480b8fb0c3f658f151d8bc1978d19a6412be3a4983d5"
+DOCKER_PYTHON_BUILDER_IMAGE = "cgr.dev/chainguard/python:latest-dev@sha256:5167939066134c84bc52d0e7a84ca3ade7b79866dc1f4a7b5ca9f654c2948a88"
+DOCKER_PYTHON_RUNTIME_IMAGE = "cgr.dev/chainguard/python:latest@sha256:54d936802bbb82c517b4d535af7bc211a44a8ec418297142df2898b32c550193"
 WINDOWS_BOOTSTRAP_PYTHON_VERSION = "3.14.5"
 
 

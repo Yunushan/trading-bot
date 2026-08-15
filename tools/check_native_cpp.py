@@ -133,8 +133,11 @@ def _visual_studio_environment() -> dict[str, str]:
 
 
 def _cmake_build_parallel_args() -> list[str]:
-    # MSVC can contend on a target PDB during cold Qt smoke builds.
-    return ["--parallel", "1"] if sys.platform == "win32" else ["--parallel"]
+    # Native smoke targets include large generated parity headers and several
+    # Qt-heavy translation units. Keep cold CI builds bounded on every host;
+    # an unconstrained Unix build can launch enough cc1plus processes to be
+    # killed by the runner before CMake can report a useful compiler error.
+    return ["--parallel", "1"]
 
 
 def _desktop_executable_path(build_dir: Path, config: str) -> Path:
@@ -222,6 +225,7 @@ def check_native_cpp(
     smoke_targets_only: bool,
     qt_version: str | None,
     timeout: int,
+    enable_webengine: bool | None = None,
 ) -> dict[str, object]:
     root = _repo_root()
     build_environment = _visual_studio_environment()
@@ -248,9 +252,11 @@ def check_native_cpp(
         str(root / "experiments" / "native-cpp"),
         "-B",
         str(build_dir),
-        f"-DTB_REQUIRE_QT_WEBENGINE={'ON' if require_webengine else 'OFF'}",
-        *_cmake_generator_args(),
     ]
+    if enable_webengine is not None:
+        configure.append(f"-DTB_ENABLE_QT_WEBENGINE={'ON' if enable_webengine else 'OFF'}")
+    configure.append(f"-DTB_REQUIRE_QT_WEBENGINE={'ON' if require_webengine else 'OFF'}")
+    configure.extend(_cmake_generator_args())
     if qt_version:
         configure.append(f"-DTB_QT_VERSION={qt_version}")
     if enable_qt_deploy_script is not None:
@@ -337,6 +343,7 @@ def check_native_cpp(
         "build_dir": str(build_dir),
         "config": config,
         "enable_qt_deploy_script": enable_qt_deploy_script,
+        "enable_webengine": enable_webengine,
         "require_webengine": require_webengine,
         "smoke_targets_only": smoke_targets_only,
         "qt_version": qt_version or "",
@@ -361,6 +368,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-require-webengine",
         action="store_true",
         help="Allow CI smoke builds without Qt WebEngine.",
+    )
+    parser.add_argument(
+        "--disable-webengine",
+        action="store_true",
+        help="Disable Qt WebEngine discovery and compile the native fallback surface.",
     )
     parser.add_argument(
         "--qt-version",
@@ -396,7 +408,8 @@ def main(argv: list[str] | None = None) -> int:
     report = check_native_cpp(
         build_dir=Path(args.build_dir),
         config=str(args.config or "Debug"),
-        require_webengine=not args.no_require_webengine,
+        require_webengine=not args.no_require_webengine and not args.disable_webengine,
+        enable_webengine=False if args.disable_webengine else None,
         enable_qt_deploy_script=args.enable_qt_deploy_script,
         smoke_targets_only=bool(args.smoke_targets_only),
         qt_version=str(args.qt_version or "").strip() or None,
@@ -422,10 +435,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # `/FS` is also set by the CMake project, but keeping the orchestration
-    # serial on Windows avoids target-PDB contention in generated Qt builds.
-    if sys.platform == "win32":
-        os.environ["CMAKE_BUILD_PARALLEL_LEVEL"] = "1"
-    else:
-        os.environ.setdefault("CMAKE_BUILD_PARALLEL_LEVEL", str(os.cpu_count() or 2))
+    # `/FS` is also set by the CMake project. Keep orchestration serial on every
+    # host so generated Qt/parity translation units do not exhaust CI memory.
+    os.environ.setdefault("CMAKE_BUILD_PARALLEL_LEVEL", "1")
     raise SystemExit(main())

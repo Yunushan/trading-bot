@@ -71,6 +71,17 @@ class ServiceTestRunnerTests(unittest.TestCase):
         self.assertEqual([], docs_table_errors(PYTHON_ROOT.parents[1]))
         self.assertIn("tests.test_service_schema_contracts", discover_service_test_modules(PYTHON_ROOT))
 
+    def test_service_test_runner_loads_manifest_modules_without_package_errors(self):
+        suite = run_service_tests.build_suite()
+
+        failed_imports = []
+        for test in suite:
+            if type(test).__name__ == "_FailedTest":
+                failed_imports.append(str(test))
+
+        self.assertEqual([], failed_imports)
+        self.assertGreater(suite.countTestCases(), 0)
+
     def test_service_test_runner_preflights_testclient_dependencies(self):
         def fake_find_spec(name: str):
             return None if name == "httpx" else object()

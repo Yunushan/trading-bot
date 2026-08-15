@@ -6042,7 +6042,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("binance_backtest_tab", desktop_build)
         self.assertEqual("desktop release smoke", run_step.call_args_list[2].args[0])
 
-    def test_native_cpp_serializes_windows_builds_to_avoid_pdb_contention(self):
+    def test_native_cpp_serializes_builds_to_bound_ci_compiler_memory(self):
         with (
             patch.object(native_cpp.sys, "platform", "win32"),
             patch.object(native_cpp, "_visual_studio_environment", return_value=os.environ.copy()),
@@ -6062,6 +6062,33 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         for call in run_step.call_args_list[1:3]:
             self.assertEqual(["--parallel", "1"], call.args[1][-2:])
+
+    def test_native_cpp_serializes_non_windows_builds_to_bound_ci_compiler_memory(self):
+        with (
+            patch.object(native_cpp.sys, "platform", "linux"),
+            patch.object(native_cpp.shutil, "which", side_effect=["cmake", "ctest"]),
+            patch.object(native_cpp, "_run_step", return_value={"ok": True}) as run_step,
+        ):
+            report = native_cpp.check_native_cpp(
+                build_dir=REPO_ROOT / "build" / "test-native-linux",
+                config="Debug",
+                require_webengine=False,
+                enable_qt_deploy_script=False,
+                smoke_targets_only=True,
+                qt_version="6.4.0",
+                timeout=30,
+            )
+
+        self.assertTrue(report["ok"])
+        for call in run_step.call_args_list[1:3]:
+            self.assertEqual(["--parallel", "1"], call.args[1][-2:])
+
+    def test_native_cpp_disable_webengine_also_disables_requirement_by_default(self):
+        with patch.object(native_cpp, "check_native_cpp", return_value={"ok": True, "steps": []}) as check:
+            self.assertEqual(0, native_cpp.main(["--disable-webengine", "--json"]))
+
+        self.assertFalse(check.call_args.kwargs["require_webengine"])
+        self.assertFalse(check.call_args.kwargs["enable_webengine"])
 
     def test_native_cpp_imports_visual_studio_environment_for_direct_windows_checks(self):
         with tempfile.TemporaryDirectory() as temp_dir:

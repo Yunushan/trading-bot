@@ -592,6 +592,7 @@ jobs:
           set -euo pipefail
           python tools/check_native_cpp.py \
             --no-require-webengine \
+            --disable-webengine \
             --no-enable-qt-deploy-script \
             --smoke-targets-only \
             --qt-version 6.4.0 \

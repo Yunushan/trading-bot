@@ -77,63 +77,87 @@ QWidget *TradingBotWindow::createLiquidationWebPanel(const QString &title, const
         }
     });
 
+    const auto addWebEngineFallback = [this,
+                                       panel,
+                                       layout,
+                                       urlEdit,
+                                       goBtn,
+                                       reloadBtn,
+                                       normalizedUrlText,
+                                       boundedSmoke]() {
 #if HAS_QT_WEBENGINE
-    auto *webView = new QWebEngineView(panel);
-    layout->addWidget(webView, 1);
+        const QString fallbackReason = boundedSmoke
+            ? QStringLiteral("Embedded Qt WebEngine is disabled during the bounded headless smoke.")
+            : QStringLiteral("Qt WebEngine is not available in this C++ runtime mode.");
+        const QString reloadMessage = boundedSmoke
+            ? QStringLiteral("Reload is unavailable while embedded WebEngine is disabled.")
+            : QStringLiteral("Reload is unavailable while embedded WebEngine is not active.");
+#else
+        const QString fallbackReason = QStringLiteral("Qt WebEngine is not available in this C++ build.");
+        const QString reloadMessage = QStringLiteral("Reload is unavailable: Qt WebEngine is not enabled in this build.");
+#endif
+        auto *fallback = new QLabel(
+            fallbackReason + QStringLiteral("\nUse 'Open in Browser' to view the heatmap."),
+            panel);
+        fallback->setObjectName("liquidationWebEngineFallback");
+        fallback->setWordWrap(true);
+        fallback->setStyleSheet("color: #f59e0b;");
+        layout->addWidget(fallback, 1);
 
-    const auto applyUrl = [this, urlEdit, webView]() {
-        const QString raw = urlEdit ? urlEdit->text().trimmed() : QString();
-        if (raw.isEmpty()) {
-            return;
-        }
-        const QUrl parsed = QUrl::fromUserInput(raw);
-        if (!parsed.isValid()) {
-            updateStatusMessage(QString("Invalid URL: %1").arg(raw));
-            return;
-        }
-        if (urlEdit) {
-            urlEdit->setText(parsed.toString());
-        }
-        webView->load(parsed);
+        connect(goBtn, &QPushButton::clicked, this, [this, normalizedUrlText]() {
+            const QString target = normalizedUrlText();
+            if (!openExternalUrl(target)) {
+                updateStatusMessage(QString("Could not open URL: %1").arg(target));
+            }
+        });
+        connect(urlEdit, &QLineEdit::returnPressed, this, [this, normalizedUrlText]() {
+            const QString target = normalizedUrlText();
+            if (!openExternalUrl(target)) {
+                updateStatusMessage(QString("Could not open URL: %1").arg(target));
+            }
+        });
+        connect(reloadBtn, &QPushButton::clicked, this, [this, reloadMessage]() {
+            updateStatusMessage(reloadMessage);
+        });
     };
 
-    connect(goBtn, &QPushButton::clicked, this, [applyUrl]() {
-        applyUrl();
-    });
-    connect(urlEdit, &QLineEdit::returnPressed, this, [applyUrl]() {
-        applyUrl();
-    });
-    connect(reloadBtn, &QPushButton::clicked, webView, &QWebEngineView::reload);
-
+#if HAS_QT_WEBENGINE
     if (!boundedSmoke) {
+        auto *webView = new QWebEngineView(panel);
+        layout->addWidget(webView, 1);
+
+        const auto applyUrl = [this, urlEdit, webView]() {
+            const QString raw = urlEdit ? urlEdit->text().trimmed() : QString();
+            if (raw.isEmpty()) {
+                return;
+            }
+            const QUrl parsed = QUrl::fromUserInput(raw);
+            if (!parsed.isValid()) {
+                updateStatusMessage(QString("Invalid URL: %1").arg(raw));
+                return;
+            }
+            if (urlEdit) {
+                urlEdit->setText(parsed.toString());
+            }
+            webView->load(parsed);
+        };
+
+        connect(goBtn, &QPushButton::clicked, this, [applyUrl]() {
+            applyUrl();
+        });
+        connect(urlEdit, &QLineEdit::returnPressed, this, [applyUrl]() {
+            applyUrl();
+        });
+        connect(reloadBtn, &QPushButton::clicked, webView, &QWebEngineView::reload);
+
         QTimer::singleShot(0, this, [applyUrl]() {
             applyUrl();
         });
+    } else {
+        addWebEngineFallback();
     }
 #else
-    auto *fallback = new QLabel(
-        "Qt WebEngine is not available in this C++ build.\n"
-        "Use 'Open in Browser' to view the heatmap.",
-        panel);
-    fallback->setWordWrap(true);
-    fallback->setStyleSheet("color: #f59e0b;");
-    layout->addWidget(fallback, 1);
-
-    connect(goBtn, &QPushButton::clicked, this, [this, normalizedUrlText]() {
-        const QString target = normalizedUrlText();
-        if (!openExternalUrl(target)) {
-            updateStatusMessage(QString("Could not open URL: %1").arg(target));
-        }
-    });
-    connect(urlEdit, &QLineEdit::returnPressed, this, [this, normalizedUrlText]() {
-        const QString target = normalizedUrlText();
-        if (!openExternalUrl(target)) {
-            updateStatusMessage(QString("Could not open URL: %1").arg(target));
-        }
-    });
-    connect(reloadBtn, &QPushButton::clicked, this, [this]() {
-        updateStatusMessage("Reload is unavailable: Qt WebEngine is not enabled in this build.");
-    });
+    addWebEngineFallback();
 #endif
 
     return panel;

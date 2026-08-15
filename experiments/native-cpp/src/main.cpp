@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QLabel>
 #include <QListWidget>
 #include <QTabBar>
 #include <QStringList>
@@ -101,6 +102,24 @@ bool verifyBoundedSmokeWindow(TradingBotWindow &window) {
     }
     if (!mainTabs) {
         QTextStream(stderr) << "Trading Bot C++ smoke failed: primary desktop tabs are unavailable\n";
+        return false;
+    }
+
+    // The bounded smoke must remain independent of the browser runtime. A
+    // successful QApplication launch alone would not catch an accidental
+    // QWebEngineView construction because the failure occurs asynchronously.
+    for (QObject *child : window.findChildren<QObject *>()) {
+        const QString className = QString::fromLatin1(child->metaObject()->className());
+        if (className.contains(QStringLiteral("WebEngine"), Qt::CaseInsensitive)) {
+            QTextStream(stderr) << "Trading Bot C++ smoke failed: bounded smoke constructed "
+                                << className << "\n";
+            return false;
+        }
+    }
+    if (!window.findChild<QWidget *>(QStringLiteral("nativeKlineChartFallback"))
+        || !window.findChild<QLabel *>(QStringLiteral("chartTradingViewFallback"))
+        || !window.findChild<QLabel *>(QStringLiteral("liquidationWebEngineFallback"))) {
+        QTextStream(stderr) << "Trading Bot C++ smoke failed: bounded browser fallbacks are unavailable\n";
         return false;
     }
 

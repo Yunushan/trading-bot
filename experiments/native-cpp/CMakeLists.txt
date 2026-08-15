@@ -23,7 +23,16 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-option(TB_REQUIRE_QT_WEBENGINE "Require Qt WebEngine for embedded TradingView/Binance chart modes." ON)
+option(
+    TB_ENABLE_QT_WEBENGINE
+    "Enable Qt WebEngine for embedded TradingView/Binance chart modes."
+    ON
+)
+option(
+    TB_REQUIRE_QT_WEBENGINE
+    "Require Qt WebEngine for embedded TradingView/Binance chart modes."
+    ON
+)
 if (WIN32 OR APPLE)
     set(_tb_default_enable_qt_deploy_script ON)
 else()
@@ -59,13 +68,15 @@ if ((NOT DEFINED Qt6_DIR) OR Qt6_DIR STREQUAL "" OR Qt6_DIR MATCHES "NOTFOUND")
     endif()
 
     set(_tb_selected_qt6_dir "")
-    foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
-        if (EXISTS "${_tb_candidate}/Qt6Config.cmake"
-            AND EXISTS "${_tb_candidate}/../Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake")
-            set(_tb_selected_qt6_dir "${_tb_candidate}")
-            break()
-        endif()
-    endforeach()
+    if (TB_ENABLE_QT_WEBENGINE)
+        foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
+            if (EXISTS "${_tb_candidate}/Qt6Config.cmake"
+                AND EXISTS "${_tb_candidate}/../Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake")
+                set(_tb_selected_qt6_dir "${_tb_candidate}")
+                break()
+            endif()
+        endforeach()
+    endif()
 
     if (_tb_selected_qt6_dir STREQUAL "")
         foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
@@ -125,7 +136,9 @@ endif()
 find_package(Qt6 ${TB_QT_VERSION} REQUIRED COMPONENTS Core Widgets Network Concurrent)
 # Qt6_DIR points at lib/cmake/Qt6.  The optional module config packages live
 # alongside it, so explicitly hint that parent directory for archive installs.
-find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} QUIET HINTS "${Qt6_DIR}/..")
+if (TB_ENABLE_QT_WEBENGINE)
+    find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} QUIET HINTS "${Qt6_DIR}/..")
+endif()
 find_package(Qt6WebSockets ${TB_QT_VERSION} QUIET HINTS "${Qt6_DIR}/..")
 
 set(HAS_WEBENGINE 0)
@@ -135,6 +148,12 @@ endif()
 set(HAS_QT_WEBSOCKETS 0)
 if (TARGET Qt6::WebSockets)
     set(HAS_QT_WEBSOCKETS 1)
+endif()
+
+if (TB_REQUIRE_QT_WEBENGINE AND NOT TB_ENABLE_QT_WEBENGINE)
+    message(FATAL_ERROR
+        "TB_REQUIRE_QT_WEBENGINE cannot be ON when TB_ENABLE_QT_WEBENGINE is OFF."
+    )
 endif()
 
 if (TB_REQUIRE_QT_WEBENGINE AND NOT HAS_WEBENGINE)
@@ -317,6 +336,7 @@ if (APPLE)
         binance_backtest_tab
         PROPERTIES
             MACOSX_BUNDLE TRUE
+            MACOSX_RPATH TRUE
             BUILD_RPATH "@executable_path/../Frameworks"
             INSTALL_RPATH "@executable_path/../Frameworks"
             BUILD_WITH_INSTALL_RPATH TRUE

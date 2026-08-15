@@ -271,6 +271,13 @@ QString buildBinanceWebUrl(const QString &symbol, const QString &interval, const
 QWidget *TradingBotWindow::createChartTab() {
     const bool boundedSmoke = QCoreApplication::instance()
         && QCoreApplication::instance()->property("tradingBotBoundedSmoke").toBool();
+#if HAS_QT_WEBENGINE
+    // Qt WebEngine is intentionally not initialized by the headless bounded smoke.
+    // The normal desktop path still uses the embedded browser views.
+    const bool useEmbeddedWebEngine = !boundedSmoke;
+#else
+    constexpr bool useEmbeddedWebEngine = false;
+#endif
     auto *page = new QWidget(this);
     page->setObjectName("chartPage");
     auto *layout = new QVBoxLayout(page);
@@ -369,14 +376,23 @@ QWidget *TradingBotWindow::createChartTab() {
     originalPage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *originalLayout = new QVBoxLayout(originalPage);
     originalLayout->setContentsMargins(0, 0, 0, 0);
+    NativeKlineChartWidget *chartWidget = nullptr;
 #if HAS_QT_WEBENGINE
-    auto *binanceView = new QWebEngineView(originalPage);
-    binanceView->setContextMenuPolicy(Qt::NoContextMenu);
-    binanceView->setMinimumHeight(520);
-    binanceView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    originalLayout->addWidget(binanceView, 1);
+    QWebEngineView *binanceView = nullptr;
+    if (useEmbeddedWebEngine) {
+        binanceView = new QWebEngineView(originalPage);
+        binanceView->setContextMenuPolicy(Qt::NoContextMenu);
+        binanceView->setMinimumHeight(520);
+        binanceView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        originalLayout->addWidget(binanceView, 1);
+    } else {
+        chartWidget = new NativeKlineChartWidget(originalPage);
+        chartWidget->setObjectName("nativeKlineChartFallback");
+        originalLayout->addWidget(chartWidget, 1);
+    }
 #else
-    auto *chartWidget = new NativeKlineChartWidget(originalPage);
+    chartWidget = new NativeKlineChartWidget(originalPage);
+    chartWidget->setObjectName("nativeKlineChartFallback");
     originalLayout->addWidget(chartWidget, 1);
 #endif
     chartStack->addWidget(originalPage);
@@ -387,50 +403,64 @@ QWidget *TradingBotWindow::createChartTab() {
     tradingLayout->setContentsMargins(0, 0, 0, 0);
     tradingLayout->setSpacing(8);
 #if HAS_QT_WEBENGINE
-    auto *tradingView = new ResizeAwareWebEngineView(tradingPage);
-    tradingView->setMinimumHeight(560);
-    tradingView->setContextMenuPolicy(Qt::NoContextMenu);
-    tradingLayout->addWidget(tradingView, 1);
-    auto syncTradingViewEmbed = [tradingView]() {
-        if (!tradingView || !tradingView->page()) {
-            return;
-        }
-        const int hostHeight = std::max(560, tradingView->height());
-        const QString js = QStringLiteral(R"JS(
+    ResizeAwareWebEngineView *tradingView = nullptr;
+    if (useEmbeddedWebEngine) {
+        tradingView = new ResizeAwareWebEngineView(tradingPage);
+        tradingView->setMinimumHeight(560);
+        tradingView->setContextMenuPolicy(Qt::NoContextMenu);
+        tradingLayout->addWidget(tradingView, 1);
+        auto syncTradingViewEmbed = [tradingView]() {
+            if (!tradingView || !tradingView->page()) {
+                return;
+            }
+            const int hostHeight = std::max(560, tradingView->height());
+            const QString js = QStringLiteral(R"JS(
 (function(hostHeight) {
   if (typeof window.__tv_sync_host === "function") {
     window.__tv_sync_host(hostHeight);
   }
 })(%1);
         )JS").arg(hostHeight);
-        tradingView->page()->runJavaScript(js);
-    };
-    auto *tradingViewResizeTimer = new QTimer(tradingView);
-    tradingViewResizeTimer->setSingleShot(true);
-    tradingViewResizeTimer->setInterval(90);
-    connect(tradingViewResizeTimer, &QTimer::timeout, tradingPage, [syncTradingViewEmbed]() {
-        syncTradingViewEmbed();
-    });
-    tradingView->setResizeCallback([tradingViewResizeTimer]() {
-        tradingViewResizeTimer->start();
-    });
-    connect(tradingView, &QWebEngineView::loadFinished, tradingPage, [tradingView, syncTradingViewEmbed](bool ok) {
-        if (!ok) {
-            return;
-        }
-        syncTradingViewEmbed();
-        QTimer::singleShot(120, tradingView, [syncTradingViewEmbed]() {
+            tradingView->page()->runJavaScript(js);
+        };
+        auto *tradingViewResizeTimer = new QTimer(tradingView);
+        tradingViewResizeTimer->setSingleShot(true);
+        tradingViewResizeTimer->setInterval(90);
+        connect(tradingViewResizeTimer, &QTimer::timeout, tradingPage, [syncTradingViewEmbed]() {
             syncTradingViewEmbed();
         });
-        QTimer::singleShot(500, tradingView, [syncTradingViewEmbed]() {
-            syncTradingViewEmbed();
+        tradingView->setResizeCallback([tradingViewResizeTimer]() {
+            tradingViewResizeTimer->start();
         });
-    });
+        connect(tradingView, &QWebEngineView::loadFinished, tradingPage, [tradingView, syncTradingViewEmbed](bool ok) {
+            if (!ok) {
+                return;
+            }
+            syncTradingViewEmbed();
+            QTimer::singleShot(120, tradingView, [syncTradingViewEmbed]() {
+                syncTradingViewEmbed();
+            });
+            QTimer::singleShot(500, tradingView, [syncTradingViewEmbed]() {
+                syncTradingViewEmbed();
+            });
+        });
+    } else {
+        auto *tvUnavailable = new QLabel(
+            "Qt WebEngine is disabled during the bounded headless smoke. "
+            "Use the native chart fallback for contract validation.",
+            tradingPage);
+        tvUnavailable->setObjectName("chartTradingViewFallback");
+        tvUnavailable->setWordWrap(true);
+        tvUnavailable->setStyleSheet("color: #f59e0b;");
+        tradingLayout->addWidget(tvUnavailable);
+        tradingLayout->addStretch(1);
+    }
 #else
     auto *tvUnavailable = new QLabel(
         "Qt WebEngine is not available in this C++ build, so embedded TradingView is disabled. "
         "Use the Open TradingView button to view it in your browser.",
         tradingPage);
+    tvUnavailable->setObjectName("chartTradingViewFallback");
     tvUnavailable->setWordWrap(true);
     tvUnavailable->setStyleSheet("color: #f59e0b;");
     tradingLayout->addWidget(tvUnavailable);
@@ -438,23 +468,27 @@ QWidget *TradingBotWindow::createChartTab() {
 #endif
     chartStack->addWidget(tradingPage);
 
-#if !HAS_QT_WEBENGINE
-    try {
-        const int tvIdx = viewModeCombo->findData("tradingview");
-        if (tvIdx >= 0) {
-            if (auto *model = qobject_cast<QStandardItemModel *>(viewModeCombo->model())) {
-                if (QStandardItem *item = model->item(tvIdx)) {
-                    item->setEnabled(false);
-                    item->setToolTip("Qt WebEngine not installed in this C++ toolchain.");
+    if (!useEmbeddedWebEngine) {
+        try {
+            const int tvIdx = viewModeCombo->findData("tradingview");
+            if (tvIdx >= 0) {
+                if (auto *model = qobject_cast<QStandardItemModel *>(viewModeCombo->model())) {
+                    if (QStandardItem *item = model->item(tvIdx)) {
+                        item->setEnabled(false);
+#if HAS_QT_WEBENGINE
+                        item->setToolTip("Qt WebEngine is disabled during bounded headless smoke.");
+#else
+                        item->setToolTip("Qt WebEngine is not installed in this C++ toolchain.");
+#endif
+                    }
                 }
             }
+            viewModeCombo->setCurrentIndex(viewModeCombo->findData("original"));
+        } catch (...) {
         }
+    } else {
         viewModeCombo->setCurrentIndex(viewModeCombo->findData("original"));
-    } catch (...) {
     }
-#else
-    viewModeCombo->setCurrentIndex(viewModeCombo->findData("original"));
-#endif
 
     auto currentRawSymbol = [symbolCombo]() {
         QString raw = symbolCombo->currentData().toString().trimmed().toUpper();
@@ -544,21 +578,19 @@ QWidget *TradingBotWindow::createChartTab() {
     };
 
     std::function<void()> refreshOriginal;
-#if HAS_QT_WEBENGINE
-    refreshOriginal = [status, marketCombo, intervalCombo, currentRawSymbol, binanceView]() {
-        const QString rawSymbol = normalizeChartSymbol(currentRawSymbol());
-        if (rawSymbol.isEmpty()) {
-            status->setText("Select a symbol, then refresh.");
+    const auto refreshNativeOriginal = [this,
+                                        status,
+                                        marketCombo,
+                                        intervalCombo,
+                                        currentRawSymbol,
+                                        chartWidget,
+                                        boundedSmoke]() {
+        if (boundedSmoke) {
+            chartWidget->setCandles({});
+            chartWidget->setOverlayMessage("Smoke mode: native chart fallback ready without network access.");
+            status->setText("Smoke mode: chart contract verified without network access.");
             return;
         }
-        const QString marketKey = marketCombo->currentData().toString();
-        const QString interval = intervalCombo->currentText().trimmed();
-        const QString url = buildBinanceWebUrl(rawSymbol, interval, marketKey);
-        binanceView->load(QUrl(url));
-        status->setText(QString("Original view loaded: %1 (%2)").arg(rawSymbol, interval));
-    };
-#else
-    refreshOriginal = [this, status, marketCombo, intervalCombo, currentRawSymbol, chartWidget]() {
         const QString rawSymbol = normalizeChartSymbol(currentRawSymbol());
         if (rawSymbol.isEmpty()) {
             status->setText("Select a symbol, then refresh.");
@@ -567,7 +599,9 @@ QWidget *TradingBotWindow::createChartTab() {
             return;
         }
         const bool futures = marketCombo->currentData().toString() == "futures";
-        const bool isTestnet = dashboardModeCombo_ ? TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText()) : false;
+        const bool isTestnet = dashboardModeCombo_
+            ? TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText())
+            : false;
         const QString connectorText = dashboardConnectorCombo_ ? dashboardConnectorCombo_->currentText() : QString();
         const ConnectorRuntimeConfig connectorCfg = TradingBotWindowSupport::resolveConnectorConfig(connectorText, futures);
         if (!connectorCfg.ok()) {
@@ -595,11 +629,31 @@ QWidget *TradingBotWindow::createChartTab() {
         chartWidget->setOverlayMessage(futures ? "Source: Binance Futures" : "Source: Binance Spot");
         status->setText(QString("Original view loaded: %1 (%2)").arg(rawSymbol, interval));
     };
+#if HAS_QT_WEBENGINE
+    if (useEmbeddedWebEngine) {
+        refreshOriginal = [status, marketCombo, intervalCombo, currentRawSymbol, binanceView]() {
+            const QString rawSymbol = normalizeChartSymbol(currentRawSymbol());
+            if (rawSymbol.isEmpty()) {
+                status->setText("Select a symbol, then refresh.");
+                return;
+            }
+            const QString marketKey = marketCombo->currentData().toString();
+            const QString interval = intervalCombo->currentText().trimmed();
+            const QString url = buildBinanceWebUrl(rawSymbol, interval, marketKey);
+            binanceView->load(QUrl(url));
+            status->setText(QString("Original view loaded: %1 (%2)").arg(rawSymbol, interval));
+        };
+    } else {
+        refreshOriginal = refreshNativeOriginal;
+    }
+#else
+    refreshOriginal = refreshNativeOriginal;
 #endif
 
     std::function<void()> refreshTradingView;
 #if HAS_QT_WEBENGINE
-    refreshTradingView = [status, intervalCombo, currentRawSymbol, tradingView]() {
+    if (useEmbeddedWebEngine) {
+        refreshTradingView = [status, intervalCombo, currentRawSymbol, tradingView]() {
         const QString rawSymbol = normalizeChartSymbol(currentRawSymbol());
         if (rawSymbol.isEmpty()) {
             status->setText("Select a symbol, then refresh.");
@@ -754,7 +808,12 @@ QWidget *TradingBotWindow::createChartTab() {
         )").arg(rawSymbol, tvInterval, QString::number(hostHeight));
         tradingView->setHtml(html, QUrl("https://www.tradingview.com/"));
         status->setText(QString("TradingView loaded: %1 (%2)").arg(rawSymbol, intervalCombo->currentText()));
-    };
+        };
+    } else {
+        refreshTradingView = [status]() {
+            status->setText("TradingView embed unavailable during bounded headless smoke.");
+        };
+    }
 #else
     refreshTradingView = [status]() {
         status->setText("TradingView embed unavailable: Qt WebEngine is not installed in this build.");

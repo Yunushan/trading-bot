@@ -257,11 +257,27 @@ jobs:
           fi
           cpp_bin="${app_bundle}/Contents/MacOS/Trading-Bot-C++"
           embedded_rpath="@executable_path/../Frameworks"
-          if ! otool -l "${cpp_bin}" | grep -A2 -F "cmd LC_RPATH" | grep -Fq "path ${embedded_rpath}"; then
+          has_embedded_rpath() {
+            otool -l "$1" | awk -v expected="$2" '
+              $1 == "cmd" && $2 == "LC_RPATH" { in_rpath=1; next }
+              in_rpath && $1 == "path" {
+                if ($2 == expected) found=1
+                in_rpath=0
+                next
+              }
+              in_rpath && $1 == "cmd" { in_rpath=0 }
+              END { exit(found ? 0 : 1) }
+            '
+          }
+          if ! has_embedded_rpath "${cpp_bin}" "${embedded_rpath}"; then
             install_name_tool -add_rpath "${embedded_rpath}" "${cpp_bin}"
           fi
-          if ! otool -l "${cpp_bin}" | grep -A2 -F "cmd LC_RPATH" | grep -Fq "path ${embedded_rpath}"; then
+          if ! has_embedded_rpath "${cpp_bin}" "${embedded_rpath}"; then
             echo "macOS app binary is missing the embedded-framework LC_RPATH." >&2
+            exit 1
+          fi
+          if ! otool -L "${cpp_bin}" | grep -Fq "@rpath/QtConcurrent.framework/"; then
+            echo "macOS app binary is not linked against the embedded QtConcurrent framework." >&2
             exit 1
           fi
 

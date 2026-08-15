@@ -2,7 +2,7 @@
 #
 # The Chainguard Python images are pinned by immutable multi-platform digests.
 # The builder contains pip and build tools; the final Wolfi runtime is distroless.
-FROM cgr.dev/chainguard/python:latest-dev@sha256:7b253a0b7cbe886469db59e4cca6d86fffb48d3263d36b374bc0c946c2c5d9dd AS builder
+FROM cgr.dev/chainguard/python:latest-dev@sha256:5167939066134c84bc52d0e7a84ca3ade7b79866dc1f4a7b5ca9f654c2948a88 AS builder
 
 USER root
 
@@ -30,7 +30,7 @@ RUN --mount=type=secret,id=pip_ca,required=false,target=/run/secrets/pip_ca \
     && touch /home/nonroot/.trading-bot/.keep \
     && chown 65532:65532 /home/nonroot/.trading-bot/.keep
 
-FROM cgr.dev/chainguard/python:latest@sha256:69437de912cc3b5d36a2480b8fb0c3f658f151d8bc1978d19a6412be3a4983d5
+FROM cgr.dev/chainguard/python:latest@sha256:54d936802bbb82c517b4d535af7bc211a44a8ec418297142df2898b32c550193
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

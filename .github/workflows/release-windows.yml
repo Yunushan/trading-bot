@@ -177,32 +177,37 @@ jobs:
 
           # ARM64 kits are consumed through CMake. Do not require qmake or the
           # host-desktop auto-install path, which is not published consistently
-          # for the Windows ARM64 kit.
-          $qtArm64Bin = Join-Path $qtOutputDir "6.10.3/msvc2022_arm64/bin"
-          $qtArm64Cmake = Join-Path $qtOutputDir "6.10.3/msvc2022_arm64/lib/cmake/Qt6/Qt6Config.cmake"
+          # for the Windows ARM64 kit. Resolve the prefix from the installed
+          # config instead of assuming aqt's output directory spelling.
+          $qtArm64ConfigCandidates = Get-ChildItem -Path $qtOutputDir -Recurse -Filter "Qt6Config.cmake" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "[\\/]msvc2022_arm64[\\/]lib[\\/]cmake[\\/]Qt6[\\/]Qt6Config\.cmake$" }
+          $qtArm64Cmake = $qtArm64ConfigCandidates | Select-Object -First 1
+          if ($null -eq $qtArm64Cmake) {
+            throw "Native ARM64 Qt CMake package was not installed under $qtOutputDir."
+          }
+          $qtArm64Prefix = Split-Path (Split-Path (Split-Path (Split-Path $qtArm64Cmake.FullName -Parent) -Parent) -Parent) -Parent
+          $qtArm64Bin = Join-Path $qtArm64Prefix "bin"
           if (!(Test-Path $qtArm64Bin)) {
             throw "Native ARM64 Qt bin directory was not installed at $qtArm64Bin."
           }
-          if (!(Test-Path $qtArm64Cmake)) {
-            throw "Native ARM64 Qt CMake package was not installed at $qtArm64Cmake."
-          }
           foreach ($module in @("Qt6WebSocketsConfig.cmake", "Qt6WebChannelConfig.cmake", "Qt6PositioningConfig.cmake")) {
-            $moduleConfig = Join-Path $qtOutputDir "6.10.3/msvc2022_arm64/lib/cmake/$($module -replace 'Config\.cmake$','')/$module"
+            $moduleConfig = Join-Path $qtArm64Prefix "lib/cmake/$($module -replace 'Config\.cmake$','')/$module"
             if (!(Test-Path $moduleConfig)) {
               throw "Native ARM64 Qt module package was not installed at $moduleConfig."
             }
           }
+          "QT_ARM64_PREFIX=$qtArm64Prefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $qtArm64Bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Resolve Qt CMake path
         shell: pwsh
         run: |
           if ("${{ matrix.id }}" -eq "windows-arm64") {
-            $qtConfigCandidates = Get-ChildItem -Path (Join-Path $env:RUNNER_TEMP "qt/6.10.3") -Recurse -Filter "Qt6Config.cmake" -ErrorAction SilentlyContinue |
+            $qtConfigCandidates = Get-ChildItem -Path (Join-Path $env:RUNNER_TEMP "qt") -Recurse -Filter "Qt6Config.cmake" -ErrorAction SilentlyContinue |
               Where-Object { $_.FullName -match "msvc2022_arm64[\\/]lib[\\/]cmake[\\/]Qt6[\\/]Qt6Config\.cmake$" }
             $qtConfig = $qtConfigCandidates | Select-Object -First 1
             if ($null -eq $qtConfig) {
-              throw "Qt6Config.cmake was not found in the installed ARM64 kit under $env:RUNNER_TEMP/qt/6.10.3."
+              throw "Qt6Config.cmake was not found in the installed ARM64 kit under $env:RUNNER_TEMP/qt."
             }
             $qtPrefix = Split-Path (Split-Path (Split-Path (Split-Path $qtConfig.FullName -Parent) -Parent) -Parent) -Parent
           } else {
@@ -445,6 +450,9 @@ jobs:
           )
           if ("${{ matrix.id }}" -eq "windows-arm64" -and -not [string]::IsNullOrWhiteSpace($env:QT_HOST_PATH)) {
             $cmakeArgs += "-DQT_HOST_PATH=$env:QT_HOST_PATH"
+          }
+          if ("${{ matrix.id }}" -eq "windows-arm64") {
+            $cmakeArgs += "-DTB_ENABLE_QT_WEBENGINE=OFF"
           }
           cmake @cmakeArgs
 

@@ -69,7 +69,19 @@ def check_dependencies() -> int:
 
 
 def build_suite() -> unittest.TestSuite:
-    return unittest.defaultTestLoader.loadTestsFromNames(SERVICE_TEST_MODULES)
+    # The focused manifest keeps the ``tests.`` prefix for documentation and
+    # drift checks, but the test directory intentionally has no __init__.py.
+    # Load each manifest entry from that directory as a top-level module so
+    # unittest does not turn every service module into an import error.
+    tests_dir = str(PYTHON_ROOT / "tests")
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+
+    suite = unittest.TestSuite()
+    for module_name in SERVICE_TEST_MODULES:
+        local_module_name = module_name.removeprefix("tests.")
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromName(local_module_name))
+    return suite
 
 
 def check_module_list() -> int:

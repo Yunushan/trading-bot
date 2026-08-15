@@ -95,6 +95,7 @@ def _checks(
             "tools/check_native_cpp.py",
             "--json",
             "--no-require-webengine",
+            "--disable-webengine",
             "--no-enable-qt-deploy-script",
             "--smoke-targets-only",
             "--qt-version",
