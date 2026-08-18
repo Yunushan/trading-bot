@@ -63,7 +63,15 @@ QString paramValue(const QVector<QPair<QString, QString>> &params, const QString
     return {};
 }
 
-bool boolParam(const QString &value) {
+bool intentBoolParam(const QString &value) {
+    const QString text = value.trimmed().toLower();
+    return text == QStringLiteral("1")
+        || text == QStringLiteral("true")
+        || text == QStringLiteral("yes")
+        || text == QStringLiteral("on");
+}
+
+bool filterTruthyParam(const QString &value) {
     const QString text = value.trimmed().toLower();
     return text == QStringLiteral("1")
         || text == QStringLiteral("true")
@@ -136,14 +144,19 @@ bool credentialIsReal(const QString &value) {
 QStringList connectorHealthErrors(const QString &state, const QString &health) {
     const QString stateNorm = state.trimmed().toLower();
     const QString healthNorm = health.trimmed().toLower();
-    if (!stateNorm.isEmpty() && stateNorm != QStringLiteral("ready")) {
+    if (stateNorm.isEmpty()) {
+        return {QStringLiteral("connector health snapshot missing state")};
+    }
+    if (healthNorm.isEmpty()) {
+        return {QStringLiteral("connector health snapshot missing health")};
+    }
+    if (stateNorm != QStringLiteral("ready")) {
         return {
             QStringLiteral("connector health is %1 / %2")
                 .arg(healthNorm.isEmpty() ? QStringLiteral("unknown") : healthNorm, stateNorm),
         };
     }
-    if (!healthNorm.isEmpty()
-        && healthNorm != QStringLiteral("ok")
+    if (healthNorm != QStringLiteral("ok")
         && healthNorm != QStringLiteral("unknown")) {
         return {QStringLiteral("connector health is %1").arg(healthNorm)};
     }
@@ -186,11 +199,13 @@ bool envBool(QString value, bool defaultValue = false) {
     if (value.isEmpty()) {
         return defaultValue;
     }
-    return value == QStringLiteral("1")
-        || value == QStringLiteral("true")
-        || value == QStringLiteral("yes")
-        || value == QStringLiteral("y")
-        || value == QStringLiteral("on");
+    for (const std::string_view candidate :
+         PythonParityContract::kPythonLiveSafetyEnvironmentTrueValues) {
+        if (value == QString::fromLatin1(candidate.data(), static_cast<int>(candidate.size()))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 QString generatedEnvValue(std::string_view name) {
@@ -270,6 +285,10 @@ QString stateFromRaw(const QJsonObject &raw) {
 } // namespace
 
 namespace NativeOrderSafety {
+
+QStringList validateConnectorHealthErrors(const QString &state, const QString &health) {
+    return connectorHealthErrors(state, health);
+}
 
 ConnectorOrderCircuitBreaker::ConnectorOrderCircuitBreaker(ConnectorOrderCircuitConfig config)
     : config_(config) {
@@ -484,8 +503,8 @@ OrderSubmitIntent orderSubmitIntentFromParams(
     intent.hasQuantity = doubleParam(paramValue(params, {QStringLiteral("quantity")}), &intent.quantity);
     intent.hasPrice = doubleParam(paramValue(params, {QStringLiteral("price")}), &intent.price);
     intent.positionSide = paramValue(params, {QStringLiteral("positionSide"), QStringLiteral("position_side")}).trimmed().toUpper();
-    intent.closePosition = boolParam(paramValue(params, {QStringLiteral("closePosition"), QStringLiteral("close_position")}));
-    intent.reduceOnly = boolParam(paramValue(params, {QStringLiteral("reduceOnly"), QStringLiteral("reduce_only")}));
+    intent.closePosition = intentBoolParam(paramValue(params, {QStringLiteral("closePosition"), QStringLiteral("close_position")}));
+    intent.reduceOnly = intentBoolParam(paramValue(params, {QStringLiteral("reduceOnly"), QStringLiteral("reduce_only")}));
     return intent;
 }
 
@@ -564,17 +583,16 @@ QStringList validateOrderSubmitIntent(const OrderSubmitIntent &intent) {
     return errors;
 }
 
-QStringList validateOrderFilterConstraints(
+QStringList validateOrderFilterConstraintsInternal(
     const OrderSubmitIntent &intent,
     const OrderSymbolFilters &filters,
     bool hasLastPrice,
-    double lastPrice) {
+    double lastPrice,
+    bool riskReducingExit) {
     if (!intent.hasQuantity || !qIsFinite(intent.quantity)) {
         return {};
     }
     QStringList errors;
-    const bool riskReducingExit = intent.market == QStringLiteral("futures")
-        && (intent.reduceOnly || intent.closePosition);
     if (filters.minQty > 0.0 && intent.quantity < filters.minQty && !riskReducingExit) {
         errors.append(
             QStringLiteral("order quantity %1 is below %2 minQty %3")
@@ -607,6 +625,42 @@ QStringList validateOrderFilterConstraints(
         }
     }
     return errors;
+}
+
+QStringList validateOrderFilterConstraints(
+    const OrderSubmitIntent &intent,
+    const OrderSymbolFilters &filters,
+    bool hasLastPrice,
+    double lastPrice) {
+    const bool riskReducingExit = intent.market == QStringLiteral("futures")
+        && (intent.reduceOnly || intent.closePosition);
+    return validateOrderFilterConstraintsInternal(
+        intent,
+        filters,
+        hasLastPrice,
+        lastPrice,
+        riskReducingExit);
+}
+
+QStringList validateOrderFilterConstraintsWithRawParams(
+    const OrderSubmitIntent &intent,
+    const OrderSymbolFilters &filters,
+    bool hasLastPrice,
+    double lastPrice,
+    const QVector<QPair<QString, QString>> &params) {
+    const bool riskReducingExit = intent.market == QStringLiteral("futures")
+        && (filterTruthyParam(paramValue(
+                params,
+                {QStringLiteral("reduceOnly"), QStringLiteral("reduce_only")}))
+            || filterTruthyParam(paramValue(
+                params,
+                {QStringLiteral("closePosition"), QStringLiteral("close_position")})));
+    return validateOrderFilterConstraintsInternal(
+        intent,
+        filters,
+        hasLastPrice,
+        lastPrice,
+        riskReducingExit);
 }
 
 bool isLiveTradingMode(const QString &mode) {
@@ -705,7 +759,7 @@ LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
         }
     }
     if (liveMode || PythonParityContract::kPythonOrderGuardValidateConnectorHealthAllModes) {
-        errors.append(connectorHealthErrors(input.connectorState, input.connectorHealth));
+        errors.append(validateConnectorHealthErrors(input.connectorState, input.connectorHealth));
     }
     const OrderSubmitIntent intent = orderSubmitIntentFromParams(input.market, input.params);
     if (liveMode || PythonParityContract::kPythonOrderGuardValidateIntentAllModes) {
@@ -717,7 +771,12 @@ LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
             && intent.hasQuantity
             && (intent.market == QStringLiteral("futures") || intent.market == QStringLiteral("spot"))) {
             if (input.hasFilters) {
-                errors.append(validateOrderFilterConstraints(intent, input.filters, input.hasLastPrice, input.lastPrice));
+                errors.append(validateOrderFilterConstraintsWithRawParams(
+                    intent,
+                    input.filters,
+                    input.hasLastPrice,
+                    input.lastPrice,
+                    input.params));
             } else {
                 errors.append(QStringLiteral("%1 symbol filters unavailable for %2").arg(intent.market, intent.symbol));
             }
@@ -786,6 +845,292 @@ MinimumOrderAutoBumpGuardResult guardFuturesMinimumOrderAutoBump(
         return {false, true, errors};
     }
     return {true, true, {}};
+}
+
+namespace {
+
+double finiteNonNegative(double value) {
+    return qIsFinite(value) ? std::max(0.0, value) : 0.0;
+}
+
+double normalizedRatio(double value) {
+    if (!qIsFinite(value) || value <= 0.0) {
+        return 0.0;
+    }
+    return value > 1.0 ? value / 100.0 : value;
+}
+
+double filterMinimumMargin(
+    const OrderSymbolFilters &filters,
+    double price,
+    double leverage) {
+    if (!qIsFinite(price) || price <= 0.0 || leverage <= 0.0) {
+        return 0.0;
+    }
+    double minimumQuantity = finiteNonNegative(filters.minQty);
+    const double minNotional = finiteNonNegative(filters.minNotional);
+    if (minNotional > 0.0) {
+        double notionalQuantity = minNotional / price;
+        const double step = finiteNonNegative(filters.stepSize);
+        if (step > 0.0 && qIsFinite(notionalQuantity)) {
+            const double stepUnits = std::ceil((notionalQuantity / step) - 1e-12);
+            if (qIsFinite(stepUnits)) {
+                notionalQuantity = std::max(0.0, stepUnits * step);
+            }
+        }
+        minimumQuantity = std::max(minimumQuantity, notionalQuantity);
+    }
+    return minimumQuantity * price / leverage;
+}
+
+double filterHeadroomMargin(
+    const OrderSymbolFilters &filters,
+    double price,
+    double leverage) {
+    if (!qIsFinite(price) || price <= 0.0 || leverage <= 0.0) {
+        return 0.0;
+    }
+    const double minimumQuantityMargin = finiteNonNegative(filters.minQty) * price / leverage;
+    const double minimumNotionalMargin = finiteNonNegative(filters.minNotional) / leverage;
+    // Python's first-pass headroom deliberately uses the raw filter floors;
+    // step rounding is applied only by its later filter_min_margin check.
+    return std::max(minimumQuantityMargin, minimumNotionalMargin);
+}
+
+CapitalExposureGuardResult capitalExposureBlock(
+    const QString &reason,
+    double equityUsdt = 0.0,
+    double targetMarginUsdt = 0.0,
+    double maxIndicatorMarginUsdt = 0.0,
+    double marginEstimateUsdt = 0.0,
+    double projectedSideMarginUsdt = 0.0,
+    double quantityEstimate = 0.0,
+    bool reduceOnly = false,
+    const QString &desiredPositionSide = {}) {
+    return {
+        false,
+        reason,
+        equityUsdt,
+        targetMarginUsdt,
+        maxIndicatorMarginUsdt,
+        marginEstimateUsdt,
+        projectedSideMarginUsdt,
+        quantityEstimate,
+        reduceOnly,
+        desiredPositionSide,
+    };
+}
+
+} // namespace
+
+CapitalExposureGuardResult guardFuturesCapitalExposure(
+    const CapitalExposureGuardInput &input) {
+    const QString side = input.side.trimmed().toUpper();
+    if (side != QStringLiteral("BUY") && side != QStringLiteral("SELL")) {
+        return capitalExposureBlock(QStringLiteral("side must be BUY or SELL"));
+    }
+    if (!qIsFinite(input.price) || input.price <= 0.0) {
+        return capitalExposureBlock(QStringLiteral("price must be > 0"));
+    }
+    if (input.leverage < 1) {
+        return capitalExposureBlock(QStringLiteral("leverage must be >= 1"));
+    }
+    if (!qIsFinite(input.positionPctFraction) || input.positionPctFraction <= 0.0) {
+        return capitalExposureBlock(QStringLiteral("position_pct_fraction must be > 0"));
+    }
+    if (!qIsFinite(input.requestedQuantity) || input.requestedQuantity < 0.0
+        || !qIsFinite(input.normalizedQuantity) || input.normalizedQuantity <= 0.0) {
+        return capitalExposureBlock(QStringLiteral("quantity must be finite and > 0 after exchange filters"));
+    }
+
+    const double leverage = static_cast<double>(input.leverage);
+    const double availableUsdt = finiteNonNegative(input.availableUsdt);
+    const double ledgerMarginTotal = finiteNonNegative(input.ledgerMarginTotal);
+    const double walletUsdt = finiteNonNegative(input.walletUsdt);
+    const double equityUsdt = std::max({
+        walletUsdt,
+        availableUsdt + ledgerMarginTotal,
+        ledgerMarginTotal,
+    });
+    if (equityUsdt <= 0.0) {
+        return capitalExposureBlock(QStringLiteral("capital guard: no wallet equity to allocate"));
+    }
+
+    const double pctFraction = input.positionPctFraction > 1.0
+        ? input.positionPctFraction / 100.0
+        : input.positionPctFraction;
+    const double targetMarginUsdt = equityUsdt * pctFraction;
+    if (targetMarginUsdt <= 0.0) {
+        return capitalExposureBlock(QStringLiteral("capital guard: computed margin target <= 0"));
+    }
+
+    const double marginTolerance = normalizedRatio(input.marginOverTargetTolerance);
+    const double marginFilterSlippage = normalizedRatio(input.marginFilterSlippage);
+    const double filterMinMargin = input.hasFilters
+        ? filterMinimumMargin(input.filters, input.price, leverage)
+        : 0.0;
+    const double filterHeadroom = input.hasFilters
+        ? filterHeadroomMargin(input.filters, input.price, leverage) * 0.25
+        : 0.0;
+    const double maxIndicatorMarginUsdt = targetMarginUsdt * (1.0 + marginTolerance) + filterHeadroom;
+    const double existingIndicatorMargin = finiteNonNegative(input.existingIndicatorMargin);
+    if (existingIndicatorMargin >= maxIndicatorMarginUsdt - 1e-9) {
+        return capitalExposureBlock(
+            QStringLiteral("%1@%2 capital guard: existing %3 margin already >= cap")
+                .arg(input.symbol.trimmed().isEmpty() ? QStringLiteral("-") : input.symbol.trimmed(),
+                     input.interval.trimmed().isEmpty() ? QStringLiteral("-") : input.interval.trimmed(),
+                     side),
+            equityUsdt,
+            targetMarginUsdt,
+            maxIndicatorMarginUsdt,
+            0.0,
+            finiteNonNegative(input.existingSideMargin));
+    }
+
+    const bool hasFlipQuantity = input.hasFlipCloseQuantity
+        && qIsFinite(input.flipCloseQuantity)
+        && input.flipCloseQuantity > 0.0;
+    double targetMargin = hasFlipQuantity
+        ? (input.flipCloseQuantity * input.price) / leverage
+        : std::max(0.0, targetMarginUsdt - existingIndicatorMargin);
+    if (targetMargin <= 0.0) {
+        return capitalExposureBlock(
+            QStringLiteral("capital guard: exposure already meets allocation target"),
+            equityUsdt,
+            targetMarginUsdt,
+            maxIndicatorMarginUsdt,
+            0.0,
+            finiteNonNegative(input.existingSideMargin));
+    }
+    if (availableUsdt <= 0.0) {
+        return capitalExposureBlock(
+            QStringLiteral("capital guard: no available USDT to allocate"),
+            equityUsdt,
+            targetMarginUsdt,
+            maxIndicatorMarginUsdt,
+            0.0,
+            finiteNonNegative(input.existingSideMargin));
+    }
+    if (availableUsdt < targetMargin * 0.95) {
+        return capitalExposureBlock(
+            QStringLiteral("capital guard: requested margin exceeds available USDT"),
+            equityUsdt,
+            targetMarginUsdt,
+            maxIndicatorMarginUsdt,
+            0.0,
+            finiteNonNegative(input.existingSideMargin));
+    }
+
+    const bool autoBumpRequired = !hasFlipQuantity
+        && input.normalizedQuantity > input.requestedQuantity + 1e-12;
+    if (autoBumpRequired) {
+        const double requestedPercent = pctFraction * 100.0;
+        const double requiredNotional = input.normalizedQuantity * input.price;
+        const double requiredMargin = requiredNotional / leverage;
+        const double requiredPercent = (requiredNotional / std::max(availableUsdt * leverage, 1e-12)) * 100.0;
+        const double multiplier = qIsFinite(input.autoBumpPercentMultiplier)
+                && input.autoBumpPercentMultiplier > 0.0
+            ? input.autoBumpPercentMultiplier
+            : 1.0;
+        const bool unlimitedPercent = !qIsFinite(input.maxAutoBumpPercent)
+            || input.maxAutoBumpPercent <= 0.0;
+        const double allowedPercent = unlimitedPercent
+            ? std::numeric_limits<double>::infinity()
+            : std::max(input.maxAutoBumpPercent, requestedPercent * multiplier);
+        if (input.liveMode && !input.liveAllowAutoBumpToMinOrder) {
+            return capitalExposureBlock(
+                QStringLiteral("live auto-bump to exchange minimum is disabled; increase position percent or enable live_allow_auto_bump_to_min_order explicitly"),
+                equityUsdt,
+                targetMarginUsdt,
+                maxIndicatorMarginUsdt,
+                requiredMargin,
+                finiteNonNegative(input.existingSideMargin),
+                input.normalizedQuantity);
+        }
+        if (requiredMargin > availableUsdt * 1.01
+            || (!unlimitedPercent && requiredPercent > allowedPercent + 1e-9)) {
+            return capitalExposureBlock(
+                QStringLiteral("capital guard: insufficient funds for exchange minimum order"),
+                equityUsdt,
+                targetMarginUsdt,
+                maxIndicatorMarginUsdt,
+                requiredMargin,
+                finiteNonNegative(input.existingSideMargin),
+                input.normalizedQuantity);
+        }
+    }
+
+    const double marginEstimateUsdt = input.normalizedQuantity * input.price / leverage;
+    targetMargin = marginEstimateUsdt;
+    double indicatorSoftCap = maxIndicatorMarginUsdt * (1.0 + marginFilterSlippage);
+    if (filterMinMargin > maxIndicatorMarginUsdt) {
+        indicatorSoftCap = std::max(
+            indicatorSoftCap,
+            filterMinMargin * (1.0 + marginFilterSlippage));
+    }
+    if (existingIndicatorMargin + marginEstimateUsdt > indicatorSoftCap + 1e-6) {
+        return capitalExposureBlock(
+            QStringLiteral("capital guard: adding margin would exceed indicator cap"),
+            equityUsdt,
+            targetMarginUsdt,
+            maxIndicatorMarginUsdt,
+            marginEstimateUsdt,
+            finiteNonNegative(input.existingSideMargin),
+            input.normalizedQuantity);
+    }
+
+    const int activeSlotCount = std::max(0, input.activeSlotCount);
+    const int expectedSlotsAfter = std::max(
+        1,
+        activeSlotCount + (input.slotAlreadyActive ? 0 : 1));
+    const double maxSideMargin = targetMarginUsdt * expectedSlotsAfter * (1.0 + marginTolerance)
+        + filterHeadroom;
+    double sideSoftCap = maxSideMargin * (1.0 + marginFilterSlippage);
+    if (filterMinMargin > maxSideMargin) {
+        sideSoftCap = std::max(sideSoftCap, filterMinMargin * (1.0 + marginFilterSlippage));
+    }
+    const double existingSideMargin = finiteNonNegative(input.existingSideMargin);
+    const double projectedSideMarginUsdt = existingSideMargin + marginEstimateUsdt;
+    if (projectedSideMarginUsdt > sideSoftCap + 1e-6) {
+        return capitalExposureBlock(
+            QStringLiteral("capital guard: projected side margin exceeds cap"),
+            equityUsdt,
+            targetMarginUsdt,
+            maxIndicatorMarginUsdt,
+            marginEstimateUsdt,
+            projectedSideMarginUsdt,
+            input.normalizedQuantity);
+    }
+
+    double quantityEstimate = input.normalizedQuantity;
+    bool reduceOnly = false;
+    if (input.addOnly && !input.dualSide) {
+        const double netPositionAmt = qIsFinite(input.netPositionAmt) ? input.netPositionAmt : 0.0;
+        if ((netPositionAmt > 0.0 && side == QStringLiteral("SELL"))
+            || (netPositionAmt < 0.0 && side == QStringLiteral("BUY"))) {
+            quantityEstimate = std::min(quantityEstimate, std::fabs(netPositionAmt));
+            reduceOnly = true;
+        }
+        if (quantityEstimate <= 0.0) {
+            return capitalExposureBlock(QStringLiteral("opposite open blocked in one-way add-only mode"));
+        }
+    }
+
+    const QString desiredPositionSide = input.dualSide
+        ? (side == QStringLiteral("BUY") ? QStringLiteral("LONG") : QStringLiteral("SHORT"))
+        : QString();
+    return {
+        true,
+        QStringLiteral("capital guard: allowed"),
+        equityUsdt,
+        targetMarginUsdt,
+        maxIndicatorMarginUsdt,
+        targetMargin,
+        projectedSideMarginUsdt,
+        quantityEstimate,
+        reduceOnly,
+        desiredPositionSide,
+    };
 }
 
 QJsonObject buildOrderAuditEvent(

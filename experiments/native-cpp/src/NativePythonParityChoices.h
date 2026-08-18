@@ -14,6 +14,13 @@ inline QString fromStringView(std::string_view value) {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
 }
 
+inline QString normalizeConfigChoiceToken(QString value) {
+    value = value.trimmed().toLower();
+    value.replace(QLatin1Char('-'), QLatin1Char('_'));
+    value.replace(QLatin1Char(' '), QLatin1Char('_'));
+    return value;
+}
+
 template <std::size_t N>
 QString defaultConfigChoice(
     const std::array<PythonParityContract::PythonConfigChoice, N> &choices,
@@ -29,16 +36,16 @@ QString canonicalConfigChoice(
     const QString &value,
     const std::array<PythonParityContract::PythonConfigChoice, N> &choices,
     const QString &fallback = {}) {
-    const QString raw = value.trimmed();
+    const QString raw = normalizeConfigChoiceToken(value);
     if (raw.isEmpty()) {
         return fallback;
     }
     for (const auto &choice : choices) {
-        const QString key = fromStringView(choice.key);
-        const QString canonical = fromStringView(choice.value);
+        const QString key = normalizeConfigChoiceToken(fromStringView(choice.key));
+        const QString canonical = normalizeConfigChoiceToken(fromStringView(choice.value));
         if (raw.compare(key, Qt::CaseInsensitive) == 0
             || raw.compare(canonical, Qt::CaseInsensitive) == 0) {
-            return canonical;
+            return fromStringView(choice.value);
         }
     }
     return fallback;

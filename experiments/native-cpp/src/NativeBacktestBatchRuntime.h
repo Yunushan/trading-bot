@@ -13,6 +13,9 @@ namespace NativeBacktestBatchRuntime {
 
 inline constexpr qint64 kMaxOptimizerRuns = 100'000'000'000LL;
 inline constexpr int kDefaultResultLimit = 5'000;
+inline constexpr qint64 kMinOptimizerDurationSeconds = 60;
+inline constexpr qint64 kDefaultOptimizerDurationSeconds = 4 * 60 * 60;
+inline constexpr qint64 kMaxOptimizerDurationSeconds = 7 * 24 * 60 * 60;
 
 struct CandleLoadResult {
     bool ok = false;
@@ -35,13 +38,16 @@ struct BatchRequest {
     QString optimizerMode = QStringLiteral("current");
     QString optimizerMetric = QStringLiteral("roi_percent");
     QString optimizerScope = QStringLiteral("selected");
+    bool optimizerEnabled = false;
     int optimizerComboSize = 2;
     int optimizerMinTrades = 1;
     double optimizerMddLimit = 10.0;
+    qint64 optimizerMaxDurationSeconds = kDefaultOptimizerDurationSeconds;
     int resultLimit = kDefaultResultLimit;
     qint64 maxRunCount = kMaxOptimizerRuns;
     QString startDisplay;
     QString endDisplay;
+    qint64 warmupBars = 100;
     QString loopIntervalOverride;
     QString connectorBackend;
     QJsonArray pairOverrides;
@@ -58,6 +64,13 @@ QVector<QStringList> buildIndicatorGroups(
     const QString &mode,
     int comboSize,
     const QString &logic);
+
+qint64 estimateWarmupBars(const NativeIndicatorRuntime::ConfigMap &configs);
+
+qint64 bufferedStartTimeMs(
+    qint64 startTimeMs,
+    const QString &interval,
+    qint64 warmupBars);
 
 qint64 estimateRunCount(
     qsizetype symbolCount,

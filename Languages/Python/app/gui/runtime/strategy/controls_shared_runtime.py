@@ -4,6 +4,17 @@ _NORMALIZE_STOP_LOSS_DICT = None
 _NORMALIZE_CONNECTOR_BACKEND = None
 _SIDE_LABELS: dict[str, str] = {}
 
+POSITION_PCT_UNITS_CHOICES: tuple[tuple[str, str], ...] = (
+    ("percent", "percent"),
+    ("%", "percent"),
+    ("perc", "percent"),
+    ("percentage", "percent"),
+    ("fraction", "fraction"),
+    ("decimal", "fraction"),
+    ("ratio", "fraction"),
+)
+_POSITION_PCT_UNITS_BY_ALIAS = dict(POSITION_PCT_UNITS_CHOICES)
+
 
 def configure_main_window_strategy_controls_shared_runtime(
     *,
@@ -44,11 +55,7 @@ def _normalize_connector_backend_value(value):
 
 def _normalize_position_pct_units(value) -> str:
     text = str(value or "").strip().lower()
-    if text in {"percent", "%", "perc", "percentage"}:
-        return "percent"
-    if text in {"fraction", "decimal", "ratio"}:
-        return "fraction"
-    return ""
+    return _POSITION_PCT_UNITS_BY_ALIAS.get(text, "")
 
 
 def side_labels() -> dict[str, str]:

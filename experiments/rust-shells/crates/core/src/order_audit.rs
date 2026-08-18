@@ -944,7 +944,7 @@ fn redact_value_at_depth(value: Value, depth: usize) -> Value {
             for (key, item) in object {
                 let value = if is_sensitive_key(&key) {
                     match item {
-                        Value::Null => Value::Null,
+                        Value::Null => Value::String(String::new()),
                         Value::String(text) if text.is_empty() => Value::String(String::new()),
                         _ => Value::String(REDACTED_TEXT.to_owned()),
                     }

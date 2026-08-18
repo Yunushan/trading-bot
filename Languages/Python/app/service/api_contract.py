@@ -116,6 +116,7 @@ SERVICE_DASHBOARD_RESPONSE_FIELDS: tuple[str, ...] = (
     "operational",
     "config",
     "config_summary",
+    "config_persistence",
     "execution",
     "backtest",
     "account",
@@ -333,9 +334,75 @@ SERVICE_LLM_LOCAL_MODEL_RESPONSE_FIELDS: tuple[str, ...] = (
     "installed",
     "can_download",
     "can_start",
+    "available_models",
+    "error",
     "storage_hint",
     "storage_paths",
     "estimated_size_label",
+    "free_disk_gb",
+    "recommended_free_disk_gb",
+    "disk_space_warning",
+)
+
+SERVICE_CONNECTOR_ORDER_CIRCUIT_BREAKER_RESPONSE_FIELDS: tuple[str, ...] = (
+    "active",
+    "state",
+    "reason",
+    "message",
+    "block_count",
+    "block_threshold",
+    "block_window_seconds",
+    "tripped_at",
+    "cleared_at",
+    "source",
+    "symbol",
+    "interval",
+    "side",
+    "account_type",
+    "connector_health",
+    "connector_state",
+    "reset_blocked",
+    "reset_blocked_reason",
+    "reset_blocked_at",
+    "recovery_pending",
+    "recovery_pending_reason",
+    "last_event",
+    "generated_at",
+)
+
+SERVICE_CONNECTOR_ORDER_CIRCUIT_INCIDENTS_RESPONSE_FIELDS: tuple[str, ...] = (
+    "path",
+    "path_source",
+    "configured_path",
+    "max_bytes",
+    "backup_count",
+    "exists",
+    "limit",
+    "count",
+    "total_read",
+    "events",
+    "parse_errors",
+    "last_event",
+    "error",
+)
+
+SERVICE_EXCHANGE_CONNECTOR_RESPONSE_FIELDS: tuple[str, ...] = (
+    "health",
+    "state",
+    "generated_at",
+    "source",
+    "selected_exchange",
+    "connector_backend",
+    "selected_forex_broker",
+    "account_type",
+    "mode",
+    "support",
+    "rate_limit",
+    "network",
+    "last_error",
+    "attention",
+    "order_audit",
+    "order_intents",
 )
 
 SERVICE_API_ROUTE_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
@@ -423,17 +490,17 @@ SERVICE_API_ROUTE_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
     "connector_order_circuit_breaker": {
         "query_fields": (),
         "request_fields": ("snapshot", "source", "force"),
-        "response_fields": ("active", "state", "reason", "message", "block_count", "block_threshold", "block_window_seconds", "source", "generated_at"),
+        "response_fields": SERVICE_CONNECTOR_ORDER_CIRCUIT_BREAKER_RESPONSE_FIELDS,
     },
     "connector_order_circuit_breaker_reset": {
         "query_fields": (),
         "request_fields": ("snapshot", "source", "force"),
-        "response_fields": ("active", "state", "source", "generated_at"),
+        "response_fields": SERVICE_CONNECTOR_ORDER_CIRCUIT_BREAKER_RESPONSE_FIELDS,
     },
     "connector_order_circuit_incidents": {
         "query_fields": ("limit",),
         "request_fields": (),
-        "response_fields": ("path", "path_source", "configured_path", "limit", "events", "parse_errors"),
+        "response_fields": SERVICE_CONNECTOR_ORDER_CIRCUIT_INCIDENTS_RESPONSE_FIELDS,
     },
     "backtest_run": {
         "query_fields": (),
@@ -469,7 +536,7 @@ SERVICE_API_ROUTE_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
     "exchange_connector": {
         "query_fields": (),
         "request_fields": ("snapshot", "source"),
-        "response_fields": ("health", "state", "generated_at", "source", "selected_exchange", "connector_backend", "support", "rate_limit", "network", "last_error", "attention"),
+        "response_fields": SERVICE_EXCHANGE_CONNECTOR_RESPONSE_FIELDS,
     },
     "logs": {
         "query_fields": ("limit",),

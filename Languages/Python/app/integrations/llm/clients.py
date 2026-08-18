@@ -33,6 +33,12 @@ def _system_message(system_prompt: str) -> list[dict[str, str]]:
     return [{"role": "system", "content": text}] if text else []
 
 
+def _context_json_text(context: dict) -> str:
+    """Serialize the already-redacted context consistently across native clients."""
+
+    return json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _execution_boundary_text() -> str:
     return (
         "Execution boundary: this LLM is advisory only. It must not place orders, "
@@ -224,7 +230,10 @@ def build_llm_chat_request(
         if context_for_request:
             messages.insert(
                 len(messages) - 1,
-                {"role": "system", "content": f"Trading context JSON: {context_for_request}"},
+                {
+                    "role": "system",
+                    "content": f"Trading context JSON: {_context_json_text(context_for_request)}",
+                },
             )
         body = {"model": model, "messages": messages}
         body.update(_openai_compatible_reasoning_body(provider, model, reasoning_effort))
@@ -244,7 +253,13 @@ def build_llm_chat_request(
             system_parts.append(str(system_prompt))
         body["system"] = "\n\n".join(system_parts)
         if context_for_request:
-            body["messages"].insert(0, {"role": "user", "content": f"Trading context JSON: {context_for_request}"})
+            body["messages"].insert(
+                0,
+                {
+                    "role": "user",
+                    "content": f"Trading context JSON: {_context_json_text(context_for_request)}",
+                },
+            )
         body.update(_anthropic_thinking_body(reasoning_effort))
     elif protocol == GEMINI_GENERATE_CONTENT_PROTOCOL:
         if not api_key:
@@ -257,7 +272,7 @@ def build_llm_chat_request(
         if system_prompt:
             parts.append({"text": str(system_prompt)})
         if context_for_request:
-            parts.append({"text": f"Trading context JSON: {context_for_request}"})
+            parts.append({"text": f"Trading context JSON: {_context_json_text(context_for_request)}"})
         parts.append({"text": user_prompt})
         body = {"contents": [{"parts": parts}]}
         generation_config = _gemini_generation_config(reasoning_effort, model)

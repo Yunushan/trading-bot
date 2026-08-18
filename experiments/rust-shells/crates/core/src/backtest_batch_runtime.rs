@@ -6,12 +6,20 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde_json::{Map, Value, json};
 
 use crate::backtest_runtime::{
-    NativeBacktestRequest, NativeBacktestResult, run_native_backtest_with_cancel_and_window,
+    NativeBacktestRequest, NativeBacktestResult, default_config_choice, normalize_config_choice,
+    run_native_backtest_with_cancel_and_window,
+};
+use crate::generated_python_parity::{
+    PYTHON_LOGIC_CONFIG_CHOICES, PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+    PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES, PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES,
+    PYTHON_SCAN_SCOPE_CONFIG_CHOICES, PYTHON_SIDE_CONFIG_CHOICES,
+    PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
 };
 use crate::market_data::BinanceKlineCandle;
 use crate::python_source_default_backtest_config;
 use crate::python_source_default_execution_config;
 use crate::python_source_ui_defaults;
+use crate::strategy_runtime::normalize_backtest_interval;
 
 pub const MAX_OPTIMIZER_RUNS: u64 = 100_000_000_000;
 pub const DEFAULT_RESULT_LIMIT: usize = 5_000;
@@ -138,18 +146,21 @@ impl Default for NativeBacktestBatchRequest {
             optimizer_mode: text_default(backtest_defaults, "optimizer_mode", "current"),
             optimizer_metric: text_default(backtest_defaults, "optimizer_metric", "roi_percent"),
             optimizer_scope: text_default(backtest_defaults, "scan_scope", "selected"),
-            optimizer_combo_size: number_default("optimizer_combo_size", 2.0).round().max(1.0)
-                as usize,
-            optimizer_min_trades: number_default("optimizer_min_trades", 1.0).round().max(0.0)
+            optimizer_combo_size: number_default("optimizer_combo_size", 2.0)
+                .trunc()
+                .clamp(1.0, 5.0) as usize,
+            optimizer_min_trades: number_default("optimizer_min_trades", 1.0).trunc().max(0.0)
                 as usize,
             optimizer_mdd_limit: number_default("scan_mdd_limit", 10.0).max(0.0),
             optimizer_max_duration_seconds: number_default(
                 "optimizer_max_duration_seconds",
                 14_400.0,
             )
-            .round()
-            .max(MIN_OPTIMIZER_DURATION_SECONDS as f64)
-                as u64,
+            .trunc()
+            .clamp(
+                MIN_OPTIMIZER_DURATION_SECONDS as f64,
+                MAX_OPTIMIZER_DURATION_SECONDS as f64,
+            ) as u64,
             result_limit: DEFAULT_RESULT_LIMIT,
             max_run_count: MAX_OPTIMIZER_RUNS,
             start_display: String::new(),
@@ -173,7 +184,7 @@ impl Default for NativeBacktestBatchRequest {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("Binance")
                 .to_owned(),
-            scan_top_n: number_default("scan_top_n", 200.0).round().max(1.0) as usize,
+            scan_top_n: number_default("scan_top_n", 200.0).trunc().max(1.0) as usize,
             resume_combo_offset: 0,
             resume_prior_runs: Vec::new(),
             resume_prior_errors: Vec::new(),
@@ -276,10 +287,14 @@ const WARMUP_PARAMETER_KEYS: &[&str] = &[
 ];
 
 fn estimate_warmup_bars(indicator_configs: &BTreeMap<String, Value>) -> usize {
-    indicator_configs
+    let maximum = indicator_configs
         .values()
         .map(|config| {
+            if !config_enabled(config) {
+                return 0;
+            }
             let mut maximum = 0_usize;
+            let mut has_candidate = false;
             for source in [Some(config), config.get("params")] {
                 let Some(object) = source.and_then(Value::as_object) else {
                     continue;
@@ -293,14 +308,19 @@ fn estimate_warmup_bars(indicator_configs: &BTreeMap<String, Value>) -> usize {
                                 .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
                         })
                         .filter(|value: &f64| value.is_finite() && *value >= 0.0)
+                        .map(|value| {
+                            has_candidate = true;
+                            value
+                        })
                         .unwrap_or(0.0);
                     maximum = maximum.max(value.floor() as usize);
                 }
             }
-            maximum.max(50)
+            if has_candidate { maximum } else { 50 }
         })
         .max()
-        .unwrap_or(50)
+        .unwrap_or(100);
+    if maximum == 0 { 100 } else { maximum }
 }
 
 fn parse_request_datetime(value: &str) -> Result<Option<i64>, String> {
@@ -341,7 +361,7 @@ impl NativeBacktestBatchRequest {
         let object = request_object(payload)?;
         let defaults = python_source_default_backtest_config();
         let mut symbols = request_text_list(object, "symbols");
-        let intervals = request_text_list(object, "intervals");
+        let intervals = unique_intervals(&request_text_list(object, "intervals"));
         let indicator_configs = object
             .get("indicators")
             .and_then(Value::as_object)
@@ -365,24 +385,30 @@ impl NativeBacktestBatchRequest {
         }
 
         let mut run_template = NativeBacktestRequest::default();
-        run_template.logic = request_text(
-            object,
-            "logic",
-            defaults
-                .get("logic")
-                .and_then(Value::as_str)
-                .unwrap_or("AND"),
-        )
-        .to_ascii_uppercase();
-        run_template.side = request_text(
-            object,
-            "side",
-            defaults
-                .get("side")
-                .and_then(Value::as_str)
-                .unwrap_or("BOTH"),
-        )
-        .to_ascii_uppercase();
+        run_template.logic = normalize_config_choice(
+            &request_text(
+                object,
+                "logic",
+                defaults
+                    .get("logic")
+                    .and_then(Value::as_str)
+                    .unwrap_or("AND"),
+            ),
+            PYTHON_LOGIC_CONFIG_CHOICES,
+            &default_config_choice(PYTHON_LOGIC_CONFIG_CHOICES, "AND"),
+        );
+        run_template.side = normalize_config_choice(
+            &request_text(
+                object,
+                "side",
+                defaults
+                    .get("side")
+                    .and_then(Value::as_str)
+                    .unwrap_or("BOTH"),
+            ),
+            PYTHON_SIDE_CONFIG_CHOICES,
+            &default_config_choice(PYTHON_SIDE_CONFIG_CHOICES, "BOTH"),
+        );
         run_template.capital = request_number(object, "capital", run_template.capital);
         if run_template.capital <= 0.0 {
             return Err("Backtest capital must be positive.".to_owned());
@@ -397,7 +423,11 @@ impl NativeBacktestBatchRequest {
         run_template.assets_mode = request_text(object, "assets_mode", &run_template.assets_mode);
         run_template.account_mode =
             request_text(object, "account_mode", &run_template.account_mode);
-        run_template.mdd_logic = request_text(object, "mdd_logic", &run_template.mdd_logic);
+        run_template.mdd_logic = normalize_config_choice(
+            &request_text(object, "mdd_logic", &run_template.mdd_logic),
+            PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+            &default_config_choice(PYTHON_MDD_LOGIC_CONFIG_CHOICES, "per_trade"),
+        );
         run_template.fee_bps = request_number(object, "fee_bps", run_template.fee_bps).max(0.0);
         run_template.slippage_bps =
             request_number(object, "slippage_bps", run_template.slippage_bps).max(0.0);
@@ -412,10 +442,14 @@ impl NativeBacktestBatchRequest {
             "enabled",
             request_bool(object, "stop_loss_enabled", run_template.stop_loss_enabled),
         );
-        run_template.stop_loss_mode = request_text(
-            &stop_loss,
-            "mode",
-            &request_text(object, "stop_loss_mode", &run_template.stop_loss_mode),
+        run_template.stop_loss_mode = normalize_config_choice(
+            &request_text(
+                &stop_loss,
+                "mode",
+                &request_text(object, "stop_loss_mode", &run_template.stop_loss_mode),
+            ),
+            PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
+            &default_config_choice(PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, "usdt"),
         );
         run_template.stop_loss_usdt = request_number(
             &stop_loss,
@@ -429,27 +463,39 @@ impl NativeBacktestBatchRequest {
             request_number(object, "stop_loss_percent", run_template.stop_loss_percent),
         )
         .max(0.0);
-        run_template.stop_loss_scope = request_text(
-            &stop_loss,
-            "scope",
-            &request_text(object, "stop_loss_scope", &run_template.stop_loss_scope),
+        run_template.stop_loss_scope = normalize_config_choice(
+            &request_text(
+                &stop_loss,
+                "scope",
+                &request_text(object, "stop_loss_scope", &run_template.stop_loss_scope),
+            ),
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+            &default_config_choice(PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES, "per_trade"),
         );
 
-        let optimizer_mode = request_text(
-            object,
-            "optimizer_mode",
-            defaults
-                .get("optimizer_mode")
-                .and_then(Value::as_str)
-                .unwrap_or("current"),
+        let optimizer_mode = normalize_config_choice(
+            &request_text(
+                object,
+                "optimizer_mode",
+                defaults
+                    .get("optimizer_mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("current"),
+            ),
+            PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES,
+            &default_config_choice(PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES, "current"),
         );
-        let optimizer_scope = request_text(
-            object,
-            "scan_scope",
-            defaults
-                .get("scan_scope")
-                .and_then(Value::as_str)
-                .unwrap_or("selected"),
+        let optimizer_scope = normalize_config_choice(
+            &request_text(
+                object,
+                "scan_scope",
+                defaults
+                    .get("scan_scope")
+                    .and_then(Value::as_str)
+                    .unwrap_or("selected"),
+            ),
+            PYTHON_SCAN_SCOPE_CONFIG_CHOICES,
+            &default_config_choice(PYTHON_SCAN_SCOPE_CONFIG_CHOICES, "selected"),
         );
         let scan_top_n = request_number(
             object,
@@ -459,13 +505,14 @@ impl NativeBacktestBatchRequest {
                 .and_then(Value::as_f64)
                 .unwrap_or(200.0),
         )
-        .round()
+        .trunc()
         .max(1.0) as usize;
         if !optimizer_mode.eq_ignore_ascii_case("current")
             && optimizer_scope.eq_ignore_ascii_case("top_n")
         {
             symbols.truncate(scan_top_n);
         }
+        let has_pair_overrides = object.contains_key("pair_overrides");
         let pair_overrides = object
             .get("pair_overrides")
             .and_then(Value::as_array)
@@ -474,12 +521,12 @@ impl NativeBacktestBatchRequest {
         let optimizer_enabled = request_bool(
             object,
             "optimizer_enabled",
-            !optimizer_mode.eq_ignore_ascii_case("current"),
+            !optimizer_mode.eq_ignore_ascii_case("current") && !has_pair_overrides,
         );
         let start_display = request_text(object, "start", &request_text(object, "start_date", ""));
         let end_display = request_text(object, "end", &request_text(object, "end_date", ""));
         let (start_ms, end_ms) = resolve_request_date_range(&start_display, &end_display)?;
-        let optimizer_max_duration_seconds = request_number(
+        let normalized_optimizer_max_duration_seconds = request_number(
             object,
             "optimizer_max_duration_seconds",
             defaults
@@ -487,10 +534,15 @@ impl NativeBacktestBatchRequest {
                 .and_then(Value::as_f64)
                 .unwrap_or(DEFAULT_OPTIMIZER_DURATION_SECONDS as f64),
         )
-        .round()
+        .trunc()
         .max(MIN_OPTIMIZER_DURATION_SECONDS as f64)
         .min(MAX_OPTIMIZER_DURATION_SECONDS as f64)
             as u64;
+        let optimizer_max_duration_seconds = if optimizer_enabled {
+            normalized_optimizer_max_duration_seconds
+        } else {
+            0
+        };
         let warmup_bars = estimate_warmup_bars(&indicator_configs);
         Ok(Self {
             symbols,
@@ -499,13 +551,17 @@ impl NativeBacktestBatchRequest {
             run_template,
             optimizer_enabled,
             optimizer_mode,
-            optimizer_metric: request_text(
-                object,
-                "optimizer_metric",
-                defaults
-                    .get("optimizer_metric")
-                    .and_then(Value::as_str)
-                    .unwrap_or("roi_percent"),
+            optimizer_metric: normalize_config_choice(
+                &request_text(
+                    object,
+                    "optimizer_metric",
+                    defaults
+                        .get("optimizer_metric")
+                        .and_then(Value::as_str)
+                        .unwrap_or("roi_percent"),
+                ),
+                PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES,
+                &default_config_choice(PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES, "roi_percent"),
             ),
             optimizer_scope,
             optimizer_combo_size: request_number(
@@ -516,7 +572,7 @@ impl NativeBacktestBatchRequest {
                     .and_then(Value::as_f64)
                     .unwrap_or(2.0),
             )
-            .round()
+            .trunc()
             .clamp(1.0, 5.0) as usize,
             optimizer_min_trades: request_number(
                 object,
@@ -526,7 +582,7 @@ impl NativeBacktestBatchRequest {
                     .and_then(Value::as_f64)
                     .unwrap_or(1.0),
             )
-            .round()
+            .trunc()
             .max(0.0) as usize,
             optimizer_mdd_limit: request_number(
                 object,
@@ -543,7 +599,7 @@ impl NativeBacktestBatchRequest {
                 "optimizer_result_limit",
                 DEFAULT_RESULT_LIMIT as f64,
             )
-            .round()
+            .trunc()
             .max(1.0) as usize,
             max_run_count: MAX_OPTIMIZER_RUNS,
             start_display,
@@ -577,7 +633,7 @@ impl NativeBacktestBatchRequest {
             ),
             scan_top_n,
             resume_combo_offset: request_number(object, "resume_combo_offset", 0.0)
-                .round()
+                .trunc()
                 .max(0.0) as u64,
             resume_prior_runs: object
                 .get("resume_prior_runs")
@@ -719,12 +775,14 @@ pub fn build_indicator_groups(
         return Vec::new();
     }
 
-    let mode = normalized_token(mode, "current");
-    let logic = normalized_token(logic, "and").to_ascii_uppercase();
+    let mode_default = default_config_choice(PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES, "current");
+    let logic_default = default_config_choice(PYTHON_LOGIC_CONFIG_CHOICES, "AND");
+    let mode = normalize_config_choice(mode, PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES, &mode_default);
+    let logic = normalize_config_choice(logic, PYTHON_LOGIC_CONFIG_CHOICES, &logic_default);
     let mut signal_groups = Vec::new();
     match mode.as_str() {
         "current" => {
-            if logic == "SEPARATE" {
+            if logic.eq_ignore_ascii_case("SEPARATE") {
                 signal_groups.extend(signal_keys.iter().map(|key| vec![key.clone()]));
             } else {
                 signal_groups.push(signal_keys);
@@ -894,16 +952,24 @@ fn apply_pair_controls(
     mut request: NativeBacktestRequest,
     controls: &Value,
 ) -> NativeBacktestRequest {
-    let logic = json_text(controls, "logic", "").to_ascii_uppercase();
-    if matches!(logic.as_str(), "AND" | "OR" | "SEPARATE") {
+    let logic = normalize_config_choice(
+        &json_text(controls, "logic", ""),
+        PYTHON_LOGIC_CONFIG_CHOICES,
+        "",
+    );
+    if !logic.is_empty() {
         request.logic = logic;
     }
     let capital = json_number(controls, "capital", -1.0);
     if capital > 0.0 && capital.is_finite() {
         request.capital = capital;
     }
-    let side = json_text(controls, "side", "").to_ascii_uppercase();
-    if matches!(side.as_str(), "BUY" | "SELL" | "BOTH") {
+    let side = normalize_config_choice(
+        &json_text(controls, "side", ""),
+        PYTHON_SIDE_CONFIG_CHOICES,
+        "",
+    );
+    if !side.is_empty() {
         request.side = side;
     }
     let position_pct = json_number(controls, "position_pct", -1.0);
@@ -923,12 +989,19 @@ fn apply_pair_controls(
         (&mut request.position_mode, "position_mode"),
         (&mut request.assets_mode, "assets_mode"),
         (&mut request.account_mode, "account_mode"),
-        (&mut request.mdd_logic, "mdd_logic"),
     ] {
         let value = json_text(controls, key, "");
         if !value.is_empty() {
             *target = value;
         }
+    }
+    let mdd_logic = normalize_config_choice(
+        &json_text(controls, "mdd_logic", ""),
+        crate::generated_python_parity::PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+        "",
+    );
+    if !mdd_logic.is_empty() {
+        request.mdd_logic = mdd_logic;
     }
 
     let mut stop_loss = controls
@@ -954,11 +1027,25 @@ fn apply_pair_controls(
         .is_some_and(|object| !object.is_empty())
     {
         request.stop_loss_enabled = json_bool(&stop_loss, "enabled", request.stop_loss_enabled);
-        request.stop_loss_mode = json_text(&stop_loss, "mode", &request.stop_loss_mode);
+        let stop_loss_mode = normalize_config_choice(
+            &json_text(&stop_loss, "mode", ""),
+            PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
+            "",
+        );
+        if !stop_loss_mode.is_empty() {
+            request.stop_loss_mode = stop_loss_mode;
+        }
         request.stop_loss_usdt = json_number(&stop_loss, "usdt", request.stop_loss_usdt).max(0.0);
         request.stop_loss_percent =
             json_number(&stop_loss, "percent", request.stop_loss_percent).max(0.0);
-        request.stop_loss_scope = json_text(&stop_loss, "scope", &request.stop_loss_scope);
+        let stop_loss_scope = normalize_config_choice(
+            &json_text(&stop_loss, "scope", ""),
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+            "",
+        );
+        if !stop_loss_scope.is_empty() {
+            request.stop_loss_scope = stop_loss_scope;
+        }
     }
     request
 }
@@ -994,7 +1081,8 @@ fn build_override_plans(request: &NativeBacktestBatchRequest) -> OverridePlanSet
             continue;
         }
         let symbol = json_text(entry, "symbol", "").to_ascii_uppercase();
-        let interval = json_text(entry, "interval", "");
+        let interval =
+            normalize_backtest_interval(Some(&Value::String(json_text(entry, "interval", ""))));
         if symbol.is_empty() || interval.is_empty() {
             continue;
         }
@@ -1016,11 +1104,18 @@ fn build_override_plans(request: &NativeBacktestBatchRequest) -> OverridePlanSet
             request.optimizer_combo_size,
             &run_template.logic,
         );
-        let reported_logic = run_template.logic.trim().to_ascii_uppercase();
-        let effective_logic = if run_template.logic.trim().eq_ignore_ascii_case("SEPARATE") {
-            "AND".to_owned()
+        let reported_logic = normalize_config_choice(
+            &run_template.logic,
+            PYTHON_LOGIC_CONFIG_CHOICES,
+            &default_config_choice(PYTHON_LOGIC_CONFIG_CHOICES, "AND"),
+        );
+        let separate_logic =
+            normalize_config_choice("SEPARATE", PYTHON_LOGIC_CONFIG_CHOICES, "SEPARATE");
+        let and_logic = normalize_config_choice("AND", PYTHON_LOGIC_CONFIG_CHOICES, "AND");
+        let effective_logic = if reported_logic.eq_ignore_ascii_case(&separate_logic) {
+            and_logic
         } else {
-            run_template.logic.clone()
+            reported_logic.clone()
         };
         for group in groups {
             let mut effective_template = run_template.clone();
@@ -1054,15 +1149,13 @@ fn build_override_plans(request: &NativeBacktestBatchRequest) -> OverridePlanSet
 }
 
 fn normalized_optimizer_metric(metric: &str) -> String {
-    let metric = normalized_token(metric, "roi_percent");
-    if matches!(
-        metric.as_str(),
-        "roi_percent" | "roi_percent_mdd" | "roi_drawdown" | "roi_value"
-    ) {
-        metric
-    } else {
-        "roi_percent".to_owned()
-    }
+    let default_metric =
+        default_config_choice(PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES, "roi_percent");
+    normalize_config_choice(
+        metric,
+        PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES,
+        &default_metric,
+    )
 }
 
 pub fn optimizer_score(
@@ -1192,7 +1285,7 @@ fn unique_symbols(values: &[String]) -> Vec<String> {
 fn unique_intervals(values: &[String]) -> Vec<String> {
     let mut output = Vec::new();
     for value in values {
-        let normalized = value.trim().to_owned();
+        let normalized = normalize_backtest_interval(Some(&Value::String(value.clone())));
         if !normalized.is_empty() && !output.contains(&normalized) {
             output.push(normalized);
         }
@@ -1336,19 +1429,31 @@ where
 
     let result_limit = request.result_limit.max(1);
     let metric = normalized_optimizer_metric(&request.optimizer_metric);
-    let mode = normalized_token(&request.optimizer_mode, "current");
-    let scope = normalized_token(&request.optimizer_scope, "selected");
-    let effective_logic = if request
-        .run_template
-        .logic
-        .trim()
-        .eq_ignore_ascii_case("SEPARATE")
-    {
-        "AND".to_owned()
+    let mode_default = default_config_choice(PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES, "current");
+    let scope_default = default_config_choice(PYTHON_SCAN_SCOPE_CONFIG_CHOICES, "selected");
+    let mode = normalize_config_choice(
+        &request.optimizer_mode,
+        PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES,
+        &mode_default,
+    );
+    let scope = normalize_config_choice(
+        &request.optimizer_scope,
+        PYTHON_SCAN_SCOPE_CONFIG_CHOICES,
+        &scope_default,
+    );
+    let separate_logic =
+        normalize_config_choice("SEPARATE", PYTHON_LOGIC_CONFIG_CHOICES, "SEPARATE");
+    let and_logic = normalize_config_choice("AND", PYTHON_LOGIC_CONFIG_CHOICES, "AND");
+    let reported_logic = normalize_config_choice(
+        &request.run_template.logic,
+        PYTHON_LOGIC_CONFIG_CHOICES,
+        &default_config_choice(PYTHON_LOGIC_CONFIG_CHOICES, "AND"),
+    );
+    let effective_logic = if reported_logic.eq_ignore_ascii_case(&separate_logic) {
+        and_logic
     } else {
-        request.run_template.logic.clone()
+        reported_logic.clone()
     };
-    let reported_logic = request.run_template.logic.trim().to_ascii_uppercase();
     let mut eligible_rows = Vec::new();
     let mut rejected_samples = Vec::new();
     let mut plain_rows = Vec::new();
@@ -1822,6 +1927,30 @@ mod tests {
     }
 
     #[test]
+    fn native_batch_request_normalizes_python_interval_aliases() {
+        let payload = json!({
+            "symbols": ["btcusdt"],
+            "intervals": ["60 minutes", "1H", "1M", "20 minutes", "3 hours"],
+            "indicators": {"rsi": {"enabled": true}},
+            "start": "2026-01-01",
+            "end": "2026-02-01"
+        });
+        let request = NativeBacktestBatchRequest::from_python_request(&payload)
+            .expect("Python-shaped request should parse");
+        assert_eq!(request.intervals, ["1h", "1mo", "20m", "3h"]);
+
+        let mut override_request = NativeBacktestBatchRequest::default();
+        override_request.pair_overrides = vec![json!({
+            "symbol": "btcusdt",
+            "interval": "60 minutes",
+            "indicators": ["rsi"]
+        })];
+        let plans = build_override_plans(&override_request);
+        assert!(plans.has_valid_overrides);
+        assert_eq!(plans.plans[0].interval, "1h");
+    }
+
+    #[test]
     fn indicator_groups_preserve_python_filter_and_optimizer_modes() {
         let configs = BTreeMap::from([
             ("rsi".to_owned(), json!({"enabled": true})),
@@ -2033,7 +2162,8 @@ mod tests {
             "intervals": ["5m"],
             "indicators": {
                 "macd": {"enabled": true, "fast": 12, "slow": 26, "signal": 9},
-                "rsi": {"enabled": true, "length": 14}
+                "rsi": {"enabled": true, "length": 14},
+                "ichimoku": {"enabled": false, "span_b_length": 52}
             },
             "logic": "OR",
             "side": "SELL",
@@ -2074,20 +2204,80 @@ mod tests {
         assert_eq!(request.run_template.position_pct_units, "percent");
         assert_eq!(request.run_template.stop_loss_scope, "cumulative");
         assert!(request.run_template.stop_loss_enabled);
-        assert!(request.optimizer_enabled);
+        assert!(!request.optimizer_enabled);
         assert_eq!(request.optimizer_mode, "pairs");
         assert_eq!(request.optimizer_metric, "roi_drawdown");
         assert_eq!(request.optimizer_scope, "top_n");
         assert_eq!(request.optimizer_combo_size, 3);
         assert_eq!(request.optimizer_min_trades, 4);
-        assert_eq!(request.optimizer_max_duration_seconds, 120);
+        assert_eq!(request.optimizer_max_duration_seconds, 0);
         assert_eq!(request.result_limit, 17);
         assert_eq!(request.loop_interval_override, "15m");
         assert_eq!(request.connector_backend, "binance-connector");
         assert_eq!(request.selected_exchange, "Binance");
         assert_eq!(request.start_ms, Some(1_704_164_645_000));
         assert_eq!(request.end_ms, Some(1_704_251_045_000));
-        assert_eq!(request.warmup_bars, 50);
+        assert_eq!(request.warmup_bars, 26);
+    }
+
+    #[test]
+    fn python_request_conversion_normalizes_aliases_and_truncates_numeric_controls() {
+        let request = NativeBacktestBatchRequest::from_python_request(&json!({
+            "symbols": ["btcusdt", "ethusdt"],
+            "intervals": ["60 minutes", "1h", "60m"],
+            "indicators": {"rsi": {"enabled": true}},
+            "logic": "not-a-python-logic",
+            "side": "sell",
+            "optimizer_mode": "pairs",
+            "optimizer_metric": "roi percent mdd",
+            "scan_scope": "top n",
+            "scan_top_n": 1.9,
+            "optimizer_combo_size": 3.9,
+            "optimizer_min_trades": 4.9,
+            "optimizer_max_duration_seconds": 120.9,
+            "optimizer_result_limit": 17.9,
+            "resume_combo_offset": 2.9,
+            "start": "2026-01-01",
+            "end": "2026-01-02"
+        }))
+        .expect("Python request aliases should convert");
+
+        assert_eq!(request.symbols, ["btcusdt"]);
+        assert_eq!(request.intervals, ["1h"]);
+        assert_eq!(request.run_template.logic, "AND");
+        assert_eq!(request.run_template.side, "SELL");
+        assert_eq!(request.optimizer_mode, "pairs");
+        assert_eq!(request.optimizer_metric, "roi_percent_mdd");
+        assert_eq!(request.optimizer_scope, "top_n");
+        assert_eq!(request.scan_top_n, 1);
+        assert_eq!(request.optimizer_combo_size, 3);
+        assert_eq!(request.optimizer_min_trades, 4);
+        assert_eq!(request.optimizer_max_duration_seconds, 120);
+        assert_eq!(request.result_limit, 17);
+        assert_eq!(request.resume_combo_offset, 2);
+    }
+
+    #[test]
+    fn python_request_pair_overrides_disable_generated_optimizer_ownership() {
+        let request = NativeBacktestBatchRequest::from_python_request(&json!({
+            "symbols": ["btcusdt"],
+            "intervals": ["1h"],
+            "indicators": {"rsi": {"enabled": true}},
+            "optimizer_mode": "pairs",
+            "optimizer_max_duration_seconds": 120,
+            "pair_overrides": [{
+                "symbol": "btcusdt",
+                "interval": "1h",
+                "indicators": ["rsi"]
+            }],
+            "start": "2026-01-01",
+            "end": "2026-01-02"
+        }))
+        .expect("Python pair-override request should convert");
+
+        assert!(!request.optimizer_enabled);
+        assert_eq!(request.optimizer_max_duration_seconds, 0);
+        assert_eq!(request.pair_overrides.len(), 1);
     }
 
     #[test]

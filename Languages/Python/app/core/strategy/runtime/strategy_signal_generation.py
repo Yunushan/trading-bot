@@ -17,6 +17,8 @@ def generate_signal(self, df, ind):
         prev_close = float(df["close"].iloc[prev_idx])
     except Exception:
         return None, "no data", None, [], {}
+    if not math.isfinite(sig_close) or not math.isfinite(prev_close):
+        return None, "no data", None, [], {}
 
     signal = None
     trigger_desc = []

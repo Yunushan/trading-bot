@@ -9,6 +9,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUrl>
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <span>
 #include <string_view>
 
 namespace {
@@ -62,6 +64,52 @@ int main(int argc, char **argv) {
             ++failures;
         }
     };
+
+    for (const auto &referenceCase : PythonParityContract::kPythonRuntimeConfigReferenceCases) {
+        const QString caseName = parityString(referenceCase.name);
+        const QByteArray inputJson(referenceCase.inputJson.data(),
+                                   static_cast<int>(referenceCase.inputJson.size()));
+        const QByteArray expectedJson(referenceCase.expectedJson.data(),
+                                      static_cast<int>(referenceCase.expectedJson.size()));
+        QJsonParseError inputError;
+        const QJsonDocument inputDocument = QJsonDocument::fromJson(inputJson, &inputError);
+        check(!inputDocument.isNull() && inputDocument.isObject(),
+              QStringLiteral("generated Python config input should parse: %1 (%2)")
+                  .arg(caseName, inputError.errorString()));
+        if (inputDocument.isNull() || !inputDocument.isObject()) {
+            continue;
+        }
+        QJsonParseError expectedError;
+        const QJsonDocument expectedDocument = QJsonDocument::fromJson(expectedJson, &expectedError);
+        check(!expectedDocument.isNull() && expectedDocument.isObject(),
+              QStringLiteral("generated Python config expected output should parse: %1 (%2)")
+                  .arg(caseName, expectedError.errorString()));
+        if (expectedDocument.isNull() || !expectedDocument.isObject()) {
+            continue;
+        }
+        const NativeConfigPersistence::ServiceConfigValidationResult result =
+            NativeConfigPersistence::validateServiceRuntimeConfig(inputDocument.object());
+        check(result.ok == referenceCase.valid,
+              QStringLiteral("C++ runtime config acceptance should match Python: %1")
+                  .arg(caseName));
+        if (referenceCase.valid) {
+            check(result.config == expectedDocument.object(),
+                  QStringLiteral("C++ runtime config normalization should match Python: %1")
+                      .arg(caseName));
+        } else {
+            check(result.error == parityString(referenceCase.expectedError),
+                  QStringLiteral("C++ runtime config rejection should match Python: %1 (actual=%2 expected=%3)")
+                      .arg(caseName, result.error, parityString(referenceCase.expectedError)));
+        }
+    }
+
+    for (const auto &referenceCase : PythonParityContract::kPythonConnectorNormalizationReferenceCases) {
+        const QString caseName = parityString(referenceCase.name);
+        const QString actual =
+            TradingBotWindowSupport::normalizeConnectorBackend(parityString(referenceCase.input));
+        check(actual == parityString(referenceCase.expected),
+              QStringLiteral("C++ connector normalization should match Python: %1").arg(caseName));
+    }
 
     const QStringList routes = TradingBotWindowSupport::pythonSourceServiceRouteNames();
     check(routes.size() == 36,
@@ -113,6 +161,30 @@ int main(int argc, char **argv) {
     checkStarterCatalog(
         PythonParityContract::kPythonStarterMarketOptions,
         QStringLiteral("starter markets"));
+
+    const auto checkUiCatalog = [&check](const auto &options, const QString &catalogName) {
+        check(!options.empty(), QStringLiteral("Python UI catalog should not be empty: %1").arg(catalogName));
+        QSet<QString> keys;
+        for (const auto &option : options) {
+            const QString key = parityString(option.key);
+            const QString label = parityString(option.label);
+            check(!label.isEmpty(),
+                  QStringLiteral("Python UI catalog label should be present: %1").arg(key));
+            if (key.isEmpty()) {
+                check(catalogName == QStringLiteral("dashboard strategy templates")
+                          && label == QStringLiteral("No Template"),
+                      QStringLiteral("only Python's No Template sentinel may have an empty key"));
+            }
+            check(!keys.contains(key),
+                  QStringLiteral("Python UI catalog key should be unique: %1 (%2)").arg(catalogName, key));
+            keys.insert(key);
+        }
+    };
+    for (const auto &catalog : PythonParityContract::kPythonUiOptionCatalogs) {
+        checkUiCatalog(
+            std::span<const PythonParityContract::PythonUiOption>(catalog.options, catalog.size),
+            parityString(catalog.name));
+    }
     check(PythonParityContract::kPythonCodeLanguageOptions.size() == 3,
           QStringLiteral("Python code-language catalog should expose Python, C++, and Rust"));
     check(PythonParityContract::kPythonRustFrameworkOptions.size() == 1
@@ -152,8 +224,23 @@ int main(int argc, char **argv) {
         TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("python-binance")),
         QStringLiteral("C++ native runtime should own Python's python-binance provider alias"));
     check(
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("CCXT Unified")),
+        QStringLiteral("C++ native runtime should own Python's normalized CCXT alias"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
+            QStringLiteral("Binance SDK USD-M Futures")),
+        QStringLiteral("C++ native runtime should own Python's normalized USD-M alias"));
+    check(
         !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(QStringLiteral("custom")),
         QStringLiteral("C++ native runtime should reject unknown connector providers"));
+    check(
+        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
+            QStringLiteral("OANDA REST-v20")),
+        QStringLiteral("C++ native runtime should delegate Python's non-native OANDA connector"));
+    check(
+        !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
+            QStringLiteral("unknown backend")),
+        QStringLiteral("C++ native runtime should reject unknown connector text"));
     check(
         TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
             QStringLiteral("binance-sdk-spot")),

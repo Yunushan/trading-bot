@@ -1,5 +1,6 @@
 #include "NativeBacktestRuntime.h"
 #include "NativePythonParityChoices.h"
+#include "NativeStrategyRuntime.h"
 #include "generated/PythonParityContract.h"
 
 #include <QJsonArray>
@@ -220,10 +221,12 @@ Series backtestSeries(
 QVector<bool> thresholdEvents(
     const Series &series,
     double threshold,
-    bool lessOrEqual) {
+    bool lessOrEqual,
+    qsizetype signalStartIndex = 0) {
     QVector<bool> events(series.size(), false);
     bool previous = false;
     for (int index = 0; index < series.size(); ++index) {
+        if (index < signalStartIndex) continue;
         const double value = series[index];
         const bool current = std::isfinite(value) && (lessOrEqual ? value <= threshold : value >= threshold);
         events[index] = current && !previous;
@@ -390,7 +393,8 @@ Result run(
     const std::function<bool()> &shouldStop) {
     Result result;
     result.symbol = request.symbol.trimmed().toUpper();
-    result.interval = request.interval.trimmed();
+    result.interval = NativeStrategyRuntime::canonicalizeBacktestInterval(
+        QJsonValue(request.interval));
     result.logic = NativePythonParity::canonicalConfigChoice(
         request.logic,
         PythonParityContract::kPythonLogicConfigChoices,
@@ -425,10 +429,12 @@ Result run(
     const double feeRate = result.feeBps / 10000.0;
     const double slippageRate = result.slippageBps / 10000.0;
 
-    const QString pctUnits = request.positionPctUnits.trimmed().toLower();
+    const QString canonicalPctUnits = NativePythonParity::canonicalConfigChoice(
+        request.positionPctUnits,
+        PythonParityContract::kPythonPositionPctUnitsConfigChoices);
     double pctFraction = request.positionPct;
-    if (QStringList{QStringLiteral("percent"), QStringLiteral("%"), QStringLiteral("perc")}.contains(pctUnits)) pctFraction /= 100.0;
-    else if (!QStringList{QStringLiteral("fraction"), QStringLiteral("decimal"), QStringLiteral("ratio")}.contains(pctUnits) && pctFraction > 1.0) pctFraction /= 100.0;
+    if (canonicalPctUnits == QStringLiteral("percent")) pctFraction /= 100.0;
+    else if (canonicalPctUnits != QStringLiteral("fraction") && pctFraction > 1.0) pctFraction /= 100.0;
     pctFraction = std::clamp(pctFraction, 0.0001, 1.0);
     result.positionPct = pctFraction;
     result.positionPctUnits = QStringLiteral("fraction");
@@ -445,6 +451,34 @@ Result run(
     if (!unsupported.isEmpty()) {
         result.error = QStringLiteral("Unsupported native backtest indicators: %1").arg(unsupported.join(QStringLiteral(", ")));
         return result;
+    }
+
+    int executionStartIndex = 0;
+    int executionEndIndex = candles.size() - 1;
+    bool hasTimestampedCandles = false;
+    for (const Candle &candle : candles) {
+        if (candle.openTimeMs != 0) {
+            hasTimestampedCandles = true;
+            break;
+        }
+    }
+    if (hasTimestampedCandles && (request.startTimeMs != 0 || request.endTimeMs != 0)) {
+        if (request.startTimeMs != 0 && request.endTimeMs != 0 && request.startTimeMs >= request.endTimeMs) {
+            result.error = QStringLiteral("Backtest start must be earlier than backtest end");
+            return result;
+        }
+        if (request.startTimeMs != 0) {
+            while (executionStartIndex <= executionEndIndex
+                   && candles.at(executionStartIndex).openTimeMs < request.startTimeMs) {
+                ++executionStartIndex;
+            }
+        }
+        if (request.endTimeMs != 0) {
+            while (executionEndIndex >= executionStartIndex
+                   && candles.at(executionEndIndex).openTimeMs > request.endTimeMs) {
+                --executionEndIndex;
+            }
+        }
     }
 
     const SeriesMap computed = NativeIndicatorRuntime::computeConfiguredSeries(candles, request.indicators);
@@ -469,8 +503,16 @@ Result run(
                 result.error = QStringLiteral("Backtest indicator '%1' is missing buy/sell values").arg(it.key());
                 return result;
             }
-            if (buy) indicatorSignal.buy = thresholdEvents(series, *buy, sell && *buy < *sell);
-            if (sell) indicatorSignal.sell = thresholdEvents(series, *sell, !(buy && *buy < *sell));
+            if (buy) indicatorSignal.buy = thresholdEvents(
+                series,
+                *buy,
+                sell && *buy < *sell,
+                executionStartIndex);
+            if (sell) indicatorSignal.sell = thresholdEvents(
+                series,
+                *sell,
+                !(buy && *buy < *sell),
+                executionStartIndex);
         }
         indicatorSignals.append(indicatorSignal);
         result.indicatorKeys.append(it.key());
@@ -510,7 +552,11 @@ Result run(
     };
     rawBuy = combine(buyArrays, result.logic);
     rawSell = combine(sellArrays, QStringLiteral("OR"));
-    for (int index = 0; index < size; ++index) {
+    if (executionStartIndex > executionEndIndex) {
+        result.error = QStringLiteral("No candles fall inside the requested backtest window");
+        return result;
+    }
+    for (int index = executionStartIndex; index <= executionEndIndex; ++index) {
         for (const QVector<bool> *array : filterArrays) entryFilter[index] = entryFilter[index] && array->value(index, false);
     }
 
@@ -610,7 +656,7 @@ Result run(
 
     resetTrade();
     recordEquity(equity);
-    for (int index = 0; index < size; ++index) {
+    for (int index = executionStartIndex; index <= executionEndIndex; ++index) {
         if (shouldStop && shouldStop()) {
             result.error = QStringLiteral("backtest_cancelled");
             return result;
@@ -730,7 +776,7 @@ Result run(
     }
 
     if (positionOpen && units > 0.0) {
-        const double last = candles.constLast().close;
+        const double last = candles.at(executionEndIndex).close;
         const auto [exitPrice, pnl] = realizeClose(last);
         equity = std::max(0.0, equity + pnl);
         recordEquity(equity);

@@ -6,8 +6,9 @@ use serde_json::{Map, Value, json};
 use crate::exchange_connectors::normalize_connector_backend;
 use crate::generated_python_parity::{
     PYTHON_ACCOUNT_MODE_OPTIONS, PYTHON_ASSETS_MODE_OPTIONS, PYTHON_INDICATOR_CATALOG,
-    PYTHON_RISK_DEFAULTS_JSON, PYTHON_SIDE_OPTIONS, PYTHON_SIGNAL_LOGIC_OPTIONS,
-    PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES, PythonUiOption,
+    PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES, PYTHON_RISK_DEFAULTS_JSON, PYTHON_SIDE_OPTIONS,
+    PYTHON_SIGNAL_LOGIC_OPTIONS, PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
+    PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES, PythonUiOption,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -165,8 +166,13 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         if value.is_finite() {
             descriptions.push(format!("RSI={value:.2}"));
             let rule = rule(&input, "rsi");
-            let buy = rule.buy_value.unwrap_or(30.0);
-            let sell = rule.sell_value.unwrap_or(70.0);
+            // Python uses ``float(value or default)`` for RSI thresholds, so
+            // an explicit zero selects the Python default.
+            let buy = rule.buy_value.filter(|value| *value != 0.0).unwrap_or(30.0);
+            let sell = rule
+                .sell_value
+                .filter(|value| *value != 0.0)
+                .unwrap_or(70.0);
             if buy_allowed && value <= buy {
                 action(
                     "rsi",
@@ -292,7 +298,7 @@ pub fn build_signal_decision(input: StrategySignalInput) -> StrategySignalDecisi
         "mfi",
         "MFI",
         "{:.2}",
-        Compare::LeGeDefaults(20.0, 80.0),
+        Compare::LeGePythonDefaults(20.0, 80.0),
         buy_allowed,
         sell_allowed,
         &mut signal,
@@ -644,94 +650,127 @@ pub fn normalize_strategy_controls(kind: &str, controls: &Value) -> Value {
     let Some(input) = controls.as_object() else {
         return json!({});
     };
-    let kind = kind.trim().to_lowercase();
+    let is_runtime = kind == "runtime";
+    let is_backtest = kind == "backtest";
     let mut out = Map::new();
-    if kind == "runtime" {
-        if let Some(side) = canonical_side(input.get("side")) {
+    if is_runtime {
+        if let Some(side) = normalize_runtime_side(input.get("side")) {
             out.insert("side".to_owned(), Value::String(side));
         }
-        insert_float(input, &mut out, "position_pct");
-        if let Some(units) = normalize_position_pct_units(
-            input
-                .get("position_pct_units")
-                .or_else(|| input.get("_position_pct_units")),
-        ) {
+        if input
+            .get("position_pct")
+            .is_some_and(|value| !value.is_null())
+        {
+            if let Some(value) = python_float_value(input.get("position_pct")) {
+                out.insert("position_pct".to_owned(), json!(value));
+            }
+        }
+        let units_value = input
+            .get("position_pct_units")
+            .filter(|value| python_truthy(Some(value)))
+            .or_else(|| input.get("_position_pct_units"));
+        if let Some(units) = normalize_position_pct_units(units_value) {
             out.insert("position_pct_units".to_owned(), Value::String(units));
         }
-        if let Some(leverage) = int_value(input.get("leverage")).filter(|value| *value >= 1) {
-            out.insert("leverage".to_owned(), json!(leverage));
+        if input.get("leverage").is_some_and(|value| !value.is_null()) {
+            if let Some(leverage) =
+                python_int_value(input.get("leverage")).filter(|value| *value >= 1)
+            {
+                out.insert("leverage".to_owned(), json!(leverage));
+            }
         }
-        if let Some(loop_override) = normalize_loop_override(input.get("loop_interval_override")) {
-            out.insert(
-                "loop_interval_override".to_owned(),
-                Value::String(loop_override),
-            );
+        if python_truthy(input.get("loop_interval_override")) {
+            if let Some(loop_override) =
+                normalize_loop_override(input.get("loop_interval_override"))
+            {
+                out.insert(
+                    "loop_interval_override".to_owned(),
+                    Value::String(loop_override),
+                );
+            }
         }
-        if let Some(value) = input.get("add_only") {
+        if let Some(value) = input.get("add_only").filter(|value| !value.is_null()) {
             out.insert(
                 "add_only".to_owned(),
-                Value::Bool(coerce_strategy_bool(Some(value), false)),
+                Value::Bool(python_truthy(Some(value))),
             );
         }
-        if let Some(account_mode) = normalize_account_mode(input.get("account_mode")) {
-            out.insert("account_mode".to_owned(), Value::String(account_mode));
+        if python_truthy(input.get("account_mode")) {
+            if let Some(account_mode) = normalize_account_mode(input.get("account_mode")) {
+                out.insert("account_mode".to_owned(), Value::String(account_mode));
+            }
         }
-    } else if kind == "backtest" {
-        if let Some(logic) =
-            normalize_python_ui_option_key(input.get("logic"), PYTHON_SIGNAL_LOGIC_OPTIONS)
-        {
+    } else if is_backtest {
+        if let Some(logic) = normalize_strategy_signal_logic(input.get("logic")) {
             out.insert("logic".to_owned(), Value::String(logic));
         }
-        insert_float(input, &mut out, "capital");
-        insert_float(input, &mut out, "position_pct");
-        insert_float(input, &mut out, "fee_bps");
-        insert_float(input, &mut out, "slippage_bps");
-        if let Some(units) = normalize_position_pct_units(
-            input
-                .get("position_pct_units")
-                .or_else(|| input.get("_position_pct_units")),
-        ) {
+        for key in ["capital", "position_pct"] {
+            if input.get(key).is_some_and(|value| !value.is_null()) {
+                if let Some(value) = python_float_value(input.get(key)) {
+                    out.insert(key.to_owned(), json!(value));
+                }
+            }
+        }
+        let units_value = input
+            .get("position_pct_units")
+            .filter(|value| python_truthy(Some(value)))
+            .or_else(|| input.get("_position_pct_units"));
+        if let Some(units) = normalize_position_pct_units(units_value) {
             out.insert("position_pct_units".to_owned(), Value::String(units));
         }
-        if let Some(side) = canonical_side(input.get("side")) {
-            out.insert("side".to_owned(), Value::String(side));
+        if python_truthy(input.get("side")) {
+            if let Some(side) = canonical_side(input.get("side")) {
+                out.insert("side".to_owned(), Value::String(side));
+            }
         }
-        if let Some(margin_mode) =
-            string_value(input.get("margin_mode")).filter(|value| !value.is_empty())
-        {
-            out.insert("margin_mode".to_owned(), Value::String(margin_mode));
+        if python_truthy(input.get("margin_mode")) {
+            if let Some(margin_mode) = python_string_value(input.get("margin_mode")) {
+                out.insert("margin_mode".to_owned(), Value::String(margin_mode));
+            }
         }
-        if let Some(position_mode) =
-            string_value(input.get("position_mode")).filter(|value| !value.is_empty())
-        {
-            out.insert("position_mode".to_owned(), Value::String(position_mode));
+        if python_truthy(input.get("position_mode")) {
+            if let Some(position_mode) = python_string_value(input.get("position_mode")) {
+                out.insert("position_mode".to_owned(), Value::String(position_mode));
+            }
         }
-        if let Some(assets_mode) = normalize_assets_mode(input.get("assets_mode")) {
-            out.insert("assets_mode".to_owned(), Value::String(assets_mode));
+        if python_truthy(input.get("assets_mode")) {
+            if let Some(assets_mode) = normalize_assets_mode(input.get("assets_mode")) {
+                out.insert("assets_mode".to_owned(), Value::String(assets_mode));
+            }
         }
-        if let Some(account_mode) = normalize_account_mode(input.get("account_mode")) {
-            out.insert("account_mode".to_owned(), Value::String(account_mode));
+        if python_truthy(input.get("account_mode")) {
+            if let Some(account_mode) = normalize_account_mode(input.get("account_mode")) {
+                out.insert("account_mode".to_owned(), Value::String(account_mode));
+            }
         }
-        if let Some(loop_override) = normalize_loop_override(input.get("loop_interval_override")) {
-            out.insert(
-                "loop_interval_override".to_owned(),
-                Value::String(loop_override),
-            );
+        if python_truthy(input.get("loop_interval_override")) {
+            if let Some(loop_override) =
+                normalize_loop_override(input.get("loop_interval_override"))
+            {
+                out.insert(
+                    "loop_interval_override".to_owned(),
+                    Value::String(loop_override),
+                );
+            }
         }
-        if let Some(leverage) = int_value(input.get("leverage")) {
-            out.insert("leverage".to_owned(), json!(leverage));
+        if input.get("leverage").is_some_and(|value| !value.is_null()) {
+            if let Some(leverage) = python_int_value(input.get("leverage")) {
+                out.insert("leverage".to_owned(), json!(leverage));
+            }
         }
     }
-    if let Some(stop_loss) = input.get("stop_loss").filter(|value| value.is_object()) {
-        out.insert("stop_loss".to_owned(), normalize_stop_loss(stop_loss));
-    }
-    if let Some(backend) =
-        string_value(input.get("connector_backend")).filter(|value| !value.is_empty())
-    {
-        out.insert(
-            "connector_backend".to_owned(),
-            Value::String(normalize_connector_backend(backend)),
-        );
+    if is_runtime || is_backtest {
+        if let Some(stop_loss) = input.get("stop_loss").filter(|value| value.is_object()) {
+            out.insert("stop_loss".to_owned(), normalize_stop_loss(stop_loss));
+        }
+        if python_truthy(input.get("connector_backend")) {
+            if let Some(backend) = python_string_value(input.get("connector_backend")) {
+                out.insert(
+                    "connector_backend".to_owned(),
+                    Value::String(normalize_connector_backend(&backend)),
+                );
+            }
+        }
     }
     Value::Object(out)
 }
@@ -996,7 +1035,7 @@ pub fn build_worker_lifecycle_snapshot(input: StrategyWorkerLifecycleInput) -> V
         "is_alive": input.thread_alive,
         "lifecycle_phase": lifecycle_phase,
         "active_engine_count": input.active_engine_count,
-        "offline_backoff": input.offline_backoff.max(0.0),
+        "offline_backoff": normalize_offline_backoff(input.offline_backoff),
         "next_network_backoff": next_network_backoff(input.offline_backoff),
         "emergency_close_triggered": input.emergency_close_triggered,
         "loop_interval_seconds": interval_seconds,
@@ -1007,15 +1046,19 @@ pub fn build_worker_lifecycle_snapshot(input: StrategyWorkerLifecycleInput) -> V
 }
 
 pub fn next_network_backoff(previous: f64) -> f64 {
-    if previous <= 0.0 {
+    let safe_previous = normalize_offline_backoff(previous);
+    if safe_previous <= 0.0 {
         5.0
     } else {
-        let scaled = previous * 1.5;
-        if scaled.is_nan() {
-            5.0
-        } else {
-            scaled.clamp(5.0, 90.0)
-        }
+        (safe_previous * 1.5).clamp(5.0, 90.0)
+    }
+}
+
+fn normalize_offline_backoff(previous: f64) -> f64 {
+    if previous.is_finite() && previous >= 0.0 {
+        previous
+    } else {
+        0.0
     }
 }
 
@@ -1024,6 +1067,7 @@ enum Compare {
     LeGe,
     GeLe,
     LeGeDefaults(f64, f64),
+    LeGePythonDefaults(f64, f64),
     GeLeDefaults(f64, f64),
 }
 
@@ -1143,6 +1187,15 @@ fn threshold_action_existing_value(
         Compare::LeGeDefaults(buy, sell) => (
             Some(rule.buy_value.unwrap_or(buy)),
             Some(rule.sell_value.unwrap_or(sell)),
+            false,
+        ),
+        Compare::LeGePythonDefaults(buy, sell) => (
+            Some(rule.buy_value.filter(|value| *value != 0.0).unwrap_or(buy)),
+            Some(
+                rule.sell_value
+                    .filter(|value| *value != 0.0)
+                    .unwrap_or(sell),
+            ),
             false,
         ),
         Compare::GeLeDefaults(buy, sell) => (
@@ -1289,6 +1342,26 @@ fn string_value(value: Option<&Value>) -> Option<String> {
     }
 }
 
+fn python_string_value(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(if *flag { "True" } else { "False" }.to_owned()),
+        _ => None,
+    }
+}
+
+fn python_truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::Number(number)) => number.as_f64().is_some_and(|value| value != 0.0),
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::Object(object)) => !object.is_empty(),
+    }
+}
+
 fn normalize_python_ui_option_key(
     value: Option<&Value>,
     options: &[PythonUiOption],
@@ -1400,6 +1473,13 @@ fn float_value(value: Option<&Value>) -> Option<f64> {
     }
 }
 
+fn python_float_value(value: Option<&Value>) -> Option<f64> {
+    match value? {
+        Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
+        _ => float_value(value),
+    }
+}
+
 fn int_value(value: Option<&Value>) -> Option<i64> {
     match value? {
         Value::Number(number) => number
@@ -1410,9 +1490,10 @@ fn int_value(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn insert_float(input: &Map<String, Value>, out: &mut Map<String, Value>, key: &str) {
-    if let Some(value) = float_value(input.get(key)) {
-        out.insert(key.to_owned(), json!(value));
+fn python_int_value(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Bool(flag) => Some(if *flag { 1 } else { 0 }),
+        _ => int_value(value),
     }
 }
 
@@ -1420,13 +1501,32 @@ fn canonical_side(value: Option<&Value>) -> Option<String> {
     normalize_python_ui_option_key_fuzzy(value, PYTHON_SIDE_OPTIONS, 2)
 }
 
-fn normalize_position_pct_units(value: Option<&Value>) -> Option<String> {
-    let lower = string_value(value)?.to_lowercase();
-    match lower.as_str() {
-        "percent" | "%" | "perc" | "percentage" => Some("percent".to_owned()),
-        "fraction" | "decimal" | "ratio" => Some("fraction".to_owned()),
-        _ => None,
+fn normalize_runtime_side(value: Option<&Value>) -> Option<String> {
+    let raw = python_string_value(value)?.to_uppercase();
+    if raw.is_empty() {
+        return None;
     }
+    PYTHON_SIDE_OPTIONS
+        .iter()
+        .find(|option| option.key == raw)
+        .map(|option| option.key.to_owned())
+}
+
+fn normalize_strategy_signal_logic(value: Option<&Value>) -> Option<String> {
+    let raw = python_string_value(value)?.to_uppercase();
+    PYTHON_SIGNAL_LOGIC_OPTIONS
+        .iter()
+        .find(|option| option.key == raw)
+        .map(|option| option.key.to_owned())
+}
+
+fn normalize_position_pct_units(value: Option<&Value>) -> Option<String> {
+    let normalized = normalize_python_config_choice_or_default(
+        value,
+        PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
+        "",
+    );
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn normalize_loop_override(value: Option<&Value>) -> Option<String> {
@@ -1462,23 +1562,47 @@ fn normalize_stop_loss(value: &Value) -> Value {
         return json!({});
     };
     let enabled = coerce_strategy_bool(object.get("enabled"), false);
-    let mode = normalize_python_config_choice_or_default(
+    let mode = normalize_strategy_stop_loss_choice(
         object.get("mode"),
-        PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
         "usdt",
+        [
+            PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES[0],
+            PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES[1],
+            PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES[2],
+        ],
     );
-    let scope = normalize_python_config_choice_or_default(
+    let scope = normalize_strategy_stop_loss_choice(
         object.get("scope"),
-        PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
         "per_trade",
+        [
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES[0],
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES[1],
+            PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES[2],
+        ],
     );
     json!({
         "enabled": enabled,
         "mode": mode,
         "scope": scope,
-        "usdt": float_value(object.get("usdt")).unwrap_or(0.0).max(0.0),
-        "percent": float_value(object.get("percent")).unwrap_or(0.0).max(0.0),
+        "usdt": python_float_value(object.get("usdt")).unwrap_or(0.0).max(0.0),
+        "percent": python_float_value(object.get("percent")).unwrap_or(0.0).max(0.0),
     })
+}
+
+fn normalize_strategy_stop_loss_choice<const N: usize>(
+    value: Option<&Value>,
+    default_value: &str,
+    choices: [(&str, &str); N],
+) -> String {
+    let Some(raw) = python_string_value(value) else {
+        return default_value.to_owned();
+    };
+    let lower = if raw.is_empty() {
+        default_value.to_owned()
+    } else {
+        raw.to_lowercase()
+    };
+    normalize_python_config_choice_or_default(Some(&Value::String(lower)), &choices, default_value)
 }
 
 fn normalize_indicator_values(value: Option<&Value>) -> Vec<String> {
@@ -1492,34 +1616,45 @@ fn normalize_indicator_values(value: Option<&Value>) -> Vec<String> {
     }
 }
 
-fn normalize_backtest_interval(value: Option<&Value>) -> String {
+pub(crate) fn normalize_backtest_interval(value: Option<&Value>) -> String {
     let raw = string_value(value).unwrap_or_default();
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return String::new();
     }
-    if let Some(number) = trimmed
-        .strip_suffix('M')
-        .and_then(|prefix| prefix.parse::<i64>().ok())
-    {
-        return format!("{number}mo");
-    }
-    let compact = trimmed.to_lowercase();
-    let parts = split_amount_unit(&compact);
-    let Some((amount, unit)) = parts else {
-        return compact;
+    let Some((amount_raw, unit_raw)) = split_python_numeric_unit(trimmed) else {
+        return trimmed.to_lowercase();
     };
-    if matches!(unit.as_str(), "mo" | "mon" | "mons" | "month" | "months") {
+    if unit_raw == "M" && amount_raw.chars().all(|ch| ch.is_ascii_digit()) {
+        let normalized_amount = amount_raw.trim_start_matches('0');
+        return format!(
+            "{}mo",
+            if normalized_amount.is_empty() {
+                "0"
+            } else {
+                normalized_amount
+            }
+        );
+    }
+    let amount = match amount_raw.parse::<f64>() {
+        Ok(value) => value,
+        Err(_) => return trimmed.to_lowercase(),
+    };
+    let unit_lower = unit_raw.to_lowercase();
+    if matches!(
+        unit_lower.as_str(),
+        "mo" | "mon" | "mons" | "month" | "months"
+    ) {
         return format!("{}mo", format_amount(amount));
     }
-    let unit = match unit.as_str() {
+    let unit = match unit_lower.as_str() {
         "" | "m" | "min" | "mins" | "minute" | "minutes" => "m",
         "s" | "sec" | "secs" | "second" | "seconds" => "s",
         "h" | "hr" | "hrs" | "hour" | "hours" => "h",
         "d" | "day" | "days" => "d",
         "w" | "wk" | "wks" | "week" | "weeks" => "w",
         "y" | "yr" | "yrs" | "year" | "years" => "y",
-        _ => return compact,
+        _ => return trimmed.to_lowercase(),
     };
     let seconds = match unit {
         "s" => Some(amount),
@@ -1535,6 +1670,33 @@ fn normalize_backtest_interval(value: Option<&Value>) -> String {
         return canonical.to_owned();
     }
     format!("{}{}", format_amount(amount), unit)
+}
+
+fn split_python_numeric_unit(value: &str) -> Option<(String, String)> {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index == 0 {
+        return None;
+    }
+    if index < bytes.len() && bytes[index] == b'.' {
+        index += 1;
+        let fraction_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == fraction_start {
+            return None;
+        }
+    }
+    let amount = value[..index].to_owned();
+    let unit = value[index..].trim();
+    if !unit.is_empty() && !unit.chars().all(char::is_alphabetic) {
+        return None;
+    }
+    Some((amount, unit.to_owned()))
 }
 
 fn split_amount_unit(value: &str) -> Option<(f64, String)> {
@@ -1563,13 +1725,30 @@ fn canonical_interval_by_seconds(seconds: f64) -> Option<&'static str> {
         (300.0, "5m"),
         (600.0, "10m"),
         (900.0, "15m"),
+        (1200.0, "20m"),
         (1800.0, "30m"),
         (2700.0, "45m"),
         (3600.0, "1h"),
         (7200.0, "2h"),
+        (10800.0, "3h"),
         (14400.0, "4h"),
+        (18000.0, "5h"),
+        (21600.0, "6h"),
+        (25200.0, "7h"),
+        (28800.0, "8h"),
+        (32400.0, "9h"),
+        (36000.0, "10h"),
+        (39600.0, "11h"),
+        (43200.0, "12h"),
         (86400.0, "1d"),
+        (172800.0, "2d"),
+        (259200.0, "3d"),
+        (345600.0, "4d"),
+        (432000.0, "5d"),
+        (518400.0, "6d"),
         (604800.0, "1w"),
+        (1209600.0, "2w"),
+        (1814400.0, "3w"),
     ];
     ITEMS
         .iter()
@@ -1626,6 +1805,28 @@ fn format_number(value: Option<&Value>, suffix: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backtest_interval_aliases_match_python_canonicalization() {
+        for (raw, expected) in [
+            ("60 minutes", "1h"),
+            ("20 minutes", "20m"),
+            ("3 hours", "3h"),
+            ("12h", "12h"),
+            ("2 days", "2d"),
+            ("3 weeks", "3w"),
+            ("1M", "1mo"),
+            ("1 M", "1mo"),
+            ("1 year", "1y"),
+            ("1 q", "1 q"),
+        ] {
+            assert_eq!(
+                normalize_backtest_interval(Some(&Value::String(raw.to_owned()))),
+                expected,
+                "interval alias {raw}"
+            );
+        }
+    }
 
     fn rule(enabled: bool, buy_value: Option<f64>, sell_value: Option<f64>) -> IndicatorRule {
         IndicatorRule {
@@ -2064,6 +2265,23 @@ mod tests {
     }
 
     #[test]
+    fn signal_generation_rejects_non_finite_candle_closes_like_python() {
+        let decision = build_signal_decision(StrategySignalInput {
+            closes: vec![100.0, f64::NAN],
+            indicators: BTreeMap::from([("rsi".to_owned(), vec![50.0, 20.0])]),
+            rules: BTreeMap::from([("rsi".to_owned(), rule(true, Some(30.0), Some(70.0)))]),
+            side: "BUY".to_owned(),
+            use_live_values: true,
+        });
+
+        assert_eq!(decision.signal, None);
+        assert_eq!(decision.description, "no data");
+        assert_eq!(decision.trigger_price, None);
+        assert!(decision.trigger_sources.is_empty());
+        assert!(decision.trigger_actions.is_empty());
+    }
+
+    #[test]
     fn signal_generation_reports_missing_composite_series_like_python() {
         let decision = build_signal_decision(StrategySignalInput {
             closes: vec![100.0, 101.0],
@@ -2108,12 +2326,27 @@ mod tests {
 
     #[test]
     fn strategy_controls_normalize_runtime_and_backtest_like_python() {
+        for reference_case in
+            crate::generated_python_parity::PYTHON_STRATEGY_CONTROLS_REFERENCE_CASES
+        {
+            let input: Value = serde_json::from_str(reference_case.input_json)
+                .expect("generated Python strategy-control input should parse");
+            let expected: Value = serde_json::from_str(reference_case.expected_json)
+                .expect("generated Python strategy-control expected output should parse");
+            assert_eq!(
+                normalize_strategy_controls(reference_case.kind, &input),
+                expected,
+                "Rust strategy-control normalization should match Python fixture {}",
+                reference_case.name
+            );
+        }
+
         let runtime = normalize_strategy_controls(
             "runtime",
             &json!({
-                "side": "buy only",
+                "side": "buy",
                 "position_pct": "12.5",
-                "position_pct_units": "ratio",
+                "position_pct_units": "percentage",
                 "leverage": "3",
                 "loop_interval_override": " 5 M ",
                 "add_only": "false",
@@ -2124,10 +2357,10 @@ mod tests {
         );
         assert_eq!(runtime["side"], "BUY");
         assert_eq!(runtime["position_pct"], 12.5);
-        assert_eq!(runtime["position_pct_units"], "fraction");
+        assert_eq!(runtime["position_pct_units"], "percent");
         assert_eq!(runtime["leverage"], 3);
         assert_eq!(runtime["loop_interval_override"], "5m");
-        assert_eq!(runtime["add_only"], false);
+        assert_eq!(runtime["add_only"], true);
         assert_eq!(runtime["account_mode"], "Portfolio Margin");
         assert_eq!(runtime["connector_backend"], "ccxt");
         assert_eq!(runtime["stop_loss"]["scope"], "per_trade");
@@ -2153,12 +2386,25 @@ mod tests {
         assert_eq!(backtest["assets_mode"], "Multi-Assets");
         assert_eq!(backtest["account_mode"], "Classic Trading");
         assert_eq!(backtest["leverage"], 10);
-        assert_eq!(backtest["fee_bps"], 5.0);
-        assert_eq!(backtest["slippage_bps"], 2.0);
+        assert!(backtest.get("fee_bps").is_none());
+        assert!(backtest.get("slippage_bps").is_none());
     }
 
     #[test]
     fn strategy_risk_controls_normalize_from_python_effective_defaults() {
+        for reference_case in crate::generated_python_parity::PYTHON_STRATEGY_RISK_REFERENCE_CASES {
+            let input: Value = serde_json::from_str(reference_case.input_json)
+                .expect("generated Python strategy-risk input should parse");
+            let expected: Value = serde_json::from_str(reference_case.expected_json)
+                .expect("generated Python strategy-risk expected output should parse");
+            assert_eq!(
+                normalize_strategy_risk_controls(&input),
+                expected,
+                "Rust strategy-risk normalization should match Python fixture {}",
+                reference_case.name
+            );
+        }
+
         let controls = normalize_strategy_risk_controls(&json!({
             "indicator_use_live_values": "true",
             "allow_opposite_positions": false,
@@ -2251,5 +2497,13 @@ mod tests {
         });
         assert_eq!(stopping["stopped"], true);
         assert_eq!(stopping["lifecycle_phase"], "stopping");
+
+        assert_eq!(next_network_backoff(f64::NAN), 5.0);
+        let invalid = build_worker_lifecycle_snapshot(StrategyWorkerLifecycleInput {
+            offline_backoff: f64::NAN,
+            ..Default::default()
+        });
+        assert_eq!(invalid["offline_backoff"], 0.0);
+        assert_eq!(invalid["next_network_backoff"], 5.0);
     }
 }

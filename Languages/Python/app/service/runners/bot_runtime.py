@@ -75,19 +75,24 @@ class BotRuntimeCoordinator(BotRuntimeStateMixin, BotRuntimeControlMixin):
             config=self._config,
             source="service-bootstrap",
         )
-        self._connector_order_circuit_breaker_snapshot = {
-            "active": False,
-            "state": "closed",
-            "reason": "",
-            "message": "",
-            "block_count": 0,
-            "block_threshold": int(self._config.get("connector_order_block_pause_threshold") or 2),
-            "block_window_seconds": float(self._config.get("connector_order_block_window_seconds") or 60.0),
-            "tripped_at": "",
-            "cleared_at": "",
-            "source": "service-bootstrap",
-            "generated_at": self._now_iso(),
-        }
+        self._connector_order_circuit_breaker_snapshot = (
+            self._build_connector_order_circuit_breaker_snapshot_unlocked(
+                {
+                    "active": False,
+                    "state": "closed",
+                    "reason": "",
+                    "message": "",
+                    "block_count": 0,
+                    "block_threshold": int(self._config.get("connector_order_block_pause_threshold") or 2),
+                    "block_window_seconds": float(self._config.get("connector_order_block_window_seconds") or 60.0),
+                    "tripped_at": "",
+                    "cleared_at": "",
+                    "source": "service-bootstrap",
+                    "generated_at": self._now_iso(),
+                },
+                source="service-bootstrap",
+            )
+        )
         self._connector_order_circuit_last_incident = None
         self._connector_order_circuit_incident_log_warned = False
         self._connector_order_circuit_incident_log_last_write_error = None

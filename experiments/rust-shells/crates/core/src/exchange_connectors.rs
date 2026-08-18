@@ -155,18 +155,45 @@ pub fn ccxt_exchange_id_for(value: impl AsRef<str>) -> String {
 }
 
 pub fn normalize_connector_backend(value: impl AsRef<str>) -> String {
-    let key = support_key(value);
-    if key.is_empty() {
+    let text_raw = value.as_ref().trim();
+    if text_raw.is_empty() {
         return DEFAULT_CONNECTOR_BACKEND.to_owned();
     }
-    if let Some(option) = PYTHON_CONNECTOR_OPTIONS
-        .iter()
-        .find(|option| support_key(option.key) == key)
+
+    // Keep this ordering and fallback aligned with Python's
+    // app.gui.shared.helper_runtime._normalize_connector_backend.
+    let text = text_raw.to_ascii_lowercase();
+    if text == "binance-sdk-derivatives-trading-usds-futures"
+        || text == "binance_sdk_derivatives_trading_usds_futures"
+        || (text.contains("sdk")
+            && text.contains("future")
+            && (text.contains("usd") || text.contains("usds")))
     {
-        option.key.to_owned()
-    } else {
-        key
+        return "binance-sdk-derivatives-trading-usds-futures".to_owned();
     }
+    if text == "binance-sdk-derivatives-trading-coin-futures"
+        || text == "binance_sdk_derivatives_trading_coin_futures"
+        || (text.contains("sdk") && text.contains("coin") && text.contains("future"))
+    {
+        return "binance-sdk-derivatives-trading-coin-futures".to_owned();
+    }
+    if text == "binance-sdk-spot"
+        || text == "binance_sdk_spot"
+        || (text.contains("sdk") && text.contains("spot"))
+    {
+        return "binance-sdk-spot".to_owned();
+    }
+    if text == "ccxt" || text.contains("ccxt") {
+        return "ccxt".to_owned();
+    }
+    if text.contains("connector") || text.contains("official") || text == "binance-connector" {
+        return "binance-connector".to_owned();
+    }
+    if text.contains("python") && text.contains("binance") {
+        return "python-binance".to_owned();
+    }
+
+    DEFAULT_CONNECTOR_BACKEND.to_owned()
 }
 
 pub fn build_exchange_support_payload(
@@ -627,6 +654,18 @@ fn non_empty_or(value: String, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connector_normalization_matches_generated_python_reference_cases() {
+        for case in crate::generated_python_parity::PYTHON_CONNECTOR_NORMALIZATION_REFERENCE_CASES {
+            assert_eq!(
+                normalize_connector_backend(case.input),
+                case.expected,
+                "connector normalization diverged for Python case {}",
+                case.name
+            );
+        }
+    }
 
     #[test]
     fn support_payload_matches_every_generated_python_reference_case() {

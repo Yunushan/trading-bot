@@ -90,6 +90,54 @@ struct MinimumOrderAutoBumpGuardResult {
     QStringList errors;
 };
 
+// Mirrors the Python futures signal-order capital guard.  The caller owns
+// exchange filter normalization so this guard can be shared by paper and live
+// native execution paths without depending on an exchange client.
+struct CapitalExposureGuardInput {
+    QString market = QStringLiteral("futures");
+    QString symbol;
+    QString interval;
+    QString side;
+    double positionPctFraction = 0.0;
+    double availableUsdt = 0.0;
+    double walletUsdt = 0.0;
+    double ledgerMarginTotal = 0.0;
+    double existingIndicatorMargin = 0.0;
+    double existingSideMargin = 0.0;
+    int activeSlotCount = 0;
+    bool slotAlreadyActive = false;
+    double price = 0.0;
+    int leverage = 1;
+    bool hasFilters = false;
+    OrderSymbolFilters filters;
+    double requestedQuantity = 0.0;
+    double normalizedQuantity = 0.0;
+    double flipCloseQuantity = 0.0;
+    bool hasFlipCloseQuantity = false;
+    bool liveMode = false;
+    bool liveAllowAutoBumpToMinOrder = false;
+    double maxAutoBumpPercent = 5.0;
+    double autoBumpPercentMultiplier = 10.0;
+    double marginOverTargetTolerance = 0.05;
+    double marginFilterSlippage = 0.1;
+    bool addOnly = false;
+    bool dualSide = false;
+    double netPositionAmt = 0.0;
+};
+
+struct CapitalExposureGuardResult {
+    bool allowed = false;
+    QString reason;
+    double equityUsdt = 0.0;
+    double targetMarginUsdt = 0.0;
+    double maxIndicatorMarginUsdt = 0.0;
+    double marginEstimateUsdt = 0.0;
+    double projectedSideMarginUsdt = 0.0;
+    double quantityEstimate = 0.0;
+    bool reduceOnly = false;
+    QString desiredPositionSide;
+};
+
 struct OrderAuditLogConfig {
     bool enabled = true;
     QString path;
@@ -184,11 +232,20 @@ QStringList validateOrderFilterConstraints(
     const OrderSymbolFilters &filters,
     bool hasLastPrice,
     double lastPrice);
+QStringList validateOrderFilterConstraintsWithRawParams(
+    const OrderSubmitIntent &intent,
+    const OrderSymbolFilters &filters,
+    bool hasLastPrice,
+    double lastPrice,
+    const QVector<QPair<QString, QString>> &params);
+QStringList validateConnectorHealthErrors(const QString &state, const QString &health);
 bool isLiveTradingMode(const QString &mode);
 QStringList validateLiveTradingSafety(const LiveOrderGuardInput &input);
 LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input);
 MinimumOrderAutoBumpGuardResult guardFuturesMinimumOrderAutoBump(
     const MinimumOrderAutoBumpGuardInput &input);
+CapitalExposureGuardResult guardFuturesCapitalExposure(
+    const CapitalExposureGuardInput &input);
 
 QJsonObject buildOrderAuditEvent(
     const QString &event,

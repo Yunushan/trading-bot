@@ -1407,8 +1407,8 @@ fn float_range_issue(
         format!(
             "must be {} {} and <= {}",
             if exclusive_min { ">" } else { ">=" },
-            format_amount(min),
-            format_amount(max)
+            format_python_general(min),
+            format_python_general(max)
         ),
     )
 }
@@ -1518,6 +1518,22 @@ fn format_amount(value: f64) -> String {
         }
         text
     }
+}
+
+// Python's ``:g`` formatting uses scientific notation at one million and
+// keeps a signed, two-digit exponent. Keep validation errors byte-for-byte
+// compatible with the Python source contract without changing interval text.
+fn format_python_general(value: f64) -> String {
+    if value != 0.0 && value.abs() >= 1_000_000.0 {
+        let raw = format!("{value:e}");
+        if let Some((mantissa, exponent)) = raw.split_once('e') {
+            if let Ok(exponent) = exponent.parse::<i32>() {
+                let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
+                return format!("{mantissa}e{exponent:+03}");
+            }
+        }
+    }
+    format_amount(value)
 }
 
 fn validate_symbol_list(
@@ -2164,6 +2180,7 @@ fn normalize_pair_list(cfg: &mut Map<String, Value>, key: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generated_python_parity::PYTHON_RUNTIME_CONFIG_REFERENCE_CASES;
     use serde_json::json;
     use std::time::SystemTime;
 
@@ -2500,6 +2517,35 @@ mod tests {
         assert!(message.contains("llm_provider: must be one of:"));
         assert!(message.contains("chart.view_mode: must be one of:"));
         assert!(!message.contains("backtest.symbol_source:"));
+    }
+
+    #[test]
+    fn generated_runtime_config_cases_match_python_source() {
+        for case in PYTHON_RUNTIME_CONFIG_REFERENCE_CASES {
+            let input: Value = serde_json::from_str(case.input_json)
+                .unwrap_or_else(|error| panic!("{} input JSON should parse: {error}", case.name));
+            if case.valid {
+                let expected: Value =
+                    serde_json::from_str(case.expected_json).unwrap_or_else(|error| {
+                        panic!("{} expected JSON should parse: {error}", case.name)
+                    });
+                let actual = validate_service_runtime_config(&input)
+                    .unwrap_or_else(|error| panic!("{} should validate: {error}", case.name));
+                assert_eq!(
+                    actual, expected,
+                    "{} should match Python validation output",
+                    case.name
+                );
+            } else {
+                let actual = validate_service_runtime_config(&input)
+                    .expect_err("invalid Python validation case should be rejected");
+                assert_eq!(
+                    actual, case.expected_error,
+                    "{} should match Python validation error",
+                    case.name
+                );
+            }
+        }
     }
 
     #[test]

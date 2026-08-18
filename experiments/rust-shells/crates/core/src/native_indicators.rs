@@ -1327,11 +1327,14 @@ fn config_enabled(config: &Value) -> bool {
 }
 
 fn config_length(config: &Value, key: &str, fallback: usize) -> usize {
-    config
-        .get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value > 0)
+    let candidate = config.get(key).and_then(|value| match value {
+        Value::Number(value) => value.as_f64(),
+        Value::String(value) => value.trim().parse::<f64>().ok(),
+        _ => None,
+    });
+    candidate
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.max(1.0) as usize)
         .unwrap_or(fallback)
 }
 
@@ -1677,8 +1680,8 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| vec![fixture.clone()]);
         assert!(
-            indicator_cases.len() >= 3,
-            "generated Python indicator reference should include multiple market scenarios"
+            indicator_cases.len() >= 7,
+            "generated Python indicator reference should include normal, edge, and coercion scenarios"
         );
         for (case_index, indicator_case) in indicator_cases.iter().enumerate() {
             let case_name = indicator_case["name"]

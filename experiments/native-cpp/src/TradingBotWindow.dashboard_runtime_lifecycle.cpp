@@ -411,6 +411,7 @@ void TradingBotWindow::startDashboardRuntime() {
                     side,
                     interval,
                     rawCellText(row, 9).trimmed(),
+                    QStringList{rawCellText(row, 9).trimmed()},
                     rowConnectorCfg.key,
                     rowConnectorCfg.baseUrl,
                     entryPrice,

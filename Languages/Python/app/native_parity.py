@@ -15,6 +15,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import re
 from typing import Any
 
 from .gui.code.code_language_catalog import (
@@ -32,15 +33,19 @@ from .gui.runtime.composition.module_state_constants import (
     CHART_MARKET_OPTIONS,
     DASHBOARD_LOOP_CHOICES,
     DEFAULT_CHART_SYMBOLS,
+    FUTURES_CONNECTOR_KEYS,
     LEAD_TRADER_OPTIONS,
     MDD_LOGIC_LABELS,
     SIDE_LABELS,
+    SPOT_CONNECTOR_KEYS,
     STOP_LOSS_MODE_LABELS,
     STOP_LOSS_SCOPE_LABELS,
     TRADINGVIEW_INTERVAL_MAP,
     _connector_options,
 )
+from .gui.runtime.strategy import controls_format_runtime, controls_shared_runtime
 from .gui.runtime.ui.theme_styles import DESIGN_OPTIONS
+from .integrations.llm.clients import build_llm_chat_request, llm_output_policy_violations
 from .integrations.llm.providers import (
     LLM_MODEL_CATALOG_PATH_ENV,
     LLM_PROVIDER_CATALOG_REVISION,
@@ -87,7 +92,14 @@ from .settings.live_safety import (
     LIVE_TRADING_MAX_POSITION_PCT_ENV,
     LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
 )
-from .settings.risk import RiskManagementSettings, STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS
+from .settings.risk import (
+    RiskManagementSettings,
+    STOP_LOSS_MODE_ORDER,
+    STOP_LOSS_SCOPE_OPTIONS,
+    coerce_bool,
+    normalize_stop_loss_dict,
+)
+from .gui.shared.helper_runtime import _normalize_connector_backend
 from .settings.ui import DEFAULT_DESIGN, DEFAULT_SELECTED_EXCHANGE, DEFAULT_THEME
 from .settings.validation import (
     _ACCOUNT_MODE_CHOICES,
@@ -106,6 +118,8 @@ from .settings.validation import (
     _SCAN_SCOPE_CHOICES,
     _SIDE_CHOICES,
     _TIF_CHOICES,
+    ConfigValidationError,
+    validate_runtime_config,
 )
 
 
@@ -121,40 +135,55 @@ INDICATOR_SOURCE_OPTIONS = (
     "Binance spot",
     "Binance futures",
 )
+_COERCE_BOOL_PROBE_VALUES = ("1", "true", "yes", "on", "y")
+PYTHON_COERCE_BOOL_TRUE_VALUES = tuple(
+    value for value in _COERCE_BOOL_PROBE_VALUES if coerce_bool(value, False)
+)
 
 # Native shells must derive their direct-execution boundary from Python as well
 # as their option catalogs. Anything outside this deliberately small surface is
 # coordinated by the Python Service API/provider connector until native runtime
 # promotion has matching implementation and external evidence.
+_NATIVE_RUNTIME_CONNECTOR_BACKEND_ORDER = (
+    "binance-sdk-derivatives-trading-usds-futures",
+    "binance-sdk-derivatives-trading-coin-futures",
+    "binance-sdk-spot",
+    "binance-connector",
+    "ccxt",
+    "python-binance",
+)
+
+
+def _native_runtime_connector_market_families() -> tuple[tuple[str, str], ...]:
+    """Project Python's account connector filters into native market families."""
+
+    mappings: list[tuple[str, str]] = []
+    for backend in _NATIVE_RUNTIME_CONNECTOR_BACKEND_ORDER:
+        if backend == "binance-sdk-derivatives-trading-coin-futures":
+            mappings.append((backend, "coin-m-futures"))
+        elif backend in FUTURES_CONNECTOR_KEYS:
+            mappings.append((backend, "usd-m-futures"))
+        if backend in SPOT_CONNECTOR_KEYS:
+            mappings.append((backend, "spot"))
+    return tuple(mappings)
+
+
+_NATIVE_RUNTIME_CONNECTOR_BACKENDS = tuple(
+    backend
+    for backend in _NATIVE_RUNTIME_CONNECTOR_BACKEND_ORDER
+    if backend in FUTURES_CONNECTOR_KEYS or backend in SPOT_CONNECTOR_KEYS
+)
+
+
 NATIVE_RUNTIME_OWNERSHIP = {
     "direct_exchanges": ("Binance",),
-    "direct_connector_backends": (
-        "binance-sdk-derivatives-trading-usds-futures",
-        "binance-sdk-derivatives-trading-coin-futures",
-        "binance-sdk-spot",
-        "binance-connector",
-        # These Python adapters use Binance's Spot/USD-M API shapes. Native
-        # shells may use the same normalized REST boundary when Binance is
-        # selected; CCXT remains delegated for every other exchange.
-        "ccxt",
-        "python-binance",
-    ),
+    "direct_connector_backends": _NATIVE_RUNTIME_CONNECTOR_BACKENDS,
     "direct_market_families": (
         "usd-m-futures",
         "coin-m-futures",
         "spot",
     ),
-    "direct_connector_market_families": (
-        ("binance-sdk-derivatives-trading-usds-futures", "usd-m-futures"),
-        ("binance-sdk-derivatives-trading-coin-futures", "coin-m-futures"),
-        ("binance-sdk-spot", "spot"),
-        ("binance-connector", "usd-m-futures"),
-        ("binance-connector", "spot"),
-        ("ccxt", "usd-m-futures"),
-        ("ccxt", "spot"),
-        ("python-binance", "usd-m-futures"),
-        ("python-binance", "spot"),
-    ),
+    "direct_connector_market_families": _native_runtime_connector_market_families(),
     "indicator_source_market_families": (
         ("binance_spot", "spot"),
         ("binance_futures", "usd-m-futures"),
@@ -199,6 +228,7 @@ ORDER_GUARD_BEHAVIOR = {
         "max_position_pct": LIVE_TRADING_MAX_POSITION_PCT_ENV,
         "max_session_orders": LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
     },
+    "environment_bool_true_values": PYTHON_COERCE_BOOL_TRUE_VALUES,
 }
 
 # Canonical runtime-series keys for every user-selectable indicator.  Python's
@@ -264,8 +294,21 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="desktop_shell_and_tabs",
         title="Desktop shell and primary tabs",
         python_surface="Dashboard, Chart, Positions, Backtest, Liquidation Heatmap, Code Languages, startup composition, theme, and live tab wiring.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_support_consumes_generated_contract",
+            "cpp_support_exposes_generated_contract",
+            "cpp_dashboard_uses_python_source_surface",
+            "cpp_indicator_dialog_uses_python_ma_options",
+            "cpp_chart_uses_python_source_surface",
+            "cpp_native_chart_heatmap_uses_python_source_surface",
+            "cpp_positions_uses_python_source_surface",
+        ),
+        rust_required_before_full_parity=(
+            "rust_core_consumes_generated_contract",
+            "tauri_browser_consumes_generated_contract",
+            "tauri_browser_consumes_generated_starter_catalogs",
+            "tauri_environment_versions_browser_bridge",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -273,8 +316,22 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="service_api_contract",
         title="Service API contract",
         python_surface="Canonical /api/v1 routes, methods, schemas, dashboard stream, auth, control-plane state, and desktop bridge contract.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_support_consumes_generated_contract",
+            "cpp_support_exposes_generated_contract",
+            "cpp_backtest_service_api_uses_python_source_routes",
+            "cpp_dashboard_llm_service_api_uses_python_source_routes",
+            "cpp_config_service_api_uses_python_source_routes",
+            "cpp_code_terminal_uses_python_service_api",
+            "cpp_account_uses_python_service_api",
+        ),
+        rust_required_before_full_parity=(
+            "rust_core_consumes_generated_contract",
+            "tauri_browser_service_api_uses_python_source_routes",
+            "tauri_llm_catalog_uses_python_source_route",
+            "tauri_dashboard_stream_backend_uses_python_source_route",
+            "tauri_dashboard_stream_browser_bridge",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -282,8 +339,13 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="config_persistence",
         title="Config persistence and hydration",
         python_surface="Runtime config, file save/load, dirty state, dashboard hydration, service snapshots, and secret redaction.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_config_persistence_uses_python_source_options",
+            "cpp_config_service_api_uses_python_source_routes",
+        ),
+        rust_required_before_full_parity=(
+            "rust_config_persistence_uses_python_source_options",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -291,8 +353,20 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="strategy_runtime",
         title="Strategy runtime and signal generation",
         python_surface="Indicator computation, strategy cycles, signal generation, live candle options, override tables, and worker lifecycle.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_native_indicator_source_uses_python_source_policy",
+            "cpp_native_indicator_runtime_uses_python_source_policy",
+            "cpp_native_indicator_runtime_uses_python_reference_fixture",
+            "cpp_native_strategy_runtime_uses_python_source_options",
+            "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
+            "cpp_native_strategy_runtime_uses_python_behavior_fixtures",
+            "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline",
+        ),
+        rust_required_before_full_parity=(
+            "rust_core_consumes_generated_contract",
+            "rust_strategy_runtime_uses_python_source_options",
+            "rust_native_strategy_runtime_uses_python_live_signal_fixture",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -300,8 +374,16 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="exchange_connectors",
         title="Exchange connectors and market data",
         python_surface="Binance SDK/connector/CCXT/python-binance selection, connector support metadata, transport diagnostics, rate limits, REST market data, and WebSocket paths.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_native_exchange_connectors_use_python_source_connectors",
+            "cpp_native_exchange_connectors_use_python_reference_fixture",
+            "cpp_native_runtime_ownership_uses_python_source_policy",
+        ),
+        rust_required_before_full_parity=(
+            "rust_native_exchange_connectors_use_python_source_connectors",
+            "rust_native_exchange_connectors_use_python_reference_fixture",
+            "rust_native_runtime_ownership_uses_python_source_policy",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -309,8 +391,17 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="account_portfolio_positions",
         title="Account, portfolio, and positions",
         python_surface="Account snapshots, portfolio summaries, futures position queries, close-all behavior, position history, allocation tracking, and reconciliation.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_account_uses_python_service_api",
+            "cpp_native_portfolio_reconciliation_uses_python_missing_options",
+            "cpp_native_portfolio_reconciliation_policy_uses_python_keys",
+            "cpp_native_portfolio_reconciliation_uses_python_reference_fixture",
+        ),
+        rust_required_before_full_parity=(
+            "rust_native_account_runtime_is_present",
+            "rust_native_portfolio_reconciliation_uses_python_missing_options",
+            "rust_native_portfolio_reconciliation_uses_python_reference_fixture",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -318,8 +409,21 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="order_execution_and_risk",
         title="Order execution, audit, and risk",
         python_surface="Order sizing, submit guards, audit logs, position gates, close-opposite logic, stop-loss scopes, live safety preflight, circuit breaker, and shutdown guards.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "python_order_guard_implements_behavior_contract",
+            "cpp_order_guard_uses_python_behavior_contract",
+            "cpp_order_guard_uses_python_live_safety_environment",
+            "cpp_native_order_guard_uses_python_order_intent_fixture",
+            "cpp_native_order_guard_uses_python_connector_health_fixture",
+            "cpp_dashboard_runtime_enforces_live_order_safety",
+        ),
+        rust_required_before_full_parity=(
+            "python_order_guard_implements_behavior_contract",
+            "rust_order_guard_uses_python_behavior_contract",
+            "rust_order_guard_uses_python_live_safety_environment",
+            "rust_order_guard_uses_python_order_intent_fixture",
+            "rust_order_guard_uses_python_connector_health_fixture",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -327,8 +431,19 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="backtest_engine",
         title="Backtest engine, optimizer, and scanner",
         python_surface="Backtest engine, optimizer limits/results, live parity request shape, scanner polling, dashboard import, indicator selection, and provenance.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_backtest_uses_python_source_surface",
+            "cpp_native_backtest_pair_overrides_match_python",
+            "cpp_native_backtest_runtime_uses_python_reference_fixture",
+            "cpp_backtest_service_api_uses_python_source_routes",
+        ),
+        rust_required_before_full_parity=(
+            "rust_native_backtest_runtime_uses_python_reference_fixture",
+            "rust_native_backtest_batch_runtime_uses_python_reference_fixture",
+            "tauri_native_backtest_bridge",
+            "tauri_native_backtest_commands_registered",
+            "tauri_native_backtest_browser_bridge",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -336,8 +451,17 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="charts_and_heatmaps",
         title="Charts and liquidation heatmaps",
         python_surface="TradingView, lightweight chart assets, candlestick fallback, chart state payloads, browser guards, and liquidation provider panels.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_chart_uses_python_source_surface",
+            "cpp_native_chart_heatmap_uses_python_source_surface",
+            "cpp_support_consumes_generated_contract",
+        ),
+        rust_required_before_full_parity=(
+            "rust_core_consumes_generated_contract",
+            "tauri_dashboard_stream_backend_uses_python_source_route",
+            "tauri_dashboard_stream_browser_bridge",
+            "tauri_browser_consumes_generated_contract",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -345,8 +469,15 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="logs_terminal_diagnostics",
         title="Logs, terminal, and diagnostics",
         python_surface="Service logs, dashboard logs, terminal command execution, exception diagnostics, secret redaction, and test runner/reporting flows.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_code_terminal_uses_python_service_api",
+            "cpp_support_consumes_generated_contract",
+        ),
+        rust_required_before_full_parity=(
+            "rust_core_consumes_generated_contract",
+            "tauri_browser_service_api_uses_python_source_routes",
+            "tauri_dashboard_stream_browser_bridge",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -354,8 +485,20 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="llm_advisory",
         title="LLM advisory and local model lifecycle",
         python_surface="Provider catalogs, privacy flags, advisory prompt execution, config persistence, local Ollama status/start/pull/delete, and redacted output.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_dashboard_llm_service_api_uses_python_source_routes",
+            "cpp_llm_catalog_payload_fields_follow_python",
+            "cpp_llm_dynamic_catalog_uses_python_sources",
+            "cpp_llm_output_policy_uses_python_reference_fixture",
+            "cpp_llm_chat_request_uses_python_reference_fixture",
+        ),
+        rust_required_before_full_parity=(
+            "rust_llm_output_policy_uses_python_reference_fixture",
+            "rust_llm_chat_request_uses_python_reference_fixture",
+            "rust_llm_dynamic_catalog_uses_python_sources",
+            "tauri_llm_catalog_uses_python_source_route",
+            "tauri_browser_service_api_uses_python_source_routes",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -363,8 +506,14 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="startup_packaging_platform",
         title="Startup, packaging, and platform integration",
         python_surface="Product entrypoints, startup splash/suppression, Windows taskbar metadata, PyInstaller packaging, service wrappers, and release smoke tests.",
-        cpp_required_before_full_parity=(),
-        rust_required_before_full_parity=(),
+        cpp_required_before_full_parity=(
+            "cpp_startup_packaging_contract",
+        ),
+        rust_required_before_full_parity=(
+            "rust_startup_packaging_contract",
+            "tauri_environment_versions_backend_uses_python_source_catalog",
+            "tauri_environment_versions_browser_bridge",
+        ),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -814,7 +963,704 @@ def _config_choice_maps() -> dict[str, dict[str, str]]:
         "chart_view_mode": dict(_CHART_VIEW_MODE_CHOICES),
         "llm_use_for": dict(_LLM_USE_FOR_CHOICES),
         "llm_reasoning_effort": dict(_LLM_REASONING_EFFORT_CHOICES),
+        "position_pct_units": dict(controls_shared_runtime.POSITION_PCT_UNITS_CHOICES),
     }
+
+
+def native_runtime_config_choice_reference() -> list[dict[str, object]]:
+    """Return Python-normalized cases for every accepted config choice alias."""
+
+    choice_paths: dict[str, tuple[tuple[str, ...], str]] = {
+        "account_type": ((), "account_type"),
+        "margin_mode": ((), "margin_mode"),
+        "position_mode": ((), "position_mode"),
+        "assets_mode": ((), "assets_mode"),
+        "account_mode": ((), "account_mode"),
+        "side": ((), "side"),
+        "order_type": ((), "order_type"),
+        "tif": ((), "tif"),
+        "chart_view_mode": (("chart",), "view_mode"),
+        "logic": (("backtest",), "logic"),
+        "backtest_execution_backend": (("backtest",), "execution_backend"),
+        "mdd_logic": (("backtest",), "mdd_logic"),
+        "scan_scope": (("backtest",), "scan_scope"),
+        "optimizer_mode": (("backtest",), "optimizer_mode"),
+        "optimizer_metric": (("backtest",), "optimizer_metric"),
+        "stop_loss_mode": (("stop_loss",), "mode"),
+        "stop_loss_scope": (("stop_loss",), "scope"),
+        "llm_use_for": ((), "llm_use_for"),
+        "llm_reasoning_effort": ((), "llm_reasoning_effort"),
+    }
+    cases: list[dict[str, object]] = []
+    choice_maps = _config_choice_maps()
+    for choice_name, (path, field) in choice_paths.items():
+        for alias in choice_maps.get(choice_name, {}):
+            config: dict[str, object] = {}
+            target = config
+            for part in path:
+                child: dict[str, object] = {}
+                target[part] = child
+                target = child
+            target[field] = alias
+            cases.append(
+                {
+                    "name": f"choice-{choice_name}-{alias}",
+                    "input": config,
+                    "valid": True,
+                    "expected": validate_runtime_config(config),
+                    "expected_error": "",
+                }
+            )
+
+    # Position units belong to strategy controls nested under a symbol/interval
+    # override, rather than to the top-level runtime configuration schema.
+    for alias in choice_maps.get("position_pct_units", {}):
+        config = {
+            "runtime_symbol_interval_pairs": [
+                {
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                    "strategy_controls": {"position_pct_units": alias},
+                }
+            ]
+        }
+        cases.append(
+            {
+                "name": f"choice-position_pct_units-{alias}",
+                "input": config,
+                "valid": True,
+                "expected": validate_runtime_config(config),
+                "expected_error": "",
+            }
+        )
+
+    for alias in llm_provider_choices():
+        if alias:
+            config = {"llm_provider": alias}
+            cases.append(
+                {
+                    "name": f"choice-llm_provider-{alias}",
+                    "input": config,
+                    "valid": True,
+                    "expected": validate_runtime_config(config),
+                    "expected_error": "",
+                }
+            )
+    return cases
+
+
+def native_runtime_config_invalid_reference_cases() -> list[dict[str, object]]:
+    """Return Python-owned rejection outcomes for native config validators."""
+
+    invalid_cases: tuple[tuple[str, dict[str, object]], ...] = (
+        ("invalid-unknown-key", {"unknown_key": True}),
+        ("invalid-mode-empty", {"mode": ""}),
+        ("invalid-account-type", {"account_type": "margin"}),
+        ("invalid-symbol-type", {"symbols": 42}),
+        ("invalid-symbol-content", {"symbols": ["BTC USDT"]}),
+        ("invalid-interval-type", {"intervals": 42}),
+        ("invalid-interval-content", {"intervals": ["0m"]}),
+        ("invalid-lookback-type", {"lookback": "bars"}),
+        ("invalid-lookback-range", {"lookback": 0}),
+        ("invalid-position-pct-exclusive", {"position_pct": 0}),
+        ("invalid-position-pct-range", {"position_pct": 101}),
+        ("invalid-bool", {"live_trading_enabled": "maybe"}),
+        ("invalid-loop-interval", {"loop_interval_override": "fast"}),
+        ("invalid-pair-type", {"runtime_symbol_interval_pairs": {}}),
+        (
+            "invalid-pair-entry",
+            {"runtime_symbol_interval_pairs": [{"symbol": "BTC USDT", "interval": "1m"}]},
+        ),
+        (
+            "invalid-pair-controls",
+            {
+                "runtime_symbol_interval_pairs": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "interval": "1m",
+                        "strategy_controls": {"leverage": 0},
+                    }
+                ]
+            },
+        ),
+        ("invalid-stop-loss-type", {"stop_loss": "no"}),
+        ("invalid-chart-type", {"chart": "no"}),
+        ("invalid-chart-key", {"chart": {"unknown": True}}),
+        ("invalid-chart-market", {"chart": {"market": "margin"}}),
+        ("invalid-chart-view", {"chart": {"view_mode": "external"}}),
+        ("invalid-chart-symbol", {"chart": {"symbol": "BTC USDT"}}),
+        ("invalid-chart-interval", {"chart": {"interval": "0m"}}),
+        ("invalid-backtest-type", {"backtest": "no"}),
+        ("invalid-backtest-key", {"backtest": {"unknown": True}}),
+        ("invalid-backtest-capital", {"backtest": {"capital": 0}}),
+        ("invalid-backtest-date", {"backtest": {"start_date": "not-date"}}),
+        ("invalid-backtest-choice", {"backtest": {"logic": "xor"}}),
+        ("invalid-backtest-mapping", {"backtest": {"template": []}}),
+        ("invalid-backtest-stop-loss", {"backtest": {"stop_loss": "bad"}}),
+        ("invalid-risk-int", {"indicator_flip_confirmation_bars": 0}),
+        ("invalid-risk-float", {"max_auto_bump_percent": 101}),
+        ("invalid-llm-provider", {"llm_provider": "ghost-ai"}),
+        ("invalid-text-control", {"connector_backend": "ok\u0001"}),
+    )
+    cases: list[dict[str, object]] = []
+    for name, config in invalid_cases:
+        try:
+            validate_runtime_config(config)
+        except ConfigValidationError as error:
+            cases.append(
+                {
+                    "name": name,
+                    "input": config,
+                    "valid": False,
+                    "expected": {},
+                    "expected_error": str(error),
+                }
+            )
+        else:
+            raise AssertionError(f"Python invalid parity fixture unexpectedly validated: {name}")
+    return cases
+
+
+class _NativeStrategyControlsReferenceAdapter:
+    """Bind the real Python control formatter without importing a GUI window."""
+
+    config: dict[str, object] = {}
+
+    @staticmethod
+    def _normalize_position_pct_units(value) -> str:
+        return controls_shared_runtime._normalize_position_pct_units(value)
+
+    @staticmethod
+    def _normalize_loop_override(value) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        cleaned = re.sub(r"\s+", "", text.lower())
+        if re.match(r"^\d+(s|m|h|d|w)?$", cleaned):
+            return cleaned
+        return None
+
+    @staticmethod
+    def _normalize_account_mode(value) -> str:
+        text = str(value or "").strip().lower()
+        if "portfolio" in text:
+            return "Portfolio Margin"
+        return "Classic Trading"
+
+    @staticmethod
+    def _normalize_assets_mode(value) -> str:
+        text = str(value or "").strip().lower()
+        if "multi" in text:
+            return "Multi-Assets"
+        return "Single-Asset"
+
+    @staticmethod
+    def _canonical_side_from_text(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return "BOTH"
+        lower = raw.lower()
+        side_lookup = {str(label).lower(): str(code) for code, label in SIDE_LABELS.items()}
+        if lower in side_lookup:
+            return side_lookup[lower]
+        if lower.startswith("buy"):
+            return "BUY"
+        if lower.startswith("sell"):
+            return "SELL"
+        return "BOTH"
+
+
+def native_strategy_controls_reference_cases() -> list[dict[str, object]]:
+    """Return exact Python strategy-control normalization outcomes."""
+
+    controls_shared_runtime.configure_main_window_strategy_controls_shared_runtime(
+        side_labels=SIDE_LABELS,
+        normalize_stop_loss_dict=normalize_stop_loss_dict,
+        normalize_connector_backend=_normalize_connector_backend,
+    )
+    adapter = _NativeStrategyControlsReferenceAdapter()
+    raw_cases: tuple[tuple[str, str, dict[str, object]], ...] = (
+        (
+            "runtime-canonical",
+            "runtime",
+            {
+                "side": "buy",
+                "position_pct": "12.5",
+                "position_pct_units": "percentage",
+                "leverage": "3",
+                "loop_interval_override": " 5 M ",
+                "add_only": "false",
+                "account_mode": "portfolio margin",
+                "connector_backend": "CCXT",
+                "stop_loss": {
+                    "enabled": "true",
+                    "mode": "both",
+                    "scope": "bad",
+                    "usdt": "50",
+                    "percent": "2.5",
+                },
+            },
+        ),
+        (
+            "runtime-python-truthiness-boundaries",
+            "runtime",
+            {
+                "side": " buy ",
+                "position_pct": True,
+                "position_pct_units": "",
+                "_position_pct_units": "percentage",
+                "leverage": 2.5,
+                "loop_interval_override": " 5 M ",
+                "add_only": None,
+                "account_mode": False,
+                "connector_backend": False,
+            },
+        ),
+        (
+            "runtime-kind-is-case-sensitive",
+            "Runtime",
+            {
+                "side": "buy",
+                "stop_loss": {"enabled": True},
+                "connector_backend": "ccxt",
+            },
+        ),
+        (
+            "backtest-canonical",
+            "backtest",
+            {
+                "logic": "separate",
+                "capital": "1000",
+                "position_pct": "0.4",
+                "position_pct_units": "fraction",
+                "side": "sell short",
+                "margin_mode": " Isolated ",
+                "position_mode": " Hedge ",
+                "assets_mode": "multi assets",
+                "account_mode": "classic",
+                "loop_interval_override": " 1 h ",
+                "leverage": 0,
+                "fee_bps": "5",
+                "slippage_bps": "2",
+                "stop_loss": {
+                    "enabled": "true",
+                    "mode": "both",
+                    "scope": "entire_account",
+                    "percent": "2.5",
+                },
+                "connector_backend": "ccxt",
+            },
+        ),
+        (
+            "backtest-exact-logic-and-fuzzy-side",
+            "backtest",
+            {
+                "logic": " OR ",
+                "side": " buy ",
+                "leverage": "3.5",
+                "margin_mode": "",
+                "position_mode": "Hedge",
+                "assets_mode": "single asset",
+                "account_mode": "portfolio",
+            },
+        ),
+    )
+    return [
+        {
+            "name": name,
+            "kind": kind,
+            "input": controls,
+            "expected": controls_format_runtime._normalize_strategy_controls(adapter, kind, controls),
+        }
+        for name, kind, controls in raw_cases
+    ]
+
+
+def native_strategy_risk_reference_cases() -> list[dict[str, object]]:
+    """Return Python-validated effective risk-control outputs for native runtimes."""
+
+    raw_cases: tuple[tuple[str, dict[str, object]], ...] = (
+        (
+            "risk-defaults",
+            {},
+        ),
+        (
+            "risk-canonical-all-controls",
+            {
+                "indicator_flip_cooldown_bars": "4",
+                "indicator_flip_cooldown_seconds": "12.5",
+                "indicator_use_live_values": "false",
+                "indicator_min_position_hold_seconds": "7.25",
+                "indicator_min_position_hold_bars": "3",
+                "require_indicator_flip_signal": "yes",
+                "strict_indicator_flip_enforcement": "no",
+                "indicator_reentry_cooldown_seconds": "9.5",
+                "indicator_reentry_cooldown_bars": "2",
+                "indicator_reentry_requires_signal_reset": "true",
+                "auto_flip_on_close": "false",
+                "allow_close_ignoring_hold": "true",
+                "allow_multi_indicator_close": "true",
+                "allow_indicator_close_without_signal": "false",
+                "indicator_flip_confirmation_bars": "2",
+                "close_on_exit": "true",
+                "positions_missing_threshold": "3",
+                "positions_missing_autoclose": "false",
+                "positions_missing_grace_seconds": "45",
+                "futures_flat_purge_miss_threshold": "4",
+                "futures_flat_purge_grace_seconds": "18.5",
+                "allow_opposite_positions": "false",
+                "hedge_preserve_opposites": "true",
+                "max_auto_bump_percent": "7.5",
+                "auto_bump_percent_multiplier": "20",
+                "stop_loss": {
+                    "enabled": "true",
+                    "mode": "percent",
+                    "scope": "entire_account",
+                    "usdt": "25",
+                    "percent": "2.5",
+                },
+            },
+        ),
+        (
+            "risk-valid-lower-and-upper-bounds",
+            {
+                "indicator_flip_cooldown_bars": 0,
+                "indicator_flip_cooldown_seconds": 0,
+                "indicator_min_position_hold_seconds": 0,
+                "indicator_min_position_hold_bars": 0,
+                "indicator_reentry_cooldown_seconds": 0,
+                "indicator_reentry_cooldown_bars": 0,
+                "indicator_flip_confirmation_bars": 1,
+                "positions_missing_threshold": 1,
+                "positions_missing_grace_seconds": 604800,
+                "futures_flat_purge_miss_threshold": 1,
+                "futures_flat_purge_grace_seconds": 604800,
+                "max_auto_bump_percent": 100,
+                "auto_bump_percent_multiplier": 1000,
+                "stop_loss": {
+                    "enabled": False,
+                    "mode": "both",
+                    "scope": "cumulative",
+                    "usdt": 0,
+                    "percent": 0,
+                },
+            },
+        ),
+    )
+    cases: list[dict[str, object]] = []
+    for name, config in raw_cases:
+        normalized = validate_runtime_config(config)
+        expected = native_python_risk_defaults()
+        expected.update(normalized)
+        cases.append(
+            {
+                "name": name,
+                "input": config,
+                "expected": expected,
+            }
+        )
+    return cases
+
+
+def native_order_intent_reference_cases() -> dict[str, object]:
+    """Return Python order-intent and raw-filter truthiness reference cases."""
+
+    from trading_core.orders import (
+        order_submit_intent_from_params,
+        validate_order_submit_intent,
+    )
+
+    from .integrations.exchanges.binance.orders.order_submit_guard_runtime import (
+        _order_filter_errors,
+    )
+
+    class _FixtureWrapper:
+        def __init__(self, filters: dict[str, object], last_price: object) -> None:
+            self._filters = dict(filters)
+            self._last_price = last_price
+
+        def get_spot_symbol_filters(self, _symbol: str) -> dict[str, object]:
+            return dict(self._filters)
+
+        def get_futures_symbol_filters(self, _symbol: str) -> dict[str, object]:
+            return dict(self._filters)
+
+        def get_last_price(self, _symbol: str) -> object:
+            return self._last_price
+
+    raw_cases: tuple[tuple[str, str, dict[str, object], dict[str, object], object], ...] = (
+        (
+            "canonical-close-position",
+            "futures",
+            {
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "type": "MARKET",
+                "closePosition": "true",
+            },
+            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "minNotional": 5.0},
+            100.0,
+        ),
+        (
+            "python-intent-y-is-false-filter-y-is-true",
+            "futures",
+            {
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "type": "MARKET",
+                "quantity": "0.001",
+                "closePosition": "y",
+            },
+            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "minNotional": 5.0},
+            100.0,
+        ),
+        (
+            "canonical-aliases-and-conflicting-flags",
+            "futures",
+            {
+                "symbol": "ETHUSDT",
+                "side": "BUY",
+                "type": "LIMIT",
+                "quantity": "1",
+                "price": "2000",
+                "position_side": "long",
+                "close_position": "yes",
+                "reduce_only": "on",
+            },
+            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "minNotional": 5.0},
+            2000.0,
+        ),
+        (
+            "spot-rejects-futures-flags",
+            "spot",
+            {
+                "symbol": "ETHUSDT",
+                "side": "BUY",
+                "type": "MARKET",
+                "positionSide": "LONG",
+                "closePosition": "true",
+                "reduceOnly": "true",
+            },
+            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "minNotional": 5.0},
+            2000.0,
+        ),
+    )
+    cases: list[dict[str, object]] = []
+    for name, market, params, filters, last_price in raw_cases:
+        intent = order_submit_intent_from_params(market, params)
+        wrapper = _FixtureWrapper(filters, last_price)
+        cases.append(
+            {
+                "name": name,
+                "market": market,
+                "params": dict(params),
+                "filters": dict(filters),
+                "last_price": last_price,
+                "expected": {
+                    "intent": asdict(intent),
+                    "intent_errors": list(validate_order_submit_intent(intent)),
+                    "filter_errors": list(_order_filter_errors(wrapper, market, params)),
+                },
+            }
+        )
+    return {"schema_version": 1, "cases": cases}
+
+
+def native_connector_health_reference_cases() -> dict[str, object]:
+    """Return Python connector-health order-guard cases for native consumers."""
+
+    from .integrations.exchanges.binance.orders.order_submit_guard_runtime import (
+        _order_health_errors,
+    )
+
+    class _FixtureWrapper:
+        def __init__(self, snapshot: dict[str, object]) -> None:
+            self._snapshot = dict(snapshot)
+
+        def get_connector_health_snapshot(self) -> dict[str, object]:
+            return dict(self._snapshot)
+
+    raw_cases: tuple[tuple[str, dict[str, object]], ...] = (
+        ("missing-state", {"state": "", "health": "ok"}),
+        ("missing-health", {"state": "ready", "health": ""}),
+        ("not-ready", {"state": "paused", "health": "degraded"}),
+        ("degraded-health", {"state": "ready", "health": "degraded"}),
+        ("ready-ok", {"state": "ready", "health": "ok"}),
+        ("ready-unknown", {"state": "ready", "health": "unknown"}),
+    )
+    return {
+        "schema_version": 1,
+        "cases": [
+            {
+                "name": name,
+                "snapshot": dict(snapshot),
+                "expected_errors": list(_order_health_errors(_FixtureWrapper(snapshot))),
+            }
+            for name, snapshot in raw_cases
+        ],
+    }
+
+
+def native_llm_output_policy_reference_cases() -> dict[str, object]:
+    """Return Python LLM output-policy cases for native consumers."""
+
+    raw_cases: tuple[tuple[str, str], ...] = (
+        (
+            "structured-order-and-status",
+            '{"action":"place_order","status":"executed"}',
+        ),
+        (
+            "natural-order-and-risk",
+            "I executed the trade and disabled stop loss.",
+        ),
+        (
+            "fenced-direct-order",
+            '```json\n{"tool":"submit_order","symbol":"BTCUSDT"}\n```',
+        ),
+        (
+            "structured-command-and-risk",
+            'prefix {"command":"create_order","disable_stop_loss":true} suffix',
+        ),
+        (
+            "all-policy-categories",
+            "Order executed; place_order; disable stop loss.",
+        ),
+        (
+            "structured-advice",
+            '{"action":"advise","recommendation":"wait","risk":"keep stop loss enabled"}',
+        ),
+    )
+    return {
+        "schema_version": 1,
+        "cases": [
+            {
+                "name": name,
+                "text": text,
+                "expected_violations": list(llm_output_policy_violations(text)),
+            }
+            for name, text in raw_cases
+        ],
+    }
+
+
+def native_llm_chat_request_reference_cases() -> dict[str, object]:
+    """Return deterministic Python LLM request payloads for native consumers."""
+
+    raw_cases: tuple[
+        tuple[str, dict[str, object], str, str, dict[str, object] | None], ...
+    ] = (
+        (
+            "openai-cloud-context-and-reasoning",
+            {
+                "llm_provider": "openai",
+                "llm_model": "gpt-5.5",
+                "llm_api_key": "parity-test-key",
+                "llm_reasoning_effort": "high",
+            },
+            "Summarize risk",
+            "Be concise",
+            {
+                "runtime": {"phase": "running", "control_plane": "python"},
+                "config": {
+                    "mode": "Live",
+                    "selected_exchange": "Binance",
+                    "account_type": "futures",
+                    "symbols": ["BTCUSDT", "ETHUSDT"],
+                    "intervals": ["1m"],
+                    "llm": {"llm_api_key": None, "token": "secret-token"},
+                },
+                "portfolio": {
+                    "open_position_records": {"BTCUSDT:L": {"secret": "raw"}},
+                    "active_pnl": 12.5,
+                    "closed_pnl": None,
+                },
+                "logs": [{"message": "api_key=secret"}],
+            },
+        ),
+        (
+            "qwen-thinking-option",
+            {
+                "llm_provider": "qwen",
+                "llm_model": "qwen3.7-max",
+                "llm_api_key": "parity-test-key",
+                "llm_reasoning_effort": "enabled",
+            },
+            "Explain the signal",
+            "",
+            None,
+        ),
+        (
+            "anthropic-high-thinking",
+            {
+                "llm_provider": "anthropic",
+                "llm_model": "claude-sonnet-4-5-20250929",
+                "llm_api_key": "parity-test-key",
+                "llm_reasoning_effort": "high",
+            },
+            "Summarize the trade plan",
+            "Keep the answer advisory",
+            None,
+        ),
+        (
+            "gemini-pro-thinking-level",
+            {
+                "llm_provider": "gemini",
+                "llm_model": "gemini-3-pro-preview",
+                "llm_api_key": "parity-test-key",
+                "llm_reasoning_effort": "medium",
+            },
+            "Explain the risk",
+            "",
+            None,
+        ),
+        (
+            "open-source-public-endpoint-privacy",
+            {
+                "llm_provider": "open-source",
+                "llm_model": "RWKV/rwkv-6-world",
+                "llm_base_url": "https://llm.example.test/v1",
+                "llm_allow_public_network": True,
+                "llm_reasoning_effort": "disabled",
+            },
+            "Explain the risk",
+            "",
+            {
+                "runtime": {"phase": "running"},
+                "config": {"api_key": "exchange-secret", "symbols": ["BTCUSDT"]},
+                "custom": {"local_detail": "must-not-leave-private-runtime"},
+                "logs": [{"message": "Bearer private-secret"}],
+            },
+        ),
+        (
+            "local-open-source-endpoint",
+            {
+                "llm_provider": "local",
+                "llm_model": "Qwen/Qwen3-8B",
+                "llm_reasoning_effort": "extra-high",
+            },
+            "Explain the risk",
+            "",
+            {"custom": {"local_detail": "kept-on-loopback"}},
+        ),
+    )
+    cases: list[dict[str, object]] = []
+    for name, config, prompt, system_prompt, context in raw_cases:
+        cases.append(
+            {
+                "name": name,
+                "config": dict(config),
+                "prompt": prompt,
+                "system_prompt": system_prompt,
+                "context": context,
+                "expected": build_llm_chat_request(
+                    config,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    context=context,
+                ),
+            }
+        )
+    return {"schema_version": 1, "cases": cases}
 
 
 def _label_map_payload(values: dict[str, str]) -> list[dict[str, str]]:
@@ -1210,6 +2056,14 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "model_catalog_path_env": LLM_MODEL_CATALOG_PATH_ENV,
         },
         "config_choice_maps": _config_choice_maps(),
+        "runtime_config_choice_reference": native_runtime_config_choice_reference(),
+        "runtime_config_invalid_reference": native_runtime_config_invalid_reference_cases(),
+        "strategy_controls_reference": native_strategy_controls_reference_cases(),
+        "strategy_risk_reference": native_strategy_risk_reference_cases(),
+        "order_intent_reference": native_order_intent_reference_cases(),
+        "connector_health_reference": native_connector_health_reference_cases(),
+        "llm_output_policy_reference": native_llm_output_policy_reference_cases(),
+        "llm_chat_request_reference": native_llm_chat_request_reference_cases(),
         "exchange_support": {
             "supported_exchanges": list(SUPPORTED_EXCHANGES),
             "supported_connector_backends": list(SUPPORTED_CONNECTOR_BACKENDS),
@@ -1293,6 +2147,14 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "config_choice_maps": {
             name: dict(values) for name, values in payload["config_choice_maps"].items()
         },
+        "runtime_config_choice_reference": list(payload["runtime_config_choice_reference"]),
+        "runtime_config_invalid_reference": list(payload["runtime_config_invalid_reference"]),
+        "strategy_controls_reference": list(payload["strategy_controls_reference"]),
+        "strategy_risk_reference": list(payload["strategy_risk_reference"]),
+        "order_intent_reference": dict(payload["order_intent_reference"]),
+        "connector_health_reference": dict(payload["connector_health_reference"]),
+        "llm_output_policy_reference": dict(payload["llm_output_policy_reference"]),
+        "llm_chat_request_reference": dict(payload["llm_chat_request_reference"]),
         "connector_keys": [key for _label, key in _connector_options()],
         "supported_exchanges": list(payload["exchange_support"]["supported_exchanges"]),
         "supported_connector_backends": list(payload["exchange_support"]["supported_connector_backends"]),

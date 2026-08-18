@@ -177,6 +177,7 @@ void populateComboFromPythonSourceOptions(
     const QString &currentLabel = {});
 bool cppPythonSourceParityReady();
 bool rustPythonSourceParityReady();
+QString normalizeConnectorBackend(const QString &value);
 QString recommendedConnectorKey(bool futures);
 QString connectorLabelForKey(const QString &connectorKey);
 void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceDefault = false);

@@ -5,7 +5,9 @@
 #include <QColor>
 #include <QComboBox>
 #include <QByteArray>
+#include <QDir>
 #include <QEventLoop>
+#include <QFile>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -49,7 +51,7 @@ const QString kConnectorPyBinance = QStringLiteral("python-binance");
 const QString kConnectorLegacyGateway = QStringLiteral("gateway");
 const QString kConnectorLegacyCustom = QStringLiteral("custom");
 
-QString normalizeConnectorBackend(const QString &value) {
+QString normalizeConnectorBackendInternal(const QString &value) {
     const QString textRaw = value.trimmed();
     if (textRaw.isEmpty()) {
         return kConnectorUsdsFutures;
@@ -222,6 +224,140 @@ QStringList parityCsvStringList(std::string_view value) {
     return parityString(value).split(QLatin1Char(','), Qt::SkipEmptyParts);
 }
 
+void appendUniqueLlmModel(QStringList &models, const QString &value) {
+    const QString normalized = value.trimmed();
+    if (!normalized.isEmpty() && !models.contains(normalized)) {
+        models.append(normalized);
+    }
+}
+
+QString pythonCatalogRepr(const QJsonValue &value) {
+    if (value.isNull() || value.isUndefined()) {
+        return QStringLiteral("None");
+    }
+    if (value.isBool()) {
+        return value.toBool() ? QStringLiteral("True") : QStringLiteral("False");
+    }
+    if (value.isDouble()) {
+        return QString::number(value.toDouble(), 'g', 15);
+    }
+    if (value.isString()) {
+        QString escaped = value.toString();
+        escaped.replace(QStringLiteral("\\"), QStringLiteral("\\\\"));
+        escaped.replace(QStringLiteral("'"), QStringLiteral("\\'"));
+        escaped.replace(QStringLiteral("\n"), QStringLiteral("\\n"));
+        escaped.replace(QStringLiteral("\r"), QStringLiteral("\\r"));
+        escaped.replace(QStringLiteral("\t"), QStringLiteral("\\t"));
+        return QStringLiteral("'") + escaped + QStringLiteral("'");
+    }
+    if (value.isArray()) {
+        QStringList items;
+        for (const QJsonValue &item : value.toArray()) {
+            items.append(pythonCatalogRepr(item));
+        }
+        return QStringLiteral("[") + items.join(QStringLiteral(", ")) + QStringLiteral("]");
+    }
+    QStringList items;
+    const QJsonObject object = value.toObject();
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+        items.append(
+            pythonCatalogRepr(QJsonValue(it.key()))
+            + QStringLiteral(": ")
+            + pythonCatalogRepr(it.value()));
+    }
+    return QStringLiteral("{") + items.join(QStringLiteral(", ")) + QStringLiteral("}");
+}
+
+QString catalogValueText(const QJsonValue &value) {
+    if (value.isNull() || value.isUndefined()) {
+        return {};
+    }
+    if (value.isString()) {
+        return value.toString();
+    }
+    if (value.isBool()) {
+        return value.toBool() ? QStringLiteral("True") : QString();
+    }
+    if (value.isDouble()) {
+        const double number = value.toDouble();
+        return number == 0.0 ? QString() : QString::number(number, 'g', 15);
+    }
+    if (value.isArray()) {
+        const QJsonArray array = value.toArray();
+        return array.isEmpty() ? QString() : pythonCatalogRepr(value);
+    }
+    const QJsonObject object = value.toObject();
+    return object.isEmpty() ? QString() : pythonCatalogRepr(value);
+}
+
+QString expandLlmCatalogPath(const QString &value) {
+    const QString trimmed = value.trimmed();
+    if (trimmed == QStringLiteral("~")) {
+        return QDir::homePath();
+    }
+    if (trimmed.startsWith(QStringLiteral("~/"))
+        || trimmed.startsWith(QStringLiteral("~\\"))) {
+        return QDir(QDir::homePath()).filePath(trimmed.mid(2));
+    }
+    return trimmed;
+}
+
+QString llmCatalogPath(const QString &catalogPathEnv) {
+    const QString envName = catalogPathEnv.trimmed().isEmpty()
+        ? QStringLiteral("BOT_LLM_MODEL_CATALOG_PATH")
+        : catalogPathEnv.trimmed();
+    const QByteArray envNameBytes = envName.toUtf8();
+    const QString configured = qEnvironmentVariable(envNameBytes.constData()).trimmed();
+    if (!configured.isEmpty()) {
+        return expandLlmCatalogPath(configured);
+    }
+    return QDir(QDir::homePath()).filePath(QStringLiteral(".trading-bot/llm-models.json"));
+}
+
+void appendLlmCatalogModels(
+    QStringList &models,
+    const QString &providerKey,
+    const QString &catalogPathEnv) {
+    QFile file(llmCatalogPath(catalogPathEnv));
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return;
+    }
+    const QJsonObject payload = document.object();
+    QJsonValue rawModels = payload.value(providerKey);
+    if (rawModels.isUndefined() || rawModels.isNull()) {
+        rawModels = payload.value(QStringLiteral("providers")).toObject().value(providerKey);
+    }
+    if (!rawModels.isArray()) {
+        return;
+    }
+    for (const QJsonValue &item : rawModels.toArray()) {
+        appendUniqueLlmModel(models, catalogValueText(item));
+    }
+}
+
+QStringList llmModelSuggestions(
+    const QString &providerKey,
+    const QString &customModelsEnv,
+    const QString &customModelsPathEnv,
+    std::string_view staticModels) {
+    QStringList models = parityCsvStringList(staticModels);
+    const QString extra = qEnvironmentVariable(customModelsEnv.toUtf8().constData()).trimmed();
+    if (!extra.isEmpty()) {
+        QString expanded = extra;
+        for (const QString &item : expanded.replace(QLatin1Char(';'), QLatin1Char(','))
+                 .split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            appendUniqueLlmModel(models, item);
+        }
+    }
+    appendLlmCatalogModels(models, providerKey, customModelsPathEnv);
+    return models;
+}
+
 template <typename OptionArray>
 QStringList parityUiOptionKeys(const OptionArray &options) {
     QStringList result;
@@ -285,6 +421,10 @@ const PythonParityContract::PythonServiceRouteSchema *serviceRouteSchemaByName(c
 } // namespace
 
 namespace TradingBotWindowSupport {
+
+QString normalizeConnectorBackend(const QString &value) {
+    return normalizeConnectorBackendInternal(value);
+}
 
 bool isTestnetModeLabel(const QString &modeText) {
     const QString modeNorm = modeText.trimmed().toLower();
@@ -734,15 +874,22 @@ QVector<LlmProviderRuntimeConfig> pythonSourceLlmProviderConfigs() {
     QVector<LlmProviderRuntimeConfig> configs;
     configs.reserve(static_cast<int>(PythonParityContract::kPythonLlmProviders.size()));
     for (const auto &provider : PythonParityContract::kPythonLlmProviders) {
+        const QString providerKey = parityString(provider.key);
+        const QString customModelsEnv = parityString(provider.customModelsEnv);
+        const QString customModelsPathEnv = parityString(provider.customModelsPathEnv);
         configs.append({
-            parityString(provider.key),
+            providerKey,
             parityString(provider.label),
             parityString(provider.mode),
             parityString(provider.protocol),
             parityString(provider.defaultBaseUrl),
             parityString(provider.defaultModel),
             parityString(provider.apiKeyEnv),
-            parityCsvStringList(provider.modelSuggestions),
+            llmModelSuggestions(
+                providerKey,
+                customModelsEnv,
+                customModelsPathEnv,
+                provider.modelSuggestions),
             parityCsvStringList(provider.reasoningEfforts),
             parityString(provider.defaultReasoningEffort),
             parityString(provider.catalogRevision),
@@ -1164,9 +1311,9 @@ void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceD
         return;
     }
 
-    QString currentKey = normalizeConnectorBackend(combo->currentData().toString().trimmed());
+    QString currentKey = normalizeConnectorBackendInternal(combo->currentData().toString().trimmed());
     if (currentKey.trimmed().isEmpty()) {
-        currentKey = normalizeConnectorBackend(combo->currentText().trimmed());
+        currentKey = normalizeConnectorBackendInternal(combo->currentText().trimmed());
     }
     const QString recommended = recommendedConnectorKey(futures);
     const bool legacyConnector = currentKey == kConnectorLegacyGateway || currentKey == kConnectorLegacyCustom;
@@ -1207,7 +1354,7 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
     ConnectorRuntimeConfig cfg;
     cfg.label = connectorText.trimmed();
     const QString normalized = connectorText.trimmed().toLower();
-    const QString selectedKey = normalizeConnectorBackend(connectorText);
+    const QString selectedKey = normalizeConnectorBackendInternal(connectorText);
 
     if (selectedKey == kConnectorLegacyGateway) {
         cfg.key = kConnectorLegacyGateway;
@@ -1304,7 +1451,7 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
 
 bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText) {
     const QString selected = connectorText.trimmed();
-    const QString key = normalizeConnectorBackend(selected);
+    const QString key = normalizeConnectorBackendInternal(selected);
     bool nativeBinanceKey = false;
     for (const std::string_view directBackend : PythonParityContract::kPythonNativeRuntimeConnectorBackends) {
         if (key.compare(parityString(directBackend), Qt::CaseInsensitive) == 0) {
@@ -1316,18 +1463,32 @@ bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText) {
         return false;
     }
 
-    // Only backends listed by Python's generated native-ownership policy may
-    // enter the direct C++ loop. Binance aliases are normalized to the same
-    // REST boundary; non-Binance exchange selection is still rejected by the
-    // exchange ownership guard before this function is used.
     for (const ConnectorOption &option : pythonConnectorOptions()) {
-        if (option.key != key) {
+        if (option.key.compare(selected, Qt::CaseInsensitive) != 0
+            && option.label.compare(selected, Qt::CaseInsensitive) != 0) {
             continue;
         }
-        return selected.compare(option.key, Qt::CaseInsensitive) == 0
-            || selected.compare(option.label, Qt::CaseInsensitive) == 0;
+        for (const std::string_view directBackend : PythonParityContract::kPythonNativeRuntimeConnectorBackends) {
+            if (option.key.compare(parityString(directBackend), Qt::CaseInsensitive) == 0) {
+                return true;
+            }
+        }
+        return false;
     }
-    return false;
+
+    // Non-default native aliases are explicit identities after normalization.
+    // The USD-M default needs one extra check because Python intentionally
+    // falls back to it for unknown text; unknown or non-native options must
+    // not silently enter the Binance REST boundary.
+    if (key != kConnectorUsdsFutures) {
+        return true;
+    }
+
+    const QString text = selected.toLower();
+    return text == QStringLiteral("binance_sdk_derivatives_trading_usds_futures")
+        || (text.contains(QStringLiteral("sdk"))
+            && text.contains(QStringLiteral("future"))
+            && (text.contains(QStringLiteral("usd")) || text.contains(QStringLiteral("usds"))));
 }
 
 double firstNumberInText(const QString &text, bool *okOut) {

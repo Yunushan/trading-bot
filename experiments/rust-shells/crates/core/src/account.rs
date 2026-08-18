@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::market_data::BinanceMarket;
+use crate::tls::build_http_client;
 
 const DEFAULT_RECV_WINDOW_MS: u64 = 10_000;
 const POSITION_EPSILON: f64 = 1e-10;
@@ -171,10 +172,7 @@ impl BinanceSignedRestClient {
     }
 
     pub fn with_base_url(market: BinanceMarket, base_url: impl Into<String>) -> Result<Self> {
-        let http = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .user_agent("trading-bot-rust/0.1")
-            .build()
+        let http = build_http_client(Duration::from_secs(10), "trading-bot-rust/0.1")
             .context("build Binance signed REST HTTP client")?;
         Self::with_http_client(market, base_url, http)
     }

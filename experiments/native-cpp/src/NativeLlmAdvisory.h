@@ -1,12 +1,20 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QString>
 #include <QStringList>
 
 namespace NativeLlmAdvisory {
 
 QString executionBoundaryText();
+
+QJsonObject buildChatRequest(
+    const QJsonObject &config,
+    const QString &prompt,
+    const QString &systemPrompt = {},
+    const QJsonValue &context = {},
+    QString *error = nullptr);
 
 QJsonObject buildPromptRoutePayload(
     const QString &prompt,

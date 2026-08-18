@@ -31,6 +31,8 @@ pub mod startup_packaging;
 pub mod strategy_runtime;
 pub mod streams;
 
+mod tls;
+
 pub use generated_python_parity::{
     PythonConnectorOption as NativePythonConnectorOption, PythonIndicator as NativePythonIndicator,
     PythonLlmProvider as NativePythonLlmProvider,
@@ -1150,6 +1152,8 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -1193,6 +1197,37 @@ mod tests {
             Some("Tauri")
         );
         assert_eq!(python_source_starter_market_options().len(), 2);
+    }
+
+    #[test]
+    fn every_python_ui_catalog_is_non_empty_and_has_unique_keys() {
+        for catalog in generated_python_parity::PYTHON_UI_OPTION_CATALOGS {
+            let catalog_name = catalog.name;
+            let options = catalog.options;
+            assert!(
+                !options.is_empty(),
+                "Python UI catalog should not be empty: {catalog_name}"
+            );
+            let mut keys = BTreeSet::new();
+            for option in options {
+                assert!(!option.label.is_empty(), "missing label in {catalog_name}");
+                if option.key.is_empty() {
+                    assert_eq!(
+                        catalog_name, "dashboard strategy templates",
+                        "only Python's No Template sentinel may have an empty key"
+                    );
+                    assert_eq!(
+                        option.label, "No Template",
+                        "the empty-key Python template must remain the No Template sentinel"
+                    );
+                }
+                assert!(
+                    keys.insert(option.key),
+                    "duplicate key in {catalog_name}: {}",
+                    option.key
+                );
+            }
+        }
     }
 
     #[test]

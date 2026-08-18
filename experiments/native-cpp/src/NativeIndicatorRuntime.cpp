@@ -40,11 +40,16 @@ bool configEnabled(const QJsonObject &config) {
 
 qsizetype configLength(const QJsonObject &config, const QString &key, qsizetype fallback) {
     const QJsonValue value = config.value(key);
+    bool parsed = false;
+    double candidate = 0.0;
     if (value.isDouble()) {
-        const double candidate = value.toDouble();
-        if (std::isfinite(candidate) && candidate > 0.0) {
-            return std::max<qsizetype>(1, static_cast<qsizetype>(candidate));
-        }
+        candidate = value.toDouble();
+        parsed = true;
+    } else {
+        candidate = value.toString().trimmed().toDouble(&parsed);
+    }
+    if (parsed && std::isfinite(candidate) && candidate > 0.0) {
+        return std::max<qsizetype>(1, static_cast<qsizetype>(candidate));
     }
     return fallback;
 }

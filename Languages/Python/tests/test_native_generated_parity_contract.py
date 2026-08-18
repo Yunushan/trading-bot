@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,6 +29,11 @@ from app.service.api_contract import (  # noqa: E402
     SERVICE_API_ROUTE_SCHEMAS,
     SERVICE_API_ROUTE_SUFFIXES,
 )
+from app.integrations.llm.local_models import LocalModelStatus  # noqa: E402
+from app.gui.runtime.composition.module_state_constants import (  # noqa: E402
+    FUTURES_CONNECTOR_KEYS,
+    SPOT_CONNECTOR_KEYS,
+)
 from app.settings.exchange_support import SUPPORTED_CONNECTOR_BACKENDS  # noqa: E402
 from tools.generate_native_parity_contracts import (  # noqa: E402
     CPP_OUTPUT,
@@ -38,6 +44,7 @@ from tools.generate_native_parity_contracts import (  # noqa: E402
     _cpp_string,
     _exchange_support_reference_payload,
     _indicator_reference_payload,
+    _runtime_config_reference_cases,
     _rust_string,
     render_cpp_header,
     render_cpp_exchange_support_reference_header,
@@ -67,7 +74,136 @@ def _load_repo_tool(module_name: str, path: Path):
 
 
 class NativeGeneratedParityContractTests(unittest.TestCase):
+    def test_local_model_status_contract_covers_python_dataclass(self):
+        declared_fields = set(SERVICE_API_ROUTE_SCHEMAS["llm_local_model_status"]["response_fields"])
+        python_fields = {field.name for field in dataclass_fields(LocalModelStatus)}
+        self.assertEqual(
+            python_fields,
+            declared_fields,
+            "local model response schema must expose every Python LocalModelStatus field",
+        )
+
     maxDiff = None
+
+    def test_runtime_config_reference_covers_every_python_choice_alias(self):
+        cases = _runtime_config_reference_cases()
+        names = {str(case["name"]) for case in cases}
+        choice_maps = native_python_source_contract_summary()["config_choice_maps"]
+        expected_names = {
+            f"choice-{choice_name}-{alias}"
+            for choice_name, choices in choice_maps.items()
+            for alias in choices
+        }
+        expected_names.update(
+            f"choice-llm_provider-{choice['key']}"
+            for choice in native_python_source_contract_summary()["llm_provider_choices"]
+            if choice["key"]
+        )
+        self.assertTrue(expected_names.issubset(names))
+        self.assertIn("alias-rich-runtime", names)
+        self.assertIn("canonical-runtime", names)
+
+    def test_runtime_config_reference_covers_python_rejection_boundaries(self):
+        cases = _runtime_config_reference_cases()
+        invalid_cases = [case for case in cases if not bool(case["valid"])]
+        self.assertGreaterEqual(len(invalid_cases), 30)
+        self.assertEqual(
+            {case["name"] for case in invalid_cases},
+            {
+                case["name"]
+                for case in native_python_source_contract_summary()["runtime_config_invalid_reference"]
+            },
+        )
+        for case in invalid_cases:
+            self.assertTrue(str(case["expected_error"]).startswith("Invalid config:"))
+            self.assertEqual(case["expected"], {})
+
+    def test_strategy_controls_reference_covers_python_normalization_boundaries(self):
+        cases = native_python_source_contract_summary()["strategy_controls_reference"]
+        self.assertGreaterEqual(len(cases), 5)
+        self.assertEqual(
+            {
+                "runtime-canonical",
+                "runtime-python-truthiness-boundaries",
+                "runtime-kind-is-case-sensitive",
+                "backtest-canonical",
+                "backtest-exact-logic-and-fuzzy-side",
+            },
+            {case["name"] for case in cases},
+        )
+        canonical_runtime = next(case for case in cases if case["name"] == "runtime-canonical")
+        self.assertTrue(canonical_runtime["expected"]["add_only"])
+        self.assertEqual(canonical_runtime["expected"]["position_pct_units"], "percent")
+        canonical_backtest = next(case for case in cases if case["name"] == "backtest-canonical")
+        self.assertNotIn("fee_bps", canonical_backtest["expected"])
+        self.assertNotIn("slippage_bps", canonical_backtest["expected"])
+
+    def test_strategy_risk_reference_covers_python_effective_defaults_and_bounds(self):
+        cases = native_python_source_contract_summary()["strategy_risk_reference"]
+        self.assertEqual(
+            {
+                "risk-defaults",
+                "risk-canonical-all-controls",
+                "risk-valid-lower-and-upper-bounds",
+            },
+            {case["name"] for case in cases},
+        )
+        defaults = next(case for case in cases if case["name"] == "risk-defaults")
+        self.assertFalse(defaults["expected"]["indicator_use_live_values"])
+        canonical = next(case for case in cases if case["name"] == "risk-canonical-all-controls")
+        self.assertEqual(canonical["expected"]["indicator_flip_cooldown_bars"], 4)
+        self.assertEqual(canonical["expected"]["stop_loss"]["scope"], "entire_account")
+        bounds = next(case for case in cases if case["name"] == "risk-valid-lower-and-upper-bounds")
+        self.assertEqual(bounds["expected"]["max_auto_bump_percent"], 100.0)
+        self.assertEqual(bounds["expected"]["auto_bump_percent_multiplier"], 1000.0)
+
+    def test_order_intent_reference_covers_python_boolean_boundaries(self):
+        payload = native_python_source_contract_summary()["order_intent_reference"]
+        self.assertEqual(payload["schema_version"], 1)
+        cases = payload["cases"]
+        self.assertEqual(
+            {
+                "canonical-close-position",
+                "python-intent-y-is-false-filter-y-is-true",
+                "canonical-aliases-and-conflicting-flags",
+                "spot-rejects-futures-flags",
+            },
+            {case["name"] for case in cases},
+        )
+        y_boundary = next(
+            case
+            for case in cases
+            if case["name"] == "python-intent-y-is-false-filter-y-is-true"
+        )
+        self.assertFalse(y_boundary["expected"]["intent"]["close_position"])
+        self.assertEqual(y_boundary["expected"]["intent_errors"], [])
+        self.assertEqual(y_boundary["expected"]["filter_errors"], [])
+        spot_case = next(case for case in cases if case["name"] == "spot-rejects-futures-flags")
+        self.assertIn("positionSide is only supported for futures", spot_case["expected"]["intent_errors"])
+        self.assertIn("closePosition orders are only supported for futures", spot_case["expected"]["intent_errors"])
+        self.assertIn("reduceOnly orders are only supported for futures", spot_case["expected"]["intent_errors"])
+
+    def test_connector_health_reference_covers_python_fail_closed_boundaries(self):
+        payload = native_python_source_contract_summary()["connector_health_reference"]
+        self.assertEqual(payload["schema_version"], 1)
+        cases = {case["name"]: case for case in payload["cases"]}
+        self.assertEqual(
+            {
+                "missing-state",
+                "missing-health",
+                "not-ready",
+                "degraded-health",
+                "ready-ok",
+                "ready-unknown",
+            },
+            set(cases),
+        )
+        self.assertEqual(cases["missing-state"]["expected_errors"], ["connector health snapshot missing state"])
+        self.assertEqual(cases["missing-health"]["expected_errors"], ["connector health snapshot missing health"])
+        self.assertEqual(cases["not-ready"]["expected_errors"], ["connector health is degraded / paused"])
+        self.assertEqual(cases["degraded-health"]["expected_errors"], ["connector health is degraded"])
+        self.assertEqual(cases["ready-ok"]["expected_errors"], [])
+        self.assertEqual(cases["ready-unknown"]["expected_errors"], [])
 
     def test_indicator_reference_contains_multiple_python_generated_scenarios(self):
         payload = _indicator_reference_payload()
@@ -87,7 +223,17 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             cases[0]["expected"],
         )
         self.assertEqual(
-            {"baseline", "reversal-and-flat", "parameterized-longer-series"},
+            {
+                "baseline",
+                "reversal-and-flat",
+                "parameterized-longer-series",
+                "short-warmup-series",
+                "flat-price-series",
+                "zero-volume-series",
+                "threshold-zero-series",
+                "mfi-threshold-series",
+                "string-config-values",
+            },
             {case["name"] for case in cases},
         )
         for case in cases:
@@ -258,6 +404,22 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             ),
         )
 
+    def test_cpp_reference_literals_supply_explicit_lengths_for_gcc(self):
+        generated_dir = REPO_ROOT / "experiments" / "native-cpp" / "src" / "generated"
+        for name in (
+            "PythonIndicatorReference.h",
+            "PythonExchangeSupportReference.h",
+            "PythonPortfolioReference.h",
+        ):
+            with self.subTest(name=name):
+                source = _read(generated_dir / name)
+                declaration = source.split(
+                    "inline constexpr std::string_view kReferenceJson =", 1
+                )[1].rsplit("};", 1)[0]
+                self.assertIn("std::string_view{", declaration)
+                length = declaration.rsplit(",", 1)[1].strip().rstrip("}")
+                self.assertTrue(length.isdigit())
+
     def test_generated_rust_contract_is_stable_under_rustfmt(self):
         rust_generated = _read(RUST_OUTPUT)
 
@@ -278,6 +440,21 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         ownership = summary["native_runtime_ownership"]
         direct_backends = set(ownership["direct_connector_backends"])
         connector_market_families = ownership["direct_connector_market_families"]
+        expected_backends = FUTURES_CONNECTOR_KEYS | SPOT_CONNECTOR_KEYS
+        expected_market_families = {
+            (backend, "coin-m-futures")
+            if backend == "binance-sdk-derivatives-trading-coin-futures"
+            else (backend, "usd-m-futures")
+            for backend in FUTURES_CONNECTOR_KEYS
+        }
+        expected_market_families.update(
+            (backend, "spot") for backend in SPOT_CONNECTOR_KEYS
+        )
+        self.assertEqual(expected_backends, direct_backends)
+        self.assertEqual(
+            expected_market_families,
+            {(mapping["key"], mapping["value"]) for mapping in connector_market_families},
+        )
         self.assertEqual(
             direct_backends,
             {mapping["key"] for mapping in connector_market_families},
@@ -602,6 +779,14 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             {"cpp": True, "rust": True},
             feature_option_contract["generated_native_contracts_match_python"],
         )
+        domain_evidence = report["domain_evidence_contract"]
+        self.assertTrue(domain_evidence["ok"], domain_evidence)
+        self.assertEqual(12, len(domain_evidence["domains"]))
+        for domain in domain_evidence["domains"]:
+            with self.subTest(domain=domain["key"]):
+                for target in ("cpp", "rust"):
+                    self.assertTrue(domain[target]["required"])
+                    self.assertTrue(domain[target]["ok"])
         parity_percentages = report["parity_percentages"]
         for target in ("cpp", "rust"):
             self.assertEqual(100.0, parity_percentages[target]["feature_domains"])
@@ -622,6 +807,16 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             list(audit.REQUIRED_CONSUMER_SURFACE_NAMES),
             report["surface_contract"]["actual_consumer_surface_names"],
         )
+        consumer_surfaces = report["surface_contract"]["consumer_surfaces_by_target"]
+        for target in ("cpp", "rust"):
+            with self.subTest(consumer_target=target):
+                self.assertTrue(consumer_surfaces[target]["required"])
+                self.assertEqual(
+                    consumer_surfaces[target]["required"],
+                    consumer_surfaces[target]["actual"],
+                )
+                self.assertEqual([], consumer_surfaces[target]["missing"])
+                self.assertEqual([], consumer_surfaces[target]["extra"])
         for artifact in report["generated"]:
             self.assertEqual(report["contract_hash"], artifact["expected_contract_hash"])
             self.assertTrue(artifact["embeds_contract_hash"], artifact)

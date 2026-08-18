@@ -119,6 +119,13 @@ Optional inputs:
 - `BINANCE_LIVE_SMOKE_SYMBOL`, default `BTCUSDT`
 - `BINANCE_LIVE_SMOKE_INTERVAL`, default `1m`
 - `BINANCE_TESTNET`, default `true`
+- `TRADING_BOT_RUST_CA_BUNDLE`, optional path to a PEM CA bundle for networks
+  that add an inspection root. The bundle is additive to system roots and is
+  used by both Rust REST and WebSocket clients; hostname verification remains
+  enabled and invalid bundles fail closed.
+- `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` are accepted as
+  fallback PEM-bundle names when the Rust-specific variable is not set, so
+  existing Python/cURL deployment configuration can be reused.
 
 Before running the live smoke, operators can check prerequisites without
 network access or secret output:

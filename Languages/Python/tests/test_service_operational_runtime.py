@@ -273,7 +273,15 @@ class ServiceOperationalRuntimeTests(unittest.TestCase):
         self.assertFalse(freshness["portfolio"]["stale"])
 
     def test_service_operational_snapshot_exposes_connector_order_circuit_breaker(self):
-        service = TradingBotService()
+        incident_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(incident_dir.cleanup)
+        service = TradingBotService(
+            config={
+                "connector_order_circuit_incident_log_path": str(
+                    Path(incident_dir.name) / "connector-order-circuit.jsonl"
+                )
+            }
+        )
 
         trip = service.set_connector_order_circuit_breaker_snapshot(
             {

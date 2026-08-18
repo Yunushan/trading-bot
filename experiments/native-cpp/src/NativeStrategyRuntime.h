@@ -53,6 +53,7 @@ struct StrategyWorkerLifecycleInput {
 };
 
 QStringList strategyRuntimeBoundaries();
+QString canonicalizeBacktestInterval(const QJsonValue &value);
 bool coerceStrategyBool(const QJsonValue &value, bool defaultValue = false);
 QStringList indicatorOutputKeysFromConfig(const QJsonObject &indicators);
 QJsonObject buildSignalDecision(const StrategySignalInput &input);
@@ -87,7 +88,20 @@ void recordIndicatorClose(
     qint64 timestampMs,
     QMap<QString, IndicatorOrderGuardState> &states,
     QMap<QString, qint64> &reentryBlocks);
+void recordIndicatorCloses(
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    const QStringList &indicators,
+    const QString &side,
+    qint64 timestampMs,
+    QMap<QString, IndicatorOrderGuardState> &states,
+    QMap<QString, qint64> &reentryBlocks);
 QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &controls);
+double positionPctFraction(
+    const QJsonObject &controls,
+    double fallbackPositionPct,
+    const QString &fallbackUnits);
 QJsonObject normalizeStrategyRiskControls(const QJsonObject &controls);
 bool indicatorHoldReady(
     const QJsonObject &riskControls,

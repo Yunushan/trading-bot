@@ -486,7 +486,7 @@ QString allowedChoiceText(const ChoicePairs &choices) {
 }
 
 const ChoicePairs &chartMarketChoices() {
-    static const ChoicePairs choices = configChoicePairs(PythonParityContract::kPythonAccountTypeConfigChoices);
+    static const ChoicePairs choices = stringOptionChoices(PythonParityContract::kPythonChartMarketOptions);
     return choices;
 }
 
@@ -805,8 +805,9 @@ void validateFloatRange(
             issueField(prefix, key),
             QStringLiteral("must be %1 %2 and <= %3")
                 .arg(exclusiveMin ? QStringLiteral(">") : QStringLiteral(">="))
-                .arg(minValue, 0, 'g', 15)
-                .arg(maxValue, 0, 'g', 15));
+                // Python's f"{value:g}" uses six significant digits by default.
+                .arg(minValue, 0, 'g', 6)
+                .arg(maxValue, 0, 'g', 6));
         return;
     }
     cfg->insert(key, number);

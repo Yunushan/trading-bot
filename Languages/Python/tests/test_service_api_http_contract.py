@@ -296,13 +296,62 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             "exchange_connector",
             "llm_config",
         )
+        required_response_fields = {
+            "connector_order_circuit_breaker": (
+                "active",
+                "state",
+                "reason",
+                "message",
+                "block_count",
+                "block_threshold",
+                "block_window_seconds",
+                "source",
+                "recovery_pending",
+                "generated_at",
+            ),
+            "connector_order_circuit_breaker_reset": (
+                "active",
+                "state",
+                "source",
+                "generated_at",
+            ),
+            "connector_order_circuit_incidents": (
+                "path",
+                "path_source",
+                "configured_path",
+                "limit",
+                "events",
+                "parse_errors",
+            ),
+            "exchange_connector": (
+                "health",
+                "state",
+                "generated_at",
+                "source",
+                "selected_exchange",
+                "connector_backend",
+                "support",
+                "rate_limit",
+                "network",
+                "last_error",
+                "attention",
+            ),
+        }
         for route_name in live_read_routes:
             response = client.get(SERVICE_API_ROUTE_PATHS[route_name], headers=headers)
             self.assertEqual(200, response.status_code, route_name)
             payload = response.json()
+            declared_required_fields = required_response_fields.get(
+                route_name,
+                SERVICE_API_ROUTE_SCHEMAS[route_name]["response_fields"],
+            )
             self.assertTrue(
-                set(SERVICE_API_ROUTE_SCHEMAS[route_name]["response_fields"]).issubset(payload),
+                set(declared_required_fields).issubset(payload),
                 f"{route_name} should return declared top-level response fields",
+            )
+            self.assertFalse(
+                set(payload).difference(SERVICE_API_ROUTE_SCHEMAS[route_name]["response_fields"]),
+                f"{route_name} should not return undeclared top-level response fields",
             )
 
         providers_response = client.get(SERVICE_API_ROUTE_PATHS["llm_providers"], headers=headers)
@@ -315,6 +364,79 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 set(SERVICE_API_ROUTE_SCHEMAS["llm_providers"]["response_fields"]).issubset(provider),
                 "llm_providers items should return every declared dynamic catalog field",
             )
+
+    @unittest.skipUnless(
+        FASTAPI_TESTCLIENT_AVAILABLE,
+        "FastAPI TestClient optional dependencies are not installed",
+    )
+    def test_service_api_dynamic_native_response_fields_remain_declared(self):
+        service = TradingBotService()
+        app = create_service_api_app(service=service, api_token="token-123")
+        client = _create_test_client(app)
+        headers = {"Authorization": "Bearer token-123"}
+
+        circuit_response = client.put(
+            SERVICE_API_ROUTE_PATHS["connector_order_circuit_breaker"],
+            headers=headers,
+            json={
+                "snapshot": {
+                    "active": True,
+                    "reason": "connector-health",
+                    "symbol": "btcusdt",
+                    "interval": "1m",
+                    "side": "long",
+                    "account_type": "futures",
+                    "connector_health": "error",
+                    "connector_state": "network_offline",
+                },
+                "source": "contract-test",
+            },
+        )
+        self.assertEqual(200, circuit_response.status_code)
+        self.assertFalse(
+            set(circuit_response.json()).difference(
+                SERVICE_API_ROUTE_SCHEMAS["connector_order_circuit_breaker"]["response_fields"]
+            )
+        )
+        self.assertTrue(circuit_response.json()["active"])
+        self.assertEqual("BTCUSDT", circuit_response.json()["symbol"])
+
+        reset_response = client.post(
+            SERVICE_API_ROUTE_PATHS["connector_order_circuit_breaker_reset"],
+            headers=headers,
+            json={"source": "contract-test", "force": True},
+        )
+        self.assertEqual(200, reset_response.status_code)
+        self.assertFalse(reset_response.json()["active"])
+        self.assertFalse(
+            set(reset_response.json()).difference(
+                SERVICE_API_ROUTE_SCHEMAS["connector_order_circuit_breaker_reset"]["response_fields"]
+            )
+        )
+
+        connector_response = client.put(
+            SERVICE_API_ROUTE_PATHS["exchange_connector"],
+            headers=headers,
+            json={
+                "snapshot": {
+                    "health": "warning",
+                    "state": "order_audit_write_failed",
+                    "account_type": "futures",
+                    "mode": "Demo",
+                    "order_audit": {"last_write_error": {"message": "write failed"}},
+                    "order_intents": {"unresolved_count": 1},
+                },
+                "source": "contract-test",
+            },
+        )
+        self.assertEqual(200, connector_response.status_code)
+        self.assertFalse(
+            set(connector_response.json()).difference(
+                SERVICE_API_ROUTE_SCHEMAS["exchange_connector"]["response_fields"]
+            )
+        )
+        self.assertIn("order_audit", connector_response.json())
+        self.assertIn("order_intents", connector_response.json())
 
     @unittest.skipUnless(
         FASTAPI_TESTCLIENT_AVAILABLE,

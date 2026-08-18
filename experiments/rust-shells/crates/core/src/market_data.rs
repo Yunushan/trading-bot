@@ -6,6 +6,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
+use crate::tls::build_http_client;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinanceMarket {
     Futures,
@@ -123,10 +125,7 @@ impl BinanceRestMarketDataClient {
     }
 
     pub fn with_base_url(market: BinanceMarket, base_url: impl Into<String>) -> Result<Self> {
-        let http = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .user_agent("trading-bot-rust/0.1")
-            .build()
+        let http = build_http_client(Duration::from_secs(10), "trading-bot-rust/0.1")
             .context("build Binance REST market-data HTTP client")?;
         Self::with_http_client(market, base_url, http)
     }

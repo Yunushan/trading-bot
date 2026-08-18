@@ -13,6 +13,7 @@ struct Candle {
     double low = 0.0;
     double close = 0.0;
     double volume = 0.0;
+    qint64 openTimeMs = 0;
 };
 
 using ConfigMap = QMap<QString, QJsonObject>;

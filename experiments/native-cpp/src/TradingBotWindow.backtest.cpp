@@ -1,6 +1,8 @@
 #include "TradingBotWindow.h"
 #include "NativeBacktestBatchRuntime.h"
+#include "NativePythonParityChoices.h"
 #include "TradingBotWindowSupport.h"
+#include "generated/PythonParityContract.h"
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -1645,6 +1647,14 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
         batchRequest.indicatorConfigs = selectedIndicatorConfigs;
         batchRequest.runTemplate = runTemplate;
         batchRequest.optimizerMode = optimizerMode;
+        const QString normalizedOptimizerMode = NativePythonParity::canonicalConfigChoice(
+            optimizerMode,
+            PythonParityContract::kPythonOptimizerModeConfigChoices,
+            NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonOptimizerModeConfigChoices));
+        batchRequest.optimizerEnabled = normalizedOptimizerMode != QStringLiteral("current") && pairOverrides.isEmpty();
+        batchRequest.optimizerMaxDurationSeconds = batchRequest.optimizerEnabled
+            ? static_cast<qint64>(jsonNumber(request, QStringLiteral("optimizer_max_duration_seconds"), 14'400.0))
+            : 0;
         batchRequest.optimizerMetric = jsonText(request, QStringLiteral("optimizer_metric"), QStringLiteral("roi_percent"));
         batchRequest.optimizerScope = scanScope;
         batchRequest.optimizerComboSize = static_cast<int>(jsonNumber(request, QStringLiteral("optimizer_combo_size"), 2.0));
@@ -1655,6 +1665,7 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
             backtestDefaults.value(QStringLiteral("scan_mdd_limit")).toDouble(10.0));
         batchRequest.startDisplay = startDate.toString(Qt::ISODate);
         batchRequest.endDisplay = endDate.toString(Qt::ISODate);
+        batchRequest.warmupBars = NativeBacktestBatchRuntime::estimateWarmupBars(batchRequest.indicatorConfigs);
         batchRequest.loopIntervalOverride = loopInterval;
         batchRequest.connectorBackend = jsonText(request, QStringLiteral("connector_backend"));
         batchRequest.pairOverrides = pairOverrides;
@@ -1688,6 +1699,8 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
         }
         const qint64 startTimeMs = QDateTime(startDate, QTime(0, 0), Qt::UTC).toMSecsSinceEpoch();
         const qint64 endTimeMs = QDateTime(endDate.addDays(1), QTime(0, 0), Qt::UTC).toMSecsSinceEpoch() - 1;
+        batchRequest.runTemplate.startTimeMs = startTimeMs;
+        batchRequest.runTemplate.endTimeMs = endTimeMs;
         const auto stopFlag = std::make_shared<std::atomic_bool>(false);
         backtestStopFlag_ = stopFlag;
 
@@ -1727,16 +1740,20 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
                     return stopFlag->load(std::memory_order_relaxed);
                 };
                 const NativeBacktestBatchRuntime::CandleLoader loader =
-                    [futures, testnet, startTimeMs, endTimeMs, baseUrlOverride](
+                    [futures, testnet, startTimeMs, endTimeMs, warmupBars = batchRequest.warmupBars, baseUrlOverride](
                         const QString &symbol,
                         const QString &interval,
                         const NativeBacktestBatchRuntime::StopCallback &stopRequested) {
+                        const qint64 bufferedStartTimeMs = NativeBacktestBatchRuntime::bufferedStartTimeMs(
+                            startTimeMs,
+                            interval,
+                            warmupBars);
                         const BinanceRestClient::KlinesResult fetched = BinanceRestClient::fetchKlinesRange(
                             symbol,
                             interval,
                             futures,
                             testnet,
-                            startTimeMs,
+                            bufferedStartTimeMs,
                             endTimeMs,
                             2'000'000,
                             15'000,
@@ -1753,6 +1770,7 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
                                 candle.low,
                                 candle.close,
                                 candle.volume,
+                                candle.openTimeMs,
                             });
                         }
                         return loaded;

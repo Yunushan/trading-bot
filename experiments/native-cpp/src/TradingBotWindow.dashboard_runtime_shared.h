@@ -106,6 +106,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
     bool testnet,
     const QString &positionSide,
     int timeoutMs,
-    const QString &baseUrlOverride);
+    const QString &baseUrlOverride,
+    bool reduceOnly = false);
 
 } // namespace TradingBotWindowDashboardRuntime

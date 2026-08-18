@@ -1,7 +1,8 @@
 use crate::generated_python_parity::{
-    PYTHON_LIVE_TRADING_ACK_ENV, PYTHON_LIVE_TRADING_ACK_ENV_LEGACY,
-    PYTHON_LIVE_TRADING_ENABLED_ENV, PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV,
-    PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV, PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
+    PYTHON_LIVE_SAFETY_ENV_TRUE_VALUES, PYTHON_LIVE_TRADING_ACK_ENV,
+    PYTHON_LIVE_TRADING_ACK_ENV_LEGACY, PYTHON_LIVE_TRADING_ENABLED_ENV,
+    PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV, PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV,
+    PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
     PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
     PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES,
     PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES,
@@ -45,10 +46,10 @@ fn process_live_trading_environment() -> LiveTradingEnvironment {
 }
 
 fn environment_bool(value: Option<&str>) -> bool {
-    matches!(
-        value.unwrap_or_default().trim().to_lowercase().as_str(),
-        "1" | "true" | "yes" | "y" | "on"
-    )
+    let normalized = value.unwrap_or_default().trim().to_lowercase();
+    PYTHON_LIVE_SAFETY_ENV_TRUE_VALUES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
 }
 
 fn configured_float(config_value: f64, environment_value: Option<&String>, default: f64) -> f64 {
@@ -252,10 +253,12 @@ pub fn order_submit_intent_from_param_pairs(
             .unwrap_or_default()
             .trim()
             .to_uppercase(),
-        close_position: bool_param(
+        close_position: intent_bool_param(
             param_value(params, &["closePosition", "close_position"]).as_deref(),
         ),
-        reduce_only: bool_param(param_value(params, &["reduceOnly", "reduce_only"]).as_deref()),
+        reduce_only: intent_bool_param(
+            param_value(params, &["reduceOnly", "reduce_only"]).as_deref(),
+        ),
     }
 }
 
@@ -302,18 +305,16 @@ pub fn validate_order_submit_intent(intent: &OrderSubmitIntent) -> Vec<String> {
     errors
 }
 
-pub fn validate_order_filter_constraints(
+fn validate_order_filter_constraints_internal(
     intent: &OrderSubmitIntent,
     filters: &OrderSymbolFilters,
     last_price: Option<f64>,
+    risk_reducing_exit: bool,
 ) -> Vec<String> {
     let Some(quantity) = intent.quantity.filter(|value| value.is_finite()) else {
         return Vec::new();
     };
     let mut errors = Vec::new();
-    let risk_reducing_exit =
-        intent.market == "futures" && (intent.reduce_only || intent.close_position);
-
     if filters.min_qty > 0.0 && quantity < filters.min_qty && !risk_reducing_exit {
         errors.push(format!(
             "order quantity {} is below {} minQty {}",
@@ -367,6 +368,30 @@ pub fn validate_order_filter_constraints(
         }
     }
     errors
+}
+
+pub fn validate_order_filter_constraints(
+    intent: &OrderSubmitIntent,
+    filters: &OrderSymbolFilters,
+    last_price: Option<f64>,
+) -> Vec<String> {
+    let risk_reducing_exit =
+        intent.market == "futures" && (intent.reduce_only || intent.close_position);
+    validate_order_filter_constraints_internal(intent, filters, last_price, risk_reducing_exit)
+}
+
+fn validate_order_filter_constraints_with_raw_params(
+    intent: &OrderSubmitIntent,
+    filters: &OrderSymbolFilters,
+    last_price: Option<f64>,
+    params: &[(String, String)],
+) -> Vec<String> {
+    let risk_reducing_exit = intent.market == "futures"
+        && (filter_truthy_param(param_value(params, &["reduceOnly", "reduce_only"]).as_deref())
+            || filter_truthy_param(
+                param_value(params, &["closePosition", "close_position"]).as_deref(),
+            ));
+    validate_order_filter_constraints_internal(intent, filters, last_price, risk_reducing_exit)
 }
 
 /// Preserve Python's distinction between an omitted number and a supplied
@@ -550,7 +575,7 @@ pub fn guard_live_order_submit(
         errors.push("order audit is not writable".to_owned());
     }
     if live_mode || PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES {
-        errors.extend(connector_health_errors(
+        errors.extend(validate_connector_health_errors(
             &input.connector_state,
             &input.connector_health,
         ));
@@ -567,10 +592,11 @@ pub fn guard_live_order_submit(
             && matches!(intent.market.as_str(), "futures" | "spot")
         {
             match &input.filters {
-                Some(filters) => errors.extend(validate_order_filter_constraints(
+                Some(filters) => errors.extend(validate_order_filter_constraints_with_raw_params(
                     &intent,
                     filters,
                     input.last_price,
+                    &input.params,
                 )),
                 None => errors.push(format!(
                     "{} symbol filters unavailable for {}",
@@ -606,10 +632,16 @@ pub fn guard_live_order_submit(
     }
 }
 
-fn connector_health_errors(state: &str, health: &str) -> Vec<String> {
+pub fn validate_connector_health_errors(state: &str, health: &str) -> Vec<String> {
     let state = state.trim().to_lowercase();
     let health = health.trim().to_lowercase();
-    if !state.is_empty() && state != "ready" {
+    if state.is_empty() {
+        return vec!["connector health snapshot missing state".to_owned()];
+    }
+    if health.is_empty() {
+        return vec!["connector health snapshot missing health".to_owned()];
+    }
+    if state != "ready" {
         return vec![format!(
             "connector health is {} / {}",
             if health.is_empty() {
@@ -620,7 +652,7 @@ fn connector_health_errors(state: &str, health: &str) -> Vec<String> {
             state
         )];
     }
-    if !health.is_empty() && !matches!(health.as_str(), "ok" | "unknown") {
+    if !matches!(health.as_str(), "ok" | "unknown") {
         return vec![format!("connector health is {health}")];
     }
     Vec::new()
@@ -638,7 +670,14 @@ fn param_value(params: &[(String, String)], keys: &[&str]) -> Option<String> {
     None
 }
 
-fn bool_param(value: Option<&str>) -> bool {
+fn intent_bool_param(value: Option<&str>) -> bool {
+    matches!(
+        value.unwrap_or_default().trim().to_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn filter_truthy_param(value: Option<&str>) -> bool {
     matches!(
         value.unwrap_or_default().trim().to_lowercase().as_str(),
         "1" | "true" | "yes" | "y" | "on"
@@ -695,11 +734,12 @@ fn decimal_text(value: f64) -> String {
 mod tests {
     use super::*;
     use crate::generated_python_parity::{
-        PYTHON_ORDER_GUARD_BEHAVIOR_JSON, PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
+        PYTHON_CONNECTOR_HEALTH_REFERENCE_JSON, PYTHON_ORDER_GUARD_BEHAVIOR_JSON,
+        PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
         PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES,
         PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES,
         PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES,
-        PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES,
+        PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES, PYTHON_ORDER_INTENT_REFERENCE_JSON,
     };
     use crate::orders::{
         BinanceFuturesSymbolFilters, build_futures_limit_order_params,
@@ -722,6 +762,102 @@ mod tests {
             live_trading_max_leverage: 20,
             live_trading_max_position_pct: 10.0,
             live_trading_max_session_orders: 3,
+        }
+    }
+
+    #[test]
+    fn order_intent_and_filter_validation_match_every_python_reference_case() {
+        let payload: serde_json::Value = serde_json::from_str(PYTHON_ORDER_INTENT_REFERENCE_JSON)
+            .expect("generated Python order-intent reference should be valid JSON");
+        for case in payload["cases"]
+            .as_array()
+            .expect("order-intent reference cases should be an array")
+        {
+            let name = case["name"].as_str().unwrap_or("unknown");
+            let market = case["market"].as_str().unwrap_or_default();
+            let params = case["params"]
+                .as_object()
+                .expect("order-intent params should be an object")
+                .iter()
+                .map(|(key, value)| (key.clone(), value.as_str().unwrap_or_default().to_owned()))
+                .collect::<Vec<_>>();
+            let intent = order_submit_intent_from_param_pairs(market, &params);
+            let actual_intent = serde_json::json!({
+                "market": intent.market,
+                "symbol": intent.symbol,
+                "side": intent.side,
+                "order_type": intent.order_type,
+                "quantity": intent.quantity,
+                "price": intent.price,
+                "position_side": intent.position_side,
+                "close_position": intent.close_position,
+                "reduce_only": intent.reduce_only,
+            });
+            assert_eq!(
+                actual_intent, case["expected"]["intent"],
+                "Rust order-intent normalization should match Python: {name}"
+            );
+            let expected_intent_errors = case["expected"]["intent_errors"]
+                .as_array()
+                .expect("expected intent errors should be an array")
+                .iter()
+                .map(|error| error.as_str().unwrap_or_default().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                validate_order_submit_intent(&intent),
+                expected_intent_errors,
+                "Rust order-intent validation should match Python: {name}"
+            );
+            let filters = &case["filters"];
+            let order_filters = OrderSymbolFilters {
+                step_size: filters["stepSize"].as_f64().unwrap_or_default(),
+                tick_size: filters["tickSize"].as_f64().unwrap_or_default(),
+                min_qty: filters["minQty"].as_f64().unwrap_or_default(),
+                min_notional: filters["minNotional"].as_f64().unwrap_or_default(),
+            };
+            let last_price = case["last_price"].as_f64();
+            let expected_filter_errors = case["expected"]["filter_errors"]
+                .as_array()
+                .expect("expected filter errors should be an array")
+                .iter()
+                .map(|error| error.as_str().unwrap_or_default().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                validate_order_filter_constraints_with_raw_params(
+                    &intent,
+                    &order_filters,
+                    last_price,
+                    &params,
+                ),
+                expected_filter_errors,
+                "Rust order-filter validation should match Python: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn connector_health_validation_matches_every_python_reference_case() {
+        let payload: serde_json::Value =
+            serde_json::from_str(PYTHON_CONNECTOR_HEALTH_REFERENCE_JSON)
+                .expect("generated Python connector-health reference should be valid JSON");
+        for case in payload["cases"]
+            .as_array()
+            .expect("connector-health reference cases should be an array")
+        {
+            let name = case["name"].as_str().unwrap_or("unknown");
+            let state = case["snapshot"]["state"].as_str().unwrap_or_default();
+            let health = case["snapshot"]["health"].as_str().unwrap_or_default();
+            let expected = case["expected_errors"]
+                .as_array()
+                .expect("expected connector-health errors should be an array")
+                .iter()
+                .map(|error| error.as_str().unwrap_or_default().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                validate_connector_health_errors(state, health),
+                expected,
+                "Rust connector-health validation should match Python: {name}"
+            );
         }
     }
 
@@ -919,6 +1055,14 @@ mod tests {
             &environment,
         );
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn live_environment_boolean_matches_python_coerce_bool() {
+        assert!(environment_bool(Some("true")));
+        assert!(environment_bool(Some(" on ")));
+        assert!(!environment_bool(Some("y")));
+        assert!(!environment_bool(Some("maybe")));
     }
 
     #[test]

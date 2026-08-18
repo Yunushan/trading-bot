@@ -109,6 +109,7 @@ REQUIRED_GENERATED_ARTIFACT_NAMES = (
     "tauri_browser_generated_contract",
 )
 REQUIRED_CONSUMER_SURFACE_NAMES = (
+    "rust_startup_packaging_contract",
     "rust_core_consumes_generated_contract",
     "rust_native_account_runtime_is_present",
     "rust_native_portfolio_reconciliation_uses_python_missing_options",
@@ -124,6 +125,12 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "python_order_guard_implements_behavior_contract",
     "rust_order_guard_uses_python_behavior_contract",
     "rust_order_guard_uses_python_live_safety_environment",
+    "rust_order_guard_uses_python_order_intent_fixture",
+    "rust_order_guard_uses_python_connector_health_fixture",
+    "rust_llm_output_policy_uses_python_reference_fixture",
+    "rust_llm_chat_request_uses_python_reference_fixture",
+    "rust_llm_dynamic_catalog_uses_python_sources",
+    "cpp_startup_packaging_contract",
     "cpp_support_consumes_generated_contract",
     "cpp_support_exposes_generated_contract",
     "cpp_config_persistence_uses_python_source_options",
@@ -134,6 +141,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_backtest_service_api_uses_python_source_routes",
     "cpp_dashboard_llm_service_api_uses_python_source_routes",
     "cpp_llm_catalog_payload_fields_follow_python",
+    "cpp_llm_dynamic_catalog_uses_python_sources",
     "cpp_config_service_api_uses_python_source_routes",
     "cpp_code_terminal_uses_python_service_api",
     "cpp_chart_uses_python_source_surface",
@@ -150,11 +158,16 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_native_indicator_runtime_uses_python_source_policy",
     "cpp_native_strategy_runtime_uses_python_source_options",
     "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
+    "cpp_native_strategy_runtime_uses_python_behavior_fixtures",
     "cpp_native_indicator_runtime_uses_python_reference_fixture",
     "cpp_native_backtest_runtime_uses_python_reference_fixture",
     "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline",
     "cpp_order_guard_uses_python_behavior_contract",
     "cpp_order_guard_uses_python_live_safety_environment",
+    "cpp_native_order_guard_uses_python_order_intent_fixture",
+    "cpp_native_order_guard_uses_python_connector_health_fixture",
+    "cpp_llm_output_policy_uses_python_reference_fixture",
+    "cpp_llm_chat_request_uses_python_reference_fixture",
     "cpp_dashboard_runtime_enforces_live_order_safety",
     "tauri_browser_consumes_generated_contract",
     "tauri_browser_consumes_generated_starter_catalogs",
@@ -322,12 +335,64 @@ def _name_contract_issues(label: str, required_names: tuple[str, ...], actual_na
     return issues
 
 
+def _consumer_target(requirement: ConsumerRequirement) -> str:
+    relative = requirement.path.relative_to(REPO_ROOT).as_posix()
+    if relative.startswith("experiments/native-cpp/"):
+        return "cpp"
+    if relative.startswith("experiments/rust-shells/"):
+        return "rust"
+    return "shared"
+
+
+def _consumer_surface_groups(
+    consumers: tuple[ConsumerRequirement, ...],
+    consumer_reports: list[dict[str, object]] | tuple[dict[str, object], ...] | None = None,
+) -> dict[str, dict[str, object]]:
+    reports_by_name = {
+        str(report.get("name")): report
+        for report in (consumer_reports or [])
+        if report.get("name")
+    }
+    required_by_target: dict[str, list[str]] = {"cpp": [], "rust": []}
+    actual_by_target: dict[str, list[str]] = {"cpp": [], "rust": []}
+    for consumer in consumers:
+        target = _consumer_target(consumer)
+        targets = ("cpp", "rust") if target == "shared" else (target,)
+        report = reports_by_name.get(consumer.name)
+        report_ok = True if consumer_reports is None else bool(report and report.get("ok"))
+        for destination in targets:
+            required_by_target[destination].append(consumer.name)
+            if report_ok:
+                actual_by_target[destination].append(consumer.name)
+    return {
+        target: {
+            "required": required_by_target[target],
+            "actual": actual_by_target[target],
+            "missing": [
+                name for name in required_by_target[target] if name not in actual_by_target[target]
+            ],
+            "extra": [
+                name for name in actual_by_target[target] if name not in required_by_target[target]
+            ],
+        }
+        for target in ("cpp", "rust")
+    }
+
+
 def _surface_contract(
     generated_artifacts: tuple[GeneratedArtifact, ...],
     consumers: tuple[ConsumerRequirement, ...],
+    consumer_reports: list[dict[str, object]] | tuple[dict[str, object], ...] | None = None,
 ) -> dict[str, object]:
     generated_artifact_names = tuple(artifact.name for artifact in generated_artifacts)
-    consumer_surface_names = tuple(consumer.name for consumer in consumers)
+    consumer_surface_names = tuple(
+        str(report.get("name"))
+        for report in (consumer_reports or [])
+        if report.get("name") and bool(report.get("ok"))
+    )
+    if consumer_reports is None:
+        consumer_surface_names = tuple(consumer.name for consumer in consumers)
+    consumer_surface_groups = _consumer_surface_groups(consumers, consumer_reports)
     issues = [
         *_name_contract_issues(
             "generated artifact",
@@ -346,6 +411,7 @@ def _surface_contract(
         "actual_generated_artifact_names": list(generated_artifact_names),
         "required_consumer_surface_names": list(REQUIRED_CONSUMER_SURFACE_NAMES),
         "actual_consumer_surface_names": list(consumer_surface_names),
+        "consumer_surfaces_by_target": consumer_surface_groups,
         "issues": issues,
     }
 
@@ -388,18 +454,90 @@ def _config_contract_percentages(config_key_contract: dict[str, object]) -> dict
     return percentages
 
 
+def _domain_evidence_contract(
+    payload: dict[str, object],
+    consumers: list[dict[str, object]],
+) -> dict[str, object]:
+    """Require every declared parity domain to have passing native evidence surfaces."""
+
+    available = {
+        str(item.get("name"))
+        for item in consumers
+        if isinstance(item, dict) and item.get("name")
+    }
+    passed = {
+        str(item.get("name"))
+        for item in consumers
+        if isinstance(item, dict) and item.get("name") and bool(item.get("ok"))
+    }
+    domain_reports: list[dict[str, object]] = []
+    issues: list[str] = []
+    domains = payload.get("domains", [])
+    if not isinstance(domains, list):
+        return {
+            "ok": False,
+            "domains": [],
+            "available_consumer_surface_names": sorted(available),
+            "issues": ["Python parity domains are not a list"],
+        }
+
+    for domain in domains:
+        if not isinstance(domain, dict):
+            issues.append("Python parity domain entry is not an object")
+            continue
+        key = str(domain.get("key") or "")
+        domain_report: dict[str, object] = {"key": key}
+        for target in ("cpp", "rust"):
+            requirement_key = f"{target}_required_before_full_parity"
+            required = [str(item) for item in domain.get(requirement_key, []) or []]
+            missing = sorted(set(required) - passed)
+            unknown = sorted(set(required) - available)
+            declared_complete = bool(domain.get(f"{target}_full_parity"))
+            target_ok = declared_complete and not missing and not unknown
+            domain_report[target] = {
+                "required": required,
+                "missing": missing,
+                "unknown": unknown,
+                "declared_complete": declared_complete,
+                "ok": target_ok,
+            }
+            if not target_ok:
+                issues.append(
+                    f"{key} {target} parity evidence incomplete"
+                    f" (missing={missing or '-'}; unknown={unknown or '-'};"
+                    f" declared_complete={declared_complete})"
+                )
+        domain_reports.append(domain_report)
+
+    return {
+        "ok": not issues,
+        "domains": domain_reports,
+        "available_consumer_surface_names": sorted(available),
+        "passed_consumer_surface_names": sorted(passed),
+        "issues": issues,
+    }
+
+
 def _native_contract_percentages(
     payload: dict[str, object],
     feature_option_contract: dict[str, object],
     config_key_contract: dict[str, object],
     surface_contract: dict[str, object],
     generated: list[dict[str, object]],
+    domain_evidence: dict[str, object],
 ) -> dict[str, object]:
     domains = payload.get("domains", [])
     domain_count = len(domains) if isinstance(domains, list) else 0
+    domain_reports = domain_evidence.get("domains", [])
     domain_percentages = {
         target: _percentage(
-            sum(1 for domain in domains if isinstance(domain, dict) and bool(domain.get(f"{target}_full_parity"))),
+            sum(
+                1
+                for domain in domain_reports
+                if isinstance(domain, dict)
+                and isinstance(domain.get(target), dict)
+                and bool(domain[target].get("ok"))
+            ),
             domain_count,
         )
         for target in ("cpp", "rust")
@@ -435,10 +573,24 @@ def _native_contract_percentages(
         ]
         artifact_percentages[target] = _set_contract_percentage(expected, actual)
 
-    consumer_percentage = _set_contract_percentage(
-        surface_contract.get("required_consumer_surface_names", []),
-        surface_contract.get("actual_consumer_surface_names", []),
-    )
+    consumer_surfaces_by_target = surface_contract.get("consumer_surfaces_by_target", {})
+    consumer_percentages: dict[str, float] = {}
+    for target in ("cpp", "rust"):
+        target_surface = (
+            consumer_surfaces_by_target.get(target, {})
+            if isinstance(consumer_surfaces_by_target, dict)
+            else {}
+        )
+        if isinstance(target_surface, dict) and "required" in target_surface:
+            consumer_percentages[target] = _set_contract_percentage(
+                target_surface.get("required", []),
+                target_surface.get("actual", []),
+            )
+        else:
+            consumer_percentages[target] = _set_contract_percentage(
+                surface_contract.get("required_consumer_surface_names", []),
+                surface_contract.get("actual_consumer_surface_names", []),
+            )
     contract_percentages: dict[str, dict[str, float]] = {}
     for target in ("cpp", "rust"):
         components = {
@@ -447,7 +599,7 @@ def _native_contract_percentages(
             "option_entries": generated_match_percentages[target],
             "config_keys": config_percentages[target],
             "generated_artifacts": artifact_percentages[target],
-            "consumer_surfaces": consumer_percentage,
+            "consumer_surfaces": consumer_percentages[target],
         }
         components["contract_surface_total"] = round(sum(components.values()) / len(components), 2)
         contract_percentages[target] = components
@@ -530,6 +682,17 @@ def _generated_artifacts() -> tuple[GeneratedArtifact, ...]:
 
 def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
     return (
+        ConsumerRequirement(
+            "rust_startup_packaging_contract",
+            REPO_ROOT / "experiments" / "rust-shells" / "src" / "main.rs",
+            (
+                "fn run_packaged_smoke()",
+                "supported_frameworks()",
+                "native_python_app_contract_parity_ready()",
+                "rust_native_trading_runtime_ready()",
+                "--smoke",
+            ),
+        ),
         ConsumerRequirement(
             "rust_core_consumes_generated_contract",
             REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "lib.rs",
@@ -626,6 +789,8 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "normalize_assets_mode",
                 "normalize_strategy_controls",
                 "normalize_stop_loss",
+                "PYTHON_STRATEGY_CONTROLS_REFERENCE_CASES",
+                "PYTHON_STRATEGY_RISK_REFERENCE_CASES",
             ),
         ),
         ConsumerRequirement(
@@ -801,8 +966,69 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV",
                 "PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV",
                 "PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV",
+                "PYTHON_LIVE_SAFETY_ENV_TRUE_VALUES",
                 "process_live_trading_environment",
                 "validate_live_trading_safety_with_environment",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_order_guard_uses_python_order_intent_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "order_guard.rs",
+            (
+                "PYTHON_ORDER_INTENT_REFERENCE_JSON",
+                "order_intent_and_filter_validation_match_every_python_reference_case",
+                "intent_bool_param",
+                "filter_truthy_param",
+                "validate_order_filter_constraints_with_raw_params",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_order_guard_uses_python_connector_health_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "order_guard.rs",
+            (
+                "PYTHON_CONNECTOR_HEALTH_REFERENCE_JSON",
+                "connector_health_validation_matches_every_python_reference_case",
+                "validate_connector_health_errors",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_llm_output_policy_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "llm_advisory.rs",
+            (
+                "PYTHON_LLM_OUTPUT_POLICY_REFERENCE_JSON",
+                "output_policy_blocks_order_claims_and_risk_overrides",
+                "llm_output_policy_violations",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_llm_chat_request_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "llm_advisory.rs",
+            (
+                "PYTHON_LLM_CHAT_REQUEST_REFERENCE_JSON",
+                "chat_request_serialization_matches_python_reference_cases",
+                "build_llm_chat_request",
+                "serde_json::to_value(request)",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_llm_dynamic_catalog_uses_python_sources",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "llm_advisory.rs",
+            (
+                "model_suggestions_for_provider",
+                "model_suggestions_for_provider_with_sources",
+                "PYTHON_LLM_MODEL_CATALOG_PATH_ENV",
+                "custom_models_env",
+                "dynamic_catalog_environment_and_file_overrides_merge_like_python",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_startup_packaging_contract",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "main.cpp",
+            (
+                "bool verifyBoundedSmokeWindow(TradingBotWindow &window)",
+                "app.setApplicationName(\"Trading Bot\")",
+                "TradingBotWindow window;",
+                "window.showMaximized();",
             ),
         ),
         ConsumerRequirement(
@@ -1012,6 +1238,17 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 'QStringLiteral(\"reasoning_efforts\")',
                 'QStringLiteral(\"custom_models_path_env\")',
                 'QStringLiteral(\"catalog_note\")',
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_llm_dynamic_catalog_uses_python_sources",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindowSupport.cpp",
+            (
+                "llmModelSuggestions",
+                "appendLlmCatalogModels",
+                "customModelsEnv",
+                "customModelsPathEnv",
+                "providers",
             ),
         ),
         ConsumerRequirement(
@@ -1247,6 +1484,18 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "cpp_native_strategy_runtime_uses_python_behavior_fixtures",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonStrategyControlsReferenceCases",
+                "PythonParityContract::kPythonStrategyRiskReferenceCases",
+                "NativeStrategyRuntime::normalizeStrategyControls",
+                "NativeStrategyRuntime::normalizeStrategyRiskControls",
+                "C++ strategy-control normalization should match Python",
+                "C++ strategy-risk normalization should match Python",
+            ),
+        ),
+        ConsumerRequirement(
             "cpp_native_indicator_runtime_uses_python_reference_fixture",
             REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
             (
@@ -1304,8 +1553,46 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonLiveTradingMaxLeverageEnv",
                 "PythonParityContract::kPythonLiveTradingMaxPositionPctEnv",
                 "PythonParityContract::kPythonLiveTradingMaxSessionOrdersEnv",
+                "PythonParityContract::kPythonLiveSafetyEnvironmentTrueValues",
                 "generatedEnvValue",
                 "liveTradingConfirmationPresent",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_order_guard_uses_python_order_intent_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonOrderIntentReferenceJson",
+                "C++ order-intent normalization should match Python",
+                "C++ order-filter validation should match Python",
+                "validateOrderFilterConstraintsWithRawParams",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_order_guard_uses_python_connector_health_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonConnectorHealthReferenceJson",
+                "C++ connector-health validation should match Python",
+                "validateConnectorHealthErrors",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_llm_output_policy_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonLlmOutputPolicyReferenceJson",
+                "C++ LLM output policy should match Python case",
+                "NativeLlmAdvisory::outputPolicyViolations",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_llm_chat_request_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonLlmChatRequestReferenceJson",
+                "NativeLlmAdvisory::buildChatRequest",
+                "C++ LLM request should match Python case",
             ),
         ),
         ConsumerRequirement(
@@ -1538,6 +1825,10 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "load_service_config_file(None)",
                 "run_guarded_execution_cycle",
                 "place_futures_market_order",
+                "margin_over_target_tolerance: config_f64(",
+                'python_execution_default_f64("margin_over_target_tolerance", 0.05)',
+                "margin_filter_slippage: config_f64(",
+                'python_execution_default_f64("margin_filter_slippage", 0.1)',
                 "engine.api_key.clear()",
                 "engine.api_secret.clear()",
                 "NativeRuntimeStreamWorker",
@@ -1821,9 +2112,18 @@ def audit_native_source_sync() -> dict[str, object]:
     contract_hash = native_python_source_contract_hash()
     generated_artifact_requirements = _generated_artifacts()
     consumer_requirements = _consumer_requirements()
-    surface_contract = _surface_contract(generated_artifact_requirements, consumer_requirements)
+    consumers = [_check_consumer(requirement) for requirement in consumer_requirements]
+    surface_contract = _surface_contract(
+        generated_artifact_requirements,
+        consumer_requirements,
+        consumers,
+    )
     config_key_contract = _config_key_contract()
     feature_option_contract = _feature_option_contract()
+    payload = native_python_source_contract_payload()
+    domain_evidence = _domain_evidence_contract(payload, consumers)
+    feature_option_contract["domain_evidence_contract"] = domain_evidence
+    feature_option_contract["ok"] = bool(feature_option_contract["ok"]) and bool(domain_evidence["ok"])
     generated = [
         _check_generated_artifact(artifact, contract_hash)
         for artifact in generated_artifact_requirements
@@ -1834,8 +2134,8 @@ def audit_native_source_sync() -> dict[str, object]:
         config_key_contract,
         surface_contract,
         generated,
+        domain_evidence,
     )
-    consumers = [_check_consumer(requirement) for requirement in consumer_requirements]
     surface_contract_issues = [str(issue) for issue in surface_contract["issues"]]
     surface_wiring_issues = [
         f"{item['path']}: {item.get('issue') or 'missing consumer wiring'}"
@@ -1846,6 +2146,8 @@ def audit_native_source_sync() -> dict[str, object]:
     issues.extend(str(issue) for issue in config_key_contract["issues"])
     if not bool(feature_option_contract["ok"]):
         issues.append("Python feature or option contract/catalog parity failed")
+    if not bool(domain_evidence["ok"]):
+        issues.extend(str(issue) for issue in domain_evidence["issues"])
     return {
         "ok": not issues,
         "contract_hash": contract_hash,
@@ -1853,6 +2155,7 @@ def audit_native_source_sync() -> dict[str, object]:
         "surface_contract": surface_contract,
         "config_key_contract": config_key_contract,
         "feature_option_contract": feature_option_contract,
+        "domain_evidence_contract": domain_evidence,
         "parity_percentages": parity_percentages,
         "generated": generated,
         "consumers": consumers,

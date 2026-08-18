@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -489,8 +489,18 @@ pub struct NativeRuntimeExposureGuardInput {
     pub ledger_margin_total: f64,
     pub existing_indicator_margin: f64,
     pub existing_side_margin: f64,
+    /// Account-derived BUY/SELL margins are populated before the strategy
+    /// signal is known. The guarded cycle selects the matching side after
+    /// Python-shaped signal generation, so an opposite hedge leg cannot
+    /// consume the signal side's allocation cap.
+    pub existing_buy_side_margin: f64,
+    pub existing_sell_side_margin: f64,
     pub active_slot_count: usize,
     pub slot_already_active: bool,
+    pub active_buy_slot_count: usize,
+    pub active_sell_slot_count: usize,
+    pub buy_slot_already_active: bool,
+    pub sell_slot_already_active: bool,
     pub price: f64,
     pub leverage: i64,
     pub filter_min_qty: f64,
@@ -570,6 +580,16 @@ struct NativeRuntimeIndicatorOrderGuardState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+struct NativeRuntimeIndicatorExposureEntry {
+    symbol: String,
+    interval: String,
+    indicators: BTreeSet<String>,
+    side: String,
+    quantity: f64,
+    margin_usdt: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeRuntimeGuardedExecutionCycleSnapshot {
     pub market_cycle: NativeRuntimeReadOnlyMarketCycleSnapshot,
     pub exposure: Option<NativeRuntimeExposureGuardSnapshot>,
@@ -594,6 +614,7 @@ pub struct NativeRuntimeLoop {
     indicator_signal_trackers: BTreeMap<String, NativeRuntimeIndicatorSignalTracker>,
     indicator_order_guard_states: BTreeMap<String, NativeRuntimeIndicatorOrderGuardState>,
     indicator_reentry_blocks: BTreeMap<String, i64>,
+    indicator_exposure_entries: Vec<NativeRuntimeIndicatorExposureEntry>,
 }
 
 impl NativeRuntimeLoop {
@@ -616,6 +637,7 @@ impl NativeRuntimeLoop {
             indicator_signal_trackers: BTreeMap::new(),
             indicator_order_guard_states: BTreeMap::new(),
             indicator_reentry_blocks: BTreeMap::new(),
+            indicator_exposure_entries: Vec::new(),
         }
     }
 
@@ -629,6 +651,7 @@ impl NativeRuntimeLoop {
         self.indicator_signal_trackers.clear();
         self.indicator_order_guard_states.clear();
         self.indicator_reentry_blocks.clear();
+        self.indicator_exposure_entries.clear();
         self.status_message = "Runtime started in native dry-run coordination mode.".to_owned();
     }
 
@@ -738,32 +761,30 @@ impl NativeRuntimeLoop {
         }
     }
 
-    fn indicator_order_guard_key(&self, indicator: &str) -> String {
+    fn indicator_order_guard_key_for(symbol: &str, interval: &str, indicator: &str) -> String {
         format!(
             "{}|{}|{}",
-            self.config.symbol.trim().to_ascii_uppercase(),
-            if self.config.interval.trim().is_empty() {
-                "default"
-            } else {
-                self.config.interval.trim()
-            }
-            .to_ascii_lowercase(),
+            symbol.trim().to_ascii_uppercase(),
+            normalize_indicator_slot_interval(interval),
             indicator.trim().to_ascii_lowercase()
         )
     }
 
-    fn indicator_reentry_block_key(&self, side: &str) -> String {
+    fn indicator_order_guard_key(&self, indicator: &str) -> String {
+        Self::indicator_order_guard_key_for(&self.config.symbol, &self.config.interval, indicator)
+    }
+
+    fn indicator_reentry_block_key_for(symbol: &str, interval: &str, side: &str) -> String {
         format!(
             "{}|{}|{}",
-            self.config.symbol.trim().to_ascii_uppercase(),
-            if self.config.interval.trim().is_empty() {
-                "default"
-            } else {
-                self.config.interval.trim()
-            }
-            .to_ascii_lowercase(),
+            symbol.trim().to_ascii_uppercase(),
+            normalize_indicator_slot_interval(interval),
             side.trim().to_ascii_uppercase()
         )
+    }
+
+    fn indicator_reentry_block_key(&self, side: &str) -> String {
+        Self::indicator_reentry_block_key_for(&self.config.symbol, &self.config.interval, side)
     }
 
     /// Apply Python's post-confirmation indicator order guards. The guard is
@@ -921,23 +942,33 @@ impl NativeRuntimeLoop {
         }
     }
 
-    fn record_indicator_close(&mut self, indicator: &str, side: &str, timestamp_ms: i64) {
+    fn record_indicator_close_for_slot(
+        &mut self,
+        symbol: &str,
+        interval: &str,
+        indicator: &str,
+        side: &str,
+        timestamp_ms: i64,
+    ) {
+        let symbol = symbol.trim().to_ascii_uppercase();
+        let interval = normalize_indicator_slot_interval(interval);
         let side = side.trim().to_ascii_uppercase();
-        if !matches!(side.as_str(), "BUY" | "SELL") || indicator.trim().is_empty() {
+        let indicator = indicator.trim().to_ascii_lowercase();
+        if symbol.is_empty() || !matches!(side.as_str(), "BUY" | "SELL") || indicator.is_empty() {
             return;
         }
         let controls = normalize_strategy_risk_controls(&self.config.risk_controls);
         let state = self
             .indicator_order_guard_states
-            .entry(self.indicator_order_guard_key(indicator))
+            .entry(Self::indicator_order_guard_key_for(
+                &symbol, &interval, &indicator,
+            ))
             .or_default();
         state.recent_close_ms = timestamp_ms;
         if native_config_bool(controls.get("indicator_reentry_requires_signal_reset")) {
             state.signal_reset_side = side.clone();
         }
-        let interval_window_seconds = interval_seconds(&self.config.interval)
-            .unwrap_or(60.0)
-            .max(1.0);
+        let interval_window_seconds = interval_seconds(&interval).unwrap_or(60.0).max(1.0);
         let reentry_seconds =
             native_config_number(controls.get("indicator_reentry_cooldown_seconds"))
                 .unwrap_or(0.0)
@@ -950,10 +981,192 @@ impl NativeRuntimeLoop {
                 );
         if reentry_seconds > 0.0 {
             self.indicator_reentry_blocks.insert(
-                self.indicator_reentry_block_key(&side),
+                Self::indicator_reentry_block_key_for(&symbol, &interval, &side),
                 timestamp_ms + (reentry_seconds * 1_000.0).ceil() as i64,
             );
         }
+    }
+
+    fn record_indicator_close(&mut self, indicator: &str, side: &str, timestamp_ms: i64) {
+        self.record_indicator_close_for_slot(
+            &self.config.symbol.clone(),
+            &self.config.interval.clone(),
+            indicator,
+            side,
+            timestamp_ms,
+        );
+    }
+
+    /// Keep the native runtime's local indicator ownership aligned with the
+    /// Python ledger used by the capital/slot guard. Binance position snapshots
+    /// do not carry indicator or interval ownership, so this state is learned
+    /// from accepted native orders and reconciled against each fresh snapshot.
+    fn apply_indicator_exposure_state(
+        &self,
+        input: &mut NativeRuntimeExposureGuardInput,
+        decision: &StrategySignalDecision,
+        signal: &str,
+    ) {
+        let symbol = self.config.symbol.trim().to_ascii_uppercase();
+        let interval = normalize_indicator_slot_interval(&self.config.interval);
+        let side = signal.trim().to_ascii_uppercase();
+        if symbol.is_empty() || !matches!(side.as_str(), "BUY" | "SELL") {
+            return;
+        }
+        let indicators: BTreeSet<String> = decision
+            .trigger_sources
+            .iter()
+            .map(|indicator| indicator.trim().to_ascii_lowercase())
+            .filter(|indicator| !indicator.is_empty())
+            .collect();
+        if indicators.is_empty() {
+            return;
+        }
+
+        let matching: Vec<&NativeRuntimeIndicatorExposureEntry> = self
+            .indicator_exposure_entries
+            .iter()
+            .filter(|entry| {
+                entry.symbol.eq_ignore_ascii_case(&symbol)
+                    && entry.interval == interval
+                    && entry.side.eq_ignore_ascii_case(&side)
+                    && entry
+                        .indicators
+                        .iter()
+                        .any(|indicator| indicators.contains(indicator))
+                    && entry.quantity.is_finite()
+                    && entry.quantity > NATIVE_POSITION_EPSILON
+            })
+            .collect();
+        if matching.is_empty() {
+            return;
+        }
+
+        input.existing_indicator_margin = matching
+            .iter()
+            .map(|entry| finite_non_negative(entry.margin_usdt))
+            .sum();
+        input.active_slot_count = matching.len();
+        input.slot_already_active = !matching.is_empty();
+    }
+
+    fn record_indicator_position_open(
+        &mut self,
+        decision: &StrategySignalDecision,
+        side: &str,
+        quantity: f64,
+        margin_usdt: f64,
+    ) {
+        let symbol = self.config.symbol.trim().to_ascii_uppercase();
+        let interval = normalize_indicator_slot_interval(&self.config.interval);
+        let side = side.trim().to_ascii_uppercase();
+        if symbol.is_empty()
+            || !matches!(side.as_str(), "BUY" | "SELL")
+            || !quantity.is_finite()
+            || quantity <= NATIVE_POSITION_EPSILON
+            || !margin_usdt.is_finite()
+            || margin_usdt <= NATIVE_POSITION_EPSILON
+        {
+            return;
+        }
+        let indicators: BTreeSet<String> = decision
+            .trigger_sources
+            .iter()
+            .map(|indicator| indicator.trim().to_ascii_lowercase())
+            .filter(|indicator| !indicator.is_empty())
+            .collect();
+        if indicators.is_empty() {
+            return;
+        }
+        self.indicator_exposure_entries
+            .push(NativeRuntimeIndicatorExposureEntry {
+                symbol,
+                interval,
+                indicators,
+                side,
+                quantity,
+                margin_usdt,
+            });
+    }
+
+    fn reduce_indicator_position_entries(
+        &mut self,
+        side: &str,
+        closed_quantity: f64,
+        timestamp_ms: i64,
+    ) {
+        let side = side.trim().to_ascii_uppercase();
+        if !matches!(side.as_str(), "BUY" | "SELL")
+            || !closed_quantity.is_finite()
+            || closed_quantity <= NATIVE_POSITION_EPSILON
+        {
+            return;
+        }
+        let symbol = self.config.symbol.trim().to_ascii_uppercase();
+        let total_quantity: f64 = self
+            .indicator_exposure_entries
+            .iter()
+            .filter(|entry| {
+                entry.symbol.eq_ignore_ascii_case(&symbol)
+                    && entry.side.eq_ignore_ascii_case(&side)
+                    && entry.quantity.is_finite()
+                    && entry.quantity > NATIVE_POSITION_EPSILON
+            })
+            .map(|entry| entry.quantity)
+            .sum();
+        if total_quantity <= NATIVE_POSITION_EPSILON {
+            return;
+        }
+
+        let remaining_ratio = (1.0 - (closed_quantity / total_quantity)).clamp(0.0, 1.0);
+        let mut fully_closed_indicators = BTreeSet::new();
+        self.indicator_exposure_entries.retain_mut(|entry| {
+            if !entry.symbol.eq_ignore_ascii_case(&symbol)
+                || !entry.side.eq_ignore_ascii_case(&side)
+                || !entry.quantity.is_finite()
+                || entry.quantity <= NATIVE_POSITION_EPSILON
+            {
+                return true;
+            }
+            let remaining_quantity = entry.quantity * remaining_ratio;
+            if remaining_quantity <= NATIVE_POSITION_EPSILON {
+                fully_closed_indicators.extend(entry.indicators.iter().cloned());
+                return false;
+            }
+            entry.quantity = remaining_quantity;
+            entry.margin_usdt = finite_non_negative(entry.margin_usdt) * remaining_ratio;
+            true
+        });
+
+        for indicator in fully_closed_indicators {
+            self.record_indicator_close(&indicator, &side, timestamp_ms);
+        }
+    }
+
+    /// Drop local indicator ownership when a fresh exchange snapshot proves
+    /// that the corresponding position side is gone. Unknown ownership stays
+    /// conservative in the account-derived guard until a native order or a
+    /// later reconciliation establishes its exact indicator slot.
+    pub fn reconcile_indicator_exposure_positions(&mut self, positions: &[BinanceFuturesPosition]) {
+        let mut live_sides = BTreeSet::new();
+        for position in positions {
+            if !position
+                .symbol
+                .trim()
+                .eq_ignore_ascii_case(self.config.symbol.trim())
+                || !position.position_amt.is_finite()
+                || position.position_amt.abs() <= NATIVE_POSITION_EPSILON
+            {
+                continue;
+            }
+            if let Some(side) = native_runtime_position_signal(position) {
+                live_sides.insert(side.to_owned());
+            }
+        }
+        let symbol = self.config.symbol.trim().to_ascii_uppercase();
+        self.indicator_exposure_entries.retain(|entry| {
+            !entry.symbol.eq_ignore_ascii_case(&symbol) || live_sides.contains(&entry.side)
+        });
     }
 
     /// Reconcile a confirmed exchange close when the close was initiated by
@@ -965,17 +1178,44 @@ impl NativeRuntimeLoop {
         if symbol.is_empty() {
             return;
         }
-        let indicators: Vec<String> = self
+        let position_side = side.trim().to_ascii_uppercase();
+        let signal_side = match position_side.as_str() {
+            "LONG" | "BUY" => Some("BUY"),
+            "SHORT" | "SELL" => Some("SELL"),
+            _ => None,
+        };
+        if let Some(signal_side) = signal_side {
+            self.indicator_exposure_entries.retain(|entry| {
+                !(entry.symbol.eq_ignore_ascii_case(&symbol)
+                    && entry.side.eq_ignore_ascii_case(signal_side))
+            });
+        }
+        let slots: Vec<(String, String)> = self
             .indicator_order_guard_states
             .keys()
             .filter_map(|key| {
-                let mut parts = key.split('|');
-                (parts.next()? == symbol).then(|| parts.collect::<Vec<_>>().join("|"))
+                let mut parts = key.splitn(3, '|');
+                let key_symbol = parts.next()?;
+                let interval = parts.next()?;
+                let indicator = parts.next()?;
+                (key_symbol == symbol && !interval.is_empty() && !indicator.is_empty())
+                    .then(|| (interval.to_owned(), indicator.to_owned()))
             })
-            .filter(|indicator| !indicator.is_empty())
             .collect();
-        for indicator in indicators {
-            self.record_indicator_close(&indicator, side, timestamp_ms);
+        let close_sides: &[&str] = match signal_side {
+            Some(signal_side) => &[signal_side],
+            None => &["BUY", "SELL"],
+        };
+        for (interval, indicator) in slots {
+            for close_side in close_sides {
+                self.record_indicator_close_for_slot(
+                    &symbol,
+                    &interval,
+                    &indicator,
+                    close_side,
+                    timestamp_ms,
+                );
+            }
         }
     }
 
@@ -1661,7 +1901,8 @@ impl NativeRuntimeLoop {
         }
 
         let mut exposure_input = input.exposure;
-        exposure_input.side = signal.to_owned();
+        apply_signal_side_exposure(&mut exposure_input, signal);
+        self.apply_indicator_exposure_state(&mut exposure_input, &decision, signal);
         let last_price = exposure_input.price;
         let exposure = self.evaluate_exposure_guard(exposure_input);
         if !exposure.allowed {
@@ -1836,6 +2077,39 @@ impl NativeRuntimeLoop {
         if submit.allowed {
             if let Some(decision) = market_cycle.strategy_decision.as_ref() {
                 self.record_indicator_order_actions(decision, now_ms);
+                if !engine.dry_run {
+                    let filled_quantity = submit
+                        .order_result
+                        .as_ref()
+                        .map(|result| result.executed_qty)
+                        .filter(|quantity| quantity.is_finite() && *quantity > 0.0)
+                        .unwrap_or(exposure.quantity_estimate);
+                    if exposure.reduce_only {
+                        let closed_side = match signal {
+                            "BUY" => "SELL",
+                            "SELL" => "BUY",
+                            _ => "",
+                        };
+                        self.reduce_indicator_position_entries(
+                            closed_side,
+                            filled_quantity,
+                            now_ms,
+                        );
+                    } else {
+                        let filled_margin =
+                            filled_quantity * last_price / (self.config.leverage.max(1) as f64);
+                        self.record_indicator_position_open(
+                            decision,
+                            signal,
+                            filled_quantity,
+                            if filled_margin.is_finite() && filled_margin > 0.0 {
+                                filled_margin
+                            } else {
+                                exposure.margin_estimate_usdt
+                            },
+                        );
+                    }
+                }
             }
         }
         let status_message = if submit.allowed && engine.dry_run {
@@ -2631,6 +2905,52 @@ pub fn operational_preflight_orders_allowed(
     preflight.orders.allowed
 }
 
+fn apply_signal_side_exposure(input: &mut NativeRuntimeExposureGuardInput, signal: &str) {
+    input.side = signal.to_owned();
+    match signal {
+        "BUY" => {
+            input.existing_side_margin = input.existing_buy_side_margin;
+            input.active_slot_count = input.active_buy_slot_count;
+            input.slot_already_active = input.buy_slot_already_active;
+        }
+        "SELL" => {
+            input.existing_side_margin = input.existing_sell_side_margin;
+            input.active_slot_count = input.active_sell_slot_count;
+            input.slot_already_active = input.sell_slot_already_active;
+        }
+        _ => {}
+    }
+}
+
+fn normalize_indicator_slot_interval(value: &str) -> String {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        "default".to_owned()
+    } else {
+        normalized
+    }
+}
+
+pub fn native_runtime_position_signal(position: &BinanceFuturesPosition) -> Option<&'static str> {
+    match position.position_side.trim().to_ascii_uppercase().as_str() {
+        "LONG" => Some("BUY"),
+        "SHORT" => Some("SELL"),
+        "BOTH" | ""
+            if position.position_amt.is_finite()
+                && position.position_amt > NATIVE_POSITION_EPSILON =>
+        {
+            Some("BUY")
+        }
+        "BOTH" | ""
+            if position.position_amt.is_finite()
+                && position.position_amt < -NATIVE_POSITION_EPSILON =>
+        {
+            Some("SELL")
+        }
+        _ => None,
+    }
+}
+
 pub fn evaluate_native_exposure_guard(
     input: NativeRuntimeExposureGuardInput,
 ) -> NativeRuntimeExposureGuardSnapshot {
@@ -2674,14 +2994,16 @@ pub fn evaluate_native_exposure_guard(
     let filter_min_margin = filter_min_margin(
         input.filter_min_qty,
         input.filter_min_notional,
+        input.filter_step_size,
         input.price,
         leverage,
     );
-    let filter_headroom = if filter_min_margin > 0.0 {
-        filter_min_margin * 0.25
-    } else {
-        0.0
-    };
+    let filter_headroom = filter_headroom_margin(
+        input.filter_min_qty,
+        input.filter_min_notional,
+        input.price,
+        leverage,
+    ) * 0.25;
     let max_indicator_margin_usdt = target_margin_usdt * (1.0 + margin_tolerance) + filter_headroom;
     let existing_indicator_margin = finite_non_negative(input.existing_indicator_margin);
     if existing_indicator_margin >= max_indicator_margin_usdt - 1e-9 {
@@ -3041,12 +3363,40 @@ fn normalize_ratio(value: f64) -> f64 {
     }
 }
 
-fn filter_min_margin(min_qty: f64, min_notional: f64, price: f64, leverage: f64) -> f64 {
+fn filter_min_margin(
+    min_qty: f64,
+    min_notional: f64,
+    step_size: f64,
+    price: f64,
+    leverage: f64,
+) -> f64 {
+    if price <= 0.0 || leverage <= 0.0 {
+        return 0.0;
+    }
+    let mut minimum_quantity = finite_non_negative(min_qty);
+    let minimum_notional = finite_non_negative(min_notional);
+    if minimum_notional > 0.0 {
+        let mut notional_quantity = minimum_notional / price;
+        let step = finite_non_negative(step_size);
+        if step > 0.0 && notional_quantity.is_finite() {
+            let step_units = (notional_quantity / step - 1e-12).ceil();
+            if step_units.is_finite() {
+                notional_quantity = (step_units * step).max(0.0);
+            }
+        }
+        minimum_quantity = minimum_quantity.max(notional_quantity);
+    }
+    minimum_quantity * price / leverage
+}
+
+fn filter_headroom_margin(min_qty: f64, min_notional: f64, price: f64, leverage: f64) -> f64 {
     if price <= 0.0 || leverage <= 0.0 {
         return 0.0;
     }
     let min_qty_margin = finite_non_negative(min_qty) * price / leverage;
     let min_notional_margin = finite_non_negative(min_notional) / leverage;
+    // Match Python's raw first-pass headroom; step rounding belongs only to
+    // filter_min_margin, which models the later exchange minimum check.
     min_qty_margin.max(min_notional_margin)
 }
 
@@ -3256,8 +3606,14 @@ mod tests {
             ledger_margin_total: 0.0,
             existing_indicator_margin: 0.0,
             existing_side_margin: 0.0,
+            existing_buy_side_margin: 0.0,
+            existing_sell_side_margin: 0.0,
             active_slot_count: 0,
             slot_already_active: false,
+            active_buy_slot_count: 0,
+            active_sell_slot_count: 0,
+            buy_slot_already_active: false,
+            sell_slot_already_active: false,
             price: 100.0,
             leverage: 5,
             filter_min_qty: 0.001,
@@ -3606,6 +3962,10 @@ mod tests {
             order.order_result.as_ref().expect("dry run").status,
             "DRY_RUN"
         );
+        assert!(
+            runtime.indicator_exposure_entries.is_empty(),
+            "dry-run orders must not create live indicator ownership"
+        );
         let audit = fs::read_to_string(directory.join("audit.jsonl")).expect("audit");
         assert!(audit.contains("order_dry_run"));
         fs::remove_dir_all(directory).ok();
@@ -3862,6 +4222,56 @@ mod tests {
                 .is_some()
         );
         assert!(buy.signal.is_none());
+    }
+
+    #[test]
+    fn native_confirmed_position_close_updates_the_exact_python_guard_slot() {
+        let mut runtime = loop_under_test();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "indicator_reentry_cooldown_seconds": 60.0,
+            "indicator_reentry_requires_signal_reset": true
+        }));
+        let buy = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        runtime.record_indicator_order_actions(&buy, 1_700_000_000_000);
+        let slot_key = runtime.indicator_order_guard_key("rsi");
+        assert_eq!(
+            runtime
+                .indicator_order_guard_states
+                .get(&slot_key)
+                .expect("indicator guard slot")
+                .last_action_side,
+            "BUY"
+        );
+
+        runtime.record_confirmed_position_close("btcusdt", "LONG", 1_700_000_060_000);
+
+        let state = runtime
+            .indicator_order_guard_states
+            .get(&slot_key)
+            .expect("same indicator guard slot should be updated");
+        assert_eq!(state.recent_close_ms, 1_700_000_060_000);
+        assert_eq!(state.signal_reset_side, "BUY");
+        assert!(
+            runtime
+                .indicator_order_guard_states
+                .keys()
+                .all(|key| key.split('|').count() == 3),
+            "confirmed close must not create a nested interval|indicator guard key"
+        );
+        assert_eq!(
+            runtime
+                .indicator_reentry_blocks
+                .get(&runtime.indicator_reentry_block_key("BUY")),
+            Some(&1_700_000_120_000)
+        );
     }
 
     #[test]
@@ -4868,6 +5278,139 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_exposure_guard_selects_signal_side_margin_like_python() {
+        let runtime = loop_under_test();
+        let mut buy_input = exposure_input();
+        buy_input.existing_buy_side_margin = 0.0;
+        buy_input.existing_sell_side_margin = 100.0;
+        buy_input.active_buy_slot_count = 0;
+        buy_input.active_sell_slot_count = 4;
+        apply_signal_side_exposure(&mut buy_input, "BUY");
+        let buy_snapshot = runtime.evaluate_exposure_guard(buy_input);
+
+        assert!(buy_snapshot.allowed);
+        assert_eq!(buy_snapshot.projected_side_margin_usdt, 20.0);
+
+        let mut sell_input = exposure_input();
+        sell_input.existing_buy_side_margin = 0.0;
+        sell_input.existing_sell_side_margin = 100.0;
+        apply_signal_side_exposure(&mut sell_input, "SELL");
+        let sell_snapshot = runtime.evaluate_exposure_guard(sell_input);
+
+        assert!(!sell_snapshot.allowed);
+        assert!(
+            sell_snapshot
+                .reason
+                .contains("projected side margin exceeds cap")
+        );
+        assert_eq!(sell_snapshot.projected_side_margin_usdt, 120.0);
+    }
+
+    #[test]
+    fn native_runtime_indicator_exposure_preserves_python_interval_and_side_scope() {
+        let mut runtime = loop_under_test();
+        let rsi_buy = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        runtime.record_indicator_position_open(&rsi_buy, "BUY", 0.5, 10.0);
+
+        let mut matching = exposure_input();
+        apply_signal_side_exposure(&mut matching, "BUY");
+        runtime.apply_indicator_exposure_state(&mut matching, &rsi_buy, "BUY");
+        assert_eq!(matching.existing_indicator_margin, 10.0);
+        assert_eq!(matching.active_slot_count, 1);
+        assert!(matching.slot_already_active);
+
+        runtime.reduce_indicator_position_entries("BUY", 0.25, 1_700_000_000_000);
+        let mut partially_reduced = exposure_input();
+        apply_signal_side_exposure(&mut partially_reduced, "BUY");
+        runtime.apply_indicator_exposure_state(&mut partially_reduced, &rsi_buy, "BUY");
+        assert_eq!(partially_reduced.existing_indicator_margin, 5.0);
+        assert_eq!(partially_reduced.active_slot_count, 1);
+        assert!(partially_reduced.slot_already_active);
+
+        runtime.reduce_indicator_position_entries("BUY", 0.25, 1_700_000_060_000);
+        let mut fully_reduced = exposure_input();
+        apply_signal_side_exposure(&mut fully_reduced, "BUY");
+        runtime.apply_indicator_exposure_state(&mut fully_reduced, &rsi_buy, "BUY");
+        assert_eq!(fully_reduced.existing_indicator_margin, 0.0);
+        assert_eq!(fully_reduced.active_slot_count, 0);
+        assert!(!fully_reduced.slot_already_active);
+
+        let mut other_interval_runtime = loop_under_test();
+        other_interval_runtime.config.interval = "5m".to_owned();
+        let mut other_interval = exposure_input();
+        other_interval.interval = "5m".to_owned();
+        apply_signal_side_exposure(&mut other_interval, "BUY");
+        other_interval_runtime.apply_indicator_exposure_state(&mut other_interval, &rsi_buy, "BUY");
+        assert_eq!(other_interval.existing_indicator_margin, 0.0);
+        assert_eq!(other_interval.active_slot_count, 0);
+        assert!(!other_interval.slot_already_active);
+
+        let mut other_side = exposure_input();
+        apply_signal_side_exposure(&mut other_side, "SELL");
+        runtime.apply_indicator_exposure_state(&mut other_side, &rsi_buy, "SELL");
+        assert_eq!(other_side.existing_indicator_margin, 0.0);
+        assert_eq!(other_side.active_slot_count, 0);
+        assert!(!other_side.slot_already_active);
+
+        let macd_buy = StrategySignalDecision {
+            trigger_sources: vec!["macd".to_owned()],
+            trigger_actions: BTreeMap::from([("macd".to_owned(), "buy".to_owned())]),
+            ..rsi_buy.clone()
+        };
+        let mut other_indicator = exposure_input();
+        apply_signal_side_exposure(&mut other_indicator, "BUY");
+        runtime.apply_indicator_exposure_state(&mut other_indicator, &macd_buy, "BUY");
+        assert_eq!(other_indicator.existing_indicator_margin, 0.0);
+        assert_eq!(other_indicator.active_slot_count, 0);
+        assert!(!other_indicator.slot_already_active);
+
+        runtime.reconcile_indicator_exposure_positions(&[]);
+        let mut after_reconcile = exposure_input();
+        apply_signal_side_exposure(&mut after_reconcile, "BUY");
+        runtime.apply_indicator_exposure_state(&mut after_reconcile, &rsi_buy, "BUY");
+        assert_eq!(after_reconcile.existing_indicator_margin, 0.0);
+        assert_eq!(after_reconcile.active_slot_count, 0);
+        assert!(!after_reconcile.slot_already_active);
+
+        let mut multi_source_runtime = loop_under_test();
+        let multi_source_buy = StrategySignalDecision {
+            trigger_sources: vec!["rsi".to_owned(), "macd".to_owned()],
+            trigger_actions: BTreeMap::from([
+                ("rsi".to_owned(), "buy".to_owned()),
+                ("macd".to_owned(), "buy".to_owned()),
+            ]),
+            ..rsi_buy
+        };
+        multi_source_runtime.record_indicator_position_open(&multi_source_buy, "BUY", 0.5, 10.0);
+        assert_eq!(multi_source_runtime.indicator_exposure_entries.len(), 1);
+        assert_eq!(
+            multi_source_runtime.indicator_exposure_entries[0].indicators,
+            BTreeSet::from(["macd".to_owned(), "rsi".to_owned()])
+        );
+        let mut multi_source_exposure = exposure_input();
+        apply_signal_side_exposure(&mut multi_source_exposure, "BUY");
+        multi_source_runtime.apply_indicator_exposure_state(
+            &mut multi_source_exposure,
+            &multi_source_buy,
+            "BUY",
+        );
+        assert_eq!(multi_source_exposure.existing_indicator_margin, 10.0);
+        assert_eq!(multi_source_exposure.active_slot_count, 1);
+        assert!(multi_source_exposure.slot_already_active);
+
+        multi_source_runtime.reduce_indicator_position_entries("BUY", 0.5, 1_700_000_120_000);
+        assert!(multi_source_runtime.indicator_exposure_entries.is_empty());
+    }
+
+    #[test]
     fn native_runtime_exposure_guard_allows_position_within_python_capital_guard() {
         let runtime = loop_under_test();
         let snapshot = runtime.evaluate_exposure_guard(exposure_input());
@@ -4881,6 +5424,27 @@ mod tests {
         assert_eq!(snapshot.desired_position_side.as_deref(), Some("LONG"));
         assert!(!snapshot.reduce_only);
         assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_exposure_guard_matches_python_filter_floor_rounding() {
+        let runtime = loop_under_test();
+        let mut input = exposure_input();
+        input.position_pct_fraction = 0.05;
+        input.available_usdt = 124.0;
+        input.wallet_usdt = 124.0;
+        input.leverage = 1;
+        input.filter_step_size = 0.03;
+        input.filter_min_qty = 0.01;
+        input.filter_min_notional = 5.0;
+        input.price = 100.0;
+        let snapshot = runtime.evaluate_exposure_guard(input);
+
+        assert!(snapshot.allowed);
+        // Python keeps raw min-qty/min-notional floors for headroom (5 * .25)
+        // but rounds min-notional to the step (0.06 * 100) for the later cap.
+        assert!((snapshot.max_indicator_margin_usdt - 7.76).abs() < 1e-12);
+        assert!((snapshot.quantity_estimate - 0.06).abs() < 1e-12);
     }
 
     #[test]

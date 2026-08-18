@@ -161,6 +161,38 @@ fn append_unique_model(models: &mut Vec<String>, value: impl AsRef<str>) {
     }
 }
 
+fn python_catalog_repr(value: &Value) -> String {
+    match value {
+        Value::Null => "None".to_owned(),
+        Value::Bool(true) => "True".to_owned(),
+        Value::Bool(false) => "False".to_owned(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'")),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(python_catalog_repr)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Object(values) => format!(
+            "{{{}}}",
+            values
+                .iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}: {}",
+                        python_catalog_repr(&Value::String(key.clone())),
+                        python_catalog_repr(value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn append_catalog_model(models: &mut Vec<String>, value: &Value) {
     let text = match value {
         Value::Null | Value::Bool(false) => None,
@@ -170,7 +202,7 @@ fn append_catalog_model(models: &mut Vec<String>, value: &Value) {
         Value::Number(value) => Some(value.to_string()),
         Value::Array(values) if values.is_empty() => None,
         Value::Object(values) if values.is_empty() => None,
-        Value::Array(_) | Value::Object(_) => Some(value.to_string()),
+        Value::Array(_) | Value::Object(_) => Some(python_catalog_repr(value)),
     };
     if let Some(text) = text {
         append_unique_model(models, text);
@@ -261,11 +293,12 @@ fn model_suggestions_for_provider_with_sources(
     let Ok(payload) = serde_json::from_str::<Value>(&text) else {
         return models;
     };
-    let raw_models = payload.get(provider.key).or_else(|| {
-        payload
+    let raw_models = match payload.get(provider.key) {
+        None | Some(Value::Null) => payload
             .get("providers")
-            .and_then(|items| items.get(provider.key))
-    });
+            .and_then(|items| items.get(provider.key)),
+        Some(value) => Some(value),
+    };
     if let Some(Value::Array(items)) = raw_models {
         for value in items {
             append_catalog_model(&mut models, value);
@@ -366,7 +399,10 @@ pub fn build_llm_chat_request(
                 messages.push(json!({"role": "system", "content": system_prompt}));
             }
             if let Some(context) = context_for_request {
-                messages.push(json!({"role": "system", "content": format!("Trading context JSON: {context}")}));
+                messages.push(json!({
+                    "role": "system",
+                    "content": format!("Trading context JSON: {}", context_json_text(&context)),
+                }));
             }
             messages.push(json!({"role": "user", "content": user_prompt}));
             let mut object = Map::from_iter([
@@ -393,7 +429,10 @@ pub fn build_llm_chat_request(
             if let Some(context) = context_for_request {
                 messages.insert(
                     0,
-                    json!({"role": "user", "content": format!("Trading context JSON: {context}")}),
+                    json!({
+                        "role": "user",
+                        "content": format!("Trading context JSON: {}", context_json_text(&context)),
+                    }),
                 );
             }
             let mut system_parts = vec![LLM_EXECUTION_BOUNDARY.to_owned()];
@@ -436,7 +475,9 @@ pub fn build_llm_chat_request(
                 parts.push(json!({"text": system_prompt}));
             }
             if let Some(context) = context_for_request {
-                parts.push(json!({"text": format!("Trading context JSON: {context}")}));
+                parts.push(json!({
+                    "text": format!("Trading context JSON: {}", context_json_text(&context)),
+                }));
             }
             parts.push(json!({"text": user_prompt}));
             let mut object = Map::from_iter([("contents".to_owned(), json!([{"parts": parts}]))]);
@@ -710,6 +751,10 @@ fn context_for_provider(
         Value::String(value) if value.is_empty() => None,
         _ => Some(context.clone()),
     }
+}
+
+fn context_json_text(context: &Value) -> String {
+    serde_json::to_string(context).unwrap_or_else(|_| context.to_string())
 }
 
 fn cloud_safe_context(context: &Value) -> Value {
@@ -1042,6 +1087,9 @@ fn percent_encode_model(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generated_python_parity::{
+        PYTHON_LLM_CHAT_REQUEST_REFERENCE_JSON, PYTHON_LLM_OUTPUT_POLICY_REFERENCE_JSON,
+    };
 
     #[test]
     fn provider_config_normalizes_aliases_and_reasoning_like_python() {
@@ -1174,7 +1222,11 @@ mod tests {
         append_catalog_model(&mut models, &json!(true));
         append_catalog_model(&mut models, &json!(false));
         append_catalog_model(&mut models, &json!(null));
-        assert_eq!(models, vec!["qwen3:32b", "1", "True"]);
+        append_catalog_model(&mut models, &json!([1]));
+        append_catalog_model(&mut models, &json!({"x": 1}));
+        append_catalog_model(&mut models, &json!([]));
+        append_catalog_model(&mut models, &json!({}));
+        assert_eq!(models, vec!["qwen3:32b", "1", "True", "[1]", "{'x': 1}"]);
     }
 
     #[test]
@@ -1210,6 +1262,24 @@ mod tests {
             models.iter().filter(|model| *model == "qwen3:32b").count(),
             1
         );
+
+        std::fs::write(
+            &path,
+            r#"{"local":null,"providers":{"local":["null-fallback-model"]}}"#,
+        )
+        .expect("null-precedence catalog fixture should be writable");
+        let null_fallback_models =
+            model_suggestions_for_provider_with_sources(provider, None, Some(&path));
+        assert!(null_fallback_models.contains(&"null-fallback-model".to_owned()));
+
+        std::fs::write(
+            &path,
+            r#"{"local":"not-a-list","providers":{"local":["ignored-nested-model"]}}"#,
+        )
+        .expect("invalid-top-level catalog fixture should be writable");
+        let invalid_top_level_models =
+            model_suggestions_for_provider_with_sources(provider, None, Some(&path));
+        assert!(!invalid_top_level_models.contains(&"ignored-nested-model".to_owned()));
 
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir(directory);
@@ -1354,6 +1424,68 @@ mod tests {
         let body = request.json.to_string();
         assert!(body.contains("Cloud LLM context minimized"));
         assert!(!body.contains("do-not-send"));
+    }
+
+    #[test]
+    fn chat_request_serialization_matches_python_reference_cases() {
+        let reference: Value = serde_json::from_str(PYTHON_LLM_CHAT_REQUEST_REFERENCE_JSON)
+            .expect("Python LLM chat-request fixture should be valid JSON");
+        for case in reference["cases"]
+            .as_array()
+            .expect("Python LLM chat-request fixture should contain cases")
+        {
+            let config = &case["config"];
+            let string_field = |key: &str| {
+                config
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let input = LlmConfigInput {
+                llm_enabled: config
+                    .get("llm_enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                llm_provider: string_field("llm_provider"),
+                llm_model: string_field("llm_model"),
+                llm_base_url: string_field("llm_base_url"),
+                llm_api_key: string_field("llm_api_key"),
+                llm_api_key_env: string_field("llm_api_key_env"),
+                llm_use_for: string_field("llm_use_for"),
+                llm_allow_public_network: config
+                    .get("llm_allow_public_network")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                llm_reasoning_effort: string_field("llm_reasoning_effort"),
+            };
+            let context = case.get("context").filter(|value| !value.is_null());
+            let request = build_llm_chat_request(
+                &input,
+                case["prompt"]
+                    .as_str()
+                    .expect("Python LLM fixture prompt should be a string"),
+                case["system_prompt"]
+                    .as_str()
+                    .expect("Python LLM fixture system prompt should be a string"),
+                context,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Rust LLM request should match Python case {}: {}",
+                    case["name"].as_str().unwrap_or("unknown"),
+                    error
+                )
+            });
+            let actual = serde_json::to_value(request)
+                .expect("Rust LLM request should serialize for parity comparison");
+            assert_eq!(
+                actual,
+                case["expected"],
+                "Rust LLM request should match Python case {}",
+                case["name"].as_str().unwrap_or("unknown")
+            );
+        }
     }
 
     #[test]
@@ -1508,6 +1640,33 @@ mod tests {
 
     #[test]
     fn output_policy_blocks_order_claims_and_risk_overrides() {
+        let reference: Value = serde_json::from_str(PYTHON_LLM_OUTPUT_POLICY_REFERENCE_JSON)
+            .expect("Python LLM output-policy fixture should be valid JSON");
+        for case in reference["cases"]
+            .as_array()
+            .expect("Python LLM output-policy fixture should contain cases")
+        {
+            let text = case["text"]
+                .as_str()
+                .expect("Python LLM output-policy fixture text should be a string");
+            let expected = case["expected_violations"]
+                .as_array()
+                .expect("Python LLM output-policy fixture violations should be an array")
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .expect("Python LLM policy violation should be a string")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                llm_output_policy_violations(text),
+                expected,
+                "Rust LLM output policy should match Python case {}",
+                case["name"].as_str().unwrap_or("unknown")
+            );
+        }
         assert_eq!(
             llm_output_policy_violations(r#"{"action":"place_order","status":"executed"}"#),
             vec![

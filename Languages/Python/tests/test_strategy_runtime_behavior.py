@@ -145,6 +145,19 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertEqual("strategy", emergency_calls[0]["source"])
         self.assertIn("BTCUSDT@1m connectivity lost", "\n".join(logs))
 
+    def test_network_outage_resets_non_finite_backoff_like_native_runtimes(self):
+        engine = _build_engine()
+        engine._offline_backoff = float("nan")
+
+        backoff = engine._handle_network_outage(
+            "BTCUSDT",
+            "1m",
+            RuntimeError("network_offline: timeout"),
+        )
+
+        self.assertEqual(5.0, backoff)
+        self.assertEqual(5.0, engine._offline_backoff)
+
     def test_emergency_close_dispatch_failure_is_recorded_while_strategy_stops(self):
         logs: list[str] = []
         wrapper = _FakeStrategyBinance()

@@ -230,7 +230,8 @@ def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
 
 
 def _handle_network_outage(self, sym: str, interval: str, exc: Exception) -> float:
-    prev = getattr(self, "_offline_backoff", 0.0) or 0.0
+    # Keep corrupted or non-finite state fail-closed at the initial retry delay.
+    prev = _finite_nonnegative(getattr(self, "_offline_backoff", 0.0))
     backoff = 5.0 if prev <= 0.0 else min(90.0, max(prev * 1.5, 5.0))
     self._offline_backoff = backoff
     now = time.time()

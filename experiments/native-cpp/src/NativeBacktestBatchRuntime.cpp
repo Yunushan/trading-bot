@@ -1,6 +1,9 @@
 #include "NativeBacktestBatchRuntime.h"
+#include "NativePythonParityChoices.h"
+#include "NativeStrategyRuntime.h"
 #include "generated/PythonParityContract.h"
 
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonValue>
@@ -114,16 +117,11 @@ qint64 saturatingMultiply(qint64 left, qint64 right) {
 }
 
 QString normalizedOptimizerMetric(const QString &metric) {
-    const QString normalized = normalizedToken(metric, QStringLiteral("roi_percent"));
-    if (QStringList{
-            QStringLiteral("roi_percent"),
-            QStringLiteral("roi_percent_mdd"),
-            QStringLiteral("roi_drawdown"),
-            QStringLiteral("roi_value"),
-        }.contains(normalized)) {
-        return normalized;
-    }
-    return QStringLiteral("roi_percent");
+    return NativePythonParity::canonicalConfigChoice(
+        metric,
+        PythonParityContract::kPythonOptimizerMetricConfigChoices,
+        NativePythonParity::defaultConfigChoice(
+            PythonParityContract::kPythonOptimizerMetricConfigChoices));
 }
 
 QString jsonText(const QJsonObject &object, const QString &key, const QString &fallback = {}) {
@@ -137,6 +135,74 @@ double jsonNumber(const QJsonObject &object, const QString &key, double fallback
     bool ok = false;
     const double parsed = value.toString().trimmed().toDouble(&ok);
     return ok ? parsed : fallback;
+}
+
+double pythonIntervalSeconds(const QString &interval) {
+    QString value = interval.trimmed().toLower();
+    if (value.isEmpty()) return 60.0;
+    const QChar unit = value.at(value.size() - 1);
+    const bool hasUnit = unit.isLetter();
+    const QString valuePart = hasUnit ? value.left(value.size() - 1) : value;
+    bool ok = false;
+    const double amount = valuePart.toDouble(&ok);
+    if (!ok || !std::isfinite(amount)) return 60.0;
+    double seconds = amount;
+    if (unit == QLatin1Char('s')) seconds = amount;
+    else if (unit == QLatin1Char('m')) seconds = amount * 60.0;
+    else if (unit == QLatin1Char('h')) seconds = amount * 3600.0;
+    else if (unit == QLatin1Char('d')) seconds = amount * 86400.0;
+    else if (unit == QLatin1Char('w')) seconds = amount * 7.0 * 86400.0;
+    return std::max(seconds, 1.0);
+}
+
+const QStringList &pythonWarmupParameterKeys() {
+    static const QStringList keys = {
+        QStringLiteral("length"),
+        QStringLiteral("fast"),
+        QStringLiteral("slow"),
+        QStringLiteral("signal"),
+        QStringLiteral("smooth_k"),
+        QStringLiteral("smooth_d"),
+        QStringLiteral("short"),
+        QStringLiteral("medium"),
+        QStringLiteral("long"),
+        QStringLiteral("atr_period"),
+        QStringLiteral("atr_length"),
+        QStringLiteral("conversion_length"),
+        QStringLiteral("base_length"),
+        QStringLiteral("span_b_length"),
+        QStringLiteral("displacement"),
+        QStringLiteral("roc1"),
+        QStringLiteral("roc2"),
+        QStringLiteral("roc3"),
+        QStringLiteral("roc4"),
+        QStringLiteral("sma1"),
+        QStringLiteral("sma2"),
+        QStringLiteral("sma3"),
+        QStringLiteral("sma4"),
+    };
+    return keys;
+}
+
+void inspectWarmupObject(const QJsonObject &object, qint64 &maximum, bool &hasCandidate) {
+    for (const QString &key : pythonWarmupParameterKeys()) {
+        const QJsonValue value = object.value(key);
+        double parsed = 0.0;
+        if (value.isDouble()) {
+            parsed = value.toDouble();
+        } else if (value.isString()) {
+            bool ok = false;
+            parsed = value.toString().trimmed().toDouble(&ok);
+            if (!ok) continue;
+        } else {
+            continue;
+        }
+        if (!std::isfinite(parsed) || parsed < 0.0) continue;
+        parsed = std::trunc(parsed);
+        if (parsed > static_cast<double>(std::numeric_limits<qint64>::max())) continue;
+        hasCandidate = true;
+        maximum = std::max(maximum, static_cast<qint64>(parsed));
+    }
 }
 
 bool jsonBool(const QJsonObject &object, const QString &key, bool fallback) {
@@ -217,14 +283,18 @@ ConfigMap resolveIndicatorBundle(const ConfigMap &activeConfigs, const QStringLi
 NativeBacktestRuntime::Request applyPairControls(
     NativeBacktestRuntime::Request request,
     const QJsonObject &controls) {
-    const QString logic = jsonText(controls, QStringLiteral("logic")).toUpper();
-    if (QStringList{QStringLiteral("AND"), QStringLiteral("OR"), QStringLiteral("SEPARATE")}.contains(logic)) {
+    const QString logic = NativePythonParity::canonicalConfigChoice(
+        jsonText(controls, QStringLiteral("logic")),
+        PythonParityContract::kPythonLogicConfigChoices);
+    if (!logic.isEmpty()) {
         request.logic = logic;
     }
     const double capital = jsonNumber(controls, QStringLiteral("capital"), -1.0);
     if (capital > 0.0 && std::isfinite(capital)) request.capital = capital;
-    const QString side = jsonText(controls, QStringLiteral("side")).toUpper();
-    if (QStringList{QStringLiteral("BUY"), QStringLiteral("SELL"), QStringLiteral("BOTH")}.contains(side)) {
+    const QString side = NativePythonParity::canonicalConfigChoice(
+        jsonText(controls, QStringLiteral("side")),
+        PythonParityContract::kPythonSideConfigChoices);
+    if (!side.isEmpty()) {
         request.side = side;
     }
     const double positionPct = jsonNumber(controls, QStringLiteral("position_pct"), -1.0);
@@ -242,7 +312,10 @@ NativeBacktestRuntime::Request applyPairControls(
     applyText(request.positionMode, QStringLiteral("position_mode"));
     applyText(request.assetsMode, QStringLiteral("assets_mode"));
     applyText(request.accountMode, QStringLiteral("account_mode"));
-    applyText(request.mddLogic, QStringLiteral("mdd_logic"));
+    const QString mddLogic = NativePythonParity::canonicalConfigChoice(
+        jsonText(controls, QStringLiteral("mdd_logic")),
+        PythonParityContract::kPythonMddLogicConfigChoices);
+    if (!mddLogic.isEmpty()) request.mddLogic = mddLogic;
 
     QJsonObject stopLoss = controls.value(QStringLiteral("stop_loss")).toObject();
     if (controls.contains(QStringLiteral("stop_loss_enabled"))) {
@@ -262,10 +335,16 @@ NativeBacktestRuntime::Request applyPairControls(
     }
     if (!stopLoss.isEmpty()) {
         request.stopLossEnabled = jsonBool(stopLoss, QStringLiteral("enabled"), request.stopLossEnabled);
-        request.stopLossMode = jsonText(stopLoss, QStringLiteral("mode"), request.stopLossMode);
+        const QString stopLossMode = NativePythonParity::canonicalConfigChoice(
+            jsonText(stopLoss, QStringLiteral("mode")),
+            PythonParityContract::kPythonStopLossModeConfigChoices);
+        if (!stopLossMode.isEmpty()) request.stopLossMode = stopLossMode;
         request.stopLossUsdt = std::max(0.0, jsonNumber(stopLoss, QStringLiteral("usdt"), request.stopLossUsdt));
         request.stopLossPercent = std::max(0.0, jsonNumber(stopLoss, QStringLiteral("percent"), request.stopLossPercent));
-        request.stopLossScope = jsonText(stopLoss, QStringLiteral("scope"), request.stopLossScope);
+        const QString stopLossScope = NativePythonParity::canonicalConfigChoice(
+            jsonText(stopLoss, QStringLiteral("scope")),
+            PythonParityContract::kPythonStopLossScopeConfigChoices);
+        if (!stopLossScope.isEmpty()) request.stopLossScope = stopLossScope;
     }
     return request;
 }
@@ -315,7 +394,8 @@ OverridePlanSet buildOverridePlans(const NativeBacktestBatchRuntime::BatchReques
         if (!value.isObject()) continue;
         const QJsonObject entry = value.toObject();
         const QString symbol = jsonText(entry, QStringLiteral("symbol")).toUpper();
-        const QString interval = jsonText(entry, QStringLiteral("interval"));
+        const QString interval = NativeStrategyRuntime::canonicalizeBacktestInterval(
+            QJsonValue(jsonText(entry, QStringLiteral("interval"))));
         if (symbol.isEmpty() || interval.isEmpty()) continue;
         const QStringList overrideKeys = normalizedIndicatorKeys(entry);
         const QString dedupeKey = symbol + QChar(0x1f) + interval + QChar(0x1f) + overrideKeys.join(QChar(0x1e));
@@ -331,10 +411,22 @@ OverridePlanSet buildOverridePlans(const NativeBacktestBatchRuntime::BatchReques
             QStringLiteral("current"),
             request.optimizerComboSize,
             runTemplate.logic);
-        const QString reportedLogic = runTemplate.logic.trimmed().toUpper();
-        const QString effectiveLogic = runTemplate.logic.trimmed().toUpper() == QStringLiteral("SEPARATE")
-            ? QStringLiteral("AND")
-            : runTemplate.logic;
+        const QString reportedLogic = NativePythonParity::canonicalConfigChoice(
+            runTemplate.logic,
+            PythonParityContract::kPythonLogicConfigChoices,
+            NativePythonParity::defaultConfigChoice(
+                PythonParityContract::kPythonLogicConfigChoices));
+        const QString separateLogic = NativePythonParity::canonicalConfigChoice(
+            QStringLiteral("separate"),
+            PythonParityContract::kPythonLogicConfigChoices,
+            reportedLogic);
+        const QString andLogic = NativePythonParity::canonicalConfigChoice(
+            QStringLiteral("and"),
+            PythonParityContract::kPythonLogicConfigChoices,
+            reportedLogic);
+        const QString effectiveLogic = reportedLogic.compare(separateLogic, Qt::CaseInsensitive) == 0
+            ? andLogic
+            : reportedLogic;
         for (const QStringList &group : groups) {
             NativeBacktestRuntime::Request effectiveTemplate = runTemplate;
             effectiveTemplate.logic = effectiveLogic;
@@ -370,21 +462,59 @@ BatchRequest::BatchRequest() {
         if (!symbol.isEmpty()) symbols.append(symbol);
     }
     for (const QJsonValue &value : defaults.value(QStringLiteral("intervals")).toArray()) {
-        const QString interval = value.toString().trimmed();
+        const QString interval = NativeStrategyRuntime::canonicalizeBacktestInterval(value);
         if (!interval.isEmpty()) intervals.append(interval);
     }
     const QJsonObject configuredIndicators = defaults.value(QStringLiteral("indicators")).toObject();
     for (auto iterator = configuredIndicators.constBegin(); iterator != configuredIndicators.constEnd(); ++iterator) {
         indicatorConfigs.insert(iterator.key(), iterator.value().toObject());
     }
-    optimizerMode = defaults.value(QStringLiteral("optimizer_mode")).toString(QStringLiteral("current"));
-    optimizerMetric = defaults.value(QStringLiteral("optimizer_metric")).toString(QStringLiteral("roi_percent"));
-    optimizerScope = defaults.value(QStringLiteral("scan_scope")).toString(QStringLiteral("selected"));
+    warmupBars = estimateWarmupBars(indicatorConfigs);
+    optimizerMode = defaults.value(QStringLiteral("optimizer_mode")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonOptimizerModeConfigChoices));
+    optimizerMetric = defaults.value(QStringLiteral("optimizer_metric")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonOptimizerMetricConfigChoices));
+    optimizerScope = defaults.value(QStringLiteral("scan_scope")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonScanScopeConfigChoices));
     optimizerComboSize = defaults.value(QStringLiteral("optimizer_combo_size")).toInt(2);
     optimizerMinTrades = defaults.value(QStringLiteral("optimizer_min_trades")).toInt(1);
     optimizerMddLimit = defaults.value(QStringLiteral("scan_mdd_limit")).toDouble(10.0);
+    double durationSeconds = defaults.value(QStringLiteral("optimizer_max_duration_seconds"))
+                                 .toDouble(static_cast<double>(kDefaultOptimizerDurationSeconds));
+    if (!std::isfinite(durationSeconds)) durationSeconds = kDefaultOptimizerDurationSeconds;
+    durationSeconds = std::trunc(durationSeconds);
+    optimizerMaxDurationSeconds = static_cast<qint64>(std::clamp(
+        durationSeconds,
+        static_cast<double>(kMinOptimizerDurationSeconds),
+        static_cast<double>(kMaxOptimizerDurationSeconds)));
     loopIntervalOverride = executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m"));
     connectorBackend = defaults.value(QStringLiteral("connector_backend")).toString();
+}
+
+qint64 estimateWarmupBars(const ConfigMap &configs) {
+    qint64 maximum = 0;
+    for (auto iterator = configs.cbegin(); iterator != configs.cend(); ++iterator) {
+        if (!configEnabled(iterator.value())) continue;
+        qint64 indicatorMaximum = 0;
+        bool hasCandidate = false;
+        inspectWarmupObject(iterator.value(), indicatorMaximum, hasCandidate);
+        inspectWarmupObject(iterator.value().value(QStringLiteral("params")).toObject(), indicatorMaximum, hasCandidate);
+        maximum = std::max(maximum, hasCandidate ? indicatorMaximum : 50);
+    }
+    return maximum == 0 ? 100 : maximum;
+}
+
+qint64 bufferedStartTimeMs(qint64 startTimeMs, const QString &interval, qint64 warmupBars) {
+    if (startTimeMs <= 0 || warmupBars <= 0) return startTimeMs;
+    const double bufferMs = static_cast<double>(warmupBars)
+        * pythonIntervalSeconds(interval)
+        * 2.0
+        * 1000.0;
+    if (!std::isfinite(bufferMs) || bufferMs <= 0.0) return startTimeMs;
+    const double maxQint64 = static_cast<double>(std::numeric_limits<qint64>::max());
+    const qint64 deltaMs = static_cast<qint64>(std::min(bufferMs, maxQint64));
+    if (deltaMs <= 0) return startTimeMs;
+    return startTimeMs > deltaMs ? startTimeMs - deltaMs : 1;
 }
 
 QVector<QStringList> buildIndicatorGroups(
@@ -404,10 +534,20 @@ QVector<QStringList> buildIndicatorGroups(
     if (signalKeys.isEmpty()) return {};
 
     QVector<QStringList> signalGroups;
-    const QString modeNormalized = normalizedToken(mode, QStringLiteral("current"));
-    const QString logicNormalized = normalizedToken(logic, QStringLiteral("and")).toUpper();
+    const QString modeNormalized = NativePythonParity::canonicalConfigChoice(
+        mode,
+        PythonParityContract::kPythonOptimizerModeConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonOptimizerModeConfigChoices));
+    const QString logicNormalized = NativePythonParity::canonicalConfigChoice(
+        logic,
+        PythonParityContract::kPythonLogicConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonLogicConfigChoices));
     if (modeNormalized == QStringLiteral("current")) {
-        if (logicNormalized == QStringLiteral("SEPARATE")) {
+        if (logicNormalized.compare(
+                NativePythonParity::canonicalConfigChoice(
+                    QStringLiteral("separate"),
+                    PythonParityContract::kPythonLogicConfigChoices),
+                Qt::CaseInsensitive) == 0) {
             for (const QString &key : signalKeys) signalGroups.append(QStringList{key});
         } else if (!signalKeys.isEmpty()) {
             signalGroups.append(signalKeys);
@@ -443,6 +583,24 @@ qint64 estimateRunCount(
     return saturatingMultiply(pairCount, std::max<qint64>(0, indicatorGroupCount));
 }
 
+QStringList normalizedBatchSymbols(const QStringList &values) {
+    QStringList normalized;
+    for (const QString &value : values) {
+        const QString symbol = value.trimmed().toUpper();
+        if (!symbol.isEmpty() && !normalized.contains(symbol)) normalized.append(symbol);
+    }
+    return normalized;
+}
+
+QStringList normalizedBatchIntervals(const QStringList &values) {
+    QStringList normalized;
+    for (const QString &value : values) {
+        const QString interval = NativeStrategyRuntime::canonicalizeBacktestInterval(QJsonValue(value));
+        if (!interval.isEmpty() && !normalized.contains(interval)) normalized.append(interval);
+    }
+    return normalized;
+}
+
 qint64 estimateRunCount(const BatchRequest &request) {
     const OverridePlanSet overrides = buildOverridePlans(request);
     if (overrides.hasValidOverrides) {
@@ -453,7 +611,9 @@ qint64 estimateRunCount(const BatchRequest &request) {
         request.optimizerMode,
         request.optimizerComboSize,
         request.runTemplate.logic);
-    return estimateRunCount(request.symbols.size(), request.intervals.size(), groups.size());
+    const QStringList symbols = normalizedBatchSymbols(request.symbols);
+    const QStringList intervals = normalizedBatchIntervals(request.intervals);
+    return estimateRunCount(symbols.size(), intervals.size(), groups.size());
 }
 
 Score optimizerScore(
@@ -516,22 +676,19 @@ QJsonObject runBatch(
     snapshot.insert(QStringLiteral("state"), QStringLiteral("starting"));
     snapshot.insert(QStringLiteral("cancelled"), false);
 
-    QStringList symbols;
-    for (const QString &value : request.symbols) {
-        const QString symbol = value.trimmed().toUpper();
-        if (!symbol.isEmpty() && !symbols.contains(symbol)) symbols.append(symbol);
-    }
-    QStringList intervals;
-    for (const QString &value : request.intervals) {
-        const QString interval = value.trimmed();
-        if (!interval.isEmpty() && !intervals.contains(interval)) intervals.append(interval);
-    }
+    const QStringList symbols = normalizedBatchSymbols(request.symbols);
+    const QStringList intervals = normalizedBatchIntervals(request.intervals);
     const QVector<QStringList> groups = buildIndicatorGroups(
         request.indicatorConfigs,
         request.optimizerMode,
         request.optimizerComboSize,
         request.runTemplate.logic);
     const OverridePlanSet overridePlans = buildOverridePlans(request);
+    const bool optimizerEnabled = request.optimizerEnabled && !overridePlans.hasValidOverrides;
+    snapshot.insert(QStringLiteral("optimizer_enabled"), optimizerEnabled);
+    snapshot.insert(
+        QStringLiteral("optimizer_max_duration_seconds"),
+        optimizerEnabled ? static_cast<double>(request.optimizerMaxDurationSeconds) : 0.0);
     QStringList plannedSymbols = symbols;
     QStringList plannedIntervals = intervals;
     if (overridePlans.hasValidOverrides) {
@@ -586,20 +743,50 @@ QJsonObject runBatch(
 
     const int resultLimit = std::max(1, request.resultLimit);
     const QString metric = normalizedOptimizerMetric(request.optimizerMetric);
-    const QString mode = normalizedToken(request.optimizerMode, QStringLiteral("current"));
-    const QString scope = normalizedToken(request.optimizerScope, QStringLiteral("selected"));
-    const QString originalLogic = request.runTemplate.logic.trimmed().toUpper();
-    const QString effectiveLogic = originalLogic == QStringLiteral("SEPARATE")
-        ? QStringLiteral("AND")
+    const QString mode = NativePythonParity::canonicalConfigChoice(
+        request.optimizerMode,
+        PythonParityContract::kPythonOptimizerModeConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonOptimizerModeConfigChoices));
+    const QString scope = NativePythonParity::canonicalConfigChoice(
+        request.optimizerScope,
+        PythonParityContract::kPythonScanScopeConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonScanScopeConfigChoices));
+    const QString originalLogic = NativePythonParity::canonicalConfigChoice(
+        request.runTemplate.logic,
+        PythonParityContract::kPythonLogicConfigChoices,
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonLogicConfigChoices));
+    const QString effectiveLogic = originalLogic.compare(
+        NativePythonParity::canonicalConfigChoice(
+            QStringLiteral("separate"),
+            PythonParityContract::kPythonLogicConfigChoices),
+        Qt::CaseInsensitive) == 0
+        ? NativePythonParity::canonicalConfigChoice(
+            QStringLiteral("and"),
+            PythonParityContract::kPythonLogicConfigChoices)
         : originalLogic;
+    QElapsedTimer optimizerTimer;
+    optimizerTimer.start();
+    const qint64 optimizerBudgetMilliseconds = request.optimizerMaxDurationSeconds > 0
+        ? request.optimizerMaxDurationSeconds * 1000
+        : 0;
+    const auto budgetExceeded = [&]() {
+        return optimizerEnabled
+            && optimizerBudgetMilliseconds > 0
+            && optimizerTimer.elapsed() >= optimizerBudgetMilliseconds;
+    };
+    const auto effectiveShouldStop = [&]() {
+        return (shouldStop && shouldStop()) || budgetExceeded();
+    };
     std::multiset<RankedRow, BestFirst> eligibleRows;
     QVector<QJsonObject> rejectedSamples;
+    QVector<QJsonObject> plainRows;
     QJsonArray errors;
     qint64 processedCount = 0;
     qint64 candidateCount = 0;
     qint64 eligibleCount = 0;
     qint64 filteredCount = 0;
     bool cancelled = false;
+    bool budgetExhausted = false;
 
     QMap<QString, CandleLoadResult> candleCache;
     const auto processRun = [&](const QString &symbol,
@@ -609,20 +796,22 @@ QJsonObject runBatch(
                                 const QString &reportedLogic,
                                 const QString &loopIntervalOverride,
                                 const QString &connectorBackend) {
-        if (shouldStop && shouldStop()) {
+        if (effectiveShouldStop()) {
             cancelled = true;
+            budgetExhausted = budgetExceeded();
             return false;
         }
         const QString cacheKey = symbol + QChar(0x1f) + interval;
         auto loadedIterator = candleCache.constFind(cacheKey);
         if (loadedIterator == candleCache.constEnd()) {
-            candleCache.insert(cacheKey, loadCandles(symbol, interval, shouldStop));
+            candleCache.insert(cacheKey, loadCandles(symbol, interval, effectiveShouldStop));
             loadedIterator = candleCache.constFind(cacheKey);
         }
         const CandleLoadResult &loaded = loadedIterator.value();
         if (!loaded.ok) {
-            if ((shouldStop && shouldStop()) || loaded.error == QStringLiteral("backtest_cancelled")) {
+            if (effectiveShouldStop() || loaded.error == QStringLiteral("backtest_cancelled")) {
                 cancelled = true;
+                budgetExhausted = budgetExceeded();
                 return false;
             }
             errors.append(QJsonObject{
@@ -647,11 +836,12 @@ QJsonObject runBatch(
         NativeBacktestRuntime::Result result = NativeBacktestRuntime::run(
             loaded.candles,
             runTemplate,
-            shouldStop);
+            effectiveShouldStop);
         ++processedCount;
         if (!result.ok) {
-            if (result.error == QStringLiteral("backtest_cancelled")) {
+            if (effectiveShouldStop() || result.error == QStringLiteral("backtest_cancelled")) {
                 cancelled = true;
+                budgetExhausted = budgetExceeded();
                 return false;
             }
             errors.append(QJsonObject{
@@ -673,6 +863,12 @@ QJsonObject runBatch(
         QJsonObject controls = strategyControls(runTemplate);
         controls.insert(QStringLiteral("logic"), visibleLogic);
         row.insert(QStringLiteral("strategy_controls"), controls);
+        if (!optimizerEnabled) {
+            ++candidateCount;
+            ++eligibleCount;
+            plainRows.append(row);
+            return true;
+        }
         const Score score = optimizerScore(
             result,
             metric,
@@ -742,7 +938,10 @@ QJsonObject runBatch(
     }
 
     QVector<QJsonObject> finalRows;
-    if (!eligibleRows.empty()) {
+    if (!optimizerEnabled) {
+        finalRows = plainRows;
+        if (finalRows.size() > resultLimit) finalRows.resize(resultLimit);
+    } else if (!eligibleRows.empty()) {
         finalRows.reserve(static_cast<qsizetype>(eligibleRows.size()));
         int rank = 1;
         for (const RankedRow &ranked : eligibleRows) {
@@ -756,13 +955,22 @@ QJsonObject runBatch(
             row.insert(QStringLiteral("optimizer_rank"), QJsonValue(QJsonValue::Null));
         }
     }
-    for (QJsonObject &row : finalRows) {
-        row.insert(QStringLiteral("optimizer_candidate_count"), static_cast<double>(candidateCount));
-        row.insert(QStringLiteral("optimizer_eligible_count"), static_cast<double>(eligibleCount));
-        row.insert(QStringLiteral("optimizer_filtered_count"), static_cast<double>(filteredCount));
-        row.insert(QStringLiteral("optimizer_run_count"), static_cast<double>(runCount));
+    if (optimizerEnabled) {
+        for (QJsonObject &row : finalRows) {
+            row.insert(QStringLiteral("optimizer_candidate_count"), static_cast<double>(candidateCount));
+            row.insert(QStringLiteral("optimizer_eligible_count"), static_cast<double>(eligibleCount));
+            row.insert(QStringLiteral("optimizer_filtered_count"), static_cast<double>(filteredCount));
+            row.insert(QStringLiteral("optimizer_run_count"), static_cast<double>(runCount));
+        }
     }
 
+    if (budgetExhausted) {
+        errors.append(QJsonObject{
+            {QStringLiteral("error"), QStringLiteral("backtest_optimizer_time_budget_exhausted")},
+            {QStringLiteral("processed_runs"), static_cast<double>(processedCount)},
+            {QStringLiteral("max_duration_seconds"), static_cast<double>(request.optimizerMaxDurationSeconds)},
+        });
+    }
     const QJsonArray rows = rowsToArray(finalRows);
     snapshot.insert(QStringLiteral("runs"), rows);
     snapshot.insert(QStringLiteral("top_runs"), rows);
@@ -776,7 +984,15 @@ QJsonObject runBatch(
         QStringLiteral("progress_percent"),
         runCount > 0 ? std::min(100.0, static_cast<double>(processedCount) / static_cast<double>(runCount) * 100.0) : 100.0);
 
-    if (cancelled) {
+    if (budgetExhausted) {
+        snapshot.insert(QStringLiteral("state"), QStringLiteral("budget_exhausted"));
+        snapshot.insert(QStringLiteral("cancelled"), false);
+        snapshot.insert(
+            QStringLiteral("status_message"),
+            QStringLiteral("Native C++ optimizer time budget reached after %1 of %2 run(s). A checkpoint is available for resume.")
+                .arg(processedCount)
+                .arg(runCount));
+    } else if (cancelled) {
         snapshot.insert(QStringLiteral("state"), QStringLiteral("cancelled"));
         snapshot.insert(QStringLiteral("cancelled"), true);
         snapshot.insert(

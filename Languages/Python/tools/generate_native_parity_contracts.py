@@ -16,6 +16,7 @@ from app.native_parity import (  # noqa: E402
     INDICATOR_RUNTIME_OUTPUT_KEYS,
     NATIVE_POSITION_RECONCILIATION_REFERENCE_SCHEMA_VERSION,
     native_position_reconciliation_reference_cases,
+    native_runtime_config_invalid_reference_cases,
     native_python_source_contract_hash,
     native_python_source_contract_summary,
 )
@@ -23,6 +24,8 @@ from app.core import indicators as indicator_math  # noqa: E402
 from app.core.backtest.engine import BacktestEngine  # noqa: E402
 from app.core.backtest.models import BacktestRequest, IndicatorDefinition  # noqa: E402
 from app.core.strategy.runtime.strategy_signal_generation import generate_signal  # noqa: E402
+from app.gui.shared.helper_runtime import _normalize_connector_backend  # noqa: E402
+from app.gui.runtime.composition.module_state_constants import _connector_options  # noqa: E402
 from app.settings.connectors import DEFAULT_CONNECTOR_BACKEND  # noqa: E402
 from app.settings.exchange_support import (  # noqa: E402
     BROKER_ORDER_ROUTING_BACKENDS,
@@ -30,6 +33,7 @@ from app.settings.exchange_support import (  # noqa: E402
     SUPPORTED_EXCHANGES,
     build_exchange_support_payload,
 )
+from app.settings.validation import validate_runtime_config  # noqa: E402
 
 import pandas as pd  # noqa: E402
 
@@ -122,6 +126,11 @@ def _cpp_string_chunks(value: object, chunk_size: int = 6000) -> str:
     if not text:
         return _cpp_string(text)
     return "\n    ".join(_cpp_string(text[offset : offset + chunk_size]) for offset in range(0, len(text), chunk_size))
+
+
+def _cpp_string_view_literal(value: object) -> str:
+    text = str(value)
+    return f"std::string_view{{{_cpp_string_chunks(text)}, {len(text)}}}"
 
 
 def _rust_array(name: str, values: list[str]) -> str:
@@ -257,6 +266,172 @@ def _contract_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
+def _runtime_config_reference_cases() -> list[dict[str, object]]:
+    """Return complete Python validation outputs for native configuration parity tests."""
+
+    raw_cases: list[tuple[str, dict[str, object]]] = [
+        (
+            "alias-rich-runtime",
+            {
+                "symbols": ["ethusdt", "ETHUSDT"],
+                "intervals": ["1M", "2 hours"],
+                "mode": "live",
+                "account_type": "futures",
+                "margin_mode": "cross",
+                "position_mode": "oneway",
+                "assets_mode": "multi-asset",
+                "account_mode": "portfolio margin",
+                "side": "sell",
+                "position_pct": "2.5",
+                "order_type": "limit",
+                "tif": "ioc",
+                "live_trading_enabled": "false",
+                "live_allow_auto_bump_to_min_order": "yes",
+                "live_trading_max_leverage": 20,
+                "live_trading_max_position_pct": "4.0",
+                "live_trading_max_session_orders": "25",
+                "order_audit_enabled": "no",
+                "loop_interval_override": "1 hour",
+                "connector_backend": "CCXT (Unified)",
+                "indicator_source": "binance futures",
+                "theme": "green",
+                "design": "workstation",
+                "selected_exchange": "kucoin",
+                "llm_enabled": "true",
+                "llm_provider": "chatgpt",
+                "llm_use_for": "risk_review",
+                "llm_reasoning_effort": "extra-high",
+                "llm_model": "local-model",
+                "llm_base_url": "http://127.0.0.1:11434/v1",
+                "llm_allow_public_network": "false",
+                "stop_loss": {
+                    "mode": "percent",
+                    "scope": "entire_account",
+                },
+                "chart": {
+                    "market": "spot",
+                    "view_mode": "TradingView Lightweight",
+                    "symbol": "ethusdt",
+                    "interval": "1M",
+                    "auto_follow": "yes",
+                },
+                "backtest": {
+                    "symbols": ["btcusdt", "BTCUSDT"],
+                    "intervals": ["15 minutes", "1M"],
+                    "capital": "1000",
+                    "execution_backend": "desktop-local",
+                    "logic": "or",
+                    "symbol_source": "futures",
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-02-01",
+                    "position_pct": "2.0",
+                    "side": "both",
+                    "margin_mode": "isolated",
+                    "position_mode": "hedge",
+                    "assets_mode": "single-asset mode",
+                    "account_mode": "classic trading",
+                    "connector_backend": "binance-sdk-spot",
+                    "leverage": 20,
+                    "mdd_logic": "per_trade",
+                    "scan_scope": "top_n",
+                    "scan_top_n": 200,
+                    "scan_mdd_limit": 20,
+                    "scan_auto_apply": "false",
+                    "optimizer_mode": "pairs",
+                    "optimizer_metric": "roi-percent-mdd",
+                    "optimizer_combo_size": 2,
+                    "optimizer_max_duration_seconds": 7200,
+                    "optimizer_min_trades": 1,
+                    "fee_bps": 5.0,
+                    "slippage_bps": 2.0,
+                    "template": {},
+                    "indicators": {},
+                    "stop_loss": {
+                        "mode": "percent",
+                        "scope": "entire_account",
+                    },
+                },
+                "runtime_symbol_interval_pairs": [
+                    {
+                        "symbol": "btcusdt",
+                        "interval": "15 minutes",
+                        "strategy_controls": {
+                            "side": "buy",
+                            "leverage": 20,
+                            "loop_interval_override": "1 hour",
+                            "stop_loss": {"scope": "bad-scope"},
+                        },
+                    }
+                ],
+                "backtest_symbol_interval_pairs": None,
+            },
+        ),
+        (
+            "canonical-runtime",
+            {
+                "symbols": ["BTCUSDT"],
+                "intervals": ["15m"],
+                "mode": "paper",
+                "position_pct": 1.5,
+                "side": "BUY",
+                "order_type": "MARKET",
+                "tif": "GTC",
+                "loop_interval_override": "5m",
+                "chart": {
+                    "market": "Spot",
+                    "view_mode": "lightweight",
+                    "symbol": "BTCUSDT",
+                    "interval": "15m",
+                    "auto_follow": True,
+                },
+            },
+        ),
+    ]
+
+    generated_cases = [
+        {
+            "name": name,
+            "input": config,
+            "valid": True,
+            "expected": validate_runtime_config(config),
+            "expected_error": "",
+        }
+        for name, config in raw_cases
+    ]
+    generated_cases.extend(native_runtime_config_invalid_reference_cases())
+    generated_cases.extend(native_python_source_contract_summary()["runtime_config_choice_reference"])
+    return generated_cases
+
+
+def _connector_normalization_reference_cases() -> list[dict[str, str]]:
+    """Return Python-owned connector aliases and fallback expectations."""
+
+    labels_by_key = {key: label for label, key in _connector_options()}
+    raw_cases = [
+        ("empty", ""),
+        ("usds-key", "binance-sdk-derivatives-trading-usds-futures"),
+        ("usds-underscore-key", "binance_sdk_derivatives_trading_usds_futures"),
+        ("usds-label", labels_by_key["binance-sdk-derivatives-trading-usds-futures"]),
+        ("coin-key", "binance-sdk-derivatives-trading-coin-futures"),
+        ("coin-label", labels_by_key["binance-sdk-derivatives-trading-coin-futures"]),
+        ("spot-label", labels_by_key["binance-sdk-spot"]),
+        ("connector-label", labels_by_key["binance-connector"]),
+        ("ccxt-label", labels_by_key["ccxt"]),
+        ("python-binance-label", labels_by_key["python-binance"]),
+        ("official-connector-alias", "Binance Official REST connector"),
+        ("unrelated-option-falls-back", labels_by_key["oanda-rest"]),
+        ("unknown-falls-back", "unknown backend"),
+    ]
+    return [
+        {
+            "name": name,
+            "input": input_value,
+            "expected": _normalize_connector_backend(input_value),
+        }
+        for name, input_value in raw_cases
+    ]
+
+
 def _json_series(series: object) -> list[float | None]:
     values = series.tolist() if hasattr(series, "tolist") else list(series)
     normalized: list[float | None] = []
@@ -304,6 +479,23 @@ def _backtest_reference_cases(
             "leverage": 1.0,
             "margin_mode": "Isolated",
             "mdd_logic": "per_trade",
+            "stop_loss": {"enabled": False, "mode": "usdt", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
+            "configs": {
+                "rsi": {"enabled": True, "length": 3, "buy_value": 45.0, "sell_value": 55.0},
+            },
+        },
+        {
+            "name": "rsi-fee-slippage-stress",
+            "logic": "OR",
+            "side": "BOTH",
+            "capital": 1000.0,
+            "position_pct": 25.0,
+            "position_pct_units": "percent",
+            "leverage": 2.0,
+            "margin_mode": "Cross",
+            "mdd_logic": "per_trade",
+            "fee_bps": 25.0,
+            "slippage_bps": 15.0,
             "stop_loss": {"enabled": False, "mode": "usdt", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
             "configs": {
                 "rsi": {"enabled": True, "length": 3, "buy_value": 45.0, "sell_value": 55.0},
@@ -478,10 +670,32 @@ def _backtest_reference_cases(
                 },
             },
         },
+        {
+            "name": "volume-window-signal-reset",
+            "logic": "OR",
+            "side": "BUY",
+            "capital": 1000.0,
+            "position_pct": 1.0,
+            "position_pct_units": "fraction",
+            "leverage": 1.0,
+            "margin_mode": "Isolated",
+            "mdd_logic": "per_trade",
+            "execution_start_offset": 1,
+            "stop_loss": {"enabled": False, "mode": "usdt", "usdt": 0.0, "percent": 0.0, "scope": "per_trade"},
+            "configs": {
+                "volume": {
+                    "enabled": True,
+                    "buy_value": 10.0,
+                },
+            },
+        },
     ]
 
     rendered: list[dict[str, object]] = []
     for case in cases:
+        execution_start_offset = max(0, min(int(case.get("execution_start_offset", 0)), len(indexed) - 1))
+        execution_start = indexed.index[execution_start_offset].to_pydatetime()
+        execution_frame = indexed.iloc[execution_start_offset:]
         configs = case["configs"]
         assert isinstance(configs, dict)
         indicators = []
@@ -497,7 +711,7 @@ def _backtest_reference_cases(
             indicators=indicators,
             logic=str(case["logic"]),
             symbol_source="Futures",
-            start=start,
+            start=execution_start,
             end=end,
             capital=float(case["capital"]),
             side=str(case["side"]),
@@ -509,6 +723,8 @@ def _backtest_reference_cases(
             assets_mode="Single-Asset",
             account_mode="Classic Trading",
             mdd_logic=str(case["mdd_logic"]),
+            fee_bps=float(case.get("fee_bps", 5.0)),
+            slippage_bps=float(case.get("slippage_bps", 2.0)),
             stop_loss_enabled=bool(stop_loss["enabled"]),
             stop_loss_mode=str(stop_loss["mode"]),
             stop_loss_usdt=float(stop_loss["usdt"]),
@@ -521,7 +737,7 @@ def _backtest_reference_cases(
             indexed,
             indicators,
             request,
-            work_df=indexed,
+            work_df=execution_frame,
         )
         if result is None:
             raise RuntimeError(f"Python backtest fixture case produced no result: {case['name']}")
@@ -1186,6 +1402,93 @@ def _indicator_reference_payload() -> dict[str, object]:
         }
     )
 
+    short_warmup_frame = pd.DataFrame(
+        {
+            "open": [100.0, 101.0],
+            "high": [101.0, 102.0],
+            "low": [99.0, 100.0],
+            "close": [100.0, 101.0],
+            "volume": [10.0, 10.0],
+        }
+    )
+    flat_price_frame = pd.DataFrame(
+        {
+            "open": [100.0] * 16,
+            "high": [101.0] * 16,
+            "low": [99.0] * 16,
+            "close": [100.0] * 16,
+            "volume": [10.0] * 16,
+        }
+    )
+    zero_volume_frame = pd.DataFrame(
+        {
+            "open": [100.0 + index for index in range(16)],
+            "high": [101.0 + index for index in range(16)],
+            "low": [99.0 + index for index in range(16)],
+            "close": [100.0 + index for index in range(16)],
+            "volume": [0.0] * 16,
+        }
+    )
+    threshold_zero_frame = pd.DataFrame(
+        {
+            "open": [
+                100.0,
+                97.0,
+                97.0,
+                96.0,
+                96.0,
+                93.0,
+                92.0,
+                89.0,
+                88.0,
+                87.0,
+                86.0,
+                83.0,
+                83.0,
+                84.0,
+                83.0,
+                82.0,
+            ],
+            "high": [101.0, 98.0, 98.0, 97.0, 97.0, 94.0, 93.0, 90.0, 89.0, 88.0, 87.0, 84.0, 84.0, 85.0, 84.0, 83.0],
+            "low": [99.0, 96.0, 96.0, 95.0, 95.0, 92.0, 91.0, 88.0, 87.0, 86.0, 85.0, 82.0, 82.0, 83.0, 82.0, 81.0],
+            "close": [
+                100.0,
+                97.0,
+                97.0,
+                96.0,
+                96.0,
+                93.0,
+                92.0,
+                89.0,
+                88.0,
+                87.0,
+                86.0,
+                83.0,
+                83.0,
+                84.0,
+                83.0,
+                82.0,
+            ],
+            "volume": [20.0] * 16,
+        }
+    )
+    mfi_threshold_frame = pd.DataFrame(
+        {
+            "open": [100.0 + index for index in range(16)],
+            "high": [101.0 + index for index in range(16)],
+            "low": [99.0 + index for index in range(16)],
+            "close": [100.0 + index for index in range(16)],
+            "volume": [20.0] * 16,
+        }
+    )
+    string_config_values = _indicator_configs()
+    for config in string_config_values.values():
+        for key, value in list(config.items()):
+            if key == "enabled":
+                config[key] = "true"
+            elif key != "type" and isinstance(value, (int, float)):
+                config[key] = str(value)
+
     cases = [
         _indicator_case_payload("baseline", baseline_frame, _indicator_configs()),
         _indicator_case_payload("reversal-and-flat", reversal_frame, _indicator_configs()),
@@ -1194,6 +1497,12 @@ def _indicator_reference_payload() -> dict[str, object]:
             parameterized_frame,
             _indicator_configs("parameterized"),
         ),
+        _indicator_case_payload("short-warmup-series", short_warmup_frame, _indicator_configs()),
+        _indicator_case_payload("flat-price-series", flat_price_frame, _indicator_configs()),
+        _indicator_case_payload("zero-volume-series", zero_volume_frame, _indicator_configs()),
+        _indicator_case_payload("threshold-zero-series", threshold_zero_frame, _indicator_configs()),
+        _indicator_case_payload("mfi-threshold-series", mfi_threshold_frame, _indicator_configs()),
+        _indicator_case_payload("string-config-values", parameterized_frame, string_config_values),
     ]
     primary = cases[0]
     backtest_cases: list[dict[str, object]] = []
@@ -1206,11 +1515,24 @@ def _indicator_reference_payload() -> dict[str, object]:
     live_signal_cases = [
         _live_signal_case_payload("rsi-buy", baseline_frame, "rsi", {"buy_value": 1_000_000.0}),
         _live_signal_case_payload(
+            "rsi-zero-threshold-uses-python-default",
+            threshold_zero_frame,
+            "rsi",
+            {"buy_value": 0.0, "sell_value": 1_000_000.0},
+        ),
+        _live_signal_case_payload(
             "stoch-rsi-buy", baseline_frame, "stoch_rsi", {"buy_value": 1_000_000.0}
         ),
         _live_signal_case_payload("willr-buy", baseline_frame, "willr", {"buy_value": 0.0}),
         _live_signal_case_payload("natr-buy", baseline_frame, "natr", {"buy_value": -1_000_000.0}),
         _live_signal_case_payload("mfi-buy", baseline_frame, "mfi", {"buy_value": 1_000_000.0}),
+        _live_signal_case_payload(
+            "mfi-zero-threshold-uses-python-default",
+            mfi_threshold_frame,
+            "mfi",
+            {"buy_value": -1_000_000.0, "sell_value": 0.0},
+            side="SELL",
+        ),
         _live_signal_case_payload("obv-buy", baseline_frame, "obv", {"buy_value": -1_000_000.0}),
         _live_signal_case_payload("rvol-buy", baseline_frame, "rvol", {"buy_value": -1_000_000.0}),
         _live_signal_case_payload("cmf-buy", baseline_frame, "cmf", {"buy_value": -1_000_000.0}),
@@ -1300,7 +1622,7 @@ def render_cpp_indicator_reference_header() -> str:
                 f"{_cpp_string(native_python_source_contract_hash())};"
             ),
             "inline constexpr std::string_view kReferenceJson =",
-            f"    {_cpp_string_chunks(payload)};",
+            f"    {_cpp_string_view_literal(payload)};",
             "",
             "} // namespace PythonIndicatorReference",
             "",
@@ -1340,7 +1662,7 @@ def render_cpp_exchange_support_reference_header() -> str:
                 f"{_cpp_string(native_python_source_contract_hash())};"
             ),
             "inline constexpr std::string_view kReferenceJson =",
-            f"    {_cpp_string_chunks(payload)};",
+            f"    {_cpp_string_view_literal(payload)};",
             "",
             "} // namespace PythonExchangeSupportReference",
             "",
@@ -1380,7 +1702,7 @@ def render_cpp_portfolio_reference_header() -> str:
                 f"{_cpp_string(native_python_source_contract_hash())};"
             ),
             "inline constexpr std::string_view kReferenceJson =",
-            f"    {_cpp_string_chunks(payload)};",
+            f"    {_cpp_string_view_literal(payload)};",
             "",
             "} // namespace PythonPortfolioReference",
             "",
@@ -1407,8 +1729,16 @@ def _domain_rust_status(domain: dict[str, object]) -> str:
 
 
 def _domain_required_before_full_parity(domain: dict[str, object]) -> str:
-    cpp_required = "; ".join(_domain_required_list(domain, "cpp_required_before_full_parity"))
-    rust_required = "; ".join(_domain_required_list(domain, "rust_required_before_full_parity"))
+    cpp_required = (
+        "Complete"
+        if bool(domain["cpp_full_parity"])
+        else "; ".join(_domain_required_list(domain, "cpp_required_before_full_parity"))
+    )
+    rust_required = (
+        "Complete"
+        if bool(domain["rust_full_parity"])
+        else "; ".join(_domain_required_list(domain, "rust_required_before_full_parity"))
+    )
     return f"C++: {cpp_required or 'Complete'} | Rust: {rust_required or 'Complete'}"
 
 
@@ -1563,6 +1893,108 @@ def _rust_indicator_catalog(indicators: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _rust_runtime_config_reference_cases(cases: list[dict[str, object]]) -> str:
+    lines = [
+        "pub struct PythonRuntimeConfigReferenceCase {",
+        "    pub name: &'static str,",
+        "    pub input_json: &'static str,",
+        "    pub expected_json: &'static str,",
+        "    pub valid: bool,",
+        "    pub expected_error: &'static str,",
+        "}",
+        "",
+        "pub const PYTHON_RUNTIME_CONFIG_REFERENCE_CASES: &[PythonRuntimeConfigReferenceCase] = &[",
+    ]
+    for case in cases:
+        lines.extend(
+            [
+                "    PythonRuntimeConfigReferenceCase {",
+                f"        name: {_rust_string(case['name'])},",
+                f"        input_json: {_rust_string(_contract_json(case['input']))},",
+                f"        expected_json: {_rust_string(_contract_json(case['expected']))},",
+                f"        valid: {_rust_bool(bool(case['valid']))},",
+                f"        expected_error: {_rust_string(case['expected_error'])},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _rust_strategy_controls_reference_cases(cases: list[dict[str, object]]) -> str:
+    lines = [
+        "pub struct PythonStrategyControlsReferenceCase {",
+        "    pub name: &'static str,",
+        "    pub kind: &'static str,",
+        "    pub input_json: &'static str,",
+        "    pub expected_json: &'static str,",
+        "}",
+        "",
+        "pub const PYTHON_STRATEGY_CONTROLS_REFERENCE_CASES: &[PythonStrategyControlsReferenceCase] = &[",
+    ]
+    for case in cases:
+        lines.extend(
+            [
+                "    PythonStrategyControlsReferenceCase {",
+                f"        name: {_rust_string(case['name'])},",
+                f"        kind: {_rust_string(case['kind'])},",
+                f"        input_json: {_rust_string(_contract_json(case['input']))},",
+                f"        expected_json: {_rust_string(_contract_json(case['expected']))},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _rust_strategy_risk_reference_cases(cases: list[dict[str, object]]) -> str:
+    lines = [
+        "pub struct PythonStrategyRiskReferenceCase {",
+        "    pub name: &'static str,",
+        "    pub input_json: &'static str,",
+        "    pub expected_json: &'static str,",
+        "}",
+        "",
+        "pub const PYTHON_STRATEGY_RISK_REFERENCE_CASES: &[PythonStrategyRiskReferenceCase] = &[",
+    ]
+    for case in cases:
+        lines.extend(
+            [
+                "    PythonStrategyRiskReferenceCase {",
+                f"        name: {_rust_string(case['name'])},",
+                f"        input_json: {_rust_string(_contract_json(case['input']))},",
+                f"        expected_json: {_rust_string(_contract_json(case['expected']))},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _rust_connector_normalization_reference_cases(cases: list[dict[str, str]]) -> str:
+    lines = [
+        "pub struct PythonConnectorNormalizationReferenceCase {",
+        "    pub name: &'static str,",
+        "    pub input: &'static str,",
+        "    pub expected: &'static str,",
+        "}",
+        "",
+        "pub const PYTHON_CONNECTOR_NORMALIZATION_REFERENCE_CASES: &[PythonConnectorNormalizationReferenceCase] = &[",
+    ]
+    for case in cases:
+        lines.extend(
+            [
+                "    PythonConnectorNormalizationReferenceCase {",
+                f"        name: {_rust_string(case['name'])},",
+                f"        input: {_rust_string(case['input'])},",
+                f"        expected: {_rust_string(case['expected'])},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
 def _rust_connector_options(connectors: list[dict[str, object]]) -> str:
     lines = [
         "pub struct PythonConnectorOption {",
@@ -1700,40 +2132,72 @@ def _ui_option_key(option: dict[str, object]) -> str:
     return str(option.get("key", option.get("value", "")))
 
 
-def _rust_ui_option_catalogs(summary: dict[str, object]) -> str:
-    option_groups = [
-        ("PYTHON_DASHBOARD_LOOP_CHOICES", list(summary["dashboard_loop_choices"])),
-        ("PYTHON_LEAD_TRADER_OPTIONS", list(summary["lead_trader_options"])),
-        ("PYTHON_LLM_USE_FOR_OPTIONS", list(summary["llm_use_for_options"])),
-        ("PYTHON_DASHBOARD_STRATEGY_TEMPLATES", list(summary["dashboard_strategy_templates"])),
-        ("PYTHON_BACKTEST_TEMPLATES", list(summary["backtest_templates"])),
-        ("PYTHON_SIDE_OPTIONS", list(summary["side_options"])),
-        ("PYTHON_CONFIG_MODE_OPTIONS", list(summary["config_mode_options"])),
-        ("PYTHON_THEME_OPTIONS", list(summary["theme_options"])),
-        ("PYTHON_DESIGN_OPTIONS", list(summary["design_options"])),
-        ("PYTHON_INDICATOR_SOURCE_OPTIONS", list(summary["indicator_source_options"])),
-        ("PYTHON_INDICATOR_MA_TYPE_OPTIONS", list(summary["indicator_ma_type_options"])),
-        ("PYTHON_EXCHANGE_OPTIONS", list(summary["exchange_options"])),
-        ("PYTHON_ACCOUNT_TYPE_OPTIONS", list(summary["account_type_options"])),
-        ("PYTHON_MARGIN_MODE_OPTIONS", list(summary["margin_mode_options"])),
-        ("PYTHON_POSITION_MODE_OPTIONS", list(summary["position_mode_options"])),
-        ("PYTHON_ASSETS_MODE_OPTIONS", list(summary["assets_mode_options"])),
-        ("PYTHON_ORDER_TYPE_OPTIONS", list(summary["order_type_options"])),
-        ("PYTHON_TIME_IN_FORCE_OPTIONS", list(summary["time_in_force_options"])),
-        ("PYTHON_SIGNAL_LOGIC_OPTIONS", list(summary["signal_logic_options"])),
-        ("PYTHON_MDD_LOGIC_OPTIONS", list(summary["mdd_logic_options"])),
-        ("PYTHON_STOP_LOSS_MODES", list(summary["stop_loss_modes"])),
-        ("PYTHON_STOP_LOSS_SCOPES", list(summary["stop_loss_scopes"])),
-        ("PYTHON_SCAN_SCOPE_OPTIONS", list(summary["scan_scope_options"])),
-        ("PYTHON_OPTIMIZER_MODE_OPTIONS", list(summary["optimizer_mode_options"])),
-        ("PYTHON_OPTIMIZER_METRIC_OPTIONS", list(summary["optimizer_metric_options"])),
+def _ui_option_catalog_specs(summary: dict[str, object]) -> list[tuple[str, str, str, list[dict[str, object]]]]:
+    return [
+        ("dashboard loop", "PYTHON_DASHBOARD_LOOP_CHOICES", "kPythonDashboardLoopChoices", list(summary["dashboard_loop_choices"])),
+        ("lead trader", "PYTHON_LEAD_TRADER_OPTIONS", "kPythonLeadTraderOptions", list(summary["lead_trader_options"])),
+        ("LLM use-for", "PYTHON_LLM_USE_FOR_OPTIONS", "kPythonLlmUseForOptions", list(summary["llm_use_for_options"])),
         (
+            "dashboard strategy templates",
+            "PYTHON_DASHBOARD_STRATEGY_TEMPLATES",
+            "kPythonDashboardStrategyTemplates",
+            list(summary["dashboard_strategy_templates"]),
+        ),
+        ("backtest templates", "PYTHON_BACKTEST_TEMPLATES", "kPythonBacktestTemplates", list(summary["backtest_templates"])),
+        ("side", "PYTHON_SIDE_OPTIONS", "kPythonSideOptions", list(summary["side_options"])),
+        ("config mode", "PYTHON_CONFIG_MODE_OPTIONS", "kPythonConfigModeOptions", list(summary["config_mode_options"])),
+        ("theme", "PYTHON_THEME_OPTIONS", "kPythonThemeOptions", list(summary["theme_options"])),
+        ("design", "PYTHON_DESIGN_OPTIONS", "kPythonDesignOptions", list(summary["design_options"])),
+        (
+            "indicator source",
+            "PYTHON_INDICATOR_SOURCE_OPTIONS",
+            "kPythonIndicatorSourceOptions",
+            list(summary["indicator_source_options"]),
+        ),
+        (
+            "moving average type",
+            "PYTHON_INDICATOR_MA_TYPE_OPTIONS",
+            "kPythonIndicatorMaTypeOptions",
+            list(summary["indicator_ma_type_options"]),
+        ),
+        ("exchange", "PYTHON_EXCHANGE_OPTIONS", "kPythonExchangeOptions", list(summary["exchange_options"])),
+        ("account type", "PYTHON_ACCOUNT_TYPE_OPTIONS", "kPythonAccountTypeOptions", list(summary["account_type_options"])),
+        ("margin mode", "PYTHON_MARGIN_MODE_OPTIONS", "kPythonMarginModeOptions", list(summary["margin_mode_options"])),
+        ("position mode", "PYTHON_POSITION_MODE_OPTIONS", "kPythonPositionModeOptions", list(summary["position_mode_options"])),
+        ("assets mode", "PYTHON_ASSETS_MODE_OPTIONS", "kPythonAssetsModeOptions", list(summary["assets_mode_options"])),
+        ("order type", "PYTHON_ORDER_TYPE_OPTIONS", "kPythonOrderTypeOptions", list(summary["order_type_options"])),
+        (
+            "time in force",
+            "PYTHON_TIME_IN_FORCE_OPTIONS",
+            "kPythonTimeInForceOptions",
+            list(summary["time_in_force_options"]),
+        ),
+        ("signal logic", "PYTHON_SIGNAL_LOGIC_OPTIONS", "kPythonSignalLogicOptions", list(summary["signal_logic_options"])),
+        ("MDD logic", "PYTHON_MDD_LOGIC_OPTIONS", "kPythonMddLogicOptions", list(summary["mdd_logic_options"])),
+        ("stop-loss modes", "PYTHON_STOP_LOSS_MODES", "kPythonStopLossModes", list(summary["stop_loss_modes"])),
+        ("stop-loss scopes", "PYTHON_STOP_LOSS_SCOPES", "kPythonStopLossScopes", list(summary["stop_loss_scopes"])),
+        ("scan scope", "PYTHON_SCAN_SCOPE_OPTIONS", "kPythonScanScopeOptions", list(summary["scan_scope_options"])),
+        ("optimizer mode", "PYTHON_OPTIMIZER_MODE_OPTIONS", "kPythonOptimizerModeOptions", list(summary["optimizer_mode_options"])),
+        (
+            "optimizer metric",
+            "PYTHON_OPTIMIZER_METRIC_OPTIONS",
+            "kPythonOptimizerMetricOptions",
+            list(summary["optimizer_metric_options"]),
+        ),
+        (
+            "backtest execution backend",
             "PYTHON_BACKTEST_EXECUTION_BACKEND_OPTIONS",
+            "kPythonBacktestExecutionBackendOptions",
             list(summary["backtest_execution_backend_options"]),
         ),
-        ("PYTHON_CHART_VIEW_OPTIONS", list(summary["chart_view_options"])),
-        ("PYTHON_POSITIONS_VIEW_OPTIONS", list(summary["positions_view_options"])),
+        ("chart view", "PYTHON_CHART_VIEW_OPTIONS", "kPythonChartViewOptions", list(summary["chart_view_options"])),
+        ("positions view", "PYTHON_POSITIONS_VIEW_OPTIONS", "kPythonPositionsViewOptions", list(summary["positions_view_options"])),
     ]
+
+
+def _rust_ui_option_catalogs(summary: dict[str, object]) -> str:
+    specs = _ui_option_catalog_specs(summary)
+    option_groups = [(rust_name, options) for _, rust_name, _, options in specs]
     lines = [
         "pub struct PythonUiOption {",
         "    pub key: &'static str,",
@@ -1754,6 +2218,22 @@ def _rust_ui_option_catalogs(summary: dict[str, object]) -> str:
                 ]
             )
         lines.append("];")
+    lines.extend(
+        [
+            "",
+            "pub struct PythonUiOptionCatalog {",
+            "    pub name: &'static str,",
+            "    pub options: &'static [PythonUiOption],",
+            "}",
+            "",
+            "pub const PYTHON_UI_OPTION_CATALOGS: &[PythonUiOptionCatalog] = &[",
+        ]
+    )
+    lines.extend(
+        f'    PythonUiOptionCatalog {{ name: {_rust_string(label)}, options: {rust_name} }},'
+        for label, rust_name, _, _ in specs
+    )
+    lines.append("];" )
     return "\n".join(lines)
 
 
@@ -1794,7 +2274,7 @@ def _rust_starter_catalogs(summary: dict[str, object]) -> str:
                     "    },",
                 ]
             )
-        lines.append("];" )
+        lines.append("];")
     return "\n".join(lines)
 
 
@@ -1891,6 +2371,112 @@ def _cpp_indicator_catalog(indicators: list[dict[str, object]]) -> str:
             f"{_cpp_string(_contract_json(indicator['runtime_config']))}, "
             f"{_cpp_string(_contract_json(indicator['backtest_config']))}, "
             f"{_cpp_string(runtime_output_keys)}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _cpp_runtime_config_reference_cases(cases: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonRuntimeConfigReferenceCase {",
+        "    std::string_view name;",
+        "    std::string_view inputJson;",
+        "    std::string_view expectedJson;",
+        "    bool valid;",
+        "    std::string_view expectedError;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonRuntimeConfigReferenceCase, "
+            f"{len(cases)}> kPythonRuntimeConfigReferenceCases = {{"
+        ),
+    ]
+    for case in cases:
+        lines.append(
+            "    PythonRuntimeConfigReferenceCase{"
+            f"{_cpp_string(case['name'])}, "
+            f"{_cpp_string(_contract_json(case['input']))}, "
+            f"{_cpp_string(_contract_json(case['expected']))}, "
+            f"{str(bool(case['valid'])).lower()}, "
+            f"{_cpp_string(case['expected_error'])}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _cpp_strategy_controls_reference_cases(cases: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonStrategyControlsReferenceCase {",
+        "    std::string_view name;",
+        "    std::string_view kind;",
+        "    std::string_view inputJson;",
+        "    std::string_view expectedJson;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonStrategyControlsReferenceCase, "
+            f"{len(cases)}> kPythonStrategyControlsReferenceCases = {{"
+        ),
+    ]
+    for case in cases:
+        lines.append(
+            "    PythonStrategyControlsReferenceCase{"
+            f"{_cpp_string(case['name'])}, "
+            f"{_cpp_string(case['kind'])}, "
+            f"{_cpp_string(_contract_json(case['input']))}, "
+            f"{_cpp_string(_contract_json(case['expected']))}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _cpp_strategy_risk_reference_cases(cases: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonStrategyRiskReferenceCase {",
+        "    std::string_view name;",
+        "    std::string_view inputJson;",
+        "    std::string_view expectedJson;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonStrategyRiskReferenceCase, "
+            f"{len(cases)}> kPythonStrategyRiskReferenceCases = {{"
+        ),
+    ]
+    for case in cases:
+        lines.append(
+            "    PythonStrategyRiskReferenceCase{"
+            f"{_cpp_string(case['name'])}, "
+            f"{_cpp_string(_contract_json(case['input']))}, "
+            f"{_cpp_string(_contract_json(case['expected']))}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _cpp_connector_normalization_reference_cases(cases: list[dict[str, str]]) -> str:
+    lines = [
+        "struct PythonConnectorNormalizationReferenceCase {",
+        "    std::string_view name;",
+        "    std::string_view input;",
+        "    std::string_view expected;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonConnectorNormalizationReferenceCase, "
+            f"{len(cases)}> kPythonConnectorNormalizationReferenceCases = {{"
+        ),
+    ]
+    for case in cases:
+        lines.append(
+            "    PythonConnectorNormalizationReferenceCase{"
+            f"{_cpp_string(case['name'])}, "
+            f"{_cpp_string(case['input'])}, "
+            f"{_cpp_string(case['expected'])}"
             "},"
         )
     lines.append("};")
@@ -2003,39 +2589,8 @@ def _cpp_config_choice_maps(choice_maps: dict[str, dict[str, str]]) -> str:
 
 
 def _cpp_ui_option_catalogs(summary: dict[str, object]) -> str:
-    option_groups = [
-        ("kPythonDashboardLoopChoices", list(summary["dashboard_loop_choices"])),
-        ("kPythonLeadTraderOptions", list(summary["lead_trader_options"])),
-        ("kPythonLlmUseForOptions", list(summary["llm_use_for_options"])),
-        ("kPythonDashboardStrategyTemplates", list(summary["dashboard_strategy_templates"])),
-        ("kPythonBacktestTemplates", list(summary["backtest_templates"])),
-        ("kPythonSideOptions", list(summary["side_options"])),
-        ("kPythonConfigModeOptions", list(summary["config_mode_options"])),
-        ("kPythonThemeOptions", list(summary["theme_options"])),
-        ("kPythonDesignOptions", list(summary["design_options"])),
-        ("kPythonIndicatorSourceOptions", list(summary["indicator_source_options"])),
-        ("kPythonIndicatorMaTypeOptions", list(summary["indicator_ma_type_options"])),
-        ("kPythonExchangeOptions", list(summary["exchange_options"])),
-        ("kPythonAccountTypeOptions", list(summary["account_type_options"])),
-        ("kPythonMarginModeOptions", list(summary["margin_mode_options"])),
-        ("kPythonPositionModeOptions", list(summary["position_mode_options"])),
-        ("kPythonAssetsModeOptions", list(summary["assets_mode_options"])),
-        ("kPythonOrderTypeOptions", list(summary["order_type_options"])),
-        ("kPythonTimeInForceOptions", list(summary["time_in_force_options"])),
-        ("kPythonSignalLogicOptions", list(summary["signal_logic_options"])),
-        ("kPythonMddLogicOptions", list(summary["mdd_logic_options"])),
-        ("kPythonStopLossModes", list(summary["stop_loss_modes"])),
-        ("kPythonStopLossScopes", list(summary["stop_loss_scopes"])),
-        ("kPythonScanScopeOptions", list(summary["scan_scope_options"])),
-        ("kPythonOptimizerModeOptions", list(summary["optimizer_mode_options"])),
-        ("kPythonOptimizerMetricOptions", list(summary["optimizer_metric_options"])),
-        (
-            "kPythonBacktestExecutionBackendOptions",
-            list(summary["backtest_execution_backend_options"]),
-        ),
-        ("kPythonChartViewOptions", list(summary["chart_view_options"])),
-        ("kPythonPositionsViewOptions", list(summary["positions_view_options"])),
-    ]
+    specs = _ui_option_catalog_specs(summary)
+    option_groups = [(cpp_name, options) for _, _, cpp_name, options in specs]
     lines = [
         "struct PythonUiOption {",
         "    std::string_view key;",
@@ -2053,6 +2608,26 @@ def _cpp_ui_option_catalogs(summary: dict[str, object]) -> str:
                 "},"
             )
         lines.append("};")
+    lines.extend(
+        [
+            "",
+            "struct PythonUiOptionCatalog {",
+            "    std::string_view name;",
+            "    const PythonUiOption *options;",
+            "    std::size_t size;",
+            "};",
+            "",
+            "inline constexpr std::array<PythonUiOptionCatalog, "
+            f"{len(specs)}> kPythonUiOptionCatalogs = {{",
+        ]
+    )
+    lines.extend(
+        "    PythonUiOptionCatalog{"
+        f"{_cpp_string(label)}, {cpp_name}.data(), {cpp_name}.size()"
+        "},"
+        for label, _, cpp_name, _ in specs
+    )
+    lines.append("};")
     return "\n".join(lines)
 
 
@@ -2146,9 +2721,18 @@ def render_rust_module() -> str:
     summary = native_python_source_contract_summary()
     order_guard_behavior = dict(summary["order_guard_behavior"])
     live_safety_environment = dict(order_guard_behavior["live_safety_environment"])
+    environment_bool_true_values = list(order_guard_behavior["environment_bool_true_values"])
     native_runtime_ownership = dict(summary["native_runtime_ownership"])
     indicator_source_market_families = list(native_runtime_ownership["indicator_source_market_families"])
     connector_market_families = list(native_runtime_ownership["direct_connector_market_families"])
+    runtime_config_cases = _runtime_config_reference_cases()
+    strategy_controls_cases = list(summary["strategy_controls_reference"])
+    strategy_risk_cases = list(summary["strategy_risk_reference"])
+    order_intent_reference = dict(summary["order_intent_reference"])
+    connector_health_reference = dict(summary["connector_health_reference"])
+    llm_output_policy_reference = dict(summary["llm_output_policy_reference"])
+    llm_chat_request_reference = dict(summary["llm_chat_request_reference"])
+    connector_normalization_cases = _connector_normalization_reference_cases()
     parts = [
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
@@ -2168,9 +2752,33 @@ def render_rust_module() -> str:
             "pub const PYTHON_DEFAULT_BACKTEST_JSON: &str = "
             f"{_rust_string(_contract_json(dict(summary['default_backtest'])))};"
         ),
+        "",
+        _rust_runtime_config_reference_cases(runtime_config_cases),
+        "",
+        _rust_strategy_controls_reference_cases(strategy_controls_cases),
+        "",
+        _rust_strategy_risk_reference_cases(strategy_risk_cases),
+        "",
+        _rust_connector_normalization_reference_cases(connector_normalization_cases),
         (
             "pub const PYTHON_ORDER_SIZING_REFERENCE_JSON: &str = "
             f"{_rust_string(_contract_json(dict(summary['order_sizing_reference'])))};"
+        ),
+        (
+            "pub const PYTHON_ORDER_INTENT_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(order_intent_reference))};"
+        ),
+        (
+            "pub const PYTHON_CONNECTOR_HEALTH_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(connector_health_reference))};"
+        ),
+        (
+            "pub const PYTHON_LLM_OUTPUT_POLICY_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(llm_output_policy_reference))};"
+        ),
+        (
+            "pub const PYTHON_LLM_CHAT_REQUEST_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(llm_chat_request_reference))};"
         ),
         f"pub const PYTHON_SOURCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
         f"pub const CPP_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['cpp_contract_parity'])};",
@@ -2204,6 +2812,7 @@ def render_rust_module() -> str:
             "pub const PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV: &str = "
             f"{_rust_string(live_safety_environment['max_session_orders'])};"
         ),
+        _rust_array("PYTHON_LIVE_SAFETY_ENV_TRUE_VALUES", environment_bool_true_values),
         _rust_array(
             "PYTHON_NATIVE_RUNTIME_EXCHANGES",
             list(native_runtime_ownership["direct_exchanges"]),
@@ -2353,15 +2962,25 @@ def render_cpp_header() -> str:
     summary = native_python_source_contract_summary()
     order_guard_behavior = dict(summary["order_guard_behavior"])
     live_safety_environment = dict(order_guard_behavior["live_safety_environment"])
+    environment_bool_true_values = list(order_guard_behavior["environment_bool_true_values"])
     native_runtime_ownership = dict(summary["native_runtime_ownership"])
     indicator_source_market_families = list(native_runtime_ownership["indicator_source_market_families"])
     connector_market_families = list(native_runtime_ownership["direct_connector_market_families"])
+    runtime_config_cases = _runtime_config_reference_cases()
+    strategy_controls_cases = list(summary["strategy_controls_reference"])
+    strategy_risk_cases = list(summary["strategy_risk_reference"])
+    order_intent_reference = dict(summary["order_intent_reference"])
+    connector_health_reference = dict(summary["connector_health_reference"])
+    llm_output_policy_reference = dict(summary["llm_output_policy_reference"])
+    llm_chat_request_reference = dict(summary["llm_chat_request_reference"])
+    connector_normalization_cases = _connector_normalization_reference_cases()
     parts = [
         "// This file is generated from Languages/Python/app/native_parity.py.",
         "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
         "#pragma once",
         "",
         "#include <array>",
+        "#include <cstddef>",
         "#include <string_view>",
         "",
         "namespace PythonParityContract {",
@@ -2389,9 +3008,33 @@ def render_cpp_header() -> str:
             "inline constexpr std::string_view kPythonDefaultBacktestJson = "
             f"{_cpp_string(_contract_json(dict(summary['default_backtest'])))};"
         ),
+        "",
+        _cpp_runtime_config_reference_cases(runtime_config_cases),
+        "",
+        _cpp_strategy_controls_reference_cases(strategy_controls_cases),
+        "",
+        _cpp_strategy_risk_reference_cases(strategy_risk_cases),
+        "",
+        _cpp_connector_normalization_reference_cases(connector_normalization_cases),
         (
             "inline constexpr std::string_view kPythonOrderSizingReferenceJson = "
             f"{_cpp_string(_contract_json(dict(summary['order_sizing_reference'])))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonOrderIntentReferenceJson = "
+            f"{_cpp_string(_contract_json(order_intent_reference))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonConnectorHealthReferenceJson = "
+            f"{_cpp_string(_contract_json(connector_health_reference))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLlmOutputPolicyReferenceJson = "
+            f"{_cpp_string(_contract_json(llm_output_policy_reference))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLlmChatRequestReferenceJson = "
+            f"{_cpp_string(_contract_json(llm_chat_request_reference))};"
         ),
         (
             "inline constexpr std::string_view kPythonRiskDefaultsJson = "
@@ -2429,6 +3072,7 @@ def render_cpp_header() -> str:
             "inline constexpr std::string_view kPythonLiveTradingMaxSessionOrdersEnv = "
             f"{_cpp_string(live_safety_environment['max_session_orders'])};"
         ),
+        _cpp_array("kPythonLiveSafetyEnvironmentTrueValues", environment_bool_true_values),
         _cpp_array(
             "kPythonNativeRuntimeExchanges",
             list(native_runtime_ownership["direct_exchanges"]),

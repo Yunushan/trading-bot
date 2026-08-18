@@ -7,9 +7,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{HandshakeError, Message, WebSocket, client_tls};
+use tungstenite::{HandshakeError, Message, WebSocket, client_tls_with_config};
 
 use crate::market_data::BinanceMarket;
+use crate::tls::websocket_connector_from_env;
 
 pub type BinanceWebSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -352,7 +353,7 @@ fn configure_websocket_read_timeout(
 ) -> Result<()> {
     let result = match stream {
         MaybeTlsStream::Plain(socket) => socket.set_read_timeout(timeout),
-        MaybeTlsStream::NativeTls(socket) => socket.get_mut().set_read_timeout(timeout),
+        MaybeTlsStream::Rustls(socket) => socket.sock.set_read_timeout(timeout),
         _ => bail!("configured Binance WebSocket transport does not expose a TCP read timeout"),
     };
     result.context("set Binance WebSocket read timeout")
@@ -393,7 +394,8 @@ fn connect_websocket_url_with_timeout(url: &str, timeout: Duration) -> Result<Bi
                 stream
                     .set_write_timeout(Some(timeout))
                     .context("set Binance WebSocket handshake write timeout")?;
-                return client_tls(url, stream)
+                let connector = websocket_connector_from_env()?;
+                return client_tls_with_config(url, stream, None, connector)
                     .map(|(socket, _)| socket)
                     .map_err(|error| match error {
                         HandshakeError::Failure(error) => anyhow!(error),

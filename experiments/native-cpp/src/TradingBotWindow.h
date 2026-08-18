@@ -339,6 +339,7 @@ private:
         QString side;
         QString interval;
         QString signalSource;
+        QStringList signalSources;
         QString connectorKey;
         QString connectorBaseUrl;
         double entryPrice = 0.0;

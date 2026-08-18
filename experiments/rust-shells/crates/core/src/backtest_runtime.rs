@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use crate::generated_python_parity::{
-    PYTHON_MDD_LOGIC_CONFIG_CHOICES, PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
-    PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+    PYTHON_LOGIC_CONFIG_CHOICES, PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+    PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES, PYTHON_SIDE_CONFIG_CHOICES,
+    PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
 };
 use crate::market_data::BinanceKlineCandle;
 use crate::native_indicators::{
@@ -12,11 +13,33 @@ use crate::native_indicators::{
 };
 use crate::python_source_default_backtest_config;
 
-fn normalize_config_choice(value: &str, choices: &[(&str, &str)], default_value: &str) -> String {
-    let text = value.trim().to_ascii_lowercase();
+pub(crate) fn default_config_choice(choices: &[(&str, &str)], fallback: &str) -> String {
+    choices
+        .first()
+        .map(|(_, canonical)| (*canonical).to_owned())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn normalize_config_choice_token(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_")
+}
+
+pub(crate) fn normalize_config_choice(
+    value: &str,
+    choices: &[(&str, &str)],
+    default_value: &str,
+) -> String {
+    let text = normalize_config_choice_token(value);
     choices
         .iter()
-        .find(|(key, canonical)| *key == text || *canonical == text)
+        .find(|(key, canonical)| {
+            normalize_config_choice_token(key) == text
+                || normalize_config_choice_token(canonical) == text
+        })
         .map(|(_, canonical)| (*canonical).to_owned())
         .unwrap_or_else(|| default_value.to_owned())
 }
@@ -177,38 +200,44 @@ pub struct NativeBacktestResult {
 
 impl NativeBacktestResult {
     fn from_request(request: &NativeBacktestRequest) -> Self {
-        let logic = if request.logic.trim().eq_ignore_ascii_case("AND") {
-            "AND"
-        } else {
-            "OR"
-        };
-        let requested_side = request.side.trim().to_ascii_uppercase();
-        let side = match requested_side.as_str() {
-            "BUY" | "SELL" | "BOTH" => requested_side,
-            _ => "BOTH".to_owned(),
-        };
+        let logic_default = default_config_choice(PYTHON_LOGIC_CONFIG_CHOICES, "AND");
+        let side_default = default_config_choice(PYTHON_SIDE_CONFIG_CHOICES, "BOTH");
+        let mdd_logic_default = default_config_choice(PYTHON_MDD_LOGIC_CONFIG_CHOICES, "per_trade");
+        let stop_loss_mode_default =
+            default_config_choice(PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, "usdt");
+        let stop_loss_scope_default =
+            default_config_choice(PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES, "per_trade");
+        let interval = crate::strategy_runtime::normalize_backtest_interval(Some(&Value::String(
+            request.interval.clone(),
+        )));
+        let logic =
+            normalize_config_choice(&request.logic, PYTHON_LOGIC_CONFIG_CHOICES, &logic_default);
+        let side =
+            normalize_config_choice(&request.side, PYTHON_SIDE_CONFIG_CHOICES, &side_default);
         let mdd_logic = normalize_config_choice(
             &request.mdd_logic,
             PYTHON_MDD_LOGIC_CONFIG_CHOICES,
-            "per_trade",
+            &mdd_logic_default,
         );
         let stop_loss_mode = normalize_config_choice(
             &request.stop_loss_mode,
             PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
-            "usdt",
+            &stop_loss_mode_default,
         );
         let stop_loss_scope = normalize_config_choice(
             &request.stop_loss_scope,
             PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
-            "per_trade",
+            &stop_loss_scope_default,
         );
-        let position_units = request.position_pct_units.trim().to_ascii_lowercase();
+        let position_units = normalize_config_choice(
+            &request.position_pct_units,
+            PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
+            "",
+        );
         let mut position_pct = request.position_pct;
-        if matches!(position_units.as_str(), "percent" | "%" | "perc") {
+        if position_units == "percent" {
             position_pct /= 100.0;
-        } else if !matches!(position_units.as_str(), "fraction" | "decimal" | "ratio")
-            && position_pct > 1.0
-        {
+        } else if position_units != "fraction" && position_pct > 1.0 {
             position_pct /= 100.0;
         }
 
@@ -216,7 +245,7 @@ impl NativeBacktestResult {
             ok: false,
             error: String::new(),
             symbol: request.symbol.trim().to_ascii_uppercase(),
-            interval: request.interval.trim().to_owned(),
+            interval,
             indicator_keys: Vec::new(),
             trades: 0,
             roi_value: 0.0,
@@ -228,7 +257,7 @@ impl NativeBacktestResult {
             max_drawdown_during_percent: 0.0,
             max_drawdown_result_value: 0.0,
             max_drawdown_result_percent: 0.0,
-            logic: logic.to_owned(),
+            logic,
             leverage: request.leverage.max(1.0),
             mdd_logic,
             side,
@@ -498,11 +527,20 @@ fn backtest_series(
     baseline
 }
 
-fn threshold_events(series: &[f64], threshold: f64, less_or_equal: bool) -> Vec<bool> {
+fn threshold_events(
+    series: &[f64],
+    threshold: f64,
+    less_or_equal: bool,
+    signal_start_index: usize,
+) -> Vec<bool> {
     let mut previous = false;
     series
         .iter()
-        .map(|value| {
+        .enumerate()
+        .map(|(index, value)| {
+            if index < signal_start_index {
+                return false;
+            }
             let current = value.is_finite()
                 && if less_or_equal {
                     *value <= threshold
@@ -746,7 +784,9 @@ where
     F: FnMut() -> bool,
 {
     let mut result = NativeBacktestResult::from_request(request);
-    if let (Some(start), Some(end)) = (start_time_ms, end_time_ms)
+    let effective_start_time_ms = start_time_ms.filter(|value| *value != 0);
+    let effective_end_time_ms = end_time_ms.filter(|value| *value != 0);
+    if let (Some(start), Some(end)) = (effective_start_time_ms, effective_end_time_ms)
         && start >= end
     {
         result.error = "Backtest start must be earlier than backtest end".to_owned();
@@ -768,6 +808,43 @@ where
         );
         return result;
     }
+
+    let has_timestamped_candles = candles.iter().any(|candle| candle.open_time_ms != 0);
+    let (execution_start_index, execution_end_index) = if has_timestamped_candles
+        && (effective_start_time_ms.is_some() || effective_end_time_ms.is_some())
+    {
+        let start_index = effective_start_time_ms
+            .and_then(|start| {
+                candles
+                    .iter()
+                    .position(|candle| candle.open_time_ms >= start)
+            })
+            .unwrap_or_else(|| {
+                if effective_start_time_ms.is_some() {
+                    candles.len()
+                } else {
+                    0
+                }
+            });
+        let end_index = effective_end_time_ms
+            .and_then(|end| {
+                candles
+                    .iter()
+                    .rposition(|candle| candle.open_time_ms <= end)
+            })
+            .unwrap_or(usize::MAX);
+        (start_index, end_index)
+    } else {
+        (0, candles.len() - 1)
+    };
+    if execution_start_index >= candles.len()
+        || execution_end_index >= candles.len()
+        || execution_start_index > execution_end_index
+    {
+        result.error = "No candles fall inside the requested backtest window".to_owned();
+        return result;
+    }
+    let signal_start_index = execution_start_index;
 
     let computed = compute_configured_indicator_series(candles, &request.indicators);
     let mut indicator_signals = Vec::new();
@@ -798,6 +875,7 @@ where
                     &series,
                     buy,
                     sell.is_some_and(|sell| buy < sell),
+                    signal_start_index,
                 ));
             }
             if let Some(sell) = sell {
@@ -805,6 +883,7 @@ where
                     &series,
                     sell,
                     !buy.is_some_and(|buy| buy < sell),
+                    signal_start_index,
                 ));
             }
         }
@@ -872,17 +951,12 @@ where
         };
     record_equity(equity, &mut cumulative, &mut account);
 
-    for (index, candle) in candles.iter().enumerate() {
+    for index in execution_start_index..=execution_end_index {
         if should_stop() {
             result.error = "backtest_cancelled".to_owned();
             return result;
         }
-        if start_time_ms.is_some_and(|start| candle.open_time_ms < start) {
-            continue;
-        }
-        if end_time_ms.is_some_and(|end| candle.open_time_ms > end) {
-            break;
-        }
+        let candle = &candles[index];
         let price = if candle.close.is_finite() {
             candle.close
         } else {
@@ -1309,7 +1383,21 @@ mod tests {
                 .filter(|value| value.is_array())
                 .map(candles_from_value)
                 .unwrap_or_else(|| candles.clone());
-            let actual = run_native_backtest(&case_candles, &request);
+            let actual = if let Some(start_offset) = test_case
+                .get("execution_start_offset")
+                .and_then(Value::as_u64)
+            {
+                let end_offset = case_candles.len().saturating_sub(1) as i64;
+                run_native_backtest_with_cancel_and_window(
+                    &case_candles,
+                    &request,
+                    Some(start_offset as i64 * 60_000),
+                    Some(end_offset * 60_000),
+                    || false,
+                )
+            } else {
+                run_native_backtest(&case_candles, &request)
+            };
             let case_name = format!(
                 "{}/{}",
                 text(test_case.get("fixture_name"), "baseline"),
@@ -1419,5 +1507,143 @@ mod tests {
         let cancelled = run_native_backtest_with_cancel(&candles, &executable, || true);
         assert!(!cancelled.ok);
         assert_eq!(cancelled.error, "backtest_cancelled");
+
+        let interval_alias = NativeBacktestRequest {
+            interval: "60 minutes".to_owned(),
+            ..NativeBacktestRequest::default()
+        };
+        let interval_result = run_native_backtest(&[], &interval_alias);
+        assert_eq!(interval_result.interval, "1h");
+    }
+
+    #[test]
+    fn native_backtest_uses_python_percentage_alias_as_percent() {
+        let candles = vec![
+            BinanceKlineCandle {
+                open_time_ms: 0,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0,
+                volume: 20.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 60_000,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0,
+                volume: 30.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 120_000,
+                open: 109.0,
+                high: 111.0,
+                low: 108.0,
+                close: 110.0,
+                volume: 30.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 180_000,
+                open: 109.0,
+                high: 111.0,
+                low: 108.0,
+                close: 110.0,
+                volume: 30.0,
+            },
+        ];
+        let request = NativeBacktestRequest {
+            indicators: BTreeMap::from([(
+                "volume".to_owned(),
+                json!({"enabled": true, "buy_value": 10.0}),
+            )]),
+            position_pct: 0.25,
+            position_pct_units: "percentage".to_owned(),
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            ..NativeBacktestRequest::default()
+        };
+
+        let result = run_native_backtest(&candles, &request);
+
+        assert!(result.ok, "{}", result.error);
+        assert!((result.position_pct - 0.0025).abs() <= 1e-12);
+        assert_eq!(result.position_pct_units, "fraction");
+    }
+
+    #[test]
+    fn native_backtest_resets_signal_events_at_python_execution_window_start() {
+        let candles = vec![
+            BinanceKlineCandle {
+                open_time_ms: 0,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0,
+                volume: 20.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 60_000,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0,
+                volume: 30.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 120_000,
+                open: 109.0,
+                high: 111.0,
+                low: 108.0,
+                close: 110.0,
+                volume: 30.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 180_000,
+                open: 109.0,
+                high: 111.0,
+                low: 108.0,
+                close: 110.0,
+                volume: 30.0,
+            },
+        ];
+        let request = NativeBacktestRequest {
+            symbol: "WINDOWUSDT".to_owned(),
+            interval: "1m".to_owned(),
+            capital: 1_000.0,
+            position_pct: 1.0,
+            position_pct_units: "fraction".to_owned(),
+            leverage: 1.0,
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            indicators: BTreeMap::from([(
+                "volume".to_owned(),
+                json!({"enabled": true, "buy_value": 10.0}),
+            )]),
+            ..NativeBacktestRequest::default()
+        };
+        let result = run_native_backtest_with_cancel_and_window(
+            &candles,
+            &request,
+            Some(60_000),
+            Some(180_000),
+            || false,
+        );
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.trades, 1);
+        assert!((result.final_equity - 1_100.0).abs() <= 1e-9);
+
+        let no_window = run_native_backtest_with_cancel_and_window(
+            &candles,
+            &request,
+            Some(300_000),
+            Some(360_000),
+            || false,
+        );
+        assert!(!no_window.ok);
+        assert_eq!(
+            no_window.error,
+            "No candles fall inside the requested backtest window"
+        );
     }
 }

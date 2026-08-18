@@ -33,6 +33,8 @@ struct Request {
     QString stopLossScope = QStringLiteral("per_trade");
     double feeBps = 5.0;
     double slippageBps = 2.0;
+    qint64 startTimeMs = 0;
+    qint64 endTimeMs = 0;
 };
 
 struct Result {

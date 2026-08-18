@@ -288,6 +288,15 @@ if (BUILD_TESTING)
         src/generated/PythonPortfolioReference.h
     )
     target_link_libraries(native_order_safety_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Network)
+    if (UNIX)
+        # The parity fixture translation unit is intentionally broad. Hosted
+        # Unix smoke jobs do not need debug symbols, and GCC can otherwise
+        # exhaust the runner while emitting debug information for it.
+        target_compile_options(native_order_safety_tests PRIVATE -g0)
+    endif()
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(native_order_safety_tests PRIVATE -fno-var-tracking-assignments)
+    endif()
     if (MSVC)
         target_compile_options(native_order_safety_tests PRIVATE /Zc:__cplusplus)
     endif()
@@ -303,6 +312,12 @@ if (BUILD_TESTING)
         src/generated/PythonParityContract.h
     )
     target_link_libraries(native_service_api_contract_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Network)
+    if (UNIX)
+        target_compile_options(native_service_api_contract_tests PRIVATE -g0)
+    endif()
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(native_service_api_contract_tests PRIVATE -fno-var-tracking-assignments)
+    endif()
     if (MSVC)
         target_compile_options(native_service_api_contract_tests PRIVATE /Zc:__cplusplus)
     endif()

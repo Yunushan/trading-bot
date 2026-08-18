@@ -7,6 +7,7 @@
 #include "../src/NativeExchangeConnectors.h"
 #include "../src/NativeIndicatorRuntime.h"
 #include "../src/NativeLlmAdvisory.h"
+#include "../src/NativePythonParityChoices.h"
 #include "../src/NativeOrderSafety.h"
 #include "../src/NativePortfolio.h"
 #include "../src/NativeStartupPackaging.h"
@@ -25,6 +26,7 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QTextStream>
+#include <QThread>
 
 #include <iostream>
 #include <algorithm>
@@ -59,6 +61,49 @@ NativeExchangeConnectors::ExchangeSupportInput exchangeSupportInputFromJson(cons
     };
 }
 
+QVector<QPair<QString, QString>> orderParamsFromJson(const QJsonObject &params) {
+    QVector<QPair<QString, QString>> result;
+    for (const QString &key : params.keys()) {
+        result.append({key, params.value(key).toString()});
+    }
+    return result;
+}
+
+QStringList stringListFromJson(const QJsonValue &value) {
+    QStringList result;
+    for (const QJsonValue &item : value.toArray()) {
+        result.append(item.toString());
+    }
+    return result;
+}
+
+QJsonObject orderIntentToJson(const NativeOrderSafety::OrderSubmitIntent &intent) {
+    return {
+        {QStringLiteral("market"), intent.market},
+        {QStringLiteral("symbol"), intent.symbol},
+        {QStringLiteral("side"), intent.side},
+        {QStringLiteral("order_type"), intent.orderType},
+        {QStringLiteral("quantity"), intent.hasQuantity
+                ? QJsonValue(intent.quantity)
+                : QJsonValue(QJsonValue::Null)},
+        {QStringLiteral("price"), intent.hasPrice
+                ? QJsonValue(intent.price)
+                : QJsonValue(QJsonValue::Null)},
+        {QStringLiteral("position_side"), intent.positionSide},
+        {QStringLiteral("close_position"), intent.closePosition},
+        {QStringLiteral("reduce_only"), intent.reduceOnly},
+    };
+}
+
+NativeOrderSafety::OrderSymbolFilters orderFiltersFromJson(const QJsonObject &filters) {
+    return {
+        filters.value(QStringLiteral("stepSize")).toDouble(),
+        filters.value(QStringLiteral("tickSize")).toDouble(),
+        filters.value(QStringLiteral("minQty")).toDouble(),
+        filters.value(QStringLiteral("minNotional")).toDouble(),
+    };
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -70,6 +115,146 @@ int main(int argc, char **argv) {
             ++failures;
         }
     };
+
+    for (const auto &referenceCase : PythonParityContract::kPythonStrategyControlsReferenceCases) {
+        const QString caseName = QString::fromUtf8(
+            referenceCase.name.data(),
+            static_cast<qsizetype>(referenceCase.name.size()));
+        const QByteArray inputJson(
+            referenceCase.inputJson.data(),
+            static_cast<qsizetype>(referenceCase.inputJson.size()));
+        const QByteArray expectedJson(
+            referenceCase.expectedJson.data(),
+            static_cast<qsizetype>(referenceCase.expectedJson.size()));
+        QJsonParseError inputError;
+        const QJsonDocument inputDocument = QJsonDocument::fromJson(inputJson, &inputError);
+        check(!inputDocument.isNull() && inputDocument.isObject(),
+              QStringLiteral("generated Python strategy-control input should parse: %1 (%2)")
+                  .arg(caseName, inputError.errorString()));
+        if (inputDocument.isNull() || !inputDocument.isObject()) {
+            continue;
+        }
+        QJsonParseError expectedError;
+        const QJsonDocument expectedDocument = QJsonDocument::fromJson(expectedJson, &expectedError);
+        check(!expectedDocument.isNull() && expectedDocument.isObject(),
+              QStringLiteral("generated Python strategy-control expected output should parse: %1 (%2)")
+                  .arg(caseName, expectedError.errorString()));
+        if (expectedDocument.isNull() || !expectedDocument.isObject()) {
+            continue;
+        }
+        const QString kind = QString::fromUtf8(
+            referenceCase.kind.data(),
+            static_cast<qsizetype>(referenceCase.kind.size()));
+        check(
+            NativeStrategyRuntime::normalizeStrategyControls(kind, inputDocument.object())
+                == expectedDocument.object(),
+            QStringLiteral("C++ strategy-control normalization should match Python: %1")
+                .arg(caseName));
+    }
+
+    for (const auto &referenceCase : PythonParityContract::kPythonStrategyRiskReferenceCases) {
+        const QString caseName = QString::fromUtf8(
+            referenceCase.name.data(),
+            static_cast<qsizetype>(referenceCase.name.size()));
+        const QByteArray inputJson(
+            referenceCase.inputJson.data(),
+            static_cast<qsizetype>(referenceCase.inputJson.size()));
+        const QByteArray expectedJson(
+            referenceCase.expectedJson.data(),
+            static_cast<qsizetype>(referenceCase.expectedJson.size()));
+        QJsonParseError inputError;
+        const QJsonDocument inputDocument = QJsonDocument::fromJson(inputJson, &inputError);
+        check(!inputDocument.isNull() && inputDocument.isObject(),
+              QStringLiteral("generated Python strategy-risk input should parse: %1 (%2)")
+                  .arg(caseName, inputError.errorString()));
+        if (inputDocument.isNull() || !inputDocument.isObject()) {
+            continue;
+        }
+        QJsonParseError expectedError;
+        const QJsonDocument expectedDocument = QJsonDocument::fromJson(expectedJson, &expectedError);
+        check(!expectedDocument.isNull() && expectedDocument.isObject(),
+              QStringLiteral("generated Python strategy-risk expected output should parse: %1 (%2)")
+                  .arg(caseName, expectedError.errorString()));
+        if (expectedDocument.isNull() || !expectedDocument.isObject()) {
+            continue;
+        }
+        check(
+            NativeStrategyRuntime::normalizeStrategyRiskControls(inputDocument.object())
+                == expectedDocument.object(),
+            QStringLiteral("C++ strategy-risk normalization should match Python: %1")
+                .arg(caseName));
+    }
+
+    const QByteArray orderIntentReferenceJson(
+        PythonParityContract::kPythonOrderIntentReferenceJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonOrderIntentReferenceJson.size()));
+    QJsonParseError orderIntentParseError;
+    const QJsonDocument orderIntentDocument = QJsonDocument::fromJson(
+        orderIntentReferenceJson,
+        &orderIntentParseError);
+    check(orderIntentParseError.error == QJsonParseError::NoError
+              && orderIntentDocument.isObject(),
+          QStringLiteral("generated Python order-intent reference should be valid JSON: %1")
+              .arg(orderIntentParseError.errorString()));
+    if (orderIntentDocument.isObject()) {
+        for (const QJsonValue &caseValue : orderIntentDocument.object().value(QStringLiteral("cases")).toArray()) {
+            const QJsonObject referenceCase = caseValue.toObject();
+            const QString caseName = referenceCase.value(QStringLiteral("name")).toString();
+            const QString market = referenceCase.value(QStringLiteral("market")).toString();
+            const QVector<QPair<QString, QString>> params = orderParamsFromJson(
+                referenceCase.value(QStringLiteral("params")).toObject());
+            const NativeOrderSafety::OrderSubmitIntent intent =
+                NativeOrderSafety::orderSubmitIntentFromParams(market, params);
+            const QJsonObject expected = referenceCase.value(QStringLiteral("expected")).toObject();
+            check(
+                orderIntentToJson(intent) == expected.value(QStringLiteral("intent")).toObject(),
+                QStringLiteral("C++ order-intent normalization should match Python: %1")
+                    .arg(caseName));
+            check(
+                NativeOrderSafety::validateOrderSubmitIntent(intent)
+                    == stringListFromJson(expected.value(QStringLiteral("intent_errors"))),
+                QStringLiteral("C++ order-intent validation should match Python: %1")
+                    .arg(caseName));
+            const QJsonObject filterObject = referenceCase.value(QStringLiteral("filters")).toObject();
+            const QJsonValue lastPriceValue = referenceCase.value(QStringLiteral("last_price"));
+            const QStringList filterErrors = NativeOrderSafety::validateOrderFilterConstraintsWithRawParams(
+                intent,
+                orderFiltersFromJson(filterObject),
+                lastPriceValue.isDouble(),
+                lastPriceValue.toDouble(),
+                params);
+            check(
+                filterErrors == stringListFromJson(expected.value(QStringLiteral("filter_errors"))),
+                QStringLiteral("C++ order-filter validation should match Python: %1")
+                    .arg(caseName));
+        }
+    }
+
+    const QByteArray connectorHealthReferenceJson(
+        PythonParityContract::kPythonConnectorHealthReferenceJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonConnectorHealthReferenceJson.size()));
+    QJsonParseError connectorHealthParseError;
+    const QJsonDocument connectorHealthDocument = QJsonDocument::fromJson(
+        connectorHealthReferenceJson,
+        &connectorHealthParseError);
+    check(connectorHealthParseError.error == QJsonParseError::NoError
+              && connectorHealthDocument.isObject(),
+          QStringLiteral("generated Python connector-health reference should be valid JSON: %1")
+              .arg(connectorHealthParseError.errorString()));
+    if (connectorHealthDocument.isObject()) {
+        for (const QJsonValue &caseValue : connectorHealthDocument.object().value(QStringLiteral("cases")).toArray()) {
+            const QJsonObject referenceCase = caseValue.toObject();
+            const QString caseName = referenceCase.value(QStringLiteral("name")).toString();
+            const QJsonObject snapshot = referenceCase.value(QStringLiteral("snapshot")).toObject();
+            check(
+                NativeOrderSafety::validateConnectorHealthErrors(
+                    snapshot.value(QStringLiteral("state")).toString(),
+                    snapshot.value(QStringLiteral("health")).toString())
+                    == stringListFromJson(referenceCase.value(QStringLiteral("expected_errors"))),
+                QStringLiteral("C++ connector-health validation should match Python: %1")
+                    .arg(caseName));
+        }
+    }
 
     QTemporaryDir dir;
     check(dir.isValid(), QStringLiteral("temporary directory should be valid"));
@@ -259,8 +444,8 @@ int main(int argc, char **argv) {
         // Keep older generated fixtures readable while requiring the current generator to emit cases.
         indicatorCases.append(indicatorReference);
     }
-    check(indicatorCases.size() >= 3,
-          QStringLiteral("generated Python indicator reference should include multiple market scenarios"));
+    check(indicatorCases.size() >= 7,
+          QStringLiteral("generated Python indicator reference should include normal, edge, and coercion scenarios"));
 
     QVector<NativeIndicatorRuntime::Candle> indicatorCandles;
     NativeIndicatorRuntime::ConfigMap indicatorConfigs;
@@ -356,7 +541,9 @@ int main(int argc, char **argv) {
         if (!caseCandleValues.isEmpty()) {
             caseCandles.clear();
             caseCandles.reserve(caseCandleValues.size());
-            for (const QJsonValue &value : caseCandleValues) {
+            const bool hasExecutionWindow = testCase.contains(QStringLiteral("execution_start_offset"));
+            for (qsizetype candleIndex = 0; candleIndex < caseCandleValues.size(); ++candleIndex) {
+                const QJsonValue &value = caseCandleValues.at(candleIndex);
                 const QJsonObject candle = value.toObject();
                 caseCandles.push_back({
                     candle.value(QStringLiteral("open")).toDouble(),
@@ -364,6 +551,7 @@ int main(int argc, char **argv) {
                     candle.value(QStringLiteral("low")).toDouble(),
                     candle.value(QStringLiteral("close")).toDouble(),
                     candle.value(QStringLiteral("volume")).toDouble(),
+                    hasExecutionWindow ? candleIndex * 60'000 : 0,
                 });
             }
         }
@@ -394,6 +582,11 @@ int main(int argc, char **argv) {
         const QJsonObject caseConfigs = testCase.value(QStringLiteral("configs")).toObject();
         for (auto iterator = caseConfigs.constBegin(); iterator != caseConfigs.constEnd(); ++iterator) {
             request.indicators.insert(iterator.key(), iterator.value().toObject());
+        }
+        if (testCase.contains(QStringLiteral("execution_start_offset"))) {
+            const qint64 startOffset = testCase.value(QStringLiteral("execution_start_offset")).toInteger();
+            request.startTimeMs = std::max<qint64>(0, startOffset) * 60'000;
+            request.endTimeMs = std::max<qint64>(0, caseCandles.size() - 1) * 60'000;
         }
 
         const NativeBacktestRuntime::Result actual = NativeBacktestRuntime::run(caseCandles, request);
@@ -468,12 +661,96 @@ int main(int argc, char **argv) {
             {QStringLiteral("buy_value"), 45.0},
             {QStringLiteral("sell_value"), 55.0},
         });
+    NativeBacktestRuntime::Request directIntervalBacktest = cancelledBacktest;
+    directIntervalBacktest.interval = QStringLiteral("60 minutes");
+    const NativeBacktestRuntime::Result directIntervalResult = NativeBacktestRuntime::run(
+        indicatorCandles,
+        directIntervalBacktest,
+        []() { return false; });
+    check(directIntervalResult.interval == QStringLiteral("1h"),
+          QStringLiteral("native C++ direct backtest results should expose Python-canonical intervals"));
     const NativeBacktestRuntime::Result cancelledResult = NativeBacktestRuntime::run(
         indicatorCandles,
         cancelledBacktest,
         []() { return true; });
     check(!cancelledResult.ok && cancelledResult.error == QStringLiteral("backtest_cancelled"),
           QStringLiteral("native C++ backtest should preserve cooperative cancellation"));
+
+    QVector<NativeIndicatorRuntime::Candle> timestampedWindowCandles{
+        {100.0, 101.0, 99.0, 100.0, 20.0, 0},
+        {100.0, 101.0, 99.0, 100.0, 30.0, 60'000},
+        {109.0, 111.0, 108.0, 110.0, 30.0, 120'000},
+        {109.0, 111.0, 108.0, 110.0, 30.0, 180'000},
+    };
+    NativeBacktestRuntime::Request timestampedWindowRequest;
+    timestampedWindowRequest.symbol = QStringLiteral("WINDOWUSDT");
+    timestampedWindowRequest.interval = QStringLiteral("1m");
+    timestampedWindowRequest.capital = 1'000.0;
+    timestampedWindowRequest.positionPct = 1.0;
+    timestampedWindowRequest.positionPctUnits = QStringLiteral("fraction");
+    timestampedWindowRequest.leverage = 1.0;
+    timestampedWindowRequest.feeBps = 0.0;
+    timestampedWindowRequest.slippageBps = 0.0;
+    timestampedWindowRequest.startTimeMs = 60'000;
+    timestampedWindowRequest.endTimeMs = 180'000;
+    timestampedWindowRequest.indicators.clear();
+    timestampedWindowRequest.indicators.insert(
+        QStringLiteral("volume"),
+        QJsonObject{
+            {QStringLiteral("enabled"), true},
+            {QStringLiteral("buy_value"), 10.0},
+        });
+    const NativeBacktestRuntime::Result timestampedWindowResult = NativeBacktestRuntime::run(
+        timestampedWindowCandles,
+        timestampedWindowRequest);
+    check(timestampedWindowResult.ok
+              && timestampedWindowResult.trades == 1
+              && std::abs(timestampedWindowResult.finalEquity - 1'100.0) <= 1e-9,
+          QStringLiteral("native C++ window mismatch: ok=%1 error=%2 trades=%3 final=%4")
+              .arg(timestampedWindowResult.ok)
+              .arg(timestampedWindowResult.error)
+              .arg(timestampedWindowResult.trades)
+              .arg(timestampedWindowResult.finalEquity, 0, 'f', 12));
+    NativeBacktestRuntime::Request percentageAliasRequest = timestampedWindowRequest;
+    percentageAliasRequest.positionPct = 0.25;
+    percentageAliasRequest.positionPctUnits = QStringLiteral("percentage");
+    const NativeBacktestRuntime::Result percentageAliasResult = NativeBacktestRuntime::run(
+        timestampedWindowCandles,
+        percentageAliasRequest);
+    check(percentageAliasResult.ok
+              && std::abs(percentageAliasResult.positionPct - 0.0025) <= 1e-12
+              && percentageAliasResult.positionPctUnits == QStringLiteral("fraction"),
+          QStringLiteral("native C++ backtest should consume Python percentage-unit alias"));
+    NativeBacktestRuntime::Request noWindowRequest = timestampedWindowRequest;
+    noWindowRequest.startTimeMs = 300'000;
+    noWindowRequest.endTimeMs = 360'000;
+    const NativeBacktestRuntime::Result noWindowResult = NativeBacktestRuntime::run(
+        timestampedWindowCandles,
+        noWindowRequest);
+    check(!noWindowResult.ok
+              && noWindowResult.error == QStringLiteral("No candles fall inside the requested backtest window"),
+          QStringLiteral("native C++ empty window mismatch: ok=%1 error=%2")
+              .arg(noWindowResult.ok)
+              .arg(noWindowResult.error));
+    check(NativeBacktestBatchRuntime::estimateWarmupBars(timestampedWindowRequest.indicators) == 50,
+          QStringLiteral("native C++ indicator warmup mismatch: actual=%1")
+              .arg(NativeBacktestBatchRuntime::estimateWarmupBars(timestampedWindowRequest.indicators)));
+    check(NativeBacktestBatchRuntime::estimateWarmupBars({}) == 100,
+          QStringLiteral("native C++ empty warmup mismatch: actual=%1")
+              .arg(NativeBacktestBatchRuntime::estimateWarmupBars({})));
+    NativeIndicatorRuntime::ConfigMap explicitWarmupConfigs;
+    explicitWarmupConfigs.insert(
+        QStringLiteral("macd"),
+        QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("fast"), 12}, {QStringLiteral("slow"), 26}});
+    explicitWarmupConfigs.insert(
+        QStringLiteral("ichimoku"),
+        QJsonObject{{QStringLiteral("enabled"), false}, {QStringLiteral("span_b_length"), 52}});
+    check(NativeBacktestBatchRuntime::estimateWarmupBars(explicitWarmupConfigs) == 26,
+          QStringLiteral("native C++ explicit warmup mismatch: actual=%1")
+              .arg(NativeBacktestBatchRuntime::estimateWarmupBars(explicitWarmupConfigs)));
+    check(NativeBacktestBatchRuntime::bufferedStartTimeMs(100'000'000, QStringLiteral("5m"), 50)
+              == 70'000'000,
+          QStringLiteral("native C++ warmup start should match Python's two-window interval buffer"));
 
     NativeIndicatorRuntime::ConfigMap optimizerConfigs;
     optimizerConfigs.insert(
@@ -542,6 +819,36 @@ int main(int argc, char **argv) {
     check(NativeBacktestBatchRuntime::estimateRunCount(200, 20, 435) == 1'740'000,
           QStringLiteral("native optimizer run estimate should match the Python Cartesian plan"));
 
+    for (const auto &intervalCase : {
+             std::pair<QString, QString>{QStringLiteral("60 minutes"), QStringLiteral("1h")},
+             std::pair<QString, QString>{QStringLiteral("20 minutes"), QStringLiteral("20m")},
+             std::pair<QString, QString>{QStringLiteral("3 hours"), QStringLiteral("3h")},
+             std::pair<QString, QString>{QStringLiteral("2 days"), QStringLiteral("2d")},
+             std::pair<QString, QString>{QStringLiteral("3 weeks"), QStringLiteral("3w")},
+             std::pair<QString, QString>{QStringLiteral("1M"), QStringLiteral("1mo")},
+             std::pair<QString, QString>{QStringLiteral("1 M"), QStringLiteral("1mo")},
+             std::pair<QString, QString>{QStringLiteral("1 year"), QStringLiteral("1y")},
+             std::pair<QString, QString>{QStringLiteral("1 q"), QStringLiteral("1 q")},
+         }) {
+        check(
+            NativeStrategyRuntime::canonicalizeBacktestInterval(QJsonValue(intervalCase.first))
+                == intervalCase.second,
+            QStringLiteral("native C++ interval alias %1 should match Python canonicalization")
+                .arg(intervalCase.first));
+    }
+    check(
+        NativePythonParity::canonicalConfigChoice(
+            QStringLiteral("top n"),
+            PythonParityContract::kPythonScanScopeConfigChoices)
+            == QStringLiteral("top_n"),
+        QStringLiteral("native C++ choice normalization should match Python underscore aliases"));
+    check(
+        NativePythonParity::canonicalConfigChoice(
+            QStringLiteral("roi percent mdd"),
+            PythonParityContract::kPythonOptimizerMetricConfigChoices)
+            == QStringLiteral("roi_percent_mdd"),
+        QStringLiteral("native C++ choice normalization should match Python space aliases"));
+
     NativeBacktestRuntime::Result scoreFixture;
     scoreFixture.trades = 5;
     scoreFixture.roiPercent = 12.0;
@@ -566,14 +873,23 @@ int main(int argc, char **argv) {
           QStringLiteral("native optimizer should reject runs above the configured MDD for every metric"));
 
     NativeBacktestBatchRuntime::BatchRequest batchRequest;
+    const QJsonObject pythonBacktestDefaults = QJsonDocument::fromJson(QByteArray(
+        PythonParityContract::kPythonDefaultBacktestJson.data(),
+        static_cast<int>(PythonParityContract::kPythonDefaultBacktestJson.size()))).object();
+    check(
+        batchRequest.optimizerMaxDurationSeconds
+            == static_cast<qint64>(pythonBacktestDefaults.value(QStringLiteral("optimizer_max_duration_seconds")).toDouble()),
+        QStringLiteral("native C++ optimizer duration default should match Python"));
     batchRequest.symbols = {QStringLiteral("BTCUSDT"), QStringLiteral("ETHUSDT")};
-    batchRequest.intervals = {QStringLiteral("1m")};
+    batchRequest.intervals = {QStringLiteral("1m"), QStringLiteral("1 minute"), QStringLiteral("60 seconds")};
     batchRequest.indicatorConfigs.insert(QStringLiteral("rsi"), optimizerConfigs.value(QStringLiteral("rsi")));
     batchRequest.runTemplate = cancelledBacktest;
     batchRequest.optimizerMinTrades = 0;
     batchRequest.optimizerMddLimit = 0.0;
     batchRequest.startDisplay = QStringLiteral("2026-01-01");
     batchRequest.endDisplay = QStringLiteral("2026-02-01");
+    check(NativeBacktestBatchRuntime::estimateRunCount(batchRequest) == 2,
+          QStringLiteral("native batch run estimate should deduplicate Python-equivalent symbol and interval aliases"));
     const QJsonObject batchSnapshot = NativeBacktestBatchRuntime::runBatch(
         batchRequest,
         [&indicatorCandles](const QString &, const QString &, const NativeBacktestBatchRuntime::StopCallback &) {
@@ -588,6 +904,25 @@ int main(int argc, char **argv) {
     check(batchSnapshot.value(QStringLiteral("top_run")).toObject().value(QStringLiteral("source")).toString()
               == QStringLiteral("native-cpp-backtest"),
           QStringLiteral("native batch backtest should identify its native C++ source"));
+
+    NativeBacktestBatchRuntime::BatchRequest budgetBatchRequest = batchRequest;
+    budgetBatchRequest.symbols = {QStringLiteral("BTCUSDT"), QStringLiteral("ETHUSDT")};
+    budgetBatchRequest.optimizerMode = QStringLiteral("single");
+    budgetBatchRequest.optimizerEnabled = true;
+    budgetBatchRequest.optimizerMaxDurationSeconds = 1;
+    const QJsonObject budgetSnapshot = NativeBacktestBatchRuntime::runBatch(
+        budgetBatchRequest,
+        [](const QString &, const QString &, const NativeBacktestBatchRuntime::StopCallback &stop) {
+            while (!stop()) QThread::msleep(10);
+            return NativeBacktestBatchRuntime::CandleLoadResult{false, {}, QStringLiteral("backtest_cancelled")};
+        });
+    check(budgetSnapshot.value(QStringLiteral("state")).toString() == QStringLiteral("budget_exhausted"),
+          QStringLiteral("native C++ optimizer should enforce its Python time budget"));
+    check(!budgetSnapshot.value(QStringLiteral("cancelled")).toBool(true),
+          QStringLiteral("native C++ optimizer budget exhaustion should not be reported as user cancellation"));
+    check(budgetSnapshot.value(QStringLiteral("errors")).toArray().last().toObject().value(QStringLiteral("error")).toString()
+              == QStringLiteral("backtest_optimizer_time_budget_exhausted"),
+          QStringLiteral("native C++ optimizer budget exhaustion should preserve the Python error contract"));
 
     NativeBacktestBatchRuntime::BatchRequest separateBatchRequest = batchRequest;
     separateBatchRequest.symbols = {QStringLiteral("BTCUSDT")};
@@ -698,6 +1033,8 @@ int main(int argc, char **argv) {
     paperValidOrder.filters = {0.001, 0.1, 0.001, 5.0};
     paperValidOrder.hasLastPrice = true;
     paperValidOrder.lastPrice = 100.0;
+    paperValidOrder.connectorState = QStringLiteral("ready");
+    paperValidOrder.connectorHealth = QStringLiteral("ok");
     paperValidOrder.liveSubmitAttemptCount = 3;
     const NativeOrderSafety::LiveOrderGuardResult paperValidResult =
         NativeOrderSafety::guardLiveOrderSubmit(paperValidOrder);
@@ -803,6 +1140,104 @@ int main(int argc, char **argv) {
     check(!autoBumpCapBlocked.allowed
               && autoBumpCapBlocked.errors.join(QStringLiteral(" ")).contains(QStringLiteral("insufficient funds")),
           QStringLiteral("minimum-order auto-bump should enforce the configured percentage cap"));
+
+    NativeOrderSafety::CapitalExposureGuardInput capitalGuard;
+    capitalGuard.market = QStringLiteral("futures");
+    capitalGuard.symbol = QStringLiteral("BTCUSDT");
+    capitalGuard.interval = QStringLiteral("1m");
+    capitalGuard.side = QStringLiteral("BUY");
+    capitalGuard.positionPctFraction = 0.02;
+    capitalGuard.availableUsdt = 100.0;
+    capitalGuard.walletUsdt = 1000.0;
+    capitalGuard.price = 100.0;
+    capitalGuard.leverage = 5;
+    capitalGuard.hasFilters = true;
+    capitalGuard.filters = {0.001, 0.1, 0.001, 5.0};
+    capitalGuard.requestedQuantity = 1.0;
+    capitalGuard.normalizedQuantity = 1.0;
+    capitalGuard.marginOverTargetTolerance = 0.05;
+    capitalGuard.marginFilterSlippage = 0.1;
+    capitalGuard.dualSide = true;
+    const NativeOrderSafety::CapitalExposureGuardResult capitalAllowed =
+        NativeOrderSafety::guardFuturesCapitalExposure(capitalGuard);
+    check(capitalAllowed.allowed
+              && capitalAllowed.reason == QStringLiteral("capital guard: allowed")
+              && std::abs(capitalAllowed.targetMarginUsdt - 20.0) < 1e-12
+              && std::abs(capitalAllowed.marginEstimateUsdt - 20.0) < 1e-12
+              && capitalAllowed.desiredPositionSide == QStringLiteral("LONG"),
+          QStringLiteral("C++ capital guard should allow a position within the Python allocation cap"));
+
+    NativeOrderSafety::CapitalExposureGuardInput stepRoundedFilterFloor = capitalGuard;
+    stepRoundedFilterFloor.positionPctFraction = 0.05;
+    stepRoundedFilterFloor.availableUsdt = 124.0;
+    stepRoundedFilterFloor.walletUsdt = 124.0;
+    stepRoundedFilterFloor.leverage = 1;
+    stepRoundedFilterFloor.filters.stepSize = 0.03;
+    stepRoundedFilterFloor.filters.minQty = 0.01;
+    stepRoundedFilterFloor.filters.minNotional = 5.0;
+    stepRoundedFilterFloor.price = 100.0;
+    stepRoundedFilterFloor.requestedQuantity = 0.06;
+    stepRoundedFilterFloor.normalizedQuantity = 0.06;
+    stepRoundedFilterFloor.existingIndicatorMargin = 2.0;
+    const NativeOrderSafety::CapitalExposureGuardResult stepRoundedFilterAllowed =
+        NativeOrderSafety::guardFuturesCapitalExposure(stepRoundedFilterFloor);
+    check(stepRoundedFilterAllowed.allowed
+              && std::abs(stepRoundedFilterAllowed.maxIndicatorMarginUsdt - 7.76) < 1e-12,
+          QStringLiteral("C++ capital guard should round a minimum-notional quantity up to the exchange step like Python"));
+
+    NativeOrderSafety::CapitalExposureGuardInput indicatorOverCap = capitalGuard;
+    indicatorOverCap.existingIndicatorMargin = 22.0;
+    const NativeOrderSafety::CapitalExposureGuardResult indicatorBlocked =
+        NativeOrderSafety::guardFuturesCapitalExposure(indicatorOverCap);
+    check(!indicatorBlocked.allowed
+              && indicatorBlocked.reason.contains(QStringLiteral("existing BUY margin already >= cap")),
+          QStringLiteral("C++ capital guard should block existing indicator margin over the Python cap"));
+
+    NativeOrderSafety::CapitalExposureGuardInput sideOverCap = capitalGuard;
+    sideOverCap.existingSideMargin = 100.0;
+    const NativeOrderSafety::CapitalExposureGuardResult sideBlocked =
+        NativeOrderSafety::guardFuturesCapitalExposure(sideOverCap);
+    check(!sideBlocked.allowed
+              && sideBlocked.reason.contains(QStringLiteral("projected side margin exceeds cap")),
+          QStringLiteral("C++ capital guard should block projected same-side margin over the Python cap"));
+
+    NativeOrderSafety::CapitalExposureGuardInput unavailableMargin = capitalGuard;
+    unavailableMargin.availableUsdt = 10.0;
+    const NativeOrderSafety::CapitalExposureGuardResult unavailableBlocked =
+        NativeOrderSafety::guardFuturesCapitalExposure(unavailableMargin);
+    check(!unavailableBlocked.allowed
+              && unavailableBlocked.reason == QStringLiteral("capital guard: requested margin exceeds available USDT"),
+          QStringLiteral("C++ capital guard should block unavailable margin like Python"));
+
+    NativeOrderSafety::CapitalExposureGuardInput liveMinimum = capitalGuard;
+    liveMinimum.positionPctFraction = 0.0001;
+    liveMinimum.requestedQuantity = 0.0001;
+    liveMinimum.normalizedQuantity = 0.05;
+    liveMinimum.filters.minNotional = 5.0;
+    liveMinimum.liveMode = true;
+    const NativeOrderSafety::CapitalExposureGuardResult liveMinimumBlocked =
+        NativeOrderSafety::guardFuturesCapitalExposure(liveMinimum);
+    check(!liveMinimumBlocked.allowed
+              && liveMinimumBlocked.reason.contains(QStringLiteral("live auto-bump")),
+          QStringLiteral("C++ capital guard should require explicit live minimum-order auto-bump opt-in"));
+    liveMinimum.liveAllowAutoBumpToMinOrder = true;
+    const NativeOrderSafety::CapitalExposureGuardResult liveMinimumAllowed =
+        NativeOrderSafety::guardFuturesCapitalExposure(liveMinimum);
+    check(liveMinimumAllowed.allowed
+              && std::abs(liveMinimumAllowed.quantityEstimate - 0.05) < 1e-12,
+          QStringLiteral("C++ capital guard should allow explicitly opted-in funded minimum order"));
+
+    NativeOrderSafety::CapitalExposureGuardInput addOnlyFlip = capitalGuard;
+    addOnlyFlip.side = QStringLiteral("SELL");
+    addOnlyFlip.dualSide = false;
+    addOnlyFlip.addOnly = true;
+    addOnlyFlip.netPositionAmt = 0.5;
+    const NativeOrderSafety::CapitalExposureGuardResult addOnlyResult =
+        NativeOrderSafety::guardFuturesCapitalExposure(addOnlyFlip);
+    check(addOnlyResult.allowed && addOnlyResult.reduceOnly
+              && std::abs(addOnlyResult.quantityEstimate - 0.5) < 1e-12
+              && addOnlyResult.desiredPositionSide.isEmpty(),
+          QStringLiteral("C++ capital guard should convert one-way add-only flips into reduce-only orders"));
 
     NativeOrderSafety::ConnectorOrderCircuitBreaker connectorCircuit(
         NativeOrderSafety::ConnectorOrderCircuitConfig{true, 2, 60.0});
@@ -1563,6 +1998,17 @@ int main(int argc, char **argv) {
     check(nonFiniteRsiDecision.value(QStringLiteral("description")).toString() == QStringLiteral("RSI=NaN/inf skipped"),
           QStringLiteral("native strategy signal should describe skipped non-finite RSI like Python"));
 
+    signalInput.closes = {100.0, std::numeric_limits<double>::quiet_NaN()};
+    signalInput.rules = {{QStringLiteral("rsi"), mkRule(true, 30.0, 70.0)}};
+    signalInput.indicators = {{QStringLiteral("rsi"), {50.0, 20.0}}};
+    const QJsonObject nonFiniteCloseDecision = NativeStrategyRuntime::buildSignalDecision(signalInput);
+    check(nonFiniteCloseDecision.value(QStringLiteral("signal")).isNull(),
+          QStringLiteral("native strategy signal should reject non-finite candle closes like Python"));
+    check(nonFiniteCloseDecision.value(QStringLiteral("description")).toString() == QStringLiteral("no data"),
+          QStringLiteral("native strategy signal should report no data for non-finite candle closes"));
+    check(nonFiniteCloseDecision.value(QStringLiteral("trigger_price")).isNull(),
+          QStringLiteral("native strategy signal should omit a trigger price for non-finite candle closes"));
+
     signalInput.useLiveValues = true;
     signalInput.side = QStringLiteral("BOTH");
     signalInput.closes = {100.0, 101.0};
@@ -1794,7 +2240,7 @@ int main(int argc, char **argv) {
     const QJsonObject normalizedRuntimeControls = NativeStrategyRuntime::normalizeStrategyControls(
         QStringLiteral("runtime"),
         QJsonObject{
-            {QStringLiteral("side"), QStringLiteral("buy only")},
+            {QStringLiteral("side"), QStringLiteral("buy")},
             {QStringLiteral("position_pct"), QStringLiteral("12.5")},
             {QStringLiteral("position_pct_units"), QStringLiteral("ratio")},
             {QStringLiteral("leverage"), QStringLiteral("3")},
@@ -1816,14 +2262,38 @@ int main(int argc, char **argv) {
           QStringLiteral("native strategy controls should normalize position units"));
     check(normalizedRuntimeControls.value(QStringLiteral("loop_interval_override")).toString() == QStringLiteral("5m"),
           QStringLiteral("native strategy controls should normalize loop override"));
-    check(!normalizedRuntimeControls.value(QStringLiteral("add_only")).toBool(true),
-          QStringLiteral("native strategy controls should coerce false string add_only"));
+    check(normalizedRuntimeControls.value(QStringLiteral("add_only")).toBool(false),
+          QStringLiteral("native strategy controls should preserve Python truthiness for string add_only"));
     check(normalizedRuntimeControls.value(QStringLiteral("account_mode")).toString() == QStringLiteral("Portfolio Margin"),
           QStringLiteral("native strategy controls should normalize account mode"));
     check(normalizedRuntimeControls.value(QStringLiteral("connector_backend")).toString() == QStringLiteral("ccxt"),
           QStringLiteral("native strategy controls should normalize connector backend"));
     check(normalizedRuntimeControls.value(QStringLiteral("stop_loss")).toObject().value(QStringLiteral("scope")).toString() == QStringLiteral("per_trade"),
           QStringLiteral("native strategy controls should normalize invalid stop-loss scope"));
+
+    check(qFuzzyCompare(
+              NativeStrategyRuntime::positionPctFraction(
+                  QJsonObject{{QStringLiteral("position_pct"), 25.0},
+                              {QStringLiteral("position_pct_units"), QStringLiteral("percent")}},
+                  2.0,
+                  QStringLiteral("percent")),
+              0.25),
+          QStringLiteral("native runtime sizing should apply Python percent position units"));
+    check(qFuzzyCompare(
+              NativeStrategyRuntime::positionPctFraction(
+                  QJsonObject{{QStringLiteral("position_pct"), 0.4},
+                              {QStringLiteral("position_pct_units"), QStringLiteral("ratio")}},
+                  2.0,
+                  QStringLiteral("percent")),
+              0.4),
+          QStringLiteral("native runtime sizing should apply Python ratio position units"));
+    check(qFuzzyCompare(
+              NativeStrategyRuntime::positionPctFraction(
+                  QJsonObject{{QStringLiteral("position_pct"), 0.4}},
+                  2.0,
+                  QStringLiteral("percent")),
+              0.004),
+          QStringLiteral("native runtime sizing should fall back to the Python global position units"));
 
     const QJsonObject normalizedBacktestControls = NativeStrategyRuntime::normalizeStrategyControls(
         QStringLiteral("backtest"),
@@ -2011,6 +2481,24 @@ int main(int argc, char **argv) {
     check(reentryBlocked.value(QStringLiteral("signal")).isNull(),
           QStringLiteral("C++ order guard should block same-side re-entry until signal reset/cooldown"));
 
+    NativeStrategyRuntime::recordIndicatorCloses(
+        orderGuardControls,
+        QStringLiteral("btcusdt"),
+        QStringLiteral("1m"),
+        QStringList{QStringLiteral("RSI"), QStringLiteral("macd"), QStringLiteral("generic"), QStringLiteral("rsi")},
+        QStringLiteral("SELL"),
+        1'700'000'030'000,
+        orderGuardStates,
+        reentryBlocks);
+    check(orderGuardStates.contains(QStringLiteral("BTCUSDT|1m|rsi")),
+          QStringLiteral("C++ close ledger should record every Python-owned indicator source"));
+    check(orderGuardStates.contains(QStringLiteral("BTCUSDT|1m|macd")),
+          QStringLiteral("C++ close ledger should preserve multi-indicator ownership"));
+    check(orderGuardStates.value(QStringLiteral("BTCUSDT|1m|rsi")).recentCloseMs == 1'700'000'030'000,
+          QStringLiteral("C++ multi-indicator close ledger should preserve the close timestamp"));
+    check(reentryBlocks.value(QStringLiteral("BTCUSDT|1m|SELL")) == 1'700'000'090'000,
+          QStringLiteral("C++ multi-indicator close ledger should apply Python re-entry cooldown"));
+
     const QJsonObject stopLossDecision = NativeStrategyRuntime::evaluatePerTradeStopLoss(
         QJsonObject{
             {QStringLiteral("stop_loss"), QJsonObject{
@@ -2179,6 +2667,15 @@ int main(int argc, char **argv) {
               == QStringLiteral("binance-spot-usds-and-coin-futures"),
           QStringLiteral("native strategy lifecycle should report its exact execution scope"));
 
+    NativeStrategyRuntime::StrategyWorkerLifecycleInput invalidBackoffInput;
+    invalidBackoffInput.offlineBackoff = std::numeric_limits<double>::quiet_NaN();
+    const QJsonObject invalidBackoffSnapshot =
+        NativeStrategyRuntime::buildWorkerLifecycleSnapshot(invalidBackoffInput);
+    check(invalidBackoffSnapshot.value(QStringLiteral("offline_backoff")).toDouble() == 0.0,
+          QStringLiteral("native strategy lifecycle should reset non-finite outage state"));
+    check(invalidBackoffSnapshot.value(QStringLiteral("next_network_backoff")).toDouble() == 5.0,
+          QStringLiteral("native strategy lifecycle should use the initial retry delay for invalid outage state"));
+
     const QDateTime diagnosticsAt =
         QDateTime::fromString(QStringLiteral("2026-06-18T12:10:00.000Z"), Qt::ISODateWithMs);
     const QJsonObject serviceLogEvent = NativeDiagnostics::buildServiceLogEvent(
@@ -2244,6 +2741,84 @@ int main(int argc, char **argv) {
           QStringLiteral("native LLM render should expose advisory-only boundary"));
     const QStringList llmViolations = NativeLlmAdvisory::outputPolicyViolations(
         QStringLiteral(R"({"action":"place_order","status":"executed"})"));
+    const QJsonDocument llmPolicyReferenceDocument = QJsonDocument::fromJson(QByteArray(
+        PythonParityContract::kPythonLlmOutputPolicyReferenceJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonLlmOutputPolicyReferenceJson.size())));
+    check(llmPolicyReferenceDocument.isObject(),
+          QStringLiteral("Python LLM output-policy reference fixture should be valid JSON"));
+    for (const QJsonValue &referenceValue : llmPolicyReferenceDocument.object()
+                                                    .value(QStringLiteral("cases"))
+                                                    .toArray()) {
+        const QJsonObject referenceCase = referenceValue.toObject();
+        QStringList expectedViolations;
+        for (const QJsonValue &violation : referenceCase.value(QStringLiteral("expected_violations")).toArray()) {
+            expectedViolations.append(violation.toString());
+        }
+        const QString text = referenceCase.value(QStringLiteral("text")).toString();
+        check(NativeLlmAdvisory::outputPolicyViolations(text) == expectedViolations,
+              QStringLiteral("C++ LLM output policy should match Python case %1")
+                  .arg(referenceCase.value(QStringLiteral("name")).toString()));
+    }
+    const QJsonDocument llmChatReferenceDocument = QJsonDocument::fromJson(QByteArray(
+        PythonParityContract::kPythonLlmChatRequestReferenceJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonLlmChatRequestReferenceJson.size())));
+    check(llmChatReferenceDocument.isObject(),
+          QStringLiteral("Python LLM chat-request reference fixture should be valid JSON"));
+    for (const QJsonValue &referenceValue : llmChatReferenceDocument.object()
+                                                    .value(QStringLiteral("cases"))
+                                                    .toArray()) {
+        const QJsonObject referenceCase = referenceValue.toObject();
+        QString error;
+        const QJsonObject actual = NativeLlmAdvisory::buildChatRequest(
+            referenceCase.value(QStringLiteral("config")).toObject(),
+            referenceCase.value(QStringLiteral("prompt")).toString(),
+            referenceCase.value(QStringLiteral("system_prompt")).toString(),
+            referenceCase.value(QStringLiteral("context")),
+            &error);
+        check(!actual.isEmpty(),
+              QStringLiteral("C++ LLM request should build Python case %1: %2")
+                  .arg(referenceCase.value(QStringLiteral("name")).toString(), error));
+        check(actual == referenceCase.value(QStringLiteral("expected")).toObject(),
+              QStringLiteral("C++ LLM request should match Python case %1")
+                  .arg(referenceCase.value(QStringLiteral("name")).toString()));
+    }
+    const auto parityText = [](std::string_view value) {
+        return QString::fromUtf8(value.data(), static_cast<int>(value.size()));
+    };
+    for (const auto &provider : PythonParityContract::kPythonLlmProviders) {
+        QJsonObject providerConfig{
+            {QStringLiteral("llm_provider"), parityText(provider.key)},
+            {QStringLiteral("llm_model"), parityText(provider.defaultModel)},
+            {QStringLiteral("llm_base_url"), parityText(provider.defaultBaseUrl)},
+            {QStringLiteral("llm_api_key"), parityText(provider.mode) == QStringLiteral("cloud") ? QStringLiteral("parity-test-key") : QString()},
+        };
+        const QStringList reasoningEfforts = QString::fromUtf8(
+            provider.reasoningEfforts.data(), static_cast<int>(provider.reasoningEfforts.size())).split(',');
+        for (const QString &reasoningEffort : reasoningEfforts) {
+            providerConfig.insert(QStringLiteral("llm_reasoning_effort"), reasoningEffort);
+            QString error;
+            const QJsonObject actual = NativeLlmAdvisory::buildChatRequest(
+                providerConfig,
+                QStringLiteral("Explain risk"),
+                QStringLiteral("Be concise"),
+                {},
+                &error);
+            check(!actual.isEmpty(),
+                  QStringLiteral("C++ should build every Python provider/reasoning option (%1/%2): %3")
+                      .arg(parityText(provider.key), reasoningEffort, error));
+            check(actual.value(QStringLiteral("provider")).toString() == parityText(provider.key),
+                  QStringLiteral("C++ provider request should preserve Python provider key: %1")
+                      .arg(parityText(provider.key)));
+            check(actual.value(QStringLiteral("protocol")).toString() == parityText(provider.protocol),
+                  QStringLiteral("C++ provider request should preserve Python protocol: %1")
+                      .arg(parityText(provider.key)));
+        }
+    }
+    check(llmViolations == QStringList{
+              QStringLiteral("order_execution_claim"),
+              QStringLiteral("direct_order_action"),
+          },
+          QStringLiteral("native LLM policy violation ordering should match Python source"));
     check(llmViolations.contains(QStringLiteral("direct_order_action")),
           QStringLiteral("native LLM policy should block direct order actions"));
     check(llmViolations.contains(QStringLiteral("order_execution_claim")),
@@ -2307,6 +2882,109 @@ int main(int argc, char **argv) {
     check(mergedLlmProviderSpec.value(QStringLiteral("notes")).toStringList()
               == QStringList{QStringLiteral("Local/private endpoint")},
           QStringLiteral("C++ LLM catalog merge should preserve provider notes"));
+    QTemporaryDir llmCatalogDir;
+    const QByteArray previousLocalModels = qgetenv("BOT_LLM_EXTRA_MODELS_LOCAL");
+    const QByteArray previousCatalogPath = qgetenv("BOT_LLM_MODEL_CATALOG_PATH");
+    const QString llmCatalogFilePath = llmCatalogDir.filePath(QStringLiteral("llm-models.json"));
+    {
+        QFile catalogFile(llmCatalogFilePath);
+        check(catalogFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text),
+              QStringLiteral("C++ LLM catalog parity fixture should be writable"));
+        catalogFile.write(R"({"local":["qwen3:8b","custom-file-model"]})");
+    }
+    qputenv("BOT_LLM_EXTRA_MODELS_LOCAL", QByteArray("custom-env-model;qwen3:8b"));
+    qputenv("BOT_LLM_MODEL_CATALOG_PATH", llmCatalogFilePath.toUtf8());
+    const auto dynamicLlmConfigs = TradingBotWindowSupport::pythonSourceLlmProviderConfigs();
+    for (const auto &provider : dynamicLlmConfigs) {
+        if (provider.key != QStringLiteral("local")) {
+            continue;
+        }
+        check(provider.modelSuggestions.contains(QStringLiteral("custom-env-model")),
+              QStringLiteral("C++ LLM fallback catalog should include environment model additions"));
+        check(provider.modelSuggestions.contains(QStringLiteral("custom-file-model")),
+              QStringLiteral("C++ LLM fallback catalog should include file model additions"));
+        check(provider.modelSuggestions.count(QStringLiteral("custom-file-model")) == 1,
+              QStringLiteral("C++ LLM fallback catalog should deduplicate environment and file models"));
+        break;
+    }
+    {
+        QFile catalogFile(llmCatalogFilePath);
+        check(catalogFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text),
+              QStringLiteral("C++ nested LLM catalog parity fixture should be writable"));
+        catalogFile.write(R"({"providers":{"local":["nested-file-model"]}})");
+    }
+    const auto nestedDynamicLlmConfigs = TradingBotWindowSupport::pythonSourceLlmProviderConfigs();
+    for (const auto &provider : nestedDynamicLlmConfigs) {
+        if (provider.key != QStringLiteral("local")) {
+            continue;
+        }
+        check(provider.modelSuggestions.contains(QStringLiteral("nested-file-model")),
+              QStringLiteral("C++ LLM fallback catalog should read providers-file model additions"));
+        break;
+    }
+    {
+        QFile catalogFile(llmCatalogFilePath);
+        check(catalogFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text),
+              QStringLiteral("C++ null-top-level LLM catalog fixture should be writable"));
+        catalogFile.write(R"({"local":null,"providers":{"local":["null-fallback-model"]}})");
+    }
+    const auto nullTopLevelLlmConfigs = TradingBotWindowSupport::pythonSourceLlmProviderConfigs();
+    for (const auto &provider : nullTopLevelLlmConfigs) {
+        if (provider.key != QStringLiteral("local")) {
+            continue;
+        }
+        check(provider.modelSuggestions.contains(QStringLiteral("null-fallback-model")),
+              QStringLiteral("C++ LLM fallback catalog should fall back on Python null top-level values"));
+        break;
+    }
+    {
+        QFile catalogFile(llmCatalogFilePath);
+        check(catalogFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text),
+              QStringLiteral("C++ invalid-top-level LLM catalog fixture should be writable"));
+        catalogFile.write(R"({"local":"not-a-list","providers":{"local":["ignored-nested-model"]}})");
+    }
+    const auto invalidTopLevelLlmConfigs = TradingBotWindowSupport::pythonSourceLlmProviderConfigs();
+    for (const auto &provider : invalidTopLevelLlmConfigs) {
+        if (provider.key != QStringLiteral("local")) {
+            continue;
+        }
+        check(!provider.modelSuggestions.contains(QStringLiteral("ignored-nested-model")),
+              QStringLiteral("C++ LLM fallback catalog should preserve Python top-level precedence"));
+        break;
+    }
+    {
+        QFile catalogFile(llmCatalogFilePath);
+        check(catalogFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text),
+              QStringLiteral("C++ coercion LLM catalog fixture should be writable"));
+        catalogFile.write(R"({"local":["qwen3:8b",0,false,true,1,[1],{"x":1}]})");
+    }
+    const auto coercionLlmConfigs = TradingBotWindowSupport::pythonSourceLlmProviderConfigs();
+    for (const auto &provider : coercionLlmConfigs) {
+        if (provider.key != QStringLiteral("local")) {
+            continue;
+        }
+        check(!provider.modelSuggestions.contains(QStringLiteral("0")),
+              QStringLiteral("C++ LLM fallback catalog should omit Python-falsy numeric zero"));
+        check(provider.modelSuggestions.contains(QStringLiteral("True")),
+              QStringLiteral("C++ LLM fallback catalog should preserve Python true coercion"));
+        check(provider.modelSuggestions.contains(QStringLiteral("1")),
+              QStringLiteral("C++ LLM fallback catalog should preserve Python numeric coercion"));
+        check(provider.modelSuggestions.contains(QStringLiteral("[1]")),
+              QStringLiteral("C++ LLM fallback catalog should preserve Python list coercion"));
+        check(provider.modelSuggestions.contains(QStringLiteral("{'x': 1}")),
+              QStringLiteral("C++ LLM fallback catalog should preserve Python object coercion"));
+        break;
+    }
+    if (previousLocalModels.isNull()) {
+        qunsetenv("BOT_LLM_EXTRA_MODELS_LOCAL");
+    } else {
+        qputenv("BOT_LLM_EXTRA_MODELS_LOCAL", previousLocalModels);
+    }
+    if (previousCatalogPath.isNull()) {
+        qunsetenv("BOT_LLM_MODEL_CATALOG_PATH");
+    } else {
+        qputenv("BOT_LLM_MODEL_CATALOG_PATH", previousCatalogPath);
+    }
     const QJsonObject localModelPayload = NativeLlmAdvisory::buildLocalModelRoutePayload(
         QStringLiteral("http://127.0.0.1:11434/v1"),
         QStringLiteral("qwen3:8b"),

@@ -1379,7 +1379,8 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
     bool testnet,
     const QString &positionSide,
     int timeoutMs,
-    const QString &baseUrlOverride) {
+    const QString &baseUrlOverride,
+    bool reduceOnly) {
     BinanceRestClient::FuturesOrderResult aggregated;
     aggregated.symbol = symbol.trimmed().toUpper();
     aggregated.side = side.trimmed().toUpper();
@@ -1533,7 +1534,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
             aggregated.side,
             QStringLiteral("MARKET"),
             chunkQty,
-            false,
+            reduceOnly,
             aggregated.positionSide);
         appendNativeFuturesOrderAudit(
             QStringLiteral("order_intent"),
@@ -1553,7 +1554,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
             aggregated.side,
             chunkQty,
             testnet,
-            false,
+            reduceOnly,
             aggregated.positionSide,
             timeoutMs,
             baseUrlOverride);

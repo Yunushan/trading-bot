@@ -37,7 +37,7 @@ def simulate_backtest(
 
     pct_raw = float(request.position_pct or 0.0)
     pct_units_raw = str(getattr(request, "position_pct_units", "") or "").strip().lower()
-    if pct_units_raw in {"percent", "%", "perc"}:
+    if pct_units_raw in {"percent", "%", "perc", "percentage"}:
         pct_fraction = pct_raw / 100.0
     elif pct_units_raw in {"fraction", "decimal", "ratio"}:
         pct_fraction = pct_raw

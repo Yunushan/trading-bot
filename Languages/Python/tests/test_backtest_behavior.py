@@ -601,6 +601,26 @@ class BacktestBehaviorTests(unittest.TestCase):
         self.assertAlmostEqual(1000.0, result.capital)
         self.assertFalse(result.stop_loss_enabled)
 
+    def test_simulate_treats_percentage_alias_as_percent(self):
+        df = _build_frame([100.0, 110.0, 120.0])
+        indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]
+        engine = _SyntheticBacktestEngine({"synthetic": [20.0, 50.0, 80.0]})
+        request = _build_request(
+            df,
+            indicators,
+            position_pct=0.25,
+            position_pct_units="percentage",
+        )
+
+        result = _run_without_pandas4_warning(
+            lambda: engine._simulate("BTCUSDT", "1h", df, indicators, request)
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertAlmostEqual(0.0025, result.position_pct)
+        self.assertEqual("fraction", result.position_pct_units)
+
     def test_run_applies_pair_override_strategy_controls(self):
         df = _build_frame([100.0, 105.0, 110.0])
         indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]

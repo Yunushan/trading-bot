@@ -29,6 +29,41 @@ QString textOf(const QJsonValue &value) {
     return {};
 }
 
+QString pythonStringOf(const QJsonValue &value) {
+    if (value.isString()) {
+        return value.toString();
+    }
+    if (value.isDouble()) {
+        return QString::number(value.toDouble(), 'g', 15);
+    }
+    if (value.isBool()) {
+        return value.toBool() ? QStringLiteral("True") : QStringLiteral("False");
+    }
+    return {};
+}
+
+bool pythonTruthy(const QJsonValue &value) {
+    if (value.isUndefined() || value.isNull()) {
+        return false;
+    }
+    if (value.isBool()) {
+        return value.toBool();
+    }
+    if (value.isDouble()) {
+        return value.toDouble() != 0.0;
+    }
+    if (value.isString()) {
+        return !value.toString().isEmpty();
+    }
+    if (value.isArray()) {
+        return !value.toArray().isEmpty();
+    }
+    if (value.isObject()) {
+        return !value.toObject().isEmpty();
+    }
+    return false;
+}
+
 QString parityString(std::string_view value) {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
 }
@@ -150,6 +185,28 @@ QString normalizeSignalLogic(const QJsonValue &value) {
     return normalizePythonUiOptionKey(value, PythonParityContract::kPythonSignalLogicOptions);
 }
 
+QString normalizeStrategySignalLogic(const QJsonValue &value) {
+    const QString raw = pythonStringOf(value).toUpper();
+    if (raw == QStringLiteral("AND") || raw == QStringLiteral("OR")
+        || raw == QStringLiteral("SEPARATE")) {
+        return raw;
+    }
+    return {};
+}
+
+QString normalizeRuntimeSide(const QJsonValue &value) {
+    const QString raw = pythonStringOf(value).toUpper();
+    if (raw.isEmpty()) {
+        return {};
+    }
+    for (const auto &option : PythonParityContract::kPythonSideOptions) {
+        if (raw == parityString(option.key)) {
+            return raw;
+        }
+    }
+    return {};
+}
+
 QString normalizeStopLossMode(const QJsonValue &value) {
     return normalizePythonConfigChoice(
         value,
@@ -159,6 +216,35 @@ QString normalizeStopLossMode(const QJsonValue &value) {
 
 QString normalizeStopLossScope(const QJsonValue &value) {
     return normalizePythonConfigChoice(
+        value,
+        PythonParityContract::kPythonStopLossScopeConfigChoices,
+        QStringLiteral("per_trade"));
+}
+
+template <std::size_t N>
+QString normalizeStrategyStopLossChoice(
+    const QJsonValue &value,
+    const std::array<PythonParityContract::PythonConfigChoice, N> &choices,
+    const QString &fallback) {
+    const QString raw = pythonStringOf(value);
+    const QString lower = raw.isEmpty() ? QStringLiteral("usdt") : raw.toLower();
+    for (const auto &choice : choices) {
+        if (lower == parityString(choice.key).toLower()) {
+            return parityString(choice.value);
+        }
+    }
+    return fallback;
+}
+
+QString normalizeStrategyStopLossMode(const QJsonValue &value) {
+    return normalizeStrategyStopLossChoice(
+        value,
+        PythonParityContract::kPythonStopLossModeConfigChoices,
+        QStringLiteral("usdt"));
+}
+
+QString normalizeStrategyStopLossScope(const QJsonValue &value) {
+    return normalizeStrategyStopLossChoice(
         value,
         PythonParityContract::kPythonStopLossScopeConfigChoices,
         QStringLiteral("per_trade"));
@@ -176,6 +262,13 @@ std::optional<double> numberOf(const QJsonValue &value) {
     return std::nullopt;
 }
 
+std::optional<double> pythonNumberOf(const QJsonValue &value) {
+    if (value.isBool()) {
+        return value.toBool() ? 1.0 : 0.0;
+    }
+    return numberOf(value);
+}
+
 std::optional<qint64> intOf(const QJsonValue &value) {
     if (value.isDouble()) {
         return static_cast<qint64>(value.toDouble());
@@ -186,6 +279,13 @@ std::optional<qint64> intOf(const QJsonValue &value) {
         return parsed;
     }
     return std::nullopt;
+}
+
+std::optional<qint64> pythonIntOf(const QJsonValue &value) {
+    if (value.isBool()) {
+        return value.toBool() ? 1 : 0;
+    }
+    return intOf(value);
 }
 
 void appendUnique(QStringList &items, const QStringList &values) {
@@ -273,6 +373,7 @@ enum class Compare {
     BuyLeSellGe,
     BuyGeSellLe,
     BuyLeSellGeDefaults,
+    BuyLeSellGePythonDefaults,
     BuyGeSellLeDefaults,
 };
 
@@ -292,10 +393,15 @@ void thresholdExisting(
     QStringList &sources,
     QJsonObject &actions) {
     const auto cfg = rule(input, key);
+    const bool pythonFalseyDefaults = compare == Compare::BuyLeSellGePythonDefaults;
     const std::optional<double> buy =
-        cfg.buyValue.has_value() ? cfg.buyValue : defaultBuy;
+        cfg.buyValue.has_value() && (!pythonFalseyDefaults || *cfg.buyValue != 0.0)
+            ? cfg.buyValue
+            : defaultBuy;
     const std::optional<double> sell =
-        cfg.sellValue.has_value() ? cfg.sellValue : defaultSell;
+        cfg.sellValue.has_value() && (!pythonFalseyDefaults || *cfg.sellValue != 0.0)
+            ? cfg.sellValue
+            : defaultSell;
     const int decimals = decimalsFor(pattern);
     const bool buyGe = compare == Compare::BuyGeSellLe || compare == Compare::BuyGeSellLeDefaults;
     if (buyGe) {
@@ -372,14 +478,9 @@ QString normalizeLoop(const QJsonValue &value) {
 }
 
 QString normalizePositionPctUnits(const QJsonValue &value) {
-    const QString text = textOf(value).toLower();
-    if (QStringList{QStringLiteral("percent"), QStringLiteral("%"), QStringLiteral("perc"), QStringLiteral("percentage")}.contains(text)) {
-        return QStringLiteral("percent");
-    }
-    if (QStringList{QStringLiteral("fraction"), QStringLiteral("decimal"), QStringLiteral("ratio")}.contains(text)) {
-        return QStringLiteral("fraction");
-    }
-    return {};
+    return normalizePythonConfigChoice(
+        value,
+        PythonParityContract::kPythonPositionPctUnitsConfigChoices);
 }
 
 QString canonicalSide(const QJsonValue &value) {
@@ -410,14 +511,14 @@ QString normalizeAssetsMode(const QJsonValue &value) {
 }
 
 QJsonObject normalizeStopLoss(const QJsonObject &input) {
-    const QString mode = normalizeStopLossMode(input.value(QStringLiteral("mode")));
-    const QString scope = normalizeStopLossScope(input.value(QStringLiteral("scope")));
+    const QString mode = normalizeStrategyStopLossMode(input.value(QStringLiteral("mode")));
+    const QString scope = normalizeStrategyStopLossScope(input.value(QStringLiteral("scope")));
     return {
         {QStringLiteral("enabled"), NativeStrategyRuntime::coerceStrategyBool(input.value(QStringLiteral("enabled")))},
         {QStringLiteral("mode"), mode},
         {QStringLiteral("scope"), scope},
-        {QStringLiteral("usdt"), std::max(0.0, numberOf(input.value(QStringLiteral("usdt"))).value_or(0.0))},
-        {QStringLiteral("percent"), std::max(0.0, numberOf(input.value(QStringLiteral("percent"))).value_or(0.0))},
+        {QStringLiteral("usdt"), std::max(0.0, pythonNumberOf(input.value(QStringLiteral("usdt"))).value_or(0.0))},
+        {QStringLiteral("percent"), std::max(0.0, pythonNumberOf(input.value(QStringLiteral("percent"))).value_or(0.0))},
     };
 }
 
@@ -451,29 +552,53 @@ QString normalizeBacktestInterval(const QJsonValue &value) {
     if (raw.isEmpty()) {
         return {};
     }
-    if (raw.endsWith(QLatin1Char('M')) && raw.left(raw.size() - 1).toInt() > 0) {
-        return QStringLiteral("%1mo").arg(raw.left(raw.size() - 1).toInt());
+    int index = 0;
+    while (index < raw.size() && raw.at(index).isDigit()) {
+        ++index;
     }
-    QString compact;
-    for (const QChar ch : raw.toLower()) {
-        if (!ch.isSpace()) {
-            compact.append(ch);
+    if (index == 0) {
+        return raw.toLower();
+    }
+    if (index < raw.size() && raw.at(index) == QLatin1Char('.')) {
+        ++index;
+        const int fractionStart = index;
+        while (index < raw.size() && raw.at(index).isDigit()) {
+            ++index;
+        }
+        if (index == fractionStart) {
+            return raw.toLower();
         }
     }
-    int idx = 0;
-    while (idx < compact.size() && (compact.at(idx).isDigit() || compact.at(idx) == QLatin1Char('.'))) {
-        ++idx;
+    const QString amountRaw = raw.left(index);
+    const QString unitRaw = raw.mid(index).trimmed();
+    for (const QChar ch : unitRaw) {
+        if (!ch.isLetter()) {
+            return raw.toLower();
+        }
+    }
+    bool amountIsInteger = !amountRaw.isEmpty();
+    for (const QChar ch : amountRaw) {
+        if (!ch.isDigit()) {
+            amountIsInteger = false;
+            break;
+        }
+    }
+    if (unitRaw == QStringLiteral("M") && amountIsInteger) {
+        QString normalizedAmount = amountRaw;
+        while (normalizedAmount.size() > 1 && normalizedAmount.startsWith(QLatin1Char('0'))) {
+            normalizedAmount.remove(0, 1);
+        }
+        return normalizedAmount + QStringLiteral("mo");
     }
     bool ok = false;
-    const double amount = compact.left(idx).toDouble(&ok);
+    const double amount = amountRaw.toDouble(&ok);
     if (!ok) {
-        return compact;
+        return raw.toLower();
     }
-    const QString unitRaw = compact.mid(idx);
-    if (QStringList{QStringLiteral("mo"), QStringLiteral("mon"), QStringLiteral("mons"), QStringLiteral("month"), QStringLiteral("months")}.contains(unitRaw)) {
+    if (QStringList{QStringLiteral("mo"), QStringLiteral("mon"), QStringLiteral("mons"), QStringLiteral("month"), QStringLiteral("months")}.contains(unitRaw.toLower())) {
         return QStringLiteral("%1mo").arg(formatAmount(amount));
     }
-    QString unit = unitRaw;
+    QString unit = unitRaw.toLower();
     if (unit.isEmpty() || QStringList{QStringLiteral("m"), QStringLiteral("min"), QStringLiteral("mins"), QStringLiteral("minute"), QStringLiteral("minutes")}.contains(unit)) {
         unit = QStringLiteral("m");
     } else if (QStringList{QStringLiteral("s"), QStringLiteral("sec"), QStringLiteral("secs"), QStringLiteral("second"), QStringLiteral("seconds")}.contains(unit)) {
@@ -484,17 +609,43 @@ QString normalizeBacktestInterval(const QJsonValue &value) {
         unit = QStringLiteral("d");
     } else if (QStringList{QStringLiteral("w"), QStringLiteral("wk"), QStringLiteral("wks"), QStringLiteral("week"), QStringLiteral("weeks")}.contains(unit)) {
         unit = QStringLiteral("w");
+    } else if (QStringList{QStringLiteral("y"), QStringLiteral("yr"), QStringLiteral("yrs"), QStringLiteral("year"), QStringLiteral("years")}.contains(unit)) {
+        unit = QStringLiteral("y");
+    } else if (!unit.isEmpty()) {
+        return raw.toLower();
     }
     const QMap<double, QString> canonical{
+        {30.0, QStringLiteral("30s")},
+        {45.0, QStringLiteral("45s")},
         {60.0, QStringLiteral("1m")},
+        {180.0, QStringLiteral("3m")},
         {300.0, QStringLiteral("5m")},
         {600.0, QStringLiteral("10m")},
         {900.0, QStringLiteral("15m")},
+        {1200.0, QStringLiteral("20m")},
         {1800.0, QStringLiteral("30m")},
+        {2700.0, QStringLiteral("45m")},
         {3600.0, QStringLiteral("1h")},
+        {7200.0, QStringLiteral("2h")},
+        {10800.0, QStringLiteral("3h")},
         {14400.0, QStringLiteral("4h")},
+        {18000.0, QStringLiteral("5h")},
+        {21600.0, QStringLiteral("6h")},
+        {25200.0, QStringLiteral("7h")},
+        {28800.0, QStringLiteral("8h")},
+        {32400.0, QStringLiteral("9h")},
+        {36000.0, QStringLiteral("10h")},
+        {39600.0, QStringLiteral("11h")},
+        {43200.0, QStringLiteral("12h")},
         {86400.0, QStringLiteral("1d")},
+        {172800.0, QStringLiteral("2d")},
+        {259200.0, QStringLiteral("3d")},
+        {345600.0, QStringLiteral("4d")},
+        {432000.0, QStringLiteral("5d")},
+        {518400.0, QStringLiteral("6d")},
         {604800.0, QStringLiteral("1w")},
+        {1209600.0, QStringLiteral("2w")},
+        {1814400.0, QStringLiteral("3w")},
     };
     double seconds = -1.0;
     if (unit == QStringLiteral("s")) seconds = amount;
@@ -567,6 +718,10 @@ QJsonValue integerValue(qint64 value) {
 } // namespace
 
 namespace NativeStrategyRuntime {
+
+QString canonicalizeBacktestInterval(const QJsonValue &value) {
+    return normalizeBacktestInterval(value);
+}
 
 QStringList strategyRuntimeBoundaries() {
     return {
@@ -644,6 +799,17 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
     const int prevIndex = signalIndex - 1;
     const double sigClose = input.closes.at(signalIndex);
     const double prevClose = input.closes.at(prevIndex);
+    if (!std::isfinite(sigClose) || !std::isfinite(prevClose)) {
+        return {
+            {QStringLiteral("signal"), QJsonValue()},
+            {QStringLiteral("description"), QStringLiteral("no data")},
+            {QStringLiteral("trigger_price"), QJsonValue()},
+            {QStringLiteral("trigger_sources"), QJsonArray{}},
+            {QStringLiteral("trigger_actions"), QJsonObject{}},
+            {QStringLiteral("min_bars"), minBars},
+            {QStringLiteral("signal_index_from_end"), fromEnd},
+        };
+    }
     QString signal;
     QStringList descriptions;
     QStringList sources;
@@ -658,8 +824,14 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
             if (std::isfinite(value)) {
                 descriptions.append(QStringLiteral("RSI=%1").arg(fixed(value, 2)));
                 const auto cfg = rule(input, QStringLiteral("rsi"));
-                const double buy = cfg.buyValue.value_or(30.0);
-                const double sell = cfg.sellValue.value_or(70.0);
+                // Python's RSI path uses ``float(value or default)``; zero is
+                // therefore a request for the Python default, not a threshold.
+                const double buy = cfg.buyValue.has_value() && *cfg.buyValue != 0.0
+                    ? *cfg.buyValue
+                    : 30.0;
+                const double sell = cfg.sellValue.has_value() && *cfg.sellValue != 0.0
+                    ? *cfg.sellValue
+                    : 70.0;
                 if (buyAllowed && value <= buy) {
                     addAction(QStringLiteral("rsi"), QStringLiteral("BUY"), QStringLiteral("RSI <= %1 -> BUY").arg(fixed(buy, 2)), signal, descriptions, sources, actions);
                 } else if (sellAllowed && value >= sell) {
@@ -738,7 +910,7 @@ QJsonObject buildSignalDecision(const StrategySignalInput &input) {
     threshold(input, QStringLiteral("roc"), QStringLiteral("ROC"), QStringLiteral("{:.2}"), Compare::BuyGeSellLeDefaults, 0.0, 0.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
     threshold(input, QStringLiteral("trix"), QStringLiteral("TRIX"), QStringLiteral("{:.4}"), Compare::BuyGeSellLeDefaults, 0.0, 0.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
     threshold(input, QStringLiteral("ao"), QStringLiteral("AO"), QStringLiteral("{:.4}"), Compare::BuyGeSellLeDefaults, 0.0, 0.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
-    threshold(input, QStringLiteral("mfi"), QStringLiteral("MFI"), QStringLiteral("{:.2}"), Compare::BuyLeSellGeDefaults, 20.0, 80.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
+    threshold(input, QStringLiteral("mfi"), QStringLiteral("MFI"), QStringLiteral("{:.2}"), Compare::BuyLeSellGePythonDefaults, 20.0, 80.0, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
     threshold(input, QStringLiteral("chop"), QStringLiteral("CHOP"), QStringLiteral("{:.4}"), Compare::BuyLeSellGe, std::nullopt, std::nullopt, buyAllowed, sellAllowed, signal, descriptions, sources, actions);
 
     if (enabled(input, QStringLiteral("ppo"))) {
@@ -1333,46 +1505,168 @@ void recordIndicatorClose(
     }
 }
 
+void recordIndicatorCloses(
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    const QStringList &indicators,
+    const QString &side,
+    qint64 timestampMs,
+    QMap<QString, IndicatorOrderGuardState> &states,
+    QMap<QString, qint64> &reentryBlocks) {
+    QSet<QString> seen;
+    for (const QString &rawIndicator : indicators) {
+        const QString indicator = rawIndicator.trimmed().toLower();
+        if (indicator.isEmpty()
+            || indicator == QStringLiteral("generic")
+            || seen.contains(indicator)) {
+            continue;
+        }
+        seen.insert(indicator);
+        recordIndicatorClose(
+            riskControls,
+            symbol,
+            interval,
+            indicator,
+            side,
+            timestampMs,
+            states,
+            reentryBlocks);
+    }
+}
+
 QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &controls) {
     QJsonObject out;
-    const QString kindNorm = kind.trimmed().toLower();
-    if (kindNorm == QStringLiteral("runtime")) {
-        const QString side = canonicalSide(controls.value(QStringLiteral("side")));
+    const bool isRuntime = kind == QStringLiteral("runtime");
+    const bool isBacktest = kind == QStringLiteral("backtest");
+    if (isRuntime) {
+        const QString side = normalizeRuntimeSide(controls.value(QStringLiteral("side")));
         if (!side.isEmpty()) out.insert(QStringLiteral("side"), side);
-        if (auto value = numberOf(controls.value(QStringLiteral("position_pct")))) out.insert(QStringLiteral("position_pct"), *value);
-        const QString units = normalizePositionPctUnits(controls.value(QStringLiteral("position_pct_units")).isUndefined()
-                                                            ? controls.value(QStringLiteral("_position_pct_units"))
-                                                            : controls.value(QStringLiteral("position_pct_units")));
+        if (!controls.value(QStringLiteral("position_pct")).isNull()
+            && !controls.value(QStringLiteral("position_pct")).isUndefined()) {
+            if (auto value = pythonNumberOf(controls.value(QStringLiteral("position_pct")))) {
+                out.insert(QStringLiteral("position_pct"), *value);
+            }
+        }
+        QJsonValue unitsValue = controls.value(QStringLiteral("position_pct_units"));
+        if (!pythonTruthy(unitsValue)) {
+            unitsValue = controls.value(QStringLiteral("_position_pct_units"));
+        }
+        const QString units = normalizePositionPctUnits(unitsValue);
         if (!units.isEmpty()) out.insert(QStringLiteral("position_pct_units"), units);
-        if (auto lev = intOf(controls.value(QStringLiteral("leverage"))); lev && *lev >= 1) out.insert(QStringLiteral("leverage"), integerValue(*lev));
-        const QString loop = normalizeLoop(controls.value(QStringLiteral("loop_interval_override")));
+        if (!controls.value(QStringLiteral("leverage")).isNull()
+            && !controls.value(QStringLiteral("leverage")).isUndefined()) {
+            if (auto lev = pythonIntOf(controls.value(QStringLiteral("leverage"))); lev && *lev >= 1) {
+                out.insert(QStringLiteral("leverage"), integerValue(*lev));
+            }
+        }
+        const QJsonValue loopValue = controls.value(QStringLiteral("loop_interval_override"));
+        const QString loop = pythonTruthy(loopValue) ? normalizeLoop(loopValue) : QString();
         if (!loop.isEmpty()) out.insert(QStringLiteral("loop_interval_override"), loop);
-        if (!controls.value(QStringLiteral("add_only")).isUndefined()) out.insert(QStringLiteral("add_only"), coerceStrategyBool(controls.value(QStringLiteral("add_only"))));
-        const QString account = normalizeAccountMode(controls.value(QStringLiteral("account_mode")));
-        if (!account.isEmpty()) out.insert(QStringLiteral("account_mode"), account);
-    } else if (kindNorm == QStringLiteral("backtest")) {
-        const QString logic = normalizeSignalLogic(controls.value(QStringLiteral("logic")));
+        const QJsonValue addOnly = controls.value(QStringLiteral("add_only"));
+        if (!addOnly.isUndefined() && !addOnly.isNull()) {
+            out.insert(QStringLiteral("add_only"), pythonTruthy(addOnly));
+        }
+        const QJsonValue accountValue = controls.value(QStringLiteral("account_mode"));
+        if (pythonTruthy(accountValue)) {
+            const QString account = normalizeAccountMode(accountValue);
+            if (!account.isEmpty()) out.insert(QStringLiteral("account_mode"), account);
+        }
+    } else if (isBacktest) {
+        const QString logic = normalizeStrategySignalLogic(controls.value(QStringLiteral("logic")));
         if (!logic.isEmpty()) out.insert(QStringLiteral("logic"), logic);
-        if (auto value = numberOf(controls.value(QStringLiteral("capital")))) out.insert(QStringLiteral("capital"), *value);
-        if (auto value = numberOf(controls.value(QStringLiteral("position_pct")))) out.insert(QStringLiteral("position_pct"), *value);
-        const QString units = normalizePositionPctUnits(controls.value(QStringLiteral("position_pct_units")));
+        if (!controls.value(QStringLiteral("capital")).isNull()
+            && !controls.value(QStringLiteral("capital")).isUndefined()) {
+            if (auto value = pythonNumberOf(controls.value(QStringLiteral("capital")))) {
+                out.insert(QStringLiteral("capital"), *value);
+            }
+        }
+        if (!controls.value(QStringLiteral("position_pct")).isNull()
+            && !controls.value(QStringLiteral("position_pct")).isUndefined()) {
+            if (auto value = pythonNumberOf(controls.value(QStringLiteral("position_pct")))) {
+                out.insert(QStringLiteral("position_pct"), *value);
+            }
+        }
+        QJsonValue unitsValue = controls.value(QStringLiteral("position_pct_units"));
+        if (!pythonTruthy(unitsValue)) {
+            unitsValue = controls.value(QStringLiteral("_position_pct_units"));
+        }
+        const QString units = normalizePositionPctUnits(unitsValue);
         if (!units.isEmpty()) out.insert(QStringLiteral("position_pct_units"), units);
-        const QString side = canonicalSide(controls.value(QStringLiteral("side")));
-        if (!side.isEmpty()) out.insert(QStringLiteral("side"), side);
-        if (!textOf(controls.value(QStringLiteral("margin_mode"))).isEmpty()) out.insert(QStringLiteral("margin_mode"), textOf(controls.value(QStringLiteral("margin_mode"))));
-        if (!textOf(controls.value(QStringLiteral("position_mode"))).isEmpty()) out.insert(QStringLiteral("position_mode"), textOf(controls.value(QStringLiteral("position_mode"))));
-        const QString assets = normalizeAssetsMode(controls.value(QStringLiteral("assets_mode")));
-        if (!assets.isEmpty()) out.insert(QStringLiteral("assets_mode"), assets);
-        const QString account = normalizeAccountMode(controls.value(QStringLiteral("account_mode")));
-        if (!account.isEmpty()) out.insert(QStringLiteral("account_mode"), account);
-        const QString loop = normalizeLoop(controls.value(QStringLiteral("loop_interval_override")));
+        const QJsonValue sideValue = controls.value(QStringLiteral("side"));
+        if (pythonTruthy(sideValue)) {
+            const QString side = canonicalSide(sideValue);
+            if (!side.isEmpty()) out.insert(QStringLiteral("side"), side);
+        }
+        const QJsonValue marginValue = controls.value(QStringLiteral("margin_mode"));
+        if (pythonTruthy(marginValue)) {
+            out.insert(QStringLiteral("margin_mode"), pythonStringOf(marginValue));
+        }
+        const QJsonValue positionModeValue = controls.value(QStringLiteral("position_mode"));
+        if (pythonTruthy(positionModeValue)) {
+            out.insert(QStringLiteral("position_mode"), pythonStringOf(positionModeValue));
+        }
+        const QJsonValue assetsValue = controls.value(QStringLiteral("assets_mode"));
+        if (pythonTruthy(assetsValue)) {
+            const QString assets = normalizeAssetsMode(assetsValue);
+            if (!assets.isEmpty()) out.insert(QStringLiteral("assets_mode"), assets);
+        }
+        const QJsonValue accountValue = controls.value(QStringLiteral("account_mode"));
+        if (pythonTruthy(accountValue)) {
+            const QString account = normalizeAccountMode(accountValue);
+            if (!account.isEmpty()) out.insert(QStringLiteral("account_mode"), account);
+        }
+        const QJsonValue loopValue = controls.value(QStringLiteral("loop_interval_override"));
+        const QString loop = pythonTruthy(loopValue) ? normalizeLoop(loopValue) : QString();
         if (!loop.isEmpty()) out.insert(QStringLiteral("loop_interval_override"), loop);
-        if (auto lev = intOf(controls.value(QStringLiteral("leverage")))) out.insert(QStringLiteral("leverage"), integerValue(*lev));
+        if (!controls.value(QStringLiteral("leverage")).isNull()
+            && !controls.value(QStringLiteral("leverage")).isUndefined()) {
+            if (auto lev = pythonIntOf(controls.value(QStringLiteral("leverage")))) {
+                out.insert(QStringLiteral("leverage"), integerValue(*lev));
+            }
+        }
     }
-    if (controls.value(QStringLiteral("stop_loss")).isObject()) out.insert(QStringLiteral("stop_loss"), normalizeStopLoss(controls.value(QStringLiteral("stop_loss")).toObject()));
-    const QString backend = textOf(controls.value(QStringLiteral("connector_backend")));
-    if (!backend.isEmpty()) out.insert(QStringLiteral("connector_backend"), NativeExchangeConnectors::normalizeConnectorBackend(backend));
+    if (isRuntime || isBacktest) {
+        if (controls.value(QStringLiteral("stop_loss")).isObject()) {
+            out.insert(
+                QStringLiteral("stop_loss"),
+                normalizeStopLoss(controls.value(QStringLiteral("stop_loss")).toObject()));
+        }
+        const QJsonValue backendValue = controls.value(QStringLiteral("connector_backend"));
+        if (pythonTruthy(backendValue)) {
+            out.insert(
+                QStringLiteral("connector_backend"),
+                NativeExchangeConnectors::normalizeConnectorBackend(pythonStringOf(backendValue)));
+        }
+    }
     return out;
+}
+
+double positionPctFraction(
+    const QJsonObject &controls,
+    double fallbackPositionPct,
+    const QString &fallbackUnits) {
+    const QJsonObject normalized = normalizeStrategyControls(QStringLiteral("runtime"), controls);
+    double raw = normalized.value(QStringLiteral("position_pct")).toDouble(fallbackPositionPct);
+    if (!std::isfinite(raw)) {
+        raw = std::isfinite(fallbackPositionPct) ? fallbackPositionPct : 2.0;
+    }
+
+    QString units = normalized.value(QStringLiteral("position_pct_units")).toString().trimmed();
+    if (units.isEmpty()) {
+        units = fallbackUnits.trimmed();
+    }
+    const QString canonicalUnits = normalizePositionPctUnits(units);
+    double fraction = raw;
+    if (canonicalUnits == QStringLiteral("percent")) {
+        fraction = raw / 100.0;
+    } else if (canonicalUnits != QStringLiteral("fraction") && raw > 1.0) {
+        fraction = raw / 100.0;
+    }
+    if (!std::isfinite(fraction)) {
+        fraction = 0.0001;
+    }
+    return std::clamp(fraction, 0.0001, 1.0);
 }
 
 QJsonObject normalizeStrategyRiskControls(const QJsonObject &controls) {
@@ -1826,7 +2120,7 @@ QString formatBacktestResultText(const QJsonObject &payload) {
 QJsonObject buildCleanOverrideEntry(const QString &kind, const QJsonObject &entry) {
     const QString symbol = textOf(entry.value(QStringLiteral("symbol"))).toUpper();
     const QString interval = kind.trimmed().toLower() == QStringLiteral("backtest")
-        ? normalizeBacktestInterval(entry.value(QStringLiteral("interval")))
+        ? canonicalizeBacktestInterval(entry.value(QStringLiteral("interval")))
         : textOf(entry.value(QStringLiteral("interval")));
     if (symbol.isEmpty() || interval.isEmpty()) {
         return {{QStringLiteral("entry"), QJsonValue()}, {QStringLiteral("indicator_values"), QJsonArray{}}, {QStringLiteral("controls"), QJsonObject{}}};
@@ -1871,7 +2165,8 @@ QJsonObject buildCleanOverrideEntry(const QString &kind, const QJsonObject &entr
 }
 
 double nextNetworkBackoff(double previous) {
-    return previous <= 0.0 ? 5.0 : std::min(90.0, std::max(previous * 1.5, 5.0));
+    const double safePrevious = std::isfinite(previous) && previous >= 0.0 ? previous : 0.0;
+    return safePrevious <= 0.0 ? 5.0 : std::min(90.0, std::max(safePrevious * 1.5, 5.0));
 }
 
 QJsonObject buildWorkerLifecycleSnapshot(const StrategyWorkerLifecycleInput &input) {
@@ -1891,7 +2186,9 @@ QJsonObject buildWorkerLifecycleSnapshot(const StrategyWorkerLifecycleInput &inp
         {QStringLiteral("is_alive"), input.threadAlive},
         {QStringLiteral("lifecycle_phase"), phase},
         {QStringLiteral("active_engine_count"), input.activeEngineCount},
-        {QStringLiteral("offline_backoff"), std::max(0.0, input.offlineBackoff)},
+        {QStringLiteral("offline_backoff"), std::isfinite(input.offlineBackoff) && input.offlineBackoff >= 0.0
+            ? input.offlineBackoff
+            : 0.0},
         {QStringLiteral("next_network_backoff"), nextNetworkBackoff(input.offlineBackoff)},
         {QStringLiteral("emergency_close_triggered"), input.emergencyCloseTriggered},
         {QStringLiteral("loop_interval_seconds"), seconds},

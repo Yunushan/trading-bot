@@ -600,6 +600,15 @@
       "one-way": "One-way",
       "oneway": "One-way"
     },
+    "position_pct_units": {
+      "%": "percent",
+      "decimal": "fraction",
+      "fraction": "fraction",
+      "perc": "percent",
+      "percent": "percent",
+      "percentage": "percent",
+      "ratio": "fraction"
+    },
     "scan_scope": {
       "all-loaded": "all_loaded",
       "all_loaded": "all_loaded",
@@ -720,7 +729,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "d0cf11267e597c05bc0900672e9fde942015c19e0ba1f4bc1f992da0ea8d8b0c",
+  "contractHash": "15089768680fb0ac4cc2d4da2fb1c6bb4bb416cb719ee9534c08fb06bc10d9d9",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -4509,6 +4518,12 @@
     }
   ],
   "orderGuardBehavior": {
+    "environment_bool_true_values": [
+      "1",
+      "true",
+      "yes",
+      "on"
+    ],
     "live_only_requirements": [
       "credentials",
       "live_acknowledgement",
@@ -5192,22 +5207,62 @@
       "block_count",
       "block_threshold",
       "block_window_seconds",
+      "tripped_at",
+      "cleared_at",
       "source",
+      "symbol",
+      "interval",
+      "side",
+      "account_type",
+      "connector_health",
+      "connector_state",
+      "reset_blocked",
+      "reset_blocked_reason",
+      "reset_blocked_at",
+      "recovery_pending",
+      "recovery_pending_reason",
+      "last_event",
       "generated_at"
     ],
     "connector_order_circuit_breaker_reset": [
       "active",
       "state",
+      "reason",
+      "message",
+      "block_count",
+      "block_threshold",
+      "block_window_seconds",
+      "tripped_at",
+      "cleared_at",
       "source",
+      "symbol",
+      "interval",
+      "side",
+      "account_type",
+      "connector_health",
+      "connector_state",
+      "reset_blocked",
+      "reset_blocked_reason",
+      "reset_blocked_at",
+      "recovery_pending",
+      "recovery_pending_reason",
+      "last_event",
       "generated_at"
     ],
     "connector_order_circuit_incidents": [
       "path",
       "path_source",
       "configured_path",
+      "max_bytes",
+      "backup_count",
+      "exists",
       "limit",
+      "count",
+      "total_read",
       "events",
-      "parse_errors"
+      "parse_errors",
+      "last_event",
+      "error"
     ],
     "control_start": [
       "accepted",
@@ -5251,6 +5306,7 @@
       "operational",
       "config",
       "config_summary",
+      "config_persistence",
       "execution",
       "backtest",
       "account",
@@ -5266,11 +5322,16 @@
       "source",
       "selected_exchange",
       "connector_backend",
+      "selected_forex_broker",
+      "account_type",
+      "mode",
       "support",
       "rate_limit",
       "network",
       "last_error",
-      "attention"
+      "attention",
+      "order_audit",
+      "order_intents"
     ],
     "execution": [
       "executor_kind",
@@ -5339,9 +5400,14 @@
       "installed",
       "can_download",
       "can_start",
+      "available_models",
+      "error",
       "storage_hint",
       "storage_paths",
-      "estimated_size_label"
+      "estimated_size_label",
+      "free_disk_gb",
+      "recommended_free_disk_gb",
+      "disk_space_warning"
     ],
     "llm_prompt": [
       "provider",
@@ -5529,6 +5595,7 @@
         "operational",
         "config",
         "config_summary",
+        "config_persistence",
         "execution",
         "backtest",
         "account",
@@ -5903,7 +5970,21 @@
         "block_count",
         "block_threshold",
         "block_window_seconds",
+        "tripped_at",
+        "cleared_at",
         "source",
+        "symbol",
+        "interval",
+        "side",
+        "account_type",
+        "connector_health",
+        "connector_state",
+        "reset_blocked",
+        "reset_blocked_reason",
+        "reset_blocked_at",
+        "recovery_pending",
+        "recovery_pending_reason",
+        "last_event",
         "generated_at"
       ]
     },
@@ -5918,7 +5999,26 @@
       "response_fields": [
         "active",
         "state",
+        "reason",
+        "message",
+        "block_count",
+        "block_threshold",
+        "block_window_seconds",
+        "tripped_at",
+        "cleared_at",
         "source",
+        "symbol",
+        "interval",
+        "side",
+        "account_type",
+        "connector_health",
+        "connector_state",
+        "reset_blocked",
+        "reset_blocked_reason",
+        "reset_blocked_at",
+        "recovery_pending",
+        "recovery_pending_reason",
+        "last_event",
         "generated_at"
       ]
     },
@@ -5932,9 +6032,16 @@
         "path",
         "path_source",
         "configured_path",
+        "max_bytes",
+        "backup_count",
+        "exists",
         "limit",
+        "count",
+        "total_read",
         "events",
-        "parse_errors"
+        "parse_errors",
+        "last_event",
+        "error"
       ]
     },
     {
@@ -6032,11 +6139,16 @@
         "source",
         "selected_exchange",
         "connector_backend",
+        "selected_forex_broker",
+        "account_type",
+        "mode",
         "support",
         "rate_limit",
         "network",
         "last_error",
-        "attention"
+        "attention",
+        "order_audit",
+        "order_intents"
       ]
     },
     {
@@ -6158,9 +6270,14 @@
         "installed",
         "can_download",
         "can_start",
+        "available_models",
+        "error",
         "storage_hint",
         "storage_paths",
-        "estimated_size_label"
+        "estimated_size_label",
+        "free_disk_gb",
+        "recommended_free_disk_gb",
+        "disk_space_warning"
       ]
     },
     {

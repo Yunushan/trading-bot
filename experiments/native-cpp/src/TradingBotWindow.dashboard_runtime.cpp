@@ -123,6 +123,29 @@ QString firstDecisionSource(const QJsonObject &decision) {
     return sources.isEmpty() ? QStringLiteral("generic") : sources.first().toString();
 }
 
+QStringList normalizedSignalSources(const QStringList &rawSources) {
+    QStringList sources;
+    QSet<QString> seen;
+    for (const QString &rawSource : rawSources) {
+        const QString source = normalizedIndicatorKey(rawSource);
+        if (source.isEmpty() || source == QStringLiteral("generic") || seen.contains(source)) {
+            continue;
+        }
+        seen.insert(source);
+        sources.append(source);
+    }
+    return sources;
+}
+
+QStringList decisionSignalSources(const QJsonObject &decision) {
+    QStringList rawSources;
+    const QJsonArray sources = decision.value(QStringLiteral("trigger_sources")).toArray();
+    for (const QJsonValue &source : sources) {
+        rawSources.append(source.toString());
+    }
+    return normalizedSignalSources(rawSources);
+}
+
 QString primaryOutputKey(const QString &indicatorKey) {
     static const QMap<QString, QString> outputOverrides = {
         {QStringLiteral("bb"), QStringLiteral("bb_mid")},
@@ -469,6 +492,56 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         }
         return best;
     };
+    const auto positionMarginUsdt = [](const BinanceRestClient::FuturesPosition &position) {
+        double margin = 0.0;
+        if (qIsFinite(position.positionInitialMargin) && position.positionInitialMargin > 0.0) {
+            margin += position.positionInitialMargin;
+        }
+        if (qIsFinite(position.openOrderMargin) && position.openOrderMargin > 0.0) {
+            margin += position.openOrderMargin;
+        }
+        if (margin <= 0.0 && qIsFinite(position.initialMargin) && position.initialMargin > 0.0) {
+            margin = position.initialMargin;
+        }
+        if (margin <= 0.0 && qIsFinite(position.isolatedMargin) && position.isolatedMargin > 0.0) {
+            margin = position.isolatedMargin;
+        }
+        if (margin <= 0.0 && qIsFinite(position.notional) && std::fabs(position.notional) > 0.0
+            && qIsFinite(position.leverage) && position.leverage > 0.0) {
+            margin = std::fabs(position.notional) / std::max(1.0, position.leverage);
+        }
+        if (margin <= 0.0 && qIsFinite(position.positionAmt) && std::fabs(position.positionAmt) > 0.0
+            && qIsFinite(position.entryPrice) && position.entryPrice > 0.0
+            && qIsFinite(position.leverage) && position.leverage > 0.0) {
+            margin = (std::fabs(position.positionAmt) * position.entryPrice)
+                / std::max(1.0, position.leverage);
+        }
+        return qIsFinite(margin) ? std::max(0.0, margin) : 0.0;
+    };
+    const auto positionSideForExposure = [](const BinanceRestClient::FuturesPosition &position) {
+        const QString explicitSide = position.positionSide.trimmed().toUpper();
+        if (explicitSide == QStringLiteral("LONG") || explicitSide == QStringLiteral("SHORT")) {
+            return explicitSide;
+        }
+        if (qIsFinite(position.positionAmt) && position.positionAmt > 0.0) {
+            return QStringLiteral("LONG");
+        }
+        if (qIsFinite(position.positionAmt) && position.positionAmt < 0.0) {
+            return QStringLiteral("SHORT");
+        }
+        return QString();
+    };
+    const auto trackedPositionMarginUsdt = [](const RuntimePosition &position) {
+        if (qIsFinite(position.displayMarginUsdt) && position.displayMarginUsdt > 0.0) {
+            return position.displayMarginUsdt;
+        }
+        if (qIsFinite(position.entryPrice) && position.entryPrice > 0.0
+            && qIsFinite(position.quantity) && position.quantity > 0.0
+            && qIsFinite(position.leverage) && position.leverage > 0.0) {
+            return (position.entryPrice * position.quantity) / std::max(1.0, position.leverage);
+        }
+        return 0.0;
+    };
     QMap<QString, double> runtimeQtyByExposureKey;
     for (auto it = dashboardRuntimeOpenPositions_.cbegin(); it != dashboardRuntimeOpenPositions_.cend(); ++it) {
         const QString runtimeSymbol = it.key().section('|', 0, 0).trimmed().toUpper();
@@ -781,9 +854,13 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                                               .toBool(strategyUsesLiveCandles(strategySummary));
         QSet<QString> indicatorKeys = parseIndicatorKeysFromSummary(indicatorSummary);
         if (openIt != dashboardRuntimeOpenPositions_.end()) {
-            const QString runtimeIndicatorKey = normalizedIndicatorKey(openIt.value().signalSource);
-            if (!runtimeIndicatorKey.isEmpty() && runtimeIndicatorKey != QStringLiteral("generic")) {
-                indicatorKeys.insert(runtimeIndicatorKey);
+            const RuntimePosition &runtimePosition = openIt.value();
+            QStringList runtimeSources = runtimePosition.signalSources;
+            if (runtimeSources.isEmpty()) {
+                runtimeSources.append(runtimePosition.signalSource);
+            }
+            for (const QString &runtimeSource : normalizedSignalSources(runtimeSources)) {
+                indicatorKeys.insert(runtimeSource);
             }
         }
         if (indicatorKeys.isEmpty()) {
@@ -1112,11 +1189,15 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 }
             }
 
-            const double positionPct = dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : 2.0;
+            const double globalPositionPct = dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : 2.0;
+            const double positionPctFraction = NativeStrategyRuntime::positionPctFraction(
+                normalizedStrategyControls,
+                globalPositionPct,
+                QStringLiteral("percent"));
             const double positionLeverage = futures ? leverage : 1.0;
             const double targetNotionalUsdt = futures
-                ? std::max(10.0, availableUsdt * (std::max(0.1, positionPct) / 100.0) * positionLeverage)
-                : std::max(0.0, availableUsdt * (std::max(0.1, positionPct) / 100.0));
+                ? std::max(10.0, availableUsdt * positionPctFraction * positionLeverage)
+                : std::max(0.0, availableUsdt * positionPctFraction);
             const double requestedQty = std::max(0.000001, targetNotionalUsdt / orderSizingPrice);
             double cappedRequestedQty = requestedQty;
             const double storedQtyCap = dashboardRuntimeOpenQtyCaps_.value(key, 0.0);
@@ -1136,7 +1217,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                       symbolFilters,
                       cappedRequestedQty,
                       orderSizingPrice);
-            const double orderQty = quantityAdjustment.ok ? quantityAdjustment.quantity : 0.0;
+            double orderQty = quantityAdjustment.ok ? quantityAdjustment.quantity : 0.0;
             if (!qIsFinite(orderQty) || orderQty <= 0.0) {
                 appendDashboardPositionLog(
                     QString("%1 %2@%3 blocked: Python-parity order quantity is invalid (requested=%4, sizingPrice=%5): %6")
@@ -1181,7 +1262,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     orderSizingPrice,
                     availableUsdt,
                 static_cast<int>(positionLeverage),
-                    positionPct,
+                    positionPctFraction * 100.0,
                     false,
                     liveSafetyConfig,
                 });
@@ -1193,7 +1274,170 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 continue;
             }
 
-            const QString openOrderSide = (openSide == QStringLiteral("LONG")) ? QStringLiteral("BUY") : QStringLiteral("SELL");
+            const QString openOrderSide = (openSide == QStringLiteral("LONG"))
+                ? QStringLiteral("BUY")
+                : QStringLiteral("SELL");
+            bool openReduceOnly = false;
+            if (futures) {
+                const auto *exposureSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
+                const bool hasVerifiedExposureSnapshot = exposureSnapshot && exposureSnapshot->ok;
+                if (!paperTrading && (!exposureSnapshot || !exposureSnapshot->ok)) {
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked: futures exposure snapshot is unavailable; refusing an unverified order.")
+                            .arg(openSide, symbol, interval));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
+
+                const QString targetIndicatorKey = normalizedIndicatorKey(triggerSource);
+                const QString targetIntervalKey = requestInterval.trimmed().toLower();
+                double liveSideMargin = 0.0;
+                double trackedSideMargin = 0.0;
+                double existingIndicatorMargin = 0.0;
+                double ledgerMarginTotal = 0.0;
+                double netPositionAmt = 0.0;
+                QSet<QString> activeSlotKeys;
+
+                if (hasVerifiedExposureSnapshot) {
+                    for (const BinanceRestClient::FuturesPosition &position : exposureSnapshot->positions) {
+                        if (position.symbol.trimmed().toUpper() != symbol) {
+                            continue;
+                        }
+                        const double margin = positionMarginUsdt(position);
+                        ledgerMarginTotal += margin;
+                        if (positionSideForExposure(position) == openSide) {
+                            liveSideMargin += margin;
+                        }
+                        if (!hedgeMode
+                            && (position.positionSide.trimmed().isEmpty()
+                                || position.positionSide.trimmed().compare(QStringLiteral("BOTH"), Qt::CaseInsensitive) == 0)
+                            && qIsFinite(position.positionAmt)) {
+                            netPositionAmt += position.positionAmt;
+                        }
+                    }
+                }
+
+                for (auto positionIt = dashboardRuntimeOpenPositions_.cbegin();
+                     positionIt != dashboardRuntimeOpenPositions_.cend();
+                     ++positionIt) {
+                    const RuntimePosition &trackedPosition = positionIt.value();
+                    if (trackedPosition.connectorKey.trimmed().compare(rowConnectorCfg.key, Qt::CaseInsensitive) != 0
+                        || trackedPosition.connectorBaseUrl.trimmed().compare(rowConnectorCfg.baseUrl, Qt::CaseInsensitive) != 0
+                        || positionIt.key().section('|', 0, 0).trimmed().toUpper() != symbol) {
+                        continue;
+                    }
+                    const QString trackedSide = trackedPosition.side.trimmed().toUpper();
+                    const double margin = trackedPositionMarginUsdt(trackedPosition);
+                    trackedSideMargin += trackedSide == openSide ? margin : 0.0;
+                    if (!hasVerifiedExposureSnapshot) {
+                        ledgerMarginTotal += margin;
+                    }
+                    if (trackedSide != openSide
+                        || trackedPosition.interval.trimmed().toLower() != targetIntervalKey) {
+                        if (!hasVerifiedExposureSnapshot && !hedgeMode
+                            && trackedSide == QStringLiteral("LONG")) {
+                            netPositionAmt += std::max(0.0, trackedPosition.quantity);
+                        } else if (!hasVerifiedExposureSnapshot && !hedgeMode
+                                   && trackedSide == QStringLiteral("SHORT")) {
+                            netPositionAmt -= std::max(0.0, trackedPosition.quantity);
+                        }
+                        continue;
+                    }
+                    const QString trackedIndicatorKey = normalizedIndicatorKey(trackedPosition.signalSource);
+                    const bool indicatorMatches = targetIndicatorKey.isEmpty()
+                        || targetIndicatorKey == QStringLiteral("generic")
+                        || trackedIndicatorKey == targetIndicatorKey;
+                    if (indicatorMatches) {
+                        existingIndicatorMargin += margin;
+                        const QString slotKey = QStringLiteral("%1|%2")
+                                                    .arg(trackedIndicatorKey, trackedPosition.interval.trimmed().toLower());
+                        activeSlotKeys.insert(slotKey);
+                    }
+                    if (!hasVerifiedExposureSnapshot && !hedgeMode
+                        && trackedSide == QStringLiteral("LONG")) {
+                        netPositionAmt += std::max(0.0, trackedPosition.quantity);
+                    } else if (!hasVerifiedExposureSnapshot && !hedgeMode
+                               && trackedSide == QStringLiteral("SHORT")) {
+                        netPositionAmt -= std::max(0.0, trackedPosition.quantity);
+                    }
+                }
+
+                const double existingSideMargin = hasVerifiedExposureSnapshot
+                    ? std::max(liveSideMargin, trackedSideMargin)
+                    : trackedSideMargin;
+                const bool slotAlreadyActive = !activeSlotKeys.isEmpty();
+                if (slotAlreadyActive) {
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked: indicator slot is already active for this side and interval.")
+                            .arg(openSide, symbol, interval));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
+
+                const auto ratioControl = [&rowStrategyControls](const QString &name, double fallback) {
+                    const QJsonValue raw = rowStrategyControls.value(name);
+                    double value = raw.isDouble() ? raw.toDouble() : fallback;
+                    if (!qIsFinite(value) || value <= 0.0) {
+                        return 0.0;
+                    }
+                    return value > 1.0 ? value / 100.0 : value;
+                };
+                const double walletUsdt = qIsFinite(positionsLastTotalBalanceUsdt_)
+                    && positionsLastTotalBalanceUsdt_ > 0.0
+                    ? positionsLastTotalBalanceUsdt_
+                    : availableUsdt;
+                NativeOrderSafety::CapitalExposureGuardInput exposureInput;
+                exposureInput.market = QStringLiteral("futures");
+                exposureInput.symbol = symbol;
+                exposureInput.interval = interval;
+                exposureInput.side = openOrderSide;
+                exposureInput.positionPctFraction = positionPctFraction;
+                exposureInput.availableUsdt = availableUsdt;
+                exposureInput.walletUsdt = walletUsdt;
+                exposureInput.ledgerMarginTotal = ledgerMarginTotal;
+                exposureInput.existingIndicatorMargin = existingIndicatorMargin;
+                exposureInput.existingSideMargin = existingSideMargin;
+                exposureInput.activeSlotCount = activeSlotKeys.size();
+                exposureInput.slotAlreadyActive = false;
+                exposureInput.price = orderSizingPrice;
+                exposureInput.leverage = static_cast<int>(positionLeverage);
+                exposureInput.hasFilters = true;
+                exposureInput.filters = {
+                    symbolFilters.stepSize,
+                    symbolFilters.tickSize,
+                    symbolFilters.minQty,
+                    symbolFilters.minNotional,
+                };
+                exposureInput.requestedQuantity = cappedRequestedQty;
+                exposureInput.normalizedQuantity = orderQty;
+                exposureInput.liveMode = modeText.trimmed().compare(QStringLiteral("Live"), Qt::CaseInsensitive) == 0;
+                exposureInput.liveAllowAutoBumpToMinOrder = liveSafetyConfig.liveAllowAutoBumpToMinOrder;
+                exposureInput.maxAutoBumpPercent = normalizedRiskControls.value(QStringLiteral("max_auto_bump_percent"))
+                    .toDouble(liveSafetyConfig.maxAutoBumpPercent);
+                exposureInput.autoBumpPercentMultiplier = normalizedRiskControls.value(QStringLiteral("auto_bump_percent_multiplier"))
+                    .toDouble(liveSafetyConfig.autoBumpPercentMultiplier);
+                exposureInput.marginOverTargetTolerance = ratioControl(
+                    QStringLiteral("margin_over_target_tolerance"),
+                    0.05);
+                exposureInput.marginFilterSlippage = ratioControl(
+                    QStringLiteral("margin_filter_slippage"),
+                    0.1);
+                exposureInput.addOnly = normalizedStrategyControls.value(QStringLiteral("add_only")).toBool(false);
+                exposureInput.dualSide = hedgeMode;
+                exposureInput.netPositionAmt = netPositionAmt;
+                const NativeOrderSafety::CapitalExposureGuardResult exposureGuard =
+                    NativeOrderSafety::guardFuturesCapitalExposure(exposureInput);
+                if (!exposureGuard.allowed) {
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked by Python-parity capital guard: %4")
+                            .arg(openSide, symbol, interval, exposureGuard.reason));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
+                orderQty = exposureGuard.quantityEstimate;
+                openReduceOnly = exposureGuard.reduceOnly;
+            }
+
             const QString openPositionSide = futures && hedgeMode ? openSide : QString();
             QString openOrderId;
             double filledQty = orderQty;
@@ -1227,6 +1471,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     {QStringLiteral("type"), QStringLiteral("MARKET")},
                     {QStringLiteral("quantity"), QString::number(orderQty, 'f', 12)},
                 };
+                if (openReduceOnly) {
+                    orderGuardInput.params.append({QStringLiteral("reduceOnly"), QStringLiteral("true")});
+                }
                 if (!openPositionSide.isEmpty()) {
                     orderGuardInput.params.append({QStringLiteral("positionSide"), openPositionSide});
                 }
@@ -1237,7 +1484,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 orderGuardInput.marginMode = dashboardMarginModeCombo_
                     ? dashboardMarginModeCombo_->currentText()
                     : QStringLiteral("Isolated");
-                orderGuardInput.positionPct = positionPct;
+                // Python's submit guard validates the top-level live safety
+                // percentage; pair controls affect sizing above, not this cap.
+                orderGuardInput.positionPct = globalPositionPct;
                 orderGuardInput.config = liveSafetyConfig;
                 orderGuardInput.hasFilters = true;
                 orderGuardInput.filters = {
@@ -1273,7 +1522,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                           isTestnet,
                           openPositionSide,
                           10000,
-                          rowConnectorCfg.baseUrl)
+                          rowConnectorCfg.baseUrl,
+                          openReduceOnly)
                     : BinanceRestClient::placeSpotMarketOrder(
                           apiKey,
                           apiSecret,
@@ -1414,12 +1664,14 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             const double roiBasisUsdt = std::max(1e-9, liveShare.roiBasisUsdt);
             const double marginRatio = (livePos && livePos->marginRatio > 0.0) ? livePos->marginRatio : 0.0;
             const double liqPrice = (livePos && livePos->liquidationPrice > 0.0) ? livePos->liquidationPrice : 0.0;
+            const QStringList triggerSources = decisionSignalSources(nativeOpenDecision);
             dashboardRuntimeOpenPositions_.insert(
                 key,
                 RuntimePosition{
                     openSide,
                     interval,
                     triggerSource,
+                    triggerSources,
                     rowConnectorCfg.key,
                     rowConnectorCfg.baseUrl,
                     entryPrice,
@@ -1488,11 +1740,14 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         }
 
         RuntimePosition &openPos = openIt.value();
-        const QString signalSource = openPos.signalSource.trimmed().toLower();
+        QStringList signalSources = normalizedSignalSources(openPos.signalSources);
+        if (signalSources.isEmpty()) {
+            signalSources = normalizedSignalSources(QStringList{openPos.signalSource});
+        }
         NativeStrategyRuntime::StrategySignalInput closeSignalInput = fullSignalInput;
-        if (!signalSource.isEmpty() && signalSource != QStringLiteral("generic")) {
+        if (!signalSources.isEmpty()) {
             for (auto iterator = closeSignalInput.rules.begin(); iterator != closeSignalInput.rules.end(); ++iterator) {
-                iterator.value().enabled = iterator.key() == signalSource;
+                iterator.value().enabled = signalSources.contains(iterator.key());
             }
         }
         closeSignalInput.side = openPos.side == QStringLiteral("LONG")
@@ -1793,12 +2048,12 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                         appendDashboardPositionLog(
                             QString("%1 %2@%3 close confirmed (%4): position is already flat on exchange.")
                                 .arg(openPos.side, symbol, interval, rowConnectorCfg.key));
-                        if (indicatorCloseTriggered && !openPos.signalSource.trimmed().isEmpty()) {
-                            NativeStrategyRuntime::recordIndicatorClose(
+                        if ((indicatorCloseTriggered || stopLossTriggered) && !signalSources.isEmpty()) {
+                            NativeStrategyRuntime::recordIndicatorCloses(
                                 normalizedRiskControls,
                                 symbol,
                                 interval,
-                                openPos.signalSource,
+                                signalSources,
                                 openPos.side == QStringLiteral("LONG") ? QStringLiteral("BUY") : QStringLiteral("SELL"),
                                 nowMs,
                                 dashboardRuntimeIndicatorOrderGuardStates_,
@@ -1888,17 +2143,6 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             if (openPos.quantity <= 1e-9) {
                 openPos.quantity = 0.0;
             }
-            if (indicatorCloseTriggered && !openPos.signalSource.trimmed().isEmpty()) {
-                NativeStrategyRuntime::recordIndicatorClose(
-                    normalizedRiskControls,
-                    symbol,
-                    interval,
-                    openPos.signalSource,
-                    openPos.side == QStringLiteral("LONG") ? QStringLiteral("BUY") : QStringLiteral("SELL"),
-                    nowMs,
-                    dashboardRuntimeIndicatorOrderGuardStates_,
-                    dashboardRuntimeIndicatorReentryBlocks_);
-            }
             appendDashboardPositionLog(
                 QString("%1 %2@%3 partially closed at %4, qty=%5 remaining=%6, PNL=%7 USDT (%8%%), connector=%9, orderId=%10: %11")
                     .arg(openPos.side,
@@ -1927,12 +2171,12 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                      closeReason,
                      rowConnectorCfg.key,
                      closeOrderId));
-        if (indicatorCloseTriggered && !openPos.signalSource.trimmed().isEmpty()) {
-            NativeStrategyRuntime::recordIndicatorClose(
+        if ((indicatorCloseTriggered || stopLossTriggered) && !signalSources.isEmpty()) {
+            NativeStrategyRuntime::recordIndicatorCloses(
                 normalizedRiskControls,
                 symbol,
                 interval,
-                openPos.signalSource,
+                signalSources,
                 openPos.side == QStringLiteral("LONG") ? QStringLiteral("BUY") : QStringLiteral("SELL"),
                 nowMs,
                 dashboardRuntimeIndicatorOrderGuardStates_,

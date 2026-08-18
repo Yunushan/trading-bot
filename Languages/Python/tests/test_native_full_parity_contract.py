@@ -456,7 +456,11 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("reqwest.workspace = true", core_cargo)
         self.assertIn("sha2.workspace = true", core_cargo)
         self.assertIn("tungstenite.workspace = true", core_cargo)
-        self.assertIn('tungstenite = { version = "0.30", features = ["native-tls"] }', rust_workspace_cargo)
+        self.assertIn(
+            'tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }',
+            rust_workspace_cargo,
+        )
+        self.assertIn('TRADING_BOT_RUST_CA_BUNDLE', _read(rust_root / "crates" / "core" / "src" / "tls.rs"))
         self.assertIn("pub fn set_read_timeout", streams)
         self.assertIn("configure_websocket_read_timeout", streams)
         self.assertIn("pub fn connect_subscription_with_timeout", streams)
@@ -980,6 +984,14 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("native_runtime_exposure_guard_blocks_existing_indicator_margin_over_cap", native_runtime)
         self.assertIn("native_runtime_exposure_guard_blocks_unavailable_margin_like_python", native_runtime)
         self.assertIn("native_runtime_exposure_guard_converts_one_way_add_only_flip_to_reduce_only", native_runtime)
+        self.assertIn(
+            "native_runtime_indicator_exposure_preserves_python_interval_and_side_scope",
+            native_runtime,
+        )
+        self.assertIn(
+            "guarded_execution_cycle_audits_a_valid_paper_signal_without_calling_executor",
+            native_runtime,
+        )
         self.assertIn("native runtime loop coordinator", core)
         self.assertIn("live stream ingestion bridge", core)
         self.assertIn("hedge/one-way close planning", core)
@@ -2367,15 +2379,25 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("buildWorkerLifecycleSnapshot", native_strategy_runtime_header)
         self.assertIn("indicator output key expansion", native_strategy_runtime_source)
         self.assertIn("live-vs-closed candle signal indexing", native_strategy_runtime_source)
+        self.assertIn("recordIndicatorCloses", native_strategy_runtime_header)
+        self.assertIn("void recordIndicatorCloses(", native_strategy_runtime_source)
         self.assertIn('QStringLiteral("native-cpp")', native_strategy_runtime_source)
         self.assertIn('QStringLiteral("binance-spot-usds-and-coin-futures")', native_strategy_runtime_source)
+        self.assertIn("const QStringList triggerSources = decisionSignalSources(nativeOpenDecision);", native_runtime_source)
+        self.assertIn("(indicatorCloseTriggered || stopLossTriggered) && !signalSources.isEmpty()", native_runtime_source)
+        self.assertIn("NativeStrategyRuntime::recordIndicatorCloses", native_runtime_source)
         self.assertIn("buildPromptRoutePayload", native_llm_advisory_header)
+        self.assertIn("buildChatRequest", native_llm_advisory_header)
         self.assertIn("buildLocalModelRoutePayload", native_llm_advisory_header)
         self.assertIn("describeLocalModelStatus", native_llm_advisory_header)
         self.assertIn("outputPolicyViolations", native_llm_advisory_header)
         self.assertIn("renderPromptResult", native_llm_advisory_header)
         self.assertIn("Execution boundary: this LLM is advisory only", native_llm_advisory_source)
         self.assertIn("NativeOrderSafety::redactText", native_llm_advisory_source)
+        self.assertIn("canonicalJsonText", native_llm_advisory_source)
+        self.assertIn("openAiReasoningBody", native_llm_advisory_source)
+        self.assertIn("anthropicThinkingBody", native_llm_advisory_source)
+        self.assertIn("geminiGenerationConfig", native_llm_advisory_source)
         self.assertIn("order_execution_claim", native_llm_advisory_source)
         self.assertIn("struct OrderSubmitIntent", native_order_safety_header)
         self.assertIn("struct LiveTradingSafetyConfig", native_order_safety_header)
@@ -2496,6 +2518,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("NativeLlmAdvisory::renderPromptResult", native_order_safety_tests)
         self.assertIn("NativeLlmAdvisory::outputPolicyViolations", native_order_safety_tests)
         self.assertIn("NativeLlmAdvisory::buildLocalModelRoutePayload", native_order_safety_tests)
+        self.assertIn("PythonParityContract::kPythonLlmChatRequestReferenceJson", native_order_safety_tests)
+        self.assertIn("NativeLlmAdvisory::buildChatRequest", native_order_safety_tests)
         self.assertIn("NativeLlmAdvisory::describeLocalModelStatus", native_order_safety_tests)
         self.assertIn("native LLM render should redact secret-bearing text", native_order_safety_tests)
         self.assertIn("NativeStartupPackaging::desktopEntrypointContract", native_order_safety_tests)
@@ -2526,6 +2550,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("NativeStrategyRuntime::normalizeStrategyControls", native_order_safety_tests)
         self.assertIn("NativeStrategyRuntime::buildCleanOverrideEntry", native_order_safety_tests)
         self.assertIn("NativeStrategyRuntime::buildWorkerLifecycleSnapshot", native_order_safety_tests)
+        self.assertIn("C++ close ledger should record every Python-owned indicator source", native_order_safety_tests)
+        self.assertIn("C++ close ledger should preserve multi-indicator ownership", native_order_safety_tests)
         self.assertIn("native strategy signal should choose first BUY trigger like Python", native_order_safety_tests)
         self.assertIn("native override cleanup should preserve backtest provenance", native_order_safety_tests)
         self.assertIn("native strategy lifecycle should report the C++ execution owner", native_order_safety_tests)

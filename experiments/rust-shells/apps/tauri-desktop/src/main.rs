@@ -28,11 +28,12 @@ use trading_bot_core::{
     config_persistence::{
         load_service_config_file, service_config_file_status, write_service_config_file,
     },
-    exchange_connectors::DEFAULT_CONNECTOR_BACKEND,
+    exchange_connectors::{DEFAULT_CONNECTOR_BACKEND, normalize_connector_backend},
     generated_python_parity::{
-        PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS, PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES,
-        PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER, PYTHON_NATIVE_RUNTIME_EXCHANGES,
-        PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
+        PYTHON_CONNECTOR_OPTIONS, PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS,
+        PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES, PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER,
+        PYTHON_NATIVE_RUNTIME_EXCHANGES, PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
+        PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
     },
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
@@ -42,6 +43,7 @@ use trading_bot_core::{
         NativeRuntimeGuardedExecutionCycleInput, NativeRuntimeGuardedExecutionCycleSnapshot,
         NativeRuntimeLoop, NativeRuntimeLoopConfig, NativeRuntimeOperationalPreflightInput,
         NativeRuntimeReadOnlyMarketCycleInput, NativeRuntimeRiskPositionInput,
+        native_runtime_position_signal,
     },
     order_audit::{ConnectorOrderCircuitBreakerConfig, OrderAuditConfig},
     order_guard::{LiveTradingSafetyConfig, OrderSymbolFilters},
@@ -882,10 +884,7 @@ impl NativeRuntimeState {
                     "Native runtime market configuration changed; stop and restart the runtime before polling.",
                 );
             };
-            ensure_native_runtime_stream_worker(
-                &mut managed.pairs[pair_index],
-                &spec,
-            );
+            ensure_native_runtime_stream_worker(&mut managed.pairs[pair_index], &spec);
         }
         let mut input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
             now_ms,
@@ -1206,6 +1205,9 @@ impl NativeRuntimeState {
                 symbol_settings.as_ref(),
             )
         };
+        if let Some(runtime) = managed.pairs[pair_index].runtime.as_mut() {
+            runtime.reconcile_indicator_exposure_positions(&positions);
+        }
         let reconciliation = {
             let portfolio = &mut managed.pairs[pair_index].portfolio;
             reconcile_missing_position_state(
@@ -1336,10 +1338,7 @@ impl NativeRuntimeState {
                     "Native runtime market configuration changed; stop and restart the runtime before executing.",
                 );
             };
-            ensure_native_runtime_stream_worker(
-                &mut managed.pairs[pair_index],
-                &spec,
-            );
+            ensure_native_runtime_stream_worker(&mut managed.pairs[pair_index], &spec);
         }
         if api_key.trim().is_empty() || api_secret.trim().is_empty() {
             return NativeRuntimeExecutionResponse::error(
@@ -1479,12 +1478,10 @@ impl NativeRuntimeState {
             ),
             risk_wallet_usdt: account_bootstrap.balance.total_balance,
             filters: Some(OrderSymbolFilters::from(&filters)),
-            market: match spec.market {
-                BinanceMarket::Futures => "futures",
-                BinanceMarket::CoinFutures => "coin-futures",
-                BinanceMarket::Spot => "spot",
-            }
-            .to_owned(),
+            // Python's order guard has one futures contract for both USD-M
+            // and Coin-M. Keep the Binance market family available to the
+            // native account/risk paths, but pass the canonical guard value.
+            market: native_runtime_order_guard_market(spec.market).to_owned(),
             connector_state: "active".to_owned(),
             connector_health: "ok".to_owned(),
             operational_preflight: runtime.build_operational_preflight(
@@ -2116,6 +2113,89 @@ fn python_ui_default_text(key: &str, fallback: &str) -> String {
         .to_owned()
 }
 
+fn native_runtime_account_is_futures(config: &Value) -> bool {
+    let default_account_type = python_execution_default_text("account_type", "Futures");
+    let account_type = first_config_string(config, "account_type", &default_account_type);
+    account_type.trim().to_ascii_uppercase().starts_with("FUT")
+}
+
+fn native_runtime_connector_allowed_for_account(connector_backend: &str, futures: bool) -> bool {
+    native_runtime_connector_market_families(connector_backend)
+        .iter()
+        .any(|market_family| {
+            if futures {
+                market_family.ends_with("-futures")
+            } else {
+                *market_family == "spot"
+            }
+        })
+}
+
+fn native_runtime_recommended_connector_for_account(futures: bool) -> String {
+    let preferred_family = if futures { "usd-m-futures" } else { "spot" };
+    PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES
+        .iter()
+        .find_map(|(backend, market_family)| {
+            (*market_family == preferred_family).then_some((*backend).to_owned())
+        })
+        .unwrap_or_else(|| DEFAULT_CONNECTOR_BACKEND.to_owned())
+}
+
+fn native_runtime_connector_input_is_owned(config: &Value) -> bool {
+    let default_connector =
+        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
+    let raw_connector = first_config_string(config, "connector_backend", &default_connector);
+    let raw = raw_connector.trim();
+    if raw.is_empty() {
+        return true;
+    }
+
+    let normalized = normalize_connector_backend(raw);
+    let is_direct_backend = PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS
+        .iter()
+        .any(|backend| backend.eq_ignore_ascii_case(&normalized));
+    if !is_direct_backend {
+        return false;
+    }
+
+    if let Some(option) = PYTHON_CONNECTOR_OPTIONS.iter().find(|option| {
+        option.key.eq_ignore_ascii_case(raw) || option.label.eq_ignore_ascii_case(raw)
+    }) {
+        return PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS
+            .iter()
+            .any(|backend| backend.eq_ignore_ascii_case(option.key));
+    }
+
+    // Python's normalizer intentionally falls back to USD-M for unknown
+    // values. Ownership still needs an explicit native identity so a
+    // non-native option such as OANDA cannot silently enter Binance REST.
+    if !normalized.eq_ignore_ascii_case(DEFAULT_CONNECTOR_BACKEND) {
+        return true;
+    }
+
+    let text = raw.to_ascii_lowercase();
+    text == "binance_sdk_derivatives_trading_usds_futures"
+        || (text.contains("sdk")
+            && text.contains("future")
+            && (text.contains("usd") || text.contains("usds")))
+}
+
+fn native_runtime_effective_connector_backend(config: &Value) -> String {
+    let default_connector =
+        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
+    let normalized = normalize_connector_backend(first_config_string(
+        config,
+        "connector_backend",
+        &default_connector,
+    ));
+    let futures = native_runtime_account_is_futures(config);
+    if native_runtime_connector_allowed_for_account(&normalized, futures) {
+        normalized
+    } else {
+        native_runtime_recommended_connector_for_account(futures)
+    }
+}
+
 fn native_runtime_ownership_error(config: &Value) -> Option<String> {
     let default_exchange = python_ui_default_text("selected_exchange", "Binance");
     let selected_exchange = first_config_string(config, "selected_exchange", &default_exchange);
@@ -2128,16 +2208,20 @@ fn native_runtime_ownership_error(config: &Value) -> Option<String> {
         ));
     }
 
-    let default_connector =
-        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
-    let connector_backend = first_config_string(config, "connector_backend", &default_connector);
-    let connector_backend_key = connector_backend
-        .trim()
-        .to_ascii_lowercase()
-        .replace('_', "-");
+    let connector_backend = first_config_string(
+        config,
+        "connector_backend",
+        &python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND),
+    );
+    if !native_runtime_connector_input_is_owned(config) {
+        return Some(format!(
+            "Native Rust runtime coordinates only the Python-owned native connector boundary; '{connector_backend}' remains {PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER}-owned."
+        ));
+    }
+    let effective_connector_backend = native_runtime_effective_connector_backend(config);
     if PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS
         .iter()
-        .any(|backend| backend.eq_ignore_ascii_case(&connector_backend_key))
+        .any(|backend| backend.eq_ignore_ascii_case(&effective_connector_backend))
     {
         return None;
     }
@@ -2207,11 +2291,7 @@ fn native_runtime_market_poll_spec_for_config(
     if let Some(error) = native_runtime_ownership_error(config) {
         return Err(error);
     }
-    let default_connector =
-        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
-    let connector_backend = first_config_string(config, "connector_backend", &default_connector)
-        .to_ascii_lowercase()
-        .replace('_', "-");
+    let connector_backend = native_runtime_effective_connector_backend(config);
     let default_indicator_source = python_ui_default_text("indicator_source", "Binance futures");
     let configured_indicator_source = native_runtime_configured_indicator_source(config);
     let indicator_source = configured_indicator_source
@@ -2494,6 +2574,13 @@ fn native_runtime_market_label(market: BinanceMarket) -> &'static str {
     }
 }
 
+fn native_runtime_order_guard_market(market: BinanceMarket) -> &'static str {
+    match market {
+        BinanceMarket::Futures | BinanceMarket::CoinFutures => "futures",
+        BinanceMarket::Spot => "spot",
+    }
+}
+
 #[cfg(test)]
 fn native_runtime_account_bootstrap_is_fresh(
     bootstrap: &NativeRuntimeAccountBootstrapState,
@@ -2539,6 +2626,41 @@ fn config_f64(config: &Value, key: &str, default: f64) -> f64 {
         .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
         .filter(|value| value.is_finite())
         .unwrap_or(default)
+}
+
+fn native_runtime_position_pct_fraction(config: &Value) -> f64 {
+    let raw = config_f64(
+        config,
+        "position_pct",
+        python_execution_default_f64("position_pct", 2.0),
+    );
+    let units = {
+        let configured = first_config_string(config, "position_pct_units", "");
+        if configured.is_empty() {
+            first_config_string(config, "_position_pct_units", "")
+        } else {
+            configured
+        }
+    };
+    let token = units.trim().to_ascii_lowercase();
+    let canonical = PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES
+        .iter()
+        .find(|(alias, canonical)| {
+            alias.eq_ignore_ascii_case(&token) || canonical.eq_ignore_ascii_case(&token)
+        })
+        .map(|(_, canonical)| *canonical);
+    let fraction = match canonical {
+        Some("percent") => raw / 100.0,
+        Some("fraction") => raw,
+        _ => {
+            if raw > 1.0 {
+                raw / 100.0
+            } else {
+                raw
+            }
+        }
+    };
+    fraction.clamp(0.0001, 1.0)
 }
 
 fn config_duration_ms(config: &Value, key: &str, default_seconds: f64) -> i64 {
@@ -2835,6 +2957,36 @@ fn native_runtime_exposure_input(
         .map(|position| position.initial_margin + position.open_order_margin)
         .filter(|value| value.is_finite() && *value > 0.0)
         .sum();
+    let mut existing_buy_side_margin = 0.0;
+    let mut existing_sell_side_margin = 0.0;
+    let mut active_buy_slot_count = 0;
+    let mut active_sell_slot_count = 0;
+    let mut buy_slot_already_active = false;
+    let mut sell_slot_already_active = false;
+    for position in &matching_positions {
+        let margin = [position.initial_margin, position.open_order_margin]
+            .into_iter()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .sum::<f64>();
+        let active = position.position_amt.is_finite() && position.position_amt.abs() > 1e-10;
+        match native_runtime_position_signal(position) {
+            Some("BUY") => {
+                existing_buy_side_margin += margin;
+                if active {
+                    active_buy_slot_count += 1;
+                    buy_slot_already_active = true;
+                }
+            }
+            Some("SELL") => {
+                existing_sell_side_margin += margin;
+                if active {
+                    active_sell_slot_count += 1;
+                    sell_slot_already_active = true;
+                }
+            }
+            _ => {}
+        }
+    }
     let net_position_amt = matching_positions
         .iter()
         .map(|position| position.position_amt)
@@ -2850,17 +3002,14 @@ fn native_runtime_exposure_input(
         symbol: spec.symbol.clone(),
         interval: spec.interval.clone(),
         side: "BOTH".to_owned(),
-        position_pct_fraction: (config_f64(
-            config,
-            "position_pct",
-            python_execution_default_f64("position_pct", 2.0),
-        ) / 100.0)
-            .clamp(0.0001, 1.0),
+        position_pct_fraction: native_runtime_position_pct_fraction(config),
         available_usdt: account.balance.available_balance.max(0.0),
         wallet_usdt: account.balance.total_balance.max(0.0),
         ledger_margin_total: total_margin,
         existing_indicator_margin: 0.0,
         existing_side_margin,
+        existing_buy_side_margin,
+        existing_sell_side_margin,
         active_slot_count: account
             .positions
             .iter()
@@ -2871,6 +3020,10 @@ fn native_runtime_exposure_input(
         slot_already_active: matching_positions.iter().any(|position| {
             position.position_amt.is_finite() && position.position_amt.abs() > 1e-10
         }),
+        active_buy_slot_count,
+        active_sell_slot_count,
+        buy_slot_already_active,
+        sell_slot_already_active,
         price,
         leverage: config_i64(
             config,
@@ -2903,8 +3056,16 @@ fn native_runtime_exposure_input(
             python_execution_default_f64("auto_bump_percent_multiplier", 10.0),
         )
         .clamp(0.0, 1_000.0),
-        margin_over_target_tolerance: 0.0,
-        margin_filter_slippage: 0.0,
+        margin_over_target_tolerance: config_f64(
+            config,
+            "margin_over_target_tolerance",
+            python_execution_default_f64("margin_over_target_tolerance", 0.05),
+        ),
+        margin_filter_slippage: config_f64(
+            config,
+            "margin_filter_slippage",
+            python_execution_default_f64("margin_filter_slippage", 0.1),
+        ),
         add_only: config_bool(config, "add_only", false),
         dual_side: account.position_mode.dual_side_position,
         net_position_amt,
@@ -3095,14 +3256,8 @@ fn native_runtime_config_for_effective_config(config: &Value) -> NativeRuntimeLo
         Some(loop_interval_override)
     };
 
-    let default_connector =
-        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
-    let connector_backend =
-        first_config_string(config, "connector_backend", &default_connector).to_ascii_lowercase();
-    let default_account_type = python_execution_default_text("account_type", "Futures");
-    let account_type = first_config_string(config, "account_type", &default_account_type);
-    let futures_account = !connector_backend.eq_ignore_ascii_case("binance-sdk-spot")
-        && !account_type.to_ascii_lowercase().contains("spot");
+    let connector_backend = native_runtime_effective_connector_backend(config);
+    let futures_account = native_runtime_account_is_futures(config);
     let default_symbol = if connector_backend.contains("coin-futures") {
         "BTCUSD_PERP".to_owned()
     } else {
@@ -5326,7 +5481,7 @@ mod tests {
         );
         assert!(spot.ok, "{}", spot.error);
         assert!(
-            !native_runtime_config(&json!({
+            native_runtime_config(&json!({
                 "selected_exchange": "Binance",
                 "connector_backend": "binance-sdk-spot",
                 "account_type": "Futures"
@@ -5344,6 +5499,20 @@ mod tests {
             1_700_000_000_000,
         );
         assert!(alias.ok, "{}", alias.error);
+
+        let delegated_connector = NativeRuntimeState::default().start(
+            &json!({
+                "selected_exchange": "Binance",
+                "connector_backend": "OANDA REST-v20"
+            }),
+            1_700_000_000_000,
+        );
+        assert!(!delegated_connector.ok);
+        assert!(
+            delegated_connector
+                .error
+                .contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER)
+        );
     }
 
     #[test]
@@ -5378,6 +5547,20 @@ mod tests {
         assert_eq!(coin.symbol, "BTCUSD_PERP");
         assert_eq!(coin.interval, "1m");
         assert!(coin.testnet);
+
+        let usds_label = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "Binance SDK Derivatives Trading USD-M Futures (Official Recommended)",
+            "account_type": "Futures"
+        }))
+        .expect("Python USD-M connector label should normalize to the native USD-M backend");
+        assert_eq!(usds_label.market, BinanceMarket::Futures);
+
+        let coin_label = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "Binance SDK Derivatives Trading COIN-M Futures",
+            "account_type": "Futures"
+        }))
+        .expect("Python COIN-M connector label should normalize to the native COIN-M backend");
+        assert_eq!(coin_label.market, BinanceMarket::CoinFutures);
 
         for backend in PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS {
             assert!(
@@ -5415,8 +5598,36 @@ mod tests {
             }
         }
 
+        for option in PYTHON_CONNECTOR_OPTIONS {
+            let declared_native = PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS
+                .iter()
+                .any(|backend| backend.eq_ignore_ascii_case(option.key));
+            let result = native_runtime_market_poll_spec(&json!({
+                "selected_exchange": "Binance",
+                "connector_backend": option.label,
+                "account_type": "Futures",
+            }));
+            if declared_native {
+                assert!(
+                    result.is_ok(),
+                    "Python-declared native connector label {} should be accepted: {:?}",
+                    option.label,
+                    result
+                );
+            } else {
+                let error = result
+                    .expect_err("Python-declared non-native connector should remain delegated");
+                assert!(
+                    error.contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER),
+                    "non-native connector label {} should identify the delegated owner: {error}",
+                    option.label
+                );
+            }
+        }
+
         let spot = native_runtime_market_poll_spec(&json!({
             "connector_backend": "binance-sdk-spot",
+            "account_type": "Spot",
             "symbols": ["ethusdt"],
             "mode": "Live"
         }))
@@ -5424,6 +5635,34 @@ mod tests {
         assert_eq!(spot.market, BinanceMarket::Spot);
         assert_eq!(spot.symbol, "ETHUSDT");
         assert!(!spot.testnet);
+
+        let mismatched_spot_for_futures = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "binance-sdk-spot",
+            "account_type": "Futures"
+        }))
+        .expect("Python should replace a spot-only connector for a Futures account");
+        assert_eq!(mismatched_spot_for_futures.market, BinanceMarket::Futures);
+
+        let mismatched_coin_for_spot = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "binance-sdk-derivatives-trading-coin-futures",
+            "account_type": "Spot"
+        }))
+        .expect("Python should replace a futures-only connector for a Spot account");
+        assert_eq!(mismatched_coin_for_spot.market, BinanceMarket::Spot);
+
+        let ccxt_label = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "CCXT (Unified)",
+            "account_type": "Spot"
+        }))
+        .expect("Python CCXT display label should normalize to the native CCXT backend");
+        assert_eq!(ccxt_label.market, BinanceMarket::Spot);
+
+        let delegated_option = native_runtime_market_poll_spec(&json!({
+            "connector_backend": "OANDA REST-v20",
+            "account_type": "Futures"
+        }))
+        .expect_err("non-native Python connector options should remain delegated");
+        assert!(delegated_option.contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER));
 
         let connector_alias = native_runtime_market_poll_spec(&json!({
             "connector_backend": "binance-connector",
@@ -5474,6 +5713,121 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_coin_m_uses_python_futures_order_guard_contract() {
+        assert_eq!(
+            native_runtime_order_guard_market(BinanceMarket::Futures),
+            "futures"
+        );
+        assert_eq!(
+            native_runtime_order_guard_market(BinanceMarket::CoinFutures),
+            "futures"
+        );
+        assert_eq!(
+            native_runtime_order_guard_market(BinanceMarket::Spot),
+            "spot"
+        );
+    }
+
+    #[test]
+    fn native_runtime_exposure_input_preserves_python_margin_guard_options() {
+        let bootstrap = account_bootstrap(1_700_000_000_000, true, "ready");
+        let spec = NativeRuntimeMarketPollSpec {
+            market: BinanceMarket::Futures,
+            symbol: "BTCUSDT".to_owned(),
+            interval: "1m".to_owned(),
+            lookback: 200,
+            testnet: true,
+        };
+        let filters = BinanceFuturesSymbolFilters {
+            symbol: "BTCUSDT".to_owned(),
+            min_qty: 0.001,
+            max_qty: 0.0,
+            step_size: 0.001,
+            min_notional: 5.0,
+            tick_size: 0.1,
+            quantity_precision: 3,
+            price_precision: 2,
+            quote_asset_precision: 8,
+            max_leverage: 125,
+        };
+
+        let defaults =
+            native_runtime_exposure_input(&json!({}), &spec, &bootstrap, 100.0, &filters);
+        assert_eq!(defaults.margin_over_target_tolerance, 0.05);
+        assert_eq!(defaults.margin_filter_slippage, 0.1);
+
+        let configured = native_runtime_exposure_input(
+            &json!({
+                "margin_over_target_tolerance": "12.5",
+                "margin_filter_slippage": 0.25
+            }),
+            &spec,
+            &bootstrap,
+            100.0,
+            &filters,
+        );
+        assert_eq!(configured.margin_over_target_tolerance, 12.5);
+        assert_eq!(configured.margin_filter_slippage, 0.25);
+    }
+
+    #[test]
+    fn native_runtime_exposure_input_separates_python_signal_sides_and_symbols() {
+        let mut bootstrap = account_bootstrap(1_700_000_000_000, true, "ready");
+        bootstrap.positions = vec![
+            BinanceFuturesPosition {
+                symbol: "BTCUSDT".to_owned(),
+                position_side: "LONG".to_owned(),
+                position_amt: 1.0,
+                initial_margin: 10.0,
+                open_order_margin: 2.0,
+                ..Default::default()
+            },
+            BinanceFuturesPosition {
+                symbol: "BTCUSDT".to_owned(),
+                position_side: "SHORT".to_owned(),
+                position_amt: 1.0,
+                initial_margin: 30.0,
+                ..Default::default()
+            },
+            BinanceFuturesPosition {
+                symbol: "ETHUSDT".to_owned(),
+                position_side: "LONG".to_owned(),
+                position_amt: 1.0,
+                initial_margin: 100.0,
+                ..Default::default()
+            },
+        ];
+        let spec = NativeRuntimeMarketPollSpec {
+            market: BinanceMarket::Futures,
+            symbol: "BTCUSDT".to_owned(),
+            interval: "1m".to_owned(),
+            lookback: 200,
+            testnet: true,
+        };
+        let filters = BinanceFuturesSymbolFilters {
+            symbol: "BTCUSDT".to_owned(),
+            min_qty: 0.001,
+            max_qty: 0.0,
+            step_size: 0.001,
+            min_notional: 5.0,
+            tick_size: 0.1,
+            quantity_precision: 3,
+            price_precision: 2,
+            quote_asset_precision: 8,
+            max_leverage: 125,
+        };
+
+        let input = native_runtime_exposure_input(&json!({}), &spec, &bootstrap, 100.0, &filters);
+
+        assert_eq!(input.existing_buy_side_margin, 12.0);
+        assert_eq!(input.existing_sell_side_margin, 30.0);
+        assert_eq!(input.active_buy_slot_count, 1);
+        assert_eq!(input.active_sell_slot_count, 1);
+        assert!(input.buy_slot_already_active);
+        assert!(input.sell_slot_already_active);
+    }
+
+    #[test]
     fn native_runtime_stream_activation_matches_python_transport_policy() {
         let futures_spec = NativeRuntimeMarketPollSpec {
             market: BinanceMarket::Futures,
@@ -5498,8 +5852,14 @@ mod tests {
             Some("false")
         ));
         assert!(!native_runtime_stream_requested(&futures_spec, None, None));
-        assert!(!native_runtime_indicator_data_testnet(&futures_spec, Some("true")));
-        assert!(native_runtime_indicator_data_testnet(&futures_spec, Some("false")));
+        assert!(!native_runtime_indicator_data_testnet(
+            &futures_spec,
+            Some("true")
+        ));
+        assert!(native_runtime_indicator_data_testnet(
+            &futures_spec,
+            Some("false")
+        ));
 
         let spot_spec = NativeRuntimeMarketPollSpec {
             market: BinanceMarket::Spot,
@@ -5898,6 +6258,42 @@ mod tests {
                 .and_then(Value::as_f64)
                 .expect("Python execution defaults must define circuit window")
         );
+    }
+
+    #[test]
+    fn native_runtime_position_pct_units_match_python_sizing_contract() {
+        let cases = [
+            (
+                json!({"position_pct": 25.0, "position_pct_units": "percent"}),
+                0.25,
+            ),
+            (
+                json!({"position_pct": 25.0, "position_pct_units": "percentage"}),
+                0.25,
+            ),
+            (
+                json!({"position_pct": 0.4, "position_pct_units": "ratio"}),
+                0.4,
+            ),
+            (
+                json!({"position_pct": 0.4, "position_pct_units": "fraction"}),
+                0.4,
+            ),
+            (json!({"position_pct": 25.0}), 0.25),
+            (json!({"position_pct": 0.4}), 0.4),
+            (
+                json!({"position_pct": 0.4, "position_pct_units": "", "_position_pct_units": "ratio"}),
+                0.4,
+            ),
+        ];
+
+        for (config, expected) in cases {
+            assert_eq!(
+                native_runtime_position_pct_fraction(&config),
+                expected,
+                "config={config}"
+            );
+        }
     }
 
     #[test]
