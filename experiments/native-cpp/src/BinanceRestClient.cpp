@@ -2079,8 +2079,13 @@ double BinanceRestClient::floorToStep(double value, double step) {
     if (step <= 0.0 || !qIsFinite(value) || !qIsFinite(step)) {
         return value;
     }
-    const long double units = std::trunc(
-        static_cast<long double>(value) / static_cast<long double>(step));
+    long double quotient = static_cast<long double>(value) / static_cast<long double>(step);
+    const long double nearest = std::round(quotient);
+    const long double tolerance = 1e-12L * std::max(1.0L, std::fabs(quotient));
+    if (std::fabs(quotient - nearest) <= tolerance) {
+        quotient = nearest;
+    }
+    const long double units = std::trunc(quotient);
     return static_cast<double>(units * static_cast<long double>(step));
 }
 
@@ -2088,8 +2093,13 @@ double BinanceRestClient::ceilToStep(double value, double step) {
     if (step <= 0.0 || !qIsFinite(value) || !qIsFinite(step)) {
         return value;
     }
-    const long double units = std::ceil(
-        static_cast<long double>(value) / static_cast<long double>(step));
+    long double quotient = static_cast<long double>(value) / static_cast<long double>(step);
+    const long double nearest = std::round(quotient);
+    const long double tolerance = 1e-12L * std::max(1.0L, std::fabs(quotient));
+    if (std::fabs(quotient - nearest) <= tolerance) {
+        quotient = nearest;
+    }
+    const long double units = std::ceil(quotient);
     return static_cast<double>(units * static_cast<long double>(step));
 }
 
