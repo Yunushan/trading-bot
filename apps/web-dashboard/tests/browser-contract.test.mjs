@@ -117,6 +117,23 @@ async function resolveBrowserExecutable(browser, explicit) {
   throw new Error(`Could not find ${browser} executable. Tried: ${candidates.join(", ")}`);
 }
 
+async function readPlaywrightBrowserResult(page, browser) {
+  await page.waitForFunction(
+    (attribute) => document.documentElement.hasAttribute(attribute),
+    RESULT_ATTRIBUTE,
+    { timeout: 30_000 },
+  );
+  const rawPayload = await page.locator("html").getAttribute(RESULT_ATTRIBUTE);
+  if (!rawPayload) {
+    throw new Error(`${browser} browser contract did not produce a result payload.`);
+  }
+  const payload = JSON.parse(decodeURIComponent(rawPayload));
+  if (!payload.ok) {
+    throw new Error(`${browser} browser contract failed in page: ${payload.error}`);
+  }
+  return payload;
+}
+
 async function runFirefoxBrowserContract(targetUrl) {
   let firefox;
   try {
@@ -129,7 +146,7 @@ async function runFirefoxBrowserContract(targetUrl) {
 
   let browser;
   try {
-    browser = await firefox.launch({ headless: true });
+    browser = await firefox.launch({ headless: true, timeout: 30_000 });
   } catch (error) {
     throw new Error(
       `Firefox contract requires the Playwright Firefox browser. Run npx --prefix apps/web-dashboard playwright install firefox first. ${error?.message || error}`,
@@ -138,15 +155,8 @@ async function runFirefoxBrowserContract(targetUrl) {
 
   try {
     const page = await browser.newPage();
-    await page.goto(targetUrl, { waitUntil: "networkidle" });
-    const rawPayload = await page.locator("html").getAttribute(RESULT_ATTRIBUTE);
-    if (!rawPayload) {
-      throw new Error("Firefox browser contract did not produce a result payload.");
-    }
-    const payload = JSON.parse(decodeURIComponent(rawPayload));
-    if (!payload.ok) {
-      throw new Error(`Firefox browser contract failed in page: ${payload.error}`);
-    }
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const payload = await readPlaywrightBrowserResult(page, "Firefox");
     return {
       browser: "firefox",
       executable: "playwright-firefox",
@@ -169,7 +179,7 @@ async function runEdgeBrowserContract(targetUrl) {
 
   let browser;
   try {
-    browser = await chromium.launch({ channel: "msedge", headless: true });
+    browser = await chromium.launch({ channel: "msedge", headless: true, timeout: 30_000 });
   } catch (error) {
     throw new Error(
       `Edge contract requires a locally installed Microsoft Edge browser. ${error?.message || error}`,
@@ -178,15 +188,8 @@ async function runEdgeBrowserContract(targetUrl) {
 
   try {
     const page = await browser.newPage();
-    await page.goto(targetUrl, { waitUntil: "networkidle" });
-    const rawPayload = await page.locator("html").getAttribute(RESULT_ATTRIBUTE);
-    if (!rawPayload) {
-      throw new Error("Edge browser contract did not produce a result payload.");
-    }
-    const payload = JSON.parse(decodeURIComponent(rawPayload));
-    if (!payload.ok) {
-      throw new Error(`Edge browser contract failed in page: ${payload.error}`);
-    }
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const payload = await readPlaywrightBrowserResult(page, "Edge");
     return {
       browser: "edge",
       executable: "msedge",
