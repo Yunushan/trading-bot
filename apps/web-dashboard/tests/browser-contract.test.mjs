@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -93,8 +93,12 @@ function runProcess(command, args, options = {}) {
 
 async function commandExists(command) {
   if (isExecutablePath(command)) {
-    const result = await runProcess(command, ["--version"], { timeoutMs: 10000 });
-    return result.ok;
+    try {
+      await access(command);
+      return true;
+    } catch {
+      return false;
+    }
   }
   const lookup =
     process.platform === "win32"
@@ -376,11 +380,14 @@ async function main() {
         "--disable-dev-shm-usage",
         "--no-first-run",
         "--virtual-time-budget=5000",
-        `--user-data-dir=${profileDir}`,
-        "--dump-dom",
-        targetUrl,
-      ];
-      const result = await runProcess(executable, commandArgs, { timeoutMs: 30000 });
+      `--user-data-dir=${profileDir}`,
+      "--dump-dom",
+      targetUrl,
+    ];
+    if (process.platform === "win32") {
+      commandArgs.push("--no-sandbox");
+    }
+    const result = await runProcess(executable, commandArgs, { timeoutMs: 30000 });
       if (!result.ok) {
         throw new Error(
           `${args.browser} browser contract failed to launch or exited non-zero (${result.returncode}). ${result.stderr}`,
