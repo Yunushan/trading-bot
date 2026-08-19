@@ -27,6 +27,10 @@ from app.settings.validation import (  # noqa: E402
     _ALLOWED_RUNTIME_CONFIG_KEYS,
 )
 from tools.generate_native_parity_contracts import (  # noqa: E402
+    _cpp_string,
+    _python_option_catalog_manifest,
+    _python_option_catalog_json,
+    _rust_string,
     CPP_INDICATOR_REFERENCE_OUTPUT,
     CPP_EXCHANGE_SUPPORT_REFERENCE_OUTPUT,
     CPP_PORTFOLIO_REFERENCE_OUTPUT,
@@ -117,6 +121,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_strategy_runtime_uses_python_source_options",
     "rust_native_strategy_runtime_uses_python_live_signal_fixture",
     "rust_native_strategy_runtime_uses_python_interval_timing_fixture",
+    "rust_native_indicator_runtime_uses_python_enabled_fixtures",
     "rust_native_backtest_runtime_uses_python_reference_fixture",
     "rust_native_backtest_batch_runtime_uses_python_reference_fixture",
     "rust_native_backtest_interval_timing_uses_python_reference_fixture",
@@ -564,6 +569,44 @@ def _native_contract_percentages(
         for target in ("cpp", "rust")
     }
     config_percentages = _config_contract_percentages(config_key_contract)
+    manifest_contract = feature_option_contract.get("option_catalog_manifest", {})
+    manifest_targets = manifest_contract.get("targets", {}) if isinstance(manifest_contract, dict) else {}
+    manifest_percentages = {
+        target: _percentage(
+            1 if isinstance(manifest_targets, dict) and bool(
+                isinstance(manifest_targets.get(target), dict)
+                and manifest_targets[target].get("ok")
+            ) else 0,
+            1,
+        )
+        for target in ("cpp", "rust")
+    }
+    manifest_value_percentages = {
+        target: _percentage(
+            1 if isinstance(manifest_targets, dict) and bool(
+                isinstance(manifest_targets.get(target), dict)
+                and manifest_targets[target].get("catalog_values_exact")
+            ) else 0,
+            1,
+        )
+        for target in ("cpp", "rust")
+    }
+    catalog_consumer_contract = feature_option_contract.get("option_catalog_consumers", {})
+    catalog_consumer_targets = (
+        catalog_consumer_contract.get("targets", {})
+        if isinstance(catalog_consumer_contract, dict)
+        else {}
+    )
+    catalog_consumer_percentages = {
+        target: _percentage(
+            1 if isinstance(catalog_consumer_targets, dict) and bool(
+                isinstance(catalog_consumer_targets.get(target), dict)
+                and catalog_consumer_targets[target].get("ok")
+            ) else 0,
+            1,
+        )
+        for target in ("cpp", "rust")
+    }
 
     required_artifacts = surface_contract.get("required_generated_artifact_names", [])
     actual_artifacts = surface_contract.get("actual_generated_artifact_names", [])
@@ -607,6 +650,9 @@ def _native_contract_percentages(
             "feature_domains": domain_percentages[target],
             "option_catalogs": generated_match_percentages[target],
             "option_entries": generated_match_percentages[target],
+            "option_catalog_manifest": manifest_percentages[target],
+            "option_catalog_values": manifest_value_percentages[target],
+            "option_catalog_consumers": catalog_consumer_percentages[target],
             "config_keys": config_percentages[target],
             "generated_artifacts": artifact_percentages[target],
             "consumer_surfaces": consumer_percentages[target],
@@ -827,12 +873,26 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "rust_native_indicator_runtime_uses_python_enabled_fixtures",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "native_indicators.rs",
+            (
+                "PYTHON_INDICATOR_ENABLED_REFERENCE_JSON",
+                "PYTHON_BACKTEST_INDICATOR_ENABLED_REFERENCE_JSON",
+                "IndicatorEnableSemantics",
+                "indicator_enabled",
+                "compute_configured_indicator_series_with_semantics",
+                "indicator_enabled_semantics_match_python_generated_reference",
+            ),
+        ),
+        ConsumerRequirement(
             "rust_native_backtest_runtime_uses_python_reference_fixture",
             REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "backtest_runtime.rs",
             (
                 "PYTHON_INDICATOR_REFERENCE_JSON",
-                "compute_configured_indicator_series",
-                "unsupported_enabled_indicator_keys",
+                "compute_configured_indicator_series_with_semantics",
+                "unsupported_enabled_indicator_keys_with_semantics",
+                "IndicatorEnableSemantics::Backtest",
+                "indicator_enabled",
                 "pub fn run_native_backtest(",
                 "pub fn run_native_backtest_with_cancel",
                 'combine_signals(&sell_arrays, size, "OR")',
@@ -851,6 +911,8 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             / "backtest_batch_runtime.rs",
             (
                 "PYTHON_INDICATOR_REFERENCE_JSON",
+                "indicator_enabled",
+                "IndicatorEnableSemantics::Backtest",
                 "pub fn build_indicator_groups",
                 "pub fn estimate_run_count",
                 "pub fn run_native_backtest_batch",
@@ -1574,6 +1636,10 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 '#include "../src/generated/PythonIndicatorReference.h"',
                 "PythonIndicatorReference::kPythonSourceContractHash",
                 "PythonIndicatorReference::kReferenceJson",
+                "PythonParityContract::kPythonIndicatorEnabledReferenceJson",
+                "PythonParityContract::kPythonBacktestIndicatorEnabledReferenceJson",
+                "NativeIndicatorRuntime::IndicatorEnableSemantics",
+                "NativeIndicatorRuntime::isIndicatorEnabled",
                 "NativeIndicatorRuntime::computeConfiguredSeries",
             ),
         ),
@@ -2171,6 +2237,237 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
     return report
 
 
+def _option_catalog_manifest_contract() -> dict[str, object]:
+    """Verify that every Python catalog is explicitly represented in each target."""
+    manifest = _python_option_catalog_manifest()
+    option_catalog_json = _python_option_catalog_json()
+    expected_rust = [
+        "PythonOptionCatalogManifestEntry {"
+        f" name: {_rust_string(name)}, entry_count: {entry_count} }},"
+        for name, entry_count in manifest
+    ]
+    expected_cpp = [
+        "PythonOptionCatalogManifestEntry{"
+        f"{_cpp_string(name)}, {entry_count} }},"
+        for name, entry_count in manifest
+    ]
+    expected_browser = [
+        f'"entryCount": {entry_count},\n      "name": {json.dumps(name)}'
+        for name, entry_count in manifest
+    ]
+    expected_catalog_json = {
+        "cpp": (
+            "inline constexpr std::string_view kPythonOptionCatalogsJson = "
+            f"{_cpp_string(option_catalog_json)};"
+        ),
+        "rust": (
+            "pub const PYTHON_OPTION_CATALOGS_JSON: &str = "
+            f"{_rust_string(option_catalog_json)};"
+        ),
+        "browser": f'"optionCatalogsJson": {json.dumps(option_catalog_json)}',
+    }
+    target_specs = {
+        "cpp": (CPP_OUTPUT, expected_cpp),
+        "rust": (RUST_OUTPUT, expected_rust),
+        "browser": (TAURI_BROWSER_OUTPUT, expected_browser),
+    }
+    targets: dict[str, dict[str, object]] = {}
+    issues: list[str] = []
+    for target, (path, expected_lines) in target_specs.items():
+        text = _read(path)
+        missing = [line for line in expected_lines if line not in text]
+        catalog_json_missing = expected_catalog_json[target] not in text
+        report = {
+            "path": str(path.relative_to(REPO_ROOT)),
+            "expected_count": len(expected_lines),
+            "missing": missing,
+            "catalog_values_exact": not catalog_json_missing,
+            "ok": not missing and not catalog_json_missing,
+        }
+        targets[target] = report
+        issues.extend(f"{target}: missing option catalog manifest entry {line}" for line in missing)
+        if catalog_json_missing:
+            issues.append(f"{target}: missing exact serialized Python option catalog payload")
+    return {
+        "expected_count": len(manifest),
+        "expected_entry_count": sum(entry_count for _, entry_count in manifest),
+        "catalog_values_json": option_catalog_json,
+        "catalog_names": [name for name, _ in manifest],
+        "targets": targets,
+        "ok": not issues,
+        "issues": issues,
+    }
+
+
+def _catalog_suffix(name: str) -> str:
+    return "".join(part[:1].upper() + part[1:] for part in name.split("_"))
+
+
+OPTION_CATALOG_SUFFIX_OVERRIDES = {
+    "intervals": "BacktestIntervals",
+    "tradingview_interval_map": "TradingViewIntervalMap",
+    "connectors": "ConnectorOptions",
+    "indicators": "IndicatorCatalog",
+    # Native code consumes the typed option entries; the Python key projection
+    # remains a browser-only surface.
+    "chart_view_keys": "ChartViewOptions",
+}
+
+
+OPTION_CATALOG_RUST_SUFFIX_OVERRIDES = {
+    "intervals": "BACKTEST_INTERVALS",
+    "tradingview_interval_map": "TRADINGVIEW_INTERVAL_MAP",
+    "connectors": "CONNECTOR_OPTIONS",
+    "indicators": "INDICATOR_CATALOG",
+}
+
+
+OPTION_CATALOG_BROWSER_PROPERTY_OVERRIDES = {
+    "intervals": "backtestIntervals",
+    "connectors": "connectorOptions",
+    "indicators": "indicatorCatalog",
+}
+
+
+def _catalog_browser_property(name: str) -> str:
+    override = OPTION_CATALOG_BROWSER_PROPERTY_OVERRIDES.get(name)
+    if override:
+        return override
+    suffix = _catalog_suffix(name)
+    return suffix[:1].lower() + suffix[1:]
+
+
+def _catalog_consumer_text(paths: tuple[Path, ...], suffixes: tuple[str, ...]) -> str:
+    chunks: list[str] = []
+    for root in paths:
+        candidates = [root] if root.is_file() else root.rglob("*")
+        for path in candidates:
+            if not path.is_file() or path.suffix not in suffixes:
+                continue
+            if "generated" in path.parts or path.name in {
+                "generated_python_parity.rs",
+                "generated-python-parity.js",
+            }:
+                continue
+            chunks.append(_read(path))
+    return "\n".join(chunks)
+
+
+def _option_catalog_consumer_contract() -> dict[str, object]:
+    """Require every applicable generated catalog to have a real consumer."""
+    manifest = _python_option_catalog_manifest()
+    catalog_names = [name for name, _ in manifest]
+    target_specs = {
+        "cpp": {
+            "generated_path": CPP_OUTPUT,
+            "consumer_text": _catalog_consumer_text(
+                (REPO_ROOT / "experiments" / "native-cpp" / "src",),
+                (".cpp", ".h"),
+            ),
+            "symbol": lambda name: f"kPython{OPTION_CATALOG_SUFFIX_OVERRIDES.get(name, _catalog_suffix(name))}",
+            "consumer": lambda symbol: symbol,
+            "not_applicable": {
+                "rust_environment_dependencies": "Rust environment metadata is not a C++ runtime input.",
+            },
+        },
+        "rust": {
+            "generated_path": RUST_OUTPUT,
+            "consumer_text": _catalog_consumer_text(
+                (
+                    REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src",
+                    REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src",
+                ),
+                (".rs",),
+            ),
+            "symbol": lambda name: "PYTHON_" + OPTION_CATALOG_RUST_SUFFIX_OVERRIDES.get(
+                name,
+                name.upper(),
+            ),
+            "consumer": lambda symbol: symbol,
+            "not_applicable": {
+                "chart_view_keys": "Chart-view key filtering is owned by the Tauri browser bridge.",
+            },
+        },
+        "browser": {
+            "generated_path": TAURI_BROWSER_OUTPUT,
+            "consumer_text": _catalog_consumer_text(
+                (REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui",),
+                (".html", ".js", ".cjs"),
+            ),
+            "symbol": lambda name: f'"{_catalog_browser_property(name)}"',
+            "consumer": lambda symbol: f"pythonParityContract.{symbol[1:-1]}",
+            "not_applicable": {},
+        },
+    }
+
+    targets: dict[str, dict[str, object]] = {}
+    issues: list[str] = []
+    for target, spec in target_specs.items():
+        generated_text = _read(spec["generated_path"])
+        consumer_text = str(spec["consumer_text"])
+        symbol_for = spec["symbol"]
+        consumer_for = spec["consumer"]
+        not_applicable = dict(spec["not_applicable"])
+        catalog_reports: list[dict[str, object]] = []
+        applicable_count = 0
+        matched_count = 0
+        for name in catalog_names:
+            if name in not_applicable:
+                catalog_reports.append(
+                    {
+                        "name": name,
+                        "status": "not_applicable",
+                        "reason": not_applicable[name],
+                        "ok": True,
+                    }
+                )
+                continue
+
+            symbol = str(symbol_for(name))
+            consumer_symbol = str(consumer_for(symbol))
+            generated_present = symbol in generated_text
+            consumer_references = consumer_text.count(consumer_symbol)
+            catalog_ok = generated_present and consumer_references > 0
+            applicable_count += 1
+            if catalog_ok:
+                matched_count += 1
+            catalog_reports.append(
+                {
+                    "name": name,
+                    "status": "covered" if catalog_ok else "missing_consumer",
+                    "symbol": symbol,
+                    "consumer_symbol": consumer_symbol,
+                    "generated_present": generated_present,
+                    "consumer_references": consumer_references,
+                    "ok": catalog_ok,
+                }
+            )
+            if not generated_present:
+                issues.append(f"{target}: {name} is missing generated symbol {symbol}")
+            if consumer_references <= 0:
+                issues.append(f"{target}: {name} has no consumer reference for {consumer_symbol}")
+
+        targets[target] = {
+            "generated_path": _rel(spec["generated_path"]),
+            "catalog_count": len(catalog_names),
+            "applicable_count": applicable_count,
+            "not_applicable_count": len(catalog_names) - applicable_count,
+            "covered_count": matched_count,
+            "coverage_percent": _percentage(matched_count, applicable_count),
+            "catalogs": catalog_reports,
+            "ok": matched_count == applicable_count,
+        }
+
+    return {
+        "scope": "Every Python option catalog must have a generated target representation and an applicable consumer.",
+        "catalog_count": len(catalog_names),
+        "catalog_names": catalog_names,
+        "targets": targets,
+        "ok": not issues,
+        "issues": issues,
+    }
+
+
 def _feature_option_contract() -> dict[str, object]:
     """Report the Python-owned feature and option surface independently of runtime promotion."""
     payload = native_python_source_contract_payload()
@@ -2210,21 +2507,27 @@ def _feature_option_contract() -> dict[str, object]:
         )
         for side, artifact_names in native_generated_artifact_names.items()
     }
+    option_catalog_manifest = _option_catalog_manifest_contract()
+    option_catalog_consumers = _option_catalog_consumer_contract()
     return {
-        "scope": "Python feature and option contract/catalog equality; standalone runtime promotion is reported separately.",
+        "scope": "Python feature and option contract/catalog equality plus applicable generated-catalog consumer coverage; standalone runtime promotion is reported separately.",
         "feature_domain_count": len(domains),
         "feature_domain_contract_parity": domain_contract_parity,
         "option_catalog_count": len(option_catalogs),
         "option_catalog_entry_count": sum(option_catalog_entry_counts.values()),
         "option_catalog_entry_counts": option_catalog_entry_counts,
         "option_catalog_names": sorted(option_catalogs),
+        "option_catalog_manifest": option_catalog_manifest,
+        "option_catalog_consumers": option_catalog_consumers,
         "generated_native_contracts_match_python": generated_native_contracts_match_python,
         "generated_native_contract_artifacts": {
             side: list(artifact_names)
             for side, artifact_names in native_generated_artifact_names.items()
         },
         "ok": all(domain_contract_parity.values())
-        and all(generated_native_contracts_match_python.values()),
+        and all(generated_native_contracts_match_python.values())
+        and bool(option_catalog_manifest["ok"])
+        and bool(option_catalog_consumers["ok"]),
     }
 
 
@@ -2266,6 +2569,12 @@ def audit_native_source_sync() -> dict[str, object]:
     issues.extend(str(issue) for issue in config_key_contract["issues"])
     if not bool(feature_option_contract["ok"]):
         issues.append("Python feature or option contract/catalog parity failed")
+    option_catalog_manifest = feature_option_contract.get("option_catalog_manifest", {})
+    if isinstance(option_catalog_manifest, dict) and not bool(option_catalog_manifest.get("ok")):
+        issues.extend(str(issue) for issue in option_catalog_manifest.get("issues", []))
+    option_catalog_consumers = feature_option_contract.get("option_catalog_consumers", {})
+    if isinstance(option_catalog_consumers, dict) and not bool(option_catalog_consumers.get("ok")):
+        issues.extend(str(issue) for issue in option_catalog_consumers.get("issues", []))
     if not bool(domain_evidence["ok"]):
         issues.extend(str(issue) for issue in domain_evidence["issues"])
     return {

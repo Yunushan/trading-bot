@@ -5,6 +5,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QHash>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -184,6 +185,264 @@ int main(int argc, char **argv) {
         checkUiCatalog(
             std::span<const PythonParityContract::PythonUiOption>(catalog.options, catalog.size),
             parityString(catalog.name));
+    }
+    check(PythonParityContract::kPythonOptionCatalogManifest.size()
+              == PythonParityContract::kPythonOptionCatalogCount,
+          QStringLiteral("C++ Python option manifest should contain every source catalog"));
+    std::size_t optionManifestEntryCount = 0;
+    QSet<QString> optionManifestNames;
+    for (const auto &entry : PythonParityContract::kPythonOptionCatalogManifest) {
+        const QString name = parityString(entry.name);
+        check(!name.isEmpty(), QStringLiteral("C++ Python option manifest catalog name should be present"));
+        check(entry.entryCount > 0,
+              QStringLiteral("C++ Python option manifest catalog should not be empty: %1").arg(name));
+        check(!optionManifestNames.contains(name),
+              QStringLiteral("C++ Python option manifest catalog should be unique: %1").arg(name));
+        optionManifestNames.insert(name);
+        optionManifestEntryCount += entry.entryCount;
+    }
+    check(optionManifestEntryCount == PythonParityContract::kPythonOptionCatalogEntryCount,
+          QStringLiteral("C++ Python option manifest should account for every source entry"));
+    QJsonParseError optionCatalogJsonError;
+    const QByteArray optionCatalogJson = QByteArray::fromRawData(
+        PythonParityContract::kPythonOptionCatalogsJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonOptionCatalogsJson.size()));
+    const QJsonDocument optionCatalogDocument = QJsonDocument::fromJson(optionCatalogJson, &optionCatalogJsonError);
+    check(optionCatalogJsonError.error == QJsonParseError::NoError && optionCatalogDocument.isObject(),
+          QStringLiteral("C++ Python option catalog JSON should be a valid object"));
+    const QJsonObject optionCatalogObject = optionCatalogDocument.object();
+    check(optionCatalogObject.size() == static_cast<int>(PythonParityContract::kPythonOptionCatalogCount),
+          QStringLiteral("C++ Python option catalog JSON should contain every source catalog"));
+    for (const auto &entry : PythonParityContract::kPythonOptionCatalogManifest) {
+        const QString name = parityString(entry.name);
+        const QJsonValue value = optionCatalogObject.value(name);
+        check(!value.isUndefined(),
+              QStringLiteral("C++ Python option catalog JSON should contain: %1").arg(name));
+        const int count = value.isArray() ? value.toArray().size()
+                                          : value.isObject() ? value.toObject().size() : 1;
+        check(count == static_cast<int>(entry.entryCount),
+              QStringLiteral("C++ Python option catalog JSON count should match manifest: %1").arg(name));
+    }
+    const QHash<QString, QString> uiCatalogSourceNames = {
+        {QStringLiteral("dashboard loop"), QStringLiteral("dashboard_loop_choices")},
+        {QStringLiteral("lead trader"), QStringLiteral("lead_trader_options")},
+        {QStringLiteral("LLM use-for"), QStringLiteral("llm_use_for_options")},
+        {QStringLiteral("dashboard strategy templates"), QStringLiteral("dashboard_strategy_templates")},
+        {QStringLiteral("backtest templates"), QStringLiteral("backtest_templates")},
+        {QStringLiteral("side"), QStringLiteral("side_options")},
+        {QStringLiteral("config mode"), QStringLiteral("config_mode_options")},
+        {QStringLiteral("theme"), QStringLiteral("theme_options")},
+        {QStringLiteral("design"), QStringLiteral("design_options")},
+        {QStringLiteral("indicator source"), QStringLiteral("indicator_source_options")},
+        {QStringLiteral("moving average type"), QStringLiteral("indicator_ma_type_options")},
+        {QStringLiteral("exchange"), QStringLiteral("exchange_options")},
+        {QStringLiteral("account type"), QStringLiteral("account_type_options")},
+        {QStringLiteral("margin mode"), QStringLiteral("margin_mode_options")},
+        {QStringLiteral("position mode"), QStringLiteral("position_mode_options")},
+        {QStringLiteral("assets mode"), QStringLiteral("assets_mode_options")},
+        {QStringLiteral("order type"), QStringLiteral("order_type_options")},
+        {QStringLiteral("time in force"), QStringLiteral("time_in_force_options")},
+        {QStringLiteral("signal logic"), QStringLiteral("signal_logic_options")},
+        {QStringLiteral("MDD logic"), QStringLiteral("mdd_logic_options")},
+        {QStringLiteral("stop-loss modes"), QStringLiteral("stop_loss_modes")},
+        {QStringLiteral("stop-loss scopes"), QStringLiteral("stop_loss_scopes")},
+        {QStringLiteral("scan scope"), QStringLiteral("scan_scope_options")},
+        {QStringLiteral("optimizer mode"), QStringLiteral("optimizer_mode_options")},
+        {QStringLiteral("optimizer metric"), QStringLiteral("optimizer_metric_options")},
+        {QStringLiteral("backtest execution backend"), QStringLiteral("backtest_execution_backend_options")},
+        {QStringLiteral("chart view"), QStringLiteral("chart_view_options")},
+        {QStringLiteral("positions view"), QStringLiteral("positions_view_options")},
+    };
+    for (const auto &catalog : PythonParityContract::kPythonUiOptionCatalogs) {
+        const QString catalogName = parityString(catalog.name);
+        const QString sourceName = uiCatalogSourceNames.value(catalogName);
+        check(!sourceName.isEmpty(),
+              QStringLiteral("C++ typed Python UI catalog should identify its source catalog: %1")
+                  .arg(catalogName));
+        if (sourceName.isEmpty()) {
+            continue;
+        }
+        const QJsonValue sourceValue = optionCatalogObject.value(sourceName);
+        const QJsonArray sourceOptions = sourceValue.toArray();
+        check(sourceValue.isArray() && sourceOptions.size() == static_cast<int>(catalog.size),
+              QStringLiteral("C++ typed Python UI catalog size should match source JSON: %1")
+                  .arg(catalogName));
+        const int comparableCount = std::min(
+            static_cast<int>(sourceOptions.size()), static_cast<int>(catalog.size));
+        for (int index = 0; index < comparableCount; ++index) {
+            const QJsonValue sourceOptionValue = sourceOptions.at(index);
+            const QJsonObject sourceOption = sourceOptionValue.toObject();
+            const QString expectedKey = parityString(catalog.options[index].key);
+            check(sourceOptionValue.isObject(),
+                  QStringLiteral("C++ typed Python UI option should be an object: %1[%2]")
+                      .arg(catalogName)
+                      .arg(index));
+            check(sourceOption.value(QStringLiteral("key")).toString() == expectedKey,
+                  QStringLiteral("C++ typed Python UI option key should match source: %1[%2]")
+                      .arg(catalogName)
+                      .arg(index));
+            check(sourceOption.value(QStringLiteral("label")).toString()
+                      == parityString(catalog.options[index].label),
+                  QStringLiteral("C++ typed Python UI option label should match source: %1[%2]")
+                      .arg(catalogName)
+                      .arg(index));
+            check(sourceOption.value(QStringLiteral("disabled")).toBool(false)
+                      == catalog.options[index].disabled,
+                  QStringLiteral("C++ typed Python UI option disabled state should match source: %1[%2]")
+                      .arg(catalogName)
+                      .arg(index));
+            if (sourceOption.contains(QStringLiteral("value"))) {
+                check(sourceOption.value(QStringLiteral("value")).toString() == expectedKey,
+                      QStringLiteral("C++ typed Python UI option value should match source key: %1[%2]")
+                          .arg(catalogName)
+                          .arg(index));
+            }
+        }
+    }
+    const auto sourceStringArray = [&check, &optionCatalogObject](const QString &sourceName) {
+        const QJsonValue sourceValue = optionCatalogObject.value(sourceName);
+        check(sourceValue.isArray(),
+              QStringLiteral("Python option catalog should be a string array: %1").arg(sourceName));
+        QStringList values;
+        if (!sourceValue.isArray()) {
+            return values;
+        }
+        for (const QJsonValue &value : sourceValue.toArray()) {
+            check(value.isString(),
+                  QStringLiteral("Python string option catalog entry should be a string: %1")
+                      .arg(sourceName));
+            values.append(value.toString());
+        }
+        return values;
+    };
+    const auto checkStringProjection = [&check, &sourceStringArray](
+                                           const QString &sourceName,
+                                           const QStringList &actual,
+                                           const QString &projectionName) {
+        check(actual == sourceStringArray(sourceName),
+              QStringLiteral("C++ %1 should preserve Python option catalog: %2")
+                  .arg(projectionName, sourceName));
+    };
+    checkStringProjection(
+        QStringLiteral("intervals"),
+        TradingBotWindowSupport::pythonSourceBacktestIntervals(),
+        QStringLiteral("backtest interval projection"));
+    checkStringProjection(
+        QStringLiteral("default_chart_symbols"),
+        TradingBotWindowSupport::pythonSourceDefaultChartSymbols(),
+        QStringLiteral("chart symbol projection"));
+    checkStringProjection(
+        QStringLiteral("default_execution_symbols"),
+        TradingBotWindowSupport::pythonSourceDefaultExecutionSymbols(),
+        QStringLiteral("execution symbol projection"));
+    checkStringProjection(
+        QStringLiteral("default_execution_intervals"),
+        TradingBotWindowSupport::pythonSourceDefaultExecutionIntervals(),
+        QStringLiteral("execution interval projection"));
+    checkStringProjection(
+        QStringLiteral("default_backtest_symbols"),
+        TradingBotWindowSupport::pythonSourceDefaultBacktestSymbols(),
+        QStringLiteral("backtest symbol projection"));
+    checkStringProjection(
+        QStringLiteral("default_backtest_intervals"),
+        TradingBotWindowSupport::pythonSourceDefaultBacktestIntervals(),
+        QStringLiteral("backtest default interval projection"));
+    checkStringProjection(
+        QStringLiteral("chart_market_options"),
+        TradingBotWindowSupport::pythonSourceChartMarketOptions(),
+        QStringLiteral("chart market projection"));
+    checkStringProjection(
+        QStringLiteral("account_mode_options"),
+        TradingBotWindowSupport::pythonSourceAccountModeOptions(),
+        QStringLiteral("account mode projection"));
+
+    const QJsonObject sourceTradingViewIntervals =
+        optionCatalogObject.value(QStringLiteral("tradingview_interval_map")).toObject();
+    const QStringList actualTradingViewKeys = TradingBotWindowSupport::pythonSourceTradingViewIntervalKeys();
+    const QStringList actualTradingViewCodes = TradingBotWindowSupport::pythonSourceTradingViewIntervalCodes();
+    check(actualTradingViewKeys.size() == actualTradingViewCodes.size(),
+          QStringLiteral("C++ TradingView interval projection should keep keys and codes aligned"));
+    QHash<QString, QString> actualTradingViewMap;
+    for (int index = 0; index < std::min(actualTradingViewKeys.size(), actualTradingViewCodes.size()); ++index) {
+        actualTradingViewMap.insert(actualTradingViewKeys.at(index), actualTradingViewCodes.at(index));
+    }
+    QHash<QString, QString> expectedTradingViewMap;
+    for (const QString &key : sourceTradingViewIntervals.keys()) {
+        expectedTradingViewMap.insert(key, sourceTradingViewIntervals.value(key).toString());
+    }
+    check(actualTradingViewMap == expectedTradingViewMap,
+          QStringLiteral("C++ TradingView interval projection should preserve Python interval mapping"));
+
+    const QJsonArray sourceConnectors = optionCatalogObject.value(QStringLiteral("connectors")).toArray();
+    QStringList expectedConnectorKeys;
+    QStringList expectedConnectorLabels;
+    for (const QJsonValue &value : sourceConnectors) {
+        const QJsonObject connector = value.toObject();
+        expectedConnectorKeys.append(connector.value(QStringLiteral("key")).toString());
+        expectedConnectorLabels.append(connector.value(QStringLiteral("label")).toString());
+    }
+    check(TradingBotWindowSupport::pythonSourceConnectorKeys() == expectedConnectorKeys,
+          QStringLiteral("C++ connector keys should preserve Python connector catalog"));
+    check(TradingBotWindowSupport::pythonSourceConnectorLabels() == expectedConnectorLabels,
+          QStringLiteral("C++ connector labels should preserve Python connector catalog"));
+
+    const QJsonArray sourceBacktestTemplates =
+        optionCatalogObject.value(QStringLiteral("backtest_templates")).toArray();
+    QStringList expectedBacktestTemplateKeys;
+    QStringList expectedBacktestTemplateLabels;
+    for (const QJsonValue &value : sourceBacktestTemplates) {
+        const QJsonObject templateObject = value.toObject();
+        expectedBacktestTemplateKeys.append(templateObject.value(QStringLiteral("key")).toString());
+        expectedBacktestTemplateLabels.append(templateObject.value(QStringLiteral("label")).toString());
+    }
+    check(TradingBotWindowSupport::pythonSourceBacktestTemplateKeys() == expectedBacktestTemplateKeys,
+          QStringLiteral("C++ backtest template keys should preserve Python catalog"));
+    check(TradingBotWindowSupport::pythonSourceBacktestTemplateLabels() == expectedBacktestTemplateLabels,
+          QStringLiteral("C++ backtest template labels should preserve Python catalog"));
+
+    const QJsonArray sourceIndicators = optionCatalogObject.value(QStringLiteral("indicators")).toArray();
+    const QMap<QString, QJsonObject> nativeBacktestIndicatorConfigs =
+        TradingBotWindowSupport::pythonSourceBacktestIndicatorConfigs();
+    check(sourceIndicators.size() == static_cast<int>(PythonParityContract::kPythonIndicatorCatalog.size()),
+          QStringLiteral("C++ indicator projection should preserve every Python indicator"));
+    check(nativeBacktestIndicatorConfigs.size() == sourceIndicators.size(),
+          QStringLiteral("C++ backtest indicator configs should preserve every Python indicator"));
+    const int comparableIndicatorCount = std::min(
+        static_cast<int>(sourceIndicators.size()),
+        static_cast<int>(PythonParityContract::kPythonIndicatorCatalog.size()));
+    for (int index = 0; index < comparableIndicatorCount; ++index) {
+        const QJsonObject sourceIndicator = sourceIndicators.at(index).toObject();
+        const auto &indicator = PythonParityContract::kPythonIndicatorCatalog.at(
+            static_cast<size_t>(index));
+        const QString key = parityString(indicator.key);
+        check(sourceIndicator.value(QStringLiteral("key")).toString() == key,
+              QStringLiteral("C++ indicator key should match Python: %1").arg(key));
+        check(sourceIndicator.value(QStringLiteral("display_name")).toString()
+                  == parityString(indicator.displayName),
+              QStringLiteral("C++ indicator display name should match Python: %1").arg(key));
+        check(sourceIndicator.value(QStringLiteral("default_enabled")).toBool()
+                  == indicator.defaultEnabled,
+              QStringLiteral("C++ indicator default enabled state should match Python: %1").arg(key));
+        const QJsonObject runtimeConfig = QJsonDocument::fromJson(
+            QByteArray(indicator.runtimeConfigJson.data(),
+                       static_cast<qsizetype>(indicator.runtimeConfigJson.size())))
+                                               .object();
+        const QJsonObject backtestConfig = QJsonDocument::fromJson(
+            QByteArray(indicator.backtestConfigJson.data(),
+                       static_cast<qsizetype>(indicator.backtestConfigJson.size())))
+                                                .object();
+        check(sourceIndicator.value(QStringLiteral("runtime_config")).toObject() == runtimeConfig,
+              QStringLiteral("C++ indicator runtime config should match Python: %1").arg(key));
+        check(sourceIndicator.value(QStringLiteral("backtest_config")).toObject() == backtestConfig,
+              QStringLiteral("C++ indicator backtest config should match Python: %1").arg(key));
+        QStringList expectedOutputKeys;
+        for (const QJsonValue &outputKey : sourceIndicator.value(QStringLiteral("runtime_output_keys")).toArray()) {
+            expectedOutputKeys.append(outputKey.toString());
+        }
+        check(parityCsv(indicator.runtimeOutputKeysCsv) == expectedOutputKeys,
+              QStringLiteral("C++ indicator output keys should match Python: %1").arg(key));
+        check(nativeBacktestIndicatorConfigs.value(key) == backtestConfig,
+              QStringLiteral("C++ indicator accessor should preserve Python backtest config: %1").arg(key));
     }
     check(PythonParityContract::kPythonCodeLanguageOptions.size() == 3,
           QStringLiteral("Python code-language catalog should expose Python, C++, and Rust"));
@@ -446,6 +705,13 @@ int main(int argc, char **argv) {
                                                         .object();
     check(executionDefaults == expectedExecutionDefaults,
           QStringLiteral("C++ execution defaults accessor should preserve the complete Python default object"));
+    const QJsonObject backtestDefaults = TradingBotWindowSupport::pythonSourceDefaultBacktestConfig();
+    const QJsonObject expectedBacktestDefaults = QJsonDocument::fromJson(
+        QByteArray(PythonParityContract::kPythonDefaultBacktestJson.data(),
+                   static_cast<qsizetype>(PythonParityContract::kPythonDefaultBacktestJson.size())))
+                                                        .object();
+    check(backtestDefaults == expectedBacktestDefaults,
+          QStringLiteral("C++ backtest defaults accessor should preserve the complete Python default object"));
     const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
     const QJsonObject expectedRiskDefaults = QJsonDocument::fromJson(
         QByteArray(PythonParityContract::kPythonRiskDefaultsJson.data(),

@@ -27,15 +27,9 @@ QString normalizedToken(const QString &value, const QString &fallback = {}) {
 }
 
 bool configEnabled(const QJsonObject &config) {
-    const QJsonValue value = config.value(QStringLiteral("enabled"));
-    if (value.isBool()) return value.toBool();
-    if (value.isDouble()) return value.toDouble() != 0.0;
-    return QStringList{
-        QStringLiteral("true"),
-        QStringLiteral("1"),
-        QStringLiteral("yes"),
-        QStringLiteral("on"),
-    }.contains(value.toString().trimmed().toLower());
+    return NativeIndicatorRuntime::isIndicatorEnabled(
+        config,
+        NativeIndicatorRuntime::IndicatorEnableSemantics::Backtest);
 }
 
 bool configIsFilter(const QJsonObject &config) {

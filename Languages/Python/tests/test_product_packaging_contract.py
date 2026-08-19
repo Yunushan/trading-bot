@@ -1619,7 +1619,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("tools/run_release_platform_probe.py", real_test_workflow)
         self.assertIn("include_self_hosted:", real_test_workflow)
         self.assertIn("--exclude-self-hosted", real_test_workflow)
-        self.assertIn("Require passed evidence for every selected target", real_test_workflow)
+        self.assertIn("Require passed evidence for every target in the selected scope", real_test_workflow)
         self.assertNotIn("require_all_evidence=true requires include_self_hosted=true", real_test_workflow)
         self.assertIn("Set up Rust for native release probes", real_test_workflow)
         self.assertIn("Cache Rust dependencies for native release probes", real_test_workflow)

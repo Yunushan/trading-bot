@@ -16,6 +16,7 @@ use crate::generated_python_parity::{
     PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
 };
 use crate::market_data::BinanceKlineCandle;
+use crate::native_indicators::{IndicatorEnableSemantics, indicator_enabled};
 use crate::python_source_default_backtest_config;
 use crate::python_source_default_execution_config;
 use crate::python_source_ui_defaults;
@@ -691,24 +692,7 @@ fn normalized_token(value: &str, fallback: &str) -> String {
 }
 
 fn config_enabled(config: &Value) -> bool {
-    let Some(value) = config.get("enabled") else {
-        return false;
-    };
-    if let Some(value) = value.as_bool() {
-        return value;
-    }
-    if let Some(value) = value.as_f64() {
-        return value != 0.0;
-    }
-    matches!(
-        value
-            .as_str()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "true" | "1" | "yes" | "on"
-    )
+    indicator_enabled(config, IndicatorEnableSemantics::Backtest)
 }
 
 fn config_is_filter(config: &Value) -> bool {

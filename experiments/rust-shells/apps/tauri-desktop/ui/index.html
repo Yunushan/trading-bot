@@ -871,12 +871,35 @@
   <script>
     const tauriUiBehavior = window.TauriUiBehavior || {};
     const pythonParityContract = window.PythonParityContract || {};
+    const pythonOptionCatalogs = (() => {
+      try {
+        const parsed = JSON.parse(String(pythonParityContract.optionCatalogsJson || "{}"));
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      } catch {
+        return {};
+      }
+    })();
+    const pythonIndicatorDefinitions = new Map(
+      (Array.isArray(pythonOptionCatalogs.indicators) ? pythonOptionCatalogs.indicators : [])
+        .filter((item) => item && typeof item === "object" && item.key)
+        .map((item) => [String(item.key), item])
+    );
     const indicatorCatalog = Object.freeze(
-      (pythonParityContract.indicatorCatalog || []).map((item) => ({
-        key: String(item.key || ""),
-        name: String(item.name || item.displayName || item.key || ""),
-        defaultEnabled: Boolean(item.defaultEnabled)
-      })).filter((item) => item.key && item.name)
+      (pythonParityContract.indicatorCatalog || []).map((item) => {
+        const key = String(item.key || "");
+        const definition = pythonIndicatorDefinitions.get(key) || {};
+        return {
+          key,
+          name: String(item.name || item.displayName || item.key || ""),
+          defaultEnabled: Boolean(item.defaultEnabled),
+          runtimeConfig: definition.runtime_config && typeof definition.runtime_config === "object"
+            ? { ...definition.runtime_config }
+            : {},
+          backtestConfig: definition.backtest_config && typeof definition.backtest_config === "object"
+            ? { ...definition.backtest_config }
+            : {}
+        };
+      }).filter((item) => item.key && item.name)
     );
     const connectorOptions = Object.freeze(
       (pythonParityContract.connectorOptions || []).map((item) => ({
@@ -1052,6 +1075,7 @@
       return design;
     };
     const indicatorSourceOptions = optionArray(pythonParityContract.indicatorSourceOptions);
+    const indicatorMaTypeOptions = optionArray(pythonParityContract.indicatorMaTypeOptions);
     const exchangeOptions = optionArray(pythonParityContract.exchangeOptions);
     const dashboardLoopChoiceOptions = optionArray(pythonParityContract.dashboardLoopChoices);
     const leadTraderOptions = optionArray(pythonParityContract.leadTraderOptions);
@@ -1111,6 +1135,13 @@
     const indicatorNames = indicatorCatalog.map((item) => item.name);
     const indicatorKeyByName = Object.fromEntries(indicatorCatalog.map((item) => [item.name, item.key]));
     const indicatorNameByKey = Object.fromEntries(indicatorCatalog.map((item) => [item.key, item.name]));
+    const indicatorDefaultTypeFor = (indicator, scope) => {
+      const sourceConfig = scope === "backtest" ? indicator.backtestConfig : indicator.runtimeConfig;
+      const configuredType = String(sourceConfig?.type || "");
+      return indicatorMaTypeOptions.some((option) => option.key === configuredType)
+        ? configuredType
+        : indicatorMaTypeOptions.find((option) => !option.disabled)?.key || "";
+    };
     for (const target of [document.getElementById("dashboard-indicators"), document.getElementById("backtest-indicators")]) {
       if (!target) continue;
       target.className = "grid-2";
@@ -1118,7 +1149,30 @@
       target.replaceChildren(...indicatorCatalog.map((indicator, index) => {
         const row = document.createElement("div");
         row.className = "checks";
-        row.innerHTML = `<label><input id="${scope}-indicator-${index}" data-indicator-name="${indicator.name}" data-indicator-key="${indicator.key}" type="checkbox" ${indicator.defaultEnabled ? "checked" : ""}> ${indicator.name}</label><button class="action" type="button">Buy-Sell Values</button>`;
+        const indicatorLabel = document.createElement("label");
+        const input = document.createElement("input");
+        input.id = `${scope}-indicator-${index}`;
+        input.dataset.indicatorName = indicator.name;
+        input.dataset.indicatorKey = indicator.key;
+        input.type = "checkbox";
+        input.checked = indicator.defaultEnabled;
+        indicatorLabel.append(input, document.createTextNode(` ${indicator.name}`));
+        row.append(indicatorLabel);
+        if (indicator.key === "ma") {
+          const typeLabel = document.createElement("label");
+          typeLabel.append(document.createTextNode("MA type"));
+          const typeSelect = document.createElement("select");
+          typeSelect.dataset.indicatorKey = indicator.key;
+          typeSelect.dataset.indicatorType = "ma";
+          populateOptions(typeSelect, indicatorMaTypeOptions, indicatorDefaultTypeFor(indicator, scope));
+          typeLabel.append(typeSelect);
+          row.append(typeLabel);
+        }
+        const valuesButton = document.createElement("button");
+        valuesButton.className = "action";
+        valuesButton.type = "button";
+        valuesButton.textContent = "Buy-Sell Values";
+        row.append(valuesButton);
         return row;
       }));
     }
@@ -1811,6 +1865,11 @@
       const container = kind === "backtest" ? "backtest-indicators" : "dashboard-indicators";
       return [...document.querySelectorAll(`#${container} input[data-indicator-key]`)];
     };
+    const indicatorTypeSelectForKind = (kind, key) => {
+      const container = kind === "backtest" ? "backtest-indicators" : "dashboard-indicators";
+      return [...document.querySelectorAll(`#${container} select[data-indicator-type]`)]
+        .find((select) => select.dataset.indicatorKey === key);
+    };
     const hydrateIndicatorControlsForKind = (kind, indicators) => {
       if (!indicators || typeof indicators !== "object" || Array.isArray(indicators)) return;
       const state = {};
@@ -1820,6 +1879,11 @@
         const key = input.dataset.indicatorKey || indicatorKeyFor(input.dataset.indicatorName);
         if (!Object.prototype.hasOwnProperty.call(state, key)) continue;
         input.checked = Boolean(state[key]?.enabled);
+        const typeSelect = indicatorTypeSelectForKind(kind, key);
+        const configuredType = String(state[key]?.type || "");
+        if (typeSelect && [...typeSelect.options].some((option) => option.value === configuredType)) {
+          typeSelect.value = configuredType;
+        }
       }
     };
     const selectedIndicatorsConfigForKind = (kind) => {
@@ -1829,10 +1893,13 @@
         const key = input.dataset.indicatorKey || indicatorKeyFor(input.dataset.indicatorName);
         const hasExistingConfig = Object.prototype.hasOwnProperty.call(state, key);
         if (!hasExistingConfig && !input.checked) continue;
-        config[key] = {
+        const nextConfig = {
           ...(hasExistingConfig ? cloneIndicatorConfig(state[key]) : {}),
           enabled: Boolean(input.checked)
         };
+        const typeSelect = indicatorTypeSelectForKind(kind, key);
+        if (typeSelect?.value) nextConfig.type = typeSelect.value;
+        config[key] = nextConfig;
       }
       return config;
     };

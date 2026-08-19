@@ -18,6 +18,7 @@ from app.native_parity import (  # noqa: E402
     native_position_reconciliation_reference_cases,
     native_runtime_config_invalid_reference_cases,
     native_python_source_contract_hash,
+    native_python_source_contract_payload,
     native_python_source_contract_summary,
 )
 from app.core import indicators as indicator_math  # noqa: E402
@@ -2171,6 +2172,31 @@ def _ui_option_key(option: dict[str, object]) -> str:
     return str(option.get("key", option.get("value", "")))
 
 
+def _python_option_catalog_counts() -> tuple[int, int]:
+    option_catalogs = dict(native_python_source_contract_payload()["ui_options"])
+    return len(option_catalogs), sum(
+        len(value) if isinstance(value, (dict, list, tuple)) else 1
+        for value in option_catalogs.values()
+    )
+
+
+def _python_option_catalog_manifest() -> list[tuple[str, int]]:
+    """Return every Python option catalog name with its source entry count."""
+    option_catalogs = dict(native_python_source_contract_payload()["ui_options"])
+    return [
+        (
+            str(name),
+            len(value) if isinstance(value, (dict, list, tuple)) else 1,
+        )
+        for name, value in option_catalogs.items()
+    ]
+
+
+def _python_option_catalog_json() -> str:
+    """Return the canonical serialized Python option-catalog payload."""
+    return _contract_json(dict(native_python_source_contract_payload()["ui_options"]))
+
+
 def _ui_option_catalog_specs(summary: dict[str, object]) -> list[tuple[str, str, str, list[dict[str, object]]]]:
     return [
         ("dashboard loop", "PYTHON_DASHBOARD_LOOP_CHOICES", "kPythonDashboardLoopChoices", list(summary["dashboard_loop_choices"])),
@@ -2236,14 +2262,40 @@ def _ui_option_catalog_specs(summary: dict[str, object]) -> list[tuple[str, str,
 
 def _rust_ui_option_catalogs(summary: dict[str, object]) -> str:
     specs = _ui_option_catalog_specs(summary)
+    option_catalog_manifest = _python_option_catalog_manifest()
+    option_catalog_count = len(option_catalog_manifest)
+    option_catalog_entry_count = sum(entry_count for _, entry_count in option_catalog_manifest)
+    ui_option_entry_count = sum(len(options) for _, _, _, options in specs)
     option_groups = [(rust_name, options) for _, rust_name, _, options in specs]
     lines = [
-        "pub struct PythonUiOption {",
-        "    pub key: &'static str,",
-        "    pub label: &'static str,",
-        "    pub disabled: bool,",
+        f"pub const PYTHON_OPTION_CATALOG_COUNT: usize = {option_catalog_count};",
+        f"pub const PYTHON_OPTION_CATALOG_ENTRY_COUNT: usize = {option_catalog_entry_count};",
+        f"pub const PYTHON_UI_OPTION_CATALOG_COUNT: usize = {len(specs)};",
+        f"pub const PYTHON_UI_OPTION_ENTRY_COUNT: usize = {ui_option_entry_count};",
+        "",
+        "pub struct PythonOptionCatalogManifestEntry {",
+        "    pub name: &'static str,",
+        "    pub entry_count: usize,",
         "}",
+        "",
+        "pub const PYTHON_OPTION_CATALOG_MANIFEST: &[PythonOptionCatalogManifestEntry] = &[",
     ]
+    lines.extend(
+        "    PythonOptionCatalogManifestEntry {"
+        f" name: {_rust_string(name)}, entry_count: {entry_count} }},"
+        for name, entry_count in option_catalog_manifest
+    )
+    lines.extend(
+        [
+            "];",
+            "",
+            "pub struct PythonUiOption {",
+            "    pub key: &'static str,",
+            "    pub label: &'static str,",
+            "    pub disabled: bool,",
+            "}",
+        ]
+    )
     for name, options in option_groups:
         lines.extend(["", f"pub const {name}: &[PythonUiOption] = &["])
         for option in options:
@@ -2648,14 +2700,41 @@ def _cpp_config_choice_maps(choice_maps: dict[str, dict[str, str]]) -> str:
 
 def _cpp_ui_option_catalogs(summary: dict[str, object]) -> str:
     specs = _ui_option_catalog_specs(summary)
+    option_catalog_manifest = _python_option_catalog_manifest()
+    option_catalog_count = len(option_catalog_manifest)
+    option_catalog_entry_count = sum(entry_count for _, entry_count in option_catalog_manifest)
+    ui_option_entry_count = sum(len(options) for _, _, _, options in specs)
     option_groups = [(cpp_name, options) for _, _, cpp_name, options in specs]
     lines = [
-        "struct PythonUiOption {",
-        "    std::string_view key;",
-        "    std::string_view label;",
-        "    bool disabled;",
+        f"inline constexpr std::size_t kPythonOptionCatalogCount = {option_catalog_count};",
+        f"inline constexpr std::size_t kPythonOptionCatalogEntryCount = {option_catalog_entry_count};",
+        f"inline constexpr std::size_t kPythonUiOptionCatalogCount = {len(specs)};",
+        f"inline constexpr std::size_t kPythonUiOptionEntryCount = {ui_option_entry_count};",
+        "",
+        "struct PythonOptionCatalogManifestEntry {",
+        "    std::string_view name;",
+        "    std::size_t entryCount;",
         "};",
+        "",
+        "inline constexpr std::array<PythonOptionCatalogManifestEntry, "
+        f"{len(option_catalog_manifest)}> kPythonOptionCatalogManifest = {{",
     ]
+    lines.extend(
+        "    PythonOptionCatalogManifestEntry{"
+        f"{_cpp_string(name)}, {entry_count} }},"
+        for name, entry_count in option_catalog_manifest
+    )
+    lines.extend(
+        [
+            "};",
+            "",
+            "struct PythonUiOption {",
+            "    std::string_view key;",
+            "    std::string_view label;",
+            "    bool disabled;",
+            "};",
+        ]
+    )
     for name, options in option_groups:
         lines.extend(["", f"inline constexpr std::array<PythonUiOption, {len(options)}> {name} = {{"])
         for option in options:
@@ -2787,6 +2866,8 @@ def render_rust_module() -> str:
     strategy_controls_cases = list(summary["strategy_controls_reference"])
     strategy_risk_cases = list(summary["strategy_risk_reference"])
     strategy_risk_loose_cases = list(summary["strategy_risk_loose_reference"])
+    indicator_enabled_reference = list(summary["indicator_enabled_reference"])
+    backtest_indicator_enabled_reference = list(summary["backtest_indicator_enabled_reference"])
     interval_seconds_reference = list(summary["interval_seconds_reference"])
     backtest_interval_seconds_reference = list(summary["backtest_interval_seconds_reference"])
     stop_intent_reference = dict(summary["stop_intent_reference"])
@@ -2797,6 +2878,7 @@ def render_rust_module() -> str:
     llm_output_policy_reference = dict(summary["llm_output_policy_reference"])
     llm_chat_request_reference = dict(summary["llm_chat_request_reference"])
     connector_normalization_cases = _connector_normalization_reference_cases()
+    option_catalog_json = _python_option_catalog_json()
     parts = [
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
@@ -2816,6 +2898,10 @@ def render_rust_module() -> str:
             "pub const PYTHON_DEFAULT_BACKTEST_JSON: &str = "
             f"{_rust_string(_contract_json(dict(summary['default_backtest'])))};"
         ),
+        (
+            "pub const PYTHON_OPTION_CATALOGS_JSON: &str = "
+            f"{_rust_string(option_catalog_json)};"
+        ),
         "",
         _rust_runtime_config_reference_cases(runtime_config_cases),
         "",
@@ -2824,6 +2910,14 @@ def render_rust_module() -> str:
         _rust_strategy_risk_reference_cases(strategy_risk_cases),
         "",
         _rust_strategy_risk_loose_reference_cases(strategy_risk_loose_cases),
+        (
+            "pub const PYTHON_INDICATOR_ENABLED_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(indicator_enabled_reference))};"
+        ),
+        (
+            "pub const PYTHON_BACKTEST_INDICATOR_ENABLED_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(backtest_indicator_enabled_reference))};"
+        ),
         (
             "pub const PYTHON_INTERVAL_SECONDS_REFERENCE_JSON: &str = "
             f"{_rust_string(_contract_json(interval_seconds_reference))};"
@@ -3056,6 +3150,8 @@ def render_cpp_header() -> str:
     strategy_controls_cases = list(summary["strategy_controls_reference"])
     strategy_risk_cases = list(summary["strategy_risk_reference"])
     strategy_risk_loose_cases = list(summary["strategy_risk_loose_reference"])
+    indicator_enabled_reference = list(summary["indicator_enabled_reference"])
+    backtest_indicator_enabled_reference = list(summary["backtest_indicator_enabled_reference"])
     interval_seconds_reference = list(summary["interval_seconds_reference"])
     backtest_interval_seconds_reference = list(summary["backtest_interval_seconds_reference"])
     stop_intent_reference = dict(summary["stop_intent_reference"])
@@ -3066,6 +3162,7 @@ def render_cpp_header() -> str:
     llm_output_policy_reference = dict(summary["llm_output_policy_reference"])
     llm_chat_request_reference = dict(summary["llm_chat_request_reference"])
     connector_normalization_cases = _connector_normalization_reference_cases()
+    option_catalog_json = _python_option_catalog_json()
     parts = [
         "// This file is generated from Languages/Python/app/native_parity.py.",
         "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
@@ -3100,6 +3197,10 @@ def render_cpp_header() -> str:
             "inline constexpr std::string_view kPythonDefaultBacktestJson = "
             f"{_cpp_string(_contract_json(dict(summary['default_backtest'])))};"
         ),
+        (
+            "inline constexpr std::string_view kPythonOptionCatalogsJson = "
+            f"{_cpp_string(option_catalog_json)};"
+        ),
         "",
         _cpp_runtime_config_reference_cases(runtime_config_cases),
         "",
@@ -3108,6 +3209,14 @@ def render_cpp_header() -> str:
         _cpp_strategy_risk_reference_cases(strategy_risk_cases),
         "",
         _cpp_strategy_risk_loose_reference_cases(strategy_risk_loose_cases),
+        (
+            "inline constexpr std::string_view kPythonIndicatorEnabledReferenceJson = "
+            f"{_cpp_string(_contract_json(indicator_enabled_reference))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonBacktestIndicatorEnabledReferenceJson = "
+            f"{_cpp_string(_contract_json(backtest_indicator_enabled_reference))};"
+        ),
         (
             "inline constexpr std::string_view kPythonIntervalSecondsReferenceJson = "
             f"{_cpp_string(_contract_json(interval_seconds_reference))};"
@@ -3328,6 +3437,10 @@ def render_cpp_header() -> str:
 
 def render_tauri_browser_contract() -> str:
     summary = native_python_source_contract_summary()
+    option_catalog_manifest = _python_option_catalog_manifest()
+    option_catalog_json = _python_option_catalog_json()
+    option_catalog_count = len(option_catalog_manifest)
+    option_catalog_entry_count = sum(entry_count for _, entry_count in option_catalog_manifest)
     service_routes = list(summary["service_routes"])
     service_route_paths = {str(route["name"]): str(route["path"]) for route in service_routes}
     service_route_methods = {
@@ -3353,6 +3466,13 @@ def render_tauri_browser_contract() -> str:
         "rustStandaloneRuntimeReady": bool(summary["rust_standalone_runtime_ready"]),
         "cppFullParityReady": bool(summary["cpp_full_parity"]),
         "rustFullParityReady": bool(summary["rust_full_parity"]),
+        "optionCatalogCount": option_catalog_count,
+        "optionCatalogEntryCount": option_catalog_entry_count,
+        "optionCatalogsJson": option_catalog_json,
+        "optionCatalogManifest": [
+            {"name": name, "entryCount": entry_count}
+            for name, entry_count in option_catalog_manifest
+        ],
         "orderGuardBehavior": dict(summary["order_guard_behavior"]),
         "nativeRuntimeOwnership": dict(summary["native_runtime_ownership"]),
         "indicatorCatalog": [

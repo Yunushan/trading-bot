@@ -47,24 +47,6 @@ struct TradeState {
     double entryFee = 0.0;
 };
 
-bool configBool(const QJsonObject &config, const QString &key, bool fallback = false) {
-    const QJsonValue value = config.value(key);
-    if (value.isBool()) {
-        return value.toBool();
-    }
-    if (value.isDouble()) {
-        return value.toDouble() != 0.0;
-    }
-    const QString text = value.toString().trimmed().toLower();
-    if (QStringList{QStringLiteral("true"), QStringLiteral("1"), QStringLiteral("yes"), QStringLiteral("on")}.contains(text)) {
-        return true;
-    }
-    if (QStringList{QStringLiteral("false"), QStringLiteral("0"), QStringLiteral("no"), QStringLiteral("off")}.contains(text)) {
-        return false;
-    }
-    return fallback;
-}
-
 std::optional<double> configNumber(const QJsonObject &config, const QString &key) {
     const QJsonValue value = config.value(key);
     if (value.isDouble()) {
@@ -447,7 +429,9 @@ Result run(
         result.error = QStringLiteral("Backtest capital must be positive");
         return result;
     }
-    const QStringList unsupported = NativeIndicatorRuntime::unsupportedEnabledIndicatorKeys(request.indicators);
+    const QStringList unsupported = NativeIndicatorRuntime::unsupportedEnabledIndicatorKeys(
+        request.indicators,
+        NativeIndicatorRuntime::IndicatorEnableSemantics::Backtest);
     if (!unsupported.isEmpty()) {
         result.error = QStringLiteral("Unsupported native backtest indicators: %1").arg(unsupported.join(QStringLiteral(", ")));
         return result;
@@ -481,11 +465,18 @@ Result run(
         }
     }
 
-    const SeriesMap computed = NativeIndicatorRuntime::computeConfiguredSeries(candles, request.indicators);
+    const SeriesMap computed = NativeIndicatorRuntime::computeConfiguredSeries(
+        candles,
+        request.indicators,
+        NativeIndicatorRuntime::IndicatorEnableSemantics::Backtest);
     QVector<IndicatorSignals> indicatorSignals;
     for (auto it = request.indicators.cbegin(); it != request.indicators.cend(); ++it) {
         const QJsonObject config = it.value();
-        if (!configBool(config, QStringLiteral("enabled"))) continue;
+        if (!NativeIndicatorRuntime::isIndicatorEnabled(
+                config,
+                NativeIndicatorRuntime::IndicatorEnableSemantics::Backtest)) {
+            continue;
+        }
         IndicatorSignals indicatorSignal;
         indicatorSignal.key = it.key();
         indicatorSignal.filter = isFilter(config);

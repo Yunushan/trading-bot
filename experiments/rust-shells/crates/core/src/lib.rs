@@ -1152,7 +1152,7 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
 
@@ -1201,6 +1201,31 @@ mod tests {
 
     #[test]
     fn every_python_ui_catalog_is_non_empty_and_has_unique_keys() {
+        let ui_catalog_count = generated_python_parity::PYTHON_UI_OPTION_CATALOGS.len();
+        let ui_entry_count = generated_python_parity::PYTHON_UI_OPTION_CATALOGS
+            .iter()
+            .map(|catalog| catalog.options.len())
+            .sum::<usize>();
+        assert_eq!(
+            generated_python_parity::PYTHON_OPTION_CATALOG_COUNT,
+            44,
+            "the generated native contract must contain every Python option catalog"
+        );
+        assert_eq!(
+            generated_python_parity::PYTHON_OPTION_CATALOG_ENTRY_COUNT,
+            255,
+            "the generated native contract must contain every Python option entry"
+        );
+        assert_eq!(
+            generated_python_parity::PYTHON_UI_OPTION_CATALOG_COUNT,
+            ui_catalog_count,
+            "generated UI catalog count must match the native catalog projection"
+        );
+        assert_eq!(
+            generated_python_parity::PYTHON_UI_OPTION_ENTRY_COUNT,
+            ui_entry_count,
+            "generated UI entry count must match the native catalog projection"
+        );
         for catalog in generated_python_parity::PYTHON_UI_OPTION_CATALOGS {
             let catalog_name = catalog.name;
             let options = catalog.options;
@@ -1227,6 +1252,317 @@ mod tests {
                     option.key
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_python_option_catalog_is_manifested_with_source_entry_counts() {
+        let manifest = generated_python_parity::PYTHON_OPTION_CATALOG_MANIFEST;
+        assert_eq!(
+            manifest.len(),
+            generated_python_parity::PYTHON_OPTION_CATALOG_COUNT,
+            "the generated Rust manifest must contain every Python option catalog"
+        );
+        assert_eq!(
+            manifest
+                .iter()
+                .map(|entry| entry.entry_count)
+                .sum::<usize>(),
+            generated_python_parity::PYTHON_OPTION_CATALOG_ENTRY_COUNT,
+            "the generated Rust manifest must contain every Python option entry"
+        );
+        let mut names = BTreeSet::new();
+        for entry in manifest {
+            assert!(
+                !entry.name.is_empty(),
+                "Python option catalog names must be present"
+            );
+            assert!(
+                entry.entry_count > 0,
+                "Python option catalogs must not be empty: {}",
+                entry.name
+            );
+            assert!(
+                names.insert(entry.name),
+                "duplicate Python option catalog: {}",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn python_option_catalog_json_matches_manifest_shape() {
+        let payload: Value =
+            serde_json::from_str(generated_python_parity::PYTHON_OPTION_CATALOGS_JSON)
+                .expect("generated Python option catalog JSON should be valid");
+        let catalogs = payload
+            .as_object()
+            .expect("generated Python option catalog JSON should be an object");
+        assert_eq!(
+            catalogs.len(),
+            generated_python_parity::PYTHON_OPTION_CATALOG_COUNT
+        );
+        for entry in generated_python_parity::PYTHON_OPTION_CATALOG_MANIFEST {
+            let value = catalogs.get(entry.name).unwrap_or_else(|| {
+                panic!("missing Python option catalog JSON entry: {}", entry.name)
+            });
+            let count = value.as_array().map_or_else(
+                || value.as_object().map_or(1, |object| object.len()),
+                |array| array.len(),
+            );
+            assert_eq!(
+                count, entry.entry_count,
+                "catalog JSON count mismatch: {}",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn python_typed_ui_catalog_values_match_python_option_catalog_json() {
+        let payload: Value =
+            serde_json::from_str(generated_python_parity::PYTHON_OPTION_CATALOGS_JSON)
+                .expect("generated Python option catalog JSON should be valid");
+        let catalogs = payload
+            .as_object()
+            .expect("generated Python option catalog JSON should be an object");
+        let source_name_for = |name: &str| -> &str {
+            match name {
+                "dashboard loop" => "dashboard_loop_choices",
+                "lead trader" => "lead_trader_options",
+                "LLM use-for" => "llm_use_for_options",
+                "dashboard strategy templates" => "dashboard_strategy_templates",
+                "backtest templates" => "backtest_templates",
+                "side" => "side_options",
+                "config mode" => "config_mode_options",
+                "theme" => "theme_options",
+                "design" => "design_options",
+                "indicator source" => "indicator_source_options",
+                "moving average type" => "indicator_ma_type_options",
+                "exchange" => "exchange_options",
+                "account type" => "account_type_options",
+                "margin mode" => "margin_mode_options",
+                "position mode" => "position_mode_options",
+                "assets mode" => "assets_mode_options",
+                "order type" => "order_type_options",
+                "time in force" => "time_in_force_options",
+                "signal logic" => "signal_logic_options",
+                "MDD logic" => "mdd_logic_options",
+                "stop-loss modes" => "stop_loss_modes",
+                "stop-loss scopes" => "stop_loss_scopes",
+                "scan scope" => "scan_scope_options",
+                "optimizer mode" => "optimizer_mode_options",
+                "optimizer metric" => "optimizer_metric_options",
+                "backtest execution backend" => "backtest_execution_backend_options",
+                "chart view" => "chart_view_options",
+                "positions view" => "positions_view_options",
+                other => panic!("unmapped generated Python UI catalog: {other}"),
+            }
+        };
+
+        for catalog in generated_python_parity::PYTHON_UI_OPTION_CATALOGS {
+            let source_name = source_name_for(catalog.name);
+            let source_options = catalogs
+                .get(source_name)
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| {
+                    panic!("missing Python option catalog JSON array: {source_name}")
+                });
+            assert_eq!(
+                source_options.len(),
+                catalog.options.len(),
+                "typed Python UI catalog size mismatch: {}",
+                catalog.name
+            );
+            for (index, option) in catalog.options.iter().enumerate() {
+                let source_option = source_options[index].as_object().unwrap_or_else(|| {
+                    panic!("Python UI option should be an object: {source_name}[{index}]")
+                });
+                assert_eq!(
+                    source_option.get("key").and_then(Value::as_str),
+                    Some(option.key),
+                    "typed Python UI option key mismatch: {}[{index}]",
+                    catalog.name
+                );
+                assert_eq!(
+                    source_option.get("label").and_then(Value::as_str),
+                    Some(option.label),
+                    "typed Python UI option label mismatch: {}[{index}]",
+                    catalog.name
+                );
+                assert_eq!(
+                    source_option
+                        .get("disabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    option.disabled,
+                    "typed Python UI option disabled mismatch: {}[{index}]",
+                    catalog.name
+                );
+                if let Some(value) = source_option.get("value") {
+                    assert_eq!(
+                        value.as_str(),
+                        Some(option.key),
+                        "typed Python UI option value mismatch: {}[{index}]",
+                        catalog.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn python_native_primitive_projections_match_python_option_catalog_json() {
+        let payload: Value =
+            serde_json::from_str(generated_python_parity::PYTHON_OPTION_CATALOGS_JSON)
+                .expect("generated Python option catalog JSON should be valid");
+        let catalogs = payload
+            .as_object()
+            .expect("generated Python option catalog JSON should be an object");
+        let source_strings = |name: &str| -> Vec<&str> {
+            catalogs
+                .get(name)
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| panic!("missing Python string catalog: {name}"))
+                .iter()
+                .map(|value| {
+                    value.as_str().unwrap_or_else(|| {
+                        panic!("Python catalog entry should be a string: {name}")
+                    })
+                })
+                .collect()
+        };
+
+        assert_eq!(
+            python_source_backtest_intervals(),
+            source_strings("intervals").as_slice()
+        );
+        assert_eq!(
+            python_source_default_chart_symbols(),
+            source_strings("default_chart_symbols").as_slice()
+        );
+        assert_eq!(
+            python_source_default_execution_symbols(),
+            source_strings("default_execution_symbols").as_slice()
+        );
+        assert_eq!(
+            python_source_default_execution_intervals(),
+            source_strings("default_execution_intervals").as_slice()
+        );
+        assert_eq!(
+            python_source_default_backtest_symbols(),
+            source_strings("default_backtest_symbols").as_slice()
+        );
+        assert_eq!(
+            python_source_default_backtest_intervals(),
+            source_strings("default_backtest_intervals").as_slice()
+        );
+        assert_eq!(
+            python_source_chart_market_options(),
+            source_strings("chart_market_options").as_slice()
+        );
+        assert_eq!(
+            python_source_account_mode_options(),
+            source_strings("account_mode_options").as_slice()
+        );
+
+        let expected_tradingview: BTreeMap<&str, &str> = catalogs
+            .get("tradingview_interval_map")
+            .and_then(Value::as_object)
+            .expect("missing Python TradingView interval map")
+            .iter()
+            .map(|(interval, code)| {
+                (
+                    interval.as_str(),
+                    code.as_str()
+                        .expect("TradingView interval code should be a string"),
+                )
+            })
+            .collect();
+        let actual_tradingview: BTreeMap<&str, &str> = python_source_tradingview_interval_map()
+            .iter()
+            .map(|entry| (entry.interval, entry.code))
+            .collect();
+        assert_eq!(actual_tradingview, expected_tradingview);
+
+        let expected_connectors: Vec<(&str, &str)> = catalogs
+            .get("connectors")
+            .and_then(Value::as_array)
+            .expect("missing Python connector catalog")
+            .iter()
+            .map(|value| {
+                let connector = value.as_object().expect("connector should be an object");
+                (
+                    connector
+                        .get("key")
+                        .and_then(Value::as_str)
+                        .expect("connector key should be present"),
+                    connector
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .expect("connector label should be present"),
+                )
+            })
+            .collect();
+        let actual_connectors: Vec<(&str, &str)> = python_source_connector_options()
+            .iter()
+            .map(|connector| (connector.key, connector.label))
+            .collect();
+        assert_eq!(actual_connectors, expected_connectors);
+
+        let source_indicators = catalogs
+            .get("indicators")
+            .and_then(Value::as_array)
+            .expect("missing Python indicator catalog");
+        assert_eq!(
+            python_source_indicator_catalog().len(),
+            source_indicators.len()
+        );
+        for (index, indicator) in python_source_indicator_catalog().iter().enumerate() {
+            let source_indicator = source_indicators[index]
+                .as_object()
+                .expect("Python indicator should be an object");
+            assert_eq!(
+                source_indicator.get("key").and_then(Value::as_str),
+                Some(indicator.key)
+            );
+            assert_eq!(
+                source_indicator.get("display_name").and_then(Value::as_str),
+                Some(indicator.display_name)
+            );
+            assert_eq!(
+                source_indicator
+                    .get("default_enabled")
+                    .and_then(Value::as_bool),
+                Some(indicator.default_enabled)
+            );
+            let runtime_config: Value = serde_json::from_str(indicator.runtime_config_json)
+                .expect("generated Python indicator runtime config should be valid JSON");
+            let backtest_config: Value = serde_json::from_str(indicator.backtest_config_json)
+                .expect("generated Python indicator backtest config should be valid JSON");
+            assert_eq!(
+                source_indicator.get("runtime_config"),
+                Some(&runtime_config)
+            );
+            assert_eq!(
+                source_indicator.get("backtest_config"),
+                Some(&backtest_config)
+            );
+            let expected_output_keys: Vec<&str> = source_indicator
+                .get("runtime_output_keys")
+                .and_then(Value::as_array)
+                .expect("Python indicator output keys should be an array")
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .expect("Python indicator output key should be a string")
+                })
+                .collect();
+            assert_eq!(
+                indicator.runtime_output_keys,
+                expected_output_keys.as_slice()
+            );
         }
     }
 

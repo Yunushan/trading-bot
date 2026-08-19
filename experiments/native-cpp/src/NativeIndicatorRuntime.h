@@ -20,8 +20,21 @@ using ConfigMap = QMap<QString, QJsonObject>;
 using Series = QVector<double>;
 using SeriesMap = QMap<QString, Series>;
 
+enum class IndicatorEnableSemantics {
+    Strategy,
+    Backtest,
+};
+
+bool isIndicatorEnabled(
+    const QJsonObject &config,
+    IndicatorEnableSemantics semantics = IndicatorEnableSemantics::Strategy);
 QStringList computedIndicatorKeys();
-QStringList unsupportedEnabledIndicatorKeys(const ConfigMap &configs);
-SeriesMap computeConfiguredSeries(const QVector<Candle> &candles, const ConfigMap &configs);
+QStringList unsupportedEnabledIndicatorKeys(
+    const ConfigMap &configs,
+    IndicatorEnableSemantics semantics = IndicatorEnableSemantics::Strategy);
+SeriesMap computeConfiguredSeries(
+    const QVector<Candle> &candles,
+    const ConfigMap &configs,
+    IndicatorEnableSemantics semantics = IndicatorEnableSemantics::Strategy);
 
 } // namespace NativeIndicatorRuntime

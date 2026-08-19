@@ -9,7 +9,8 @@ use crate::generated_python_parity::{
 };
 use crate::market_data::BinanceKlineCandle;
 use crate::native_indicators::{
-    compute_configured_indicator_series, unsupported_enabled_indicator_keys,
+    IndicatorEnableSemantics, compute_configured_indicator_series_with_semantics,
+    indicator_enabled, unsupported_enabled_indicator_keys_with_semantics,
 };
 use crate::python_source_default_backtest_config;
 
@@ -347,29 +348,6 @@ struct TradeState {
     notional: f64,
     units: f64,
     entry_fee: f64,
-}
-
-fn config_bool(config: &Value, key: &str, fallback: bool) -> bool {
-    let Some(value) = config.get(key) else {
-        return fallback;
-    };
-    if let Some(value) = value.as_bool() {
-        return value;
-    }
-    if let Some(value) = value.as_f64() {
-        return value != 0.0;
-    }
-    match value
-        .as_str()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "true" | "1" | "yes" | "on" => true,
-        "false" | "0" | "no" | "off" => false,
-        _ => fallback,
-    }
 }
 
 fn config_number(config: &Value, key: &str) -> Option<f64> {
@@ -800,7 +778,10 @@ where
         result.error = "Backtest capital must be positive".to_owned();
         return result;
     }
-    let unsupported = unsupported_enabled_indicator_keys(&request.indicators);
+    let unsupported = unsupported_enabled_indicator_keys_with_semantics(
+        &request.indicators,
+        IndicatorEnableSemantics::Backtest,
+    );
     if !unsupported.is_empty() {
         result.error = format!(
             "Unsupported native backtest indicators: {}",
@@ -846,10 +827,14 @@ where
     }
     let signal_start_index = execution_start_index;
 
-    let computed = compute_configured_indicator_series(candles, &request.indicators);
+    let computed = compute_configured_indicator_series_with_semantics(
+        candles,
+        &request.indicators,
+        IndicatorEnableSemantics::Backtest,
+    );
     let mut indicator_signals = Vec::new();
     for (key, config) in &request.indicators {
-        if !config_bool(config, "enabled", false) {
+        if !indicator_enabled(config, IndicatorEnableSemantics::Backtest) {
             continue;
         }
         let mut signals = IndicatorSignals {

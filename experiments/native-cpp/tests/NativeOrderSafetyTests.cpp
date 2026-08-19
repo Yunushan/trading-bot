@@ -139,6 +139,20 @@ int main(int argc, char **argv) {
         }
     };
 
+    std::size_t pythonUiOptionEntryCount = 0;
+    for (const auto &catalog : PythonParityContract::kPythonUiOptionCatalogs) {
+        pythonUiOptionEntryCount += catalog.size;
+    }
+    check(PythonParityContract::kPythonOptionCatalogCount == 44,
+          QStringLiteral("generated native contract must contain every Python option catalog"));
+    check(PythonParityContract::kPythonOptionCatalogEntryCount == 255,
+          QStringLiteral("generated native contract must contain every Python option entry"));
+    check(PythonParityContract::kPythonUiOptionCatalogCount
+              == PythonParityContract::kPythonUiOptionCatalogs.size(),
+          QStringLiteral("generated UI catalog count must match the native catalog projection"));
+    check(PythonParityContract::kPythonUiOptionEntryCount == pythonUiOptionEntryCount,
+          QStringLiteral("generated UI entry count must match the native catalog projection"));
+
     for (const auto &referenceCase : PythonParityContract::kPythonStrategyControlsReferenceCases) {
         const QString caseName = QString::fromUtf8(
             referenceCase.name.data(),
@@ -688,6 +702,48 @@ int main(int argc, char **argv) {
           QStringLiteral("native C++ calculator should explicitly implement every Python indicator key"));
     check(NativeIndicatorRuntime::unsupportedEnabledIndicatorKeys(indicatorConfigs).isEmpty(),
           QStringLiteral("native C++ calculator should support every enabled Python fixture indicator"));
+
+    const auto assertIndicatorEnabledCases = [&](std::string_view fixture,
+                                                  NativeIndicatorRuntime::IndicatorEnableSemantics semantics,
+                                                  const QString &label) {
+        const QByteArray fixtureJson(fixture.data(), static_cast<qsizetype>(fixture.size()));
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(fixtureJson, &parseError);
+        check(parseError.error == QJsonParseError::NoError && document.isArray(),
+              QStringLiteral("generated Python %1 indicator-enabled fixture should contain valid JSON")
+                  .arg(label));
+        if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+            return;
+        }
+        for (const QJsonValue &caseValue : document.array()) {
+            const QJsonObject testCase = caseValue.toObject();
+            const QJsonObject input = testCase.value(QStringLiteral("input")).toObject();
+            QJsonObject config;
+            config.insert(QStringLiteral("length"), 2);
+            if (input.contains(QStringLiteral("enabled"))) {
+                config.insert(QStringLiteral("enabled"), input.value(QStringLiteral("enabled")));
+            }
+            const bool expected = testCase.value(QStringLiteral("expected")).toBool();
+            check(NativeIndicatorRuntime::isIndicatorEnabled(config, semantics) == expected,
+                  QStringLiteral("native C++ %1 indicator-enabled coercion should match Python for %2")
+                      .arg(label, testCase.value(QStringLiteral("name")).toString()));
+            NativeIndicatorRuntime::ConfigMap configs;
+            configs.insert(QStringLiteral("ma"), config);
+            const NativeIndicatorRuntime::SeriesMap actual =
+                NativeIndicatorRuntime::computeConfiguredSeries(indicatorCandles, configs, semantics);
+            check(actual.contains(QStringLiteral("ma")) == expected,
+                  QStringLiteral("native C++ %1 indicator selection should match Python for %2")
+                      .arg(label, testCase.value(QStringLiteral("name")).toString()));
+        }
+    };
+    assertIndicatorEnabledCases(
+        PythonParityContract::kPythonIndicatorEnabledReferenceJson,
+        NativeIndicatorRuntime::IndicatorEnableSemantics::Strategy,
+        QStringLiteral("strategy"));
+    assertIndicatorEnabledCases(
+        PythonParityContract::kPythonBacktestIndicatorEnabledReferenceJson,
+        NativeIndicatorRuntime::IndicatorEnableSemantics::Backtest,
+        QStringLiteral("backtest"));
 
     const QJsonArray backtestCases = indicatorReference.value(QStringLiteral("backtest_cases")).toArray();
     check(!backtestCases.isEmpty(),

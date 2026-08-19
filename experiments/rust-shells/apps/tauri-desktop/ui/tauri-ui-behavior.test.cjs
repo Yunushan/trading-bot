@@ -87,6 +87,15 @@ vm.runInNewContext(
 );
 const intervalReference = parityContext.window.PythonParityContract.intervalSecondsReference;
 assert.ok(Array.isArray(intervalReference) && intervalReference.length > 0);
+const optionCatalogs = JSON.parse(parityContext.window.PythonParityContract.optionCatalogsJson);
+assert.deepEqual(
+  optionCatalogs.indicator_ma_type_options.map((option) => option.key),
+  ["SMA", "EMA"]
+);
+assert.equal(
+  optionCatalogs.indicators.find((indicator) => indicator.key === "ma").backtest_config.type,
+  "SMA"
+);
 for (const referenceCase of intervalReference) {
   assert.equal(
     pythonLoopIntervalSeconds(referenceCase.input, intervalReference),
@@ -181,6 +190,18 @@ for (const requiredPythonConfigParityFragment of [
 ]) assert.ok(
   indexHtml.includes(requiredPythonConfigParityFragment),
   `missing Python config parity fragment: ${requiredPythonConfigParityFragment}`
+);
+for (const requiredIndicatorParityFragment of [
+  "pythonOptionCatalogs",
+  "pythonParityContract.optionCatalogsJson",
+  "indicatorMaTypeOptions",
+  "data-indicator-type",
+  "indicatorDefaultTypeFor",
+  "state[key]?.type",
+  "nextConfig.type = typeSelect.value"
+]) assert.ok(
+  indexHtml.includes(requiredIndicatorParityFragment),
+  `missing Python indicator option parity fragment: ${requiredIndicatorParityFragment}`
 );
 
 const environmentCatalog = [

@@ -26,6 +26,7 @@ from .gui.code.code_language_catalog import (
     STARTER_MARKET_OPTIONS,
     _rust_dependency_targets_for_config,
 )
+from .core.backtest.indicator_selection_runtime import _enabled as backtest_indicator_enabled
 from .gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
 from .native_interval_semantics import (
     backtest_interval_seconds,
@@ -1432,6 +1433,69 @@ def native_strategy_risk_loose_reference_cases() -> list[dict[str, object]]:
     return cases
 
 
+def native_indicator_enabled_reference_cases() -> list[dict[str, object]]:
+    """Return strategy indicator enabled coercion from Python's canonical bool helper."""
+
+    raw_cases: tuple[tuple[str, object], ...] = (
+        ("indicator-enabled-bool-true", True),
+        ("indicator-enabled-bool-false", False),
+        ("indicator-enabled-string-true", "true"),
+        ("indicator-enabled-string-false", "false"),
+        ("indicator-enabled-string-yes", "yes"),
+        ("indicator-enabled-string-no", "no"),
+        ("indicator-enabled-string-on", "on"),
+        ("indicator-enabled-string-off", "off"),
+        ("indicator-enabled-string-disabled", "disabled"),
+        ("indicator-enabled-string-none", "none"),
+        ("indicator-enabled-string-null", "null"),
+        ("indicator-enabled-string-numeric", "0.5"),
+        ("indicator-enabled-string-y", "y"),
+        ("indicator-enabled-unknown-string", "maybe"),
+        ("indicator-enabled-empty-string", ""),
+        ("indicator-enabled-null", None),
+        ("indicator-enabled-zero", 0),
+        ("indicator-enabled-one", 1),
+        ("indicator-enabled-fractional-zero", 0.5),
+        ("indicator-enabled-fractional-one", 1.5),
+        ("indicator-enabled-negative-fractional-zero", -0.5),
+        ("indicator-enabled-negative-fractional-one", -1.5),
+    )
+    cases: list[dict[str, object]] = [
+        {
+            "name": "indicator-enabled-missing",
+            "input": {},
+            "expected": coerce_bool(None, False),
+        }
+    ]
+    for name, value in raw_cases:
+        cases.append(
+            {
+                "name": name,
+                "input": {"enabled": value},
+                "expected": coerce_bool(value, False),
+            }
+        )
+    return cases
+
+
+def native_backtest_indicator_enabled_reference_cases() -> list[dict[str, object]]:
+    """Return backtest/optimizer indicator selection coercion from Python."""
+
+    raw_cases = native_indicator_enabled_reference_cases()
+    cases: list[dict[str, object]] = []
+    for case in raw_cases:
+        input_config = dict(case["input"])
+        value = input_config.get("enabled")
+        cases.append(
+            {
+                "name": str(case["name"]).replace("indicator-enabled", "backtest-indicator-enabled", 1),
+                "input": input_config,
+                "expected": backtest_indicator_enabled(value, default=False),
+            }
+        )
+    return cases
+
+
 def native_interval_seconds_reference_cases() -> list[dict[str, object]]:
     """Return interval timing behavior used by Python strategy runtime paths."""
 
@@ -2373,6 +2437,8 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         "strategy_controls_reference": native_strategy_controls_reference_cases(),
         "strategy_risk_reference": native_strategy_risk_reference_cases(),
         "strategy_risk_loose_reference": native_strategy_risk_loose_reference_cases(),
+        "indicator_enabled_reference": native_indicator_enabled_reference_cases(),
+        "backtest_indicator_enabled_reference": native_backtest_indicator_enabled_reference_cases(),
         "interval_seconds_reference": native_interval_seconds_reference_cases(),
         "backtest_interval_seconds_reference": native_backtest_interval_seconds_reference_cases(),
         "stop_intent_reference": native_stop_intent_reference_cases(),
@@ -2470,6 +2536,8 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "strategy_controls_reference": list(payload["strategy_controls_reference"]),
         "strategy_risk_reference": list(payload["strategy_risk_reference"]),
         "strategy_risk_loose_reference": list(payload["strategy_risk_loose_reference"]),
+        "indicator_enabled_reference": list(payload["indicator_enabled_reference"]),
+        "backtest_indicator_enabled_reference": list(payload["backtest_indicator_enabled_reference"]),
         "interval_seconds_reference": list(payload["interval_seconds_reference"]),
         "backtest_interval_seconds_reference": list(payload["backtest_interval_seconds_reference"]),
         "stop_intent_reference": dict(payload["stop_intent_reference"]),

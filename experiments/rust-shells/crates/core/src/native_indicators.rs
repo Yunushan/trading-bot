@@ -46,6 +46,50 @@ pub const NATIVE_RUNTIME_COMPUTED_INDICATOR_KEYS: &[&str] = &[
     "stochastic",
 ];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndicatorEnableSemantics {
+    /// Strategy/dashboard indicator configs use Python's canonical `coerce_bool`.
+    Strategy,
+    /// Backtest/optimizer selection uses Python's permissive `_enabled` helper.
+    Backtest,
+}
+
+pub fn indicator_enabled(config: &Value, semantics: IndicatorEnableSemantics) -> bool {
+    let Some(value) = config.get("enabled") else {
+        return false;
+    };
+    if let Some(value) = value.as_bool() {
+        return value;
+    }
+    if let Some(value) = value.as_f64() {
+        return match semantics {
+            IndicatorEnableSemantics::Strategy if value.is_finite() => value.trunc() != 0.0,
+            IndicatorEnableSemantics::Strategy => value != 0.0,
+            IndicatorEnableSemantics::Backtest => value != 0.0,
+        };
+    }
+    let normalized = value
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match semantics {
+        IndicatorEnableSemantics::Strategy => {
+            matches!(normalized.as_str(), "true" | "1" | "yes" | "on")
+        }
+        IndicatorEnableSemantics::Backtest => {
+            if normalized.is_empty() {
+                false
+            } else {
+                !matches!(
+                    normalized.as_str(),
+                    "0" | "false" | "no" | "off" | "disabled"
+                )
+            }
+        }
+    }
+}
+
 pub fn default_runtime_indicator_configs() -> BTreeMap<String, Value> {
     PYTHON_INDICATOR_CATALOG
         .iter()
@@ -59,10 +103,17 @@ pub fn default_runtime_indicator_configs() -> BTreeMap<String, Value> {
 }
 
 pub fn unsupported_enabled_indicator_keys(configs: &BTreeMap<String, Value>) -> Vec<String> {
+    unsupported_enabled_indicator_keys_with_semantics(configs, IndicatorEnableSemantics::Strategy)
+}
+
+pub fn unsupported_enabled_indicator_keys_with_semantics(
+    configs: &BTreeMap<String, Value>,
+    semantics: IndicatorEnableSemantics,
+) -> Vec<String> {
     configs
         .iter()
         .filter(|(key, config)| {
-            config_enabled(config)
+            indicator_enabled(config, semantics)
                 && !NATIVE_RUNTIME_COMPUTED_INDICATOR_KEYS.contains(&key.as_str())
         })
         .map(|(key, _)| key.clone())
@@ -73,9 +124,21 @@ pub fn compute_configured_indicator_series(
     candles: &[BinanceKlineCandle],
     configs: &BTreeMap<String, Value>,
 ) -> BTreeMap<String, Vec<f64>> {
+    compute_configured_indicator_series_with_semantics(
+        candles,
+        configs,
+        IndicatorEnableSemantics::Strategy,
+    )
+}
+
+pub fn compute_configured_indicator_series_with_semantics(
+    candles: &[BinanceKlineCandle],
+    configs: &BTreeMap<String, Value>,
+    semantics: IndicatorEnableSemantics,
+) -> BTreeMap<String, Vec<f64>> {
     let mut output = BTreeMap::new();
     for (key, config) in configs {
-        if !config_enabled(config) {
+        if !indicator_enabled(config, semantics) {
             continue;
         }
         match key.as_str() {
@@ -1314,18 +1377,6 @@ fn supertrend_series(
         .collect()
 }
 
-fn config_enabled(config: &Value) -> bool {
-    match config.get("enabled") {
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|value| value != 0.0),
-        Some(Value::String(value)) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on" | "y"
-        ),
-        _ => false,
-    }
-}
-
 fn config_length(config: &Value, key: &str, fallback: usize) -> usize {
     let candidate = config.get(key).and_then(|value| match value {
         Value::Number(value) => value.as_f64(),
@@ -1748,5 +1799,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn indicator_enabled_semantics_match_python_generated_reference() {
+        let candles = vec![candle(0, 100.0), candle(1, 101.0), candle(2, 102.0)];
+        let assert_cases =
+            |fixture_json: &str, semantics: IndicatorEnableSemantics, label: &str| {
+                let cases: Value =
+                    serde_json::from_str(fixture_json).expect("indicator enabled fixture");
+                for case in cases.as_array().expect("indicator enabled cases") {
+                    let input = case["input"].as_object().expect("indicator enabled input");
+                    let mut config = serde_json::json!({"length": 2});
+                    if let Some(enabled) = input.get("enabled") {
+                        config
+                            .as_object_mut()
+                            .expect("indicator config object")
+                            .insert("enabled".to_owned(), enabled.clone());
+                    }
+                    let configs = BTreeMap::from([(String::from("ma"), config)]);
+                    let expected = case["expected"]
+                        .as_bool()
+                        .expect("indicator enabled expected");
+                    assert_eq!(
+                        indicator_enabled(&configs["ma"], semantics),
+                        expected,
+                        "{label} enabled coercion mismatch for {}",
+                        case["name"]
+                    );
+                    let actual = compute_configured_indicator_series_with_semantics(
+                        &candles, &configs, semantics,
+                    );
+                    assert_eq!(
+                        actual.contains_key("ma"),
+                        expected,
+                        "{label} computed-series selection mismatch for {}",
+                        case["name"]
+                    );
+                }
+            };
+        assert_cases(
+            crate::generated_python_parity::PYTHON_INDICATOR_ENABLED_REFERENCE_JSON,
+            IndicatorEnableSemantics::Strategy,
+            "strategy",
+        );
+        assert_cases(
+            crate::generated_python_parity::PYTHON_BACKTEST_INDICATOR_ENABLED_REFERENCE_JSON,
+            IndicatorEnableSemantics::Backtest,
+            "backtest",
+        );
     }
 }

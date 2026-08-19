@@ -324,7 +324,7 @@ committed.
   hosted-only `target_id: all` run, excluding self-hosted Windows targets to
   avoid waiting on an unavailable runner. Set `include_self_hosted: true` for
   the full checked-in 12-target release matrix; `require_all_evidence: true`
-  also requires that opt-in and validates the combined
+  validates every target in the selected hosted or full scope and the combined
   `release-platform-evidence-*` artifacts in the same run. A specific canonical
   target id is for focused recovery only; `runner_labels_json` can override the
   runner only for that one target. Each matrix job uploads

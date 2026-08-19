@@ -19,21 +19,39 @@ Series filled(qsizetype size, double value = kNaN) {
     return Series(size, value);
 }
 
-bool configEnabled(const QJsonObject &config) {
+bool indicatorEnabled(
+    const QJsonObject &config,
+    NativeIndicatorRuntime::IndicatorEnableSemantics semantics) {
     const QJsonValue value = config.value(QStringLiteral("enabled"));
     if (value.isBool()) {
         return value.toBool();
     }
     if (value.isDouble()) {
-        return value.toDouble() != 0.0;
+        const double number = value.toDouble();
+        if (semantics == NativeIndicatorRuntime::IndicatorEnableSemantics::Strategy
+            && std::isfinite(number)) {
+            return std::trunc(number) != 0.0;
+        }
+        return number != 0.0;
     }
     if (value.isString()) {
         const QString normalized = value.toString().trimmed().toLower();
-        return normalized == QStringLiteral("1")
-            || normalized == QStringLiteral("true")
-            || normalized == QStringLiteral("yes")
-            || normalized == QStringLiteral("on")
-            || normalized == QStringLiteral("y");
+        if (semantics == NativeIndicatorRuntime::IndicatorEnableSemantics::Strategy) {
+            return QStringList{
+                QStringLiteral("1"),
+                QStringLiteral("true"),
+                QStringLiteral("yes"),
+                QStringLiteral("on"),
+            }.contains(normalized);
+        }
+        return !normalized.isEmpty()
+            && !QStringList{
+                QStringLiteral("0"),
+                QStringLiteral("false"),
+                QStringLiteral("no"),
+                QStringLiteral("off"),
+                QStringLiteral("disabled"),
+            }.contains(normalized);
     }
     return false;
 }
@@ -981,23 +999,34 @@ QStringList computedIndicatorKeys() {
     };
 }
 
-QStringList unsupportedEnabledIndicatorKeys(const ConfigMap &configs) {
+bool isIndicatorEnabled(
+    const QJsonObject &config,
+    IndicatorEnableSemantics semantics) {
+    return indicatorEnabled(config, semantics);
+}
+
+QStringList unsupportedEnabledIndicatorKeys(
+    const ConfigMap &configs,
+    IndicatorEnableSemantics semantics) {
     const QStringList supported = computedIndicatorKeys();
     QStringList unsupported;
     for (auto iterator = configs.cbegin(); iterator != configs.cend(); ++iterator) {
-        if (configEnabled(iterator.value()) && !supported.contains(iterator.key())) {
+        if (indicatorEnabled(iterator.value(), semantics) && !supported.contains(iterator.key())) {
             unsupported.push_back(iterator.key());
         }
     }
     return unsupported;
 }
 
-SeriesMap computeConfiguredSeries(const QVector<Candle> &candles, const ConfigMap &configs) {
+SeriesMap computeConfiguredSeries(
+    const QVector<Candle> &candles,
+    const ConfigMap &configs,
+    IndicatorEnableSemantics semantics) {
     SeriesMap output;
     for (auto iterator = configs.cbegin(); iterator != configs.cend(); ++iterator) {
         const QString &key = iterator.key();
         const QJsonObject &config = iterator.value();
-        if (!configEnabled(config)) {
+        if (!indicatorEnabled(config, semantics)) {
             continue;
         }
         if (key == QStringLiteral("donchian")) {

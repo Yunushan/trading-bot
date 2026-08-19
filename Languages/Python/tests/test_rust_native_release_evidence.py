@@ -295,7 +295,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("Evidence Gate (selected scope)", release_platform_workflow_text)
         self.assertIn("args+=(--exclude-self-hosted)", release_platform_workflow_text)
         self.assertIn("REQUIRE_ALL_EVIDENCE: ${{ inputs.require_all_evidence }}", release_platform_workflow_text)
-        self.assertIn(
+        self.assertNotIn(
             "Strict all-target evidence requires include_self_hosted=true",
             release_platform_workflow_text,
         )

@@ -21,6 +21,7 @@ from app.native_parity import (  # noqa: E402
     INDICATOR_RUNTIME_OUTPUT_KEYS,
         NATIVE_PARITY_DOMAINS,
         native_python_source_contract_hash,
+        native_python_source_contract_payload,
         native_python_source_contract_summary,
 )
 from app.service.api_contract import (  # noqa: E402
@@ -44,6 +45,8 @@ from tools.generate_native_parity_contracts import (  # noqa: E402
     _cpp_string,
     _exchange_support_reference_payload,
     _indicator_reference_payload,
+    _python_option_catalog_manifest,
+    _python_option_catalog_json,
     _runtime_config_reference_cases,
     _rust_string,
     render_cpp_header,
@@ -177,6 +180,33 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertFalse(fractional_zero["expected"]["indicator_use_live_values"])
         fractional_one = next(case for case in cases if case["name"] == "risk-loose-fractional-one")
         self.assertTrue(fractional_one["expected"]["indicator_use_live_values"])
+
+    def test_indicator_enabled_references_preserve_python_context_semantics(self):
+        summary = native_python_source_contract_summary()
+        strategy_cases = summary["indicator_enabled_reference"]
+        backtest_cases = summary["backtest_indicator_enabled_reference"]
+        self.assertEqual(len(strategy_cases), 23)
+        self.assertEqual(len(backtest_cases), 23)
+        strategy = {case["name"]: case["expected"] for case in strategy_cases}
+        backtest = {case["name"]: case["expected"] for case in backtest_cases}
+        self.assertFalse(strategy["indicator-enabled-string-y"])
+        self.assertTrue(backtest["backtest-indicator-enabled-string-y"])
+        self.assertFalse(strategy["indicator-enabled-fractional-zero"])
+        self.assertTrue(backtest["backtest-indicator-enabled-fractional-zero"])
+        self.assertTrue(strategy["indicator-enabled-fractional-one"])
+        self.assertTrue(backtest["backtest-indicator-enabled-fractional-one"])
+        self.assertFalse(strategy["indicator-enabled-unknown-string"])
+        self.assertTrue(backtest["backtest-indicator-enabled-unknown-string"])
+        self.assertFalse(strategy["indicator-enabled-string-disabled"])
+        self.assertFalse(backtest["backtest-indicator-enabled-string-disabled"])
+        self.assertFalse(strategy["indicator-enabled-string-none"])
+        self.assertTrue(backtest["backtest-indicator-enabled-string-none"])
+        self.assertFalse(strategy["indicator-enabled-string-null"])
+        self.assertTrue(backtest["backtest-indicator-enabled-string-null"])
+        self.assertFalse(strategy["indicator-enabled-string-numeric"])
+        self.assertTrue(backtest["backtest-indicator-enabled-string-numeric"])
+        self.assertFalse(strategy["indicator-enabled-null"])
+        self.assertFalse(backtest["backtest-indicator-enabled-null"])
 
     def test_order_intent_reference_covers_python_boolean_boundaries(self):
         payload = native_python_source_contract_summary()["order_intent_reference"]
@@ -369,6 +399,67 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             render_cpp_portfolio_reference_header(),
             _read(CPP_PORTFOLIO_REFERENCE_OUTPUT),
         )
+
+    def test_python_option_catalog_inventory_is_complete(self):
+        option_catalogs = native_python_source_contract_payload()["ui_options"]
+        entry_count = sum(
+            len(value) if isinstance(value, (dict, list, tuple)) else 1
+            for value in option_catalogs.values()
+        )
+        self.assertEqual(44, len(option_catalogs))
+        self.assertEqual(255, entry_count)
+
+    def test_every_python_option_catalog_is_manifested_in_native_and_browser_contracts(self):
+        manifest = _python_option_catalog_manifest()
+        option_catalog_json = _python_option_catalog_json()
+        rust_generated = _read(RUST_OUTPUT)
+        cpp_generated = _read(CPP_OUTPUT)
+        tauri_generated = _read(TAURI_BROWSER_OUTPUT)
+
+        self.assertEqual(44, len(manifest))
+        self.assertEqual(255, sum(entry_count for _, entry_count in manifest))
+        self.assertIn(
+            "pub const PYTHON_OPTION_CATALOG_MANIFEST: &[PythonOptionCatalogManifestEntry] = &[",
+            rust_generated,
+        )
+        self.assertIn(
+            "inline constexpr std::array<PythonOptionCatalogManifestEntry, 44> "
+            "kPythonOptionCatalogManifest = {",
+            cpp_generated,
+        )
+        self.assertIn('"optionCatalogManifest": [', tauri_generated)
+        self.assertIn(
+            "pub const PYTHON_OPTION_CATALOGS_JSON: &str = "
+            f"{_rust_string(option_catalog_json)};",
+            rust_generated,
+        )
+        self.assertIn(
+            "inline constexpr std::string_view kPythonOptionCatalogsJson = "
+            f"{_cpp_string(option_catalog_json)};",
+            cpp_generated,
+        )
+        self.assertIn(
+            f'"optionCatalogsJson": {json.dumps(option_catalog_json)}',
+            tauri_generated,
+        )
+        for name, entry_count in manifest:
+            with self.subTest(catalog=name):
+                rust_name = _rust_string(name)
+                cpp_name = _cpp_string(name)
+                self.assertIn(
+                    "PythonOptionCatalogManifestEntry {"
+                    f" name: {rust_name}, entry_count: {entry_count} }},",
+                    rust_generated,
+                )
+                self.assertIn(
+                    "PythonOptionCatalogManifestEntry{"
+                    f"{cpp_name}, {entry_count} }},",
+                    cpp_generated,
+                )
+                self.assertIn(
+                    f'"entryCount": {entry_count},\n      "name": {json.dumps(name)}',
+                    tauri_generated,
+                )
 
     def test_position_reconciliation_reference_covers_python_policy_paths(self):
         from app.native_parity import native_position_reconciliation_reference_cases
@@ -646,6 +737,8 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn('"rustStandaloneRuntimeReady": false', tauri_generated)
         self.assertIn('"cppFullParityReady": false', tauri_generated)
         self.assertIn('"rustFullParityReady": false', tauri_generated)
+        self.assertIn('"optionCatalogCount": 44', tauri_generated)
+        self.assertIn('"optionCatalogEntryCount": 255', tauri_generated)
         self.assertIn('"riskDefaults"', tauri_generated)
         self.assertIn('"uiDefaults"', tauri_generated)
         self.assertIn('"supportedBrokers"', tauri_generated)
@@ -846,6 +939,19 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             {"cpp": True, "rust": True},
             feature_option_contract["generated_native_contracts_match_python"],
         )
+        option_catalog_consumers = feature_option_contract["option_catalog_consumers"]
+        self.assertTrue(option_catalog_consumers["ok"], option_catalog_consumers)
+        self.assertEqual(44, option_catalog_consumers["catalog_count"])
+        for target in ("cpp", "rust", "browser"):
+            with self.subTest(option_catalog_consumer_target=target):
+                target_report = option_catalog_consumers["targets"][target]
+                self.assertTrue(target_report["ok"], target_report)
+                self.assertEqual(44, target_report["catalog_count"])
+                self.assertEqual(100.0, target_report["coverage_percent"])
+                self.assertEqual(
+                    target_report["applicable_count"],
+                    target_report["covered_count"],
+                )
         domain_evidence = report["domain_evidence_contract"]
         self.assertTrue(domain_evidence["ok"], domain_evidence)
         self.assertEqual(12, len(domain_evidence["domains"]))
@@ -859,6 +965,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertEqual(100.0, parity_percentages[target]["feature_domains"])
             self.assertEqual(100.0, parity_percentages[target]["option_catalogs"])
             self.assertEqual(100.0, parity_percentages[target]["option_entries"])
+            self.assertEqual(100.0, parity_percentages[target]["option_catalog_consumers"])
             self.assertEqual(100.0, parity_percentages[target]["config_keys"])
             self.assertEqual(100.0, parity_percentages[target]["generated_artifacts"])
             self.assertEqual(100.0, parity_percentages[target]["consumer_surfaces"])

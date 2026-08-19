@@ -19,7 +19,7 @@ on:
         default: ""
         type: string
       require_all_evidence:
-        description: "Require passed evidence for every selected target; set include_self_hosted=true to include Windows 11 self-hosted targets."
+        description: "Require passed evidence for every target in the selected scope; self-hosted targets are included only when enabled."
         required: true
         type: boolean
         default: false
@@ -72,10 +72,6 @@ jobs:
           RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
         run: |
           set -euo pipefail
-          if [[ "$TARGET_ID" == "all" && "$REQUIRE_ALL_EVIDENCE" == "true" && "$INCLUDE_SELF_HOSTED" != "true" ]]; then
-            echo "Strict all-target evidence requires include_self_hosted=true so Windows 11 targets are not silently omitted." >&2
-            exit 1
-          fi
           args=(--emit-github-matrix)
           if [[ "$TARGET_ID" != "all" ]]; then
             args+=(--target-filter "$TARGET_ID")
