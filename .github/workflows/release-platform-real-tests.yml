@@ -126,20 +126,23 @@ jobs:
         if: ${{ !startsWith(matrix.target.target_id, 'browser-') && runner.os == 'Linux' }}
         shell: bash
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libayatana-appindicator3-dev \
-            libglib2.0-dev \
-            libgtk-3-dev \
-            libjavascriptcoregtk-4.1-dev \
-            librsvg2-dev \
-            libsoup-3.0-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            pkg-config
+          timeout --foreground --kill-after=30s 12m bash -c '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update
+            sudo -n apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y \
+              build-essential \
+              libayatana-appindicator3-dev \
+              libglib2.0-dev \
+              libgtk-3-dev \
+              libjavascriptcoregtk-4.1-dev \
+              librsvg2-dev \
+              libsoup-3.0-dev \
+              libssl-dev \
+              libwebkit2gtk-4.1-dev \
+              libxdo-dev \
+              pkg-config
+          '
 
       - name: Install browser contract dependencies
         if: ${{ startsWith(matrix.target.target_id, 'browser-') }}
@@ -160,7 +163,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx --prefix apps/web-dashboard playwright install --with-deps firefox
+          export DEBIAN_FRONTEND=noninteractive
+          export PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000
+          timeout --foreground --kill-after=30s 12m \
+            npx --prefix apps/web-dashboard playwright install --with-deps firefox
 
       - name: Install Playwright Google Chrome
         if: ${{ startsWith(matrix.target.target_id, 'browser-chrome-') && runner.os != 'Linux' }}
@@ -174,7 +180,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx --prefix apps/web-dashboard playwright install --with-deps chrome
+          export DEBIAN_FRONTEND=noninteractive
+          export PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000
+          timeout --foreground --kill-after=30s 12m \
+            npx --prefix apps/web-dashboard playwright install --with-deps chrome
 
       - name: Install Playwright Microsoft Edge
         if: ${{ startsWith(matrix.target.target_id, 'browser-edge-') && runner.os != 'Linux' }}
@@ -188,7 +197,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx --prefix apps/web-dashboard playwright install --with-deps msedge
+          export DEBIAN_FRONTEND=noninteractive
+          export PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000
+          timeout --foreground --kill-after=30s 12m \
+            npx --prefix apps/web-dashboard playwright install --with-deps msedge
 
       - name: Install native parity dependencies
         shell: bash
