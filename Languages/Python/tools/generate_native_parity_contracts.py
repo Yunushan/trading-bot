@@ -1515,6 +1515,27 @@ def _indicator_reference_payload() -> dict[str, object]:
     live_signal_cases = [
         _live_signal_case_payload("rsi-buy", baseline_frame, "rsi", {"buy_value": 1_000_000.0}),
         _live_signal_case_payload(
+            "rsi-both-buy",
+            baseline_frame,
+            "rsi",
+            {"buy_value": 1_000_000.0},
+            side="BOTH",
+        ),
+        _live_signal_case_payload(
+            "rsi-buy-blocked-by-sell-side",
+            baseline_frame,
+            "rsi",
+            {"buy_value": 1_000_000.0, "sell_value": 1_000_000.0},
+            side="SELL",
+        ),
+        _live_signal_case_payload(
+            "rsi-sell-blocked-by-buy-side",
+            baseline_frame,
+            "rsi",
+            {"buy_value": -1_000_000.0, "sell_value": -1_000_000.0},
+            side="BUY",
+        ),
+        _live_signal_case_payload(
             "rsi-zero-threshold-uses-python-default",
             threshold_zero_frame,
             "rsi",
@@ -1956,6 +1977,24 @@ def _rust_strategy_risk_reference_cases(cases: list[dict[str, object]]) -> str:
         "}",
         "",
         "pub const PYTHON_STRATEGY_RISK_REFERENCE_CASES: &[PythonStrategyRiskReferenceCase] = &[",
+    ]
+    for case in cases:
+        lines.extend(
+            [
+                "    PythonStrategyRiskReferenceCase {",
+                f"        name: {_rust_string(case['name'])},",
+                f"        input_json: {_rust_string(_contract_json(case['input']))},",
+                f"        expected_json: {_rust_string(_contract_json(case['expected']))},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _rust_strategy_risk_loose_reference_cases(cases: list[dict[str, object]]) -> str:
+    lines = [
+        "pub const PYTHON_STRATEGY_RISK_LOOSE_REFERENCE_CASES: &[PythonStrategyRiskReferenceCase] = &[",
     ]
     for case in cases:
         lines.extend(
@@ -2458,6 +2497,25 @@ def _cpp_strategy_risk_reference_cases(cases: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _cpp_strategy_risk_loose_reference_cases(cases: list[dict[str, object]]) -> str:
+    lines = [
+        (
+            "inline constexpr std::array<PythonStrategyRiskReferenceCase, "
+            f"{len(cases)}> kPythonStrategyRiskLooseReferenceCases = {{"
+        ),
+    ]
+    for case in cases:
+        lines.append(
+            "    PythonStrategyRiskReferenceCase{"
+            f"{_cpp_string(case['name'])}, "
+            f"{_cpp_string(_contract_json(case['input']))}, "
+            f"{_cpp_string(_contract_json(case['expected']))}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
 def _cpp_connector_normalization_reference_cases(cases: list[dict[str, str]]) -> str:
     lines = [
         "struct PythonConnectorNormalizationReferenceCase {",
@@ -2728,7 +2786,13 @@ def render_rust_module() -> str:
     runtime_config_cases = _runtime_config_reference_cases()
     strategy_controls_cases = list(summary["strategy_controls_reference"])
     strategy_risk_cases = list(summary["strategy_risk_reference"])
+    strategy_risk_loose_cases = list(summary["strategy_risk_loose_reference"])
+    interval_seconds_reference = list(summary["interval_seconds_reference"])
+    backtest_interval_seconds_reference = list(summary["backtest_interval_seconds_reference"])
+    stop_intent_reference = dict(summary["stop_intent_reference"])
+    stop_intent_loose_reference = dict(summary["stop_intent_loose_reference"])
     order_intent_reference = dict(summary["order_intent_reference"])
+    live_safety_reference = dict(summary["live_safety_reference"])
     connector_health_reference = dict(summary["connector_health_reference"])
     llm_output_policy_reference = dict(summary["llm_output_policy_reference"])
     llm_chat_request_reference = dict(summary["llm_chat_request_reference"])
@@ -2759,6 +2823,24 @@ def render_rust_module() -> str:
         "",
         _rust_strategy_risk_reference_cases(strategy_risk_cases),
         "",
+        _rust_strategy_risk_loose_reference_cases(strategy_risk_loose_cases),
+        (
+            "pub const PYTHON_INTERVAL_SECONDS_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(interval_seconds_reference))};"
+        ),
+        (
+            "pub const PYTHON_BACKTEST_INTERVAL_SECONDS_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(backtest_interval_seconds_reference))};"
+        ),
+        (
+            "pub const PYTHON_STOP_INTENT_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(stop_intent_reference))};"
+        ),
+        (
+            "pub const PYTHON_STOP_INTENT_LOOSE_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(stop_intent_loose_reference))};"
+        ),
+        "",
         _rust_connector_normalization_reference_cases(connector_normalization_cases),
         (
             "pub const PYTHON_ORDER_SIZING_REFERENCE_JSON: &str = "
@@ -2767,6 +2849,10 @@ def render_rust_module() -> str:
         (
             "pub const PYTHON_ORDER_INTENT_REFERENCE_JSON: &str = "
             f"{_rust_string(_contract_json(order_intent_reference))};"
+        ),
+        (
+            "pub const PYTHON_LIVE_SAFETY_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(live_safety_reference))};"
         ),
         (
             "pub const PYTHON_CONNECTOR_HEALTH_REFERENCE_JSON: &str = "
@@ -2969,7 +3055,13 @@ def render_cpp_header() -> str:
     runtime_config_cases = _runtime_config_reference_cases()
     strategy_controls_cases = list(summary["strategy_controls_reference"])
     strategy_risk_cases = list(summary["strategy_risk_reference"])
+    strategy_risk_loose_cases = list(summary["strategy_risk_loose_reference"])
+    interval_seconds_reference = list(summary["interval_seconds_reference"])
+    backtest_interval_seconds_reference = list(summary["backtest_interval_seconds_reference"])
+    stop_intent_reference = dict(summary["stop_intent_reference"])
+    stop_intent_loose_reference = dict(summary["stop_intent_loose_reference"])
     order_intent_reference = dict(summary["order_intent_reference"])
+    live_safety_reference = dict(summary["live_safety_reference"])
     connector_health_reference = dict(summary["connector_health_reference"])
     llm_output_policy_reference = dict(summary["llm_output_policy_reference"])
     llm_chat_request_reference = dict(summary["llm_chat_request_reference"])
@@ -3015,6 +3107,24 @@ def render_cpp_header() -> str:
         "",
         _cpp_strategy_risk_reference_cases(strategy_risk_cases),
         "",
+        _cpp_strategy_risk_loose_reference_cases(strategy_risk_loose_cases),
+        (
+            "inline constexpr std::string_view kPythonIntervalSecondsReferenceJson = "
+            f"{_cpp_string(_contract_json(interval_seconds_reference))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonBacktestIntervalSecondsReferenceJson = "
+            f"{_cpp_string(_contract_json(backtest_interval_seconds_reference))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonStopIntentReferenceJson = "
+            f"{_cpp_string(_contract_json(stop_intent_reference))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonStopIntentLooseReferenceJson = "
+            f"{_cpp_string(_contract_json(stop_intent_loose_reference))};"
+        ),
+        "",
         _cpp_connector_normalization_reference_cases(connector_normalization_cases),
         (
             "inline constexpr std::string_view kPythonOrderSizingReferenceJson = "
@@ -3023,6 +3133,10 @@ def render_cpp_header() -> str:
         (
             "inline constexpr std::string_view kPythonOrderIntentReferenceJson = "
             f"{_cpp_string(_contract_json(order_intent_reference))};"
+        ),
+        (
+            "inline constexpr std::string_view kPythonLiveSafetyReferenceJson = "
+            f"{_cpp_string(_contract_json(live_safety_reference))};"
         ),
         (
             "inline constexpr std::string_view kPythonConnectorHealthReferenceJson = "
@@ -3257,6 +3371,7 @@ def render_tauri_browser_contract() -> str:
         "supportedForexBrokers": list(summary["supported_forex_brokers"]),
         "brokerOrderRoutingBackends": list(summary["broker_order_routing_backends"]),
         "backtestIntervals": list(summary["intervals"]),
+        "intervalSecondsReference": list(summary["interval_seconds_reference"]),
         "tradingviewIntervalMap": dict(summary["tradingview_interval_map"]),
         "defaultChartSymbols": list(summary["default_chart_symbols"]),
         "defaultExecutionSymbols": list(summary["default_execution_symbols"]),

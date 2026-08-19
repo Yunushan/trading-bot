@@ -116,8 +116,10 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_native_portfolio_reconciliation_uses_python_reference_fixture",
     "rust_strategy_runtime_uses_python_source_options",
     "rust_native_strategy_runtime_uses_python_live_signal_fixture",
+    "rust_native_strategy_runtime_uses_python_interval_timing_fixture",
     "rust_native_backtest_runtime_uses_python_reference_fixture",
     "rust_native_backtest_batch_runtime_uses_python_reference_fixture",
+    "rust_native_backtest_interval_timing_uses_python_reference_fixture",
     "rust_config_persistence_uses_python_source_options",
     "rust_native_exchange_connectors_use_python_source_connectors",
     "rust_native_exchange_connectors_use_python_reference_fixture",
@@ -126,6 +128,8 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_order_guard_uses_python_behavior_contract",
     "rust_order_guard_uses_python_live_safety_environment",
     "rust_order_guard_uses_python_order_intent_fixture",
+    "rust_order_guard_uses_python_live_safety_fixture",
+    "rust_native_stop_intent_uses_python_reference_fixture",
     "rust_order_guard_uses_python_connector_health_fixture",
     "rust_llm_output_policy_uses_python_reference_fixture",
     "rust_llm_chat_request_uses_python_reference_fixture",
@@ -159,12 +163,17 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_native_strategy_runtime_uses_python_source_options",
     "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
     "cpp_native_strategy_runtime_uses_python_behavior_fixtures",
+    "cpp_native_strategy_runtime_uses_python_interval_timing_fixture",
     "cpp_native_indicator_runtime_uses_python_reference_fixture",
     "cpp_native_backtest_runtime_uses_python_reference_fixture",
+    "cpp_native_backtest_interval_timing_uses_python_reference_fixture",
     "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline",
     "cpp_order_guard_uses_python_behavior_contract",
     "cpp_order_guard_uses_python_live_safety_environment",
     "cpp_native_order_guard_uses_python_order_intent_fixture",
+    "cpp_native_order_guard_uses_python_live_safety_fixture",
+    "cpp_native_stop_intent_uses_python_reference_fixture",
+    "cpp_dashboard_runtime_uses_python_stop_intent",
     "cpp_native_order_guard_uses_python_connector_health_fixture",
     "cpp_llm_output_policy_uses_python_reference_fixture",
     "cpp_llm_chat_request_uses_python_reference_fixture",
@@ -181,6 +190,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "tauri_native_runtime_preview_browser_bridge",
     "tauri_native_runtime_controller_backend",
     "tauri_native_runtime_controller_browser_bridge",
+    "tauri_native_runtime_poll_timing_uses_python_reference_fixture",
     "tauri_native_backtest_bridge",
     "tauri_native_backtest_commands_registered",
     "tauri_native_backtest_browser_bridge",
@@ -791,6 +801,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "normalize_stop_loss",
                 "PYTHON_STRATEGY_CONTROLS_REFERENCE_CASES",
                 "PYTHON_STRATEGY_RISK_REFERENCE_CASES",
+                "PYTHON_STRATEGY_RISK_LOOSE_REFERENCE_CASES",
             ),
         ),
         ConsumerRequirement(
@@ -802,6 +813,17 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "StrategySignalInput",
                 "build_signal_decision",
                 "live_signal_generation_matches_python_reference_cases",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_native_strategy_runtime_uses_python_interval_timing_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "native_runtime.rs",
+            (
+                "PYTHON_INTERVAL_SECONDS_REFERENCE_JSON",
+                "python_indicator_interval_seconds",
+                "interval_seconds_value",
+                "native_interval_timing_matches_python_reference_cases",
+                "generated Python interval timing reference",
             ),
         ),
         ConsumerRequirement(
@@ -841,6 +863,22 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "completed_combo_count",
                 "native_batch_budget_and_resume_preserve_python_checkpoint_semantics",
                 "native_batch_matches_python_reference_result_and_reuses_candles",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_native_backtest_interval_timing_uses_python_reference_fixture",
+            REPO_ROOT
+            / "experiments"
+            / "rust-shells"
+            / "crates"
+            / "core"
+            / "src"
+            / "market_data.rs",
+            (
+                "PYTHON_BACKTEST_INTERVAL_SECONDS_REFERENCE_JSON",
+                "pub fn python_backtest_interval_seconds",
+                "backtest_interval_seconds_match_python_generated_reference_cases",
+                "generated Python backtest interval reference",
             ),
         ),
         ConsumerRequirement(
@@ -980,6 +1018,27 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "intent_bool_param",
                 "filter_truthy_param",
                 "validate_order_filter_constraints_with_raw_params",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_order_guard_uses_python_live_safety_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "order_guard.rs",
+            (
+                "PYTHON_LIVE_SAFETY_REFERENCE_JSON",
+                "live_safety_validation_matches_every_python_reference_case",
+                "LiveTradingSafetyInput",
+                "validate_live_trading_safety_with_environment",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_native_stop_intent_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "runtime_control.rs",
+            (
+                "PYTHON_STOP_INTENT_REFERENCE_JSON",
+                "PYTHON_STOP_INTENT_LOOSE_REFERENCE_JSON",
+                "stop_intent_mapping_matches_python_reference_cases",
+                "close_positions_from_python_config",
+                "build_runtime_stop_guard_result",
             ),
         ),
         ConsumerRequirement(
@@ -1340,7 +1399,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "serviceOpenRecords",
                 "positionsOpenRecords_ = serviceOpenRecords",
                 "positionsPendingCloseTimes_.insert(stateKey, closeTime)",
-                "pythonSourceRiskDefaults",
+                "buildDashboardServiceConfigPatch",
             ),
         ),
         ConsumerRequirement(
@@ -1489,10 +1548,22 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             (
                 "PythonParityContract::kPythonStrategyControlsReferenceCases",
                 "PythonParityContract::kPythonStrategyRiskReferenceCases",
+                "PythonParityContract::kPythonStrategyRiskLooseReferenceCases",
                 "NativeStrategyRuntime::normalizeStrategyControls",
                 "NativeStrategyRuntime::normalizeStrategyRiskControls",
                 "C++ strategy-control normalization should match Python",
                 "C++ strategy-risk normalization should match Python",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_strategy_runtime_uses_python_interval_timing_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonIntervalSecondsReferenceJson",
+                "NativeStrategyRuntime::pythonIndicatorIntervalSeconds",
+                "NativeStrategyRuntime::pythonLoopIntervalSeconds",
+                "C++ indicator interval timing should match Python",
+                "C++ loop interval timing should match Python",
             ),
         ),
         ConsumerRequirement(
@@ -1517,6 +1588,16 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 'QStringLiteral("max_drawdown_result_value")',
                 'QStringLiteral("fees_paid")',
                 'QStringLiteral("indicator_keys")',
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_backtest_interval_timing_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonBacktestIntervalSecondsReferenceJson",
+                "NativeBacktestBatchRuntime::bufferedStartTimeMs",
+                "C++ backtest interval timing should match Python",
+                "generated Python backtest interval timing reference",
             ),
         ),
         ConsumerRequirement(
@@ -1566,6 +1647,36 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "C++ order-intent normalization should match Python",
                 "C++ order-filter validation should match Python",
                 "validateOrderFilterConstraintsWithRawParams",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_order_guard_uses_python_live_safety_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonLiveSafetyReferenceJson",
+                "C++ live-safety validation should match Python",
+                "liveSafetyInputFromJson",
+                "validateLiveTradingSafety",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_stop_intent_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeOrderSafetyTests.cpp",
+            (
+                "PythonParityContract::kPythonStopIntentReferenceJson",
+                "PythonParityContract::kPythonStopIntentLooseReferenceJson",
+                "stop-intent mapping should match Python",
+                "NativeOrderSafety::closePositionsFromPythonConfig",
+                "buildRuntimeStopGuardResult",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_dashboard_runtime_uses_python_stop_intent",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_runtime_lifecycle.cpp",
+            (
+                "NativeOrderSafety::closePositionsFromPythonConfig",
+                "buildDashboardServiceConfigPatch",
+                "stopRequest",
             ),
         ),
         ConsumerRequirement(
@@ -1903,6 +2014,15 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "connector_order_circuit_incident_log_backup_count:",
                 "delete config.api_key",
                 "delete config.api_secret",
+            ),
+        ),
+        ConsumerRequirement(
+            "tauri_native_runtime_poll_timing_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html",
+            (
+                "pythonParityContract.intervalSecondsReference",
+                "tauriUiBehavior.pythonLoopIntervalSeconds",
+                "nativeRuntimeMarketPollIntervalMs",
             ),
         ),
         ConsumerRequirement(

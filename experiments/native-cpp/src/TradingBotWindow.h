@@ -313,6 +313,8 @@ private:
     QMap<QString, NativeStrategyRuntime::IndicatorOrderGuardState>
         dashboardRuntimeIndicatorOrderGuardStates_;
     QMap<QString, qint64> dashboardRuntimeIndicatorReentryBlocks_;
+    QMap<QString, QJsonObject> dashboardRuntimePendingFlipRequests_;
+    QMap<QString, int> dashboardRuntimeFlatPurgeMissCounts_;
     QList<QWidget *> dashboardRuntimeLockWidgets_;
     QCheckBox *dashboardLeadTraderEnableCheck_;
     QComboBox *dashboardLeadTraderCombo_;
@@ -325,6 +327,7 @@ private:
     QComboBox *dashboardStopLossScopeCombo_;
     QDoubleSpinBox *dashboardStopLossUsdtSpin_;
     QDoubleSpinBox *dashboardStopLossPercentSpin_;
+    QJsonObject dashboardEffectiveRiskControls_;
     bool dashboardRuntimeActive_ = false;
     bool dashboardRuntimeStopping_ = false;
     bool dashboardServiceRuntimeActive_ = false;

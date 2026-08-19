@@ -170,6 +170,7 @@ def _initialize_config_state(self) -> None:
         self.config["design"] = stored_design
     self.config["close_on_exit"] = False
     self.config.setdefault("close_on_exit", False)
+    self.config.setdefault("stop_without_close", False)
     self.config["allow_opposite_positions"] = coerce_bool(
         self.config.get("allow_opposite_positions", True),
         True,

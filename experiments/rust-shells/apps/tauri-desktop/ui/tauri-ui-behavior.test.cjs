@@ -29,6 +29,7 @@ const {
   normalizeOverrideRow,
   optionsMatchingKeys,
   overrideImportKey,
+  pythonLoopIntervalSeconds,
   preflightFreshnessAges,
   serviceLogItemsFromPayload,
   preflightStartBlocked,
@@ -74,10 +75,28 @@ assert.deepEqual(
 
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const indexHtml = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 const inlineScripts = [...indexHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)];
 assert.ok(inlineScripts.length > 0, "Tauri index should contain an inline application script");
 for (const [, source] of inlineScripts) new Function(source);
+const parityContext = { window: {} };
+vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, "generated-python-parity.js"), "utf8"),
+  parityContext
+);
+const intervalReference = parityContext.window.PythonParityContract.intervalSecondsReference;
+assert.ok(Array.isArray(intervalReference) && intervalReference.length > 0);
+for (const referenceCase of intervalReference) {
+  assert.equal(
+    pythonLoopIntervalSeconds(referenceCase.input, intervalReference),
+    Math.max(1, Number(referenceCase.loop_seconds)),
+    `Tauri interval timing drifted for ${JSON.stringify(referenceCase.input)}`
+  );
+}
+assert.equal(pythonLoopIntervalSeconds("2h", intervalReference), 7_200);
+assert.equal(pythonLoopIntervalSeconds(" 5m ", intervalReference), 60);
+assert.equal(pythonLoopIntervalSeconds("5", intervalReference), 5);
 for (const requiredPositionCloseFragment of [
   "routePaths.position_close",
   '"position_close"',

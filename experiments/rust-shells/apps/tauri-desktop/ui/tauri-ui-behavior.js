@@ -548,6 +548,28 @@
     return Math.min(maximum, base * (2 ** Math.min(normalizedAttempt, 16)));
   };
 
+  const pythonLoopIntervalSeconds = (value, referenceCases = []) => {
+    if (typeof value !== "string") return 60;
+    const exactCase = (Array.isArray(referenceCases) ? referenceCases : [])
+      .find((item) => String(item?.input ?? "") === value);
+    const referencedSeconds = Number(exactCase?.loop_seconds);
+    if (Number.isFinite(referencedSeconds)) return Math.max(1, Math.trunc(referencedSeconds));
+
+    const suffixMultipliers = { s: 1, m: 60, h: 3_600, d: 86_400, w: 604_800 };
+    for (const [suffix, multiplier] of Object.entries(suffixMultipliers)) {
+      if (!value.endsWith(suffix)) continue;
+      const amountText = value.slice(0, -suffix.length);
+      if (!/^[+-]?\d+$/.test(amountText)) return 60;
+      const seconds = Number(amountText) * multiplier;
+      return Number.isFinite(seconds) ? Math.max(1, Math.trunc(seconds)) : 60;
+    }
+    if (/^[+-]?\d+$/.test(value.trim())) {
+      const seconds = Number(value.trim());
+      return Number.isFinite(seconds) ? Math.max(1, Math.trunc(seconds)) : 60;
+    }
+    return 60;
+  };
+
   const dashboardPayloadFromStreamEvent = (event) => {
     const envelope = event && typeof event === "object" && event.payload && typeof event.payload === "object"
       ? event.payload
@@ -636,6 +658,7 @@
     formatLlmPromptResult,
     dashboardPayloadFromStreamEvent,
     dashboardStreamReconnectDelay,
+    pythonLoopIntervalSeconds,
     environmentSelectionCountText,
     environmentUpdateScope,
     normalizeEnvironmentVersionRows,

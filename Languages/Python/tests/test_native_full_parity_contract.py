@@ -77,9 +77,18 @@ class NativeFullParityContractTests(unittest.TestCase):
 
     def test_cpp_dashboard_defaults_are_consumed_from_python_contract(self):
         cpp_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_ui.cpp")
+        cpp_positions = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.positions.cpp")
+        cpp_overrides = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_overrides.cpp")
         self.assertIn("pythonSourceDefaultExecutionConfig()", cpp_source)
         self.assertIn("pythonSourceRiskDefaults()", cpp_source)
         self.assertIn("pythonSourceUiDefaults()", cpp_source)
+        self.assertIn("pythonSourceDefaultExecutionConfig()", cpp_positions)
+        self.assertIn('QStringLiteral("positions_auto_resize_rows")', cpp_positions)
+        self.assertIn('QStringLiteral("positions_auto_resize_columns")', cpp_positions)
+        self.assertIn('QStringLiteral("positions_auto_resize_rows")', cpp_overrides)
+        self.assertIn('QStringLiteral("positions_auto_resize_columns")', cpp_overrides)
+        self.assertIn("positionsAutoRowHeightCheck_->isChecked()", cpp_overrides)
+        self.assertIn("positionsAutoColumnWidthCheck_->isChecked()", cpp_overrides)
         for key in (
             "account_type",
             "account_mode",
@@ -124,6 +133,59 @@ class NativeFullParityContractTests(unittest.TestCase):
                 source,
                 f"{path.name} must not default a missing runtime control to Live",
             )
+
+    def test_active_order_option_policy_matches_python_source_in_native_paths(self):
+        python_strategy = _read(
+            REPO_ROOT
+            / "Languages"
+            / "Python"
+            / "app"
+            / "core"
+            / "strategy"
+            / "orders"
+            / "strategy_signal_order_submit_runtime.py"
+        )
+        python_orders = _read(
+            REPO_ROOT
+            / "Languages"
+            / "Python"
+            / "app"
+            / "integrations"
+            / "exchanges"
+            / "binance"
+            / "orders"
+            / "futures_orders.py"
+        )
+        cpp_runtime = _read(
+            REPO_ROOT
+            / "experiments"
+            / "native-cpp"
+            / "src"
+            / "TradingBotWindow.dashboard_runtime_shared.cpp"
+        )
+        rust_runtime = _read(
+            REPO_ROOT
+            / "experiments"
+            / "rust-shells"
+            / "apps"
+            / "tauri-desktop"
+            / "src"
+            / "main.rs"
+        )
+
+        self.assertIn("self.binance.place_futures_market_order(", python_strategy)
+        self.assertIn('timeInForce=self.config.get("tif", "GTC")', python_strategy)
+        self.assertIn('gtd_minutes=int(self.config.get("gtd_minutes", 30))', python_strategy)
+        self.assertIn("intentionally MARKET-only", python_orders)
+        self.assertIn("until Python implements a limit-entry strategy", python_orders)
+        self.assertIn("contract. Native direct entry paths", python_orders)
+        self.assertIn('params = dict(symbol=sym, side=side_up, type="MARKET", quantity=qty_str)', python_orders)
+
+        self.assertIn("Python's active strategy submits through place_futures_market_order", cpp_runtime)
+        self.assertIn('QStringLiteral("cpp_futures_open_market")', cpp_runtime)
+        self.assertIn("BinanceRestClient::placeFuturesMarketOrder(", cpp_runtime)
+        self.assertIn("The Python strategy's active entry path is MARKET-only", rust_runtime)
+        self.assertIn("account_client.place_futures_market_order(", rust_runtime)
 
     def test_backtest_symbol_source_preserves_python_text_contract(self):
         validated = validate_runtime_config({"backtest": {"symbol_source": "margin"}})

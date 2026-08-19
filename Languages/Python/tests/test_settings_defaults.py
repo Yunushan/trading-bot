@@ -369,6 +369,14 @@ class SettingsDefaultsTests(unittest.TestCase):
 
         self.assertIs(validated["add_only"], True)
 
+    def test_runtime_validation_accepts_stop_without_close_control(self):
+        config = build_default_config()
+        config["stop_without_close"] = "true"
+
+        validated = validate_runtime_config(config)
+
+        self.assertIs(validated["stop_without_close"], True)
+
     def test_runtime_validation_accepts_chart_config(self):
         config = build_default_config()
         config["chart"] = {

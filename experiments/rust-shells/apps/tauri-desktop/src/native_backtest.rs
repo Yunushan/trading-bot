@@ -11,7 +11,10 @@ use trading_bot_core::{
     backtest_batch_runtime::{
         CandleLoadResult, NativeBacktestBatchRequest, run_native_backtest_batch,
     },
-    market_data::{BinanceMarket, BinanceRestMarketDataClient, interval_seconds},
+    market_data::{
+        BinanceMarket, BinanceRestMarketDataClient, interval_seconds,
+        python_backtest_interval_seconds,
+    },
     python_source_default_backtest_config, python_source_default_execution_config,
 };
 
@@ -201,12 +204,15 @@ fn run_worker(
                     );
                 }
             };
-            let seconds_per_candle = match interval_seconds(interval) {
-                Ok(value) if value.is_finite() && value > 0.0 => value,
+            match interval_seconds(interval) {
+                Ok(value) if value.is_finite() && value > 0.0 => {}
                 Ok(_) => return CandleLoadResult::failure("Backtest interval must be positive."),
                 Err(error) => return CandleLoadResult::failure(error.to_string()),
             };
-            let warmup_ms = (request.warmup_bars as f64 * seconds_per_candle * 2.0 * 1000.0)
+            let warmup_ms = (request.warmup_bars as f64
+                * python_backtest_interval_seconds(interval)
+                * 2.0
+                * 1000.0)
                 .round()
                 .clamp(0.0, i64::MAX as f64) as i64;
             let buffered_start_ms = start_ms.saturating_sub(warmup_ms);

@@ -210,13 +210,16 @@ QWidget *TradingBotWindow::createPositionsTab() {
         QStringLiteral("cumulative"));
     positionsViewCombo_ = positionsViewCombo;
     positionsCumulativeView_ = true;
+    const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
     auto *autoRowHeightCheck = new QCheckBox("Auto Row Height", page);
     autoRowHeightCheck->setToolTip("Resize rows to fit multi-line indicator values.");
-    autoRowHeightCheck->setChecked(true);
+    autoRowHeightCheck->setChecked(
+        executionDefaults.value(QStringLiteral("positions_auto_resize_rows")).toBool(true));
     positionsAutoRowHeightCheck_ = autoRowHeightCheck;
     auto *autoColumnWidthCheck = new QCheckBox("Auto Column Width", page);
     autoColumnWidthCheck->setToolTip("Resize columns to fit full indicator text.");
-    autoColumnWidthCheck->setChecked(true);
+    autoColumnWidthCheck->setChecked(
+        executionDefaults.value(QStringLiteral("positions_auto_resize_columns")).toBool(true));
     positionsAutoColumnWidthCheck_ = autoColumnWidthCheck;
 
     ctrlLayout->addWidget(refreshPosBtn);
@@ -475,7 +478,7 @@ QWidget *TradingBotWindow::createPositionsTab() {
             positionsMissingCounts_,
             positionsPendingCloseTimes_,
             livePositionRecords,
-            TradingBotWindowSupport::pythonSourceRiskDefaults(),
+            buildDashboardServiceConfigPatch(),
             nowText);
         QSet<QString> closedKeys;
         for (const QJsonValue &value : reconciliation.value(QStringLiteral("closed_keys")).toArray()) {

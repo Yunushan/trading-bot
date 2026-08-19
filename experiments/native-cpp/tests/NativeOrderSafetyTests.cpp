@@ -104,6 +104,29 @@ NativeOrderSafety::OrderSymbolFilters orderFiltersFromJson(const QJsonObject &fi
     };
 }
 
+NativeOrderSafety::LiveOrderGuardInput liveSafetyInputFromJson(const QJsonObject &input) {
+    NativeOrderSafety::LiveOrderGuardInput result;
+    const QJsonObject config = input.value(QStringLiteral("config")).toObject();
+    result.mode = input.value(QStringLiteral("mode")).toString();
+    result.apiKey = input.value(QStringLiteral("api_key")).toString();
+    result.apiSecret = input.value(QStringLiteral("api_secret")).toString();
+    result.accountType = input.value(QStringLiteral("account_type")).toString();
+    result.leverage = input.value(QStringLiteral("leverage")).toInt(result.leverage);
+    result.marginMode = input.value(QStringLiteral("margin_mode")).toString();
+    result.positionPct = input.value(QStringLiteral("position_pct")).toDouble(result.positionPct);
+    result.config.liveTradingEnabled = config.value(QStringLiteral("live_trading_enabled"))
+                                           .toBool(result.config.liveTradingEnabled);
+    result.config.liveTradingAcknowledgement = config.value(QStringLiteral("live_trading_acknowledgement"))
+                                                   .toString(result.config.liveTradingAcknowledgement);
+    result.config.liveTradingMaxLeverage = config.value(QStringLiteral("live_trading_max_leverage"))
+                                               .toInt(result.config.liveTradingMaxLeverage);
+    result.config.liveTradingMaxPositionPct = config.value(QStringLiteral("live_trading_max_position_pct"))
+                                                  .toDouble(result.config.liveTradingMaxPositionPct);
+    result.config.liveTradingMaxSessionOrders = config.value(QStringLiteral("live_trading_max_session_orders"))
+                                                   .toInt(result.config.liveTradingMaxSessionOrders);
+    return result;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -185,6 +208,94 @@ int main(int argc, char **argv) {
                 .arg(caseName));
     }
 
+    for (const auto &referenceCase : PythonParityContract::kPythonStrategyRiskLooseReferenceCases) {
+        const QString caseName = QString::fromUtf8(
+            referenceCase.name.data(),
+            static_cast<qsizetype>(referenceCase.name.size()));
+        const QByteArray inputJson(
+            referenceCase.inputJson.data(),
+            static_cast<qsizetype>(referenceCase.inputJson.size()));
+        const QByteArray expectedJson(
+            referenceCase.expectedJson.data(),
+            static_cast<qsizetype>(referenceCase.expectedJson.size()));
+        QJsonParseError inputError;
+        const QJsonDocument inputDocument = QJsonDocument::fromJson(inputJson, &inputError);
+        check(!inputDocument.isNull() && inputDocument.isObject(),
+              QStringLiteral("generated Python loose strategy-risk input should parse: %1 (%2)")
+                  .arg(caseName, inputError.errorString()));
+        if (inputDocument.isNull() || !inputDocument.isObject()) {
+            continue;
+        }
+        QJsonParseError expectedError;
+        const QJsonDocument expectedDocument = QJsonDocument::fromJson(expectedJson, &expectedError);
+        check(!expectedDocument.isNull() && expectedDocument.isObject(),
+              QStringLiteral("generated Python loose strategy-risk expected output should parse: %1 (%2)")
+                  .arg(caseName, expectedError.errorString()));
+        if (expectedDocument.isNull() || !expectedDocument.isObject()) {
+            continue;
+        }
+        check(
+            NativeStrategyRuntime::normalizeStrategyRiskControls(inputDocument.object())
+                == expectedDocument.object(),
+            QStringLiteral("C++ loose strategy-risk normalization should match Python: %1")
+                .arg(caseName));
+    }
+
+    const QByteArray intervalSecondsReferenceJson(
+        PythonParityContract::kPythonIntervalSecondsReferenceJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonIntervalSecondsReferenceJson.size()));
+    QJsonParseError intervalSecondsParseError;
+    const QJsonDocument intervalSecondsDocument = QJsonDocument::fromJson(
+        intervalSecondsReferenceJson,
+        &intervalSecondsParseError);
+    check(intervalSecondsParseError.error == QJsonParseError::NoError
+              && intervalSecondsDocument.isArray(),
+          QStringLiteral("generated Python interval timing reference should be valid JSON: %1")
+              .arg(intervalSecondsParseError.errorString()));
+    if (intervalSecondsDocument.isArray()) {
+        for (const QJsonValue &caseValue : intervalSecondsDocument.array()) {
+            const QJsonObject referenceCase = caseValue.toObject();
+            const QString caseName = referenceCase.value(QStringLiteral("input")).toString();
+            const QString input = caseName;
+            check(qFuzzyCompare(
+                      NativeStrategyRuntime::pythonIndicatorIntervalSeconds(input) + 1.0,
+                      referenceCase.value(QStringLiteral("indicator_seconds")).toDouble() + 1.0),
+                  QStringLiteral("C++ indicator interval timing should match Python: %1").arg(caseName));
+            check(qFuzzyCompare(
+                      NativeStrategyRuntime::pythonLoopIntervalSeconds(input) + 1.0,
+                      referenceCase.value(QStringLiteral("loop_seconds")).toDouble() + 1.0),
+                  QStringLiteral("C++ loop interval timing should match Python: %1").arg(caseName));
+        }
+    }
+
+    const QByteArray backtestIntervalSecondsReferenceJson(
+        PythonParityContract::kPythonBacktestIntervalSecondsReferenceJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonBacktestIntervalSecondsReferenceJson.size()));
+    QJsonParseError backtestIntervalSecondsParseError;
+    const QJsonDocument backtestIntervalSecondsDocument = QJsonDocument::fromJson(
+        backtestIntervalSecondsReferenceJson,
+        &backtestIntervalSecondsParseError);
+    check(backtestIntervalSecondsParseError.error == QJsonParseError::NoError
+              && backtestIntervalSecondsDocument.isArray(),
+          QStringLiteral("generated Python backtest interval timing reference should be valid JSON: %1")
+              .arg(backtestIntervalSecondsParseError.errorString()));
+    if (backtestIntervalSecondsDocument.isArray()) {
+        constexpr qint64 startTimeMs = 1'000'000'000;
+        for (const QJsonValue &caseValue : backtestIntervalSecondsDocument.array()) {
+            const QJsonObject referenceCase = caseValue.toObject();
+            const QString input = referenceCase.value(QStringLiteral("input")).toString();
+            const double expectedSeconds = referenceCase.value(QStringLiteral("seconds")).toDouble();
+            const qint64 expectedDeltaMs = static_cast<qint64>(expectedSeconds * 2.0 * 1000.0);
+            const qint64 expectedStartTimeMs = startTimeMs > expectedDeltaMs
+                ? startTimeMs - expectedDeltaMs
+                : 1;
+            check(
+                NativeBacktestBatchRuntime::bufferedStartTimeMs(startTimeMs, input, 1)
+                    == expectedStartTimeMs,
+                QStringLiteral("C++ backtest interval timing should match Python: %1").arg(input));
+        }
+    }
+
     const QByteArray orderIntentReferenceJson(
         PythonParityContract::kPythonOrderIntentReferenceJson.data(),
         static_cast<qsizetype>(PythonParityContract::kPythonOrderIntentReferenceJson.size()));
@@ -227,6 +338,59 @@ int main(int argc, char **argv) {
                 filterErrors == stringListFromJson(expected.value(QStringLiteral("filter_errors"))),
                 QStringLiteral("C++ order-filter validation should match Python: %1")
                     .arg(caseName));
+        }
+    }
+
+    const QByteArray liveSafetyReferenceJson(
+        PythonParityContract::kPythonLiveSafetyReferenceJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonLiveSafetyReferenceJson.size()));
+    QJsonParseError liveSafetyParseError;
+    const QJsonDocument liveSafetyDocument = QJsonDocument::fromJson(
+        liveSafetyReferenceJson,
+        &liveSafetyParseError);
+    check(liveSafetyParseError.error == QJsonParseError::NoError
+              && liveSafetyDocument.isObject(),
+          QStringLiteral("generated Python live-safety reference should be valid JSON: %1")
+              .arg(liveSafetyParseError.errorString()));
+    if (liveSafetyDocument.isObject()) {
+        struct SavedEnvironmentValue {
+            QByteArray name;
+            bool wasSet = false;
+            QByteArray value;
+        };
+        const QVector<QByteArray> environmentNames = {
+            QByteArray("BOT_ENABLE_LIVE_TRADING"),
+            QByteArray("BOT_LIVE_TRADING_ACKNOWLEDGEMENT"),
+            QByteArray("BOT_LIVE_TRADING_ACK"),
+            QByteArray("BOT_LIVE_MAX_LEVERAGE"),
+            QByteArray("BOT_LIVE_MAX_POSITION_PCT"),
+            QByteArray("BOT_LIVE_MAX_SESSION_ORDERS"),
+        };
+        QVector<SavedEnvironmentValue> savedEnvironment;
+        savedEnvironment.reserve(environmentNames.size());
+        for (const QByteArray &name : environmentNames) {
+            savedEnvironment.push_back({name, qEnvironmentVariableIsSet(name.constData()), qgetenv(name.constData())});
+            qunsetenv(name.constData());
+        }
+
+        for (const QJsonValue &caseValue : liveSafetyDocument.object().value(QStringLiteral("cases")).toArray()) {
+            const QJsonObject referenceCase = caseValue.toObject();
+            const QString caseName = referenceCase.value(QStringLiteral("name")).toString();
+            const QStringList expectedErrors = stringListFromJson(
+                referenceCase.value(QStringLiteral("expected_errors")));
+            check(
+                NativeOrderSafety::validateLiveTradingSafety(
+                    liveSafetyInputFromJson(referenceCase.value(QStringLiteral("input")).toObject()))
+                    == expectedErrors,
+                QStringLiteral("C++ live-safety validation should match Python: %1").arg(caseName));
+        }
+
+        for (const SavedEnvironmentValue &saved : savedEnvironment) {
+            if (saved.wasSet) {
+                qputenv(saved.name.constData(), saved.value);
+            } else {
+                qunsetenv(saved.name.constData());
+            }
         }
     }
 
@@ -1166,6 +1330,18 @@ int main(int argc, char **argv) {
               && std::abs(capitalAllowed.marginEstimateUsdt - 20.0) < 1e-12
               && capitalAllowed.desiredPositionSide == QStringLiteral("LONG"),
           QStringLiteral("C++ capital guard should allow a position within the Python allocation cap"));
+
+    NativeOrderSafety::CapitalExposureGuardInput flipQuantityGuard = capitalGuard;
+    flipQuantityGuard.flipCloseQuantity = 0.5;
+    flipQuantityGuard.hasFlipCloseQuantity = true;
+    flipQuantityGuard.requestedQuantity = 0.5;
+    flipQuantityGuard.normalizedQuantity = 0.5;
+    const NativeOrderSafety::CapitalExposureGuardResult flipQuantityAllowed =
+        NativeOrderSafety::guardFuturesCapitalExposure(flipQuantityGuard);
+    check(flipQuantityAllowed.allowed
+              && std::abs(flipQuantityAllowed.quantityEstimate - 0.5) < 1e-12
+              && std::abs(flipQuantityAllowed.marginEstimateUsdt - 10.0) < 1e-12,
+          QStringLiteral("C++ capital guard should preserve Python flip quantity instead of recomputing the target"));
 
     NativeOrderSafety::CapitalExposureGuardInput stepRoundedFilterFloor = capitalGuard;
     stepRoundedFilterFloor.positionPctFraction = 0.05;
@@ -2167,8 +2343,8 @@ int main(int argc, char **argv) {
           QStringLiteral("native strategy trigger source order should follow Python indicator priority"));
 
     const QJsonArray liveSignalCases = indicatorReference.value(QStringLiteral("live_signal_cases")).toArray();
-    check(liveSignalCases.size() >= 40,
-          QStringLiteral("generated Python fixture should cover BUY, SELL, and closed-candle live signal behavior"));
+    check(liveSignalCases.size() >= 44,
+          QStringLiteral("generated Python fixture should cover BUY, SELL, BOTH, side-blocked, and closed-candle live signal behavior"));
     for (const QJsonValue &caseValue : liveSignalCases) {
         const QJsonObject liveCase = caseValue.toObject();
         const QString caseName = liveCase.value(QStringLiteral("name")).toString();
@@ -2334,6 +2510,23 @@ int main(int argc, char **argv) {
               .value(QStringLiteral("scope")).toString() == QStringLiteral("entire_account"),
           QStringLiteral("C++ native risk normalization should canonicalize Python stop-loss scope"));
 
+    check(
+        !NativeStrategyRuntime::indicatorCloseScopeAllowed(
+            normalizedRiskControls,
+            QStringList{QStringLiteral("rsi"), QStringLiteral("macd")}),
+        QStringLiteral("multi-indicator close should remain blocked by Python default"));
+    check(
+        NativeStrategyRuntime::indicatorCloseScopeAllowed(
+            QJsonObject{{QStringLiteral("allow_multi_indicator_close"), true}},
+            QStringList{QStringLiteral("rsi"), QStringLiteral("macd")}),
+        QStringLiteral("allow_multi_indicator_close should permit multi-indicator close"));
+    check(
+        NativeStrategyRuntime::indicatorCloseScopeAllowed(
+            normalizedRiskControls,
+            QStringList{QStringLiteral("rsi"), QStringLiteral("macd")},
+            true),
+        QStringLiteral("explicit close override should permit multi-indicator close"));
+
     QString holdReason;
     check(!NativeStrategyRuntime::indicatorHoldReady(
               normalizedRiskControls,
@@ -2361,6 +2554,15 @@ int main(int argc, char **argv) {
               1'700'000'060'000,
               &holdReason),
           QStringLiteral("C++ indicator hold guard should fail closed when the open timestamp is missing"));
+    check(NativeStrategyRuntime::indicatorHoldReady(
+              QJsonObject{{QStringLiteral("allow_close_ignoring_hold"), true}},
+              QStringLiteral("BTCUSDT"),
+              QStringLiteral("1m"),
+              1'700'000'000'000,
+              1'700'000'001'000,
+              &holdReason,
+              true),
+          QStringLiteral("C++ opposite-close hold override should match Python allow_close_ignoring_hold"));
 
     QMap<QString, NativeStrategyRuntime::IndicatorSignalConfirmationTracker> confirmationTrackers;
     const QJsonObject confirmationDecision{
@@ -2481,6 +2683,105 @@ int main(int argc, char **argv) {
     check(reentryBlocked.value(QStringLiteral("signal")).isNull(),
           QStringLiteral("C++ order guard should block same-side re-entry until signal reset/cooldown"));
 
+    const QJsonObject sideAwareCooldownControls{
+        {QStringLiteral("indicator_flip_cooldown_seconds"), 120.0},
+        {QStringLiteral("indicator_reentry_cooldown_seconds"), 0.0},
+        {QStringLiteral("indicator_reentry_cooldown_bars"), 0},
+        {QStringLiteral("indicator_reentry_requires_signal_reset"), false},
+    };
+    QMap<QString, NativeStrategyRuntime::IndicatorOrderGuardState> sideAwareStates;
+    QMap<QString, qint64> sideAwareReentryBlocks;
+    NativeStrategyRuntime::recordIndicatorOrderAction(
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        QStringLiteral("rsi"),
+        QStringLiteral("BUY"),
+        1'700'000'000'000,
+        sideAwareStates);
+    NativeStrategyRuntime::recordIndicatorClose(
+        sideAwareCooldownControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        QStringLiteral("rsi"),
+        QStringLiteral("SELL"),
+        1'700'000'020'000,
+        sideAwareStates,
+        sideAwareReentryBlocks);
+    const QJsonObject wrongSideRecentClose = NativeStrategyRuntime::applyIndicatorOrderGuards(
+        oppositeDecision,
+        sideAwareCooldownControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        1'700'000'021'000,
+        sideAwareStates,
+        sideAwareReentryBlocks);
+    check(wrongSideRecentClose.value(QStringLiteral("signal")).isNull(),
+          QStringLiteral("C++ recent-close bypass must require the Python opposite closed side"));
+    NativeStrategyRuntime::recordIndicatorClose(
+        sideAwareCooldownControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        QStringLiteral("rsi"),
+        QStringLiteral("BUY"),
+        1'700'000'022'000,
+        sideAwareStates,
+        sideAwareReentryBlocks);
+    const QJsonObject matchingSideRecentClose = NativeStrategyRuntime::applyIndicatorOrderGuards(
+        oppositeDecision,
+        sideAwareCooldownControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        1'700'000'023'000,
+        sideAwareStates,
+        sideAwareReentryBlocks);
+    check(matchingSideRecentClose.value(QStringLiteral("signal")).toString() == QStringLiteral("SELL"),
+          QStringLiteral("C++ recent-close bypass should allow the Python matching opposite close"));
+
+    const QJsonObject resetOnlyControls{
+        {QStringLiteral("indicator_flip_cooldown_seconds"), 0.0},
+        {QStringLiteral("indicator_reentry_cooldown_seconds"), 0.0},
+        {QStringLiteral("indicator_reentry_cooldown_bars"), 0},
+        {QStringLiteral("indicator_reentry_requires_signal_reset"), true},
+    };
+    QMap<QString, NativeStrategyRuntime::IndicatorOrderGuardState> resetRefreshStates;
+    QMap<QString, qint64> resetRefreshReentryBlocks;
+    NativeStrategyRuntime::recordIndicatorClose(
+        resetOnlyControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        QStringLiteral("rsi"),
+        QStringLiteral("BUY"),
+        1'700'000'000'000,
+        resetRefreshStates,
+        resetRefreshReentryBlocks);
+    const QJsonObject unrelatedIndicatorDecision{
+        {QStringLiteral("signal"), QStringLiteral("SELL")},
+        {QStringLiteral("description"), QStringLiteral("MACD -> SELL")},
+        {QStringLiteral("trigger_price"), 100.0},
+        {QStringLiteral("trigger_sources"), QJsonArray{QStringLiteral("macd")}},
+        {QStringLiteral("trigger_actions"), QJsonObject{{QStringLiteral("macd"), QStringLiteral("sell")}}},
+    };
+    const QJsonObject refreshResult = NativeStrategyRuntime::applyIndicatorOrderGuards(
+        unrelatedIndicatorDecision,
+        resetOnlyControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        1'700'000'001'000,
+        resetRefreshStates,
+        resetRefreshReentryBlocks);
+    check(refreshResult.value(QStringLiteral("signal")).toString() == QStringLiteral("SELL"),
+          QStringLiteral("C++ reset refresh should allow an unrelated indicator action"));
+    const QJsonObject resetClearedResult = NativeStrategyRuntime::applyIndicatorOrderGuards(
+        confirmationDecision,
+        resetOnlyControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        1'700'000'002'000,
+        resetRefreshStates,
+        resetRefreshReentryBlocks);
+    check(resetClearedResult.value(QStringLiteral("signal")).toString() == QStringLiteral("BUY"),
+          QStringLiteral("C++ reset refresh should clear a Python block when its indicator action is absent"));
+
     NativeStrategyRuntime::recordIndicatorCloses(
         orderGuardControls,
         QStringLiteral("btcusdt"),
@@ -2498,6 +2799,82 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ multi-indicator close ledger should preserve the close timestamp"));
     check(reentryBlocks.value(QStringLiteral("BTCUSDT|1m|SELL")) == 1'700'000'090'000,
           QStringLiteral("C++ multi-indicator close ledger should apply Python re-entry cooldown"));
+
+    QMap<QString, QJsonObject> pendingFlipRequests;
+    const QJsonObject autoFlipControls{
+        {QStringLiteral("auto_flip_on_close"), true},
+        {QStringLiteral("require_indicator_flip_signal"), false},
+        {QStringLiteral("strict_indicator_flip_enforcement"), false},
+    };
+    NativeStrategyRuntime::queueIndicatorFlipOnClose(
+        autoFlipControls,
+        QStringLiteral("btcusdt"),
+        QStringLiteral("1m"),
+        QStringList{QStringLiteral("rsi")},
+        QStringLiteral("BUY"),
+        1.0,
+        1'700'000'000'000,
+        pendingFlipRequests);
+    check(pendingFlipRequests.size() == 1,
+          QStringLiteral("C++ auto-flip should queue a fully closed Python indicator slot"));
+    const QJsonObject noSignalDecision{
+        {QStringLiteral("description"), QStringLiteral("no data")},
+        {QStringLiteral("trigger_sources"), QJsonArray{}},
+        {QStringLiteral("trigger_actions"), QJsonObject{}},
+    };
+    const QJsonObject mergedFlip = NativeStrategyRuntime::mergeIndicatorFlipOnCloseRequests(
+        noSignalDecision,
+        autoFlipControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        1'700'000'000'001,
+        pendingFlipRequests);
+    check(mergedFlip.value(QStringLiteral("signal")).toString() == QStringLiteral("SELL"),
+          QStringLiteral("C++ auto-flip should create the Python-equivalent opposite signal"));
+    check(mergedFlip.value(QStringLiteral("trigger_actions")).toObject()
+                  .value(QStringLiteral("rsi"))
+                  .toString() == QStringLiteral("sell"),
+          QStringLiteral("C++ auto-flip should preserve the indicator action source"));
+    check(std::abs(mergedFlip.value(QStringLiteral("flip_qty")).toDouble() - 1.0) < 1e-12
+              && std::abs(mergedFlip.value(QStringLiteral("flip_qty_target")).toDouble() - 1.0) < 1e-12,
+          QStringLiteral("C++ auto-flip should preserve Python's exact close quantity metadata"));
+    check(pendingFlipRequests.isEmpty(),
+          QStringLiteral("C++ auto-flip should consume a matching pending request"));
+
+    NativeStrategyRuntime::queueIndicatorFlipOnClose(
+        autoFlipControls,
+        QStringLiteral("btcusdt"),
+        QStringLiteral("1m"),
+        QStringList{QStringLiteral("rsi")},
+        QStringLiteral("BUY"),
+        1.0,
+        1'700'000'000'000,
+        pendingFlipRequests);
+    const QJsonObject expiredFlip = NativeStrategyRuntime::mergeIndicatorFlipOnCloseRequests(
+        noSignalDecision,
+        autoFlipControls,
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("1m"),
+        1'700'000'120'001,
+        pendingFlipRequests);
+    check(expiredFlip.value(QStringLiteral("signal")).isNull()
+              || expiredFlip.value(QStringLiteral("signal")).isUndefined(),
+          QStringLiteral("C++ auto-flip should expire requests using the Python interval TTL"));
+    check(pendingFlipRequests.isEmpty(),
+          QStringLiteral("C++ expired auto-flip requests should be removed"));
+
+    QMap<QString, QJsonObject> disabledFlipRequests;
+    NativeStrategyRuntime::queueIndicatorFlipOnClose(
+        QJsonObject{{QStringLiteral("auto_flip_on_close"), false}},
+        QStringLiteral("btcusdt"),
+        QStringLiteral("1m"),
+        QStringList{QStringLiteral("rsi")},
+        QStringLiteral("BUY"),
+        1.0,
+        1'700'000'000'000,
+        disabledFlipRequests);
+    check(disabledFlipRequests.isEmpty(),
+          QStringLiteral("C++ auto-flip should honor Python's disabled option"));
 
     const QJsonObject stopLossDecision = NativeStrategyRuntime::evaluatePerTradeStopLoss(
         QJsonObject{
@@ -3836,6 +4213,51 @@ int main(int argc, char **argv) {
           QStringLiteral("disabled preflight should include start disabled reason"));
     check(jsonArrayContains(disabledReasons, QStringLiteral("Operational live order safety gate is disabled.")),
           QStringLiteral("disabled preflight should include order disabled reason"));
+
+    const auto checkStopIntentReference = [&](std::string_view referenceJson,
+                                               const QString &referenceLabel) {
+        const QByteArray stopIntentReferenceJson(
+            referenceJson.data(),
+            static_cast<qsizetype>(referenceJson.size()));
+        QJsonParseError stopIntentParseError;
+        const QJsonDocument stopIntentDocument = QJsonDocument::fromJson(
+            stopIntentReferenceJson,
+            &stopIntentParseError);
+        check(stopIntentParseError.error == QJsonParseError::NoError
+                  && stopIntentDocument.isObject(),
+              QStringLiteral("generated Python %1 stop intent reference should be valid JSON: %2")
+                  .arg(referenceLabel, stopIntentParseError.errorString()));
+        if (stopIntentDocument.isObject()) {
+            for (const QJsonValue &caseValue : stopIntentDocument.object().value(QStringLiteral("cases")).toArray()) {
+                const QJsonObject stopCase = caseValue.toObject();
+                const QString caseName = stopCase.value(QStringLiteral("name")).toString();
+                const bool expectedClosePositions = stopCase.value(QStringLiteral("expected"))
+                    .toObject().value(QStringLiteral("close_positions")).toBool(false);
+                const bool closePositions = NativeOrderSafety::closePositionsFromPythonConfig(
+                    stopCase.value(QStringLiteral("input")).toObject());
+                check(closePositions == expectedClosePositions,
+                      QStringLiteral("C++ %1 stop-intent mapping should match Python: %2")
+                          .arg(referenceLabel, caseName));
+
+                NativeOrderSafety::RuntimeStopGuardInput stopIntentGuard;
+                stopIntentGuard.runtimeActive = true;
+                stopIntentGuard.activeEngineCount = 1;
+                stopIntentGuard.closePositions = closePositions;
+                const QJsonObject stopIntentResult = NativeOrderSafety::buildRuntimeStopGuardResult(
+                    stopIntentGuard);
+                check(stopIntentResult.value(QStringLiteral("close_positions_requested")).toBool(false)
+                          == expectedClosePositions,
+                      QStringLiteral("C++ %1 stop guard should preserve Python stop intent: %2")
+                          .arg(referenceLabel, caseName));
+            }
+        }
+    };
+    checkStopIntentReference(
+        PythonParityContract::kPythonStopIntentReferenceJson,
+        QStringLiteral("validated"));
+    checkStopIntentReference(
+        PythonParityContract::kPythonStopIntentLooseReferenceJson,
+        QStringLiteral("loose"));
 
     NativeOrderSafety::RuntimeStopGuardInput stopWithClose;
     stopWithClose.runtimeActive = true;

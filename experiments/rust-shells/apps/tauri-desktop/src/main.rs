@@ -54,6 +54,7 @@ use trading_bot_core::{
     },
     python_source_contract_hash, python_source_risk_defaults,
     python_source_rust_environment_dependencies,
+    runtime_control::close_positions_from_python_config,
     runtime_order_engine::RuntimeOrderEngine,
     rust_trading_execution_supported, service_api_route_path, service_api_route_supports_method,
     service_api_route_supports_query_field, service_api_route_supports_request_field,
@@ -762,6 +763,7 @@ impl NativeRuntimeState {
         api_secret: String,
         now_ms: i64,
     ) -> NativeRuntimeControlResponse {
+        let close_positions = close_positions_from_python_config(&config, close_positions);
         let mut managed = match self.inner.lock() {
             Ok(value) => value,
             Err(_) => {
@@ -1206,7 +1208,7 @@ impl NativeRuntimeState {
             )
         };
         if let Some(runtime) = managed.pairs[pair_index].runtime.as_mut() {
-            runtime.reconcile_indicator_exposure_positions(&positions);
+            runtime.reconcile_indicator_exposure_positions_at(&positions, now_ms);
         }
         let reconciliation = {
             let portfolio = &mut managed.pairs[pair_index].portfolio;
@@ -1523,6 +1525,9 @@ impl NativeRuntimeState {
                 Ok(())
             },
             |params| {
+                // The Python strategy's active entry path is MARKET-only;
+                // order_type/tif/gtd_minutes remain validated and persisted
+                // config until Python promotes a limit-entry contract.
                 let quantity = params
                     .params
                     .iter()
@@ -3238,6 +3243,7 @@ fn native_runtime_config(config: &Value) -> NativeRuntimeLoopConfig {
 }
 
 fn native_runtime_config_for_effective_config(config: &Value) -> NativeRuntimeLoopConfig {
+    let default_mode = python_execution_default_text("mode", "Demo/Testnet");
     let default_position_mode = python_execution_default_text("position_mode", "Hedge");
     let default_margin_mode = python_execution_default_text("margin_mode", "Isolated");
     let default_assets_mode = python_execution_default_text("assets_mode", "Single-Asset");
@@ -3255,6 +3261,7 @@ fn native_runtime_config_for_effective_config(config: &Value) -> NativeRuntimeLo
     } else {
         Some(loop_interval_override)
     };
+    let mode = first_config_string(config, "mode", &default_mode);
 
     let connector_backend = native_runtime_effective_connector_backend(config);
     let futures_account = native_runtime_account_is_futures(config);
@@ -3273,6 +3280,7 @@ fn native_runtime_config_for_effective_config(config: &Value) -> NativeRuntimeLo
         ),
         lookback: config_lookback(config),
         futures_account,
+        mode,
         position_mode: if position_mode.to_ascii_lowercase().contains("one") {
             "One-way".to_owned()
         } else {
@@ -6258,6 +6266,35 @@ mod tests {
                 .and_then(Value::as_f64)
                 .expect("Python execution defaults must define circuit window")
         );
+    }
+
+    #[test]
+    fn native_runtime_config_applies_python_execution_option_matrix() {
+        let runtime = native_runtime_config(&json!({
+            "mode": "Live",
+            "account_type": "Spot",
+            "margin_mode": "Cross",
+            "symbols": ["ethusdt"],
+            "intervals": ["15m"],
+            "lookback": 321,
+            "leverage": 20,
+            "position_mode": "One-way",
+            "assets_mode": "Multi-Assets",
+            "loop_interval_override": "1h",
+            "indicator_use_live_values": true,
+        }));
+
+        assert_eq!(runtime.symbol, "ETHUSDT");
+        assert_eq!(runtime.interval, "15m");
+        assert_eq!(runtime.lookback, 321);
+        assert!(!runtime.futures_account);
+        assert_eq!(runtime.mode, "Live");
+        assert_eq!(runtime.position_mode, "One-way");
+        assert_eq!(runtime.margin_mode, "CROSSED");
+        assert_eq!(runtime.leverage, 20);
+        assert!(runtime.multi_assets_mode);
+        assert_eq!(runtime.loop_interval_override.as_deref(), Some("1h"));
+        assert!(runtime.indicator_use_live_values);
     }
 
     #[test]

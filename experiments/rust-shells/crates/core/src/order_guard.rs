@@ -734,8 +734,8 @@ fn decimal_text(value: f64) -> String {
 mod tests {
     use super::*;
     use crate::generated_python_parity::{
-        PYTHON_CONNECTOR_HEALTH_REFERENCE_JSON, PYTHON_ORDER_GUARD_BEHAVIOR_JSON,
-        PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
+        PYTHON_CONNECTOR_HEALTH_REFERENCE_JSON, PYTHON_LIVE_SAFETY_REFERENCE_JSON,
+        PYTHON_ORDER_GUARD_BEHAVIOR_JSON, PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
         PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES,
         PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES,
         PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES,
@@ -762,6 +762,64 @@ mod tests {
             live_trading_max_leverage: 20,
             live_trading_max_position_pct: 10.0,
             live_trading_max_session_orders: 3,
+        }
+    }
+
+    #[test]
+    fn live_safety_validation_matches_every_python_reference_case() {
+        let payload: serde_json::Value = serde_json::from_str(PYTHON_LIVE_SAFETY_REFERENCE_JSON)
+            .expect("generated Python live-safety reference should be valid JSON");
+        for case in payload["cases"]
+            .as_array()
+            .expect("live-safety reference cases should be an array")
+        {
+            let name = case["name"].as_str().unwrap_or("unknown");
+            let input = &case["input"];
+            let config = &input["config"];
+            let safety_input = LiveTradingSafetyInput {
+                mode: input["mode"].as_str().unwrap_or_default().to_owned(),
+                api_key: input["api_key"].as_str().unwrap_or_default().to_owned(),
+                api_secret: input["api_secret"].as_str().unwrap_or_default().to_owned(),
+                account_type: input["account_type"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                leverage: input["leverage"]
+                    .as_i64()
+                    .unwrap_or(DEFAULT_LIVE_MAX_LEVERAGE),
+                margin_mode: input["margin_mode"].as_str().unwrap_or_default().to_owned(),
+                position_pct: input["position_pct"].as_f64().unwrap_or(2.0),
+                config: LiveTradingSafetyConfig {
+                    live_trading_enabled: config["live_trading_enabled"].as_bool().unwrap_or(false),
+                    live_trading_acknowledgement: config["live_trading_acknowledgement"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    live_trading_max_leverage: config["live_trading_max_leverage"]
+                        .as_i64()
+                        .unwrap_or(DEFAULT_LIVE_MAX_LEVERAGE),
+                    live_trading_max_position_pct: config["live_trading_max_position_pct"]
+                        .as_f64()
+                        .unwrap_or(DEFAULT_LIVE_MAX_POSITION_PCT),
+                    live_trading_max_session_orders: config["live_trading_max_session_orders"]
+                        .as_i64()
+                        .unwrap_or(DEFAULT_LIVE_MAX_SESSION_ORDERS),
+                },
+            };
+            let actual = validate_live_trading_safety_with_environment(
+                &safety_input,
+                &LiveTradingEnvironment::default(),
+            );
+            let expected = case["expected_errors"]
+                .as_array()
+                .expect("expected live-safety errors should be an array")
+                .iter()
+                .map(|error| error.as_str().unwrap_or_default().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual, expected,
+                "Rust live-safety validation should match Python: {name}"
+            );
         }
     }
 

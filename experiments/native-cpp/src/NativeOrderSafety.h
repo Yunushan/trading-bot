@@ -280,6 +280,7 @@ QJsonObject buildOperationalPreflightSnapshot(const OperationalPreflightInput &i
 bool operationalPreflightStartAllowed(const QJsonObject &preflight);
 bool operationalPreflightOrdersAllowed(const QJsonObject &preflight);
 QJsonObject buildRuntimeStopGuardResult(const RuntimeStopGuardInput &input);
+bool closePositionsFromPythonConfig(const QJsonObject &config);
 QJsonObject buildRuntimeIdleAfterStopResult(
     bool closePositionsRequested,
     const QString &source = QStringLiteral("service"),

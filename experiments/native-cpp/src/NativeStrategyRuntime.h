@@ -36,6 +36,7 @@ struct IndicatorOrderGuardState {
     QString lastActionSide;
     qint64 lastActionMs = 0;
     qint64 recentCloseMs = 0;
+    QString recentCloseSide;
     QString signalResetSide;
 };
 
@@ -53,6 +54,8 @@ struct StrategyWorkerLifecycleInput {
 };
 
 QStringList strategyRuntimeBoundaries();
+double pythonIndicatorIntervalSeconds(const QString &interval);
+double pythonLoopIntervalSeconds(const QString &interval);
 QString canonicalizeBacktestInterval(const QJsonValue &value);
 bool coerceStrategyBool(const QJsonValue &value, bool defaultValue = false);
 QStringList indicatorOutputKeysFromConfig(const QJsonObject &indicators);
@@ -72,6 +75,11 @@ QJsonObject applyIndicatorOrderGuards(
     qint64 signalTimestampMs,
     QMap<QString, IndicatorOrderGuardState> &states,
     QMap<QString, qint64> &reentryBlocks);
+void refreshIndicatorReentrySignalBlocks(
+    const QJsonObject &actions,
+    const QString &symbol,
+    const QString &interval,
+    QMap<QString, IndicatorOrderGuardState> &states);
 void recordIndicatorOrderAction(
     const QString &symbol,
     const QString &interval,
@@ -97,19 +105,40 @@ void recordIndicatorCloses(
     qint64 timestampMs,
     QMap<QString, IndicatorOrderGuardState> &states,
     QMap<QString, qint64> &reentryBlocks);
+void queueIndicatorFlipOnClose(
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    const QStringList &indicators,
+    const QString &closedSide,
+    double quantity,
+    qint64 timestampMs,
+    QMap<QString, QJsonObject> &pendingRequests);
+QJsonObject mergeIndicatorFlipOnCloseRequests(
+    const QJsonObject &decision,
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    qint64 timestampMs,
+    QMap<QString, QJsonObject> &pendingRequests);
 QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &controls);
 double positionPctFraction(
     const QJsonObject &controls,
     double fallbackPositionPct,
     const QString &fallbackUnits);
 QJsonObject normalizeStrategyRiskControls(const QJsonObject &controls);
+bool indicatorCloseScopeAllowed(
+    const QJsonObject &riskControls,
+    const QStringList &indicators,
+    bool allowMultiOverride = false);
 bool indicatorHoldReady(
     const QJsonObject &riskControls,
     const QString &symbol,
     const QString &interval,
     qint64 openedAtMs,
     qint64 nowMs,
-    QString *reason = nullptr);
+    QString *reason = nullptr,
+    bool ignoreHold = false);
 QJsonObject evaluatePerTradeStopLoss(
     const QJsonObject &riskControls,
     const QString &symbol,

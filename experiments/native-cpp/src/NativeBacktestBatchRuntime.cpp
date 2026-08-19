@@ -152,6 +152,7 @@ double pythonIntervalSeconds(const QString &interval) {
     else if (unit == QLatin1Char('h')) seconds = amount * 3600.0;
     else if (unit == QLatin1Char('d')) seconds = amount * 86400.0;
     else if (unit == QLatin1Char('w')) seconds = amount * 7.0 * 86400.0;
+    else if (hasUnit) return 60.0;
     return std::max(seconds, 1.0);
 }
 

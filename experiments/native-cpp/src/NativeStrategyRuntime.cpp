@@ -5,6 +5,7 @@
 
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSet>
 
 #include <algorithm>
@@ -660,27 +661,38 @@ QString normalizeBacktestInterval(const QJsonValue &value) {
 }
 
 double intervalSeconds(const QString &interval) {
-    QString compact;
-    for (const QChar ch : interval.toLower()) {
-        if (!ch.isSpace()) {
-            compact.append(ch);
+    const auto parseInteger = [](const QString &text, double multiplier) -> std::optional<double> {
+        bool ok = false;
+        const qint64 amount = text.toLongLong(&ok);
+        if (!ok) {
+            return std::nullopt;
+        }
+        return static_cast<double>(amount) * multiplier;
+    };
+    const auto parseSuffix = [&](const QString &suffix, double multiplier) -> std::optional<double> {
+        if (!interval.endsWith(suffix)) {
+            return std::nullopt;
+        }
+        return parseInteger(interval.left(interval.size() - suffix.size()), multiplier);
+    };
+    for (const auto &candidate : {
+             std::pair<QString, double>{QStringLiteral("s"), 1.0},
+             std::pair<QString, double>{QStringLiteral("m"), 60.0},
+             std::pair<QString, double>{QStringLiteral("h"), 3600.0},
+             std::pair<QString, double>{QStringLiteral("d"), 86400.0},
+             std::pair<QString, double>{QStringLiteral("w"), 7.0 * 86400.0},
+         }) {
+        if (const auto value = parseSuffix(candidate.first, candidate.second); value.has_value()) {
+            return *value;
+        }
+        if (interval.endsWith(candidate.first)) {
+            return 60.0;
         }
     }
-    int idx = 0;
-    while (idx < compact.size() && (compact.at(idx).isDigit() || compact.at(idx) == QLatin1Char('.'))) {
-        ++idx;
+    if (const auto value = parseInteger(interval, 1.0); value.has_value()) {
+        return *value;
     }
-    bool ok = false;
-    const double amount = compact.left(idx).toDouble(&ok);
-    if (!ok) {
-        return 60.0;
-    }
-    const QString unit = compact.mid(idx);
-    if (unit == QStringLiteral("s")) return amount;
-    if (unit == QStringLiteral("h")) return amount * 3600.0;
-    if (unit == QStringLiteral("d")) return amount * 86400.0;
-    if (unit == QStringLiteral("w")) return amount * 7.0 * 86400.0;
-    return amount * 60.0;
+    return 60.0;
 }
 
 QString displayValue(const QJsonValue &value) {
@@ -719,6 +731,39 @@ QJsonValue integerValue(qint64 value) {
 
 namespace NativeStrategyRuntime {
 
+double pythonIndicatorIntervalSeconds(const QString &interval) {
+    const QString text = interval.isEmpty() ? QStringLiteral("1m") : interval;
+    const auto parseInteger = [&](const QString &suffix, double multiplier) -> std::optional<double> {
+        if (!text.endsWith(suffix)) {
+            return std::nullopt;
+        }
+        bool ok = false;
+        const qint64 amount = text.left(text.size() - suffix.size()).toLongLong(&ok);
+        if (!ok) {
+            return std::nullopt;
+        }
+        return static_cast<double>(amount) * multiplier;
+    };
+    for (const auto &candidate : {
+             std::pair<QString, double>{QStringLiteral("s"), 1.0},
+             std::pair<QString, double>{QStringLiteral("m"), 60.0},
+             std::pair<QString, double>{QStringLiteral("h"), 3600.0},
+             std::pair<QString, double>{QStringLiteral("d"), 86400.0},
+         }) {
+        if (const auto value = parseInteger(candidate.first, candidate.second); value.has_value()) {
+            return *value;
+        }
+        if (text.endsWith(candidate.first)) {
+            return 60.0;
+        }
+    }
+    return 60.0;
+}
+
+double pythonLoopIntervalSeconds(const QString &interval) {
+    return std::max(1.0, intervalSeconds(interval));
+}
+
 QString canonicalizeBacktestInterval(const QJsonValue &value) {
     return normalizeBacktestInterval(value);
 }
@@ -743,7 +788,8 @@ bool coerceStrategyBool(const QJsonValue &value, bool defaultValue) {
         return value.toBool();
     }
     if (value.isDouble()) {
-        return value.toDouble() != 0.0;
+        const double number = value.toDouble();
+        return !std::isfinite(number) || std::trunc(number) != 0.0;
     }
     const QString lowered = value.toString().trimmed().toLower();
     if (lowered.isEmpty()) {
@@ -752,7 +798,7 @@ bool coerceStrategyBool(const QJsonValue &value, bool defaultValue) {
     if (QStringList{QStringLiteral("0"), QStringLiteral("false"), QStringLiteral("no"), QStringLiteral("off"), QStringLiteral("n")}.contains(lowered)) {
         return false;
     }
-    if (QStringList{QStringLiteral("1"), QStringLiteral("true"), QStringLiteral("yes"), QStringLiteral("on"), QStringLiteral("y")}.contains(lowered)) {
+    if (QStringList{QStringLiteral("1"), QStringLiteral("true"), QStringLiteral("yes"), QStringLiteral("on")}.contains(lowered)) {
         return true;
     }
     return defaultValue;
@@ -1220,7 +1266,7 @@ QJsonObject applyIndicatorSignalConfirmation(
         return decision;
     }
 
-    const double resetWindowSeconds = std::max(1.0, intervalSeconds(interval))
+    const double resetWindowSeconds = std::max(1.0, pythonIndicatorIntervalSeconds(interval))
         * static_cast<double>(std::max(required + 1, 2));
     const qint64 resetWindowMs = static_cast<qint64>(std::max(
         1000.0,
@@ -1351,13 +1397,44 @@ double effectiveIndicatorWindowSeconds(
     const QString &secondsKey,
     const QString &barsKey,
     const QString &interval) {
-    const double intervalWindow = std::max(1.0, intervalSeconds(interval));
+    const double intervalWindow = std::max(1.0, pythonIndicatorIntervalSeconds(interval));
     const double seconds = std::max(0.0, numberOf(riskControls.value(secondsKey)).value_or(0.0));
     const double bars = std::max(0.0, numberOf(riskControls.value(barsKey)).value_or(0.0));
     return std::max(seconds, bars * intervalWindow);
 }
 
 } // namespace
+
+void refreshIndicatorReentrySignalBlocks(
+    const QJsonObject &actions,
+    const QString &symbol,
+    const QString &interval,
+    QMap<QString, IndicatorOrderGuardState> &states) {
+    QMap<QString, QString> actionSides;
+    for (auto iterator = actions.constBegin(); iterator != actions.constEnd(); ++iterator) {
+        const QString indicator = iterator.key().trimmed().toLower();
+        const QString action = iterator.value().toString().trimmed().toLower();
+        if (indicator.isEmpty()) {
+            continue;
+        }
+        if (action == QStringLiteral("buy")) {
+            actionSides.insert(indicator, QStringLiteral("BUY"));
+        } else if (action == QStringLiteral("sell")) {
+            actionSides.insert(indicator, QStringLiteral("SELL"));
+        }
+    }
+    const QString keyPrefix = indicatorOrderGuardKey(symbol, interval, QString());
+    for (auto iterator = states.begin(); iterator != states.end(); ++iterator) {
+        if (!iterator.key().startsWith(keyPrefix)) {
+            continue;
+        }
+        const QString indicator = iterator.key().mid(keyPrefix.size());
+        if (!iterator.value().signalResetSide.isEmpty()
+            && actionSides.value(indicator) != iterator.value().signalResetSide) {
+            iterator.value().signalResetSide.clear();
+        }
+    }
+}
 
 QJsonObject applyIndicatorOrderGuards(
     const QJsonObject &decision,
@@ -1369,11 +1446,14 @@ QJsonObject applyIndicatorOrderGuards(
     QMap<QString, qint64> &reentryBlocks) {
     const QJsonObject normalizedRiskControls = normalizeStrategyRiskControls(riskControls);
     const QJsonObject actions = decision.value(QStringLiteral("trigger_actions")).toObject();
+    const bool requireSignalReset = coerceStrategyBool(
+        normalizedRiskControls.value(QStringLiteral("indicator_reentry_requires_signal_reset")), false);
+    if (requireSignalReset) {
+        refreshIndicatorReentrySignalBlocks(actions, symbol, interval, states);
+    }
     if (actions.isEmpty()) {
         return decision;
     }
-    const bool requireSignalReset = coerceStrategyBool(
-        normalizedRiskControls.value(QStringLiteral("indicator_reentry_requires_signal_reset")), false);
     const double cooldownSeconds = effectiveIndicatorWindowSeconds(
         normalizedRiskControls,
         QStringLiteral("indicator_flip_cooldown_seconds"),
@@ -1385,7 +1465,7 @@ QJsonObject applyIndicatorOrderGuards(
         QStringLiteral("indicator_reentry_cooldown_bars"),
         interval);
     const qint64 recentCloseWindowMs = static_cast<qint64>(std::ceil(
-        std::max(5.0, std::min(std::max(1.0, intervalSeconds(interval)) * 1.5, 600.0)) * 1000.0));
+        std::max(5.0, std::min(std::max(1.0, pythonIndicatorIntervalSeconds(interval)) * 1.5, 600.0)) * 1000.0));
     QJsonObject allowedActions;
     QStringList waiting;
     for (auto iterator = actions.constBegin(); iterator != actions.constEnd(); ++iterator) {
@@ -1396,6 +1476,9 @@ QJsonObject applyIndicatorOrderGuards(
             continue;
         }
         const QString side = actionNorm == QStringLiteral("buy") ? QStringLiteral("BUY") : QStringLiteral("SELL");
+        const QString oppositeSide = side == QStringLiteral("BUY")
+            ? QStringLiteral("SELL")
+            : QStringLiteral("BUY");
         const QString indicator = iterator.key().trimmed().toLower();
         if (indicator.isEmpty()) {
             continue;
@@ -1413,6 +1496,7 @@ QJsonObject applyIndicatorOrderGuards(
             const qint64 elapsedMs = std::max<qint64>(0, signalTimestampMs - state.lastActionMs);
             const qint64 cooldownMs = static_cast<qint64>(std::ceil(cooldownSeconds * 1000.0));
             const bool recentClose = state.recentCloseMs > 0
+                && state.recentCloseSide == oppositeSide
                 && signalTimestampMs - state.recentCloseMs <= recentCloseWindowMs;
             if (elapsedMs < cooldownMs && !recentClose) {
                 waiting.append(QStringLiteral("%1 %2 cooldown %3s")
@@ -1487,6 +1571,7 @@ void recordIndicatorClose(
     }
     IndicatorOrderGuardState &state = states[indicatorOrderGuardKey(symbol, interval, indicatorNorm)];
     state.recentCloseMs = timestampMs;
+    state.recentCloseSide = sideNorm;
     if (coerceStrategyBool(
             normalizeStrategyRiskControls(riskControls)
                 .value(QStringLiteral("indicator_reentry_requires_signal_reset")),
@@ -1533,6 +1618,180 @@ void recordIndicatorCloses(
             states,
             reentryBlocks);
     }
+}
+
+void queueIndicatorFlipOnClose(
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    const QStringList &indicators,
+    const QString &closedSide,
+    double quantity,
+    qint64 timestampMs,
+    QMap<QString, QJsonObject> &pendingRequests) {
+    const QJsonObject normalized = normalizeStrategyRiskControls(riskControls);
+    if (!coerceStrategyBool(normalized.value(QStringLiteral("auto_flip_on_close")))
+        || !qIsFinite(quantity)
+        || quantity <= 1e-10) {
+        return;
+    }
+    const QString closedSideNorm = closedSide.trimmed().toUpper();
+    const QString openSide = closedSideNorm == QStringLiteral("BUY")
+        || closedSideNorm == QStringLiteral("LONG")
+        ? QStringLiteral("SELL")
+        : closedSideNorm == QStringLiteral("SELL") || closedSideNorm == QStringLiteral("SHORT")
+            ? QStringLiteral("BUY")
+            : QString();
+    const QString symbolNorm = symbol.trimmed().toUpper();
+    if (symbolNorm.isEmpty() || openSide.isEmpty()) {
+        return;
+    }
+    QString intervalNorm = interval.trimmed().toLower();
+    if (intervalNorm.isEmpty()) {
+        intervalNorm = QStringLiteral("default");
+    }
+    QSet<QString> seen;
+    for (const QString &rawIndicator : indicators) {
+        const QString indicator = rawIndicator.trimmed().toLower();
+        if (indicator.isEmpty() || indicator == QStringLiteral("generic") || seen.contains(indicator)) {
+            continue;
+        }
+        seen.insert(indicator);
+        const QString key = QStringLiteral("%1|%2|%3|%4")
+                                .arg(symbolNorm, intervalNorm, indicator, openSide);
+        pendingRequests.insert(
+            key,
+            QJsonObject{
+                {QStringLiteral("symbol"), symbolNorm},
+                {QStringLiteral("interval"), intervalNorm},
+                {QStringLiteral("indicator_key"), indicator},
+                {QStringLiteral("side"), openSide},
+                {QStringLiteral("flip_from"), closedSideNorm},
+                {QStringLiteral("qty"), quantity},
+                {QStringLiteral("timestamp_ms"), static_cast<double>(timestampMs)},
+            });
+    }
+}
+
+QJsonObject mergeIndicatorFlipOnCloseRequests(
+    const QJsonObject &decision,
+    const QJsonObject &riskControls,
+    const QString &symbol,
+    const QString &interval,
+    qint64 timestampMs,
+    QMap<QString, QJsonObject> &pendingRequests) {
+    const QJsonObject normalized = normalizeStrategyRiskControls(riskControls);
+    if (!coerceStrategyBool(normalized.value(QStringLiteral("auto_flip_on_close")))) {
+        return decision;
+    }
+
+    QStringList intervalTokens = interval.trimmed().toLower().split(
+        QRegularExpression(QStringLiteral("[^a-z0-9]+")),
+        Qt::SkipEmptyParts);
+    if (intervalTokens.isEmpty()) {
+        intervalTokens << QStringLiteral("default");
+    }
+    const QString symbolNorm = symbol.trimmed().toUpper();
+    const double ttlMs = std::max(5'000.0, std::max(1.0, pythonIndicatorIntervalSeconds(interval)) * 2.0 * 1'000.0);
+    QList<QString> removeKeys;
+    QList<QJsonObject> requests;
+    for (auto iterator = pendingRequests.cbegin(); iterator != pendingRequests.cend(); ++iterator) {
+        const QJsonObject request = iterator.value();
+        if (request.value(QStringLiteral("symbol")).toString().trimmed().toUpper() != symbolNorm) {
+            continue;
+        }
+        const QString requestInterval = request.value(QStringLiteral("interval")).toString().trimmed().toLower();
+        const QStringList requestTokens = requestInterval.split(
+            QRegularExpression(QStringLiteral("[^a-z0-9]+")),
+            Qt::SkipEmptyParts);
+        bool intervalMatches = false;
+        for (const QString &token : intervalTokens) {
+            if (requestTokens.contains(token)) {
+                intervalMatches = true;
+                break;
+            }
+        }
+        if (!intervalMatches) {
+            continue;
+        }
+        const qint64 requestTimestamp = static_cast<qint64>(
+            request.value(QStringLiteral("timestamp_ms")).toDouble());
+        const double ageMs = std::max<qint64>(0, timestampMs - requestTimestamp);
+        removeKeys.append(iterator.key());
+        if (ageMs <= ttlMs) {
+            requests.append(request);
+        }
+    }
+    for (const QString &key : removeKeys) {
+        pendingRequests.remove(key);
+    }
+    if (requests.isEmpty()) {
+        return decision;
+    }
+
+    const bool requireFlipSignal = coerceStrategyBool(
+        normalized.value(QStringLiteral("require_indicator_flip_signal")));
+    const bool strictFlipGuard = coerceStrategyBool(
+        normalized.value(QStringLiteral("strict_indicator_flip_enforcement")));
+    const bool allowWithoutSignal = coerceStrategyBool(
+        normalized.value(QStringLiteral("allow_indicator_close_without_signal")));
+    const bool requireLiveConfirmation = requireFlipSignal && strictFlipGuard && !allowWithoutSignal;
+    QJsonObject result = decision;
+    QJsonObject actions = result.value(QStringLiteral("trigger_actions")).toObject();
+    QJsonArray sources = result.value(QStringLiteral("trigger_sources")).toArray();
+    if (requireLiveConfirmation && actions.isEmpty()) {
+        return result;
+    }
+
+    QString description = result.value(QStringLiteral("description")).toString();
+    for (const QJsonObject &request : requests) {
+        const QString indicator = request.value(QStringLiteral("indicator_key")).toString().trimmed().toLower();
+        const QString side = request.value(QStringLiteral("side")).toString().trimmed().toUpper();
+        if (indicator.isEmpty() || (side != QStringLiteral("BUY") && side != QStringLiteral("SELL"))) {
+            continue;
+        }
+        if (actions.contains(indicator)) {
+            if (actions.value(indicator).toString().trimmed().compare(side, Qt::CaseInsensitive) == 0) {
+                continue;
+            }
+            continue;
+        }
+        if (requireLiveConfirmation) {
+            continue;
+        }
+        actions.insert(indicator, side.toLower());
+        bool sourcePresent = false;
+        for (const QJsonValue &source : sources) {
+            if (source.toString().trimmed().compare(indicator, Qt::CaseInsensitive) == 0) {
+                sourcePresent = true;
+                break;
+            }
+        }
+        if (!sourcePresent) {
+            sources.append(indicator);
+        }
+        description += QStringLiteral(" | %1 flip-on-close -> %2 (from %3)")
+                           .arg(indicator.toUpper(), side,
+                                request.value(QStringLiteral("flip_from")).toString());
+        result.insert(QStringLiteral("flip_qty"), request.value(QStringLiteral("qty")));
+        result.insert(QStringLiteral("flip_qty_target"), request.value(QStringLiteral("qty")));
+    }
+
+    result.insert(QStringLiteral("trigger_actions"), actions);
+    result.insert(QStringLiteral("trigger_sources"), sources);
+    result.insert(QStringLiteral("description"), description);
+    QString signal;
+    for (const QJsonValue &source : sources) {
+        const QString action = actions.value(source.toString()).toString().trimmed().toUpper();
+        if (action == QStringLiteral("BUY") || action == QStringLiteral("SELL")) {
+            signal = action;
+            break;
+        }
+    }
+    if (!signal.isEmpty()) {
+        result.insert(QStringLiteral("signal"), signal);
+    }
+    return result;
 }
 
 QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &controls) {
@@ -1741,17 +2000,48 @@ QJsonObject normalizeStrategyRiskControls(const QJsonObject &controls) {
     return out;
 }
 
+bool indicatorCloseScopeAllowed(
+    const QJsonObject &riskControls,
+    const QStringList &indicators,
+    bool allowMultiOverride) {
+    if (allowMultiOverride) {
+        return true;
+    }
+    const QJsonObject normalized = normalizeStrategyRiskControls(riskControls);
+    if (coerceStrategyBool(
+            normalized.value(QStringLiteral("allow_multi_indicator_close")),
+            false)) {
+        return true;
+    }
+
+    QSet<QString> normalizedIndicators;
+    for (const QString &indicator : indicators) {
+        const QString token = indicator.trimmed().toLower();
+        if (!token.isEmpty() && token != QStringLiteral("generic")) {
+            normalizedIndicators.insert(token);
+        }
+    }
+    return normalizedIndicators.size() <= 1;
+}
+
 bool indicatorHoldReady(
     const QJsonObject &riskControls,
     const QString &symbol,
     const QString &interval,
     qint64 openedAtMs,
     qint64 nowMs,
-    QString *reason) {
+    QString *reason,
+    bool ignoreHold) {
     if (reason) {
         reason->clear();
     }
     const QJsonObject normalized = normalizeStrategyRiskControls(riskControls);
+    if (ignoreHold
+        && coerceStrategyBool(
+            normalized.value(QStringLiteral("allow_close_ignoring_hold")),
+            false)) {
+        return true;
+    }
     const double baseHoldSeconds = std::max(
         0.0,
         numberOf(normalized.value(QStringLiteral("indicator_min_position_hold_seconds"))).value_or(0.0));
@@ -1759,34 +2049,7 @@ bool indicatorHoldReady(
         0,
         intOf(normalized.value(QStringLiteral("indicator_min_position_hold_bars"))).value_or(0));
 
-    const QString intervalText = interval.trimmed().toLower();
-    double intervalSeconds = 60.0;
-    bool intervalParsed = false;
-    const auto parseInterval = [&](const QString &suffix, double multiplier) {
-        if (!intervalText.endsWith(suffix)) {
-            return;
-        }
-        bool ok = false;
-        const qint64 value = intervalText.left(intervalText.size() - suffix.size()).toLongLong(&ok);
-        if (ok && value > 0) {
-            intervalSeconds = static_cast<double>(value) * multiplier;
-            intervalParsed = true;
-        }
-    };
-    parseInterval(QStringLiteral("s"), 1.0);
-    if (!intervalParsed) {
-        parseInterval(QStringLiteral("m"), 60.0);
-    }
-    if (!intervalParsed) {
-        parseInterval(QStringLiteral("h"), 3600.0);
-    }
-    if (!intervalParsed) {
-        parseInterval(QStringLiteral("d"), 86400.0);
-    }
-    if (!intervalParsed) {
-        intervalSeconds = 60.0;
-    }
-    intervalSeconds = std::max(1.0, intervalSeconds);
+    const double intervalSeconds = std::max(1.0, pythonIndicatorIntervalSeconds(interval));
     const double effectiveHoldSeconds = std::max(
         baseHoldSeconds,
         intervalSeconds * static_cast<double>(holdBars));
@@ -2177,7 +2440,7 @@ QJsonObject buildWorkerLifecycleSnapshot(const StrategyWorkerLifecycleInput &inp
     else if (input.stopRequested && input.threadAlive) phase = QStringLiteral("stopping");
     else if (input.threadAlive) phase = QStringLiteral("running");
     const QString effectiveInterval = input.loopIntervalOverride.trimmed().isEmpty() ? input.interval : input.loopIntervalOverride;
-    const double seconds = intervalSeconds(effectiveInterval);
+    const double seconds = pythonLoopIntervalSeconds(effectiveInterval);
     return {
         {QStringLiteral("symbol"), input.symbol.trimmed().toUpper()},
         {QStringLiteral("interval"), input.interval},

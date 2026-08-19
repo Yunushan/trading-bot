@@ -630,7 +630,8 @@ const QStringList &runtimeAllowedKeys() {
         QStringLiteral("positions_missing_threshold"), QStringLiteral("require_indicator_flip_signal"),
         QStringLiteral("runtime_symbol_interval_pairs"), QStringLiteral("selected_exchange"),
         QStringLiteral("selected_forex_broker"), QStringLiteral("selected_rust_framework"), QStringLiteral("side"),
-        QStringLiteral("stop_loss"), QStringLiteral("strict_indicator_flip_enforcement"), QStringLiteral("symbols"),
+        QStringLiteral("stop_loss"), QStringLiteral("stop_without_close"),
+        QStringLiteral("strict_indicator_flip_enforcement"), QStringLiteral("symbols"),
         QStringLiteral("theme"), QStringLiteral("tif"),
     };
     return keys;
@@ -1285,6 +1286,7 @@ ServiceConfigValidationResult validateServiceRuntimeConfig(const QJsonObject &co
              QStringLiteral("allow_multi_indicator_close"),
              QStringLiteral("allow_indicator_close_without_signal"),
              QStringLiteral("close_on_exit"),
+             QStringLiteral("stop_without_close"),
              QStringLiteral("positions_missing_autoclose"),
              QStringLiteral("allow_opposite_positions"),
              QStringLiteral("hedge_preserve_opposites"),

@@ -322,6 +322,34 @@ class BinanceMarketDataRuntimeTests(unittest.TestCase):
         self.assertEqual(2.5, result.iloc[0]["close"])
         self.assertEqual(30.0, result.iloc[0]["volume"])
 
+    def test_month_and_year_aliases_follow_python_minute_fallback(self):
+        start = pd.Timestamp("2026-01-01T00:00:00")
+        index = pd.date_range(start, periods=3, freq="1min")
+        base = pd.DataFrame(
+            {
+                "open": [1.0, 2.0, 3.0],
+                "high": [2.0, 3.0, 4.0],
+                "low": [0.0, 1.0, 2.0],
+                "close": [1.5, 2.5, 3.5],
+                "volume": [10.0, 20.0, 30.0],
+            },
+            index=index,
+        )
+        wrapper = _Wrapper()
+        wrapper._get_klines_range_native = Mock(return_value=base)
+
+        for alias in ("1month", "1mo", "1y"):
+            with self.subTest(alias=alias):
+                wrapper._get_klines_range_native.reset_mock()
+                result = wrapper._get_klines_range_custom(
+                    "BTCUSDT", alias, start, start + pd.Timedelta(minutes=2), 2, "FUTURES", "futures"
+                )
+
+                self.assertEqual(3, len(result))
+                call = wrapper._get_klines_range_native.call_args.args
+                self.assertEqual("1m", call[1])
+                self.assertEqual(pd.Timedelta(minutes=3), call[3] - call[2])
+
     def test_custom_range_rejects_unrepresentable_intervals(self):
         wrapper = _Wrapper()
         with self.assertRaisesRegex(NotImplementedError, "below 1 minute"):

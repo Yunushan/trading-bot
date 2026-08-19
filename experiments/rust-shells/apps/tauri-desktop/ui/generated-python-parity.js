@@ -729,7 +729,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "15089768680fb0ac4cc2d4da2fb1c6bb4bb416cb719ee9534c08fb06bc10d9d9",
+  "contractHash": "aed34c8090882e0a094b394f14c45232d0c1c4272a446537fa3496d3b1d753ae",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -1156,6 +1156,7 @@
     "position_pct": 2.0,
     "runtime_symbol_interval_pairs": [],
     "side": "BOTH",
+    "stop_without_close": false,
     "symbols": [
       "BTCUSDT"
     ],
@@ -1638,6 +1639,88 @@
       "key": "Binance futures",
       "label": "Binance futures",
       "value": "Binance futures"
+    }
+  ],
+  "intervalSecondsReference": [
+    {
+      "indicator_seconds": 1.0,
+      "input": "1s",
+      "loop_seconds": 1
+    },
+    {
+      "indicator_seconds": 300.0,
+      "input": "5m",
+      "loop_seconds": 300
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "1.5m",
+      "loop_seconds": 60
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "0.5h",
+      "loop_seconds": 60
+    },
+    {
+      "indicator_seconds": 3600.0,
+      "input": "1h",
+      "loop_seconds": 3600
+    },
+    {
+      "indicator_seconds": 86400.0,
+      "input": "1d",
+      "loop_seconds": 86400
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "1w",
+      "loop_seconds": 604800
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "1mo",
+      "loop_seconds": 60
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "1y",
+      "loop_seconds": 60
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "5",
+      "loop_seconds": 5
+    },
+    {
+      "indicator_seconds": 0.0,
+      "input": "0m",
+      "loop_seconds": 1
+    },
+    {
+      "indicator_seconds": -60.0,
+      "input": "-1m",
+      "loop_seconds": 1
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "1M",
+      "loop_seconds": 60
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": " 5m ",
+      "loop_seconds": 60
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "5m ",
+      "loop_seconds": 60
+    },
+    {
+      "indicator_seconds": 60.0,
+      "input": "",
+      "loop_seconds": 60
     }
   ],
   "leadTraderOptions": [

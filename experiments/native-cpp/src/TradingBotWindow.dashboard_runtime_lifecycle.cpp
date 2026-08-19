@@ -118,7 +118,8 @@ void TradingBotWindow::stopDashboardServiceRuntime() {
         return;
     }
     dashboardRuntimeStopping_ = true;
-    const bool closePositions = !(dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked());
+    const bool closePositions = NativeOrderSafety::closePositionsFromPythonConfig(
+        buildDashboardServiceConfigPatch());
     QJsonObject stopRequest;
     stopRequest.insert(QStringLiteral("close_positions"), closePositions);
     stopRequest.insert(QStringLiteral("source"), QStringLiteral("cpp-desktop-service-delegation"));
@@ -249,6 +250,8 @@ void TradingBotWindow::startDashboardRuntime() {
     dashboardRuntimeIndicatorSignalTrackers_.clear();
     dashboardRuntimeIndicatorOrderGuardStates_.clear();
     dashboardRuntimeIndicatorReentryBlocks_.clear();
+    dashboardRuntimePendingFlipRequests_.clear();
+    dashboardRuntimeFlatPurgeMissCounts_.clear();
     dashboardRuntimeLiveSubmitAttemptCount_ = 0;
     NativeOrderSafety::OrderAuditLogConfig orderAuditConfig;
     orderAuditConfig.enabled = dashboardOrderAuditEnabledCheck_ && dashboardOrderAuditEnabledCheck_->isChecked();
@@ -459,14 +462,15 @@ void TradingBotWindow::stopDashboardRuntime() {
         stopDashboardServiceRuntime();
         return;
     }
-    const bool stopWithoutCloseIntent = dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked();
+    const bool closePositions = NativeOrderSafety::closePositionsFromPythonConfig(
+        buildDashboardServiceConfigPatch());
     NativeOrderSafety::RuntimeStopGuardInput stopGuardInput;
     stopGuardInput.runtimeActive = dashboardRuntimeActive_;
     stopGuardInput.activeEngineCount = dashboardRuntimeActive_
         ? std::max(1, dashboardOverridesTable_ ? dashboardOverridesTable_->rowCount() : 0)
         : 0;
     stopGuardInput.stopAlreadyInProgress = dashboardRuntimeStopping_;
-    stopGuardInput.closePositions = !stopWithoutCloseIntent;
+    stopGuardInput.closePositions = closePositions;
     stopGuardInput.source = QStringLiteral("cpp-dashboard");
     const QJsonObject stopGuard = NativeOrderSafety::buildRuntimeStopGuardResult(stopGuardInput);
     const QString stopGuardMessage = stopGuard.value(QStringLiteral("status_message")).toString();
@@ -515,7 +519,7 @@ void TradingBotWindow::stopDashboardRuntime() {
     }
     refreshDashboardWaitingQueueTable();
 
-    const bool keepOpenPositions = stopWithoutCloseIntent;
+    const bool keepOpenPositions = !closePositions;
     const bool futures = dashboardAccountTypeCombo_
         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
         : defaultAccountType.trimmed().toLower().startsWith(QStringLiteral("fut"));

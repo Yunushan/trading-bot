@@ -157,6 +157,27 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertEqual(bounds["expected"]["max_auto_bump_percent"], 100.0)
         self.assertEqual(bounds["expected"]["auto_bump_percent_multiplier"], 1000.0)
 
+    def test_strategy_risk_loose_reference_covers_python_bool_coercion_boundaries(self):
+        cases = native_python_source_contract_summary()["strategy_risk_loose_reference"]
+        self.assertEqual(
+            {
+                "risk-loose-string-y",
+                "risk-loose-unknown-string",
+                "risk-loose-fractional-zero",
+                "risk-loose-fractional-one",
+                "risk-loose-negative-fractional-zero",
+                "risk-loose-negative-fractional-one",
+            },
+            {case["name"] for case in cases},
+        )
+        loose_y = next(case for case in cases if case["name"] == "risk-loose-string-y")
+        self.assertFalse(loose_y["expected"]["indicator_use_live_values"])
+        self.assertTrue(loose_y["expected"]["allow_opposite_positions"])
+        fractional_zero = next(case for case in cases if case["name"] == "risk-loose-fractional-zero")
+        self.assertFalse(fractional_zero["expected"]["indicator_use_live_values"])
+        fractional_one = next(case for case in cases if case["name"] == "risk-loose-fractional-one")
+        self.assertTrue(fractional_one["expected"]["indicator_use_live_values"])
+
     def test_order_intent_reference_covers_python_boolean_boundaries(self):
         payload = native_python_source_contract_summary()["order_intent_reference"]
         self.assertEqual(payload["schema_version"], 1)
@@ -204,6 +225,36 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertEqual(cases["degraded-health"]["expected_errors"], ["connector health is degraded"])
         self.assertEqual(cases["ready-ok"]["expected_errors"], [])
         self.assertEqual(cases["ready-unknown"]["expected_errors"], [])
+
+    def test_live_safety_reference_covers_python_gate_boundaries(self):
+        payload = native_python_source_contract_summary()["live_safety_reference"]
+        self.assertEqual(payload["schema_version"], 1)
+        cases = {case["name"]: case for case in payload["cases"]}
+        self.assertEqual(
+            {
+                "demo-mode-bypasses-live-gates",
+                "live-requires-confirmation",
+                "live-safe-futures",
+                "live-spot-position-cap",
+                "live-invalid-caps-and-futures-controls",
+                "live-rejects-placeholder-credentials",
+            },
+            set(cases),
+        )
+        self.assertEqual(cases["demo-mode-bypasses-live-gates"]["expected_errors"], [])
+        self.assertEqual(cases["live-safe-futures"]["expected_errors"], [])
+        self.assertIn(
+            "set live_trading_enabled=true",
+            cases["live-requires-confirmation"]["expected_errors"][0],
+        )
+        self.assertIn(
+            "position_pct 4% exceeds live cap 3%",
+            cases["live-spot-position-cap"]["expected_errors"],
+        )
+        self.assertIn(
+            "provide non-placeholder Binance API credentials",
+            cases["live-rejects-placeholder-credentials"]["expected_errors"],
+        )
 
     def test_indicator_reference_contains_multiple_python_generated_scenarios(self):
         payload = _indicator_reference_payload()
@@ -258,8 +309,24 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
 
         live_signal_cases = payload["live_signal_cases"]
         self.assertIsInstance(live_signal_cases, list)
-        self.assertGreaterEqual(len(live_signal_cases), 40)
-        self.assertEqual({"BUY", "SELL"}, {case["expected"]["signal"] for case in live_signal_cases})
+        self.assertGreaterEqual(len(live_signal_cases), 44)
+        self.assertEqual(
+            {"BUY", "SELL", None},
+            {case["expected"]["signal"] for case in live_signal_cases},
+        )
+        self.assertEqual(
+            {"BOTH", "BUY", "SELL"},
+            {case["side"] for case in live_signal_cases},
+        )
+        self.assertEqual(
+            {"rsi-both-buy", "rsi-buy-blocked-by-sell-side", "rsi-sell-blocked-by-buy-side"},
+            {
+                case["name"]
+                for case in live_signal_cases
+                if case["expected"]["signal"] is None
+                or case["side"] == "BOTH"
+            },
+        )
         self.assertIn(3, {case["expected"]["min_bars"] for case in live_signal_cases})
         self.assertEqual(
             {

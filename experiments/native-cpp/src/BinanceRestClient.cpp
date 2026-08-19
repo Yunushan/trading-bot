@@ -20,42 +20,38 @@
 #include <limits>
 
 namespace {
-qint64 intervalMilliseconds(QString interval) {
+qint64 pythonIntervalMilliseconds(QString interval) {
     interval = interval.trimmed().toLower();
-    if (interval.isEmpty()) {
-        return 0;
-    }
+    if (interval.isEmpty()) return 60'000;
 
-    qint64 multiplier = 0;
-    QString number = interval;
-    if (interval.endsWith(QStringLiteral("months"))) {
-        number.chop(6);
-        multiplier = 30LL * 24 * 60 * 60 * 1000;
-    } else if (interval.endsWith(QStringLiteral("month"))) {
-        number.chop(5);
-        multiplier = 30LL * 24 * 60 * 60 * 1000;
-    } else if (interval.endsWith(QStringLiteral("mo"))) {
-        number.chop(2);
-        multiplier = 30LL * 24 * 60 * 60 * 1000;
-    } else {
-        const QChar unit = interval.back();
-        number.chop(1);
-        if (unit == QLatin1Char('s')) multiplier = 1000;
-        else if (unit == QLatin1Char('m')) multiplier = 60LL * 1000;
-        else if (unit == QLatin1Char('h')) multiplier = 60LL * 60 * 1000;
-        else if (unit == QLatin1Char('d')) multiplier = 24LL * 60 * 60 * 1000;
-        else if (unit == QLatin1Char('w')) multiplier = 7LL * 24 * 60 * 60 * 1000;
-        else if (unit == QLatin1Char('y')) multiplier = 365LL * 24 * 60 * 60 * 1000;
-        else return 0;
+    const QChar unit = interval.back();
+    const bool hasUnit = unit.isLetter();
+    const QString number = hasUnit ? interval.left(interval.size() - 1) : interval;
+    double multiplier = 1.0;
+    if (unit == QLatin1Char('s')) multiplier = 1.0;
+    else if (unit == QLatin1Char('m')) multiplier = 60.0;
+    else if (unit == QLatin1Char('h')) multiplier = 60.0 * 60;
+    else if (unit == QLatin1Char('d')) multiplier = 24.0 * 60 * 60;
+    else if (unit == QLatin1Char('w')) multiplier = 7.0 * 24 * 60 * 60;
+    else if (hasUnit) {
+        bool numericOk = false;
+        const double numeric = interval.toDouble(&numericOk);
+        if (!numericOk || !qIsFinite(numeric)) return 60'000;
+        return std::max<qint64>(1, static_cast<qint64>(std::floor(std::max(numeric, 1.0) * 1000.0)));
     }
 
     bool ok = false;
-    const qint64 count = number.toLongLong(&ok);
-    if (!ok || count <= 0 || multiplier <= 0
-        || count > std::numeric_limits<qint64>::max() / multiplier) {
+    const double count = number.toDouble(&ok);
+    const double seconds = count * multiplier;
+    if (!ok || !qIsFinite(count) || !qIsFinite(seconds) || multiplier <= 0.0) {
         return 0;
     }
-    return count * multiplier;
+    const double milliseconds = std::max(seconds, 1.0) * 1000.0;
+    if (!qIsFinite(milliseconds) || milliseconds < 1.0
+        || milliseconds >= static_cast<double>(std::numeric_limits<qint64>::max())) {
+        return 0;
+    }
+    return std::max<qint64>(1, static_cast<qint64>(std::floor(milliseconds)));
 }
 
 bool isNativeBinanceInterval(const QString &interval) {
@@ -1045,6 +1041,38 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlines(
     }
 
     const int safeLimit = std::clamp(limit, 1, futures ? 1500 : 1000);
+    if (!isNativeBinanceInterval(cleanInterval)) {
+        const qint64 requestedIntervalMs = pythonIntervalMilliseconds(cleanInterval);
+        if (requestedIntervalMs < 60LL * 1000) {
+            result.error = QStringLiteral("Historical interval '%1' must be at least one minute").arg(cleanInterval);
+            return result;
+        }
+        const qint64 nowMs = QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+        const qint64 sampleCount = std::max<qint64>(1, safeLimit);
+        const qint64 spanMultiplier = sampleCount > std::numeric_limits<qint64>::max() / 2
+            ? std::numeric_limits<qint64>::max()
+            : sampleCount * 2;
+        const qint64 spanMs = requestedIntervalMs > std::numeric_limits<qint64>::max() / spanMultiplier
+            ? std::numeric_limits<qint64>::max()
+            : requestedIntervalMs * spanMultiplier;
+        const qint64 startMs = nowMs > spanMs ? nowMs - spanMs : 1;
+        KlinesResult ranged = fetchKlinesRange(
+            cleanSymbol,
+            cleanInterval,
+            futures,
+            testnet,
+            startMs,
+            nowMs,
+            2'000'000,
+            timeoutMs,
+            baseUrlOverride);
+        if (!ranged.ok) return ranged;
+        if (ranged.candles.size() > safeLimit) {
+            ranged.candles = ranged.candles.mid(ranged.candles.size() - safeLimit, safeLimit);
+        }
+        return ranged;
+    }
+
     const QString defaultBase = futures
         ? futuresBaseUrl(testnet, baseUrlOverride)
         : (testnet ? QStringLiteral("https://testnet.binance.vision")
@@ -1191,9 +1219,7 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlinesRange(
     }
 
     const QString requestedInterval = interval.trimmed();
-    const qint64 requestedIntervalMs = intervalMilliseconds(requestedInterval == QStringLiteral("1M")
-        ? QStringLiteral("1mo")
-        : requestedInterval);
+    const qint64 requestedIntervalMs = pythonIntervalMilliseconds(requestedInterval);
     if (requestedIntervalMs < 60LL * 1000) {
         result.error = QStringLiteral("Historical interval '%1' must be at least one minute").arg(requestedInterval);
         return result;
@@ -1201,7 +1227,7 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlinesRange(
 
     const bool nativeInterval = isNativeBinanceInterval(requestedInterval);
     const QString fetchInterval = nativeInterval ? requestedInterval : baseIntervalFor(requestedIntervalMs);
-    const qint64 fetchIntervalMs = intervalMilliseconds(fetchInterval);
+    const qint64 fetchIntervalMs = pythonIntervalMilliseconds(fetchInterval);
     if (fetchIntervalMs <= 0 || requestedIntervalMs % fetchIntervalMs != 0) {
         result.error = QStringLiteral("Custom interval '%1' is not a multiple of %2")
                            .arg(requestedInterval, fetchInterval);
@@ -1259,7 +1285,6 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlinesRange(
                                .arg(safeMaxCandles);
             return result;
         }
-        if (page.candles.size() < pageLimit) break;
         const qint64 next = lastOpenTime + fetchIntervalMs;
         if (next <= current) break;
         current = next;

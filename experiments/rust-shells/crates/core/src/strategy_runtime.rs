@@ -66,13 +66,16 @@ pub fn coerce_strategy_bool(value: Option<&Value>, default: bool) -> bool {
     match value {
         None | Some(Value::Null) => default,
         Some(Value::Bool(flag)) => *flag,
-        Some(Value::Number(number)) => number.as_f64().unwrap_or(0.0) != 0.0,
+        Some(Value::Number(number)) => number
+            .as_f64()
+            .map(|value| !value.is_finite() || value.trunc() != 0.0)
+            .unwrap_or(default),
         Some(Value::String(text)) => {
             let lowered = text.trim().to_lowercase();
             match lowered.as_str() {
                 "" => default,
                 "0" | "false" | "no" | "off" | "n" => false,
-                "1" | "true" | "yes" | "on" | "y" => true,
+                "1" | "true" | "yes" | "on" => true,
                 _ => default,
             }
         }
@@ -1026,7 +1029,7 @@ pub fn build_worker_lifecycle_snapshot(input: StrategyWorkerLifecycleInput) -> V
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(input.interval.as_str());
-    let interval_seconds = interval_seconds_value(interval);
+    let interval_seconds = interval_seconds_value(interval).max(1.0);
     json!({
         "symbol": input.symbol.trim().to_uppercase(),
         "interval": input.interval,
@@ -1699,23 +1702,6 @@ fn split_python_numeric_unit(value: &str) -> Option<(String, String)> {
     Some((amount, unit.to_owned()))
 }
 
-fn split_amount_unit(value: &str) -> Option<(f64, String)> {
-    let compact: String = value.chars().filter(|ch| !ch.is_whitespace()).collect();
-    let mut amount = String::new();
-    let mut unit = String::new();
-    for ch in compact.chars() {
-        if ch.is_ascii_digit() || ch == '.' {
-            if !unit.is_empty() {
-                return None;
-            }
-            amount.push(ch);
-        } else {
-            unit.push(ch);
-        }
-    }
-    Some((amount.parse::<f64>().ok()?, unit))
-}
-
 fn canonical_interval_by_seconds(seconds: f64) -> Option<&'static str> {
     const ITEMS: &[(f64, &str)] = &[
         (30.0, "30s"),
@@ -1767,18 +1753,27 @@ fn format_amount(value: f64) -> String {
     }
 }
 
-fn interval_seconds_value(interval: &str) -> f64 {
-    let Some((amount, unit)) = split_amount_unit(interval) else {
-        return 60.0;
-    };
-    match unit.as_str() {
-        "s" => amount,
-        "m" | "" => amount * 60.0,
-        "h" => amount * 3600.0,
-        "d" => amount * 86400.0,
-        "w" => amount * 7.0 * 86400.0,
-        _ => 60.0,
+pub(crate) fn interval_seconds_value(interval: &str) -> f64 {
+    for (suffix, multiplier) in [
+        ("s", 1.0),
+        ("m", 60.0),
+        ("h", 3_600.0),
+        ("d", 86_400.0),
+        ("w", 7.0 * 86_400.0),
+    ] {
+        if interval.ends_with(suffix) {
+            return interval[..interval.len() - suffix.len()]
+                .trim()
+                .parse::<i64>()
+                .map(|value| value as f64 * multiplier)
+                .unwrap_or(60.0);
+        }
     }
+    interval
+        .trim()
+        .parse::<i64>()
+        .map(|value| value as f64)
+        .unwrap_or(60.0)
 }
 
 fn display_value(value: &Value) -> String {
@@ -2080,8 +2075,8 @@ mod tests {
             .and_then(Value::as_array)
             .expect("generated Python indicator reference should include live signal cases");
         assert!(
-            cases.len() >= 40,
-            "fixture should cover BUY, SELL, and closed-candle Python live signal behavior"
+            cases.len() >= 44,
+            "fixture should cover BUY, SELL, BOTH, side-blocked, and closed-candle Python live signal behavior"
         );
 
         for case in cases {
@@ -2392,17 +2387,22 @@ mod tests {
 
     #[test]
     fn strategy_risk_controls_normalize_from_python_effective_defaults() {
-        for reference_case in crate::generated_python_parity::PYTHON_STRATEGY_RISK_REFERENCE_CASES {
-            let input: Value = serde_json::from_str(reference_case.input_json)
-                .expect("generated Python strategy-risk input should parse");
-            let expected: Value = serde_json::from_str(reference_case.expected_json)
-                .expect("generated Python strategy-risk expected output should parse");
-            assert_eq!(
-                normalize_strategy_risk_controls(&input),
-                expected,
-                "Rust strategy-risk normalization should match Python fixture {}",
-                reference_case.name
-            );
+        for reference_cases in [
+            crate::generated_python_parity::PYTHON_STRATEGY_RISK_REFERENCE_CASES,
+            crate::generated_python_parity::PYTHON_STRATEGY_RISK_LOOSE_REFERENCE_CASES,
+        ] {
+            for reference_case in reference_cases {
+                let input: Value = serde_json::from_str(reference_case.input_json)
+                    .expect("generated Python strategy-risk input should parse");
+                let expected: Value = serde_json::from_str(reference_case.expected_json)
+                    .expect("generated Python strategy-risk expected output should parse");
+                assert_eq!(
+                    normalize_strategy_risk_controls(&input),
+                    expected,
+                    "Rust strategy-risk normalization should match Python fixture {}",
+                    reference_case.name
+                );
+            }
         }
 
         let controls = normalize_strategy_risk_controls(&json!({

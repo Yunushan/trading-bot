@@ -1665,6 +1665,26 @@ QJsonObject buildRuntimeStopGuardResult(const RuntimeStopGuardInput &input) {
     };
 }
 
+bool closePositionsFromPythonConfig(const QJsonObject &config) {
+    const QJsonValue value = config.value(QStringLiteral("stop_without_close"));
+    bool stopWithoutClose = false;
+    if (value.isBool()) {
+        stopWithoutClose = value.toBool();
+    } else if (value.isDouble()) {
+        const double number = value.toDouble();
+        stopWithoutClose = std::isfinite(number) && std::trunc(number) != 0.0;
+    } else if (value.isString()) {
+        const QString normalized = value.toString().trimmed().toLower();
+        if (normalized == QStringLiteral("1")
+            || normalized == QStringLiteral("true")
+            || normalized == QStringLiteral("yes")
+            || normalized == QStringLiteral("on")) {
+            stopWithoutClose = true;
+        }
+    }
+    return !stopWithoutClose;
+}
+
 QJsonObject buildRuntimeIdleAfterStopResult(
     bool closePositionsRequested,
     const QString &source,

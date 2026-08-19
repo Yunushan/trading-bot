@@ -26,6 +26,7 @@ class ExecutionSettings:
     side: str = "BOTH"
     position_pct: float = 2.0
     order_type: str = "MARKET"
+    stop_without_close: bool = False
     live_trading_enabled: bool = False
     live_trading_acknowledgement: str = ""
     live_trading_max_leverage: int = 20
@@ -71,6 +72,7 @@ class ExecutionSettings:
             "side": self.side,
             "position_pct": self.position_pct,
             "order_type": self.order_type,
+            "stop_without_close": self.stop_without_close,
             "live_trading_enabled": self.live_trading_enabled,
             "live_trading_acknowledgement": self.live_trading_acknowledgement,
             "live_trading_max_leverage": self.live_trading_max_leverage,

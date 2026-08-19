@@ -1381,6 +1381,10 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
     int timeoutMs,
     const QString &baseUrlOverride,
     bool reduceOnly) {
+    // Python's active strategy submits through place_futures_market_order and
+    // currently keeps order_type/tif/gtd_minutes at the validated, persisted
+    // configuration layer. Keep this native direct-entry path MARKET-only
+    // until the Python source contract promotes limit-entry behavior.
     BinanceRestClient::FuturesOrderResult aggregated;
     aggregated.symbol = symbol.trimmed().toUpper();
     aggregated.side = side.trimmed().toUpper();

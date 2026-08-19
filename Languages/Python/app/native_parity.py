@@ -27,6 +27,11 @@ from .gui.code.code_language_catalog import (
     _rust_dependency_targets_for_config,
 )
 from .gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
+from .native_interval_semantics import (
+    backtest_interval_seconds,
+    interval_seconds,
+    interval_seconds_value,
+)
 from .gui.runtime.composition.module_state_constants import (
     ACCOUNT_MODE_OPTIONS,
     BACKTEST_INTERVAL_ORDER,
@@ -85,12 +90,16 @@ from .settings.indicators import (
     build_runtime_indicator_defaults,
 )
 from .settings.live_safety import (
+    BINANCE_MAX_FUTURES_LEVERAGE,
     LIVE_TRADING_ACK_ENV,
     LIVE_TRADING_ACK_ENV_LEGACY,
+    LIVE_TRADING_ACKNOWLEDGEMENT,
     LIVE_TRADING_ENABLED_ENV,
     LIVE_TRADING_MAX_LEVERAGE_ENV,
     LIVE_TRADING_MAX_POSITION_PCT_ENV,
     LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
+    LiveTradingSafetyError,
+    validate_live_trading_safety,
 )
 from .settings.risk import (
     RiskManagementSettings,
@@ -360,12 +369,15 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
             "cpp_native_strategy_runtime_uses_python_source_options",
             "cpp_native_strategy_runtime_uses_python_live_signal_fixture",
             "cpp_native_strategy_runtime_uses_python_behavior_fixtures",
+            "cpp_native_strategy_runtime_uses_python_interval_timing_fixture",
             "cpp_dashboard_runtime_uses_native_indicator_strategy_pipeline",
         ),
         rust_required_before_full_parity=(
             "rust_core_consumes_generated_contract",
             "rust_strategy_runtime_uses_python_source_options",
             "rust_native_strategy_runtime_uses_python_live_signal_fixture",
+            "rust_native_strategy_runtime_uses_python_interval_timing_fixture",
+            "tauri_native_runtime_poll_timing_uses_python_reference_fixture",
         ),
         cpp_full_parity=True,
         rust_full_parity=True,
@@ -415,6 +427,8 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
             "cpp_order_guard_uses_python_live_safety_environment",
             "cpp_native_order_guard_uses_python_order_intent_fixture",
             "cpp_native_order_guard_uses_python_connector_health_fixture",
+            "cpp_native_stop_intent_uses_python_reference_fixture",
+            "cpp_dashboard_runtime_uses_python_stop_intent",
             "cpp_dashboard_runtime_enforces_live_order_safety",
         ),
         rust_required_before_full_parity=(
@@ -423,6 +437,7 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
             "rust_order_guard_uses_python_live_safety_environment",
             "rust_order_guard_uses_python_order_intent_fixture",
             "rust_order_guard_uses_python_connector_health_fixture",
+            "rust_native_stop_intent_uses_python_reference_fixture",
         ),
         cpp_full_parity=True,
         rust_full_parity=True,
@@ -435,11 +450,13 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
             "cpp_backtest_uses_python_source_surface",
             "cpp_native_backtest_pair_overrides_match_python",
             "cpp_native_backtest_runtime_uses_python_reference_fixture",
+            "cpp_native_backtest_interval_timing_uses_python_reference_fixture",
             "cpp_backtest_service_api_uses_python_source_routes",
         ),
         rust_required_before_full_parity=(
             "rust_native_backtest_runtime_uses_python_reference_fixture",
             "rust_native_backtest_batch_runtime_uses_python_reference_fixture",
+            "rust_native_backtest_interval_timing_uses_python_reference_fixture",
             "tauri_native_backtest_bridge",
             "tauri_native_backtest_commands_registered",
             "tauri_native_backtest_browser_bridge",
@@ -1046,6 +1063,18 @@ def native_runtime_config_choice_reference() -> list[dict[str, object]]:
                     "expected_error": "",
                 }
             )
+    for key in ("stop_without_close",):
+        for alias in ("true", "false"):
+            config = {key: alias}
+            cases.append(
+                {
+                    "name": f"bool-{key}-{alias}",
+                    "input": config,
+                    "valid": True,
+                    "expected": validate_runtime_config(config),
+                    "expected_error": "",
+                }
+            )
     return cases
 
 
@@ -1362,6 +1391,168 @@ def native_strategy_risk_reference_cases() -> list[dict[str, object]]:
     return cases
 
 
+def native_strategy_risk_loose_reference_cases() -> list[dict[str, object]]:
+    """Return Python's loose bool-coercion cases for strategy risk controls."""
+
+    bool_keys = (
+        "indicator_use_live_values",
+        "require_indicator_flip_signal",
+        "strict_indicator_flip_enforcement",
+        "indicator_reentry_requires_signal_reset",
+        "auto_flip_on_close",
+        "allow_close_ignoring_hold",
+        "allow_multi_indicator_close",
+        "allow_indicator_close_without_signal",
+        "close_on_exit",
+        "positions_missing_autoclose",
+        "allow_opposite_positions",
+        "hedge_preserve_opposites",
+    )
+    raw_cases: tuple[tuple[str, object], ...] = (
+        ("risk-loose-string-y", "y"),
+        ("risk-loose-unknown-string", "maybe"),
+        ("risk-loose-fractional-zero", 0.5),
+        ("risk-loose-fractional-one", 1.5),
+        ("risk-loose-negative-fractional-zero", -0.5),
+        ("risk-loose-negative-fractional-one", -1.5),
+    )
+    cases: list[dict[str, object]] = []
+    for name, value in raw_cases:
+        config = {key: value for key in bool_keys}
+        expected = native_python_risk_defaults()
+        for key in bool_keys:
+            expected[key] = coerce_bool(value, bool(expected[key]))
+        cases.append(
+            {
+                "name": name,
+                "input": config,
+                "expected": expected,
+            }
+        )
+    return cases
+
+
+def native_interval_seconds_reference_cases() -> list[dict[str, object]]:
+    """Return interval timing behavior used by Python strategy runtime paths."""
+
+    values = (
+        "1s",
+        "5m",
+        "1.5m",
+        "0.5h",
+        "1h",
+        "1d",
+        "1w",
+        "1mo",
+        "1y",
+        "5",
+        "0m",
+        "-1m",
+        "1M",
+        " 5m ",
+        "5m ",
+        "",
+    )
+    cases: list[dict[str, object]] = []
+    for value in values:
+        cases.append(
+            {
+                "input": value,
+                "indicator_seconds": interval_seconds_value(value),
+                "loop_seconds": max(1, interval_seconds(value)),
+            }
+        )
+    return cases
+
+
+def native_backtest_interval_seconds_reference_cases() -> list[dict[str, object]]:
+    """Return the exact interval coercion used by Python backtest data loading."""
+
+    values = (
+        "1s",
+        "5m",
+        "1.5m",
+        "0.5h",
+        "1h",
+        "1d",
+        "1w",
+        "1mo",
+        "1y",
+        "5",
+        "0m",
+        "-1m",
+        "1M",
+        " 5m ",
+        "5m ",
+        "",
+        "abc",
+        "5x",
+    )
+    return [
+        {
+            "input": value,
+        "seconds": backtest_interval_seconds(value),
+        }
+        for value in values
+    ]
+
+
+def native_stop_intent_reference_cases() -> dict[str, object]:
+    """Return Python-normalized stop-without-close intent cases for native runtimes."""
+
+    raw_cases: tuple[tuple[str, dict[str, object]], ...] = (
+        ("default-close-all", {}),
+        ("explicit-close-all", {"stop_without_close": False}),
+        ("explicit-keep-open", {"stop_without_close": True}),
+        ("string-keep-open", {"stop_without_close": "true"}),
+        ("string-close-all", {"stop_without_close": "false"}),
+    )
+    cases: list[dict[str, object]] = []
+    for name, config in raw_cases:
+        normalized = validate_runtime_config(config)
+        stop_without_close = bool(normalized.get("stop_without_close", False))
+        cases.append(
+            {
+                "name": name,
+                "input": dict(config),
+                "expected": {
+                    "stop_without_close": stop_without_close,
+                    "close_positions": not stop_without_close,
+                },
+            }
+        )
+    return {"schema_version": 1, "cases": cases}
+
+
+def native_stop_intent_loose_reference_cases() -> dict[str, object]:
+    """Return Python's loose bool-coercion cases used before config validation."""
+
+    raw_cases: tuple[tuple[str, dict[str, object]], ...] = (
+        ("missing", {}),
+        ("null", {"stop_without_close": None}),
+        ("empty-string", {"stop_without_close": ""}),
+        ("string-y-is-false", {"stop_without_close": "y"}),
+        ("unknown-string-is-false", {"stop_without_close": "maybe"}),
+        ("fractional-zero-is-false", {"stop_without_close": 0.5}),
+        ("fractional-one-is-true", {"stop_without_close": 1.5}),
+        ("negative-fraction-is-true", {"stop_without_close": -1.5}),
+    )
+    cases: list[dict[str, object]] = []
+    for name, config in raw_cases:
+        stop_without_close = coerce_bool(config.get("stop_without_close"), False)
+        cases.append(
+            {
+                "name": name,
+                "input": dict(config),
+                "expected": {
+                    "stop_without_close": stop_without_close,
+                    "close_positions": not stop_without_close,
+                },
+            }
+        )
+    return {"schema_version": 1, "cases": cases}
+
+
 def native_order_intent_reference_cases() -> dict[str, object]:
     """Return Python order-intent and raw-filter truthiness reference cases."""
 
@@ -1461,6 +1652,127 @@ def native_order_intent_reference_cases() -> dict[str, object]:
                     "intent_errors": list(validate_order_submit_intent(intent)),
                     "filter_errors": list(_order_filter_errors(wrapper, market, params)),
                 },
+            }
+        )
+    return {"schema_version": 1, "cases": cases}
+
+
+def native_live_safety_reference_cases() -> dict[str, object]:
+    """Return Python-owned live safety outcomes for native guard consumers."""
+
+    safe_config = {
+        "live_trading_enabled": True,
+        "live_trading_acknowledgement": LIVE_TRADING_ACKNOWLEDGEMENT,
+        "live_trading_max_leverage": 5,
+        "live_trading_max_position_pct": 3.0,
+        "live_trading_max_session_orders": 7,
+    }
+    raw_cases: tuple[tuple[str, dict[str, object]], ...] = (
+        (
+            "demo-mode-bypasses-live-gates",
+            {
+                "mode": "Demo/Testnet",
+                "api_key": "",
+                "api_secret": "",
+                "account_type": "Futures",
+                "leverage": 0,
+                "margin_mode": "invalid",
+                "position_pct": 0.0,
+                "config": {},
+            },
+        ),
+        (
+            "live-requires-confirmation",
+            {
+                "mode": "Live",
+                "api_key": "live-api-key",
+                "api_secret": "live-api-secret",
+                "account_type": "Futures",
+                "leverage": 1,
+                "margin_mode": "",
+                "position_pct": 2.0,
+                "config": {},
+            },
+        ),
+        (
+            "live-safe-futures",
+            {
+                "mode": "Live",
+                "api_key": "live-api-key",
+                "api_secret": "live-api-secret",
+                "account_type": "Futures",
+                "leverage": 3,
+                "margin_mode": "Isolated",
+                "position_pct": 2.0,
+                "config": dict(safe_config),
+            },
+        ),
+        (
+            "live-spot-position-cap",
+            {
+                "mode": "Live",
+                "api_key": "live-api-key",
+                "api_secret": "live-api-secret",
+                "account_type": "Spot",
+                "leverage": 0,
+                "margin_mode": "invalid-is-ignored-for-spot",
+                "position_pct": 4.0,
+                "config": dict(safe_config),
+            },
+        ),
+        (
+            "live-invalid-caps-and-futures-controls",
+            {
+                "mode": "Production",
+                "api_key": "live-api-key",
+                "api_secret": "live-api-secret",
+                "account_type": "Futures",
+                "leverage": 130,
+                "margin_mode": "Portfolio",
+                "position_pct": 0.0,
+                "config": {
+                    "live_trading_enabled": True,
+                    "live_trading_acknowledgement": LIVE_TRADING_ACKNOWLEDGEMENT,
+                    "live_trading_max_leverage": BINANCE_MAX_FUTURES_LEVERAGE + 1,
+                    "live_trading_max_position_pct": 0.0,
+                    "live_trading_max_session_orders": 0,
+                },
+            },
+        ),
+        (
+            "live-rejects-placeholder-credentials",
+            {
+                "mode": "Live",
+                "api_key": "your_api_key",
+                "api_secret": "testnet",
+                "account_type": "Futures",
+                "leverage": 1,
+                "margin_mode": "Cross",
+                "position_pct": 2.0,
+                "config": dict(safe_config),
+            },
+        ),
+    )
+
+    cases: list[dict[str, object]] = []
+    for name, input_case in raw_cases:
+        try:
+            validate_live_trading_safety(**input_case, env={})
+        except LiveTradingSafetyError as exc:
+            mode = input_case["mode"]
+            prefix = f"Live trading safety check failed for mode {mode!r}: "
+            message = str(exc)
+            if not message.startswith(prefix) or not message.endswith("."):
+                raise AssertionError(f"Unexpected Python live-safety error format: {message}") from exc
+            detail = message[len(prefix) : -1]
+            expected_errors = detail.split("; ") if detail else []
+        else:
+            expected_errors = []
+        cases.append(
+            {
+                "name": name,
+                "input": input_case,
+                "expected_errors": expected_errors,
             }
         )
     return {"schema_version": 1, "cases": cases}
@@ -2060,7 +2372,13 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         "runtime_config_invalid_reference": native_runtime_config_invalid_reference_cases(),
         "strategy_controls_reference": native_strategy_controls_reference_cases(),
         "strategy_risk_reference": native_strategy_risk_reference_cases(),
+        "strategy_risk_loose_reference": native_strategy_risk_loose_reference_cases(),
+        "interval_seconds_reference": native_interval_seconds_reference_cases(),
+        "backtest_interval_seconds_reference": native_backtest_interval_seconds_reference_cases(),
+        "stop_intent_reference": native_stop_intent_reference_cases(),
+        "stop_intent_loose_reference": native_stop_intent_loose_reference_cases(),
         "order_intent_reference": native_order_intent_reference_cases(),
+        "live_safety_reference": native_live_safety_reference_cases(),
         "connector_health_reference": native_connector_health_reference_cases(),
         "llm_output_policy_reference": native_llm_output_policy_reference_cases(),
         "llm_chat_request_reference": native_llm_chat_request_reference_cases(),
@@ -2151,7 +2469,13 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "runtime_config_invalid_reference": list(payload["runtime_config_invalid_reference"]),
         "strategy_controls_reference": list(payload["strategy_controls_reference"]),
         "strategy_risk_reference": list(payload["strategy_risk_reference"]),
+        "strategy_risk_loose_reference": list(payload["strategy_risk_loose_reference"]),
+        "interval_seconds_reference": list(payload["interval_seconds_reference"]),
+        "backtest_interval_seconds_reference": list(payload["backtest_interval_seconds_reference"]),
+        "stop_intent_reference": dict(payload["stop_intent_reference"]),
+        "stop_intent_loose_reference": dict(payload["stop_intent_loose_reference"]),
         "order_intent_reference": dict(payload["order_intent_reference"]),
+        "live_safety_reference": dict(payload["live_safety_reference"]),
         "connector_health_reference": dict(payload["connector_health_reference"]),
         "llm_output_policy_reference": dict(payload["llm_output_policy_reference"]),
         "llm_chat_request_reference": dict(payload["llm_chat_request_reference"]),

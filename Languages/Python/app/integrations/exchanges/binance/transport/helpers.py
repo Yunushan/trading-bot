@@ -6,28 +6,11 @@ import time
 from collections import deque
 from typing import Any
 
+from app.native_interval_semantics import backtest_interval_seconds
+
 
 def _coerce_interval_seconds(interval: str | None) -> float:
-    try:
-        iv = (interval or "").strip().lower()
-        if not iv:
-            return 60.0
-        unit = iv[-1]
-        value_part = iv[:-1] if unit.isalpha() else iv
-        value = float(value_part or 0.0)
-        if unit == "s":
-            return max(value, 1.0)
-        if unit == "m":
-            return max(value * 60.0, 1.0)
-        if unit == "h":
-            return max(value * 3600.0, 1.0)
-        if unit == "d":
-            return max(value * 86400.0, 1.0)
-        if unit == "w":
-            return max(value * 7 * 86400.0, 1.0)
-        return max(float(iv), 1.0)
-    except Exception:
-        return 60.0
+    return backtest_interval_seconds(interval)
 
 
 def normalize_margin_ratio(value):

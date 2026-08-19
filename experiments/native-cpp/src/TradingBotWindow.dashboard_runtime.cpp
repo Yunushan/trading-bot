@@ -301,6 +301,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     QSet<QString> accountStopLossConnectors;
     const qint64 cycleNowMs = QDateTime::currentMSecsSinceEpoch();
     const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
+    const QJsonObject effectiveDashboardConfig = buildDashboardServiceConfigPatch();
     const QString defaultAccountType = executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures"));
     const QString defaultMode = executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"));
     const QString defaultIndicatorSource = executionDefaults.value(QStringLiteral("indicator_source")).toString(QStringLiteral("Binance futures"));
@@ -848,8 +849,12 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         const QJsonObject rowStrategyControls = rowPayload.value(QStringLiteral("strategy_controls")).toObject();
         const QJsonObject normalizedStrategyControls =
             NativeStrategyRuntime::normalizeStrategyControls(QStringLiteral("runtime"), rowStrategyControls);
+        QJsonObject effectiveRiskInput = effectiveDashboardConfig;
+        for (auto riskIt = rowStrategyControls.constBegin(); riskIt != rowStrategyControls.constEnd(); ++riskIt) {
+            effectiveRiskInput.insert(riskIt.key(), riskIt.value());
+        }
         const QJsonObject normalizedRiskControls =
-            NativeStrategyRuntime::normalizeStrategyRiskControls(rowStrategyControls);
+            NativeStrategyRuntime::normalizeStrategyRiskControls(effectiveRiskInput);
         const bool useLiveSignalCandles = normalizedRiskControls.value(QStringLiteral("indicator_use_live_values"))
                                               .toBool(strategyUsesLiveCandles(strategySummary));
         QSet<QString> indicatorKeys = parseIndicatorKeysFromSummary(indicatorSummary);
@@ -1003,7 +1008,88 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     }
                 }
 
-                const bool exchangePositionMissing = !paperTrading && liveSnapshot && liveSnapshot->ok && !livePos;
+                const bool exchangePositionMissing = futures && !paperTrading && liveSnapshot && liveSnapshot->ok && !livePos;
+                const QString purgeKey = key;
+                if (!exchangePositionMissing) {
+                    dashboardRuntimeFlatPurgeMissCounts_.remove(purgeKey);
+                } else {
+                    double purgeGraceSeconds = std::max(
+                        0.0,
+                        normalizedRiskControls
+                            .value(QStringLiteral("futures_flat_purge_grace_seconds"))
+                            .toDouble(12.0));
+                    const QString purgeMode = dashboardModeCombo_
+                        ? dashboardModeCombo_->currentText().trimmed().toLower()
+                        : defaultMode.trimmed().toLower();
+                    if (purgeMode.contains(QStringLiteral("demo"))
+                        || purgeMode.contains(QStringLiteral("test"))
+                        || purgeMode.contains(QStringLiteral("paper"))) {
+                        purgeGraceSeconds = std::max(purgeGraceSeconds, 30.0);
+                    }
+                    const int purgeThreshold = std::max(
+                        1,
+                        normalizedRiskControls
+                            .value(QStringLiteral("futures_flat_purge_miss_threshold"))
+                            .toInt(2));
+                    const bool graceElapsed = openPos.openedAtMs <= 0
+                        || (static_cast<double>(nowMs) - static_cast<double>(openPos.openedAtMs))
+                            >= (purgeGraceSeconds * 1000.0);
+                    if (graceElapsed) {
+                        const int missCount = dashboardRuntimeFlatPurgeMissCounts_.value(purgeKey, 0) + 1;
+                        dashboardRuntimeFlatPurgeMissCounts_.insert(purgeKey, missCount);
+                        if (missCount >= purgeThreshold) {
+                            dashboardRuntimeFlatPurgeMissCounts_.remove(purgeKey);
+                            const int purgeTargetRow = findOpenPositionRow(
+                                positionsTable_,
+                                symbol,
+                                interval,
+                                rowConnectorCfg.key);
+                            const QString closeSignalSide = openPos.side == QStringLiteral("LONG")
+                                ? QStringLiteral("BUY")
+                                : QStringLiteral("SELL");
+                            QStringList purgeSources = openPos.signalSources;
+                            if (purgeSources.isEmpty()) {
+                                purgeSources.append(openPos.signalSource);
+                            }
+                            purgeSources = normalizedSignalSources(purgeSources);
+                            if (purgeTargetRow >= 0 && positionsTable_) {
+                                markPositionClosedRow(
+                                    positionsTable_,
+                                    positionsCumulativeView_,
+                                    purgeTargetRow,
+                                    QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
+                                positionsTableMutated = true;
+                            }
+                            applyCumulativeViewImmediately();
+                            NativeStrategyRuntime::recordIndicatorCloses(
+                                normalizedRiskControls,
+                                symbol,
+                                interval,
+                                purgeSources,
+                                closeSignalSide,
+                                nowMs,
+                                dashboardRuntimeIndicatorOrderGuardStates_,
+                                dashboardRuntimeIndicatorReentryBlocks_);
+                            NativeStrategyRuntime::queueIndicatorFlipOnClose(
+                                normalizedRiskControls,
+                                symbol,
+                                interval,
+                                purgeSources,
+                                closeSignalSide,
+                                std::max(0.0, openPos.quantity),
+                                nowMs,
+                                dashboardRuntimePendingFlipRequests_);
+                            appendDashboardPositionLog(
+                                QStringLiteral("Purged stale %1 leg for %2@%3 after exchange flat-leg grace and miss threshold.")
+                                    .arg(openPos.side, symbol, interval));
+                            dashboardRuntimeLastEvalMs_.remove(key);
+                            dashboardRuntimeEntryRetryAfterMs_.remove(key);
+                            dashboardRuntimeOpenQtyCaps_.remove(key);
+                            dashboardRuntimeOpenPositions_.remove(key);
+                            continue;
+                        }
+                    }
+                }
                 const double rowQty = std::max(0.0, openPos.quantity);
                 const QString exposureKey = QStringLiteral("%1|%2|%3")
                                                 .arg(symbol,
@@ -1098,7 +1184,13 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             openSignalInput.side = signalSideForAllowedDirections(allowLong, allowShort);
             const QJsonObject nativeOpenDecision = NativeStrategyRuntime::applyIndicatorOrderGuards(
                 NativeStrategyRuntime::applyIndicatorSignalConfirmation(
-                    NativeStrategyRuntime::buildSignalDecision(openSignalInput),
+                    NativeStrategyRuntime::mergeIndicatorFlipOnCloseRequests(
+                        NativeStrategyRuntime::buildSignalDecision(openSignalInput),
+                        normalizedRiskControls,
+                        symbol,
+                        requestInterval,
+                        nowMs,
+                        dashboardRuntimePendingFlipRequests_),
                     normalizedRiskControls,
                     symbol,
                     requestInterval,
@@ -1125,6 +1217,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             const QString triggerText = openSignal.triggerText;
             const QString triggerSource = openSignal.triggerSource;
             const QString rowIndicatorValueSummary = displayIndicatorValueSummary;
+            const QJsonValue rawFlipQty = nativeOpenDecision.value(QStringLiteral("flip_qty"));
+            const double flipCloseQty = rawFlipQty.isDouble() ? rawFlipQty.toDouble() : 0.0;
+            const bool hasFlipCloseQuantity = qIsFinite(flipCloseQty) && flipCloseQty > 0.0;
 
             if (!openSignal.hasSignal()) {
                 // "No trigger yet" is a normal monitoring state, not a pending queue item.
@@ -1199,7 +1294,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 ? std::max(10.0, availableUsdt * positionPctFraction * positionLeverage)
                 : std::max(0.0, availableUsdt * positionPctFraction);
             const double requestedQty = std::max(0.000001, targetNotionalUsdt / orderSizingPrice);
-            double cappedRequestedQty = requestedQty;
+            double cappedRequestedQty = hasFlipCloseQuantity ? flipCloseQty : requestedQty;
             const double storedQtyCap = dashboardRuntimeOpenQtyCaps_.value(key, 0.0);
             if (qIsFinite(storedQtyCap) && storedQtyCap > 0.0) {
                 cappedRequestedQty = std::min(cappedRequestedQty, storedQtyCap);
@@ -1410,6 +1505,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 };
                 exposureInput.requestedQuantity = cappedRequestedQty;
                 exposureInput.normalizedQuantity = orderQty;
+                exposureInput.flipCloseQuantity = flipCloseQty;
+                exposureInput.hasFlipCloseQuantity = hasFlipCloseQuantity;
                 exposureInput.liveMode = modeText.trimmed().compare(QStringLiteral("Live"), Qt::CaseInsensitive) == 0;
                 exposureInput.liveAllowAutoBumpToMinOrder = liveSafetyConfig.liveAllowAutoBumpToMinOrder;
                 exposureInput.maxAutoBumpPercent = normalizedRiskControls.value(QStringLiteral("max_auto_bump_percent"))
@@ -1665,6 +1762,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             const double marginRatio = (livePos && livePos->marginRatio > 0.0) ? livePos->marginRatio : 0.0;
             const double liqPrice = (livePos && livePos->liquidationPrice > 0.0) ? livePos->liquidationPrice : 0.0;
             const QStringList triggerSources = decisionSignalSources(nativeOpenDecision);
+            dashboardRuntimeFlatPurgeMissCounts_.remove(key);
             dashboardRuntimeOpenPositions_.insert(
                 key,
                 RuntimePosition{
@@ -1766,6 +1864,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             && nativeCloseSignal == QStringLiteral("SELL");
         const bool shouldCloseShort = openPos.side == QStringLiteral("SHORT")
             && nativeCloseSignal == QStringLiteral("BUY");
+        const bool indicatorCloseScopeAllowed = NativeStrategyRuntime::indicatorCloseScopeAllowed(
+            normalizedRiskControls,
+            signalSources);
         const auto *liveSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
         const auto *livePos = pickLivePosition(liveSnapshot, symbol, openPos.side);
         if ((!qIsFinite(openPos.quantity) || openPos.quantity <= 1e-10)
@@ -1942,7 +2043,13 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 futures);
         }
         const bool stopLossTriggered = stopLossDecision.value(QStringLiteral("triggered")).toBool(false);
-        bool indicatorCloseTriggered = shouldCloseLong || shouldCloseShort;
+        bool indicatorCloseTriggered = (shouldCloseLong || shouldCloseShort)
+            && indicatorCloseScopeAllowed;
+        if ((shouldCloseLong || shouldCloseShort) && !indicatorCloseScopeAllowed) {
+            appendDashboardPositionLog(
+                QStringLiteral("%1 %2@%3 indicator close blocked: multi-indicator entry requires allow_multi_indicator_close.")
+                    .arg(openPos.side, symbol, interval));
+        }
         if (indicatorCloseTriggered) {
             QString holdReason;
             if (!NativeStrategyRuntime::indicatorHoldReady(
@@ -1951,7 +2058,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     interval,
                     openPos.openedAtMs,
                     nowMs,
-                    &holdReason)) {
+                    &holdReason,
+                    true)) {
                 appendDashboardPositionLog(
                     QStringLiteral("%1 %2: indicator close blocked: %3")
                         .arg(openPos.side, symbol, holdReason));
@@ -2058,10 +2166,20 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                                 nowMs,
                                 dashboardRuntimeIndicatorOrderGuardStates_,
                                 dashboardRuntimeIndicatorReentryBlocks_);
+                            NativeStrategyRuntime::queueIndicatorFlipOnClose(
+                                normalizedRiskControls,
+                                symbol,
+                                interval,
+                                signalSources,
+                                openPos.side == QStringLiteral("LONG") ? QStringLiteral("BUY") : QStringLiteral("SELL"),
+                                openPos.quantity,
+                                nowMs,
+                                dashboardRuntimePendingFlipRequests_);
                         }
                         dashboardRuntimeLastEvalMs_.remove(key);
                         dashboardRuntimeEntryRetryAfterMs_.remove(key);
                         dashboardRuntimeOpenQtyCaps_.remove(key);
+                        dashboardRuntimeFlatPurgeMissCounts_.remove(key);
                         dashboardRuntimeOpenPositions_.remove(key);
                         continue;
                     }
@@ -2098,7 +2216,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             : 1.0;
         const double closeRoiBasisUsed = std::max(1e-9, openPos.roiBasisUsdt * closeShareRatio);
         const double realizedPnlPct = (realizedPnlUsdt / closeRoiBasisUsed) * 100.0;
-        const bool partialClose = (effectiveCloseQty + 1e-9) < openPos.quantity;
+        const double closeCompletionTolerance = std::max(1e-9, openPos.quantity * 1e-6);
+        const bool partialClose = (effectiveCloseQty + closeCompletionTolerance) < openPos.quantity;
         double remainingQty = 0.0;
         double remainingNotional = 0.0;
         double remainingDisplayMarginUsdt = 0.0;
@@ -2181,10 +2300,20 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 nowMs,
                 dashboardRuntimeIndicatorOrderGuardStates_,
                 dashboardRuntimeIndicatorReentryBlocks_);
+            NativeStrategyRuntime::queueIndicatorFlipOnClose(
+                normalizedRiskControls,
+                symbol,
+                interval,
+                signalSources,
+                openPos.side == QStringLiteral("LONG") ? QStringLiteral("BUY") : QStringLiteral("SELL"),
+                openPos.quantity,
+                nowMs,
+                dashboardRuntimePendingFlipRequests_);
         }
         dashboardRuntimeLastEvalMs_.remove(key);
         dashboardRuntimeEntryRetryAfterMs_.remove(key);
         dashboardRuntimeOpenQtyCaps_.remove(key);
+        dashboardRuntimeFlatPurgeMissCounts_.remove(key);
         dashboardRuntimeOpenPositions_.remove(key);
     }
 

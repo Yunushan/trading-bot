@@ -1339,13 +1339,14 @@ int main(int argc, char **argv) {
             const qint64 startTime = query.queryItemValue(QStringLiteral("startTime")).toLongLong();
             const qint64 endTime = query.queryItemValue(QStringLiteral("endTime")).toLongLong();
             const int limit = query.queryItemValue(QStringLiteral("limit")).toInt();
+            const bool shortPage = query.queryItemValue(QStringLiteral("symbol")) == QStringLiteral("SHORTUSDT");
             observedKlineStarts.append(startTime);
             observedKlineIntervals.append(query.queryItemValue(QStringLiteral("interval")));
 
             QJsonArray candles;
             constexpr qint64 intervalMs = 60'000;
             for (qint64 openTime = startTime;
-                 openTime <= endTime && candles.size() < std::max(1, limit);
+                 openTime <= endTime && candles.size() < (shortPage ? 1 : std::max(1, limit));
                  openTime += intervalMs) {
                 const double open = 100.0 + static_cast<double>(openTime / intervalMs);
                 candles.append(QJsonArray{
@@ -1383,6 +1384,19 @@ int main(int argc, char **argv) {
               && observedKlineIntervals.at(0) == QStringLiteral("1m"),
           QStringLiteral("native historical loader should preserve native Binance intervals"));
 
+    const BinanceRestClient::KlinesResult shortPageKlines = BinanceRestClient::fetchKlinesRange(
+        QStringLiteral("SHORTUSDT"),
+        QStringLiteral("1m"),
+        false,
+        false,
+        pageStart,
+        pageStart + 3 * minuteMs,
+        100,
+        5'000,
+        klineBaseUrl);
+    check(shortPageKlines.ok && shortPageKlines.candles.size() == 3,
+          QStringLiteral("native historical loader should continue after a short non-empty page"));
+
     constexpr qint64 customStart = 7 * minuteMs;
     const BinanceRestClient::KlinesResult customKlines = BinanceRestClient::fetchKlinesRange(
         QStringLiteral("ETHUSDT"),
@@ -1400,6 +1414,52 @@ int main(int argc, char **argv) {
           QStringLiteral("native custom interval aggregation should sum source volume"));
     check(observedKlineIntervals.constLast() == QStringLiteral("1m"),
           QStringLiteral("native custom interval aggregation should fetch the supported one-minute base"));
+
+    const BinanceRestClient::KlinesResult fractionalCustomKlines = BinanceRestClient::fetchKlinesRange(
+        QStringLiteral("ETHUSDT"),
+        QStringLiteral("0.5h"),
+        false,
+        false,
+        customStart,
+        customStart + 61 * minuteMs,
+        100,
+        5'000,
+        klineBaseUrl);
+    check(fractionalCustomKlines.ok && fractionalCustomKlines.candles.size() == 2,
+          QStringLiteral("native historical loader should accept Python-compatible fractional hour intervals"));
+    check(fractionalCustomKlines.ok
+              && std::abs(fractionalCustomKlines.candles.constFirst().volume - 30.0) < 1e-12,
+          QStringLiteral("fractional custom interval aggregation should preserve Python candle volume"));
+    check(observedKlineIntervals.constLast() == QStringLiteral("1m"),
+          QStringLiteral("fractional custom interval aggregation should fetch the one-minute base"));
+
+    const BinanceRestClient::KlinesResult pythonMonthAliasKlines = BinanceRestClient::fetchKlinesRange(
+        QStringLiteral("ETHUSDT"),
+        QStringLiteral("1mo"),
+        false,
+        false,
+        customStart,
+        customStart + 13 * minuteMs,
+        100,
+        5'000,
+        klineBaseUrl);
+    check(pythonMonthAliasKlines.ok && pythonMonthAliasKlines.candles.size() == 14,
+          QStringLiteral("native historical loader should preserve Python one-minute fallback for month aliases"));
+    check(observedKlineIntervals.constLast() == QStringLiteral("1m"),
+          QStringLiteral("Python month aliases should request the one-minute base interval"));
+
+    const BinanceRestClient::KlinesResult directCustomKlines = BinanceRestClient::fetchKlines(
+        QStringLiteral("ETHUSDT"),
+        QStringLiteral("7m"),
+        false,
+        false,
+        2,
+        5'000,
+        klineBaseUrl);
+    check(directCustomKlines.ok && directCustomKlines.candles.size() == 2,
+          QStringLiteral("native direct kline loading should aggregate Python custom intervals"));
+    check(observedKlineIntervals.constLast() == QStringLiteral("1m"),
+          QStringLiteral("native direct custom loading should request the supported one-minute base"));
 
     const int requestsBeforeCancellation = observedKlineStarts.size();
     const BinanceRestClient::KlinesResult cancelledKlines = BinanceRestClient::fetchKlinesRange(

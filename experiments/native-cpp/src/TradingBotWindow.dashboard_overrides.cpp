@@ -131,6 +131,38 @@ void setComboTextAllowingCustom(QComboBox *combo, const QString &textRaw) {
     combo->setCurrentIndex(index);
 }
 
+const QStringList &pythonRiskControlKeys() {
+    static const QStringList keys{
+        QStringLiteral("indicator_use_live_values"),
+        QStringLiteral("require_indicator_flip_signal"),
+        QStringLiteral("strict_indicator_flip_enforcement"),
+        QStringLiteral("indicator_reentry_requires_signal_reset"),
+        QStringLiteral("auto_flip_on_close"),
+        QStringLiteral("allow_close_ignoring_hold"),
+        QStringLiteral("allow_multi_indicator_close"),
+        QStringLiteral("allow_indicator_close_without_signal"),
+        QStringLiteral("close_on_exit"),
+        QStringLiteral("positions_missing_autoclose"),
+        QStringLiteral("allow_opposite_positions"),
+        QStringLiteral("hedge_preserve_opposites"),
+        QStringLiteral("indicator_flip_cooldown_bars"),
+        QStringLiteral("indicator_min_position_hold_bars"),
+        QStringLiteral("indicator_reentry_cooldown_bars"),
+        QStringLiteral("indicator_flip_confirmation_bars"),
+        QStringLiteral("positions_missing_threshold"),
+        QStringLiteral("futures_flat_purge_miss_threshold"),
+        QStringLiteral("indicator_flip_cooldown_seconds"),
+        QStringLiteral("indicator_min_position_hold_seconds"),
+        QStringLiteral("indicator_reentry_cooldown_seconds"),
+        QStringLiteral("positions_missing_grace_seconds"),
+        QStringLiteral("futures_flat_purge_grace_seconds"),
+        QStringLiteral("max_auto_bump_percent"),
+        QStringLiteral("auto_bump_percent_multiplier"),
+        QStringLiteral("stop_loss"),
+    };
+    return keys;
+}
+
 QJsonArray selectedOrAllListValues(const QListWidget *list, bool uppercase) {
     QJsonArray values;
     if (!list) {
@@ -591,6 +623,11 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     const QJsonObject riskDefaults = TradingBotWindowSupport::pythonSourceRiskDefaults();
     const QJsonObject uiDefaults = TradingBotWindowSupport::pythonSourceUiDefaults();
     QJsonObject config;
+    for (const QString &key : pythonRiskControlKeys()) {
+        const QJsonValue configured = dashboardEffectiveRiskControls_.value(key);
+        const QJsonValue fallback = riskDefaults.value(key);
+        config.insert(key, configured.isUndefined() ? fallback : configured);
+    }
     config.insert(QStringLiteral("mode"), comboText(dashboardModeCombo_, executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"))));
     config.insert(QStringLiteral("account_type"), comboText(dashboardAccountTypeCombo_, executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures"))));
     config.insert(QStringLiteral("account_mode"), comboText(dashboardAccountModeCombo_, executionDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
@@ -604,6 +641,16 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     config.insert(QStringLiteral("leverage"), dashboardLeverageSpin_ ? dashboardLeverageSpin_->value() : executionDefaults.value(QStringLiteral("leverage")).toInt(1));
     config.insert(QStringLiteral("tif"), comboDataOrText(dashboardTimeInForceCombo_, executionDefaults.value(QStringLiteral("tif")).toString(QStringLiteral("GTC"))));
     config.insert(QStringLiteral("gtd_minutes"), dashboardGtdMinutesSpin_ ? dashboardGtdMinutesSpin_->value() : executionDefaults.value(QStringLiteral("gtd_minutes")).toInt(30));
+    config.insert(
+        QStringLiteral("positions_auto_resize_rows"),
+        positionsAutoRowHeightCheck_
+            ? positionsAutoRowHeightCheck_->isChecked()
+            : executionDefaults.value(QStringLiteral("positions_auto_resize_rows")).toBool(true));
+    config.insert(
+        QStringLiteral("positions_auto_resize_columns"),
+        positionsAutoColumnWidthCheck_
+            ? positionsAutoColumnWidthCheck_->isChecked()
+            : executionDefaults.value(QStringLiteral("positions_auto_resize_columns")).toBool(true));
     config.insert(QStringLiteral("indicator_source"), comboDataOrText(dashboardIndicatorSourceCombo_, uiDefaults.value(QStringLiteral("indicator_source")).toString(QStringLiteral("Binance futures"))));
     QJsonArray symbols = selectedOrAllListValues(dashboardSymbolList_, true);
     if (symbols.isEmpty()) {
@@ -755,6 +802,13 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
         return false;
     }
 
+    dashboardEffectiveRiskControls_ = TradingBotWindowSupport::pythonSourceRiskDefaults();
+    for (const QString &key : pythonRiskControlKeys()) {
+        if (config.contains(key) && !config.value(key).isUndefined()) {
+            dashboardEffectiveRiskControls_.insert(key, config.value(key));
+        }
+    }
+
     setComboValue(dashboardModeCombo_, config.value(QStringLiteral("mode")));
     setComboValue(dashboardAccountTypeCombo_, config.value(QStringLiteral("account_type")));
     setComboValue(dashboardAccountModeCombo_, config.value(QStringLiteral("account_mode")));
@@ -780,6 +834,14 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
     }
     if (dashboardGtdMinutesSpin_ && config.contains(QStringLiteral("gtd_minutes"))) {
         dashboardGtdMinutesSpin_->setValue(config.value(QStringLiteral("gtd_minutes")).toInt(dashboardGtdMinutesSpin_->value()));
+    }
+    if (positionsAutoRowHeightCheck_ && config.contains(QStringLiteral("positions_auto_resize_rows"))) {
+        positionsAutoRowHeightCheck_->setChecked(
+            config.value(QStringLiteral("positions_auto_resize_rows")).toBool(true));
+    }
+    if (positionsAutoColumnWidthCheck_ && config.contains(QStringLiteral("positions_auto_resize_columns"))) {
+        positionsAutoColumnWidthCheck_->setChecked(
+            config.value(QStringLiteral("positions_auto_resize_columns")).toBool(true));
     }
     if (dashboardPositionPctSpin_ && config.contains(QStringLiteral("position_pct"))) {
         dashboardPositionPctSpin_->setValue(config.value(QStringLiteral("position_pct")).toDouble(dashboardPositionPctSpin_->value()));

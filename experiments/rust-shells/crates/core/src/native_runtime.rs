@@ -52,6 +52,20 @@ use crate::{
 
 const NATIVE_POSITION_EPSILON: f64 = 1e-10;
 
+fn python_indicator_interval_seconds(interval: &str) -> f64 {
+    let text = if interval.is_empty() { "1m" } else { interval };
+    for (suffix, multiplier) in [("s", 1.0), ("m", 60.0), ("h", 3_600.0), ("d", 86_400.0)] {
+        if !text.ends_with(suffix) {
+            continue;
+        }
+        let amount = text[..text.len() - suffix.len()].trim().parse::<i64>();
+        return amount
+            .map(|value| value as f64 * multiplier)
+            .unwrap_or(60.0);
+    }
+    60.0
+}
+
 fn python_default_execution_config() -> serde_json::Map<String, Value> {
     serde_json::from_str::<Value>(PYTHON_DEFAULT_EXECUTION_JSON)
         .ok()
@@ -83,6 +97,7 @@ pub struct NativeRuntimeLoopConfig {
     pub interval: String,
     pub lookback: usize,
     pub futures_account: bool,
+    pub mode: String,
     pub indicator_use_live_values: bool,
     pub risk_controls: Value,
     pub position_mode: String,
@@ -124,6 +139,7 @@ impl Default for NativeRuntimeLoopConfig {
             interval,
             lookback,
             futures_account: true,
+            mode: python_default_text(&defaults, "mode", "Demo/Testnet"),
             indicator_use_live_values: risk_controls
                 .get("indicator_use_live_values")
                 .and_then(Value::as_bool)
@@ -331,10 +347,12 @@ impl NativeRuntimeReadOnlyMarketCycleInput {
 fn native_config_bool(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|value| value != 0.0),
+        Some(Value::Number(value)) => value
+            .as_f64()
+            .is_some_and(|value| !value.is_finite() || value.trunc() != 0.0),
         Some(Value::String(value)) => matches!(
             value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on" | "y"
+            "1" | "true" | "yes" | "on"
         ),
         _ => false,
     }
@@ -576,6 +594,7 @@ struct NativeRuntimeIndicatorOrderGuardState {
     last_action_side: String,
     last_action_ms: i64,
     recent_close_ms: i64,
+    recent_close_side: String,
     signal_reset_side: String,
 }
 
@@ -587,6 +606,18 @@ struct NativeRuntimeIndicatorExposureEntry {
     side: String,
     quantity: f64,
     margin_usdt: f64,
+    opened_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct NativeRuntimePendingFlipRequest {
+    symbol: String,
+    interval: String,
+    indicator: String,
+    side: String,
+    flip_from: String,
+    quantity: f64,
+    timestamp_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -615,6 +646,9 @@ pub struct NativeRuntimeLoop {
     indicator_order_guard_states: BTreeMap<String, NativeRuntimeIndicatorOrderGuardState>,
     indicator_reentry_blocks: BTreeMap<String, i64>,
     indicator_exposure_entries: Vec<NativeRuntimeIndicatorExposureEntry>,
+    flat_purge_miss_counts: BTreeMap<String, usize>,
+    pending_flip_requests: BTreeMap<String, NativeRuntimePendingFlipRequest>,
+    active_flip_close_quantities: BTreeMap<String, f64>,
 }
 
 impl NativeRuntimeLoop {
@@ -638,6 +672,9 @@ impl NativeRuntimeLoop {
             indicator_order_guard_states: BTreeMap::new(),
             indicator_reentry_blocks: BTreeMap::new(),
             indicator_exposure_entries: Vec::new(),
+            flat_purge_miss_counts: BTreeMap::new(),
+            pending_flip_requests: BTreeMap::new(),
+            active_flip_close_quantities: BTreeMap::new(),
         }
     }
 
@@ -652,6 +689,9 @@ impl NativeRuntimeLoop {
         self.indicator_order_guard_states.clear();
         self.indicator_reentry_blocks.clear();
         self.indicator_exposure_entries.clear();
+        self.flat_purge_miss_counts.clear();
+        self.pending_flip_requests.clear();
+        self.active_flip_close_quantities.clear();
         self.status_message = "Runtime started in native dry-run coordination mode.".to_owned();
     }
 
@@ -676,9 +716,7 @@ impl NativeRuntimeLoop {
             return None;
         }
 
-        let interval_window_ms = interval_seconds(&self.config.interval)
-            .unwrap_or(60.0)
-            .max(1.0)
+        let interval_window_ms = python_indicator_interval_seconds(&self.config.interval).max(1.0)
             * 1_000.0
             * (required.saturating_add(1).max(2) as f64);
         let reset_window_ms = interval_window_ms.ceil().clamp(1_000.0, i64::MAX as f64) as i64;
@@ -787,6 +825,35 @@ impl NativeRuntimeLoop {
         Self::indicator_reentry_block_key_for(&self.config.symbol, &self.config.interval, side)
     }
 
+    fn refresh_indicator_reentry_signal_blocks(&mut self, actions: &BTreeMap<String, String>) {
+        let action_sides: BTreeMap<String, String> = actions
+            .iter()
+            .filter_map(|(indicator, action)| {
+                let indicator = indicator.trim().to_ascii_lowercase();
+                let side = match action.trim().to_ascii_lowercase().as_str() {
+                    "buy" => "BUY",
+                    "sell" => "SELL",
+                    _ => return None,
+                };
+                (!indicator.is_empty()).then(|| (indicator, side.to_owned()))
+            })
+            .collect();
+        let key_prefix = format!(
+            "{}|{}|",
+            self.config.symbol.trim().to_ascii_uppercase(),
+            normalize_indicator_slot_interval(&self.config.interval)
+        );
+        for (key, state) in &mut self.indicator_order_guard_states {
+            if !key.starts_with(&key_prefix) || state.signal_reset_side.is_empty() {
+                continue;
+            }
+            let indicator = &key[key_prefix.len()..];
+            if action_sides.get(indicator) != Some(&state.signal_reset_side) {
+                state.signal_reset_side.clear();
+            }
+        }
+    }
+
     /// Apply Python's post-confirmation indicator order guards. The guard is
     /// intentionally evaluated immediately before exposure/order handling so
     /// read-only signal evaluation stays stateless like Python.
@@ -795,15 +862,17 @@ impl NativeRuntimeLoop {
         decision: &mut StrategySignalDecision,
         now_ms: i64,
     ) -> Option<String> {
-        if decision.trigger_actions.is_empty() {
-            return None;
-        }
         let controls = normalize_strategy_risk_controls(&self.config.risk_controls);
         let required_signal_reset =
             native_config_bool(controls.get("indicator_reentry_requires_signal_reset"));
-        let interval_window_seconds = interval_seconds(&self.config.interval)
-            .unwrap_or(60.0)
-            .max(1.0);
+        if required_signal_reset {
+            self.refresh_indicator_reentry_signal_blocks(&decision.trigger_actions);
+        }
+        if decision.trigger_actions.is_empty() {
+            return None;
+        }
+        let interval_window_seconds =
+            python_indicator_interval_seconds(&self.config.interval).max(1.0);
         let cooldown_seconds =
             native_config_number(controls.get("indicator_flip_cooldown_seconds"))
                 .unwrap_or(0.0)
@@ -840,6 +909,7 @@ impl NativeRuntimeLoop {
                 continue;
             }
             let side = if action_norm == "buy" { "BUY" } else { "SELL" };
+            let opposite_side = if side == "BUY" { "SELL" } else { "BUY" };
             let indicator_norm = indicator.trim().to_ascii_lowercase();
             if indicator_norm.is_empty() {
                 continue;
@@ -861,6 +931,7 @@ impl NativeRuntimeLoop {
             {
                 let elapsed_ms = now_ms.saturating_sub(state.last_action_ms).max(0);
                 let recent_close = state.recent_close_ms > 0
+                    && state.recent_close_side == opposite_side
                     && now_ms.saturating_sub(state.recent_close_ms) <= recent_close_window_ms;
                 if elapsed_ms < cooldown_ms && !recent_close {
                     waiting.push(format!(
@@ -942,6 +1013,207 @@ impl NativeRuntimeLoop {
         }
     }
 
+    fn auto_flip_on_close_enabled(&self) -> bool {
+        let controls = normalize_strategy_risk_controls(&self.config.risk_controls);
+        native_config_bool(controls.get("auto_flip_on_close"))
+    }
+
+    fn indicator_interval_tokens(value: &str) -> BTreeSet<String> {
+        let mut tokens = value
+            .trim()
+            .to_ascii_lowercase()
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        if tokens.is_empty() {
+            tokens.insert("default".to_owned());
+        }
+        tokens
+    }
+
+    fn queue_indicator_flip_on_close(
+        &mut self,
+        symbol: &str,
+        interval: &str,
+        indicators: &BTreeSet<String>,
+        closed_side: &str,
+        quantity: f64,
+        timestamp_ms: i64,
+    ) {
+        if !self.auto_flip_on_close_enabled()
+            || !self.runtime_active
+            || self.stop_requested
+            || self.global_shutdown
+            || indicators.is_empty()
+            || !quantity.is_finite()
+            || quantity <= NATIVE_POSITION_EPSILON
+        {
+            return;
+        }
+        let closed_side = closed_side.trim().to_ascii_uppercase();
+        let open_side = match closed_side.as_str() {
+            "BUY" | "LONG" => "SELL",
+            "SELL" | "SHORT" => "BUY",
+            _ => return,
+        };
+        let symbol = symbol.trim().to_ascii_uppercase();
+        if symbol.is_empty() {
+            return;
+        }
+        let interval = normalize_indicator_slot_interval(interval);
+        for indicator in indicators {
+            let indicator = indicator.trim().to_ascii_lowercase();
+            if indicator.is_empty() || indicator == "generic" {
+                continue;
+            }
+            let key = format!("{symbol}|{interval}|{indicator}|{open_side}");
+            self.pending_flip_requests.insert(
+                key,
+                NativeRuntimePendingFlipRequest {
+                    symbol: symbol.clone(),
+                    interval: interval.clone(),
+                    indicator,
+                    side: open_side.to_owned(),
+                    flip_from: closed_side.clone(),
+                    quantity,
+                    timestamp_ms,
+                },
+            );
+        }
+    }
+
+    fn drain_pending_flip_requests(
+        &mut self,
+        interval: &str,
+        now_ms: i64,
+    ) -> Vec<NativeRuntimePendingFlipRequest> {
+        if !self.auto_flip_on_close_enabled() {
+            return Vec::new();
+        }
+        let interval_tokens = Self::indicator_interval_tokens(interval);
+        let ttl_ms = (python_indicator_interval_seconds(interval).max(1.0) * 2.0 * 1_000.0)
+            .ceil()
+            .max(5_000.0) as i64;
+        let symbol = self.config.symbol.trim().to_ascii_uppercase();
+        let mut remove_keys = Vec::new();
+        let mut drained = Vec::new();
+        for (key, request) in &self.pending_flip_requests {
+            if !request.symbol.eq_ignore_ascii_case(&symbol) {
+                continue;
+            }
+            let request_tokens = Self::indicator_interval_tokens(&request.interval);
+            let interval_matches = interval_tokens
+                .iter()
+                .any(|token| request_tokens.contains(token));
+            if !interval_matches {
+                continue;
+            }
+            let age_ms = now_ms.saturating_sub(request.timestamp_ms);
+            remove_keys.push(key.clone());
+            if age_ms <= ttl_ms {
+                drained.push(request.clone());
+            }
+        }
+        for key in remove_keys {
+            self.pending_flip_requests.remove(&key);
+        }
+        drained
+    }
+
+    /// Match Python's close queue at the order-request boundary. A pending
+    /// request can reuse a live indicator action, or create a guarded request
+    /// when Python's signal-confirmation controls explicitly allow it.
+    fn merge_pending_flip_requests(
+        &mut self,
+        decision: &mut Option<StrategySignalDecision>,
+        now_ms: i64,
+    ) {
+        self.active_flip_close_quantities.clear();
+        let requests = self.drain_pending_flip_requests(&self.config.interval.clone(), now_ms);
+        if requests.is_empty() {
+            return;
+        }
+        let controls = normalize_strategy_risk_controls(&self.config.risk_controls);
+        let require_flip_signal = native_config_bool(controls.get("require_indicator_flip_signal"));
+        let strict_flip_guard =
+            native_config_bool(controls.get("strict_indicator_flip_enforcement"));
+        let allow_without_signal =
+            native_config_bool(controls.get("allow_indicator_close_without_signal"));
+        let enforce_flip_signal_confirmation =
+            require_flip_signal && strict_flip_guard && !allow_without_signal;
+
+        if decision.is_none() {
+            if enforce_flip_signal_confirmation {
+                return;
+            }
+            if let Some(request) = requests.first() {
+                *decision = Some(StrategySignalDecision {
+                    signal: Some(request.side.clone()),
+                    description: format!(
+                        "{} flip-on-close -> {}",
+                        request.indicator.to_ascii_uppercase(),
+                        request.side
+                    ),
+                    trigger_price: None,
+                    trigger_sources: Vec::new(),
+                    trigger_actions: BTreeMap::new(),
+                    min_bars: 0,
+                    signal_index_from_end: 0,
+                });
+            }
+        }
+
+        let Some(decision) = decision.as_mut() else {
+            return;
+        };
+        for request in requests {
+            let action = request.side.to_ascii_lowercase();
+            if let Some(existing) = decision.trigger_actions.get(&request.indicator) {
+                if existing.eq_ignore_ascii_case(&action) {
+                    if request.quantity.is_finite() && request.quantity > NATIVE_POSITION_EPSILON {
+                        self.active_flip_close_quantities
+                            .insert(request.indicator.clone(), request.quantity);
+                    }
+                    continue;
+                }
+                continue;
+            }
+            if enforce_flip_signal_confirmation {
+                continue;
+            }
+            if !decision.trigger_sources.contains(&request.indicator) {
+                decision.trigger_sources.push(request.indicator.clone());
+            }
+            decision
+                .trigger_actions
+                .insert(request.indicator.clone(), action);
+            decision.description.push_str(&format!(
+                " | {} flip-on-close -> {} (from {})",
+                request.indicator.to_ascii_uppercase(),
+                request.side,
+                request.flip_from
+            ));
+            if request.quantity.is_finite() && request.quantity > NATIVE_POSITION_EPSILON {
+                self.active_flip_close_quantities
+                    .insert(request.indicator.clone(), request.quantity);
+            }
+        }
+        if !decision.trigger_actions.is_empty() {
+            decision.signal = decision
+                .trigger_sources
+                .iter()
+                .find_map(|source| decision.trigger_actions.get(source))
+                .map(|action| {
+                    if action.eq_ignore_ascii_case("buy") {
+                        "BUY".to_owned()
+                    } else {
+                        "SELL".to_owned()
+                    }
+                });
+        }
+    }
+
     fn record_indicator_close_for_slot(
         &mut self,
         symbol: &str,
@@ -965,10 +1237,11 @@ impl NativeRuntimeLoop {
             ))
             .or_default();
         state.recent_close_ms = timestamp_ms;
+        state.recent_close_side = side.clone();
         if native_config_bool(controls.get("indicator_reentry_requires_signal_reset")) {
             state.signal_reset_side = side.clone();
         }
-        let interval_window_seconds = interval_seconds(&interval).unwrap_or(60.0).max(1.0);
+        let interval_window_seconds = python_indicator_interval_seconds(&interval).max(1.0);
         let reentry_seconds =
             native_config_number(controls.get("indicator_reentry_cooldown_seconds"))
                 .unwrap_or(0.0)
@@ -1050,12 +1323,13 @@ impl NativeRuntimeLoop {
         input.slot_already_active = !matching.is_empty();
     }
 
-    fn record_indicator_position_open(
+    fn record_indicator_position_open_at(
         &mut self,
         decision: &StrategySignalDecision,
         side: &str,
         quantity: f64,
         margin_usdt: f64,
+        opened_at_ms: i64,
     ) {
         let symbol = self.config.symbol.trim().to_ascii_uppercase();
         let interval = normalize_indicator_slot_interval(&self.config.interval);
@@ -1086,6 +1360,7 @@ impl NativeRuntimeLoop {
                 side,
                 quantity,
                 margin_usdt,
+                opened_at_ms: opened_at_ms.max(0),
             });
     }
 
@@ -1129,7 +1404,7 @@ impl NativeRuntimeLoop {
                 return true;
             }
             let remaining_quantity = entry.quantity * remaining_ratio;
-            if remaining_quantity <= NATIVE_POSITION_EPSILON {
+            if remaining_quantity <= NATIVE_POSITION_EPSILON.max(entry.quantity.abs() * 1e-6) {
                 fully_closed_indicators.extend(entry.indicators.iter().cloned());
                 return false;
             }
@@ -1138,16 +1413,25 @@ impl NativeRuntimeLoop {
             true
         });
 
-        for indicator in fully_closed_indicators {
+        for indicator in &fully_closed_indicators {
             self.record_indicator_close(&indicator, &side, timestamp_ms);
+        }
+        if remaining_ratio <= 1e-6 {
+            self.queue_indicator_flip_on_close(
+                &symbol,
+                &self.config.interval.clone(),
+                &fully_closed_indicators,
+                &side,
+                closed_quantity,
+                timestamp_ms,
+            );
         }
     }
 
-    /// Drop local indicator ownership when a fresh exchange snapshot proves
-    /// that the corresponding position side is gone. Unknown ownership stays
-    /// conservative in the account-derived guard until a native order or a
-    /// later reconciliation establishes its exact indicator slot.
-    pub fn reconcile_indicator_exposure_positions(&mut self, positions: &[BinanceFuturesPosition]) {
+    fn live_indicator_position_sides(
+        &self,
+        positions: &[BinanceFuturesPosition],
+    ) -> BTreeSet<String> {
         let mut live_sides = BTreeSet::new();
         for position in positions {
             if !position
@@ -1163,17 +1447,143 @@ impl NativeRuntimeLoop {
                 live_sides.insert(side.to_owned());
             }
         }
+        live_sides
+    }
+
+    /// Drop local indicator ownership immediately for callers that already
+    /// proved a close through an explicit order or a test fixture. Account
+    /// polling uses the grace/threshold-aware method below instead.
+    pub fn reconcile_indicator_exposure_positions(&mut self, positions: &[BinanceFuturesPosition]) {
+        let live_sides = self.live_indicator_position_sides(positions);
         let symbol = self.config.symbol.trim().to_ascii_uppercase();
         self.indicator_exposure_entries.retain(|entry| {
             !entry.symbol.eq_ignore_ascii_case(&symbol) || live_sides.contains(&entry.side)
         });
     }
 
+    /// Mirror Python's `_purge_flat_futures_legs` at the native account-poll
+    /// boundary. Binance snapshots do not identify indicator ownership, so a
+    /// missing side is held through the configured grace and miss threshold
+    /// before the native ledger is purged and auto-flip metadata is queued.
+    pub fn reconcile_indicator_exposure_positions_at(
+        &mut self,
+        positions: &[BinanceFuturesPosition],
+        now_ms: i64,
+    ) {
+        let live_sides = self.live_indicator_position_sides(positions);
+        let symbol = self.config.symbol.trim().to_ascii_uppercase();
+        if symbol.is_empty() {
+            return;
+        }
+        let controls = normalize_strategy_risk_controls(&self.config.risk_controls);
+        let grace_seconds = controls
+            .get("futures_flat_purge_grace_seconds")
+            .and_then(value_f64)
+            .unwrap_or(12.0)
+            .max(0.0);
+        let mode_text = self.config.mode.trim().to_ascii_lowercase();
+        let grace_seconds = if ["demo", "test", "paper"]
+            .iter()
+            .any(|tag| mode_text.contains(tag))
+        {
+            grace_seconds.max(30.0)
+        } else {
+            grace_seconds
+        };
+        let miss_threshold = controls
+            .get("futures_flat_purge_miss_threshold")
+            .and_then(value_f64)
+            .filter(|value| value.is_finite())
+            .map(|value| value.max(1.0) as usize)
+            .unwrap_or(2);
+        let grace_ms = (grace_seconds * 1_000.0).max(0.0);
+        let groups: BTreeSet<(String, String)> = self
+            .indicator_exposure_entries
+            .iter()
+            .filter(|entry| entry.symbol.eq_ignore_ascii_case(&symbol))
+            .map(|entry| (entry.interval.clone(), entry.side.clone()))
+            .collect();
+        let mut purge_groups = BTreeSet::new();
+        for (interval, side) in groups {
+            let group_key = format!("{symbol}|{interval}|{side}");
+            if live_sides.contains(&side) {
+                self.flat_purge_miss_counts.remove(&group_key);
+                continue;
+            }
+            let newest_opened_at_ms = self
+                .indicator_exposure_entries
+                .iter()
+                .filter(|entry| {
+                    entry.symbol.eq_ignore_ascii_case(&symbol)
+                        && entry.interval == interval
+                        && entry.side == side
+                })
+                .map(|entry| entry.opened_at_ms)
+                .filter(|timestamp| *timestamp > 0)
+                .max()
+                .unwrap_or(0);
+            if grace_ms > 0.0
+                && newest_opened_at_ms > 0
+                && (now_ms as f64 - newest_opened_at_ms as f64) < grace_ms
+            {
+                continue;
+            }
+            let miss_count = self
+                .flat_purge_miss_counts
+                .entry(group_key.clone())
+                .or_insert(0);
+            *miss_count = miss_count.saturating_add(1);
+            if *miss_count >= miss_threshold {
+                self.flat_purge_miss_counts.remove(&group_key);
+                purge_groups.insert((interval, side));
+            }
+        }
+        if purge_groups.is_empty() {
+            return;
+        }
+
+        let mut purged_entries = Vec::new();
+        self.indicator_exposure_entries.retain(|entry| {
+            let purge = entry.symbol.eq_ignore_ascii_case(&symbol)
+                && purge_groups.contains(&(entry.interval.clone(), entry.side.clone()));
+            if purge {
+                purged_entries.push(entry.clone());
+            }
+            !purge
+        });
+        for entry in purged_entries {
+            let close_side = entry.side.clone();
+            for indicator in &entry.indicators {
+                self.record_indicator_close_for_slot(
+                    &symbol,
+                    &entry.interval,
+                    indicator,
+                    &close_side,
+                    now_ms,
+                );
+            }
+            self.queue_indicator_flip_on_close(
+                &symbol,
+                &entry.interval,
+                &entry.indicators,
+                &close_side,
+                entry.quantity,
+                now_ms,
+            );
+        }
+    }
+
     /// Reconcile a confirmed exchange close when the close was initiated by
     /// an explicit close-all/shutdown path rather than an indicator decision.
     /// The exchange snapshot does not carry Python's indicator ownership, so
     /// invalidate every guard state already observed for this symbol.
-    pub fn record_confirmed_position_close(&mut self, symbol: &str, side: &str, timestamp_ms: i64) {
+    fn record_confirmed_position_close_with_queue(
+        &mut self,
+        symbol: &str,
+        side: &str,
+        timestamp_ms: i64,
+        queue_flip: bool,
+    ) {
         let symbol = symbol.trim().to_ascii_uppercase();
         if symbol.is_empty() {
             return;
@@ -1184,11 +1594,47 @@ impl NativeRuntimeLoop {
             "SHORT" | "SELL" => Some("SELL"),
             _ => None,
         };
+        let close_entries: Vec<(String, BTreeSet<String>, f64)> = if queue_flip {
+            signal_side
+                .map(|signal_side| {
+                    self.indicator_exposure_entries
+                        .iter()
+                        .filter(|entry| {
+                            entry.symbol.eq_ignore_ascii_case(&symbol)
+                                && entry.side.eq_ignore_ascii_case(signal_side)
+                                && entry.quantity.is_finite()
+                                && entry.quantity > NATIVE_POSITION_EPSILON
+                        })
+                        .map(|entry| {
+                            (
+                                entry.interval.clone(),
+                                entry.indicators.clone(),
+                                entry.quantity,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         if let Some(signal_side) = signal_side {
             self.indicator_exposure_entries.retain(|entry| {
                 !(entry.symbol.eq_ignore_ascii_case(&symbol)
                     && entry.side.eq_ignore_ascii_case(signal_side))
             });
+        }
+        if let Some(signal_side) = signal_side {
+            for (interval, indicators, quantity) in close_entries {
+                self.queue_indicator_flip_on_close(
+                    &symbol,
+                    &interval,
+                    &indicators,
+                    signal_side,
+                    quantity,
+                    timestamp_ms,
+                );
+            }
         }
         let slots: Vec<(String, String)> = self
             .indicator_order_guard_states
@@ -1217,6 +1663,10 @@ impl NativeRuntimeLoop {
                 );
             }
         }
+    }
+
+    pub fn record_confirmed_position_close(&mut self, symbol: &str, side: &str, timestamp_ms: i64) {
+        self.record_confirmed_position_close_with_queue(symbol, side, timestamp_ms, true);
     }
 
     pub fn set_global_pause(&mut self, paused: bool) {
@@ -1833,6 +2283,7 @@ impl NativeRuntimeLoop {
                 ),
             ));
         }
+        self.merge_pending_flip_requests(&mut market_cycle.strategy_decision, now_ms);
         if let Some(decision) = market_cycle.strategy_decision.as_mut()
             && let Some(reason) = self.apply_indicator_signal_confirmation(decision, now_ms)
         {
@@ -1903,6 +2354,10 @@ impl NativeRuntimeLoop {
         let mut exposure_input = input.exposure;
         apply_signal_side_exposure(&mut exposure_input, signal);
         self.apply_indicator_exposure_state(&mut exposure_input, &decision, signal);
+        exposure_input.flip_close_qty = decision
+            .trigger_sources
+            .iter()
+            .find_map(|source| self.active_flip_close_quantities.get(source).copied());
         let last_price = exposure_input.price;
         let exposure = self.evaluate_exposure_guard(exposure_input);
         if !exposure.allowed {
@@ -2038,7 +2493,12 @@ impl NativeRuntimeLoop {
             }
             for position in &risk_positions {
                 if opposite_close_position_matches(position, &close_plan, dual_side) {
-                    self.record_confirmed_position_close(&position.symbol, &position.side, now_ms);
+                    self.record_confirmed_position_close_with_queue(
+                        &position.symbol,
+                        &position.side,
+                        now_ms,
+                        false,
+                    );
                 }
             }
         }
@@ -2098,7 +2558,7 @@ impl NativeRuntimeLoop {
                     } else {
                         let filled_margin =
                             filled_quantity * last_price / (self.config.leverage.max(1) as f64);
-                        self.record_indicator_position_open(
+                        self.record_indicator_position_open_at(
                             decision,
                             signal,
                             filled_quantity,
@@ -2107,6 +2567,7 @@ impl NativeRuntimeLoop {
                             } else {
                                 exposure.margin_estimate_usdt
                             },
+                            now_ms,
                         );
                     }
                 }
@@ -2152,11 +2613,8 @@ impl NativeRuntimeLoop {
             .and_then(value_f64)
             .map(|value| value.max(0.0).round() as i64)
             .unwrap_or(0);
-        let interval_ms = interval_seconds(&self.config.interval)
-            .ok()
-            .unwrap_or(0.0)
-            .max(0.0)
-            * 1_000.0;
+        let interval_ms =
+            python_indicator_interval_seconds(&self.config.interval).max(0.0) * 1_000.0;
         let hold_ms = (seconds * 1_000.0).max(interval_ms * bars as f64).ceil() as i64;
         if hold_ms <= 0 {
             return None;
@@ -3483,6 +3941,7 @@ mod tests {
             interval: "1m".to_owned(),
             lookback: 200,
             futures_account: true,
+            mode: "Live".to_owned(),
             indicator_use_live_values: false,
             risk_controls: normalize_strategy_risk_controls(&Value::Null),
             position_mode: "Hedge".to_owned(),
@@ -4127,6 +4586,34 @@ mod tests {
     }
 
     #[test]
+    fn native_interval_timing_matches_python_reference_cases() {
+        let reference: Value = serde_json::from_str(
+            crate::generated_python_parity::PYTHON_INTERVAL_SECONDS_REFERENCE_JSON,
+        )
+        .expect("generated Python interval timing reference");
+        for case in reference.as_array().expect("interval timing cases") {
+            let input = case
+                .get("input")
+                .and_then(Value::as_str)
+                .expect("interval timing input");
+            let expected_indicator = case
+                .get("indicator_seconds")
+                .and_then(Value::as_f64)
+                .expect("indicator interval timing output");
+            let expected_loop = case
+                .get("loop_seconds")
+                .and_then(Value::as_f64)
+                .expect("loop interval timing output");
+            assert!((python_indicator_interval_seconds(input) - expected_indicator).abs() < 1e-9);
+            assert!(
+                (crate::strategy_runtime::interval_seconds_value(input).max(1.0) - expected_loop)
+                    .abs()
+                    < 1e-9
+            );
+        }
+    }
+
+    #[test]
     fn native_indicator_confirmation_matches_python_order_boundary() {
         let mut runtime = loop_under_test();
         runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
@@ -4225,6 +4712,85 @@ mod tests {
     }
 
     #[test]
+    fn native_indicator_guard_recent_close_side_and_reset_refresh_match_python() {
+        let mut runtime = loop_under_test();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "indicator_flip_cooldown_seconds": 120.0,
+            "indicator_reentry_cooldown_seconds": 0.0,
+            "indicator_reentry_cooldown_bars": 0,
+            "indicator_reentry_requires_signal_reset": false
+        }));
+        let buy = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        runtime.record_indicator_order_actions(&buy, 1_700_000_000_000);
+        runtime.record_indicator_close("rsi", "SELL", 1_700_000_020_000);
+        let mut wrong_side_recent_close = StrategySignalDecision {
+            signal: Some("SELL".to_owned()),
+            description: "RSI >= 70.00 -> SELL".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "sell".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        assert!(
+            runtime
+                .apply_indicator_order_guards(&mut wrong_side_recent_close, 1_700_000_021_000)
+                .is_some()
+        );
+        runtime.record_indicator_close("rsi", "BUY", 1_700_000_022_000);
+        let mut matching_side_recent_close = StrategySignalDecision {
+            signal: Some("SELL".to_owned()),
+            description: "RSI >= 70.00 -> SELL".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "sell".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        assert!(
+            runtime
+                .apply_indicator_order_guards(&mut matching_side_recent_close, 1_700_000_023_000)
+                .is_none()
+        );
+
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "indicator_flip_cooldown_seconds": 0.0,
+            "indicator_reentry_cooldown_seconds": 0.0,
+            "indicator_reentry_cooldown_bars": 0,
+            "indicator_reentry_requires_signal_reset": true
+        }));
+        runtime.record_indicator_close("rsi", "BUY", 1_700_000_030_000);
+        let mut unrelated_indicator = StrategySignalDecision {
+            signal: Some("SELL".to_owned()),
+            description: "MACD -> SELL".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["macd".to_owned()],
+            trigger_actions: BTreeMap::from([("macd".to_owned(), "sell".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        assert!(
+            runtime
+                .apply_indicator_order_guards(&mut unrelated_indicator, 1_700_000_031_000)
+                .is_none()
+        );
+        let mut reset_cleared = buy;
+        assert!(
+            runtime
+                .apply_indicator_order_guards(&mut reset_cleared, 1_700_000_032_000)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn native_confirmed_position_close_updates_the_exact_python_guard_slot() {
         let mut runtime = loop_under_test();
         runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
@@ -4272,6 +4838,153 @@ mod tests {
                 .get(&runtime.indicator_reentry_block_key("BUY")),
             Some(&1_700_000_120_000)
         );
+    }
+
+    #[test]
+    fn native_auto_flip_on_close_matches_python_queue_and_expiry_controls() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "auto_flip_on_close": true,
+            "require_indicator_flip_signal": false,
+            "strict_indicator_flip_enforcement": false
+        }));
+        let buy = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        runtime.record_indicator_position_open_at(&buy, "BUY", 1.0, 20.0, 0);
+        runtime.record_confirmed_position_close("btcusdt", "LONG", 1_700_000_000_000);
+        assert_eq!(runtime.pending_flip_requests.len(), 1);
+
+        let mut pending = None;
+        runtime.merge_pending_flip_requests(&mut pending, 1_700_000_000_001);
+        let pending = pending.expect("enabled auto-flip should create a native request");
+        assert_eq!(pending.signal.as_deref(), Some("SELL"));
+        assert_eq!(pending.trigger_sources, vec!["rsi"]);
+        assert_eq!(
+            pending.trigger_actions.get("rsi").map(String::as_str),
+            Some("sell")
+        );
+        assert_eq!(
+            runtime.active_flip_close_quantities.get("rsi").copied(),
+            Some(1.0)
+        );
+        assert_eq!(runtime.pending_flip_requests.len(), 0);
+
+        runtime.record_indicator_position_open_at(&buy, "BUY", 1.0, 20.0, 0);
+        runtime.record_confirmed_position_close("btcusdt", "LONG", 1_700_000_000_000);
+        let mut expired = None;
+        runtime.merge_pending_flip_requests(&mut expired, 1_700_000_120_001);
+        assert!(expired.is_none(), "expired requests must not re-enter");
+        assert!(runtime.pending_flip_requests.is_empty());
+    }
+
+    #[test]
+    fn native_auto_flip_on_close_respects_disabled_option() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "auto_flip_on_close": false,
+            "require_indicator_flip_signal": false,
+            "strict_indicator_flip_enforcement": false
+        }));
+        let buy = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        runtime.record_indicator_position_open_at(&buy, "BUY", 1.0, 20.0, 0);
+        runtime.record_confirmed_position_close("btcusdt", "LONG", 1_700_000_000_000);
+        assert!(runtime.pending_flip_requests.is_empty());
+    }
+
+    #[test]
+    fn native_flat_futures_purge_matches_python_grace_threshold_and_flip_queue() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "auto_flip_on_close": true,
+            "futures_flat_purge_grace_seconds": 10.0,
+            "futures_flat_purge_miss_threshold": 2,
+            "require_indicator_flip_signal": false,
+            "strict_indicator_flip_enforcement": false
+        }));
+        let buy = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        runtime.record_indicator_position_open_at(&buy, "BUY", 0.5, 10.0, 1_000);
+
+        runtime.reconcile_indicator_exposure_positions_at(&[], 5_000);
+        assert_eq!(runtime.indicator_exposure_entries.len(), 1);
+        assert!(runtime.pending_flip_requests.is_empty());
+
+        runtime.reconcile_indicator_exposure_positions_at(&[], 11_001);
+        assert_eq!(runtime.indicator_exposure_entries.len(), 1);
+        assert!(runtime.pending_flip_requests.is_empty());
+
+        runtime.reconcile_indicator_exposure_positions_at(&[], 11_002);
+        assert!(runtime.indicator_exposure_entries.is_empty());
+        let pending = runtime
+            .pending_flip_requests
+            .values()
+            .next()
+            .expect("flat purge should queue the Python auto-flip request");
+        assert_eq!(pending.quantity, 0.5);
+        assert_eq!(pending.flip_from, "BUY");
+        assert_eq!(pending.side, "SELL");
+    }
+
+    #[test]
+    fn native_flat_futures_purge_applies_python_demo_grace_floor() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        runtime.config.mode = "Demo/Testnet".to_owned();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "auto_flip_on_close": true,
+            "futures_flat_purge_grace_seconds": 1.0,
+            "futures_flat_purge_miss_threshold": 1,
+            "require_indicator_flip_signal": false,
+            "strict_indicator_flip_enforcement": false
+        }));
+        let buy = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 3,
+            signal_index_from_end: 2,
+        };
+        runtime.record_indicator_position_open_at(&buy, "BUY", 0.5, 10.0, 1_000);
+
+        runtime.reconcile_indicator_exposure_positions_at(&[], 2_001);
+        assert_eq!(runtime.indicator_exposure_entries.len(), 1);
+        assert!(runtime.pending_flip_requests.is_empty());
+
+        runtime.reconcile_indicator_exposure_positions_at(&[], 31_001);
+        assert!(runtime.indicator_exposure_entries.is_empty());
+        let pending = runtime
+            .pending_flip_requests
+            .values()
+            .next()
+            .expect("demo flat purge should wait through Python's 30-second grace floor");
+        assert_eq!(pending.quantity, 0.5);
     }
 
     #[test]
@@ -5318,7 +6031,7 @@ mod tests {
             min_bars: 3,
             signal_index_from_end: 2,
         };
-        runtime.record_indicator_position_open(&rsi_buy, "BUY", 0.5, 10.0);
+        runtime.record_indicator_position_open_at(&rsi_buy, "BUY", 0.5, 10.0, 0);
 
         let mut matching = exposure_input();
         apply_signal_side_exposure(&mut matching, "BUY");
@@ -5389,7 +6102,13 @@ mod tests {
             ]),
             ..rsi_buy
         };
-        multi_source_runtime.record_indicator_position_open(&multi_source_buy, "BUY", 0.5, 10.0);
+        multi_source_runtime.record_indicator_position_open_at(
+            &multi_source_buy,
+            "BUY",
+            0.5,
+            10.0,
+            0,
+        );
         assert_eq!(multi_source_runtime.indicator_exposure_entries.len(), 1);
         assert_eq!(
             multi_source_runtime.indicator_exposure_entries[0].indicators,
@@ -5424,6 +6143,19 @@ mod tests {
         assert_eq!(snapshot.desired_position_side.as_deref(), Some("LONG"));
         assert!(!snapshot.reduce_only);
         assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_exposure_guard_preserves_python_flip_quantity() {
+        let runtime = loop_under_test();
+        let mut input = exposure_input();
+        input.flip_close_qty = Some(0.5);
+
+        let snapshot = runtime.evaluate_exposure_guard(input);
+
+        assert!(snapshot.allowed);
+        assert_eq!(snapshot.quantity_estimate, 0.5);
+        assert_eq!(snapshot.margin_estimate_usdt, 10.0);
     }
 
     #[test]

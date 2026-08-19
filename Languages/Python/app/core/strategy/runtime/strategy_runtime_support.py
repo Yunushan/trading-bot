@@ -4,6 +4,10 @@ from datetime import datetime
 import logging
 import time
 
+from ....native_interval_semantics import (
+    interval_seconds as _python_interval_seconds,
+    interval_seconds_value as _python_interval_seconds_value,
+)
 from ....security.redaction import redact_text
 
 
@@ -405,36 +409,11 @@ def _indicator_prev_live_signal_values(self, series) -> tuple[float, float, floa
 
 
 def _interval_seconds_value(interval_value: str | None) -> float:
-    try:
-        text = str(interval_value or "1m")
-        if text.endswith("s"):
-            return float(int(text[:-1]))
-        if text.endswith("m"):
-            return float(int(text[:-1]) * 60)
-        if text.endswith("h"):
-            return float(int(text[:-1]) * 3600)
-        if text.endswith("d"):
-            return float(int(text[:-1]) * 86400)
-    except (AttributeError, TypeError, ValueError, OverflowError):
-        return 60.0
-    return 60.0
+    return _python_interval_seconds_value(interval_value)
 
 
 def _interval_seconds(self, interval: str) -> int:
-    try:
-        if interval.endswith("s"):
-            return int(interval[:-1])
-        if interval.endswith("m"):
-            return int(interval[:-1]) * 60
-        if interval.endswith("h"):
-            return int(interval[:-1]) * 3600
-        if interval.endswith("d"):
-            return int(interval[:-1]) * 86400
-        if interval.endswith("w"):
-            return int(interval[:-1]) * 7 * 86400
-        return int(interval)
-    except Exception:
-        return 60
+    return _python_interval_seconds(interval)
 
 
 def bind_strategy_runtime_support(strategy_cls) -> None:

@@ -109,7 +109,13 @@ def place_futures_market_order(
     quantity: float | None = None,
     **kwargs,
 ):
-    """Futures MARKET order with robust sizing and clear returns."""
+    """Futures MARKET order with robust sizing and clear returns.
+
+    The active Python strategy passes ``order_type``, ``timeInForce``, and
+    ``gtd_minutes`` for configuration compatibility, but this source path is
+    intentionally MARKET-only until Python implements a limit-entry strategy
+    contract. Native direct entry paths must preserve that behavior.
+    """
     sym = (symbol or "").upper()
     account_type_error = _futures_account_type_error(self, sym)
     if account_type_error is not None:

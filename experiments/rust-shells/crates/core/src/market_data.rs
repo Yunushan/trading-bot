@@ -195,19 +195,21 @@ impl BinanceRestMarketDataClient {
         limit: usize,
     ) -> Result<Vec<BinanceKlineCandle>> {
         let clean_symbol = normalize_symbol(symbol.as_ref())?;
-        let clean_interval = normalize_interval(interval.as_ref())?;
-        let safe_limit = limit.clamp(10, self.max_klines_limit());
-        if let Some(base_interval) = custom_interval_base(&clean_interval, self.market)? {
-            let requested_interval_seconds = interval_seconds(&clean_interval)?;
-            let base_seconds = interval_seconds(base_interval)?;
-            let factor = (requested_interval_seconds / base_seconds).ceil().max(1.0) as usize;
-            let base_limit = safe_limit
+        let clean_interval = normalize_python_range_interval(interval.as_ref())?;
+        let safe_limit = limit.clamp(1, self.max_klines_limit());
+        if let Some(base_interval) = python_range_custom_interval_base(&clean_interval)? {
+            let requested_interval_ms = python_range_interval_millis(&clean_interval)?;
+            let base_interval_ms = python_range_interval_millis(base_interval)?;
+            let factor = (requested_interval_ms / base_interval_ms).max(1) as usize;
+            let fetch_limit = safe_limit.saturating_mul(2).max(safe_limit);
+            let base_limit = fetch_limit
                 .saturating_mul(factor)
-                .saturating_add(factor)
-                .clamp(10, 1000);
+                .max(factor)
+                .min(self.max_klines_limit());
             let base_candles =
                 self.fetch_native_klines(&clean_symbol, base_interval, base_limit)?;
-            let aggregated = aggregate_klines_to_interval(&base_candles, &clean_interval)?;
+            let aggregated =
+                aggregate_klines_to_interval_millis(&base_candles, requested_interval_ms)?;
             if aggregated.len() <= safe_limit {
                 return Ok(aggregated);
             }
@@ -230,12 +232,12 @@ impl BinanceRestMarketDataClient {
             bail!("end_time_ms must be greater than start_time_ms");
         }
         let clean_symbol = normalize_symbol(symbol.as_ref())?;
-        let clean_interval = normalize_interval(interval.as_ref())?;
+        let clean_interval = normalize_python_range_interval(interval.as_ref())?;
         let safe_limit = limit.clamp(1, self.max_klines_limit());
 
-        if let Some(base_interval) = custom_interval_base(&clean_interval, self.market)? {
-            let requested_interval_ms = interval_millis(&clean_interval)?;
-            let base_interval_ms = interval_millis(base_interval)?;
+        if let Some(base_interval) = python_range_custom_interval_base(&clean_interval)? {
+            let requested_interval_ms = python_range_interval_millis(&clean_interval)?;
+            let base_interval_ms = python_range_interval_millis(base_interval)?;
             let factor = (requested_interval_ms / base_interval_ms).max(1) as usize;
             let fetch_end = end_time_ms.saturating_add(requested_interval_ms);
             let base_limit = safe_limit
@@ -249,7 +251,8 @@ impl BinanceRestMarketDataClient {
                 fetch_end,
                 base_limit,
             )?;
-            let mut aggregated = aggregate_klines_to_interval(&base_candles, &clean_interval)?;
+            let mut aggregated =
+                aggregate_klines_to_interval_millis(&base_candles, requested_interval_ms)?;
             aggregated.retain(|candle| {
                 candle.open_time_ms >= start_time_ms && candle.open_time_ms <= end_time_ms
             });
@@ -259,7 +262,7 @@ impl BinanceRestMarketDataClient {
             return Ok(aggregated);
         }
 
-        let interval_step_ms = interval_cursor_step_millis(&clean_interval)?;
+        let interval_step_ms = python_range_interval_millis(&clean_interval)?;
         let mut current = start_time_ms;
         let mut collected = Vec::new();
         for _ in 0..10_000 {
@@ -305,7 +308,7 @@ impl BinanceRestMarketDataClient {
         clean_interval: &str,
         safe_limit: usize,
     ) -> Result<Vec<BinanceKlineCandle>> {
-        let safe_limit = safe_limit.clamp(10, self.max_klines_limit()).to_string();
+        let safe_limit = safe_limit.clamp(1, self.max_klines_limit()).to_string();
         let payload = self.get_json(
             &self.klines_url(),
             &[
@@ -512,8 +515,15 @@ pub fn aggregate_klines_to_interval(
 ) -> Result<Vec<BinanceKlineCandle>> {
     let clean_interval = normalize_interval(interval.as_ref())?;
     let interval_ms = interval_millis(&clean_interval)?;
+    aggregate_klines_to_interval_millis(candles, interval_ms)
+}
+
+fn aggregate_klines_to_interval_millis(
+    candles: &[BinanceKlineCandle],
+    interval_ms: i64,
+) -> Result<Vec<BinanceKlineCandle>> {
     if interval_ms < 60_000 {
-        bail!("Custom interval '{clean_interval}' below 1 minute is not supported.");
+        bail!("Custom interval below 1 minute is not supported.");
     }
 
     let mut sorted = candles.to_vec();
@@ -602,6 +612,42 @@ pub fn interval_seconds(interval: impl AsRef<str>) -> Result<f64> {
         bail!("interval must be positive");
     }
     Ok((amount * unit_multiplier).max(1.0))
+}
+
+/// Match Python's backtest warmup coercion without changing exchange interval
+/// parsing, which also understands Binance month aliases for API requests.
+pub fn python_backtest_interval_seconds(interval: impl AsRef<str>) -> f64 {
+    let raw = interval.as_ref().trim();
+    let lower = raw.to_ascii_lowercase();
+    if lower.is_empty() {
+        return 60.0;
+    }
+    let unit = lower.chars().last().expect("non-empty interval");
+    let value_part = if unit.is_alphabetic() {
+        &lower[..lower.len() - unit.len_utf8()]
+    } else {
+        lower.as_str()
+    };
+    let value = if value_part.is_empty() {
+        0.0
+    } else {
+        match value_part.parse::<f64>() {
+            Ok(value) if value.is_finite() => value,
+            _ => return 60.0,
+        }
+    };
+    let seconds = match unit {
+        's' => value,
+        'm' => value * 60.0,
+        'h' => value * 3_600.0,
+        'd' => value * 86_400.0,
+        'w' => value * 7.0 * 86_400.0,
+        _ => match lower.parse::<f64>() {
+            Ok(value) if value.is_finite() => value,
+            _ => return 60.0,
+        },
+    };
+    seconds.max(1.0)
 }
 
 pub fn parse_ticker_price(payload: &Value) -> Result<BinanceTickerPrice> {
@@ -718,11 +764,47 @@ fn interval_millis(interval: &str) -> Result<i64> {
     Ok(rounded as i64)
 }
 
-fn interval_cursor_step_millis(interval: &str) -> Result<i64> {
-    if interval == "1M" {
-        return Ok(30 * 86_400_000);
+fn normalize_python_range_interval(value: &str) -> Result<String> {
+    let raw = value.trim();
+    if raw.is_empty() {
+        bail!("interval is required");
     }
-    interval_millis(interval)
+    if raw == "1M" {
+        return Ok("1M".to_owned());
+    }
+    Ok(raw.to_ascii_lowercase())
+}
+
+fn python_range_interval_millis(interval: &str) -> Result<i64> {
+    let seconds = python_backtest_interval_seconds(interval);
+    let millis = (seconds * 1_000.0).floor().max(1.0);
+    if !millis.is_finite() || millis > i64::MAX as f64 {
+        bail!("interval must be positive");
+    }
+    Ok(millis as i64)
+}
+
+fn python_range_custom_interval_base(interval: &str) -> Result<Option<&'static str>> {
+    if is_native_interval(interval) {
+        return Ok(None);
+    }
+
+    let interval_seconds = python_backtest_interval_seconds(interval);
+    if interval_seconds < 60.0 {
+        bail!("Custom interval '{interval}' below 1 minute is not supported.");
+    }
+
+    let (base_interval, base_seconds) = if interval_seconds < 3_600.0 {
+        ("1m", 60.0)
+    } else if interval_seconds < 86_400.0 {
+        ("1h", 3_600.0)
+    } else {
+        ("1d", 86_400.0)
+    };
+    if interval_seconds % base_seconds != 0.0 {
+        bail!("Custom interval '{interval}' is not a multiple of {base_interval}.");
+    }
+    Ok(Some(base_interval))
 }
 
 fn interval_amount_and_unit_multiplier(lower: &str) -> Option<(&str, f64)> {
@@ -786,6 +868,8 @@ mod tests {
 
     use reqwest::blocking::Client;
     use serde_json::json;
+
+    use crate::generated_python_parity::PYTHON_BACKTEST_INTERVAL_SECONDS_REFERENCE_JSON;
 
     use super::*;
 
@@ -963,6 +1047,10 @@ mod tests {
             Some("1d")
         );
         assert_eq!(
+            custom_interval_base("0.5h", BinanceMarket::Futures).expect("0.5h"),
+            Some("1m")
+        );
+        assert_eq!(
             custom_interval_base("1M", BinanceMarket::Futures).expect("1M"),
             None
         );
@@ -978,6 +1066,35 @@ mod tests {
         let not_multiple = custom_interval_base("90m", BinanceMarket::Futures)
             .expect_err("90m cannot be composed from hourly candles");
         assert!(not_multiple.to_string().contains("multiple of 1h"));
+    }
+
+    #[test]
+    fn monthly_range_cursor_step_matches_python_interval_coercion() {
+        assert_eq!(python_range_interval_millis("1M").expect("1M"), 60_000);
+        assert_eq!(
+            python_range_custom_interval_base("1mo").expect("1mo"),
+            Some("1m")
+        );
+        assert_eq!(
+            python_range_custom_interval_base("1y").expect("1y"),
+            Some("1m")
+        );
+    }
+
+    #[test]
+    fn backtest_interval_seconds_match_python_generated_reference_cases() {
+        let reference: Value =
+            serde_json::from_str(PYTHON_BACKTEST_INTERVAL_SECONDS_REFERENCE_JSON)
+                .expect("generated Python backtest interval reference must be valid JSON");
+        for case in reference.as_array().expect("reference must be an array") {
+            let input = case["input"].as_str().expect("interval input");
+            let expected = case["seconds"].as_f64().expect("interval seconds");
+            let actual = python_backtest_interval_seconds(input);
+            assert!(
+                (actual - expected).abs() <= 1e-9,
+                "backtest interval mismatch for {input:?}: actual={actual}, expected={expected}"
+            );
+        }
     }
 
     #[test]
