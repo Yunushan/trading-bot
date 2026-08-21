@@ -1144,7 +1144,7 @@ int main(int argc, char **argv) {
                                                   observedCoinPositionModeGetRequest = requestLine;
                                                   writeJsonResponseAndClose(
                                                       socket,
-                                                      R"({"dualSidePosition":true})");
+                                                      R"({"dualSidePosition":"yes"})");
                                               } else if (requestLine.startsWith(
                                                              "POST /dapi/v1/positionSide/dual?")) {
                                                   observedCoinPositionModeChangeRequest = requestLine;
@@ -1166,7 +1166,7 @@ int main(int argc, char **argv) {
                                                   observedCoinMultiAssetsGetRequest = requestLine;
                                                   writeJsonResponseAndClose(
                                                       socket,
-                                                      R"({"multiAssetsMargin":false})");
+                                                      R"({"multiAssetsMargin":0})");
                                               } else if (requestLine.startsWith(
                                                              "POST /dapi/v1/multiAssetsMargin?")) {
                                                   observedCoinMultiAssetsChangeRequest = requestLine;
@@ -1549,7 +1549,7 @@ int main(int argc, char **argv) {
                 observedSpotTradesRequest = requestLine;
                 writeJsonResponseAndClose(
                     socket,
-                    R"([{"symbol":"ETHUSDT","id":7,"orderId":42,"price":"2000","qty":"0.25","quoteQty":"500","commission":"0.001","commissionAsset":"ETH","isBuyer":true,"isMaker":false,"isBestMatch":true,"time":1700000000000}])");
+                    R"([{"symbol":"ETHUSDT","id":7,"orderId":42,"price":"2000","qty":"0.25","quoteQty":"500","commission":"0.001","commissionAsset":"ETH","isBuyer":"false","isMaker":false,"isBestMatch":true,"time":1700000000000}])");
             } else if (requestLine.startsWith("GET /api/v3/exchangeInfo")) {
                 observedSpotExchangeInfoRequest = requestLine;
                 writeJsonResponseAndClose(

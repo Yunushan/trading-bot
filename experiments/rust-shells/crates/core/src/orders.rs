@@ -1662,13 +1662,12 @@ fn upper_string(row: &Map<String, Value>, key: &str) -> String {
 
 fn coerce_bool_value(value: Option<&Value>) -> bool {
     match value {
+        None | Some(Value::Null) => false,
         Some(Value::Bool(flag)) => *flag,
-        Some(Value::Number(number)) => number.as_i64().unwrap_or(0) != 0,
-        Some(Value::String(text)) => matches!(
-            text.trim().to_ascii_lowercase().as_str(),
-            "true" | "1" | "yes" | "y"
-        ),
-        _ => false,
+        Some(Value::Number(number)) => number.as_f64().is_some_and(|value| value != 0.0),
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(Value::Object(values)) => !values.is_empty(),
     }
 }
 
@@ -2267,6 +2266,25 @@ mod tests {
                 .expect("closed spot position")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn spot_trade_flags_follow_python_truthiness_for_json_values() {
+        let trades = parse_spot_trades(
+            &json!([
+                {"symbol": "ETHUSDT", "id": 1, "price": "1", "qty": "1", "isBuyer": "false"},
+                {"symbol": "ETHUSDT", "id": 2, "price": "1", "qty": "1", "isBuyer": 0.5},
+                {"symbol": "ETHUSDT", "id": 3, "price": "1", "qty": "1", "isBuyer": []},
+                {"symbol": "ETHUSDT", "id": 4, "price": "1", "qty": "1", "isBuyer": [0]}
+            ]),
+            "ETHUSDT",
+        )
+        .expect("spot trades");
+        assert_eq!(trades.len(), 4);
+        assert!(trades[0].is_buyer);
+        assert!(trades[1].is_buyer);
+        assert!(!trades[2].is_buyer);
+        assert!(trades[3].is_buyer);
     }
 
     #[test]

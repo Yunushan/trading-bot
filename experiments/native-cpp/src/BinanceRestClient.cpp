@@ -124,14 +124,46 @@ bool parseJsonBool(const QJsonValue &value, bool *out) {
         *out = value.toBool();
         return true;
     }
+    if (value.isDouble()) {
+        const double number = value.toDouble();
+        if (qIsFinite(number) && (number == 0.0 || number == 1.0)) {
+            *out = number == 1.0;
+            return true;
+        }
+        return false;
+    }
     const QString text = value.toString().trimmed().toLower();
-    if (text == QStringLiteral("true") || text == QStringLiteral("1")) {
+    if (text == QStringLiteral("true") || text == QStringLiteral("1")
+        || text == QStringLiteral("yes") || text == QStringLiteral("y")) {
         *out = true;
         return true;
     }
-    if (text == QStringLiteral("false") || text == QStringLiteral("0")) {
+    if (text == QStringLiteral("false") || text == QStringLiteral("0")
+        || text == QStringLiteral("no") || text == QStringLiteral("n")) {
         *out = false;
         return true;
+    }
+    return false;
+}
+
+bool pythonJsonTruthy(const QJsonValue &value) {
+    if (value.isNull() || value.isUndefined()) {
+        return false;
+    }
+    if (value.isBool()) {
+        return value.toBool();
+    }
+    if (value.isDouble()) {
+        return value.toDouble() != 0.0;
+    }
+    if (value.isString()) {
+        return !value.toString().isEmpty();
+    }
+    if (value.isArray()) {
+        return !value.toArray().isEmpty();
+    }
+    if (value.isObject()) {
+        return !value.toObject().isEmpty();
     }
     return false;
 }
@@ -3201,9 +3233,9 @@ BinanceRestClient::SpotTradesResult BinanceRestClient::fetchSpotTrades(
         parseJsonNumber(object.value(QStringLiteral("commission")), &trade.commission);
         trade.commissionAsset = object.value(QStringLiteral("commissionAsset"))
                                     .toString().trimmed().toUpper();
-        parseJsonBool(object.value(QStringLiteral("isBuyer")), &trade.isBuyer);
-        parseJsonBool(object.value(QStringLiteral("isMaker")), &trade.isMaker);
-        parseJsonBool(object.value(QStringLiteral("isBestMatch")), &trade.isBestMatch);
+        trade.isBuyer = pythonJsonTruthy(object.value(QStringLiteral("isBuyer")));
+        trade.isMaker = pythonJsonTruthy(object.value(QStringLiteral("isMaker")));
+        trade.isBestMatch = pythonJsonTruthy(object.value(QStringLiteral("isBestMatch")));
         trade.timeMs = object.value(QStringLiteral("time")).toVariant().toLongLong();
         result.trades.append(trade);
     }

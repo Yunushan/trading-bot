@@ -873,7 +873,9 @@ pub fn parse_futures_position_mode(payload: &Value) -> Result<BinanceFuturesPosi
     ensure_not_binance_error(payload)?;
     let value = dual_side_position_value(payload)
         .ok_or_else(|| anyhow!("futures position mode response missing dualSidePosition"))?;
-    let dual_side_position = coerce_bool_flag(value);
+    let dual_side_position = coerce_bool_flag(value).ok_or_else(|| {
+        anyhow!("futures position mode response contains an invalid dualSidePosition")
+    })?;
     Ok(BinanceFuturesPositionMode {
         dual_side_position,
         position_mode: if dual_side_position {
@@ -937,8 +939,11 @@ pub fn parse_futures_multi_assets_mode(payload: &Value) -> Result<BinanceFutures
     ensure_not_binance_error(payload)?;
     let value = multi_assets_margin_value(payload)
         .ok_or_else(|| anyhow!("futures multi-assets response missing multiAssetsMargin"))?;
+    let multi_assets_margin = coerce_bool_flag(value).ok_or_else(|| {
+        anyhow!("futures multi-assets response contains an invalid multiAssetsMargin")
+    })?;
     Ok(BinanceFuturesMultiAssetsMode {
-        multi_assets_margin: coerce_bool_flag(value),
+        multi_assets_margin,
     })
 }
 
@@ -1797,15 +1802,19 @@ fn multi_assets_margin_value(payload: &Value) -> Option<&Value> {
     })
 }
 
-fn coerce_bool_flag(value: &Value) -> bool {
+fn coerce_bool_flag(value: &Value) -> Option<bool> {
     match value {
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => number.as_i64().unwrap_or(0) != 0,
-        Value::String(text) => matches!(
-            text.trim().to_ascii_lowercase().as_str(),
-            "true" | "1" | "yes" | "y"
-        ),
-        _ => false,
+        Value::Bool(flag) => Some(*flag),
+        Value::Number(number) => {
+            let number = number.as_f64()?;
+            (number == 0.0 || number == 1.0).then_some(number == 1.0)
+        }
+        Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "y" => Some(true),
+            "false" | "0" | "no" | "n" => Some(false),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -2165,6 +2174,8 @@ mod tests {
         let fallback_truthy =
             parse_futures_position_mode(&json!(["yes"])).expect("truthy list fallback");
         assert!(fallback_truthy.dual_side_position);
+        assert!(parse_futures_position_mode(&json!({"dualSidePosition": "maybe"})).is_err());
+        assert!(parse_futures_position_mode(&json!({"dualSidePosition": 0.5})).is_err());
 
         assert_eq!(
             build_futures_position_mode_params(true),
@@ -2263,6 +2274,7 @@ mod tests {
         let multi = parse_futures_multi_assets_mode(&json!({"multiAssetsMargin": "true"}))
             .expect("multi assets mode");
         assert!(multi.multi_assets_margin);
+        assert!(parse_futures_multi_assets_mode(&json!({"multiAssetsMargin": "maybe"})).is_err());
 
         assert!(ensure_not_binance_error(&json!({"code": 200, "msg": "success"})).is_ok());
         assert!(
