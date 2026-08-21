@@ -1,6 +1,7 @@
 #include "NativeExchangeConnectors.h"
 
 #include "NativeOrderSafety.h"
+#include "TradingBotWindowSupport.h"
 #include "generated/PythonParityContract.h"
 
 #include <array>
@@ -189,17 +190,43 @@ QString ccxtExchangeIdFor(const QString &exchange) {
 }
 
 QString normalizeConnectorBackend(const QString &value) {
-    const QString key = supportKey(value);
-    if (key.isEmpty()) {
+    const QString text = value.trimmed().toLower();
+    if (text.isEmpty()) {
         return defaultConnectorBackend();
     }
+    const QString key = supportKey(text);
     for (const auto &option : PythonParityContract::kPythonConnectorOptions) {
         const QString optionKey = parityString(option.key);
         if (supportKey(optionKey) == key) {
             return optionKey;
         }
     }
-    return key;
+    // Keep the same ordered label/alias rules as Python's
+    // _normalize_connector_backend, not only its canonical option keys.
+    if (text.contains(QStringLiteral("sdk")) && text.contains(QStringLiteral("future"))
+        && (text.contains(QStringLiteral("usd")) || text.contains(QStringLiteral("usds")))) {
+        return QStringLiteral("binance-sdk-derivatives-trading-usds-futures");
+    }
+    if (text.contains(QStringLiteral("sdk")) && text.contains(QStringLiteral("coin"))
+        && text.contains(QStringLiteral("future"))) {
+        return QStringLiteral("binance-sdk-derivatives-trading-coin-futures");
+    }
+    if (text.contains(QStringLiteral("sdk")) && text.contains(QStringLiteral("spot"))) {
+        return QStringLiteral("binance-sdk-spot");
+    }
+    if (text == QStringLiteral("ccxt") || text.contains(QStringLiteral("ccxt"))) {
+        return QStringLiteral("ccxt");
+    }
+    if (text.contains(QStringLiteral("connector")) || text.contains(QStringLiteral("official"))
+        || text == QStringLiteral("binance-connector")) {
+        return QStringLiteral("binance-connector");
+    }
+    if (text.contains(QStringLiteral("python")) && text.contains(QStringLiteral("binance"))) {
+        return QStringLiteral("python-binance");
+    }
+    // Unknown or unrelated values must not flow into the native strategy
+    // runtime as a connector identity Python would never select.
+    return defaultConnectorBackend();
 }
 
 QJsonObject buildExchangeSupportPayload(
@@ -532,7 +559,10 @@ QJsonObject buildConnectorHealthSnapshot(const QJsonObject &input) {
         {QStringLiteral("state"), state},
         {QStringLiteral("generated_at"), input.value(QStringLiteral("generated_at")).toDouble()},
         {QStringLiteral("source"), QStringLiteral("binance-wrapper")},
-        {QStringLiteral("selected_exchange"), QStringLiteral("Binance")},
+        {QStringLiteral("selected_exchange"), TradingBotWindowSupport::pythonSourceDefaultUiText(
+            QStringLiteral("selected_exchange"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceExchangeOptionLabels()))},
         {QStringLiteral("connector_backend"), nonEmptyOrRedacted(input.value(QStringLiteral("connector_backend")).toString(), QStringLiteral("Unknown"))},
         {QStringLiteral("account_type"), nonEmptyOrRedacted(input.value(QStringLiteral("account_type")).toString(), QStringLiteral("Unknown"))},
         {QStringLiteral("mode"), nonEmptyOrRedacted(input.value(QStringLiteral("mode")).toString(), QStringLiteral("Unknown"))},

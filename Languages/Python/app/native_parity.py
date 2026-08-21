@@ -58,6 +58,7 @@ from .integrations.llm.providers import (
     _PROVIDER_SPECS,
     llm_provider_choices,
 )
+from .integrations.llm.local_models import ollama_model_size_catalog
 from .service.api_contract import (
     SERVICE_API_ROUTE_METHODS,
     SERVICE_API_ROUTE_PATHS,
@@ -65,6 +66,7 @@ from .service.api_contract import (
     SERVICE_BACKTEST_RUN_REQUEST_FIELDS,
     service_api_contract_payload,
 )
+from .service.config_store import REMOTE_SERVICE_CONFIG_PROTECTED_FIELDS
 from .settings.backtest import BacktestSettings, MDD_LOGIC_OPTIONS
 from .settings.connectors import DEFAULT_INDICATOR_SOURCE
 from .settings.execution import ExecutionSettings
@@ -193,6 +195,8 @@ NATIVE_RUNTIME_OWNERSHIP = {
         "coin-m-futures",
         "spot",
     ),
+    "native_execution_scope": "binance-spot-usds-and-coin-futures",
+    "native_execution_capability": True,
     "direct_connector_market_families": _native_runtime_connector_market_families(),
     "indicator_source_market_families": (
         ("binance_spot", "spot"),
@@ -2335,6 +2339,8 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "direct_exchanges": list(NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"]),
             "direct_connector_backends": list(NATIVE_RUNTIME_OWNERSHIP["direct_connector_backends"]),
             "direct_market_families": list(NATIVE_RUNTIME_OWNERSHIP["direct_market_families"]),
+            "native_execution_scope": str(NATIVE_RUNTIME_OWNERSHIP["native_execution_scope"]),
+            "native_execution_capability": bool(NATIVE_RUNTIME_OWNERSHIP["native_execution_capability"]),
             "direct_connector_market_families": [
                 {"key": key, "value": value}
                 for key, value in NATIVE_RUNTIME_OWNERSHIP["direct_connector_market_families"]
@@ -2351,6 +2357,7 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "route_suffixes": dict(SERVICE_API_ROUTE_SUFFIXES),
             "route_methods": route_methods,
             "backtest_run_request_fields": list(SERVICE_BACKTEST_RUN_REQUEST_FIELDS),
+            "remote_config_protected_fields": sorted(REMOTE_SERVICE_CONFIG_PROTECTED_FIELDS),
         },
         "ui_options": {
             "intervals": list(BACKTEST_INTERVAL_ORDER),
@@ -2377,6 +2384,10 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "dashboard_loop_choices": _choice_payload(DASHBOARD_LOOP_CHOICES),
             "lead_trader_options": _choice_payload(LEAD_TRADER_OPTIONS),
             "llm_use_for_options": _choice_payload(LLM_USE_FOR_OPTIONS),
+            "llm_reasoning_effort_options": _canonical_choice_payload(_LLM_REASONING_EFFORT_CHOICES),
+            "position_pct_units_options": _canonical_choice_payload(
+                dict(controls_shared_runtime.POSITION_PCT_UNITS_CHOICES)
+            ),
             "dashboard_strategy_templates": [
                 {"key": key, "label": str(definition.get("label", key))}
                 for key, definition in DASHBOARD_STRATEGY_TEMPLATE_DEFINITIONS.items()
@@ -2430,6 +2441,7 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         "llm_catalog": {
             "revision": LLM_PROVIDER_CATALOG_REVISION,
             "model_catalog_path_env": LLM_MODEL_CATALOG_PATH_ENV,
+            "ollama_model_size_hints": list(ollama_model_size_catalog()),
         },
         "config_choice_maps": _config_choice_maps(),
         "runtime_config_choice_reference": native_runtime_config_choice_reference(),
@@ -2516,6 +2528,9 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "route_names": list(SERVICE_API_ROUTE_SUFFIXES),
         "service_routes": service_routes,
         "service_route_schemas": service_route_schemas,
+        "remote_service_config_protected_fields": list(
+            payload["service_api"]["remote_config_protected_fields"]
+        ),
         "backtest_run_request_fields": list(SERVICE_BACKTEST_RUN_REQUEST_FIELDS),
         "indicators": list(payload["ui_options"]["indicators"]),
         "indicator_keys": [definition.key for definition in INDICATOR_CATALOG],
@@ -2524,6 +2539,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "llm_provider_keys": [provider.key for provider in _PROVIDER_SPECS],
         "llm_catalog_revision": str(payload["llm_catalog"]["revision"]),
         "llm_model_catalog_path_env": str(payload["llm_catalog"]["model_catalog_path_env"]),
+        "ollama_model_size_hints": list(payload["llm_catalog"]["ollama_model_size_hints"]),
         "llm_provider_choices": [
             {"key": key, "value": value}
             for key, value in payload["llm_provider_choices"].items()
@@ -2579,6 +2595,8 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "dashboard_loop_choices": list(payload["ui_options"]["dashboard_loop_choices"]),
         "lead_trader_options": list(payload["ui_options"]["lead_trader_options"]),
         "llm_use_for_options": list(payload["ui_options"]["llm_use_for_options"]),
+        "llm_reasoning_effort_options": list(payload["ui_options"]["llm_reasoning_effort_options"]),
+        "position_pct_units_options": list(payload["ui_options"]["position_pct_units_options"]),
         "dashboard_strategy_templates": list(payload["ui_options"]["dashboard_strategy_templates"]),
         "side_options": list(payload["ui_options"]["side_options"]),
         "account_type_options": list(payload["ui_options"]["account_type_options"]),

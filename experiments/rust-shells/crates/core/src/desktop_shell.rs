@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::generated_python_parity::{
+    PYTHON_NATIVE_RUNTIME_EXECUTION_CAPABILITY, PYTHON_NATIVE_RUNTIME_EXECUTION_SCOPE,
+    RUST_STANDALONE_RUNTIME_READY,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DesktopShellTabContract {
     pub key: &'static str,
@@ -234,12 +239,14 @@ pub fn normalize_desktop_theme(name: &str) -> DesktopShellThemeContract {
 pub fn rust_desktop_shell_ownership_contract() -> Value {
     json!({
         "tauri": {
-            "status": "operational-service-api-client",
+            "status": "promotion-gated-native-runtime",
             "owns_local_python_service_lifecycle": true,
-            "owns_trading_execution": false,
+            "owns_trading_execution": PYTHON_NATIVE_RUNTIME_EXECUTION_CAPABILITY,
+            "native_trading_execution_scope": PYTHON_NATIVE_RUNTIME_EXECUTION_SCOPE,
+            "standalone_runtime_ready": RUST_STANDALONE_RUNTIME_READY,
             "primary_tabs": primary_tab_titles(),
         },
-        "execution_boundary": "Python service/desktop runtime remains the trading execution owner.",
+        "execution_boundary": "The Rust runtime owns the Python-declared native execution scope; standalone production promotion remains evidence-gated.",
     })
 }
 
@@ -348,14 +355,25 @@ mod tests {
             ownership["tauri"]["owns_local_python_service_lifecycle"],
             true
         );
-        assert_eq!(ownership["tauri"]["owns_trading_execution"], false);
+        assert_eq!(
+            ownership["tauri"]["owns_trading_execution"],
+            PYTHON_NATIVE_RUNTIME_EXECUTION_CAPABILITY
+        );
+        assert_eq!(
+            ownership["tauri"]["native_trading_execution_scope"],
+            PYTHON_NATIVE_RUNTIME_EXECUTION_SCOPE
+        );
+        assert_eq!(
+            ownership["tauri"]["standalone_runtime_ready"],
+            RUST_STANDALONE_RUNTIME_READY
+        );
         let ownership_object = ownership.as_object().expect("ownership contract object");
         assert!(ownership_object.contains_key("tauri"));
         assert!(ownership_object.contains_key("execution_boundary"));
         assert_eq!(ownership_object.len(), 2);
         assert_eq!(
             ownership["execution_boundary"],
-            "Python service/desktop runtime remains the trading execution owner."
+            "The Rust runtime owns the Python-declared native execution scope; standalone production promotion remains evidence-gated."
         );
     }
 }

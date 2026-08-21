@@ -65,6 +65,20 @@ committed.
   and Rust surfaces may claim generated Python source-contract parity only; full
   standalone parity stays false until native execution ownership and external
   release/platform evidence exist.
+- The Rust-managed Service API defaults to the hybrid execution mode: it
+  launches the canonical Python desktop entrypoint with `--headless-service`,
+  so delegated controls reach the real Python desktop execution bridge. Set
+  `TRADING_BOT_SERVICE_RUNTIME=service` only for an intentional API-only or
+  lifecycle diagnostic process. This improves cross-shell runtime access but
+  does not promote C++ or Rust to standalone native execution ownership.
+- The C++ dashboard has the same managed local fallback for delegated
+  connectors: an unavailable loopback Service API starts
+  `apps/desktop-pyqt/main.py --headless-service`, waits for the Python `status`
+  route, and terminates only the child process it owns. Set
+  `BOT_DESKTOP_SERVICE_API_AUTOSTART=0` to disable this fallback. Remote C++
+  endpoints remain explicit URL/token integrations and never trigger local
+  process creation. This improves feature execution parity while leaving the
+  standalone native-runtime promotion gate unchanged.
 - Python remains the source of truth for shared C++/Rust contract catalogs.
   `tools/audit_native_source_sync.py --json` must pass in local/CI verification;
   if it fails, regenerate the native contracts with

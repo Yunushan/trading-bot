@@ -789,7 +789,7 @@
         </section>
         <section class="panel" id="rust-native-runtime-gap">
           <h3>Native Rust Runtime Gap</h3>
-          <p class="muted">Native Rust trading runtime ready: false. C++ already has Binance REST/WebSocket and dashboard runtime experiments; Rust remains blocked from native trading until these gaps are implemented and tested.</p>
+          <p class="muted">Native Rust trading runtime ready: false. The guarded runtime is implemented; standalone trading remains blocked until credentialed live, recovery, and release evidence passes the promotion gate.</p>
           <div class="table-wrap">
             <table>
               <thead><tr><th>Capability</th><th>C++ status</th><th>Rust status</th><th>Required before enable</th></tr></thead>
@@ -870,6 +870,207 @@
   <script src="tauri-ui-behavior.js"></script>
   <script>
     const tauriUiBehavior = window.TauriUiBehavior || {};
+    let runtimeControlsActive = false;
+    const runtimeControlIds = Object.freeze([
+      "api-key-input",
+      "api-secret-input",
+      "config-mode",
+      "config-theme",
+      "config-design",
+      "config-lookback",
+      "config-order-type",
+      "config-account-type",
+      "config-account-mode",
+      "config-connector",
+      "exchange-select",
+      "refresh-balance-btn",
+      "config-leverage",
+      "config-margin-mode",
+      "config-position-mode",
+      "config-assets-mode",
+      "config-indicator-source",
+      "config-time-in-force",
+      "config-gtd-minutes",
+      "live-trading-enabled",
+      "live-trading-acknowledgement",
+      "live-trading-max-leverage",
+      "live-trading-max-position-pct",
+      "live-trading-max-session-orders",
+      "live-allow-auto-bump-to-min-order",
+      "operational-connector-stale-seconds",
+      "operational-execution-stale-seconds",
+      "operational-account-stale-seconds",
+      "operational-portfolio-stale-seconds",
+      "operational-live-start-gate-enabled",
+      "operational-live-order-gate-enabled",
+      "max-auto-bump-percent",
+      "auto-bump-percent-multiplier",
+      "order-audit-enabled",
+      "order-audit-log-path",
+      "order-audit-max-bytes",
+      "order-audit-backup-count",
+      "connector-order-circuit-enabled",
+      "connector-order-circuit-threshold",
+      "connector-order-circuit-window-seconds",
+      "connector-order-incident-log-path",
+      "connector-order-incident-max-bytes",
+      "connector-order-incident-backup-count",
+      "symbols-input",
+      "intervals-input",
+      "refresh-symbols-btn",
+      "custom-interval-input",
+      "add-custom-interval-btn",
+      "strategy-side",
+      "position-pct-input",
+      "loop-interval-select",
+      "lead-trader-enabled",
+      "lead-trader-profile",
+      "indicator-live-values",
+      "add-only-net-direction",
+      "allow-opposite-positions",
+      "stop-without-closing-positions",
+      "close-on-window-close",
+      "stop-loss-enabled",
+      "stop-loss-mode",
+      "stop-loss-scope",
+      "stop-loss-usdt",
+      "stop-loss-percent",
+      "strategy-template",
+      "runtime-override-add-selected-btn",
+      "runtime-override-remove-selected-btn",
+      "runtime-override-clear-btn",
+      "backtest-add-selected-dashboard-btn",
+      "backtest-add-all-dashboard-btn",
+      "save-config-btn",
+      "load-config-btn",
+      "llm-enabled",
+      "llm-public",
+      "llm-provider",
+      "llm-model",
+      "llm-base-url",
+      "llm-api-env",
+      "llm-api-token",
+      "llm-use-for",
+      "llm-reasoning",
+      "apply-llm-btn",
+      "refresh-llm-catalog-btn",
+      "check-local-model-btn",
+      "remove-local-model-btn",
+      "llm-prompt-input",
+      "llm-system-prompt-input",
+      "run-llm-dry-run-btn",
+      "send-llm-advisory-btn"
+    ]);
+    const runtimeControlContainerIds = Object.freeze(["dashboard-indicators", "llm-controls"]);
+    const syncPortfolioMarginControls = (accountModeId, marginModeId) => {
+      const accountMode = document.getElementById(accountModeId);
+      const marginMode = document.getElementById(marginModeId);
+      if (!accountMode || !marginMode) return;
+      const constraint = tauriUiBehavior.accountModeMarginConstraint
+        ? tauriUiBehavior.accountModeMarginConstraint({
+          accountMode: accountMode.value,
+          marginMode: marginMode.value
+        })
+        : {
+          marginMode: String(accountMode.value || "").toLowerCase().includes("portfolio")
+            ? "Cross"
+            : (marginMode.value || "Isolated"),
+          marginModeDisabled: String(accountMode.value || "").toLowerCase().includes("portfolio")
+        };
+      if (constraint.marginModeDisabled) {
+        const crossOption = [...marginMode.options].find((option) =>
+          String(option.value || option.textContent || "").trim().toLowerCase() === "cross"
+        );
+        if (crossOption) marginMode.value = crossOption.value;
+      }
+      marginMode.disabled = Boolean(constraint.marginModeDisabled || runtimeControlsActive);
+    };
+    const syncTimeInForceControls = () => {
+      const timeInForce = document.getElementById("config-time-in-force");
+      const gtdMinutes = document.getElementById("config-gtd-minutes");
+      if (!timeInForce || !gtdMinutes) return;
+      const constraint = tauriUiBehavior.timeInForceGtdConstraint
+        ? tauriUiBehavior.timeInForceGtdConstraint(timeInForce.value)
+        : { gtdEnabled: String(timeInForce.value || "").trim().toUpperCase() === "GTD" };
+      gtdMinutes.disabled = !constraint.gtdEnabled || runtimeControlsActive;
+      gtdMinutes.readOnly = !constraint.gtdEnabled || runtimeControlsActive;
+    };
+    const syncLeadTraderControls = () => {
+      const enabled = document.getElementById("lead-trader-enabled");
+      const profile = document.getElementById("lead-trader-profile");
+      if (!enabled || !profile) return;
+      const accountType = document.getElementById("config-account-type")?.value || "Futures";
+      const isFutures = String(accountType).trim().toLowerCase().startsWith("fut");
+      const state = tauriUiBehavior.leadTraderControlState
+        ? tauriUiBehavior.leadTraderControlState(enabled.checked)
+        : { profileDisabled: !enabled.checked };
+      enabled.disabled = Boolean(!isFutures || runtimeControlsActive);
+      profile.disabled = Boolean(state.profileDisabled || !isFutures || runtimeControlsActive);
+    };
+    const syncStopLossControls = (kind) => {
+      const prefix = kind === "backtest" ? "backtest-" : "";
+      const enabledControl = document.getElementById(`${prefix}stop-loss-enabled`);
+      const modeControl = document.getElementById(`${prefix}stop-loss-mode`);
+      const scopeControl = document.getElementById(`${prefix}stop-loss-scope`);
+      const usdtControl = document.getElementById(`${prefix}stop-loss-usdt`);
+      const percentControl = document.getElementById(`${prefix}stop-loss-percent`);
+      if (!enabledControl || !modeControl || !scopeControl || !usdtControl || !percentControl) return;
+      const state = tauriUiBehavior.stopLossControlState
+        ? tauriUiBehavior.stopLossControlState({
+          enabled: enabledControl.checked,
+          mode: modeControl.value,
+          controlsLocked: kind !== "backtest" && runtimeControlsActive
+        })
+        : (() => {
+          const mode = String(modeControl.value || "usdt").trim().toLowerCase();
+          const active = Boolean(enabledControl.checked) && !(kind !== "backtest" && runtimeControlsActive);
+          return {
+            mode,
+            modeDisabled: !active,
+            scopeDisabled: !active,
+            usdtDisabled: !active || !["usdt", "both"].includes(mode),
+            percentDisabled: !active || !["percent", "both"].includes(mode)
+          };
+        })();
+      if (kind !== "backtest") enabledControl.disabled = runtimeControlsActive;
+      modeControl.disabled = Boolean(state.modeDisabled);
+      scopeControl.disabled = Boolean(state.scopeDisabled);
+      usdtControl.disabled = Boolean(state.usdtDisabled);
+      percentControl.disabled = Boolean(state.percentDisabled);
+    };
+    const syncRuntimeControlsLock = (active) => {
+      runtimeControlsActive = Boolean(active);
+      const state = tauriUiBehavior.runtimeControlState
+        ? tauriUiBehavior.runtimeControlState(runtimeControlsActive)
+        : {
+          active: runtimeControlsActive,
+          startDisabled: runtimeControlsActive,
+          stopDisabled: !runtimeControlsActive
+        };
+      for (const id of runtimeControlIds) {
+        const control = document.getElementById(id);
+        if (control) control.disabled = Boolean(state.active);
+      }
+      for (const id of runtimeControlContainerIds) {
+        const container = document.getElementById(id);
+        if (!container) continue;
+        for (const control of container.querySelectorAll("button, input, select, textarea")) {
+          control.disabled = Boolean(state.active);
+        }
+      }
+      const startButton = document.getElementById("start-bot-btn");
+      const stopButton = document.getElementById("stop-bot-btn");
+      if (startButton) startButton.disabled = Boolean(state.startDisabled);
+      if (stopButton) stopButton.disabled = Boolean(state.stopDisabled);
+      syncPortfolioMarginControls("config-account-mode", "config-margin-mode");
+      syncAccountTypeControls();
+      syncTimeInForceControls();
+      syncLeadTraderControls();
+      syncStopLossControls("runtime");
+      syncStopLossControls("backtest");
+      syncEnabledState();
+      syncProviderAccess();
+    };
     const pythonParityContract = window.PythonParityContract || {};
     const pythonOptionCatalogs = (() => {
       try {
@@ -1005,6 +1206,15 @@
         return { key, label, disabled: Boolean(item.disabled) };
       }).filter((item) => item.label)
     );
+    const pythonLlmReasoningEffortOptions = optionArray(
+      pythonParityContract.llmReasoningEffortOptions || []
+    );
+    const pythonPositionPctUnitsOptions = optionArray(
+      pythonParityContract.positionPctUnitsOptions || []
+    );
+    const pythonDefaultPositionPctUnits = pythonPositionPctUnitsOptions.find((item) => item.key === "percent")?.key
+      || pythonPositionPctUnitsOptions[0]?.key
+      || "percent";
     const optionsFromValues = (values) => values.map((value) => ({ key: value, label: value }));
     const pythonChoiceValues = (name, fallback = []) => {
       const canonical = [...new Set(Object.values(pythonParityContract.configChoiceMaps?.[name] || {})
@@ -1031,6 +1241,25 @@
     const defaultBacktest = Object.freeze(pythonParityContract.defaultBacktest || {});
     const riskDefaults = Object.freeze(pythonParityContract.riskDefaults || {});
     const uiDefaults = Object.freeze(pythonParityContract.uiDefaults || {});
+    // Preserve Python-owned settings that do not have a dedicated Rust control.
+    // This keeps a Rust save/apply round-trip from silently deleting default
+    // execution settings, advanced risk policy, or code-language selections
+    // configured through Python.
+    const pythonConfigPassthroughKeys = Object.freeze([
+      ...new Set([
+        ...Object.keys(defaultExecution),
+        ...Object.keys(riskDefaults),
+        "code_language",
+        "selected_rust_framework",
+        "selected_forex_broker"
+      ])
+    ]);
+    let hydratedPythonConfigPassthrough = {};
+    const capturePythonConfigPassthrough = (config) => {
+      hydratedPythonConfigPassthrough = tauriUiBehavior.preserveConfigKeys
+        ? tauriUiBehavior.preserveConfigKeys(config, pythonConfigPassthroughKeys)
+        : {};
+    };
     const chartDefaultSymbols = textArray(pythonParityContract.defaultChartSymbols);
     const defaultExecutionSymbols = textArray(pythonParityContract.defaultExecutionSymbols);
     const defaultExecutionIntervals = textArray(pythonParityContract.defaultExecutionIntervals);
@@ -1051,7 +1280,7 @@
     const applyThemeMode = (value) => {
       const theme = tauriUiBehavior.normalizeTheme
         ? tauriUiBehavior.normalizeTheme(value)
-        : (String(value || "").trim() || "Dark");
+        : (String(value || "").trim() || firstEnabledOptionKey(themeOptions, "Dark"));
       const modeClass = tauriUiBehavior.themeModeClass
         ? tauriUiBehavior.themeModeClass(theme)
         : `theme-${theme.toLowerCase()}`;
@@ -1065,7 +1294,9 @@
     const applyDesignMode = (value) => {
       const design = tauriUiBehavior.normalizeDesign
         ? tauriUiBehavior.normalizeDesign(value)
-        : (String(value || "").trim().toLowerCase() === "workstation" ? "Workstation" : "Classic");
+        : (String(value || "").trim().toLowerCase() === "workstation"
+          ? "Workstation"
+          : firstEnabledOptionKey(designOptions, "Classic"));
       const modeClass = tauriUiBehavior.designModeClass
         ? tauriUiBehavior.designModeClass(design)
         : (design === "Workstation" ? "workstation-design" : "classic-design");
@@ -1077,6 +1308,11 @@
     const indicatorSourceOptions = optionArray(pythonParityContract.indicatorSourceOptions);
     const indicatorMaTypeOptions = optionArray(pythonParityContract.indicatorMaTypeOptions);
     const exchangeOptions = optionArray(pythonParityContract.exchangeOptions);
+    const defaultIndicatorSource = String(
+      uiDefaults.indicator_source
+        || indicatorSourceOptions.find((item) => !item.disabled)?.key
+        || ""
+    ).trim();
     const dashboardLoopChoiceOptions = optionArray(pythonParityContract.dashboardLoopChoices);
     const leadTraderOptions = optionArray(pythonParityContract.leadTraderOptions);
     const llmUseForOptions = pythonChoiceOptions("llm_use_for", optionArray(pythonParityContract.llmUseForOptions));
@@ -1105,6 +1341,28 @@
         : chartViewOptionCatalog.filter((option) => chartViewKeys.includes(option.key)))
       : chartViewOptionCatalog);
     const positionsViewOptions = optionArray(pythonParityContract.positionsViewOptions);
+    const firstEnabledOptionKey = (options, fallback = "") => options.find((item) => !item.disabled)?.key || fallback;
+    const configuredOptionKey = (value, options, fallback = "") => {
+      const key = String(value || "").trim();
+      return options.some((item) => item.key === key && !item.disabled)
+        ? key
+        : firstEnabledOptionKey(options, fallback);
+    };
+    const configuredText = (defaults, key, options, fallback = "") =>
+      configuredOptionKey(defaults?.[key], options, fallback);
+    const configModeDefault = () => {
+      const configured = String(defaultExecution.mode || "").trim();
+      if (configured === "Demo/Testnet") {
+        return configuredOptionKey("Demo", configModeOptions, firstEnabledOptionKey(configModeOptions));
+      }
+      return configuredOptionKey(configured, configModeOptions, firstEnabledOptionKey(configModeOptions));
+    };
+    const executionOptionDefault = (key, options, fallback = "") =>
+      configuredText(defaultExecution, key, options, fallback);
+    const backtestOptionDefault = (key, options, fallback = "") =>
+      configuredText(defaultBacktest, key, options, fallback);
+    const uiOptionDefault = (key, options, fallback = "") =>
+      configuredText(uiDefaults, key, options, fallback);
     const chartIntervalMap = Object.freeze(Object.fromEntries(
       Object.entries(pythonParityContract.tradingviewIntervalMap || {})
         .map(([key, value]) => [String(key).toLowerCase(), String(value)])
@@ -1216,101 +1474,217 @@
     const modelOptions = document.getElementById("llm-model-options");
     const reasoning = document.getElementById("llm-reasoning");
     const connectorSelectOptions = connectorOptions.map((item) => ({ key: item.key, label: item.label }));
+    const connectorMarketFamilies = Object.freeze(
+      Array.isArray(pythonParityContract.nativeRuntimeOwnership?.direct_connector_market_families)
+        ? pythonParityContract.nativeRuntimeOwnership.direct_connector_market_families
+        : []
+    );
+    const connectorKeysForAccountType = (accountType) => {
+      const marketToken = String(accountType || "").trim().toLowerCase().startsWith("fut")
+        ? "futures"
+        : "spot";
+      const keys = new Set(
+        connectorMarketFamilies
+          .filter((item) => String(item?.value || "").toLowerCase().includes(marketToken))
+          .map((item) => String(item?.key || "").trim())
+          .filter(Boolean)
+      );
+      return keys.size ? keys : new Set(connectorSelectOptions.map((option) => option.key));
+    };
+    const syncConnectorOptions = (selectId, accountType, preferred = "") => {
+      const select = document.getElementById(selectId);
+      if (!select) return "";
+      const allowed = connectorKeysForAccountType(accountType);
+      const current = String(preferred || select.value || "").trim();
+      const filtered = connectorSelectOptions.filter((option) => allowed.has(option.key));
+      const next = allowed.has(current) ? current : (filtered[0]?.key || current);
+      populateOptions(select, filtered.length ? filtered : connectorSelectOptions, next);
+      return String(select.value || next || "");
+    };
+    const syncAccountTypeControls = () => {
+      const accountType = document.getElementById("config-account-type")?.value || "Futures";
+      const state = tauriUiBehavior.accountTypeControlState
+        ? tauriUiBehavior.accountTypeControlState({ accountType, runtimeLocked: runtimeControlsActive })
+        : {
+          accountType: String(accountType).toLowerCase().startsWith("fut") ? "Futures" : "Spot",
+          isFutures: String(accountType).toLowerCase().startsWith("fut"),
+          futuresOnlyDisabled: !String(accountType).toLowerCase().startsWith("fut") || runtimeControlsActive,
+          leverageDisabled: !String(accountType).toLowerCase().startsWith("fut") || runtimeControlsActive,
+          sideDisabled: !String(accountType).toLowerCase().startsWith("fut") || runtimeControlsActive,
+          forcedSide: String(accountType).toLowerCase().startsWith("fut") ? null : "BUY"
+        };
+      for (const id of [
+        "config-margin-mode",
+        "config-position-mode",
+        "config-assets-mode",
+        "config-account-mode",
+        "allow-opposite-positions",
+        "add-only-net-direction"
+      ]) {
+        const control = document.getElementById(id);
+        if (control) control.disabled = Boolean(state.futuresOnlyDisabled);
+      }
+      const leverage = document.getElementById("config-leverage");
+      if (leverage) {
+        if (!state.isFutures) leverage.value = "1";
+        leverage.disabled = Boolean(state.leverageDisabled);
+      }
+      const side = document.getElementById("strategy-side");
+      if (side) {
+        if (state.forcedSide && [...side.options].some((option) => option.value === state.forcedSide)) {
+          side.value = state.forcedSide;
+        }
+        side.disabled = Boolean(state.sideDisabled);
+      }
+      syncConnectorOptions("config-connector", state.accountType);
+      const indicatorSource = document.getElementById("config-indicator-source");
+      if (indicatorSource) {
+        const current = String(indicatorSource.value || "").toLowerCase();
+        const target = state.isFutures ? "Binance futures" : "Binance spot";
+        if ((state.isFutures && current.includes("spot") && !current.includes("futures"))
+          || (!state.isFutures && current.includes("futures"))) {
+          const targetOption = [...indicatorSource.options].find((option) => option.value === target);
+          if (targetOption) indicatorSource.value = targetOption.value;
+        }
+      }
+      syncLeadTraderControls();
+      return state;
+    };
+    const syncBacktestMarketControls = () => {
+      const source = document.getElementById("backtest-symbol-source")?.value || "Futures";
+      const state = tauriUiBehavior.accountTypeControlState
+        ? tauriUiBehavior.accountTypeControlState({ accountType: source })
+        : { accountType: String(source).toLowerCase().startsWith("fut") ? "Futures" : "Spot", isFutures: String(source).toLowerCase().startsWith("fut") };
+      syncPortfolioMarginControls("backtest-account-mode", "backtest-margin-mode");
+      for (const id of [
+        "backtest-margin-mode",
+        "backtest-position-mode",
+        "backtest-assets-mode",
+        "backtest-account-mode",
+        "backtest-leverage"
+      ]) {
+        const control = document.getElementById(id);
+        if (!control) continue;
+        const field = control.closest("label");
+        if (field) field.hidden = !state.isFutures;
+        control.disabled = !state.isFutures;
+      }
+      syncConnectorOptions("backtest-connector", state.accountType);
+      return state;
+    };
     populateOptions(
       document.getElementById("config-mode"),
       configModeOptions,
-      defaultExecution.mode === "Demo/Testnet" ? "Demo" : (defaultExecution.mode || configModeOptions[0]?.key)
+      configModeDefault()
     );
     populateOptions(
       document.getElementById("config-theme"),
       themeOptions,
-      defaultExecution.theme || uiDefaults.theme || "Dark"
+      uiOptionDefault("theme", themeOptions, firstEnabledOptionKey(themeOptions))
     );
     const themeControl = document.getElementById("config-theme");
     themeControl?.addEventListener("change", () => applyThemeMode(themeControl.value));
-    applyThemeMode(themeControl?.value || defaultExecution.theme || uiDefaults.theme || "Dark");
+    applyThemeMode(themeControl?.value || uiOptionDefault("theme", themeOptions, firstEnabledOptionKey(themeOptions)));
     populateOptions(
       document.getElementById("config-design"),
       designOptions,
-      defaultExecution.design || uiDefaults.design || "Classic"
+      uiOptionDefault("design", designOptions, firstEnabledOptionKey(designOptions))
     );
     const designControl = document.getElementById("config-design");
     designControl?.addEventListener("change", () => applyDesignMode(designControl.value));
-    applyDesignMode(designControl?.value || defaultExecution.design || uiDefaults.design || "Classic");
+    applyDesignMode(designControl?.value || uiOptionDefault("design", designOptions, firstEnabledOptionKey(designOptions)));
     populateOptions(
       document.getElementById("config-indicator-source"),
       indicatorSourceOptions,
-      defaultExecution.indicator_source || uiDefaults.indicator_source || "Binance futures"
+      uiOptionDefault("indicator_source", indicatorSourceOptions, defaultIndicatorSource)
     );
     populateOptions(
       document.getElementById("exchange-select"),
       exchangeOptions,
-      defaultExecution.selected_exchange || exchangeOptions.find((item) => !item.disabled)?.key
+      uiOptionDefault("selected_exchange", exchangeOptions, firstEnabledOptionKey(exchangeOptions))
     );
     populateOptions(
       document.getElementById("llm-use-for"),
       llmUseForOptions,
-      defaultExecution.llm_use_for || llmUseForOptions[0]?.key
+      executionOptionDefault("llm_use_for", llmUseForOptions, firstEnabledOptionKey(llmUseForOptions))
     );
     populateOptions(
       document.getElementById("strategy-template"),
       dashboardStrategyTemplateOptions,
-      defaultExecution.dashboard_template || dashboardStrategyTemplateOptions[0]?.key
+      executionOptionDefault(
+        "dashboard_template", dashboardStrategyTemplateOptions,
+        firstEnabledOptionKey(dashboardStrategyTemplateOptions)
+      )
     );
     populateOptions(
       document.getElementById("config-account-mode"),
       optionsFromValues(accountModeOptions),
-      defaultExecution.account_mode || accountModeOptions[0]
+      executionOptionDefault(
+        "account_mode", optionsFromValues(accountModeOptions),
+        firstEnabledOptionKey(optionsFromValues(accountModeOptions))
+      )
     );
     populateOptions(
       document.getElementById("config-account-type"),
       accountTypeOptions,
-      defaultExecution.account_type || accountTypeOptions[0]?.key
+      executionOptionDefault("account_type", accountTypeOptions, firstEnabledOptionKey(accountTypeOptions))
     );
     populateOptions(
       document.getElementById("config-margin-mode"),
       marginModeOptions,
-      defaultExecution.margin_mode || marginModeOptions[0]?.key
+      executionOptionDefault("margin_mode", marginModeOptions, firstEnabledOptionKey(marginModeOptions))
     );
     populateOptions(
       document.getElementById("config-position-mode"),
       positionModeOptions,
-      defaultExecution.position_mode || positionModeOptions[0]?.key
+      executionOptionDefault("position_mode", positionModeOptions, firstEnabledOptionKey(positionModeOptions))
     );
     populateOptions(
       document.getElementById("config-assets-mode"),
       assetsModeOptions,
-      defaultExecution.assets_mode || assetsModeOptions[0]?.key
+      executionOptionDefault("assets_mode", assetsModeOptions, firstEnabledOptionKey(assetsModeOptions))
     );
     populateOptions(
       document.getElementById("config-time-in-force"),
       timeInForceOptions,
-      defaultExecution.tif || timeInForceOptions[0]?.key
+      executionOptionDefault("tif", timeInForceOptions, firstEnabledOptionKey(timeInForceOptions))
     );
     populateOptions(
       document.getElementById("config-order-type"),
       orderTypeOptions,
-      defaultExecution.order_type || orderTypeOptions[0]?.key
+      executionOptionDefault("order_type", orderTypeOptions, firstEnabledOptionKey(orderTypeOptions))
     );
     populateOptions(
       document.getElementById("backtest-execution-backend"),
       backtestExecutionBackendOptions,
-      defaultBacktest.execution_backend || backtestExecutionBackendOptions[0]?.key
+      backtestOptionDefault(
+        "execution_backend", backtestExecutionBackendOptions,
+        firstEnabledOptionKey(backtestExecutionBackendOptions, "local")
+      )
     );
     populateOptions(
       document.getElementById("backtest-account-mode"),
       optionsFromValues(accountModeOptions),
-      defaultBacktest.account_mode || accountModeOptions[0]
+      backtestOptionDefault(
+        "account_mode", optionsFromValues(accountModeOptions),
+        firstEnabledOptionKey(optionsFromValues(accountModeOptions))
+      )
     );
     populateOptions(
       document.getElementById("chart-market-select"),
       optionsFromValues(chartMarketOptions),
-      defaultExecution.account_type || chartMarketOptions[0]
+      backtestOptionDefault(
+        "symbol_source", optionsFromValues(chartMarketOptions),
+        executionOptionDefault("account_type", accountTypeOptions, firstEnabledOptionKey(accountTypeOptions))
+      )
     );
     populateOptions(
       document.getElementById("chart-view-select"),
       chartViewOptions,
-      defaultExecution.chart?.view_mode || "tradingview"
+      configuredOptionKey(
+        defaultExecution.chart?.view_mode, chartViewOptions,
+        firstEnabledOptionKey(chartViewOptions, "tradingview")
+      )
     );
     populateOptions(
       document.getElementById("positions-view-select"),
@@ -1320,97 +1694,136 @@
     populateOptions(
       document.getElementById("backtest-symbol-source"),
       accountTypeOptions,
-      defaultBacktest.symbol_source || defaultExecution.account_type || accountTypeOptions[0]?.key
+      backtestOptionDefault(
+        "symbol_source", chartMarketOptions,
+        executionOptionDefault("account_type", accountTypeOptions, firstEnabledOptionKey(accountTypeOptions))
+      )
     );
     populateOptions(
       document.getElementById("backtest-logic"),
       signalLogicOptions,
-      defaultBacktest.logic || signalLogicOptions[0]?.key
+      backtestOptionDefault("logic", signalLogicOptions, firstEnabledOptionKey(signalLogicOptions))
     );
     populateOptions(
       document.getElementById("backtest-margin-mode"),
       marginModeOptions,
-      defaultBacktest.margin_mode || defaultExecution.margin_mode || marginModeOptions[0]?.key
+      backtestOptionDefault(
+        "margin_mode", marginModeOptions,
+        executionOptionDefault("margin_mode", marginModeOptions, firstEnabledOptionKey(marginModeOptions))
+      )
     );
     populateOptions(
       document.getElementById("backtest-position-mode"),
       positionModeOptions,
-      defaultBacktest.position_mode || defaultExecution.position_mode || positionModeOptions[0]?.key
+      backtestOptionDefault(
+        "position_mode", positionModeOptions,
+        executionOptionDefault("position_mode", positionModeOptions, firstEnabledOptionKey(positionModeOptions))
+      )
     );
     populateOptions(
       document.getElementById("backtest-assets-mode"),
       assetsModeOptions,
-      defaultBacktest.assets_mode || defaultExecution.assets_mode || assetsModeOptions[0]?.key
+      backtestOptionDefault(
+        "assets_mode", assetsModeOptions,
+        executionOptionDefault("assets_mode", assetsModeOptions, firstEnabledOptionKey(assetsModeOptions))
+      )
     );
     populateOptions(
       document.getElementById("strategy-side"),
       sideOptions,
-      defaultExecution.side || "BOTH"
+      executionOptionDefault("side", sideOptions, firstEnabledOptionKey(sideOptions, "BOTH"))
     );
     populateOptions(
       document.getElementById("backtest-side"),
       sideOptions,
-      defaultBacktest.side || defaultExecution.side || "BOTH"
+      backtestOptionDefault(
+        "side", sideOptions,
+        executionOptionDefault("side", sideOptions, firstEnabledOptionKey(sideOptions, "BOTH"))
+      )
     );
     populateOptions(
       document.getElementById("loop-interval-select"),
       dashboardLoopChoiceOptions,
-      defaultExecution.loop_interval_override || dashboardLoopChoiceOptions[0]?.key
+      executionOptionDefault(
+        "loop_interval_override", dashboardLoopChoiceOptions,
+        firstEnabledOptionKey(dashboardLoopChoiceOptions)
+      )
     );
     populateOptions(
       document.getElementById("backtest-loop-interval"),
       dashboardLoopChoiceOptions,
-      defaultBacktest.loop_interval_override || dashboardLoopChoiceOptions[0]?.key
+      backtestOptionDefault(
+        "loop_interval_override", dashboardLoopChoiceOptions,
+        executionOptionDefault("loop_interval_override", dashboardLoopChoiceOptions, firstEnabledOptionKey(dashboardLoopChoiceOptions))
+      )
     );
     populateOptions(
       document.getElementById("lead-trader-profile"),
       leadTraderOptions,
-      defaultExecution.lead_trader_profile || leadTraderOptions[0]?.key
+      executionOptionDefault("lead_trader_profile", leadTraderOptions, firstEnabledOptionKey(leadTraderOptions))
     );
     populateOptions(
       document.getElementById("backtest-mdd-logic"),
       mddLogicOptions,
-      defaultBacktest.mdd_logic || mddLogicOptions[0]?.key
+      backtestOptionDefault("mdd_logic", mddLogicOptions, firstEnabledOptionKey(mddLogicOptions))
     );
     populateOptions(
       document.getElementById("stop-loss-mode"),
       stopLossModeOptions,
-      defaultExecution.stop_loss?.mode || stopLossModeOptions[0]?.key
+      configuredOptionKey(
+        defaultExecution.stop_loss?.mode, stopLossModeOptions,
+        firstEnabledOptionKey(stopLossModeOptions)
+      )
     );
     populateOptions(
       document.getElementById("backtest-stop-loss-mode"),
       stopLossModeOptions,
-      defaultBacktest.stop_loss?.mode || stopLossModeOptions[0]?.key
+      configuredOptionKey(
+        defaultBacktest.stop_loss?.mode, stopLossModeOptions,
+        firstEnabledOptionKey(stopLossModeOptions)
+      )
     );
     populateOptions(
       document.getElementById("stop-loss-scope"),
       stopLossScopeOptions,
-      defaultExecution.stop_loss?.scope || stopLossScopeOptions[0]?.key
+      configuredOptionKey(
+        defaultExecution.stop_loss?.scope, stopLossScopeOptions,
+        firstEnabledOptionKey(stopLossScopeOptions)
+      )
     );
     populateOptions(
       document.getElementById("backtest-stop-loss-scope"),
       stopLossScopeOptions,
-      defaultBacktest.stop_loss?.scope || stopLossScopeOptions[0]?.key
+      configuredOptionKey(
+        defaultBacktest.stop_loss?.scope, stopLossScopeOptions,
+        firstEnabledOptionKey(stopLossScopeOptions)
+      )
     );
     populateOptions(
       document.getElementById("backtest-template-name"),
       backtestTemplateOptions,
-      defaultBacktest.template?.name || backtestTemplateOptions[0]?.key
+      configuredOptionKey(
+        defaultBacktest.template?.name, backtestTemplateOptions,
+        firstEnabledOptionKey(backtestTemplateOptions)
+      )
     );
     populateOptions(
       document.getElementById("backtest-scan-scope"),
       scanScopeOptions,
-      defaultBacktest.scan_scope || scanScopeOptions[0]?.key
+      backtestOptionDefault("scan_scope", scanScopeOptions, firstEnabledOptionKey(scanScopeOptions, "selected"))
     );
     populateOptions(
       document.getElementById("backtest-optimizer-mode"),
       optimizerModeOptions,
-      defaultBacktest.optimizer_mode || optimizerModeOptions[0]?.key
+      backtestOptionDefault("optimizer_mode", optimizerModeOptions, firstEnabledOptionKey(optimizerModeOptions, "current"))
     );
     populateOptions(
       document.getElementById("backtest-optimizer-metric"),
       optimizerMetricOptions,
-      defaultBacktest.optimizer_metric || optimizerMetricOptions[0]?.key
+      backtestOptionDefault(
+        "optimizer_metric", optimizerMetricOptions,
+        firstEnabledOptionKey(optimizerMetricOptions, "roi_percent")
+      )
     );
     populateOptions(
       document.getElementById("chart-symbol-select"),
@@ -1429,12 +1842,18 @@
     populateOptions(
       document.getElementById("config-connector"),
       connectorSelectOptions,
-      defaultBacktest.connector_backend || connectorSelectOptions[0]?.key
+      configuredOptionKey(
+        defaultBacktest.connector_backend, connectorSelectOptions,
+        firstEnabledOptionKey(connectorSelectOptions)
+      )
     );
     populateOptions(
       document.getElementById("backtest-connector"),
       connectorSelectOptions,
-      defaultBacktest.connector_backend || connectorSelectOptions[0]?.key
+      configuredOptionKey(
+        defaultBacktest.connector_backend, connectorSelectOptions,
+        firstEnabledOptionKey(connectorSelectOptions)
+      )
     );
     populateOptions(
       provider,
@@ -1449,7 +1868,12 @@
       })),
       "openai"
     );
-    const syncEnabledState = () => { llmControls.disabled = !llmEnabled.checked; };
+    const syncEnabledState = () => {
+      const state = tauriUiBehavior.llmControlState
+        ? tauriUiBehavior.llmControlState({ enabled: llmEnabled.checked, controlsLocked: runtimeControlsActive })
+        : { containerDisabled: !llmEnabled.checked || runtimeControlsActive };
+      llmControls.disabled = Boolean(state.containerDisabled);
+    };
     const syncModelOptions = ({ preserveCurrent = false } = {}) => {
       const previous = model.value;
       const spec = llmProviderSpec(provider.value);
@@ -1467,7 +1891,9 @@
     const syncReasoningOptions = ({ preserveCurrent = false } = {}) => {
       const spec = llmProviderSpec(provider.value);
       const previous = reasoning.value;
-      const suggestions = spec?.reasoningEfforts || ["default"];
+      const suggestions = spec?.reasoningEfforts?.length
+        ? spec.reasoningEfforts
+        : pythonLlmReasoningEffortOptions.map((item) => item.key);
       reasoning.replaceChildren(...suggestions.map((name) => {
         const option = document.createElement("option");
         option.value = name;
@@ -1805,12 +2231,13 @@
     })[view] || "TradingView";
     const buildChartConfigPatch = () => ({
       market: selectedValue("chart-market-select")
-        || defaultExecution.account_type
-        || defaultBacktest.symbol_source
-        || "Futures",
+        || backtestOptionDefault(
+          "symbol_source", chartMarketOptions,
+          executionOptionDefault("account_type", accountTypeOptions, firstEnabledOptionKey(accountTypeOptions, "Futures"))
+        ),
       symbol: selectedValue("chart-symbol-select") || defaultChartSymbol,
       interval: selectedValue("chart-interval-select") || defaultChartInterval,
-      view_mode: selectedValue("chart-view-select") || "tradingview",
+      view_mode: selectedValue("chart-view-select") || firstEnabledOptionKey(chartViewOptions, "tradingview"),
       auto_follow: selectedValue("chart-market-select") === "Futures"
     });
     let runtimeOverrideRows = [];
@@ -1918,9 +2345,14 @@
     const strategyControlsForKind = (kind) => {
       if (kind === "backtest") {
         return {
-          side: selectedValue("backtest-side") || defaultBacktest.side || defaultExecution.side || "BOTH",
+          side: selectedValue("backtest-side") || backtestOptionDefault(
+            "side", sideOptions, executionOptionDefault("side", sideOptions, firstEnabledOptionKey(sideOptions))
+          ),
           leverage: numberFrom("backtest-leverage", defaultBacktest.leverage ?? 20),
-          loop_interval_override: selectedValue("backtest-loop-interval") || defaultBacktest.loop_interval_override,
+          loop_interval_override: selectedValue("backtest-loop-interval") || backtestOptionDefault(
+            "loop_interval_override", dashboardLoopChoiceOptions,
+            executionOptionDefault("loop_interval_override", dashboardLoopChoiceOptions, firstEnabledOptionKey(dashboardLoopChoiceOptions))
+          ),
           connector_backend: selectedValue("backtest-connector"),
           margin_mode: selectedText("backtest-margin-mode"),
           position_mode: selectedText("backtest-position-mode"),
@@ -1930,9 +2362,13 @@
         };
       }
       return {
-        side: selectedValue("strategy-side") || defaultExecution.side || "BOTH",
+          side: selectedValue("strategy-side") || executionOptionDefault(
+            "side", sideOptions, firstEnabledOptionKey(sideOptions)
+          ),
         leverage: numberFrom("config-leverage", defaultExecution.leverage ?? 1),
-        loop_interval_override: selectedValue("loop-interval-select") || defaultExecution.loop_interval_override,
+        loop_interval_override: selectedValue("loop-interval-select") || executionOptionDefault(
+          "loop_interval_override", dashboardLoopChoiceOptions, firstEnabledOptionKey(dashboardLoopChoiceOptions)
+        ),
         connector_backend: selectedValue("config-connector"),
         add_only: Boolean($("add-only-net-direction")?.checked),
         allow_opposite_positions: Boolean($("allow-opposite-positions")?.checked),
@@ -2340,12 +2776,17 @@
     };
     const localBacktestBackendKeys = new Set(["", "local", "desktop", "desktop-local"]);
     const usesLocalBacktestBackend = () => localBacktestBackendKeys.has(
-      String(selectedValue("backtest-execution-backend") || defaultBacktest.execution_backend || "local")
+      String(selectedValue("backtest-execution-backend") || backtestOptionDefault(
+        "execution_backend", backtestExecutionBackendOptions,
+        firstEnabledOptionKey(backtestExecutionBackendOptions, "local")
+      ))
         .trim()
         .toLowerCase()
     );
     const nativeBacktestRequestSupported = (request) => {
-      const exchange = String(request?.selected_exchange || uiDefaults.selected_exchange || "Binance").trim().toLowerCase();
+      const exchange = String(request?.selected_exchange || uiOptionDefault(
+        "selected_exchange", exchangeOptions, firstEnabledOptionKey(exchangeOptions, "Binance")
+      )).trim().toLowerCase();
       const connector = String(request?.connector_backend || "").trim().toLowerCase();
       return (exchange === "" || exchange === "binance")
         && (!connector || connector.includes("binance") || connector === "ccxt");
@@ -2617,7 +3058,7 @@
       }).join("");
     };
     const renderChartState = () => {
-      const view = selectedValue("chart-view-select") || "tradingview";
+      const view = selectedValue("chart-view-select") || firstEnabledOptionKey(chartViewOptions, "tradingview");
       const states = {
         "chart-tradingview-state": view === "tradingview" ? "Active" : "Ready",
         "chart-original-state": view === "original" ? "Active" : "Ready",
@@ -2625,9 +3066,10 @@
       };
       for (const [id, label] of Object.entries(states)) setText(id, label);
       const market = selectedValue("chart-market-select")
-        || defaultExecution.account_type
-        || defaultBacktest.symbol_source
-        || "Futures";
+        || backtestOptionDefault(
+          "symbol_source", chartMarketOptions,
+          executionOptionDefault("account_type", accountTypeOptions, firstEnabledOptionKey(accountTypeOptions, "Futures"))
+        );
       const symbol = selectedValue("chart-symbol-select") || defaultChartSymbol;
       const interval = selectedValue("chart-interval-select") || defaultChartInterval;
       setText("chart-status-text", `${chartViewLabel(view)}: ${market} ${symbol} ${interval}`);
@@ -2649,9 +3091,16 @@
       replaceSelectOptions("chart-interval-select", intervals, chart.interval || intervals[0] || defaultChartInterval);
       setSelect(
         "chart-market-select",
-        chart.market || config?.account_type || defaultExecution.account_type || defaultBacktest.symbol_source || "Futures"
+        chart.market
+          || config?.account_type
+          || executionOptionDefault("account_type", accountTypeOptions, firstEnabledOptionKey(accountTypeOptions, "Futures"))
+          || backtestOptionDefault("symbol_source", chartMarketOptions, firstEnabledOptionKey(chartMarketOptions, "Futures"))
       );
-      setSelect("chart-view-select", chart.view_mode || "tradingview", true);
+      setSelect(
+        "chart-view-select",
+        configuredOptionKey(chart.view_mode, chartViewOptions, firstEnabledOptionKey(chartViewOptions, "tradingview")),
+        true
+      );
       renderChartState();
     };
     const serviceBaseUrl = () => {
@@ -3097,7 +3546,22 @@
       }
       return result;
     };
-    const nativeRuntimeDelegationRequired = (result) => {
+    const nativeRuntimeDelegationRequired = (result, config = {}) => {
+      if (tauriUiBehavior.nativeRuntimeDelegationRequired({
+        config,
+        ownership: pythonParityContract.nativeRuntimeOwnership,
+        connectorOptions,
+        defaultExchange: uiOptionDefault(
+          "selected_exchange",
+          exchangeOptions,
+          firstEnabledOptionKey(exchangeOptions, "Binance")
+        ),
+        defaultConnector: executionOptionDefault(
+          "connector_backend",
+          connectorOptions,
+          ""
+        )
+      })) return true;
       if (result?.ok) return false;
       const detail = String(result?.error || "") + " " + String(result?.message || "");
       const normalized = detail.toLowerCase();
@@ -3362,6 +3826,7 @@
       const portfolio = payload?.portfolio || {};
       const execution = payload?.execution || {};
       const active = Boolean(status.runtime_active || status.active || execution.runtime_active);
+      syncRuntimeControlsLock(active);
       $("bot-status-text").textContent = active ? "ON" : "OFF";
       $("bot-status-dot").style.background = active ? "var(--good)" : "var(--bad)";
       $("bot-active-time-text").textContent = status.active_duration || status.active_time || "--";
@@ -3409,6 +3874,7 @@
     };
     const hydrateConfigControls = (config) => {
       if (!config || typeof config !== "object") return;
+      capturePythonConfigPassthrough(config);
       setSelect("config-mode", config.mode);
       setSelect("config-theme", config.theme);
       setSelect("config-design", config.design);
@@ -3422,11 +3888,13 @@
       setSelect("config-order-type", config.order_type);
       setValue("config-leverage", config.leverage);
       setSelect("config-margin-mode", config.margin_mode);
+      syncPortfolioMarginControls("config-account-mode", "config-margin-mode");
       setSelect("config-position-mode", config.position_mode);
       setValue("account-position-mode", config.position_mode || "N/A");
       setSelect("config-assets-mode", config.assets_mode);
       setSelect("config-time-in-force", config.tif);
       setValue("config-gtd-minutes", config.gtd_minutes);
+      syncTimeInForceControls();
       setSelect("config-indicator-source", config.indicator_source);
       setChecked("live-trading-enabled", config.live_trading_enabled);
       setValue("live-trading-acknowledgement", config.live_trading_acknowledgement);
@@ -3501,11 +3969,14 @@
       setSelect("loop-interval-select", config.loop_interval_override);
       setChecked("lead-trader-enabled", config.lead_trader_enabled);
       setSelect("lead-trader-profile", config.lead_trader_profile);
+      syncLeadTraderControls();
       setChecked("indicator-live-values", config.indicator_use_live_values ?? riskDefaults.indicator_use_live_values);
       setChecked("add-only-net-direction", config.add_only ?? false);
       setChecked("allow-opposite-positions", config.allow_opposite_positions ?? riskDefaults.allow_opposite_positions);
+      syncAccountTypeControls();
       setChecked("stop-without-closing-positions", config.stop_without_close);
-      setChecked("close-on-window-close", config.close_on_exit ?? riskDefaults.close_on_exit);
+      // Python keeps this in-progress workflow disabled and forces its value off.
+      setChecked("close-on-window-close", false);
       setChecked("positions-auto-row-height", config.positions_auto_resize_rows ?? true);
       setChecked("positions-auto-column-width", config.positions_auto_resize_columns ?? true);
       hydrateIndicatorControlsForKind("runtime", config.indicators);
@@ -3526,9 +3997,10 @@
       if (runtimeStopLoss && typeof runtimeStopLoss === "object") {
         setChecked("stop-loss-enabled", runtimeStopLoss.enabled);
         setSelect("stop-loss-mode", runtimeStopLoss.mode);
-        setSelect("stop-loss-scope", runtimeStopLoss.scope);
-        setValue("stop-loss-usdt", runtimeStopLoss.usdt);
-        setValue("stop-loss-percent", runtimeStopLoss.percent);
+      setSelect("stop-loss-scope", runtimeStopLoss.scope);
+      setValue("stop-loss-usdt", runtimeStopLoss.usdt);
+      setValue("stop-loss-percent", runtimeStopLoss.percent);
+      syncStopLossControls("runtime");
       }
       hydrateLlmControls(config.llm || {
         enabled: config.llm_enabled,
@@ -3546,6 +4018,8 @@
       if (!backtest || typeof backtest !== "object") return;
       setValue("backtest-symbols-input", Array.isArray(backtest.symbols) ? backtest.symbols.join("\n") : "");
       setValue("backtest-intervals-input", Array.isArray(backtest.intervals) ? backtest.intervals.join("\n") : "");
+      setSelect("backtest-symbol-source", backtest.symbol_source);
+      syncBacktestMarketControls();
       setSelect("backtest-execution-backend", backtest.execution_backend);
       setSelect("backtest-logic", backtest.logic);
       setValue("backtest-capital", backtest.capital);
@@ -3560,16 +4034,19 @@
       if (backtestStopLoss && typeof backtestStopLoss === "object") {
         setChecked("backtest-stop-loss-enabled", backtestStopLoss.enabled);
         setSelect("backtest-stop-loss-mode", backtestStopLoss.mode);
-        setSelect("backtest-stop-loss-scope", backtestStopLoss.scope);
-        setValue("backtest-stop-loss-usdt", backtestStopLoss.usdt);
-        setValue("backtest-stop-loss-percent", backtestStopLoss.percent);
+      setSelect("backtest-stop-loss-scope", backtestStopLoss.scope);
+      setValue("backtest-stop-loss-usdt", backtestStopLoss.usdt);
+      setValue("backtest-stop-loss-percent", backtestStopLoss.percent);
+      syncStopLossControls("backtest");
       }
       setSelect("backtest-side", backtest.side);
       setSelect("backtest-margin-mode", backtest.margin_mode);
       setSelect("backtest-position-mode", backtest.position_mode);
       setSelect("backtest-assets-mode", backtest.assets_mode);
       setSelect("backtest-account-mode", backtest.account_mode);
+      syncPortfolioMarginControls("backtest-account-mode", "backtest-margin-mode");
       setSelect("backtest-connector", backtest.connector_backend);
+      syncBacktestMarketControls();
       setValue("backtest-leverage", backtest.leverage);
       setSelect("backtest-scan-scope", backtest.scan_scope);
       setValue("backtest-scan-top-n", backtest.scan_top_n);
@@ -3791,30 +4268,62 @@
       dashboardStreamEventUnlisten = await listen("service-dashboard", handleDashboardStreamEvent);
       dashboardStreamStatusUnlisten = await listen("service-dashboard-stream-status", handleDashboardStreamStatus);
     };
-    const buildBacktestConfigPatch = () => ({
+    const buildBacktestConfigPatch = () => {
+      const accountMode = selectedValue("backtest-account-mode") || backtestOptionDefault(
+        "account_mode", optionsFromValues(accountModeOptions), firstEnabledOptionKey(optionsFromValues(accountModeOptions))
+      );
+      const marginConstraint = tauriUiBehavior.accountModeMarginConstraint
+        ? tauriUiBehavior.accountModeMarginConstraint({
+          accountMode,
+          marginMode: selectedValue("backtest-margin-mode") || backtestOptionDefault(
+            "margin_mode", marginModeOptions, firstEnabledOptionKey(marginModeOptions)
+          )
+        })
+        : { accountMode, marginMode: selectedValue("backtest-margin-mode") || "Isolated" };
+      return {
       symbols: linesFrom($("backtest-symbols-input")?.value),
       intervals: linesFrom($("backtest-intervals-input")?.value),
-      execution_backend: selectedValue("backtest-execution-backend") || defaultBacktest.execution_backend || "local",
+      execution_backend: selectedValue("backtest-execution-backend") || backtestOptionDefault(
+        "execution_backend", backtestExecutionBackendOptions, firstEnabledOptionKey(backtestExecutionBackendOptions, "local")
+      ),
       capital: numberFrom("backtest-capital", defaultBacktest.capital ?? 1000),
-      logic: selectedValue("backtest-logic") || defaultBacktest.logic || "AND",
-      symbol_source: selectedValue("backtest-symbol-source") || defaultBacktest.symbol_source || "Futures",
+      logic: selectedValue("backtest-logic") || backtestOptionDefault(
+        "logic", signalLogicOptions, firstEnabledOptionKey(signalLogicOptions, "AND")
+      ),
+      symbol_source: selectedValue("backtest-symbol-source") || backtestOptionDefault(
+        "symbol_source", chartMarketOptions, firstEnabledOptionKey(chartMarketOptions, "Futures")
+      ),
       start_date: $("backtest-start-date")?.value || null,
       end_date: $("backtest-end-date")?.value || null,
       position_pct: numberFrom("backtest-position-pct", defaultBacktest.position_pct ?? 2),
-      side: selectedValue("backtest-side") || defaultBacktest.side || "BOTH",
-      margin_mode: selectedValue("backtest-margin-mode") || defaultBacktest.margin_mode || "Isolated",
-      position_mode: selectedValue("backtest-position-mode") || defaultBacktest.position_mode || "Hedge",
-      assets_mode: selectedValue("backtest-assets-mode") || defaultBacktest.assets_mode || "Single-Asset",
-      account_mode: selectedValue("backtest-account-mode") || defaultBacktest.account_mode || "Classic Trading",
+      side: selectedValue("backtest-side") || backtestOptionDefault(
+        "side", sideOptions, firstEnabledOptionKey(sideOptions)
+      ),
+      margin_mode: marginConstraint.marginMode,
+      position_mode: selectedValue("backtest-position-mode") || backtestOptionDefault(
+        "position_mode", positionModeOptions, firstEnabledOptionKey(positionModeOptions)
+      ),
+      assets_mode: selectedValue("backtest-assets-mode") || backtestOptionDefault(
+        "assets_mode", assetsModeOptions, firstEnabledOptionKey(assetsModeOptions)
+      ),
+      account_mode: marginConstraint.accountMode,
       connector_backend: selectedValue("backtest-connector") || defaultBacktest.connector_backend,
       leverage: numberFrom("backtest-leverage", defaultBacktest.leverage ?? 20),
-      mdd_logic: selectedValue("backtest-mdd-logic") || defaultBacktest.mdd_logic,
-      scan_scope: selectedValue("backtest-scan-scope") || defaultBacktest.scan_scope || "selected",
+      mdd_logic: selectedValue("backtest-mdd-logic") || backtestOptionDefault(
+        "mdd_logic", mddLogicOptions, firstEnabledOptionKey(mddLogicOptions)
+      ),
+      scan_scope: selectedValue("backtest-scan-scope") || backtestOptionDefault(
+        "scan_scope", scanScopeOptions, firstEnabledOptionKey(scanScopeOptions, "selected")
+      ),
       scan_top_n: numberFrom("backtest-scan-top-n", defaultBacktest.scan_top_n ?? 200),
       scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", defaultBacktest.scan_mdd_limit ?? 10),
       scan_auto_apply: Boolean($("backtest-scan-auto-apply")?.checked),
-      optimizer_mode: selectedValue("backtest-optimizer-mode") || defaultBacktest.optimizer_mode || "current",
-      optimizer_metric: selectedValue("backtest-optimizer-metric") || defaultBacktest.optimizer_metric || "roi_percent",
+      optimizer_mode: selectedValue("backtest-optimizer-mode") || backtestOptionDefault(
+        "optimizer_mode", optimizerModeOptions, firstEnabledOptionKey(optimizerModeOptions, "current")
+      ),
+      optimizer_metric: selectedValue("backtest-optimizer-metric") || backtestOptionDefault(
+        "optimizer_metric", optimizerMetricOptions, firstEnabledOptionKey(optimizerMetricOptions, "roi_percent")
+      ),
       optimizer_combo_size: numberFrom("backtest-optimizer-combo-size", defaultBacktest.optimizer_combo_size ?? 2),
       optimizer_min_trades: numberFrom("backtest-optimizer-min-trades", defaultBacktest.optimizer_min_trades ?? 1),
       optimizer_max_duration_seconds: numberFrom(
@@ -3829,24 +4338,51 @@
       },
       indicators: selectedIndicatorsConfigForKind("backtest"),
       stop_loss: stopLossPatchForKind("backtest")
-    });
+      };
+    };
     const buildRuntimeConfigPatch = () => {
+      const accountMode = selectedText("config-account-mode") || executionOptionDefault(
+        "account_mode", optionsFromValues(accountModeOptions), firstEnabledOptionKey(optionsFromValues(accountModeOptions))
+      );
+      const marginConstraint = tauriUiBehavior.accountModeMarginConstraint
+        ? tauriUiBehavior.accountModeMarginConstraint({
+          accountMode,
+          marginMode: selectedText("config-margin-mode") || executionOptionDefault(
+            "margin_mode", marginModeOptions, firstEnabledOptionKey(marginModeOptions, "Isolated")
+          )
+        })
+        : { accountMode, marginMode: selectedText("config-margin-mode") || "Isolated" };
       const patch = {
-        mode: selectedText("config-mode") || defaultExecution.mode || "Demo/Testnet",
-        account_type: selectedText("config-account-type") || defaultExecution.account_type || "Futures",
-        account_mode: selectedText("config-account-mode") || defaultExecution.account_mode || "Classic Trading",
-        margin_mode: selectedText("config-margin-mode") || defaultExecution.margin_mode || "Isolated",
-        position_mode: selectedText("config-position-mode") || defaultExecution.position_mode || "Hedge",
-        assets_mode: selectedText("config-assets-mode") || defaultExecution.assets_mode || "Single-Asset",
+        ...hydratedPythonConfigPassthrough,
+        mode: selectedText("config-mode") || configModeDefault(),
+        account_type: selectedText("config-account-type") || executionOptionDefault(
+          "account_type", accountTypeOptions, firstEnabledOptionKey(accountTypeOptions, "Futures")
+        ),
+        account_mode: marginConstraint.accountMode,
+        margin_mode: marginConstraint.marginMode,
+        position_mode: selectedText("config-position-mode") || executionOptionDefault(
+          "position_mode", positionModeOptions, firstEnabledOptionKey(positionModeOptions, "Hedge")
+        ),
+        assets_mode: selectedText("config-assets-mode") || executionOptionDefault(
+          "assets_mode", assetsModeOptions, firstEnabledOptionKey(assetsModeOptions, "Single-Asset")
+        ),
         connector_backend: selectedValue("config-connector") || defaultBacktest.connector_backend,
-        selected_exchange: selectedText("exchange-select") || uiDefaults.selected_exchange || "Binance",
-        theme: selectedText("config-theme") || uiDefaults.theme || "Dark",
-        design: selectedText("config-design") || uiDefaults.design || "Classic",
+        selected_exchange: selectedText("exchange-select") || uiOptionDefault(
+          "selected_exchange", exchangeOptions, firstEnabledOptionKey(exchangeOptions, "Binance")
+        ),
+        theme: selectedText("config-theme") || uiOptionDefault(
+          "theme", themeOptions, firstEnabledOptionKey(themeOptions, "Dark")
+        ),
+        design: selectedText("config-design") || uiOptionDefault(
+          "design", designOptions, firstEnabledOptionKey(designOptions, "Classic")
+        ),
         lookback: numberFrom("config-lookback", defaultExecution.lookback ?? 200),
         leverage: numberFrom("config-leverage", defaultExecution.leverage ?? 1),
-        tif: selectedValue("config-time-in-force") || defaultExecution.tif || "GTC",
+        tif: selectedValue("config-time-in-force") || executionOptionDefault(
+          "tif", timeInForceOptions, firstEnabledOptionKey(timeInForceOptions, "GTC")
+        ),
         gtd_minutes: numberFrom("config-gtd-minutes", defaultExecution.gtd_minutes ?? 30),
-        indicator_source: selectedText("config-indicator-source") || uiDefaults.indicator_source || "Binance futures",
+        indicator_source: selectedText("config-indicator-source") || defaultIndicatorSource,
         live_trading_enabled: Boolean($("live-trading-enabled")?.checked),
         live_trading_acknowledgement: $("live-trading-acknowledgement")?.value?.trim() || "",
         live_trading_max_leverage: numberFrom("live-trading-max-leverage", defaultExecution.live_trading_max_leverage ?? 20),
@@ -3903,16 +4439,22 @@
         backtest_symbol_interval_pairs: backtestOverrideRows,
         backtest: buildBacktestConfigPatch(),
         position_pct: numberFrom("position-pct-input", defaultExecution.position_pct ?? 2),
-        side: selectedValue("strategy-side") || defaultExecution.side || "BOTH",
-        order_type: selectedValue("config-order-type") || defaultExecution.order_type || "MARKET",
-        loop_interval_override: selectedValue("loop-interval-select") || defaultExecution.loop_interval_override,
+        side: selectedValue("strategy-side") || executionOptionDefault(
+          "side", sideOptions, firstEnabledOptionKey(sideOptions, "BOTH")
+        ),
+        order_type: selectedValue("config-order-type") || executionOptionDefault(
+          "order_type", orderTypeOptions, firstEnabledOptionKey(orderTypeOptions, "MARKET")
+        ),
+        loop_interval_override: selectedValue("loop-interval-select") || executionOptionDefault(
+          "loop_interval_override", dashboardLoopChoiceOptions, firstEnabledOptionKey(dashboardLoopChoiceOptions)
+        ),
         lead_trader_enabled: Boolean($("lead-trader-enabled")?.checked),
         lead_trader_profile: selectedValue("lead-trader-profile"),
         indicator_use_live_values: Boolean($("indicator-live-values")?.checked),
         add_only: Boolean($("add-only-net-direction")?.checked),
         allow_opposite_positions: Boolean($("allow-opposite-positions")?.checked),
         stop_without_close: Boolean($("stop-without-closing-positions")?.checked),
-        close_on_exit: Boolean($("close-on-window-close")?.checked),
+        close_on_exit: false,
         symbols: linesFrom($("symbols-input")?.value),
         intervals: linesFrom($("intervals-input")?.value),
         stop_loss: {
@@ -4163,7 +4705,9 @@
       return result;
     };
     const buildBacktestRequest = () => {
-      const symbolSource = selectedValue("backtest-symbol-source") || defaultBacktest.symbol_source || "Futures";
+      const symbolSource = selectedValue("backtest-symbol-source") || backtestOptionDefault(
+        "symbol_source", chartMarketOptions, firstEnabledOptionKey(chartMarketOptions, "Futures")
+      );
       const backtestStart = $("backtest-start-date")?.value || null;
       const backtestEnd = $("backtest-end-date")?.value || null;
       const apiKey = String($("api-key-input")?.value || "").trim();
@@ -4172,11 +4716,15 @@
         symbols: linesFrom($("backtest-symbols-input")?.value),
         intervals: linesFrom($("backtest-intervals-input")?.value),
         indicators: selectedIndicatorsConfigForKind("backtest"),
-        logic: selectedValue("backtest-logic") || defaultBacktest.logic || "AND",
+        logic: selectedValue("backtest-logic") || backtestOptionDefault(
+          "logic", signalLogicOptions, firstEnabledOptionKey(signalLogicOptions, "AND")
+        ),
         symbol_source: symbolSource,
         account_type: symbolSource,
-        selected_exchange: selectedValue("exchange-select") || uiDefaults.selected_exchange || "Binance",
-        mode: selectedText("config-mode") || defaultExecution.mode || "Demo/Testnet",
+        selected_exchange: selectedValue("exchange-select") || uiOptionDefault(
+          "selected_exchange", exchangeOptions, firstEnabledOptionKey(exchangeOptions, "Binance")
+        ),
+        mode: selectedText("config-mode") || configModeDefault(),
         backtest: true,
         api_key: apiKey,
         api_secret: apiSecret,
@@ -4186,27 +4734,48 @@
         start_date: backtestStart,
         end_date: backtestEnd,
         position_pct: numberFrom("backtest-position-pct", defaultBacktest.position_pct ?? 2),
-        position_pct_units: "percent",
-        loop_interval_override: selectedValue("backtest-loop-interval") || defaultBacktest.loop_interval_override,
-        side: selectedValue("backtest-side") || defaultBacktest.side || "BOTH",
-        margin_mode: selectedText("backtest-margin-mode") || defaultBacktest.margin_mode,
-        position_mode: selectedText("backtest-position-mode") || defaultBacktest.position_mode,
-        assets_mode: selectedText("backtest-assets-mode") || defaultBacktest.assets_mode,
-        account_mode: selectedText("backtest-account-mode") || defaultBacktest.account_mode,
+        position_pct_units: pythonDefaultPositionPctUnits,
+        loop_interval_override: selectedValue("backtest-loop-interval") || backtestOptionDefault(
+          "loop_interval_override", dashboardLoopChoiceOptions,
+          executionOptionDefault("loop_interval_override", dashboardLoopChoiceOptions, firstEnabledOptionKey(dashboardLoopChoiceOptions))
+        ),
+        side: selectedValue("backtest-side") || backtestOptionDefault(
+          "side", sideOptions, firstEnabledOptionKey(sideOptions, "BOTH")
+        ),
+        margin_mode: selectedText("backtest-margin-mode") || backtestOptionDefault(
+          "margin_mode", marginModeOptions, firstEnabledOptionKey(marginModeOptions, "Isolated")
+        ),
+        position_mode: selectedText("backtest-position-mode") || backtestOptionDefault(
+          "position_mode", positionModeOptions, firstEnabledOptionKey(positionModeOptions, "Hedge")
+        ),
+        assets_mode: selectedText("backtest-assets-mode") || backtestOptionDefault(
+          "assets_mode", assetsModeOptions, firstEnabledOptionKey(assetsModeOptions, "Single-Asset")
+        ),
+        account_mode: selectedText("backtest-account-mode") || backtestOptionDefault(
+          "account_mode", optionsFromValues(accountModeOptions), firstEnabledOptionKey(optionsFromValues(accountModeOptions))
+        ),
         connector_backend: selectedValue("backtest-connector") || defaultBacktest.connector_backend,
         leverage: numberFrom("backtest-leverage", defaultBacktest.leverage ?? 20),
-        mdd_logic: selectedValue("backtest-mdd-logic") || defaultBacktest.mdd_logic,
+        mdd_logic: selectedValue("backtest-mdd-logic") || backtestOptionDefault(
+          "mdd_logic", mddLogicOptions, firstEnabledOptionKey(mddLogicOptions)
+        ),
         scan_top_n: numberFrom("backtest-scan-top-n", defaultBacktest.scan_top_n ?? 200),
         scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", defaultBacktest.scan_mdd_limit ?? 10),
-        scan_scope: selectedValue("backtest-scan-scope") || defaultBacktest.scan_scope || "selected",
+        scan_scope: selectedValue("backtest-scan-scope") || backtestOptionDefault(
+          "scan_scope", scanScopeOptions, firstEnabledOptionKey(scanScopeOptions, "selected")
+        ),
         optimizer_combo_size: numberFrom("backtest-optimizer-combo-size", defaultBacktest.optimizer_combo_size ?? 2),
-        optimizer_metric: selectedValue("backtest-optimizer-metric") || defaultBacktest.optimizer_metric || "roi_percent",
+        optimizer_metric: selectedValue("backtest-optimizer-metric") || backtestOptionDefault(
+          "optimizer_metric", optimizerMetricOptions, firstEnabledOptionKey(optimizerMetricOptions, "roi_percent")
+        ),
         optimizer_min_trades: numberFrom("backtest-optimizer-min-trades", defaultBacktest.optimizer_min_trades ?? 1),
         optimizer_max_duration_seconds: numberFrom(
           "backtest-optimizer-max-duration",
           defaultBacktest.optimizer_max_duration_seconds ?? 14400
         ),
-        optimizer_mode: selectedValue("backtest-optimizer-mode") || defaultBacktest.optimizer_mode || "current",
+        optimizer_mode: selectedValue("backtest-optimizer-mode") || backtestOptionDefault(
+          "optimizer_mode", optimizerModeOptions, firstEnabledOptionKey(optimizerModeOptions, "current")
+        ),
         queue_if_busy: Boolean($("backtest-queue-if-busy")?.checked),
         resume_checkpoint: false,
         pair_overrides: overrideRowsForRequest("backtest"),
@@ -4343,6 +4912,18 @@
     $("start-bot-btn")?.addEventListener("click", async () => {
       if (nativeRuntimeSelected()) {
         const config = buildNativeRuntimeConfig();
+        if (nativeRuntimeDelegationRequired(null, config)) {
+          clearNativeRuntimeMarketPolling();
+          activeNativeRuntimePollConfig = null;
+          const backend = $("runtime-execution-backend");
+          if (backend) {
+            backend.value = "service";
+            backend.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          appendLog("[native] Selected exchange/connector is Python-owned; delegating runtime start to the Python Service API.");
+          await startPythonServiceRuntime({ source: "tauri-desktop-native-delegation" });
+          return;
+        }
         const result = await startNativeRuntime({ config });
         reportNativeRuntimeResponse("Start", result);
         if (result?.ok) {
@@ -4355,7 +4936,7 @@
             reportNativeExecutionResponse(execution);
           }
           if (poll?.ok) startNativeRuntimeMarketPolling(config);
-        } else if (nativeRuntimeDelegationRequired(result)) {
+        } else if (nativeRuntimeDelegationRequired(result, config)) {
           clearNativeRuntimeMarketPolling();
           activeNativeRuntimePollConfig = null;
           const backend = $("runtime-execution-backend");
@@ -4677,8 +5258,36 @@
       setText("backtest-scan-status-text", "Backtest cancellation requested...");
       await requestAndReport("Stop backtest", "backtest_stop", "POST", { source: "tauri-desktop" });
     });
+    $("config-account-mode")?.addEventListener("change", () =>
+      syncPortfolioMarginControls("config-account-mode", "config-margin-mode")
+    );
+    $("config-account-type")?.addEventListener("change", syncAccountTypeControls);
+    $("backtest-symbol-source")?.addEventListener("change", syncBacktestMarketControls);
+    $("backtest-account-mode")?.addEventListener("change", () =>
+      syncBacktestMarketControls()
+    );
+    $("config-time-in-force")?.addEventListener("change", syncTimeInForceControls);
+    $("lead-trader-enabled")?.addEventListener("change", syncLeadTraderControls);
+    for (const kind of ["runtime", "backtest"]) {
+      const prefix = kind === "backtest" ? "backtest-" : "";
+      for (const controlId of [
+        `${prefix}stop-loss-enabled`,
+        `${prefix}stop-loss-mode`,
+        `${prefix}stop-loss-scope`
+      ]) {
+        $(controlId)?.addEventListener("change", () => syncStopLossControls(kind));
+      }
+    }
     hydrateConfigControls(defaultExecution);
     hydrateBacktestControls(defaultBacktest);
+    syncRuntimeControlsLock(false);
+    syncAccountTypeControls();
+    syncPortfolioMarginControls("config-account-mode", "config-margin-mode");
+    syncBacktestMarketControls();
+    syncTimeInForceControls();
+    syncLeadTraderControls();
+    syncStopLossControls("runtime");
+    syncStopLossControls("backtest");
     syncPositionsTableOptions();
     renderOverrideRows("runtime");
     renderOverrideRows("backtest");

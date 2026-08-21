@@ -94,6 +94,19 @@ _OLLAMA_SIZE_GB_HINTS = {
 }
 
 
+def ollama_model_size_catalog() -> tuple[dict[str, object], ...]:
+    """Return the Python-owned model-size hints for native contract generation."""
+
+    return tuple(
+        {
+            "model": model,
+            "label": label,
+            "size_gb": _OLLAMA_SIZE_GB_HINTS.get(model),
+        }
+        for model, label in _OLLAMA_SIZE_HINTS.items()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LocalModelStatus:
     model: str

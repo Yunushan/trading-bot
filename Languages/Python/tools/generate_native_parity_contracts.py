@@ -421,6 +421,9 @@ def _connector_normalization_reference_cases() -> list[dict[str, str]]:
         ("python-binance-label", labels_by_key["python-binance"]),
         ("official-connector-alias", "Binance Official REST connector"),
         ("unrelated-option-falls-back", labels_by_key["oanda-rest"]),
+        ("legacy-gateway-falls-back", "gateway"),
+        ("legacy-custom-falls-back", "custom"),
+        ("url-value-falls-back", "https://connector.example.test/api"),
         ("unknown-falls-back", "unknown backend"),
     ]
     return [
@@ -2136,6 +2139,38 @@ def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _rust_ollama_model_size_hints(hints: list[dict[str, object]]) -> str:
+    lines = [
+        "pub struct PythonOllamaModelSizeHint {",
+        "    pub model: &'static str,",
+        "    pub label: &'static str,",
+        "    pub size_gb: Option<f64>,",
+        "}",
+        "",
+        "pub const PYTHON_OLLAMA_MODEL_SIZE_HINTS: &[PythonOllamaModelSizeHint] = &[",
+    ]
+    for hint in hints:
+        size_gb = hint.get("size_gb")
+        if size_gb is None:
+            rust_size = "None"
+        else:
+            numeric_size = f"{float(size_gb):.12g}"
+            if "." not in numeric_size and "e" not in numeric_size.lower():
+                numeric_size += ".0"
+            rust_size = f"Some({numeric_size})"
+        lines.extend(
+            [
+                "    PythonOllamaModelSizeHint {",
+                f"        model: {_rust_string(hint['model'])},",
+                f"        label: {_rust_string(hint['label'])},",
+                f"        size_gb: {rust_size},",
+                "    },",
+            ]
+        )
+    lines.append("];" )
+    return "\n".join(lines)
+
+
 def _rust_llm_provider_choices(choices: list[dict[str, object]]) -> str:
     lines = ["pub const PYTHON_LLM_PROVIDER_CHOICES: &[(&str, &str)] = &["]
     lines.extend(
@@ -2202,6 +2237,18 @@ def _ui_option_catalog_specs(summary: dict[str, object]) -> list[tuple[str, str,
         ("dashboard loop", "PYTHON_DASHBOARD_LOOP_CHOICES", "kPythonDashboardLoopChoices", list(summary["dashboard_loop_choices"])),
         ("lead trader", "PYTHON_LEAD_TRADER_OPTIONS", "kPythonLeadTraderOptions", list(summary["lead_trader_options"])),
         ("LLM use-for", "PYTHON_LLM_USE_FOR_OPTIONS", "kPythonLlmUseForOptions", list(summary["llm_use_for_options"])),
+        (
+            "LLM reasoning effort",
+            "PYTHON_LLM_REASONING_EFFORT_OPTIONS",
+            "kPythonLlmReasoningEffortOptions",
+            list(summary["llm_reasoning_effort_options"]),
+        ),
+        (
+            "position percentage units",
+            "PYTHON_POSITION_PCT_UNITS_OPTIONS",
+            "kPythonPositionPctUnitsOptions",
+            list(summary["position_pct_units_options"]),
+        ),
         (
             "dashboard strategy templates",
             "PYTHON_DASHBOARD_STRATEGY_TEMPLATES",
@@ -2657,6 +2704,34 @@ def _cpp_llm_providers(providers: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _cpp_ollama_model_size_hints(hints: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonOllamaModelSizeHint {",
+        "    std::string_view model;",
+        "    std::string_view label;",
+        "    double sizeGb;",
+        "    bool hasSizeGb;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonOllamaModelSizeHint, "
+            f"{len(hints)}> kPythonOllamaModelSizeHints = {{"
+        ),
+    ]
+    for hint in hints:
+        size_gb = hint.get("size_gb")
+        cpp_size = "0.0" if size_gb is None else f"{float(size_gb):.12g}"
+        has_size = "false" if size_gb is None else "true"
+        lines.append(
+            "    PythonOllamaModelSizeHint{"
+            f"{_cpp_string(hint['model'])}, "
+            f"{_cpp_string(hint['label'])}, {cpp_size}, {has_size}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
 def _cpp_llm_provider_choices(choices: list[dict[str, object]]) -> str:
     lines = [
         "struct PythonLlmProviderChoice {",
@@ -3005,6 +3080,14 @@ def render_rust_module() -> str:
             "PYTHON_NATIVE_RUNTIME_MARKET_FAMILIES",
             list(native_runtime_ownership["direct_market_families"]),
         ),
+        (
+            "pub const PYTHON_NATIVE_RUNTIME_EXECUTION_SCOPE: &str = "
+            f"{_rust_string(native_runtime_ownership['native_execution_scope'])};"
+        ),
+        (
+            "pub const PYTHON_NATIVE_RUNTIME_EXECUTION_CAPABILITY: bool = "
+            f"{_rust_bool(native_runtime_ownership['native_execution_capability'])};"
+        ),
         _rust_string_pairs(
             "PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES",
             connector_market_families,
@@ -3046,6 +3129,11 @@ def render_rust_module() -> str:
         "",
         _rust_array("PYTHON_PARITY_DOMAIN_KEYS", list(summary["domain_keys"])),
         "",
+        _rust_array(
+            "PYTHON_REMOTE_SERVICE_CONFIG_PROTECTED_FIELDS",
+            list(summary["remote_service_config_protected_fields"]),
+        ),
+        "",
         _rust_array("PYTHON_SERVICE_ROUTE_NAMES", list(summary["route_names"])),
         "",
         _rust_service_routes(list(summary["service_routes"])),
@@ -3064,6 +3152,8 @@ def render_rust_module() -> str:
         f"pub const PYTHON_LLM_MODEL_CATALOG_PATH_ENV: &str = {_rust_string(summary['llm_model_catalog_path_env'])};",
         "",
         _rust_llm_providers(list(summary["llm_providers"])),
+        "",
+        _rust_ollama_model_size_hints(list(summary["ollama_model_size_hints"])),
         "",
         _rust_llm_provider_choices(list(summary["llm_provider_choices"])),
         "",
@@ -3308,6 +3398,14 @@ def render_cpp_header() -> str:
             "kPythonNativeRuntimeMarketFamilies",
             list(native_runtime_ownership["direct_market_families"]),
         ),
+        (
+            "inline constexpr std::string_view kPythonNativeRuntimeExecutionScope = "
+            f"{_cpp_string(native_runtime_ownership['native_execution_scope'])};"
+        ),
+        (
+            "inline constexpr bool kPythonNativeRuntimeExecutionCapability = "
+            f"{str(bool(native_runtime_ownership['native_execution_capability'])).lower()};"
+        ),
         _cpp_string_pairs(
             "kPythonNativeRuntimeConnectorMarketFamilies",
             connector_market_families,
@@ -3345,6 +3443,11 @@ def render_cpp_header() -> str:
         "",
         _cpp_array("kPythonParityDomainKeys", list(summary["domain_keys"])),
         "",
+        _cpp_array(
+            "kPythonRemoteServiceConfigProtectedFields",
+            list(summary["remote_service_config_protected_fields"]),
+        ),
+        "",
         _cpp_array("kPythonServiceRouteNames", list(summary["route_names"])),
         "",
         _cpp_service_routes(list(summary["service_routes"])),
@@ -3363,6 +3466,8 @@ def render_cpp_header() -> str:
         f"inline constexpr std::string_view kPythonLlmModelCatalogPathEnv = {_cpp_string(summary['llm_model_catalog_path_env'])};",
         "",
         _cpp_llm_providers(list(summary["llm_providers"])),
+        "",
+        _cpp_ollama_model_size_hints(list(summary["ollama_model_size_hints"])),
         "",
         _cpp_llm_provider_choices(list(summary["llm_provider_choices"])),
         "",
@@ -3441,6 +3546,7 @@ def render_tauri_browser_contract() -> str:
     option_catalog_json = _python_option_catalog_json()
     option_catalog_count = len(option_catalog_manifest)
     option_catalog_entry_count = sum(entry_count for _, entry_count in option_catalog_manifest)
+    connector_normalization_cases = _connector_normalization_reference_cases()
     service_routes = list(summary["service_routes"])
     service_route_paths = {str(route["name"]): str(route["path"]) for route in service_routes}
     service_route_methods = {
@@ -3487,6 +3593,7 @@ def render_tauri_browser_contract() -> str:
         ],
         "indicatorKeys": list(summary["indicator_keys"]),
         "connectorOptions": list(summary["connectors"]),
+        "connectorNormalizationReference": connector_normalization_cases,
         "supportedBrokers": list(summary["supported_brokers"]),
         "supportedForexBrokers": list(summary["supported_forex_brokers"]),
         "brokerOrderRoutingBackends": list(summary["broker_order_routing_backends"]),
@@ -3503,6 +3610,8 @@ def render_tauri_browser_contract() -> str:
         "dashboardLoopChoices": list(summary["dashboard_loop_choices"]),
         "leadTraderOptions": list(summary["lead_trader_options"]),
         "llmUseForOptions": list(summary["llm_use_for_options"]),
+        "llmReasoningEffortOptions": list(summary["llm_reasoning_effort_options"]),
+        "positionPctUnitsOptions": list(summary["position_pct_units_options"]),
         "dashboardStrategyTemplates": list(summary["dashboard_strategy_templates"]),
         "backtestTemplates": list(summary["backtest_templates"]),
         "sideOptions": list(summary["side_options"]),
@@ -3541,6 +3650,7 @@ def render_tauri_browser_contract() -> str:
         "llmProviders": list(summary["llm_providers"]),
         "llmProviderKeys": list(summary["llm_provider_keys"]),
         "llmProviderChoices": list(summary["llm_provider_choices"]),
+        "ollamaModelSizeHints": list(summary["ollama_model_size_hints"]),
         "configChoiceMaps": {
             name: dict(values) for name, values in summary["config_choice_maps"].items()
         },

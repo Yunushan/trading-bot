@@ -471,6 +471,7 @@ BatchRequest::BatchRequest() {
         NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonOptimizerMetricConfigChoices));
     optimizerScope = defaults.value(QStringLiteral("scan_scope")).toString(
         NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonScanScopeConfigChoices));
+    scanTopN = std::max(1, defaults.value(QStringLiteral("scan_top_n")).toInt(200));
     optimizerComboSize = defaults.value(QStringLiteral("optimizer_combo_size")).toInt(2);
     optimizerMinTrades = defaults.value(QStringLiteral("optimizer_min_trades")).toInt(1);
     optimizerMddLimit = defaults.value(QStringLiteral("scan_mdd_limit")).toDouble(10.0);
@@ -671,7 +672,7 @@ QJsonObject runBatch(
     snapshot.insert(QStringLiteral("state"), QStringLiteral("starting"));
     snapshot.insert(QStringLiteral("cancelled"), false);
 
-    const QStringList symbols = normalizedBatchSymbols(request.symbols);
+    QStringList symbols = normalizedBatchSymbols(request.symbols);
     const QStringList intervals = normalizedBatchIntervals(request.intervals);
     const QVector<QStringList> groups = buildIndicatorGroups(
         request.indicatorConfigs,
@@ -679,8 +680,25 @@ QJsonObject runBatch(
         request.optimizerComboSize,
         request.runTemplate.logic);
     const OverridePlanSet overridePlans = buildOverridePlans(request);
+    const QString planningMode = NativePythonParity::canonicalConfigChoice(
+        request.optimizerMode,
+        PythonParityContract::kPythonOptimizerModeConfigChoices,
+        NativePythonParity::defaultConfigChoice(
+            PythonParityContract::kPythonOptimizerModeConfigChoices));
+    const QString planningScope = NativePythonParity::canonicalConfigChoice(
+        request.optimizerScope,
+        PythonParityContract::kPythonScanScopeConfigChoices,
+        NativePythonParity::defaultConfigChoice(
+            PythonParityContract::kPythonScanScopeConfigChoices));
+    if (!overridePlans.hasValidOverrides
+        && planningMode != QStringLiteral("current")
+        && planningScope == QStringLiteral("top_n")) {
+        symbols = symbols.mid(0, std::max(1, request.scanTopN));
+    }
     const bool optimizerEnabled = request.optimizerEnabled && !overridePlans.hasValidOverrides;
     snapshot.insert(QStringLiteral("optimizer_enabled"), optimizerEnabled);
+    snapshot.insert(QStringLiteral("optimizer_scope"), planningScope);
+    snapshot.insert(QStringLiteral("scan_top_n"), request.scanTopN);
     snapshot.insert(
         QStringLiteral("optimizer_max_duration_seconds"),
         optimizerEnabled ? static_cast<double>(request.optimizerMaxDurationSeconds) : 0.0);

@@ -501,6 +501,64 @@ bool TradingBotWindow::dashboardOverridesHasPair(const QString &symbol, const QS
     return false;
 }
 
+QJsonObject TradingBotWindow::dashboardRuntimeOverridePayload(
+    const QString &symbol,
+    const QString &interval) const {
+    // Keep a newly-created row in the same structured shape that Python's
+    // runtime override collector sends to the strategy engine.  The table is
+    // only a presentation surface; the runtime consumes this payload from
+    // the symbol cell's UserRole data.
+    const QJsonObject config = buildDashboardServiceConfigPatch();
+    QJsonObject payload{
+        {QStringLiteral("symbol"), symbol.trimmed().toUpper()},
+        {QStringLiteral("interval"), interval.trimmed()},
+    };
+
+    QJsonArray indicators;
+    const QJsonObject indicatorConfig = config.value(QStringLiteral("indicators")).toObject();
+    for (auto it = indicatorConfig.constBegin(); it != indicatorConfig.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("enabled")).toBool(false)) {
+            indicators.append(it.key());
+        }
+    }
+    payload.insert(QStringLiteral("indicators"), indicators);
+
+    QJsonObject controls;
+    for (const QString &key : {
+             QStringLiteral("side"),
+             QStringLiteral("position_pct"),
+             QStringLiteral("loop_interval_override"),
+             QStringLiteral("add_only"),
+             QStringLiteral("leverage"),
+             QStringLiteral("account_mode"),
+             QStringLiteral("connector_backend")}) {
+        const QJsonValue value = config.value(key);
+        if (!value.isUndefined()) {
+            controls.insert(key, value);
+        }
+    }
+    // A dashboard position spin box is a percentage input in Python. Keep
+    // the explicit unit so native runtimes cannot reinterpret it as a ratio.
+    controls.insert(QStringLiteral("position_pct_units"), QStringLiteral("percent"));
+    const QJsonValue stopLoss = config.value(QStringLiteral("stop_loss"));
+    if (stopLoss.isObject()) {
+        controls.insert(QStringLiteral("stop_loss"), stopLoss);
+        payload.insert(QStringLiteral("stop_loss"), stopLoss);
+    }
+    payload.insert(QStringLiteral("strategy_controls"), controls);
+
+    for (const QString &key : {
+             QStringLiteral("loop_interval_override"),
+             QStringLiteral("leverage"),
+             QStringLiteral("connector_backend")}) {
+        const QJsonValue value = config.value(key);
+        if (!value.isUndefined()) {
+            payload.insert(key, value);
+        }
+    }
+    return payload;
+}
+
 bool TradingBotWindow::addDashboardOverrideRow(const QString &symbolRaw, const QString &intervalRaw) {
     if (!dashboardOverridesTable_) {
         return false;
@@ -514,29 +572,10 @@ bool TradingBotWindow::addDashboardOverrideRow(const QString &symbolRaw, const Q
 
     const int rowIdx = dashboardOverridesTable_->rowCount();
     dashboardOverridesTable_->insertRow(rowIdx);
-
-    const QString connectorText = dashboardConnectorCombo_
-        ? dashboardConnectorCombo_->currentText().trimmed()
-        : QStringLiteral("Default");
-    const QString loopText = dashboardLoopOverrideCombo_
-        ? dashboardLoopOverrideCombo_->currentText().trimmed()
-        : QStringLiteral("1 minute");
-    const QString leverageText = dashboardLeverageSpin_
-        ? QString::number(dashboardLeverageSpin_->value())
-        : QStringLiteral("20");
-    const QStringList values = {
-        symbol,
-        interval,
-        dashboardEnabledIndicatorsSummary(),
-        loopText,
-        leverageText,
-        connectorText,
-        dashboardStrategySummary(),
-        dashboardStopLossSummary(),
-    };
-    for (int col = 0; col < values.size(); ++col) {
-        dashboardOverridesTable_->setItem(rowIdx, col, new QTableWidgetItem(values.at(col)));
-    }
+    setDashboardOverridePayloadFromConfig(
+        dashboardOverridesTable_,
+        rowIdx,
+        dashboardRuntimeOverridePayload(symbol, interval));
     return true;
 }
 
@@ -629,17 +668,22 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
         config.insert(key, configured.isUndefined() ? fallback : configured);
     }
     config.insert(QStringLiteral("mode"), comboText(dashboardModeCombo_, executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"))));
-    config.insert(QStringLiteral("account_type"), comboText(dashboardAccountTypeCombo_, executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures"))));
-    config.insert(QStringLiteral("account_mode"), comboText(dashboardAccountModeCombo_, executionDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
-    config.insert(QStringLiteral("margin_mode"), comboDataOrText(dashboardMarginModeCombo_, executionDefaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"))));
-    config.insert(QStringLiteral("position_mode"), comboDataOrText(dashboardPositionModeCombo_, executionDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"))));
-    config.insert(QStringLiteral("assets_mode"), comboDataOrText(dashboardAssetsModeCombo_, executionDefaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"))));
+    config.insert(QStringLiteral("account_type"), comboText(dashboardAccountTypeCombo_, TradingBotWindowSupport::pythonSourceDefaultExecutionText(QStringLiteral("account_type"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceAccountTypeOptionLabels()))));
+    const QString accountMode = comboText(dashboardAccountModeCombo_, TradingBotWindowSupport::pythonSourceDefaultExecutionText(QStringLiteral("account_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceAccountModeOptions())));
+    QString marginMode = comboDataOrText(dashboardMarginModeCombo_, TradingBotWindowSupport::pythonSourceDefaultExecutionText(QStringLiteral("margin_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceMarginModeOptionLabels())));
+    if (accountMode.contains(QStringLiteral("portfolio"), Qt::CaseInsensitive)) {
+        marginMode = QStringLiteral("Cross");
+    }
+    config.insert(QStringLiteral("account_mode"), accountMode);
+    config.insert(QStringLiteral("margin_mode"), marginMode);
+    config.insert(QStringLiteral("position_mode"), comboDataOrText(dashboardPositionModeCombo_, TradingBotWindowSupport::pythonSourceDefaultExecutionText(QStringLiteral("position_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourcePositionModeOptionLabels()))));
+    config.insert(QStringLiteral("assets_mode"), comboDataOrText(dashboardAssetsModeCombo_, TradingBotWindowSupport::pythonSourceDefaultExecutionText(QStringLiteral("assets_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels()))));
     config.insert(QStringLiteral("connector_backend"), comboDataOrText(dashboardConnectorCombo_, backtestDefaults.value(QStringLiteral("connector_backend")).toString()));
-    config.insert(QStringLiteral("selected_exchange"), comboDataOrText(dashboardExchangeCombo_, uiDefaults.value(QStringLiteral("selected_exchange")).toString(QStringLiteral("Binance"))));
-    config.insert(QStringLiteral("theme"), comboDataOrText(dashboardThemeCombo_, uiDefaults.value(QStringLiteral("theme")).toString(QStringLiteral("Dark"))));
-    config.insert(QStringLiteral("design"), comboDataOrText(dashboardDesignCombo_, uiDefaults.value(QStringLiteral("design")).toString(QStringLiteral("Classic"))));
+    config.insert(QStringLiteral("selected_exchange"), comboDataOrText(dashboardExchangeCombo_, TradingBotWindowSupport::pythonSourceDefaultUiText(QStringLiteral("selected_exchange"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceExchangeOptionLabels()))));
+    config.insert(QStringLiteral("theme"), comboDataOrText(dashboardThemeCombo_, TradingBotWindowSupport::pythonSourceDefaultUiText(QStringLiteral("theme"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceThemeOptionLabels()))));
+    config.insert(QStringLiteral("design"), comboDataOrText(dashboardDesignCombo_, TradingBotWindowSupport::pythonSourceDefaultUiText(QStringLiteral("design"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceDesignOptionLabels()))));
     config.insert(QStringLiteral("leverage"), dashboardLeverageSpin_ ? dashboardLeverageSpin_->value() : executionDefaults.value(QStringLiteral("leverage")).toInt(1));
-    config.insert(QStringLiteral("tif"), comboDataOrText(dashboardTimeInForceCombo_, executionDefaults.value(QStringLiteral("tif")).toString(QStringLiteral("GTC"))));
+    config.insert(QStringLiteral("tif"), comboDataOrText(dashboardTimeInForceCombo_, TradingBotWindowSupport::pythonSourceDefaultExecutionText(QStringLiteral("tif"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceTimeInForceOptionLabels()))));
     config.insert(QStringLiteral("gtd_minutes"), dashboardGtdMinutesSpin_ ? dashboardGtdMinutesSpin_->value() : executionDefaults.value(QStringLiteral("gtd_minutes")).toInt(30));
     config.insert(
         QStringLiteral("positions_auto_resize_rows"),
@@ -651,7 +695,12 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
         positionsAutoColumnWidthCheck_
             ? positionsAutoColumnWidthCheck_->isChecked()
             : executionDefaults.value(QStringLiteral("positions_auto_resize_columns")).toBool(true));
-    config.insert(QStringLiteral("indicator_source"), comboDataOrText(dashboardIndicatorSourceCombo_, uiDefaults.value(QStringLiteral("indicator_source")).toString(QStringLiteral("Binance futures"))));
+    config.insert(
+        QStringLiteral("indicator_source"),
+        comboDataOrText(
+            dashboardIndicatorSourceCombo_,
+            uiDefaults.value(QStringLiteral("indicator_source"))
+                .toString(TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels().value(0))));
     QJsonArray symbols = selectedOrAllListValues(dashboardSymbolList_, true);
     if (symbols.isEmpty()) {
         symbols = stringListJsonArray(TradingBotWindowSupport::pythonSourceDefaultExecutionSymbols(), true);
@@ -666,7 +715,7 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     config.insert(QStringLiteral("runtime_symbol_interval_pairs"), dashboardOverrideRows(dashboardOverridesTable_));
     config.insert(QStringLiteral("backtest_symbol_interval_pairs"), buildBacktestSymbolIntervalPairs());
     config.insert(QStringLiteral("position_pct"), dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : executionDefaults.value(QStringLiteral("position_pct")).toDouble(2.0));
-    config.insert(QStringLiteral("order_type"), comboDataOrText(dashboardOrderTypeCombo_, executionDefaults.value(QStringLiteral("order_type")).toString(QStringLiteral("MARKET"))));
+    config.insert(QStringLiteral("order_type"), comboDataOrText(dashboardOrderTypeCombo_, TradingBotWindowSupport::pythonSourceDefaultExecutionText(QStringLiteral("order_type"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceOrderTypeOptionLabels()))));
     config.insert(QStringLiteral("live_trading_enabled"), dashboardLiveTradingEnabledCheck_ ? dashboardLiveTradingEnabledCheck_->isChecked() : executionDefaults.value(QStringLiteral("live_trading_enabled")).toBool(false));
     config.insert(
         QStringLiteral("live_trading_acknowledgement"),
@@ -736,7 +785,7 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
         QStringLiteral("operational_live_order_gate_enabled"),
         dashboardOperationalLiveOrderGateCheck_ ? dashboardOperationalLiveOrderGateCheck_->isChecked() : executionDefaults.value(QStringLiteral("operational_live_order_gate_enabled")).toBool(true));
     config.insert(QStringLiteral("side"), comboDataOrText(dashboardSideCombo_, executionDefaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"))));
-    config.insert(QStringLiteral("loop_interval_override"), comboDataOrText(dashboardLoopOverrideCombo_, executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m"))));
+    config.insert(QStringLiteral("loop_interval_override"), comboDataOrText(dashboardLoopOverrideCombo_, TradingBotWindowSupport::pythonSourceDefaultExecutionText(QStringLiteral("loop_interval_override"), QStringLiteral("1m"))));
     config.insert(QStringLiteral("lead_trader_enabled"), dashboardLeadTraderEnableCheck_ && dashboardLeadTraderEnableCheck_->isChecked());
     config.insert(QStringLiteral("lead_trader_profile"), comboDataOrText(dashboardLeadTraderCombo_));
     config.insert(QStringLiteral("indicator_use_live_values"), dashboardLiveIndicatorValuesCheck_ ? dashboardLiveIndicatorValuesCheck_->isChecked() : riskDefaults.value(QStringLiteral("indicator_use_live_values")).toBool(false));
@@ -783,6 +832,22 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     config.insert(QStringLiteral("llm_allow_public_network"), dashboardLlmAllowPublicNetworkCheck_ && dashboardLlmAllowPublicNetworkCheck_->isChecked());
     config.insert(QStringLiteral("llm_reasoning_effort"), comboText(dashboardLlmReasoningCombo_, QStringLiteral("default")));
 
+    // These selections are owned by the Python code-language surface rather than
+    // a C++ dashboard widget, but they are still part of the shared config contract.
+    const auto passthroughValue = [this](const QString &key, const QJsonValue &fallback) {
+        const QJsonValue value = dashboardPythonConfigPassthrough_.value(key);
+        return value.isUndefined() ? fallback : value;
+    };
+    config.insert(
+        QStringLiteral("code_language"),
+        passthroughValue(QStringLiteral("code_language"), QStringLiteral("Python (PyQt)")));
+    config.insert(
+        QStringLiteral("selected_rust_framework"),
+        passthroughValue(QStringLiteral("selected_rust_framework"), QString()));
+    config.insert(
+        QStringLiteral("selected_forex_broker"),
+        passthroughValue(QStringLiteral("selected_forex_broker"), QJsonValue(QJsonValue::Null)));
+
     if (dashboardApiKey_
         && !dashboardApiKey_->text().trimmed().isEmpty()
         && dashboardApiKey_->text().trimmed() != QStringLiteral("********")) {
@@ -797,9 +862,23 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     return config;
 }
 
+QJsonObject TradingBotWindow::buildDashboardServiceApiConfigPatch() const {
+    return TradingBotWindowSupport::projectPythonRemoteServiceConfig(
+        buildDashboardServiceConfigPatch());
+}
+
 bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) {
     if (config.isEmpty()) {
         return false;
+    }
+
+    for (const QString &key : {
+             QStringLiteral("code_language"),
+             QStringLiteral("selected_rust_framework"),
+             QStringLiteral("selected_forex_broker")}) {
+        if (config.contains(key)) {
+            dashboardPythonConfigPassthrough_.insert(key, config.value(key));
+        }
     }
 
     dashboardEffectiveRiskControls_ = TradingBotWindowSupport::pythonSourceRiskDefaults();
@@ -813,6 +892,7 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
     setComboValue(dashboardAccountTypeCombo_, config.value(QStringLiteral("account_type")));
     setComboValue(dashboardAccountModeCombo_, config.value(QStringLiteral("account_mode")));
     setComboValue(dashboardMarginModeCombo_, config.value(QStringLiteral("margin_mode")));
+    syncDashboardAccountModeConstraints();
     setComboValue(dashboardPositionModeCombo_, config.value(QStringLiteral("position_mode")));
     setComboValue(dashboardAssetsModeCombo_, config.value(QStringLiteral("assets_mode")));
     setComboValue(dashboardConnectorCombo_, config.value(QStringLiteral("connector_backend")));
@@ -1083,6 +1163,7 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
     if (dashboardDesignCombo_) {
         applyDashboardDesign(dashboardDesignCombo_->currentText());
     }
+    syncDashboardAccountTypeConstraints();
     if (dashboardGtdMinutesSpin_ && dashboardTimeInForceCombo_) {
         dashboardGtdMinutesSpin_->setEnabled(
             !dashboardRuntimeActive_
@@ -1095,7 +1176,7 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
 
 bool TradingBotWindow::saveDashboardServiceConfig() {
     QJsonObject wrapper;
-    wrapper.insert(QStringLiteral("config"), buildDashboardServiceConfigPatch());
+    wrapper.insert(QStringLiteral("config"), buildDashboardServiceApiConfigPatch());
     const auto patchResult = TradingBotWindowSupport::serviceApiRequestJson(
         QStringLiteral("PATCH"),
         QStringLiteral("config"),
@@ -1401,21 +1482,77 @@ void TradingBotWindow::loadDashboardLocalOverrideConfig() {
             continue;
         }
 
+        // Older local files stored only display strings. Rehydrate the
+        // structured payload as far as those strings permit, so loading a
+        // legacy file does not create a row that the native runtime ignores.
+        QJsonObject payload = dashboardRuntimeOverridePayload(symbol, interval);
+        QJsonObject controls = payload.value(QStringLiteral("strategy_controls")).toObject();
+
+        const QString legacyIndicators = rowObject.value(QStringLiteral("indicators")).toString().trimmed();
+        if (!legacyIndicators.isEmpty()) {
+            QJsonArray indicators;
+            if (legacyIndicators.compare(QStringLiteral("None"), Qt::CaseInsensitive) != 0) {
+                for (const QString &token : legacyIndicators.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+                    const QString wanted = token.trimmed();
+                    for (auto indicatorIt = dashboardIndicatorChecks_.cbegin();
+                         indicatorIt != dashboardIndicatorChecks_.cend();
+                         ++indicatorIt) {
+                        const QString key = indicatorIt.key().trimmed();
+                        const QString label = indicatorIt.value() ? indicatorIt.value()->text().trimmed() : QString();
+                        if (wanted.compare(key, Qt::CaseInsensitive) == 0
+                            || wanted.compare(label, Qt::CaseInsensitive) == 0) {
+                            indicators.append(key);
+                            break;
+                        }
+                    }
+                }
+            }
+            payload.insert(QStringLiteral("indicators"), indicators);
+        }
+
+        const QString legacyLoop = rowObject.value(QStringLiteral("loop")).toString().trimmed();
+        if (!legacyLoop.isEmpty() && legacyLoop.compare(QStringLiteral("Default"), Qt::CaseInsensitive) != 0) {
+            payload.insert(QStringLiteral("loop_interval_override"), legacyLoop);
+            controls.insert(QStringLiteral("loop_interval_override"), legacyLoop);
+        }
+
+        bool leverageOk = false;
+        const int legacyLeverage = rowObject.value(QStringLiteral("leverage")).toString().toInt(&leverageOk);
+        if (leverageOk && legacyLeverage >= 1) {
+            payload.insert(QStringLiteral("leverage"), legacyLeverage);
+            controls.insert(QStringLiteral("leverage"), legacyLeverage);
+        }
+
+        const QString legacyConnector = rowObject.value(QStringLiteral("connector")).toString().trimmed();
+        if (!legacyConnector.isEmpty() && legacyConnector.compare(QStringLiteral("Default"), Qt::CaseInsensitive) != 0) {
+            payload.insert(QStringLiteral("connector_backend"), legacyConnector);
+            controls.insert(QStringLiteral("connector_backend"), legacyConnector);
+        }
+
+        const QString legacyStrategy = rowObject.value(QStringLiteral("strategy_controls")).toString().trimmed();
+        if (!legacyStrategy.isEmpty()
+            && legacyStrategy.compare(QStringLiteral("Default"), Qt::CaseInsensitive) != 0) {
+            if (dashboardSideCombo_) {
+                for (int option = 0; option < dashboardSideCombo_->count(); ++option) {
+                    if (legacyStrategy.startsWith(dashboardSideCombo_->itemText(option), Qt::CaseInsensitive)) {
+                        QString side = dashboardSideCombo_->itemData(option).toString().trimmed();
+                        if (side.isEmpty()) {
+                            side = dashboardSideCombo_->itemText(option).trimmed();
+                        }
+                        controls.insert(QStringLiteral("side"), side);
+                        break;
+                    }
+                }
+            }
+            if (legacyStrategy.contains(QStringLiteral("Add-only"), Qt::CaseInsensitive)) {
+                controls.insert(QStringLiteral("add_only"), true);
+            }
+        }
+        payload.insert(QStringLiteral("strategy_controls"), controls);
+
         const int rowIdx = dashboardOverridesTable_->rowCount();
         dashboardOverridesTable_->insertRow(rowIdx);
-        const QStringList values = {
-            symbol,
-            interval,
-            rowObject.value(QStringLiteral("indicators")).toString(),
-            rowObject.value(QStringLiteral("loop")).toString(),
-            rowObject.value(QStringLiteral("leverage")).toString(),
-            rowObject.value(QStringLiteral("connector")).toString(),
-            rowObject.value(QStringLiteral("strategy_controls")).toString(),
-            rowObject.value(QStringLiteral("stop_loss")).toString(),
-        };
-        for (int col = 0; col < values.size(); ++col) {
-            dashboardOverridesTable_->setItem(rowIdx, col, new QTableWidgetItem(values.at(col)));
-        }
+        setDashboardOverridePayloadFromConfig(dashboardOverridesTable_, rowIdx, payload);
         ++loadedCount;
     }
 

@@ -85,6 +85,7 @@ void TradingBotWindow::setDashboardRuntimeControlsEnabled(bool enabled) {
     if (dashboardStopBtn_) {
         dashboardStopBtn_->setEnabled(!enabled);
     }
+    syncDashboardAccountTypeConstraints();
     syncDashboardPaperBalanceUi();
 }
 

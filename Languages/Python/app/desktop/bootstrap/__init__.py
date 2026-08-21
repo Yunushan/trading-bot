@@ -7,6 +7,6 @@ the internal desktop startup implementation so desktop-only bootstrap logic can
 move behind the ``app.desktop`` boundary without breaking existing entrypoints.
 """
 
-from .main import _run_entrypoint, main
+from .main import _run_entrypoint, _run_headless_service, main
 
-__all__ = ["_run_entrypoint", "main"]
+__all__ = ["_run_entrypoint", "_run_headless_service", "main"]

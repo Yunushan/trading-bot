@@ -47,6 +47,28 @@ class ServiceClientIntegrationTests(unittest.TestCase):
         self.assertIn("start", preflight)
         self.assertIn("orders", preflight)
 
+    def test_desktop_service_client_projects_gui_only_config_keys(self):
+        gui_config = {
+            "mode": "Demo/Testnet",
+            "code_market": "crypto",
+            "debug_override_verbose": True,
+            "connector_backend": "ccxt",
+            "theme": "Dark",
+            "chart": {"market": "Futures", "symbol": "BTCUSDT"},
+        }
+
+        client = create_desktop_service_client(config=gui_config)
+
+        self.assertIsInstance(client, EmbeddedDesktopServiceClient)
+        self.assertIsNotNone(client.service)
+        self.assertNotIn("code_market", client.service.config)
+        self.assertNotIn("debug_override_verbose", client.service.config)
+        self.assertEqual(client.service.config["theme"], "Dark")
+        self.assertEqual(client.service.config["chart"]["symbol"], "BTCUSDT")
+        client.replace_config(gui_config)
+        self.assertNotIn("code_market", client.service.config)
+        self.assertNotIn("debug_override_verbose", client.service.config)
+
     def test_desktop_service_client_can_be_forced_to_remote_mode(self):
         client = create_desktop_service_client(
             client_mode="remote",

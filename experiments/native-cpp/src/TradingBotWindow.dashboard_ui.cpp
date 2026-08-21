@@ -21,7 +21,6 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStringList>
@@ -41,42 +40,38 @@ QString normalizeExchangeKey(QString value) {
 
 QString exchangeFromIndicatorSource(const QString &sourceText) {
     const QString normalized = normalizeExchangeKey(sourceText);
-    static const QSet<QString> known = {
-        QStringLiteral("Binance"),
-        QStringLiteral("Bybit"),
-        QStringLiteral("OKX"),
-        QStringLiteral("Gate"),
-        QStringLiteral("Bitget"),
-        QStringLiteral("MEXC"),
-        QStringLiteral("KuCoin"),
-    };
-    if (known.contains(normalized)) {
-        return normalized;
+    for (const QString &exchangeKey : TradingBotWindowSupport::pythonSourceExchangeOptionKeys()) {
+        if (exchangeKey.compare(normalized, Qt::CaseInsensitive) == 0) {
+            return exchangeKey;
+        }
     }
     return QString();
 }
 
 QString pythonDefaultIndicatorSource() {
-    return TradingBotWindowSupport::pythonSourceUiDefaults()
+    const QString configured = TradingBotWindowSupport::pythonSourceUiDefaults()
         .value(QStringLiteral("indicator_source"))
-        .toString(QStringLiteral("Binance futures"));
+        .toString()
+        .trimmed();
+    const QStringList indicatorSources = TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels();
+    for (const QString &indicatorSource : indicatorSources) {
+        if (indicatorSource.compare(configured, Qt::CaseInsensitive) == 0) {
+            return indicatorSource;
+        }
+    }
+    return indicatorSources.value(0);
 }
 
 QString preferredIndicatorSourceForExchange(const QString &exchangeKey, const QString &currentSource) {
-    const QString normalized = normalizeExchangeKey(exchangeKey);
-    if (normalized.compare(QStringLiteral("Binance"), Qt::CaseInsensitive) == 0) {
-        if (currentSource.trimmed().toLower().contains(QStringLiteral("binance"))) {
-            return currentSource.trimmed();
+    Q_UNUSED(exchangeKey);
+    const QStringList indicatorSources = TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels();
+    const QString current = currentSource.trimmed();
+    for (const QString &indicatorSource : indicatorSources) {
+        if (indicatorSource.compare(current, Qt::CaseInsensitive) == 0) {
+            return indicatorSource;
         }
-        return pythonDefaultIndicatorSource();
     }
-    if (normalized == QStringLiteral("MEXC")) {
-        return QStringLiteral("Mexc");
-    }
-    if (normalized == QStringLiteral("KuCoin")) {
-        return QStringLiteral("Kucoin");
-    }
-    return normalized;
+    return pythonDefaultIndicatorSource();
 }
 
 } // namespace
@@ -88,6 +83,133 @@ void TradingBotWindow::registerDashboardRuntimeLockWidget(QWidget *widget) {
     if (!dashboardRuntimeLockWidgets_.contains(widget)) {
         dashboardRuntimeLockWidgets_.append(widget);
     }
+}
+
+void TradingBotWindow::syncDashboardAccountModeConstraints() {
+    const auto apply = [this](QComboBox *accountModeCombo, QComboBox *marginModeCombo) {
+        if (!accountModeCombo || !marginModeCombo) {
+            return;
+        }
+        const bool isDashboardAccount = accountModeCombo == dashboardAccountModeCombo_;
+        bool isFutures = true;
+        bool editable = true;
+        if (isDashboardAccount) {
+            QString accountType = dashboardAccountTypeCombo_
+                ? dashboardAccountTypeCombo_->currentData().toString().trimmed()
+                : QString();
+            if (accountType.isEmpty() && dashboardAccountTypeCombo_) {
+                accountType = dashboardAccountTypeCombo_->currentText().trimmed();
+            }
+            isFutures = !accountType.toLower().startsWith(QStringLiteral("spot"));
+            editable = !dashboardRuntimeActive_;
+            accountModeCombo->setEnabled(isFutures && editable);
+        }
+        QString accountMode = accountModeCombo->currentData().toString().trimmed();
+        if (accountMode.isEmpty()) {
+            accountMode = accountModeCombo->currentText().trimmed();
+        }
+        const bool portfolioMargin = accountMode.contains(QStringLiteral("portfolio"), Qt::CaseInsensitive);
+        if (portfolioMargin) {
+            int crossIndex = marginModeCombo->findData(QStringLiteral("Cross"));
+            if (crossIndex < 0) {
+                crossIndex = marginModeCombo->findText(QStringLiteral("Cross"), Qt::MatchFixedString);
+            }
+            if (crossIndex < 0) {
+                for (int index = 0; index < marginModeCombo->count(); ++index) {
+                    if (marginModeCombo->itemData(index).toString().trimmed().compare(
+                            QStringLiteral("Cross"), Qt::CaseInsensitive) == 0
+                        || marginModeCombo->itemText(index).trimmed().compare(
+                            QStringLiteral("Cross"), Qt::CaseInsensitive) == 0) {
+                        crossIndex = index;
+                        break;
+                    }
+                }
+            }
+            if (crossIndex >= 0) {
+                const QSignalBlocker blocker(marginModeCombo);
+                marginModeCombo->setCurrentIndex(crossIndex);
+            }
+        }
+        marginModeCombo->setEnabled(isFutures && editable && !portfolioMargin);
+    };
+
+    apply(dashboardAccountModeCombo_, dashboardMarginModeCombo_);
+    apply(backtestAccountModeCombo_, backtestMarginModeCombo_);
+}
+
+void TradingBotWindow::syncDashboardAccountTypeConstraints() {
+    if (!dashboardAccountTypeCombo_) {
+        return;
+    }
+
+    QString accountType = dashboardAccountTypeCombo_->currentData().toString().trimmed();
+    if (accountType.isEmpty()) {
+        accountType = dashboardAccountTypeCombo_->currentText().trimmed();
+    }
+    const bool isFutures = !accountType.toLower().startsWith(QStringLiteral("spot"));
+    const bool editable = !dashboardRuntimeActive_;
+    const auto setFuturesControl = [isFutures, editable](QWidget *widget) {
+        if (widget) {
+            widget->setEnabled(isFutures && editable);
+        }
+    };
+
+    setFuturesControl(dashboardAccountModeCombo_);
+    setFuturesControl(dashboardMarginModeCombo_);
+    setFuturesControl(dashboardPositionModeCombo_);
+    setFuturesControl(dashboardAssetsModeCombo_);
+    setFuturesControl(dashboardOneWayCheck_);
+    setFuturesControl(dashboardHedgeStackCheck_);
+    setFuturesControl(dashboardLeadTraderEnableCheck_);
+
+    if (dashboardLeverageSpin_) {
+        if (!isFutures) {
+            const QSignalBlocker blocker(dashboardLeverageSpin_);
+            dashboardLeverageSpin_->setValue(1);
+        }
+        dashboardLeverageSpin_->setEnabled(isFutures && editable);
+    }
+
+    if (dashboardSideCombo_) {
+        if (!isFutures) {
+            int buyIndex = dashboardSideCombo_->findData(QStringLiteral("BUY"));
+            if (buyIndex < 0) {
+                buyIndex = dashboardSideCombo_->findText(QStringLiteral("Buy (Long)"), Qt::MatchFixedString);
+            }
+            if (buyIndex >= 0) {
+                const QSignalBlocker blocker(dashboardSideCombo_);
+                dashboardSideCombo_->setCurrentIndex(buyIndex);
+            }
+        }
+        dashboardSideCombo_->setEnabled(isFutures && editable);
+    }
+
+    if (dashboardLeadTraderCombo_) {
+        dashboardLeadTraderCombo_->setEnabled(
+            isFutures
+            && editable
+            && dashboardLeadTraderEnableCheck_
+            && dashboardLeadTraderEnableCheck_->isChecked());
+    }
+
+    if (dashboardIndicatorSourceCombo_) {
+        const QString target = isFutures ? QStringLiteral("Binance futures") : QStringLiteral("Binance spot");
+        int targetIndex = dashboardIndicatorSourceCombo_->findData(target);
+        if (targetIndex < 0) {
+            targetIndex = dashboardIndicatorSourceCombo_->findText(target, Qt::MatchFixedString);
+        }
+        if (targetIndex >= 0 && dashboardIndicatorSourceCombo_->currentIndex() != targetIndex) {
+            const QSignalBlocker blocker(dashboardIndicatorSourceCombo_);
+            dashboardIndicatorSourceCombo_->setCurrentIndex(targetIndex);
+        }
+    }
+
+    if (dashboardConnectorCombo_) {
+        TradingBotWindowSupport::rebuildConnectorComboForAccount(
+            dashboardConnectorCombo_, isFutures, false);
+        dashboardConnectorCombo_->setEnabled(editable);
+    }
+    syncDashboardAccountModeConstraints();
 }
 
 void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxLayout *root) {
@@ -141,7 +263,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceThemeOptionKeys(),
         TradingBotWindowSupport::pythonSourceThemeOptionLabels(),
         {},
-        uiDefaults.value(QStringLiteral("theme")).toString(QStringLiteral("Dark")));
+        TradingBotWindowSupport::pythonSourceDefaultUiText(
+            QStringLiteral("theme"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceThemeOptionLabels())));
     registerDashboardRuntimeLockWidget(dashboardThemeCombo_);
     addPair(0, col, "Theme:", dashboardThemeCombo_);
     connect(dashboardThemeCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
@@ -157,7 +282,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceDesignOptionKeys(),
         TradingBotWindowSupport::pythonSourceDesignOptionLabels(),
         {},
-        uiDefaults.value(QStringLiteral("design")).toString(QStringLiteral("Classic")));
+        TradingBotWindowSupport::pythonSourceDefaultUiText(
+            QStringLiteral("design"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceDesignOptionLabels())));
     dashboardDesignCombo_->setToolTip(
         "Classic: compact tabbed workspace.\n"
         "Workstation: denser, task-oriented workspace styling from the Python source UI.");
@@ -205,7 +333,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceAccountTypeOptionKeys(),
         TradingBotWindowSupport::pythonSourceAccountTypeOptionLabels(),
         {},
-        executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures")));
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("account_type"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceAccountTypeOptionLabels())));
     registerDashboardRuntimeLockWidget(dashboardAccountTypeCombo_);
     addPair(1, col, "Account Type:", dashboardAccountTypeCombo_);
 
@@ -215,7 +346,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceAccountModeOptions(),
         TradingBotWindowSupport::pythonSourceAccountModeOptions(),
         {},
-        executionDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading")));
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("account_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceAccountModeOptions())));
     dashboardAccountModeCombo_ = accountModeCombo;
     registerDashboardRuntimeLockWidget(accountModeCombo);
     addPair(1, col, "Account Mode:", accountModeCombo);
@@ -237,6 +371,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         connect(dashboardAccountTypeCombo_, &QComboBox::currentTextChanged, this, [this](const QString &accountText) {
             const bool isFutures = accountText.trimmed().toLower().startsWith(QStringLiteral("fut"));
             TradingBotWindowSupport::rebuildConnectorComboForAccount(dashboardConnectorCombo_, isFutures, false);
+            syncDashboardAccountTypeConstraints();
         });
     }
     if (dashboardModeCombo_) {
@@ -287,10 +422,17 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceMarginModeOptionKeys(),
         TradingBotWindowSupport::pythonSourceMarginModeOptionLabels(),
         {},
-        executionDefaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated")));
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("margin_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceMarginModeOptionLabels())));
     dashboardMarginModeCombo_ = marginModeCombo;
     registerDashboardRuntimeLockWidget(marginModeCombo);
     addPair(2, col, "Margin Mode (Futures):", marginModeCombo);
+    connect(dashboardAccountModeCombo_, &QComboBox::currentTextChanged, this, [this](const QString &) {
+        syncDashboardAccountModeConstraints();
+    });
+    syncDashboardAccountModeConstraints();
 
     auto *positionModeCombo = new QComboBox(accountBox);
     TradingBotWindowSupport::populateComboFromPythonSourceOptions(
@@ -298,7 +440,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourcePositionModeOptionKeys(),
         TradingBotWindowSupport::pythonSourcePositionModeOptionLabels(),
         {},
-        executionDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge")));
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("position_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourcePositionModeOptionLabels())));
     dashboardPositionModeCombo_ = positionModeCombo;
     registerDashboardRuntimeLockWidget(positionModeCombo);
     addPair(2, col, "Position Mode:", positionModeCombo);
@@ -309,7 +454,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceAssetsModeOptionKeys(),
         TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels(),
         {},
-        executionDefaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset")));
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("assets_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels())));
     dashboardAssetsModeCombo_ = assetsModeCombo;
     registerDashboardRuntimeLockWidget(assetsModeCombo);
     addPair(2, col, "Assets Mode:", assetsModeCombo);
@@ -321,7 +469,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceIndicatorSourceOptionKeys(),
         TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels(),
         {},
-        uiDefaults.value(QStringLiteral("indicator_source")).toString(QStringLiteral("Binance futures")));
+        TradingBotWindowSupport::pythonSourceDefaultUiText(
+            QStringLiteral("indicator_source"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels())));
     indicatorSourceCombo->setMinimumWidth(140);
     indicatorSourceCombo->setToolTip(
         "Signal candles currently use Binance market data.\n"
@@ -336,7 +487,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceTimeInForceOptionKeys(),
         TradingBotWindowSupport::pythonSourceTimeInForceOptionLabels(),
         {},
-        executionDefaults.value(QStringLiteral("tif")).toString(QStringLiteral("GTC")));
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("tif"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceTimeInForceOptionLabels())));
     dashboardTimeInForceCombo_ = tifCombo;
     registerDashboardRuntimeLockWidget(tifCombo);
     addPair(3, col, "Time-in-Force:", tifCombo);
@@ -524,7 +678,10 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceOrderTypeOptionKeys(),
         TradingBotWindowSupport::pythonSourceOrderTypeOptionLabels(),
         {},
-        executionDefaults.value(QStringLiteral("order_type")).toString(QStringLiteral("MARKET")));
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("order_type"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceOrderTypeOptionLabels())));
     orderTypeCombo->setToolTip("Persisted Python order preference. The current Python and C++ strategy entry runtimes submit market orders.");
     dashboardOrderTypeCombo_ = orderTypeCombo;
     registerDashboardRuntimeLockWidget(orderTypeCombo);
@@ -1205,7 +1362,10 @@ void TradingBotWindow::createDashboardExchangeAndMarketsSections(QWidget *page, 
         TradingBotWindowSupport::pythonSourceExchangeOptionKeys(),
         TradingBotWindowSupport::pythonSourceExchangeOptionLabels(),
         TradingBotWindowSupport::pythonSourceExchangeOptionDisabledLabels(),
-        QStringLiteral("Binance"));
+        TradingBotWindowSupport::pythonSourceDefaultUiText(
+            QStringLiteral("selected_exchange"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceExchangeOptionLabels())));
     root->addWidget(exchangeBox);
 
     auto *marketsBox = new QGroupBox("Markets / Intervals", page);
@@ -1400,7 +1560,8 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
         TradingBotWindowSupport::pythonSourceDashboardLoopChoiceKeys(),
         TradingBotWindowSupport::pythonSourceDashboardLoopChoiceLabels(),
         {},
-        executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m")),
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("loop_interval_override"), QStringLiteral("1m")),
         QStringLiteral("1 minute"));
     dashboardLoopOverrideCombo_ = loopOverride;
     registerDashboardRuntimeLockWidget(loopOverride);
@@ -1873,6 +2034,7 @@ QWidget *TradingBotWindow::createDashboardTab() {
     root->addStretch();
 
     setDashboardRuntimeControlsEnabled(true);
+    syncDashboardAccountTypeConstraints();
     if (dashboardDesignCombo_) {
         applyDashboardDesign(dashboardDesignCombo_->currentText());
     } else {

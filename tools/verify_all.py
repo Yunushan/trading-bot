@@ -28,7 +28,10 @@ class Check:
     required: bool = True
     remediation: str = ""
     blocks_success: bool = False
-    timeout_seconds: int = 240
+    # The full Python suite includes coverage and currently takes just over
+    # four minutes on the supported Windows Python 3.14 environment. Keep a
+    # margin so a healthy run is not misreported as a timeout.
+    timeout_seconds: int = 360
 
 
 def _repo_root() -> Path:

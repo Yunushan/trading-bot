@@ -71,7 +71,12 @@ QIcon loadAppIcon() {
 bool hasBoundedSmokeArg() {
     const QStringList args = QCoreApplication::arguments();
     return args.contains(QStringLiteral("--smoke"))
-        || args.contains(QStringLiteral("--healthcheck"));
+        || args.contains(QStringLiteral("--healthcheck"))
+        || args.contains(QStringLiteral("--service-smoke"));
+}
+
+bool hasManagedServiceSmokeArg() {
+    return QCoreApplication::arguments().contains(QStringLiteral("--service-smoke"));
 }
 
 bool verifyBoundedSmokeWindow(TradingBotWindow &window) {
@@ -265,6 +270,30 @@ int runBoundedSmoke(QApplication &app, const QIcon &icon) {
     return 0;
 }
 
+int runManagedServiceSmoke(QApplication &app, const QIcon &icon) {
+    app.setProperty("tradingBotBoundedSmoke", true);
+    auto window = std::make_unique<TradingBotWindow>();
+    if (!icon.isNull()) {
+        window->setWindowIcon(icon);
+    }
+    window->hide();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+    QString error;
+    const bool ok = window->runManagedPythonServiceSmoke(&error);
+    window->close();
+    window.reset();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    if (!ok) {
+        QTextStream(stderr) << "Trading Bot C++ managed service smoke failed: "
+                            << error << '\n';
+        return 1;
+    }
+    QTextStream(stdout) << "Trading Bot C++ managed service smoke ok\n";
+    return 0;
+}
+
 #ifdef Q_OS_WIN
 void applyAppUserModelID() {
     // Ensures taskbar pinning/grouping and jump-list identity stay consistent.
@@ -302,6 +331,9 @@ int main(int argc, char *argv[]) {
 
     if (hasBoundedSmokeArg()) {
         return runBoundedSmoke(app, icon);
+    }
+    if (hasManagedServiceSmokeArg()) {
+        return runManagedServiceSmoke(app, icon);
     }
 
     TradingBotWindow window;

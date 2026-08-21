@@ -1,10 +1,15 @@
 #include "../src/TradingBotWindowSupport.h"
 #include "../src/BinanceRestClient.h"
 #include "../src/NativeConfigPersistence.h"
+#include "../src/NativeExchangeConnectors.h"
+#include "../src/NativeLlmAdvisory.h"
 #include "../src/generated/PythonParityContract.h"
 
 #include <QByteArray>
+#include <QApplication>
 #include <QCoreApplication>
+#include <QComboBox>
+#include <QFileInfo>
 #include <QHash>
 #include <QHostAddress>
 #include <QJsonArray>
@@ -57,7 +62,8 @@ void writeJsonResponseAndClose(QTcpSocket *socket, const QByteArray &body) {
 } // namespace
 
 int main(int argc, char **argv) {
-    QCoreApplication app(argc, argv);
+    qputenv("QT_QPA_PLATFORM", QByteArray("offscreen"));
+    QApplication app(argc, argv);
     int failures = 0;
     const auto check = [&failures](bool condition, const QString &message) {
         if (!condition) {
@@ -110,6 +116,11 @@ int main(int argc, char **argv) {
             TradingBotWindowSupport::normalizeConnectorBackend(parityString(referenceCase.input));
         check(actual == parityString(referenceCase.expected),
               QStringLiteral("C++ connector normalization should match Python: %1").arg(caseName));
+        const QString nativeRuntimeActual =
+            NativeExchangeConnectors::normalizeConnectorBackend(parityString(referenceCase.input));
+        check(nativeRuntimeActual == parityString(referenceCase.expected),
+              QStringLiteral("C++ native runtime connector normalization should match Python: %1")
+                  .arg(caseName));
     }
 
     const QStringList routes = TradingBotWindowSupport::pythonSourceServiceRouteNames();
@@ -123,6 +134,27 @@ int main(int argc, char **argv) {
           QStringLiteral("generated route names should include control_start"));
     check(contains(routes, QStringLiteral("prometheus_metrics")),
           QStringLiteral("generated route names should include prometheus_metrics"));
+    const QString pythonDesktopEntrypoint = TradingBotWindowSupport::pythonDesktopEntrypointPath();
+    check(!pythonDesktopEntrypoint.isEmpty() && QFileInfo(pythonDesktopEntrypoint).isFile(),
+          QStringLiteral("managed C++ Service API delegation should resolve the canonical Python desktop entrypoint"));
+    check(pythonDesktopEntrypoint.endsWith(QStringLiteral("apps/desktop-pyqt/main.py"), Qt::CaseInsensitive)
+              || pythonDesktopEntrypoint.endsWith(QStringLiteral("Languages/Python/main.py"), Qt::CaseInsensitive),
+          QStringLiteral("managed C++ Service API delegation should resolve an approved Python launcher"));
+    const QJsonObject remoteConfig = TradingBotWindowSupport::projectPythonRemoteServiceConfig({
+        {QStringLiteral("mode"), QStringLiteral("Demo/Testnet")},
+        {QStringLiteral("api_key"), QStringLiteral("must-stay-on-service-host")},
+        {QStringLiteral("api_secret"), QStringLiteral("must-stay-on-service-host")},
+        {QStringLiteral("llm_api_key"), QStringLiteral("must-stay-on-service-host")},
+        {QStringLiteral("order_audit_log_path"), QStringLiteral("C:/service-host/audit.jsonl")},
+        {QStringLiteral("connector_order_circuit_incident_log_path"), QStringLiteral("C:/service-host/incidents.jsonl")},
+    });
+    check(remoteConfig.value(QStringLiteral("mode")).toString() == QStringLiteral("Demo/Testnet"),
+          QStringLiteral("remote Python Service API config projection should preserve runtime options"));
+    for (const std::string_view protectedField : PythonParityContract::kPythonRemoteServiceConfigProtectedFields) {
+        check(!remoteConfig.contains(parityString(protectedField)),
+              QStringLiteral("remote Python Service API config projection should omit protected field: %1")
+                  .arg(parityString(protectedField)));
+    }
     check(TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Binance")),
           QStringLiteral("native exchange guard should accept Binance"));
     check(
@@ -223,10 +255,21 @@ int main(int argc, char **argv) {
         check(count == static_cast<int>(entry.entryCount),
               QStringLiteral("C++ Python option catalog JSON count should match manifest: %1").arg(name));
     }
+    for (const auto &hint : PythonParityContract::kPythonOllamaModelSizeHints) {
+        const QString model = parityString(hint.model);
+        const QString label = parityString(hint.label);
+        const QString description = NativeLlmAdvisory::describeLocalModelStatus(
+            QJsonObject{{QStringLiteral("model"), model}}, model);
+        check(description.contains(label),
+              QStringLiteral("C++ local-model size fallback should preserve Python catalog: %1")
+                  .arg(model));
+    }
     const QHash<QString, QString> uiCatalogSourceNames = {
         {QStringLiteral("dashboard loop"), QStringLiteral("dashboard_loop_choices")},
         {QStringLiteral("lead trader"), QStringLiteral("lead_trader_options")},
         {QStringLiteral("LLM use-for"), QStringLiteral("llm_use_for_options")},
+        {QStringLiteral("LLM reasoning effort"), QStringLiteral("llm_reasoning_effort_options")},
+        {QStringLiteral("position percentage units"), QStringLiteral("position_pct_units_options")},
         {QStringLiteral("dashboard strategy templates"), QStringLiteral("dashboard_strategy_templates")},
         {QStringLiteral("backtest templates"), QStringLiteral("backtest_templates")},
         {QStringLiteral("side"), QStringLiteral("side_options")},
@@ -466,6 +509,42 @@ int main(int argc, char **argv) {
     check(!TradingBotWindowSupport::exchangeUsesBinanceApi(QStringLiteral("Bybit")),
           QStringLiteral("native exchange guard should reject non-Binance selections"));
     check(
+        TradingBotWindowSupport::nativeRuntimeIndicatorSourceMarketFamily(
+            QStringLiteral("Binance spot"))
+            == QStringLiteral("spot"),
+        QStringLiteral("C++ native runtime should resolve Python's Binance spot indicator source"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeIndicatorSourceMarketFamily(
+            QStringLiteral("binance_futures"))
+            == QStringLiteral("usd-m-futures"),
+        QStringLiteral("C++ native runtime should resolve Python's canonical futures indicator key"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeIndicatorSourceMarketFamily(
+            QStringLiteral("TradingView"))
+        .isEmpty(),
+        QStringLiteral("C++ native runtime should delegate unknown indicator sources"));
+    const bool generatedCppStandaloneReady = PythonParityContract::kCppStandaloneRuntimeReady;
+    check(
+        TradingBotWindowSupport::nativeRuntimeStandaloneExecutionAllowed(QStringLiteral("Live"))
+            == generatedCppStandaloneReady,
+        QStringLiteral("C++ non-paper execution should follow Python's generated readiness flag"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeStandaloneExecutionAllowed(QStringLiteral("Testnet"))
+            == generatedCppStandaloneReady,
+        QStringLiteral("C++ testnet execution should follow Python's generated readiness flag"));
+    check(
+        TradingBotWindowSupport::nativeRuntimeStandaloneExecutionAllowed(QStringLiteral("Paper Local")),
+        QStringLiteral("C++ local paper simulation should remain available before promotion"));
+    for (const auto &mapping : PythonParityContract::kPythonNativeRuntimeIndicatorSourceMarketFamilies) {
+        const QString sourceKey = parityString(mapping.key);
+        const QString expectedFamily = parityString(mapping.value);
+        check(
+            TradingBotWindowSupport::nativeRuntimeIndicatorSourceMarketFamily(sourceKey)
+                == expectedFamily,
+            QStringLiteral("C++ indicator-source ownership should match Python for %1")
+                .arg(sourceKey));
+    }
+    check(
         TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
             QStringLiteral("binance-sdk-derivatives-trading-usds-futures")),
         QStringLiteral("C++ native runtime should own Python's USD-M futures connector"));
@@ -524,6 +603,39 @@ int main(int argc, char **argv) {
             TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(label) == declaredNative,
             QStringLiteral("C++ connector ownership should match Python for option: %1").arg(key));
     }
+
+    const auto connectorKeys = [](const QComboBox &combo) {
+        QSet<QString> keys;
+        for (int index = 0; index < combo.count(); ++index) {
+            keys.insert(combo.itemData(index).toString());
+        }
+        return keys;
+    };
+    const auto expectedAccountConnectorKeys = [](bool futures) {
+        QSet<QString> keys;
+        for (const auto &mapping : PythonParityContract::kPythonNativeRuntimeConnectorMarketFamilies) {
+            const QString family = parityString(mapping.value);
+            if ((futures && family.endsWith(QStringLiteral("-futures")))
+                || (!futures && family == QStringLiteral("spot"))) {
+                keys.insert(parityString(mapping.key));
+            }
+        }
+        return keys;
+    };
+    QComboBox futuresConnectorCombo;
+    TradingBotWindowSupport::rebuildConnectorComboForAccount(&futuresConnectorCombo, true, true);
+    check(
+        connectorKeys(futuresConnectorCombo) == expectedAccountConnectorKeys(true),
+        QStringLiteral("C++ futures connector dropdown should expose exactly Python's futures connector keys"));
+    QComboBox spotConnectorCombo;
+    TradingBotWindowSupport::rebuildConnectorComboForAccount(&spotConnectorCombo, false, true);
+    check(
+        connectorKeys(spotConnectorCombo) == expectedAccountConnectorKeys(false),
+        QStringLiteral("C++ spot connector dropdown should expose exactly Python's spot connector keys"));
+    check(
+        futuresConnectorCombo.findData(QStringLiteral("oanda-rest")) < 0
+            && spotConnectorCombo.findData(QStringLiteral("oanda-rest")) < 0,
+        QStringLiteral("C++ account connector dropdown must not expose Python-owned broker connectors"));
 
     const auto checkGeneratedChoiceGroup = [&failures, &check](
         const QString &field,
@@ -897,6 +1009,7 @@ int main(int argc, char **argv) {
     check(coinOrderLifecycleServer.listen(QHostAddress::LocalHost, 0),
           QStringLiteral("local Coin-M order lifecycle HTTP test server should listen"));
     QByteArray observedCoinOpenOrdersRequest;
+    QByteArray observedCoinSymbolSettingsRequest;
     QByteArray observedCoinCancelAllRequest;
     QByteArray observedCoinCancelOneRequest;
     QByteArray observedCoinBookTickerRequest;
@@ -912,7 +1025,8 @@ int main(int argc, char **argv) {
     QByteArray observedCoinPositionMarginRequest;
     QObject::connect(&coinOrderLifecycleServer, &QTcpServer::newConnection,
                      [&coinOrderLifecycleServer, &observedCoinOpenOrdersRequest,
-                      &observedCoinCancelAllRequest, &observedCoinCancelOneRequest,
+                       &observedCoinSymbolSettingsRequest,
+                       &observedCoinCancelAllRequest, &observedCoinCancelOneRequest,
                       &observedCoinBookTickerRequest, &observedCoinTradesRequest,
                       &observedCoinLeverageBracketRequest, &observedCoinPositionModeGetRequest,
                       &observedCoinPositionModeChangeRequest, &observedCoinMarginTypeRequest,
@@ -921,8 +1035,9 @@ int main(int argc, char **argv) {
                       &observedCoinPositionMarginRequest]() {
                          QTcpSocket *socket = coinOrderLifecycleServer.nextPendingConnection();
                          QObject::connect(socket, &QTcpSocket::readyRead,
-                                          [socket, &observedCoinOpenOrdersRequest,
-                                           &observedCoinCancelAllRequest,
+                                           [socket, &observedCoinOpenOrdersRequest,
+                                            &observedCoinSymbolSettingsRequest,
+                                            &observedCoinCancelAllRequest,
                                            &observedCoinCancelOneRequest,
                                            &observedCoinBookTickerRequest,
                                            &observedCoinTradesRequest,
@@ -936,12 +1051,17 @@ int main(int argc, char **argv) {
                                            &observedCoinForceOrdersRequest,
                                            &observedCoinPositionMarginRequest]() {
                                               const QByteArray request = socket->readAll();
-                                              if (!request.contains("\r\n\r\n")) {
-                                                  return;
-                                              }
-                                              const QByteArray requestLine =
-                                                  request.left(request.indexOf('\n')).trimmed();
-                                              if (requestLine.startsWith("GET /dapi/v1/openOrders?")) {
+                                               if (!request.contains("\r\n\r\n")) {
+                                                   return;
+                                               }
+                                               const QByteArray requestLine =
+                                                   request.left(request.indexOf('\n')).trimmed();
+                                               if (requestLine.startsWith("GET /dapi/v1/positionRisk?")) {
+                                                   observedCoinSymbolSettingsRequest = requestLine;
+                                                   writeJsonResponseAndClose(
+                                                       socket,
+                                                       R"([{"symbol":"BTCUSD_PERP","positionSide":"BOTH","positionAmt":"0","marginType":"isolated","leverage":"5"}])");
+                                               } else if (requestLine.startsWith("GET /dapi/v1/openOrders?")) {
                                                   observedCoinOpenOrdersRequest = requestLine;
                                                   writeJsonResponseAndClose(
                                                       socket,
@@ -1021,6 +1141,66 @@ int main(int argc, char **argv) {
                      });
     const QString coinOrderLifecycleBaseUrl =
         QStringLiteral("http://127.0.0.1:%1/dapi").arg(coinOrderLifecycleServer.serverPort());
+    const auto coinSymbolSettings = BinanceRestClient::fetchFuturesSymbolSettings(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("btcusd_perp"),
+        false,
+        5000,
+        coinOrderLifecycleBaseUrl);
+    check(coinSymbolSettings.ok
+              && coinSymbolSettings.symbol == QStringLiteral("BTCUSD_PERP")
+              && coinSymbolSettings.marginType == QStringLiteral("ISOLATED")
+              && coinSymbolSettings.leverage == 5
+              && std::abs(coinSymbolSettings.positionAmt) < 1e-12,
+          QStringLiteral("C++ Coin-M symbol settings should preserve flat rows for pre-entry verification"));
+    check(observedCoinSymbolSettingsRequest.startsWith("GET /dapi/v1/positionRisk?"),
+          QStringLiteral("C++ Coin-M symbol settings should use the signed DAPI position-risk endpoint"));
+    const auto coinSettingsPlan = BinanceRestClient::planFuturesOrderSettings(
+        QStringLiteral("btcusd_perp"),
+        QStringLiteral("isolated"),
+        QStringLiteral("cross"),
+        80,
+        0.0,
+        2,
+        50);
+    check(coinSettingsPlan.allowed
+              && coinSettingsPlan.cancelOpenOrders
+              && coinSettingsPlan.changeMarginType
+              && coinSettingsPlan.changeLeverage
+              && coinSettingsPlan.marginType == QStringLiteral("CROSSED")
+              && coinSettingsPlan.leverage == 50,
+          QStringLiteral("C++ futures settings plan should mirror Python flat-account mutation policy"));
+    const auto coinOpenPositionPlan = BinanceRestClient::planFuturesOrderSettings(
+        QStringLiteral("BTCUSD_PERP"),
+        QStringLiteral("isolated"),
+        QStringLiteral("cross"),
+        5,
+        1.0,
+        0,
+        50);
+    check(!coinOpenPositionPlan.allowed && !coinOpenPositionPlan.changeMarginType,
+          QStringLiteral("C++ futures settings plan should block margin changes with open exposure"));
+    const auto accountModesPlan = BinanceRestClient::planFuturesAccountModes(
+        false,
+        true,
+        true,
+        false);
+    check(accountModesPlan.allowed
+              && accountModesPlan.changePositionMode
+              && accountModesPlan.changeMultiAssetsMode
+              && !accountModesPlan.desiredDualSidePosition
+              && accountModesPlan.desiredMultiAssetsMargin,
+          QStringLiteral("C++ Futures account-mode plan should mirror Python mode mutations"));
+    const auto unknownAccountModesPlan = BinanceRestClient::planFuturesAccountModes(
+        true,
+        false,
+        std::nullopt,
+        false);
+    check(!unknownAccountModesPlan.allowed
+              && !unknownAccountModesPlan.changePositionMode
+              && !unknownAccountModesPlan.changeMultiAssetsMode,
+          QStringLiteral("C++ Futures account-mode plan should fail closed on unknown state"));
     const auto coinOpenOrders = BinanceRestClient::fetchOpenFuturesOrders(
         QStringLiteral("key"),
         QStringLiteral("secret"),
@@ -1332,7 +1512,7 @@ int main(int argc, char **argv) {
                 observedSpotOrderRequest = requestLine;
                 writeJsonResponseAndClose(
                     socket,
-                    R"({"symbol":"ETHUSDT","side":"BUY","orderId":42,"status":"NEW","executedQty":"0.1","cummulativeQuoteQty":"200"})");
+                    R"({"success":"true","data":{"symbol":"ETHUSDT","side":"BUY","order_id":"42","status":"NEW","executedQty":"0.1","cummulativeQuoteQty":"200"}})");
             }
         });
     });
@@ -1408,6 +1588,8 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ Spot market order should require and parse a successful response"));
     check(observedSpotOrderRequest.startsWith("POST /api/v3/order?"),
           QStringLiteral("C++ Spot order should request the Spot order endpoint"));
+    check(observedSpotOrderRequest.contains("newClientOrderId=tb-"),
+          QStringLiteral("C++ Spot order should submit a stable client order ID"));
     check(!observedSpotOrderRequest.contains("positionSide")
               && !observedSpotOrderRequest.contains("reduceOnly"),
           QStringLiteral("C++ Spot order should not send Futures-only fields"));
@@ -1443,6 +1625,202 @@ int main(int argc, char **argv) {
               && std::abs(spotPositionCost.quantity - 0.25) < 1e-12
               && std::abs(spotPositionCost.cost - 500.0) < 1e-12,
           QStringLiteral("C++ Spot cost basis should aggregate Python buyer trades"));
+
+    QTcpServer futuresOrderServer;
+    check(futuresOrderServer.listen(QHostAddress::LocalHost, 0),
+          QStringLiteral("local Futures order acknowledgement test server should listen"));
+    int futuresOrderResponses = 0;
+    QObject::connect(&futuresOrderServer, &QTcpServer::newConnection,
+                     [&futuresOrderServer, &futuresOrderResponses]() {
+        QTcpSocket *socket = futuresOrderServer.nextPendingConnection();
+        QObject::connect(socket, &QTcpSocket::readyRead,
+                         [socket, &futuresOrderResponses]() {
+            const QByteArray request = socket->readAll();
+            if (!request.contains("\r\n\r\n")) {
+                return;
+            }
+            ++futuresOrderResponses;
+            QByteArray body;
+            switch (futuresOrderResponses) {
+            case 1:
+                body = R"({"symbol":"BTCUSDT","side":"BUY","orderId":101,"status":"NEW","executedQty":"0","origQty":"0.1","price":"20000"})";
+                break;
+            case 2:
+                body = R"({"symbol":"BTCUSDT","side":"BUY","status":"NEW"})";
+                break;
+            case 3:
+                body = R"({"symbol":"BTCUSDT","side":"BUY","orderId":103})";
+                break;
+            case 4:
+                body = R"({"success":true,"data":{"symbol":"BTCUSDT","side":"BUY","clientOrderId":"client-104","status":"NEW","executedQty":"0.1","price":"20000"}})";
+                break;
+            case 5:
+                body = R"({"symbol":"BTCUSDT","side":"BUY","orderId":105,"status":"EXPIRED_IN_MATCH"})";
+                break;
+            default:
+                body = R"({"success":false,"message":"order rejected"})";
+                break;
+            }
+            writeJsonResponseAndClose(socket, body);
+        });
+    });
+    const QString futuresOrderBaseUrl =
+        QStringLiteral("http://127.0.0.1:%1").arg(futuresOrderServer.serverPort());
+    const auto acceptedFuturesOrder = BinanceRestClient::placeFuturesMarketOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("BUY"),
+        0.1,
+        false,
+        false,
+        QStringLiteral("BOTH"),
+        5000,
+        futuresOrderBaseUrl);
+    const auto missingFuturesOrderId = BinanceRestClient::placeFuturesMarketOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("BUY"),
+        0.1,
+        false,
+        false,
+        QStringLiteral("BOTH"),
+        5000,
+        futuresOrderBaseUrl);
+    const auto missingFuturesOrderStatus = BinanceRestClient::placeFuturesMarketOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("BUY"),
+        0.1,
+        false,
+        false,
+        QStringLiteral("BOTH"),
+        5000,
+        futuresOrderBaseUrl);
+    const auto wrappedFuturesOrder = BinanceRestClient::placeFuturesMarketOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("BUY"),
+        0.1,
+        false,
+        false,
+        QStringLiteral("BOTH"),
+        5000,
+        futuresOrderBaseUrl);
+    const auto expiredFuturesOrder = BinanceRestClient::placeFuturesMarketOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("BUY"),
+        0.1,
+        false,
+        false,
+        QStringLiteral("BOTH"),
+        5000,
+        futuresOrderBaseUrl);
+    const auto rejectedFuturesOrder = BinanceRestClient::placeFuturesMarketOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("BUY"),
+        0.1,
+        false,
+        false,
+        QStringLiteral("BOTH"),
+        5000,
+        futuresOrderBaseUrl);
+    check(acceptedFuturesOrder.ok && acceptedFuturesOrder.orderId == QStringLiteral("101")
+              && acceptedFuturesOrder.status == QStringLiteral("NEW"),
+          QStringLiteral("C++ Futures market order should accept a complete acknowledgement"));
+    check(!missingFuturesOrderId.ok
+              && missingFuturesOrderId.error.contains(QStringLiteral("missing orderId")),
+          QStringLiteral("C++ Futures market order should reject acknowledgements without orderId"));
+    check(!missingFuturesOrderStatus.ok
+              && missingFuturesOrderStatus.error.contains(QStringLiteral("missing explicit status")),
+          QStringLiteral("C++ Futures market order should reject acknowledgements without status"));
+    check(wrappedFuturesOrder.ok && wrappedFuturesOrder.orderId == QStringLiteral("client-104")
+              && wrappedFuturesOrder.status == QStringLiteral("NEW")
+              && std::abs(wrappedFuturesOrder.executedQty - 0.1) < 1e-12,
+          QStringLiteral("C++ Futures market order should normalize Python-compatible wrapped acknowledgements"));
+    check(!expiredFuturesOrder.ok
+              && expiredFuturesOrder.error.contains(QStringLiteral("EXPIRED_IN_MATCH")),
+          QStringLiteral("C++ Futures market order should reject terminal failure acknowledgements"));
+    check(!rejectedFuturesOrder.ok
+              && rejectedFuturesOrder.error.contains(QStringLiteral("rejected")),
+          QStringLiteral("C++ Futures market order should reject success=false acknowledgements"));
+    check(futuresOrderResponses == 6,
+          QStringLiteral("C++ Futures acknowledgement tests should exercise every response case"));
+
+    QTcpServer futuresFallbackServer;
+    check(futuresFallbackServer.listen(QHostAddress::LocalHost, 0),
+          QStringLiteral("local Futures prefix fallback test server should listen"));
+    int futuresFallbackRequests = 0;
+    QByteArray primaryFallbackRequest;
+    QByteArray alternateFallbackRequest;
+    QObject::connect(&futuresFallbackServer, &QTcpServer::newConnection,
+                     [&futuresFallbackServer, &futuresFallbackRequests, &primaryFallbackRequest,
+                      &alternateFallbackRequest]() {
+        QTcpSocket *socket = futuresFallbackServer.nextPendingConnection();
+        QObject::connect(socket, &QTcpSocket::readyRead,
+                         [socket, &futuresFallbackRequests, &primaryFallbackRequest,
+                          &alternateFallbackRequest]() {
+            const QByteArray request = socket->readAll();
+            if (!request.contains("\r\n\r\n")) {
+                return;
+            }
+            const QByteArray requestLine = request.left(request.indexOf('\n')).trimmed();
+            ++futuresFallbackRequests;
+            QByteArray body;
+            if (futuresFallbackRequests == 1) {
+                primaryFallbackRequest = requestLine;
+                body = QByteArrayLiteral(R"({"success":false,"message":"primary rejected"})");
+            } else {
+                alternateFallbackRequest = requestLine;
+                body = QByteArrayLiteral(
+                    R"({"symbol":"BTCUSDT","side":"BUY","orderId":707,"status":"NEW","executedQty":"0.1","price":"20000"})");
+            }
+            writeJsonResponseAndClose(socket, body);
+        });
+    });
+    const QString futuresFallbackBaseUrl =
+        QStringLiteral("http://127.0.0.1:%1").arg(futuresFallbackServer.serverPort());
+    const auto fallbackFuturesOrder = BinanceRestClient::placeFuturesMarketOrder(
+        QStringLiteral("key"),
+        QStringLiteral("secret"),
+        QStringLiteral("BTCUSDT"),
+        QStringLiteral("BUY"),
+        0.1,
+        true,
+        false,
+        QStringLiteral("BOTH"),
+        5000,
+        futuresFallbackBaseUrl);
+    check(fallbackFuturesOrder.ok && fallbackFuturesOrder.orderId == QStringLiteral("707")
+              && fallbackFuturesOrder.status == QStringLiteral("NEW"),
+          QStringLiteral("C++ Futures testnet prefix fallback should accept the alternate response"));
+    check(futuresFallbackRequests == 2
+              && primaryFallbackRequest.startsWith("POST /fapi/v1/order?")
+              && alternateFallbackRequest.startsWith("POST /dapi/v1/order?"),
+          QStringLiteral("C++ Futures fallback should retry the order through the alternate API prefix"));
+    const auto extractClientOrderId = [](const QByteArray &requestLine) {
+        const QByteArray marker = QByteArrayLiteral("newClientOrderId=");
+        const int markerIndex = requestLine.indexOf(marker);
+        if (markerIndex < 0) {
+            return QByteArray{};
+        }
+        const int valueStart = markerIndex + marker.size();
+        const int valueEnd = requestLine.indexOf('&', valueStart);
+        return requestLine.mid(valueStart, valueEnd < 0 ? -1 : valueEnd - valueStart);
+    };
+    const QByteArray primaryClientOrderId = extractClientOrderId(primaryFallbackRequest);
+    const QByteArray alternateClientOrderId = extractClientOrderId(alternateFallbackRequest);
+    check(primaryClientOrderId.startsWith("tb-")
+              && primaryClientOrderId == alternateClientOrderId
+              && primaryClientOrderId.size() == 35,
+          QStringLiteral("C++ Futures fallback should preserve one stable client order ID"));
 
     const QStringList dashboardResponseFields =
         TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("dashboard"));

@@ -22,11 +22,20 @@ const {
   formatPreflightLabel,
   importBacktestRowsToDashboard,
   mergeUniqueLines,
+  normalizeAccountMode,
+  accountTypeControlState,
+  accountModeMarginConstraint,
+  timeInForceGtdConstraint,
+  leadTraderControlState,
+  llmControlState,
+  runtimeControlState,
+  stopLossControlState,
   normalizeDesign,
   normalizeTheme,
   normalizeEnvironmentVersionRows,
   normalizePositionCloseSide,
   normalizeOverrideRow,
+  nativeRuntimeDelegationRequired,
   optionsMatchingKeys,
   overrideImportKey,
   pythonLoopIntervalSeconds,
@@ -37,11 +46,131 @@ const {
   selectBacktestScanBest
 } = behavior;
 
+assert.equal(normalizeAccountMode("portfolio"), "Portfolio Margin");
+assert.equal(normalizeAccountMode("Classic Trading"), "Classic Trading");
+assert.deepEqual(accountTypeControlState({ accountType: "Spot" }), {
+  accountType: "Spot",
+  isFutures: false,
+  futuresOnlyDisabled: true,
+  leverageDisabled: true,
+  sideDisabled: true,
+  forcedSide: "BUY"
+});
+assert.deepEqual(accountTypeControlState({ accountType: "Futures", runtimeLocked: true }), {
+  accountType: "Futures",
+  isFutures: true,
+  futuresOnlyDisabled: true,
+  leverageDisabled: true,
+  sideDisabled: true,
+  forcedSide: null
+});
+assert.deepEqual(
+  accountModeMarginConstraint({ accountMode: "Portfolio Margin", marginMode: "Isolated" }),
+  { accountMode: "Portfolio Margin", marginMode: "Cross", marginModeDisabled: true }
+);
+assert.deepEqual(
+  accountModeMarginConstraint({ accountMode: "Classic Trading", marginMode: "Isolated" }),
+  { accountMode: "Classic Trading", marginMode: "Isolated", marginModeDisabled: false }
+);
+assert.deepEqual(timeInForceGtdConstraint("GTD"), { gtdEnabled: true });
+assert.deepEqual(timeInForceGtdConstraint("IOC"), { gtdEnabled: false });
+assert.deepEqual(leadTraderControlState(false), { profileDisabled: true });
+assert.deepEqual(leadTraderControlState(true), { profileDisabled: false });
+assert.deepEqual(llmControlState({ enabled: false }), { containerDisabled: true });
+assert.deepEqual(llmControlState({ enabled: true }), { containerDisabled: false });
+assert.deepEqual(llmControlState({ enabled: true, controlsLocked: true }), { containerDisabled: true });
+assert.deepEqual(runtimeControlState(false), { active: false, startDisabled: false, stopDisabled: true });
+assert.deepEqual(runtimeControlState(true), { active: true, startDisabled: true, stopDisabled: false });
+assert.deepEqual(stopLossControlState({ enabled: false, mode: "both" }), {
+  mode: "both",
+  modeDisabled: true,
+  scopeDisabled: true,
+  usdtDisabled: true,
+  percentDisabled: true
+});
+assert.deepEqual(stopLossControlState({ enabled: true, mode: "usdt" }), {
+  mode: "usdt",
+  modeDisabled: false,
+  scopeDisabled: false,
+  usdtDisabled: false,
+  percentDisabled: true
+});
+assert.deepEqual(stopLossControlState({ enabled: true, mode: "percent" }), {
+  mode: "percent",
+  modeDisabled: false,
+  scopeDisabled: false,
+  usdtDisabled: true,
+  percentDisabled: false
+});
+assert.deepEqual(stopLossControlState({ enabled: true, mode: "both", controlsLocked: true }), {
+  mode: "both",
+  modeDisabled: true,
+  scopeDisabled: true,
+  usdtDisabled: true,
+  percentDisabled: true
+});
+
 assert.equal(normalizePositionCloseSide("long"), "L");
 assert.equal(normalizePositionCloseSide("BUY"), "L");
 assert.equal(normalizePositionCloseSide("short"), "S");
 assert.equal(normalizePositionCloseSide("sell"), "S");
 assert.equal(normalizePositionCloseSide("both"), "");
+const nativeOwnership = {
+  direct_exchanges: ["Binance"],
+  direct_connector_backends: [
+    "binance-sdk-derivatives-trading-usds-futures",
+    "binance-sdk-spot",
+    "ccxt",
+    "python-binance"
+  ],
+  indicator_source_market_families: [["binance_spot", "spot"], ["binance_futures", "usd-m-futures"]]
+};
+const nativeConnectorOptions = [
+  { key: "binance-sdk-spot", label: "Binance SDK Spot" },
+  { key: "ccxt", label: "CCXT (Unified)" },
+  { key: "oanda-rest", label: "OANDA REST-v20" }
+];
+assert.equal(nativeRuntimeDelegationRequired({
+  config: { selected_exchange: "Binance", connector_backend: "CCXT (Unified)" },
+  ownership: nativeOwnership,
+  connectorOptions: nativeConnectorOptions
+}), false);
+assert.equal(nativeRuntimeDelegationRequired({
+  config: { selected_exchange: "Bybit", connector_backend: "ccxt" },
+  ownership: nativeOwnership,
+  connectorOptions: nativeConnectorOptions
+}), true);
+assert.equal(nativeRuntimeDelegationRequired({
+  config: { selected_exchange: "Binance", connector_backend: "OANDA REST-v20" },
+  ownership: nativeOwnership,
+  connectorOptions: nativeConnectorOptions
+}), true);
+assert.equal(
+  behavior.normalizeConnectorBackend("binance_sdk_derivatives_trading_usds_futures"),
+  "binance-sdk-derivatives-trading-usds-futures"
+);
+assert.equal(
+  behavior.normalizeConnectorBackend("unknown-provider"),
+  "binance-sdk-derivatives-trading-usds-futures"
+);
+assert.equal(nativeRuntimeDelegationRequired({
+  config: {
+    selected_exchange: "Binance",
+    connector_backend: "binance_sdk_derivatives_trading_usds_futures"
+  },
+  ownership: nativeOwnership,
+  connectorOptions: nativeConnectorOptions
+}), false);
+assert.equal(nativeRuntimeDelegationRequired({
+  config: { selected_exchange: "Binance", connector_backend: "unknown-provider" },
+  ownership: nativeOwnership,
+  connectorOptions: nativeConnectorOptions
+}), true);
+assert.equal(nativeRuntimeDelegationRequired({
+  config: { selected_exchange: "Binance", connector_backend: "ccxt", indicator_source: "TradingView" },
+  ownership: nativeOwnership,
+  connectorOptions: nativeConnectorOptions
+}), true);
 assert.equal(normalizeDesign("workstation"), "Workstation");
 assert.equal(normalizeDesign("invalid"), "Classic");
 assert.equal(designModeClass("Workstation"), "workstation-design");
@@ -72,6 +201,13 @@ assert.deepEqual(
     { key: "original", label: "Original" }
   ]
 );
+assert.deepEqual(
+  behavior.preserveConfigKeys(
+    { advanced_risk: { enabled: true }, code_language: "Rust", secret: "ignored-by-key-list", omitted: undefined },
+    ["advanced_risk", "code_language", "omitted", "missing"]
+  ),
+  { advanced_risk: { enabled: true }, code_language: "Rust" }
+);
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -87,6 +223,35 @@ vm.runInNewContext(
 );
 const intervalReference = parityContext.window.PythonParityContract.intervalSecondsReference;
 assert.ok(Array.isArray(intervalReference) && intervalReference.length > 0);
+const generatedOwnership = parityContext.window.PythonParityContract.nativeRuntimeOwnership;
+const generatedConnectorOptions = parityContext.window.PythonParityContract.connectorOptions;
+const connectorNormalizationReference = parityContext.window.PythonParityContract.connectorNormalizationReference;
+assert.ok(Array.isArray(connectorNormalizationReference) && connectorNormalizationReference.length > 0);
+for (const referenceCase of connectorNormalizationReference) {
+  assert.equal(
+    behavior.normalizeConnectorBackend(referenceCase.input),
+    referenceCase.expected,
+    `connector normalization drifted for ${referenceCase.name}`
+  );
+}
+assert.equal(nativeRuntimeDelegationRequired({
+  config: {
+    selected_exchange: "Binance",
+    connector_backend: "binance_sdk_derivatives_trading_usds_futures"
+  },
+  ownership: generatedOwnership,
+  connectorOptions: generatedConnectorOptions
+}), false, "generated Python native connector aliases must stay native-owned");
+assert.equal(nativeRuntimeDelegationRequired({
+  config: { selected_exchange: "Binance", connector_backend: "OANDA REST-v20" },
+  ownership: generatedOwnership,
+  connectorOptions: generatedConnectorOptions
+}), true, "generated Python provider connectors must stay delegated");
+assert.equal(nativeRuntimeDelegationRequired({
+  config: { selected_exchange: "Binance", connector_backend: "unlisted-provider" },
+  ownership: generatedOwnership,
+  connectorOptions: generatedConnectorOptions
+}), true, "unknown connector values must fail closed to delegation");
 const optionCatalogs = JSON.parse(parityContext.window.PythonParityContract.optionCatalogsJson);
 assert.deepEqual(
   optionCatalogs.indicator_ma_type_options.map((option) => option.key),
@@ -136,6 +301,17 @@ for (const requiredStreamFragment of [
   "applyDashboardPayload",
   "hydrateControls: false"
 ]) assert.ok(indexHtml.includes(requiredStreamFragment), `missing dashboard stream fragment: ${requiredStreamFragment}`);
+for (const requiredConfigRoundTripFragment of [
+  "pythonConfigPassthroughKeys",
+  "Object.keys(defaultExecution)",
+  "Object.keys(riskDefaults)",
+  "capturePythonConfigPassthrough",
+  "hydratedPythonConfigPassthrough",
+  "...hydratedPythonConfigPassthrough",
+  '"code_language"',
+  '"selected_rust_framework"',
+  '"selected_forex_broker"'
+]) assert.ok(indexHtml.includes(requiredConfigRoundTripFragment), `missing Python config round-trip fragment: ${requiredConfigRoundTripFragment}`);
 for (const requiredDesignFragment of [
   'id="config-design"',
   "applyDesignMode",
@@ -190,6 +366,30 @@ for (const requiredPythonConfigParityFragment of [
 ]) assert.ok(
   indexHtml.includes(requiredPythonConfigParityFragment),
   `missing Python config parity fragment: ${requiredPythonConfigParityFragment}`
+);
+for (const requiredPythonDefaultResolverFragment of [
+  "const firstEnabledOptionKey",
+  "const configuredOptionKey",
+  "const executionOptionDefault",
+  "const backtestOptionDefault",
+  "const uiOptionDefault",
+  'executionOptionDefault("account_type"',
+  'backtestOptionDefault("symbol_source"',
+  'uiOptionDefault("selected_exchange"'
+]) assert.ok(
+  indexHtml.includes(requiredPythonDefaultResolverFragment),
+  `missing source-driven option fallback fragment: ${requiredPythonDefaultResolverFragment}`
+);
+for (const stalePythonFallback of [
+  'selectedText("config-account-type") || defaultExecution.account_type || "Futures"',
+  'selectedText("config-margin-mode") || defaultExecution.margin_mode || "Isolated"',
+  'selectedText("config-position-mode") || defaultExecution.position_mode || "Hedge"',
+  'selectedText("config-assets-mode") || defaultExecution.assets_mode || "Single-Asset"',
+  'selectedText("exchange-select") || uiDefaults.selected_exchange || "Binance"',
+  'selectedValue("backtest-logic") || defaultBacktest.logic || "AND"'
+]) assert.ok(
+  !indexHtml.includes(stalePythonFallback),
+  `stale duplicated Python default remains in Tauri UI: ${stalePythonFallback}`
 );
 for (const requiredIndicatorParityFragment of [
   "pythonOptionCatalogs",

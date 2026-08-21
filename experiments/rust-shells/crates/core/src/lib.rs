@@ -197,6 +197,10 @@ pub fn python_source_llm_use_for_options() -> &'static [NativePythonUiOption] {
     generated_python_parity::PYTHON_LLM_USE_FOR_OPTIONS
 }
 
+pub fn python_source_llm_reasoning_effort_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_LLM_REASONING_EFFORT_OPTIONS
+}
+
 pub fn python_source_dashboard_strategy_templates() -> &'static [NativePythonUiOption] {
     generated_python_parity::PYTHON_DASHBOARD_STRATEGY_TEMPLATES
 }
@@ -307,6 +311,10 @@ pub fn python_source_chart_view_options() -> &'static [NativePythonUiOption] {
 
 pub fn python_source_positions_view_options() -> &'static [NativePythonUiOption] {
     generated_python_parity::PYTHON_POSITIONS_VIEW_OPTIONS
+}
+
+pub fn python_source_position_pct_units_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_POSITION_PCT_UNITS_OPTIONS
 }
 
 pub fn python_source_cpp_contract_parity_ready() -> bool {
@@ -1208,12 +1216,12 @@ mod tests {
             .sum::<usize>();
         assert_eq!(
             generated_python_parity::PYTHON_OPTION_CATALOG_COUNT,
-            44,
+            46,
             "the generated native contract must contain every Python option catalog"
         );
         assert_eq!(
             generated_python_parity::PYTHON_OPTION_CATALOG_ENTRY_COUNT,
-            255,
+            267,
             "the generated native contract must contain every Python option entry"
         );
         assert_eq!(
@@ -1331,6 +1339,8 @@ mod tests {
                 "dashboard loop" => "dashboard_loop_choices",
                 "lead trader" => "lead_trader_options",
                 "LLM use-for" => "llm_use_for_options",
+                "LLM reasoning effort" => "llm_reasoning_effort_options",
+                "position percentage units" => "position_pct_units_options",
                 "dashboard strategy templates" => "dashboard_strategy_templates",
                 "backtest templates" => "backtest_templates",
                 "side" => "side_options",

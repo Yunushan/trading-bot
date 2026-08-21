@@ -1,4 +1,5 @@
 #include "NativeDesktopShell.h"
+#include "generated/PythonParityContract.h"
 
 #include <QJsonArray>
 
@@ -256,14 +257,18 @@ QJsonObject normalizeDesktopTheme(const QString &name) {
 }
 
 QJsonObject cppDesktopShellOwnershipContract() {
+    const auto executionScope = PythonParityContract::kPythonNativeRuntimeExecutionScope;
     return {
         {QStringLiteral("status"), QStringLiteral("production-qt-shell-parity-contract")},
         {QStringLiteral("owns_desktop_tab_lifecycle"), true},
         {QStringLiteral("owns_release_entrypoint"), true},
-        {QStringLiteral("owns_trading_execution"), true},
-        {QStringLiteral("native_trading_execution_scope"), QStringLiteral("binance-spot-usds-and-coin-futures")},
+        {QStringLiteral("owns_trading_execution"), PythonParityContract::kPythonNativeRuntimeExecutionCapability},
+        {QStringLiteral("native_trading_execution_scope"),
+         QString::fromUtf8(executionScope.data(), static_cast<qsizetype>(executionScope.size()))},
+        {QStringLiteral("standalone_runtime_ready"), PythonParityContract::kCppStandaloneRuntimeReady},
         {QStringLiteral("primary_tabs"), stringArray(primaryTabTitles())},
-        {QStringLiteral("execution_boundary"), QStringLiteral("The C++ runtime owns Binance Spot, USD-M, and Coin-M Futures execution; unimplemented venues remain evidence-gated and unsupported by the native order path.")},
+        {QStringLiteral("execution_boundary"),
+         QStringLiteral("The C++ runtime owns the Python-declared native execution scope; standalone production promotion remains evidence-gated.")},
     };
 }
 

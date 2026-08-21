@@ -49,6 +49,17 @@ The C++ experiment already contains native runtime pieces that Rust does not:
 - `TradingBotWindow.positions.cpp`: live futures position/balance refresh and
   local table reconciliation.
 
+For hybrid parity testing, the managed local Service API can host the real
+Python desktop execution bridge instead of the lifecycle-only service process.
+The Tauri-managed service now defaults to the canonical Python desktop
+execution host and launches the desktop entrypoint with `--headless-service`;
+the window remains hidden, but Python's existing desktop control dispatcher
+owns strategy, account, position, and order execution. Set
+`TRADING_BOT_SERVICE_RUNTIME=service` only when an API-only/lifecycle service is
+intentionally required for diagnostics. This is an execution-delegation path,
+not native Rust promotion: the standalone Rust runtime readiness flag remains
+false until its independent evidence gate passes.
+
 `trading-bot-core` now has a native `BinanceRestMarketDataClient` foundation for
 exchangeInfo USDT symbols, optional 24h quote-volume ordering, klines, ticker
 prices, and Binance error payload handling. It also has `BinanceWebSocketClient`

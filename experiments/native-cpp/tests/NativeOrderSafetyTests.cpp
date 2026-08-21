@@ -143,9 +143,9 @@ int main(int argc, char **argv) {
     for (const auto &catalog : PythonParityContract::kPythonUiOptionCatalogs) {
         pythonUiOptionEntryCount += catalog.size;
     }
-    check(PythonParityContract::kPythonOptionCatalogCount == 44,
+    check(PythonParityContract::kPythonOptionCatalogCount == 46,
           QStringLiteral("generated native contract must contain every Python option catalog"));
-    check(PythonParityContract::kPythonOptionCatalogEntryCount == 255,
+    check(PythonParityContract::kPythonOptionCatalogEntryCount == 267,
           QStringLiteral("generated native contract must contain every Python option entry"));
     check(PythonParityContract::kPythonUiOptionCatalogCount
               == PythonParityContract::kPythonUiOptionCatalogs.size(),
@@ -1100,6 +1100,9 @@ int main(int argc, char **argv) {
         batchRequest.optimizerMaxDurationSeconds
             == static_cast<qint64>(pythonBacktestDefaults.value(QStringLiteral("optimizer_max_duration_seconds")).toDouble()),
         QStringLiteral("native C++ optimizer duration default should match Python"));
+    check(
+        batchRequest.scanTopN == pythonBacktestDefaults.value(QStringLiteral("scan_top_n")).toInt(200),
+        QStringLiteral("native C++ scan top-N default should match Python"));
     batchRequest.symbols = {QStringLiteral("BTCUSDT"), QStringLiteral("ETHUSDT")};
     batchRequest.intervals = {QStringLiteral("1m"), QStringLiteral("1 minute"), QStringLiteral("60 seconds")};
     batchRequest.indicatorConfigs.insert(QStringLiteral("rsi"), optimizerConfigs.value(QStringLiteral("rsi")));
@@ -1124,6 +1127,23 @@ int main(int argc, char **argv) {
     check(batchSnapshot.value(QStringLiteral("top_run")).toObject().value(QStringLiteral("source")).toString()
               == QStringLiteral("native-cpp-backtest"),
           QStringLiteral("native batch backtest should identify its native C++ source"));
+
+    NativeBacktestBatchRuntime::BatchRequest topNBatchRequest = batchRequest;
+    topNBatchRequest.optimizerMode = QStringLiteral("single");
+    topNBatchRequest.optimizerScope = QStringLiteral("top_n");
+    topNBatchRequest.optimizerEnabled = true;
+    topNBatchRequest.scanTopN = 1;
+    const QJsonObject topNBatchSnapshot = NativeBacktestBatchRuntime::runBatch(
+        topNBatchRequest,
+        [&indicatorCandles](const QString &, const QString &, const NativeBacktestBatchRuntime::StopCallback &) {
+            return NativeBacktestBatchRuntime::CandleLoadResult{true, indicatorCandles, {}};
+        });
+    check(topNBatchSnapshot.value(QStringLiteral("state")).toString() == QStringLiteral("completed")
+              && topNBatchSnapshot.value(QStringLiteral("symbol_count")).toInt() == 1
+              && topNBatchSnapshot.value(QStringLiteral("processed_count")).toInt() == 1
+              && topNBatchSnapshot.value(QStringLiteral("optimizer_scope")).toString() == QStringLiteral("top_n")
+              && topNBatchSnapshot.value(QStringLiteral("scan_top_n")).toInt() == 1,
+          QStringLiteral("native C++ top-N optimizer scope should match Python batch semantics and provenance"));
 
     NativeBacktestBatchRuntime::BatchRequest budgetBatchRequest = batchRequest;
     budgetBatchRequest.symbols = {QStringLiteral("BTCUSDT"), QStringLiteral("ETHUSDT")};
@@ -1386,6 +1406,41 @@ int main(int argc, char **argv) {
               && std::abs(capitalAllowed.marginEstimateUsdt - 20.0) < 1e-12
               && capitalAllowed.desiredPositionSide == QStringLiteral("LONG"),
           QStringLiteral("C++ capital guard should allow a position within the Python allocation cap"));
+
+    NativeOrderSafety::CapitalExposureGuardInput spotSellGuard = capitalGuard;
+    spotSellGuard.market = QStringLiteral("spot");
+    spotSellGuard.side = QStringLiteral("SELL");
+    spotSellGuard.availableUsdt = 0.0;
+    spotSellGuard.walletUsdt = 0.0;
+    spotSellGuard.spotBaseFree = 10.0;
+    spotSellGuard.leverage = 20;
+    spotSellGuard.requestedQuantity = 0.2;
+    spotSellGuard.normalizedQuantity = 0.2;
+    const NativeOrderSafety::CapitalExposureGuardResult spotSellAllowed =
+        NativeOrderSafety::guardFuturesCapitalExposure(spotSellGuard);
+    check(spotSellAllowed.allowed
+              && std::abs(spotSellAllowed.quantityEstimate - 0.2) < 1e-12
+              && std::abs(spotSellAllowed.targetMarginUsdt - 20.0) < 1e-12
+              && std::abs(spotSellAllowed.marginEstimateUsdt - 20.0) < 1e-12,
+          QStringLiteral("C++ Spot SELL guard should size from free base inventory and ignore leverage"));
+
+    NativeOrderSafety::CapitalExposureGuardInput spotNoInventory = spotSellGuard;
+    spotNoInventory.spotBaseFree = 0.0;
+    const NativeOrderSafety::CapitalExposureGuardResult spotNoInventoryBlocked =
+        NativeOrderSafety::guardFuturesCapitalExposure(spotNoInventory);
+    check(!spotNoInventoryBlocked.allowed
+              && spotNoInventoryBlocked.reason.contains(QStringLiteral("no available base-asset")),
+          QStringLiteral("C++ Spot SELL guard should block an unavailable base balance"));
+
+    NativeOrderSafety::CapitalExposureGuardInput spotBelowMinimum = spotSellGuard;
+    spotBelowMinimum.spotBaseFree = 1.0;
+    spotBelowMinimum.requestedQuantity = 0.02;
+    spotBelowMinimum.normalizedQuantity = 0.02;
+    const NativeOrderSafety::CapitalExposureGuardResult spotBelowMinimumBlocked =
+        NativeOrderSafety::guardFuturesCapitalExposure(spotBelowMinimum);
+    check(!spotBelowMinimumBlocked.allowed
+              && spotBelowMinimumBlocked.reason.contains(QStringLiteral("below minNotional")),
+          QStringLiteral("C++ Spot SELL guard should preserve Python minNotional blocking"));
 
     NativeOrderSafety::CapitalExposureGuardInput flipQuantityGuard = capitalGuard;
     flipQuantityGuard.flipCloseQuantity = 0.5;
@@ -1671,8 +1726,12 @@ int main(int argc, char **argv) {
     check(cppShellOwnership.value(QStringLiteral("owns_trading_execution")).toBool(false),
           QStringLiteral("native desktop shell should own its implemented Binance trading paths"));
     check(cppShellOwnership.value(QStringLiteral("native_trading_execution_scope")).toString()
-              == QStringLiteral("binance-spot-usds-and-coin-futures"),
-          QStringLiteral("native desktop shell should bound native execution ownership to implemented Binance markets"));
+              == QString::fromUtf8(PythonParityContract::kPythonNativeRuntimeExecutionScope.data(),
+                                   static_cast<qsizetype>(PythonParityContract::kPythonNativeRuntimeExecutionScope.size())),
+          QStringLiteral("native desktop shell should derive execution scope from Python"));
+    check(cppShellOwnership.value(QStringLiteral("standalone_runtime_ready")).toBool(true)
+              == PythonParityContract::kCppStandaloneRuntimeReady,
+          QStringLiteral("native desktop shell should expose the Python promotion gate separately from capability"));
 
     const QJsonObject supportedExchange = NativeExchangeConnectors::buildExchangeSupportPayload(
         NativeExchangeConnectors::ExchangeSupportInput{
@@ -4269,6 +4328,26 @@ int main(int argc, char **argv) {
           QStringLiteral("disabled preflight should include start disabled reason"));
     check(jsonArrayContains(disabledReasons, QStringLiteral("Operational live order safety gate is disabled.")),
           QStringLiteral("disabled preflight should include order disabled reason"));
+
+    NativeOrderSafety::OperationalPreflightInput bootstrapPreflight;
+    bootstrapPreflight.mode = QStringLiteral("Live");
+    bootstrapPreflight.health = QStringLiteral("ok");
+    bootstrapPreflight.generatedAt = preflightNow;
+    bootstrapPreflight.exchangeConnector = freshness(0, 120.0, QStringLiteral("unknown"), QStringLiteral("cpp-runtime-bootstrap"));
+    bootstrapPreflight.account = freshness(0, 300.0, QStringLiteral("unknown"), QStringLiteral("cpp-runtime-bootstrap"));
+    bootstrapPreflight.portfolio = freshness(0, 300.0, QStringLiteral("unknown"), QStringLiteral("cpp-runtime-bootstrap"));
+    bootstrapPreflight.execution.timestampField = QStringLiteral("heartbeat_at");
+    bootstrapPreflight.execution.maxAgeSeconds = 10.0;
+    bootstrapPreflight.execution.shouldWarn = false;
+    bootstrapPreflight.execution.state = QStringLiteral("idle");
+    bootstrapPreflight.execution.source = QStringLiteral("cpp-runtime-bootstrap");
+    const QJsonObject bootstrapSnapshot = NativeOrderSafety::buildOperationalPreflightSnapshot(bootstrapPreflight);
+    check(NativeOrderSafety::operationalPreflightStartAllowed(bootstrapSnapshot),
+          QStringLiteral("idle bootstrap without an execution heartbeat should allow live start like Python"));
+    check(!jsonArrayContains(
+              bootstrapSnapshot.value(QStringLiteral("critical_stale")).toObject().value(QStringLiteral("start")).toArray(),
+              QStringLiteral("execution heartbeat")),
+          QStringLiteral("idle bootstrap should not mark the missing heartbeat stale"));
 
     const auto checkStopIntentReference = [&](std::string_view referenceJson,
                                                const QString &referenceLabel) {

@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 
 use crate::generated_python_parity::{
     PYTHON_LLM_MODEL_CATALOG_PATH_ENV, PYTHON_LLM_PROVIDER_CHOICES, PYTHON_LLM_PROVIDERS,
-    PYTHON_SERVICE_ROUTES, PythonLlmProvider,
+    PYTHON_OLLAMA_MODEL_SIZE_HINTS, PYTHON_SERVICE_ROUTES, PythonLlmProvider,
 };
 use crate::order_audit::{redact_text, redact_value};
 
@@ -604,28 +604,9 @@ pub fn estimate_ollama_model_size_label(model: impl AsRef<str>) -> String {
     if clean.is_empty() {
         return "unknown size".to_owned();
     }
-    let size = match clean.as_str() {
-        "qwen3:0.6b" | "llama3.2:1b" | "gemma3:1b" => "about 1 GB",
-        "qwen3:1.7b" | "llama3.2:3b" | "deepseek-r1:1.5b" => "about 2 GB",
-        "qwen3:4b" | "gemma3:4b" => "about 3 GB",
-        "qwen3:8b" | "llama3.1:8b" | "deepseek-r1:7b" | "deepseek-r1:8b" => "about 5 GB",
-        "qwen3:14b" | "qwen2.5:14b" | "qwen2.5-coder:14b" | "deepseek-r1:14b" => "about 9 GB",
-        "qwen3:30b-a3b" => "about 19 GB",
-        "qwen3:32b" | "qwen2.5:32b" | "qwen2.5-coder:32b" | "qwq:32b" | "deepseek-r1:32b" => {
-            "about 20 GB"
-        }
-        "qwen3-vl:8b" => "about 6 GB",
-        "qwen3-vl:32b" => "about 21 GB",
-        "qwen2.5:7b" | "qwen2.5-coder:7b" => "about 5 GB",
-        "qwen2.5:72b" => "about 45 GB",
-        "llama3.1:70b" | "deepseek-r1:70b" => "about 43 GB",
-        "gemma3:12b" => "about 8 GB",
-        "gemma3:27b" => "about 17 GB",
-        "gpt-oss:20b" => "about 13 GB",
-        "gpt-oss:120b" => "about 75 GB",
-        _ => "size varies by model and quantization",
-    };
-    size.to_owned()
+    ollama_model_size_hint(&clean)
+        .map(|(label, _)| label.to_owned())
+        .unwrap_or_else(|| "size varies by model and quantization".to_owned())
 }
 
 pub fn estimate_ollama_model_size_gb(model: impl AsRef<str>) -> Option<f64> {
@@ -633,27 +614,23 @@ pub fn estimate_ollama_model_size_gb(model: impl AsRef<str>) -> Option<f64> {
     if clean.is_empty() {
         return None;
     }
-    match clean.as_str() {
-        "qwen3:0.6b" | "llama3.2:1b" | "gemma3:1b" => Some(1.0),
-        "qwen3:1.7b" | "llama3.2:3b" | "deepseek-r1:1.5b" => Some(2.0),
-        "qwen3:4b" | "gemma3:4b" => Some(3.0),
-        "qwen3:8b" | "llama3.1:8b" | "deepseek-r1:7b" | "deepseek-r1:8b" => Some(5.0),
-        "qwen3:14b" | "qwen2.5:14b" | "qwen2.5-coder:14b" | "deepseek-r1:14b" => Some(9.0),
-        "qwen3:30b-a3b" => Some(19.0),
-        "qwen3:32b" | "qwen2.5:32b" | "qwen2.5-coder:32b" | "qwq:32b" | "deepseek-r1:32b" => {
-            Some(20.0)
-        }
-        "qwen3-vl:8b" => Some(6.0),
-        "qwen3-vl:32b" => Some(21.0),
-        "qwen2.5:7b" | "qwen2.5-coder:7b" => Some(5.0),
-        "qwen2.5:72b" => Some(45.0),
-        "llama3.1:70b" | "deepseek-r1:70b" => Some(43.0),
-        "gemma3:12b" => Some(8.0),
-        "gemma3:27b" => Some(17.0),
-        "gpt-oss:20b" => Some(13.0),
-        "gpt-oss:120b" => Some(75.0),
-        _ => None,
-    }
+    ollama_model_size_hint(&clean).and_then(|(_, size_gb)| size_gb)
+}
+
+fn ollama_model_size_hint(model: &str) -> Option<(&'static str, Option<f64>)> {
+    let direct = PYTHON_OLLAMA_MODEL_SIZE_HINTS
+        .iter()
+        .find(|hint| hint.model == model)
+        .or_else(|| {
+            if model.contains(':') {
+                return None;
+            }
+            let tagged = format!("{model}:latest");
+            PYTHON_OLLAMA_MODEL_SIZE_HINTS
+                .iter()
+                .find(|hint| hint.model == tagged)
+        })?;
+    Some((direct.label, direct.size_gb))
 }
 
 pub fn build_local_model_route_request(
@@ -1586,6 +1563,28 @@ mod tests {
             ollama_base_url("http://127.0.0.1:11434/v1"),
             "http://127.0.0.1:11434"
         );
+        for hint in PYTHON_OLLAMA_MODEL_SIZE_HINTS {
+            assert_eq!(
+                estimate_ollama_model_size_label(hint.model),
+                hint.label,
+                "Rust Ollama size label should follow the generated Python catalog: {}",
+                hint.model
+            );
+            assert_eq!(
+                estimate_ollama_model_size_gb(hint.model),
+                hint.size_gb,
+                "Rust Ollama size estimate should follow the generated Python catalog: {}",
+                hint.model
+            );
+            if !hint.model.contains(':') {
+                assert_eq!(
+                    estimate_ollama_model_size_label(format!("{}:latest", hint.model)),
+                    hint.label,
+                    "Rust Ollama latest-tag lookup should follow the generated Python catalog: {}",
+                    hint.model
+                );
+            }
+        }
         assert_eq!(estimate_ollama_model_size_label("qwen3:8b"), "about 5 GB");
         assert_eq!(
             estimate_ollama_model_size_label("qwen2.5:72b"),

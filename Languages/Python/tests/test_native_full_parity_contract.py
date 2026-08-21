@@ -17,6 +17,7 @@ from app.service.api_contract import (  # noqa: E402
 )
 from app.settings.backtest import BacktestSettings  # noqa: E402
 from app.settings.execution import ExecutionSettings  # noqa: E402
+from app.settings.ui import UserInterfaceSettings  # noqa: E402
 from app.settings.validation import (  # noqa: E402
     _ALLOWED_BACKTEST_CONFIG_KEYS,
     _ALLOWED_CHART_CONFIG_KEYS,
@@ -133,6 +134,62 @@ class NativeFullParityContractTests(unittest.TestCase):
                 source,
                 f"{path.name} must not default a missing runtime control to Live",
             )
+
+    def test_native_account_and_market_controls_follow_python_source_rules(self):
+        python_account = _read(
+            REPO_ROOT
+            / "Languages"
+            / "Python"
+            / "app"
+            / "gui"
+            / "runtime"
+            / "account"
+            / "account_runtime.py"
+        )
+        python_backtest = _read(
+            REPO_ROOT
+            / "Languages"
+            / "Python"
+            / "app"
+            / "gui"
+            / "backtest"
+            / "backtest_state_symbols_runtime.py"
+        )
+        cpp_dashboard = _read(
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_ui.cpp"
+        )
+        cpp_backtest = _read(
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.backtest.cpp"
+        )
+
+        for fragment in (
+            "_update_leverage_enabled",
+            "spin.setValue(1)",
+            "widget.setEnabled(is_futures)",
+            "side_combo.setEnabled(False)",
+            "_refresh_backtest_connector_options(text, force_default=True)",
+            "widget.setVisible(is_futures)",
+        ):
+            self.assertIn(fragment, python_account + python_backtest)
+
+        for fragment in (
+            "syncDashboardAccountTypeConstraints",
+            "dashboardLeverageSpin_->setValue(1)",
+            "dashboardSideCombo_->findData(QStringLiteral(\"BUY\"))",
+            "QStringLiteral(\"Binance spot\")",
+            "dashboardHedgeStackCheck_",
+            "rebuildConnectorComboForAccount",
+        ):
+            self.assertIn(fragment, cpp_dashboard)
+
+        for fragment in (
+            "syncBacktestSymbolSourceConstraints(bool forceDefault)",
+            "widget->setVisible(isFutures)",
+            "backtestMarginModeLabel_",
+            "syncBacktestSymbolSourceConstraints(true)",
+            "syncBacktestSymbolSourceConstraints(false)",
+        ):
+            self.assertIn(fragment, cpp_backtest)
 
     def test_active_order_option_policy_matches_python_source_in_native_paths(self):
         python_strategy = _read(
@@ -1794,7 +1851,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         )
         backtest_builder = _section(
             tauri_html,
-            "const buildBacktestConfigPatch = () => ({",
+            "const buildBacktestConfigPatch = () => {",
             "const buildRuntimeConfigPatch = () => {",
         )
 
@@ -1834,6 +1891,35 @@ class NativeFullParityContractTests(unittest.TestCase):
         ):
             self.assertIn(generated_property, tauri_html)
         self.assertIn("backtest: buildBacktestConfigPatch()", runtime_builder)
+        self.assertIn("accountModeMarginConstraint", tauri_html)
+        self.assertIn("accountTypeControlState", tauri_html)
+        for account_surface_fragment in (
+            "syncAccountTypeControls",
+            "syncBacktestMarketControls",
+            "connectorMarketFamilies",
+            "connectorKeysForAccountType",
+            'setSelect("backtest-symbol-source", backtest.symbol_source)',
+        ):
+            self.assertIn(account_surface_fragment, tauri_html)
+        self.assertIn('syncPortfolioMarginControls("config-account-mode", "config-margin-mode")', tauri_html)
+        self.assertIn('syncPortfolioMarginControls("backtest-account-mode", "backtest-margin-mode")', tauri_html)
+        self.assertIn('setChecked("close-on-window-close", false)', tauri_html)
+        self.assertIn('close_on_exit: false', runtime_builder)
+        for runtime_lock_fragment in (
+            "runtimeControlIds",
+            "runtimeControlState",
+            "llmControlState",
+            "syncRuntimeControlsLock(active)",
+            "syncRuntimeControlsLock(false)",
+            "syncTimeInForceControls",
+            "syncLeadTraderControls",
+            "stopLossControlState",
+            "syncStopLossControls(\"runtime\")",
+            "syncStopLossControls(\"backtest\")",
+            "backtest-add-selected-dashboard-btn",
+            "backtest-add-all-dashboard-btn",
+        ):
+            self.assertIn(runtime_lock_fragment, tauri_html)
         self.assertIn('hydrateIndicatorControlsForKind("runtime", config.indicators)', tauri_html)
         self.assertIn('hydrateIndicatorControlsForKind("backtest", backtest.indicators)', tauri_html)
         self.assertIn("hydrateBacktestControls(result.config?.backtest)", tauri_html)
@@ -1873,6 +1959,12 @@ class NativeFullParityContractTests(unittest.TestCase):
                 f'QStringLiteral("{field}")',
                 runtime_builder,
                 f"C++ runtime config persistence is missing Python ExecutionSettings field {field!r}",
+            )
+        for field in UserInterfaceSettings().to_config_dict():
+            self.assertIn(
+                f'QStringLiteral("{field}")',
+                runtime_builder,
+                f"C++ runtime config persistence is missing Python UI setting {field!r}",
             )
         for field in BacktestSettings().to_config_dict():
             self.assertIn(
@@ -2066,6 +2158,27 @@ class NativeFullParityContractTests(unittest.TestCase):
             "nativeBacktestResult",
         ):
             self.assertIn(fragment, tauri_ui)
+
+    def test_cpp_code_tab_renders_generated_python_starter_metadata(self):
+        cpp_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.cpp")
+
+        self.assertIn('#include "generated/PythonParityContract.h"', cpp_source)
+        self.assertIn(
+            "for (const auto &option : PythonParityContract::kPythonCodeLanguageOptions)",
+            cpp_source,
+        )
+        self.assertIn(
+            "for (const auto &option : PythonParityContract::kPythonRustFrameworkOptions)",
+            cpp_source,
+        )
+        for field in ("option.title", "option.subtitle", "option.accent", "option.badge"):
+            self.assertIn(f"parityText({field})", cpp_source)
+        self.assertIn("option.disabled", cpp_source)
+        self.assertIn('card->setProperty("python-parity-key", key);', cpp_source)
+        self.assertIn('card->setProperty("python-parity-subtitle", parityText(option.subtitle));', cpp_source)
+        self.assertNotIn('makeCard("Python", "Use Languages/Python/main.py for Python runtime"', cpp_source)
+        self.assertNotIn('makeCard("C++", "Qt native desktop (active)"', cpp_source)
+        self.assertNotIn('makeCard("Rust", "Desktop Cargo workspace"', cpp_source)
 
     def test_cpp_full_parity_boundary_is_explicit(self):
         cpp_root = REPO_ROOT / "experiments" / "native-cpp"
@@ -2391,15 +2504,22 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("Code language tools load the first time you open this tab.", native_desktop_shell_source)
         self.assertIn("start_code_tab_window_suppression", native_desktop_shell_source)
         self.assertIn("dependency_versions_auto_refresh", native_desktop_shell_source)
-        self.assertIn("The C++ runtime owns Binance Spot, USD-M, and Coin-M Futures execution", native_desktop_shell_source)
-        self.assertIn("binance-spot-usds-and-coin-futures", native_desktop_shell_source)
-        self.assertIn("unimplemented venues remain evidence-gated", native_desktop_shell_source)
+        self.assertIn(
+            "The C++ runtime owns the Python-declared native execution scope",
+            native_desktop_shell_source,
+        )
+        self.assertIn("kPythonNativeRuntimeExecutionScope", native_desktop_shell_source)
+        self.assertIn(
+            "standalone production promotion remains evidence-gated",
+            native_desktop_shell_source,
+        )
         self.assertIn("startDashboardServiceRuntime", native_runtime_lifecycle_source)
         self.assertIn("stopDashboardServiceRuntime", native_runtime_lifecycle_source)
         self.assertIn("cpp-desktop-service-delegation", native_runtime_lifecycle_source)
         self.assertIn("serviceDelegationRequired", native_runtime_lifecycle_source)
         self.assertIn("exchangeUsesBinanceApi(selectedExchange)", native_runtime_lifecycle_source)
         self.assertIn("nativeRuntimeOwnsBinanceFuturesConnector", native_runtime_lifecycle_source)
+        self.assertIn("nativeRuntimeStandaloneExecutionAllowed(modeText)", native_runtime_lifecycle_source)
         self.assertIn("hydrateDashboardServicePortfolio", native_runtime_source)
         self.assertIn("sequence_id", native_runtime_source)
         self.assertIn("Python Service API", native_runtime_source)

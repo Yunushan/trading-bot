@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use crate::generated_python_parity::{
-    PYTHON_LOGIC_CONFIG_CHOICES, PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+    PYTHON_ACCOUNT_MODE_CONFIG_CHOICES, PYTHON_ASSETS_MODE_CONFIG_CHOICES,
+    PYTHON_LOGIC_CONFIG_CHOICES, PYTHON_MARGIN_MODE_CONFIG_CHOICES,
+    PYTHON_MDD_LOGIC_CONFIG_CHOICES, PYTHON_POSITION_MODE_CONFIG_CHOICES,
     PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES, PYTHON_SIDE_CONFIG_CHOICES,
     PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
 };
@@ -19,6 +21,14 @@ pub(crate) fn default_config_choice(choices: &[(&str, &str)], fallback: &str) ->
         .first()
         .map(|(_, canonical)| (*canonical).to_owned())
         .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn source_text_default(value: Option<&Value>, choices: &[(&str, &str)], fallback: &str) -> String {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_config_choice(choices, fallback))
 }
 
 fn normalize_config_choice_token(value: &str) -> String {
@@ -78,14 +88,6 @@ impl Default for NativeBacktestRequest {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let text_default = |key: &str, fallback: &str| {
-            defaults
-                .get(key)
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(fallback)
-                .to_owned()
-        };
         let number_default = |key: &str, fallback: f64| {
             defaults
                 .get(key)
@@ -93,13 +95,8 @@ impl Default for NativeBacktestRequest {
                 .filter(|value| value.is_finite())
                 .unwrap_or(fallback)
         };
-        let stop_loss_text_default = |key: &str, fallback: &str| {
-            stop_loss
-                .get(key)
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(fallback)
-                .to_owned()
+        let stop_loss_choice_default = |key: &str, choices: &[(&str, &str)], fallback: &str| {
+            source_text_default(stop_loss.get(key), choices, fallback)
         };
         let stop_loss_number_default = |key: &str, fallback: f64| {
             stop_loss
@@ -136,25 +133,57 @@ impl Default for NativeBacktestRequest {
             symbol: default_symbol,
             interval: default_interval,
             indicators,
-            logic: text_default("logic", "AND"),
-            side: text_default("side", "BOTH"),
+            logic: source_text_default(defaults.get("logic"), PYTHON_LOGIC_CONFIG_CHOICES, "AND"),
+            side: source_text_default(defaults.get("side"), PYTHON_SIDE_CONFIG_CHOICES, "BOTH"),
             capital: number_default("capital", 1_000.0),
             position_pct: number_default("position_pct", 2.0),
-            position_pct_units: "percent".to_owned(),
+            position_pct_units: source_text_default(
+                defaults.get("position_pct_units"),
+                PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
+                "percent",
+            ),
             leverage: number_default("leverage", 20.0),
-            margin_mode: text_default("margin_mode", "Isolated"),
-            position_mode: text_default("position_mode", "Hedge"),
-            assets_mode: text_default("assets_mode", "Single-Asset"),
-            account_mode: text_default("account_mode", "Classic Trading"),
-            mdd_logic: text_default("mdd_logic", "per_trade"),
+            margin_mode: source_text_default(
+                defaults.get("margin_mode"),
+                PYTHON_MARGIN_MODE_CONFIG_CHOICES,
+                "Isolated",
+            ),
+            position_mode: source_text_default(
+                defaults.get("position_mode"),
+                PYTHON_POSITION_MODE_CONFIG_CHOICES,
+                "Hedge",
+            ),
+            assets_mode: source_text_default(
+                defaults.get("assets_mode"),
+                PYTHON_ASSETS_MODE_CONFIG_CHOICES,
+                "Single-Asset",
+            ),
+            account_mode: source_text_default(
+                defaults.get("account_mode"),
+                PYTHON_ACCOUNT_MODE_CONFIG_CHOICES,
+                "Classic Trading",
+            ),
+            mdd_logic: source_text_default(
+                defaults.get("mdd_logic"),
+                PYTHON_MDD_LOGIC_CONFIG_CHOICES,
+                "per_trade",
+            ),
             stop_loss_enabled: stop_loss
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            stop_loss_mode: stop_loss_text_default("mode", "usdt"),
+            stop_loss_mode: stop_loss_choice_default(
+                "mode",
+                PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
+                "usdt",
+            ),
             stop_loss_usdt: stop_loss_number_default("usdt", 0.0),
             stop_loss_percent: stop_loss_number_default("percent", 0.0),
-            stop_loss_scope: stop_loss_text_default("scope", "per_trade"),
+            stop_loss_scope: stop_loss_choice_default(
+                "scope",
+                PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+                "per_trade",
+            ),
             fee_bps: number_default("fee_bps", 5.0),
             slippage_bps: number_default("slippage_bps", 2.0),
         }
@@ -1257,6 +1286,15 @@ mod tests {
 
     fn number(value: Option<&Value>, fallback: f64) -> f64 {
         value.and_then(Value::as_f64).unwrap_or(fallback)
+    }
+
+    #[test]
+    fn missing_option_default_comes_from_the_python_choice_catalog() {
+        let choices = [("source-key", "Source Value")];
+        assert_eq!(
+            source_text_default(None, &choices, "stale literal"),
+            "Source Value"
+        );
     }
 
     fn candles_from_value(value: &Value) -> Vec<BinanceKlineCandle> {

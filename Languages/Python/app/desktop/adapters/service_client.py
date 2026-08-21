@@ -8,6 +8,7 @@ same bridge can later target a remote API client with minimal churn.
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 from pathlib import Path
@@ -18,9 +19,11 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_PYTHON_ROOT))
     from app.service.api_contract import SERVICE_BACKTEST_RUN_REQUEST_FIELDS, service_api_route
     from app.service.runtime import TradingBotService
+    from app.settings.validation import RUNTIME_CONFIG_KEYS
 else:
     from ...service.api_contract import SERVICE_BACKTEST_RUN_REQUEST_FIELDS, service_api_route
     from ...service.runtime import TradingBotService
+    from ...settings.validation import RUNTIME_CONFIG_KEYS
 
 try:
     import requests
@@ -48,6 +51,19 @@ def _backtest_request_payload(request: dict | None) -> dict:
     return dict(request)
 
 
+def _service_runtime_config_payload(config: dict | None) -> dict | None:
+    """Drop GUI-only state before crossing into the validated service schema."""
+    if config is None:
+        return None
+    if not isinstance(config, dict):
+        raise TypeError("Desktop service config must be a dictionary.")
+    return {
+        str(key): copy.deepcopy(value)
+        for key, value in config.items()
+        if key in RUNTIME_CONFIG_KEYS
+    }
+
+
 class EmbeddedDesktopServiceClient:
     """
     In-process desktop client for the service facade.
@@ -58,7 +74,11 @@ class EmbeddedDesktopServiceClient:
     """
 
     def __init__(self, config: dict | None = None, *, service_cls=TradingBotService) -> None:
-        self._service = service_cls(config=config) if callable(service_cls) else None
+        self._service = (
+            service_cls(config=_service_runtime_config_payload(config))
+            if callable(service_cls)
+            else None
+        )
         self._client_mode = "embedded"
         self._transport = "in-process"
 
@@ -85,7 +105,7 @@ class EmbeddedDesktopServiceClient:
     def replace_config(self, config: dict | None) -> dict | None:
         if self._service is None:
             return None
-        self._service.replace_config(config)
+        self._service.replace_config(_service_runtime_config_payload(config))
         return self.get_config_summary()
 
     def set_runtime_state(
@@ -322,7 +342,11 @@ class RemoteDesktopServiceClient:
         }
 
     def replace_config(self, config: dict | None) -> dict | None:
-        return self._request("PUT", service_api_route("config"), payload={"config": config})
+        return self._request(
+            "PUT",
+            service_api_route("config"),
+            payload={"config": _service_runtime_config_payload(config)},
+        )
 
     def set_runtime_state(
         self,

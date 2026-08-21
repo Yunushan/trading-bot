@@ -6,6 +6,13 @@ set(TB_EXECUTABLE_NAME "Trading-Bot-C++")
 set(TB_LEGACY_EXECUTABLE_NAME "binance_backtest_tab")
 set(TB_QT_VERSION "6.10.3" CACHE STRING "Minimum supported Qt version for the C++ build")
 
+# CTest runs binaries with the build directory as their working directory.
+# Keep the checked-out Python launcher discoverable in isolated/temp builds
+# while retaining runtime environment overrides for installed deployments.
+get_filename_component(TB_NATIVE_PROJECT_ROOT "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
+file(TO_CMAKE_PATH "${TB_NATIVE_PROJECT_ROOT}" TB_NATIVE_PROJECT_ROOT)
+set(TB_NATIVE_PROJECT_ROOT_DEFINE "TB_NATIVE_PROJECT_ROOT=\"${TB_NATIVE_PROJECT_ROOT}\"")
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -242,6 +249,7 @@ target_compile_definitions(
     PRIVATE
         HAS_QT_WEBENGINE=${HAS_WEBENGINE}
         HAS_QT_WEBSOCKETS=${HAS_QT_WEBSOCKETS}
+        ${TB_NATIVE_PROJECT_ROOT_DEFINE}
 )
 
 if (WIN32)
@@ -300,6 +308,7 @@ if (BUILD_TESTING)
     if (MSVC)
         target_compile_options(native_order_safety_tests PRIVATE /Zc:__cplusplus)
     endif()
+    target_compile_definitions(native_order_safety_tests PRIVATE ${TB_NATIVE_PROJECT_ROOT_DEFINE})
 
     add_executable(native_service_api_contract_tests
         tests/NativeServiceApiContractTests.cpp
@@ -307,6 +316,12 @@ if (BUILD_TESTING)
         src/BinanceRestClient.h
         src/NativeConfigPersistence.cpp
         src/NativeConfigPersistence.h
+        src/NativeExchangeConnectors.cpp
+        src/NativeExchangeConnectors.h
+        src/NativeLlmAdvisory.cpp
+        src/NativeLlmAdvisory.h
+        src/NativeOrderSafety.cpp
+        src/NativeOrderSafety.h
         src/TradingBotWindowSupport.cpp
         src/TradingBotWindowSupport.h
         src/generated/PythonParityContract.h
@@ -321,6 +336,7 @@ if (BUILD_TESTING)
     if (MSVC)
         target_compile_options(native_service_api_contract_tests PRIVATE /Zc:__cplusplus)
     endif()
+    target_compile_definitions(native_service_api_contract_tests PRIVATE ${TB_NATIVE_PROJECT_ROOT_DEFINE})
 
     if (WIN32)
         get_target_property(_tb_qt_core_location Qt6::Core IMPORTED_LOCATION_RELEASE)

@@ -312,10 +312,14 @@ Request::Request() {
     positionPct = defaults.value(QStringLiteral("position_pct")).toDouble(2.0);
     positionPctUnits = QStringLiteral("percent");
     leverage = defaults.value(QStringLiteral("leverage")).toDouble(20.0);
-    marginMode = defaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"));
-    positionMode = defaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"));
-    assetsMode = defaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"));
-    accountMode = defaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"));
+    marginMode = defaults.value(QStringLiteral("margin_mode")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonMarginModeConfigChoices));
+    positionMode = defaults.value(QStringLiteral("position_mode")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonPositionModeConfigChoices));
+    assetsMode = defaults.value(QStringLiteral("assets_mode")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonAssetsModeConfigChoices));
+    accountMode = defaults.value(QStringLiteral("account_mode")).toString(
+        NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonAccountModeConfigChoices));
     mddLogic = defaults.value(QStringLiteral("mdd_logic")).toString(
         NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonMddLogicConfigChoices));
     stopLossEnabled = stopLoss.value(QStringLiteral("enabled")).toBool(false);

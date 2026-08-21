@@ -943,15 +943,28 @@ CapitalExposureGuardResult guardFuturesCapitalExposure(
         return capitalExposureBlock(QStringLiteral("quantity must be finite and > 0 after exchange filters"));
     }
 
-    const double leverage = static_cast<double>(input.leverage);
+    const bool isSpot = input.market.trimmed().compare(QStringLiteral("spot"), Qt::CaseInsensitive) == 0;
+    const bool isSpotSell = isSpot && side == QStringLiteral("SELL");
+    const double spotBaseFree = finiteNonNegative(input.spotBaseFree);
+    if (isSpotSell && spotBaseFree <= 0.0) {
+        return capitalExposureBlock(QStringLiteral("Spot SELL blocked: no available base-asset balance"));
+    }
+
+    // Python Spot ignores futures leverage and applies position percent to
+    // quote balance for BUY versus free base inventory for SELL.
+    const double leverage = isSpot ? 1.0 : static_cast<double>(input.leverage);
     const double availableUsdt = finiteNonNegative(input.availableUsdt);
     const double ledgerMarginTotal = finiteNonNegative(input.ledgerMarginTotal);
     const double walletUsdt = finiteNonNegative(input.walletUsdt);
-    const double equityUsdt = std::max({
-        walletUsdt,
-        availableUsdt + ledgerMarginTotal,
-        ledgerMarginTotal,
-    });
+    const double spotSellEquityUsdt = spotBaseFree * input.price;
+    const double allocationAvailableUsdt = isSpotSell ? spotSellEquityUsdt : availableUsdt;
+    const double equityUsdt = isSpotSell
+        ? spotSellEquityUsdt
+        : std::max({
+              walletUsdt,
+              availableUsdt + ledgerMarginTotal,
+              ledgerMarginTotal,
+          });
     if (equityUsdt <= 0.0) {
         return capitalExposureBlock(QStringLiteral("capital guard: no wallet equity to allocate"));
     }
@@ -987,6 +1000,19 @@ CapitalExposureGuardResult guardFuturesCapitalExposure(
             finiteNonNegative(input.existingSideMargin));
     }
 
+    if (isSpotSell
+        && input.hasFilters
+        && input.filters.minNotional > 0.0
+        && spotSellEquityUsdt * pctFraction + 1e-12 < input.filters.minNotional) {
+        return capitalExposureBlock(
+            QStringLiteral("Spot SELL blocked: position value is below minNotional"),
+            equityUsdt,
+            targetMarginUsdt,
+            maxIndicatorMarginUsdt,
+            spotSellEquityUsdt * pctFraction,
+            finiteNonNegative(input.existingSideMargin));
+    }
+
     const bool hasFlipQuantity = input.hasFlipCloseQuantity
         && qIsFinite(input.flipCloseQuantity)
         && input.flipCloseQuantity > 0.0;
@@ -1002,7 +1028,7 @@ CapitalExposureGuardResult guardFuturesCapitalExposure(
             0.0,
             finiteNonNegative(input.existingSideMargin));
     }
-    if (availableUsdt <= 0.0) {
+    if (allocationAvailableUsdt <= 0.0) {
         return capitalExposureBlock(
             QStringLiteral("capital guard: no available USDT to allocate"),
             equityUsdt,
@@ -1011,7 +1037,7 @@ CapitalExposureGuardResult guardFuturesCapitalExposure(
             0.0,
             finiteNonNegative(input.existingSideMargin));
     }
-    if (availableUsdt < targetMargin * 0.95) {
+    if (allocationAvailableUsdt < targetMargin * 0.95) {
         return capitalExposureBlock(
             QStringLiteral("capital guard: requested margin exceeds available USDT"),
             equityUsdt,
@@ -1021,13 +1047,14 @@ CapitalExposureGuardResult guardFuturesCapitalExposure(
             finiteNonNegative(input.existingSideMargin));
     }
 
-    const bool autoBumpRequired = !hasFlipQuantity
+    const bool autoBumpRequired = !isSpot && !hasFlipQuantity
         && input.normalizedQuantity > input.requestedQuantity + 1e-12;
     if (autoBumpRequired) {
         const double requestedPercent = pctFraction * 100.0;
         const double requiredNotional = input.normalizedQuantity * input.price;
         const double requiredMargin = requiredNotional / leverage;
-        const double requiredPercent = (requiredNotional / std::max(availableUsdt * leverage, 1e-12)) * 100.0;
+        const double requiredPercent =
+            (requiredNotional / std::max(allocationAvailableUsdt * leverage, 1e-12)) * 100.0;
         const double multiplier = qIsFinite(input.autoBumpPercentMultiplier)
                 && input.autoBumpPercentMultiplier > 0.0
             ? input.autoBumpPercentMultiplier
@@ -1047,7 +1074,7 @@ CapitalExposureGuardResult guardFuturesCapitalExposure(
                 finiteNonNegative(input.existingSideMargin),
                 input.normalizedQuantity);
         }
-        if (requiredMargin > availableUsdt * 1.01
+        if (requiredMargin > allocationAvailableUsdt * 1.01
             || (!unlimitedPercent && requiredPercent > allowedPercent + 1e-9)) {
             return capitalExposureBlock(
                 QStringLiteral("capital guard: insufficient funds for exchange minimum order"),
@@ -1116,7 +1143,7 @@ CapitalExposureGuardResult guardFuturesCapitalExposure(
         }
     }
 
-    const QString desiredPositionSide = input.dualSide
+    const QString desiredPositionSide = input.dualSide && !isSpot
         ? (side == QStringLiteral("BUY") ? QStringLiteral("LONG") : QStringLiteral("SHORT"))
         : QString();
     return {

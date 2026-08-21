@@ -46,6 +46,22 @@ platform/installer/credential-gated evidence.
 | LLM advisory | Complete prompt/config/local-model service route payloads, result redaction, output-policy checks, and local model status tests | Complete for this domain |
 | Startup, packaging, platform | Complete canonical entrypoint contracts, startup suppression flags, AppUserModelID/icon metadata, and release smoke contract tests | Complete for this domain |
 
+## Managed Python execution host
+
+When the C++ dashboard selects a connector or venue outside its direct Binance
+runtime boundary, it uses the canonical Python Service API. If the configured
+endpoint is loopback and unavailable, C++ automatically starts
+`apps/desktop-pyqt/main.py --headless-service`, waits for the Python `status`
+route, and stops only the child process it started. Set
+`BOT_DESKTOP_SERVICE_API_AUTOSTART=0` to require an already-running service.
+Remote endpoints continue to use `BOT_DESKTOP_SERVICE_API_BASE_URL` (or the
+host/port variables) and `BOT_SERVICE_API_TOKEN`; C++ never launches a local
+process for a non-loopback endpoint.
+
+This is a real Python-owned execution path for feature coverage, not a claim
+that C++ has standalone native execution ownership. Native runtime promotion
+still requires the separate release, platform, and credential evidence gates.
+
 ## Source layout
 
 The `src/` folder is still being reorganized, but it already contains distinct slices such as:

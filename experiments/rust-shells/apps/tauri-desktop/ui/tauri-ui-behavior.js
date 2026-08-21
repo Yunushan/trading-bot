@@ -42,6 +42,66 @@
     return normalized === "workstation" ? "Workstation" : "Classic";
   };
 
+  const normalizeAccountMode = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized.includes("portfolio") ? "Portfolio Margin" : "Classic Trading";
+  };
+
+  const accountTypeControlState = ({ accountType = "Futures", runtimeLocked = false } = {}) => {
+    const isFutures = String(accountType || "").trim().toLowerCase().startsWith("fut");
+    const locked = Boolean(runtimeLocked);
+    return {
+      accountType: isFutures ? "Futures" : "Spot",
+      isFutures,
+      futuresOnlyDisabled: !isFutures || locked,
+      leverageDisabled: !isFutures || locked,
+      sideDisabled: !isFutures || locked,
+      forcedSide: isFutures ? null : "BUY"
+    };
+  };
+
+  const accountModeMarginConstraint = ({ accountMode, marginMode } = {}) => {
+    const normalizedAccountMode = normalizeAccountMode(accountMode);
+    const normalizedMarginMode = String(marginMode || "").trim();
+    const portfolioMargin = normalizedAccountMode === "Portfolio Margin";
+    return {
+      accountMode: normalizedAccountMode,
+      marginMode: portfolioMargin ? "Cross" : (normalizedMarginMode || "Isolated"),
+      marginModeDisabled: portfolioMargin
+    };
+  };
+
+  const timeInForceGtdConstraint = (value) => ({
+    gtdEnabled: String(value || "").trim().toUpperCase() === "GTD"
+  });
+
+  const leadTraderControlState = (enabled) => ({
+    profileDisabled: !Boolean(enabled)
+  });
+
+  const runtimeControlState = (active) => ({
+    active: Boolean(active),
+    startDisabled: Boolean(active),
+    stopDisabled: !Boolean(active)
+  });
+
+  const llmControlState = ({ enabled = false, controlsLocked = false } = {}) => ({
+    containerDisabled: !Boolean(enabled) || Boolean(controlsLocked)
+  });
+
+  const stopLossControlState = ({ enabled = false, mode = "usdt", controlsLocked = false } = {}) => {
+    const rawMode = String(mode || "").trim().toLowerCase();
+    const normalizedMode = ["usdt", "percent", "both"].includes(rawMode) ? rawMode : "usdt";
+    const active = Boolean(enabled) && !Boolean(controlsLocked);
+    return {
+      mode: normalizedMode,
+      modeDisabled: !active,
+      scopeDisabled: !active,
+      usdtDisabled: !active || !["usdt", "both"].includes(normalizedMode),
+      percentDisabled: !active || !["percent", "both"].includes(normalizedMode)
+    };
+  };
+
   const designModeClass = (value) => normalizeDesign(value) === "Workstation"
     ? "workstation-design"
     : "classic-design";
@@ -74,6 +134,19 @@
   };
 
   const mergeUniqueLines = (currentText, additions) => uniqueValues(linesFromText(currentText), additions);
+
+  const preserveConfigKeys = (config, keys) => {
+    const source = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+    const result = {};
+    for (const key of Array.isArray(keys) ? keys : []) {
+      const normalized = String(key || "").trim();
+      if (!normalized || !Object.prototype.hasOwnProperty.call(source, normalized) || source[normalized] === undefined) {
+        continue;
+      }
+      result[normalized] = source[normalized];
+    }
+    return result;
+  };
 
   const normalizeIndicatorList = (value) => {
     if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
@@ -570,6 +643,82 @@
     return 60;
   };
 
+  const connectorBackendAlias = (value) => {
+    const textRaw = String(value ?? "").trim();
+    if (!textRaw) return "";
+    const text = textRaw.toLowerCase();
+    if (text === "binance-sdk-derivatives-trading-usds-futures"
+      || text === "binance_sdk_derivatives_trading_usds_futures"
+      || (text.includes("sdk") && text.includes("future") && (text.includes("usd") || text.includes("usds")))) {
+      return "binance-sdk-derivatives-trading-usds-futures";
+    }
+    if (text === "binance-sdk-derivatives-trading-coin-futures"
+      || text === "binance_sdk_derivatives_trading_coin_futures"
+      || (text.includes("sdk") && text.includes("coin") && text.includes("future"))) {
+      return "binance-sdk-derivatives-trading-coin-futures";
+    }
+    if (text === "binance-sdk-spot"
+      || text === "binance_sdk_spot"
+      || (text.includes("sdk") && text.includes("spot"))) {
+      return "binance-sdk-spot";
+    }
+    if (text === "ccxt" || text.includes("ccxt")) return "ccxt";
+    if (text.includes("connector") || text.includes("official") || text === "binance-connector") {
+      return "binance-connector";
+    }
+    if (text.includes("python") && text.includes("binance")) return "python-binance";
+    return "";
+  };
+
+  const normalizeConnectorBackend = (value, fallback = "binance-sdk-derivatives-trading-usds-futures") =>
+    connectorBackendAlias(value) || fallback;
+
+  const nativeRuntimeDelegationRequired = ({
+    config = {},
+    ownership = {},
+    connectorOptions = [],
+    defaultExchange = "Binance",
+    defaultConnector = ""
+  } = {}) => {
+    const source = config && typeof config === "object" ? config : {};
+    const selectedExchange = String(source.selected_exchange || defaultExchange).trim();
+    const directExchanges = Array.isArray(ownership.direct_exchanges)
+      ? ownership.direct_exchanges.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean)
+      : [];
+    if (!directExchanges.includes(selectedExchange.toLowerCase())) return true;
+
+    const rawConnector = String(source.connector_backend || defaultConnector).trim();
+    if (!rawConnector) return false;
+    const normalizedRaw = rawConnector.toLowerCase();
+    const matchedOption = (Array.isArray(connectorOptions) ? connectorOptions : []).find((option) => (
+      String(option?.key || "").trim().toLowerCase() === normalizedRaw
+      || String(option?.label || "").trim().toLowerCase() === normalizedRaw
+    ));
+    const connectorKey = String(matchedOption?.key || rawConnector).trim().toLowerCase();
+    const normalizedConnectorKey = connectorBackendAlias(rawConnector) || connectorKey;
+    const directConnectors = Array.isArray(ownership.direct_connector_backends)
+      ? ownership.direct_connector_backends.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean)
+      : [];
+    if (!directConnectors.includes(connectorKey) && !directConnectors.includes(normalizedConnectorKey)) return true;
+
+    const configuredIndicatorSource = Array.isArray(source.indicator_source)
+      ? source.indicator_source[0]
+      : source.indicator_source;
+    if (configuredIndicatorSource === undefined || configuredIndicatorSource === null) return false;
+    const normalizedIndicatorSource = String(configuredIndicatorSource || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[ -]+/g, "_");
+    if (!normalizedIndicatorSource) return false;
+    const directIndicatorSources = Array.isArray(ownership.indicator_source_market_families)
+      ? ownership.indicator_source_market_families
+        .map((item) => Array.isArray(item) ? item[0] : item?.key)
+        .map((item) => String(item || "").trim().toLowerCase().replace(/[ -]+/g, "_"))
+        .filter(Boolean)
+      : [];
+    return directIndicatorSources.length > 0 && !directIndicatorSources.includes(normalizedIndicatorSource);
+  };
+
   const dashboardPayloadFromStreamEvent = (event) => {
     const envelope = event && typeof event === "object" && event.payload && typeof event.payload === "object"
       ? event.payload
@@ -646,7 +795,16 @@
     linesFromText,
     localModelStorageText,
     mergeUniqueLines,
+    preserveConfigKeys,
     normalizeIndicatorList,
+    normalizeAccountMode,
+    accountTypeControlState,
+    accountModeMarginConstraint,
+    timeInForceGtdConstraint,
+    leadTraderControlState,
+    llmControlState,
+    runtimeControlState,
+    stopLossControlState,
     normalizePositionCloseSide,
     normalizeOverrideRow,
     numericRunValue,
@@ -673,6 +831,8 @@
     designModeClass,
     normalizeDesign,
     normalizeTheme,
+    nativeRuntimeDelegationRequired,
+    normalizeConnectorBackend,
     themeModeClass,
     titleizeLabel,
     uniqueValues

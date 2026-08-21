@@ -101,6 +101,8 @@ struct CapitalExposureGuardInput {
     double positionPctFraction = 0.0;
     double availableUsdt = 0.0;
     double walletUsdt = 0.0;
+    // Python Spot SELL sizing is bounded by free base-asset inventory.
+    double spotBaseFree = 0.0;
     double ledgerMarginTotal = 0.0;
     double existingIndicatorMargin = 0.0;
     double existingSideMargin = 0.0;

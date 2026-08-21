@@ -164,11 +164,14 @@ pub struct BinanceSignedRestClient {
     market: BinanceMarket,
     base_url: String,
     recv_window_ms: u64,
+    testnet: bool,
 }
 
 impl BinanceSignedRestClient {
     pub fn new(market: BinanceMarket, testnet: bool) -> Result<Self> {
-        Self::with_base_url(market, market.default_base_url(testnet))
+        let mut client = Self::with_base_url(market, market.default_base_url(testnet))?;
+        client.testnet = testnet;
+        Ok(client)
     }
 
     pub fn with_base_url(market: BinanceMarket, base_url: impl Into<String>) -> Result<Self> {
@@ -188,6 +191,7 @@ impl BinanceSignedRestClient {
             market,
             base_url,
             recv_window_ms: DEFAULT_RECV_WINDOW_MS,
+            testnet: false,
         })
     }
 
@@ -202,6 +206,31 @@ impl BinanceSignedRestClient {
     pub fn with_recv_window_ms(mut self, recv_window_ms: u64) -> Self {
         self.recv_window_ms = recv_window_ms;
         self
+    }
+
+    pub(crate) fn alternate_futures_prefix_client(&self) -> Result<Self> {
+        let alternate_market = match self.market {
+            BinanceMarket::Futures => BinanceMarket::CoinFutures,
+            BinanceMarket::CoinFutures => BinanceMarket::Futures,
+            BinanceMarket::Spot => bail!("spot market has no futures prefix fallback"),
+        };
+        let mut client =
+            Self::with_http_client(alternate_market, self.base_url.clone(), self.http.clone())?;
+        client.recv_window_ms = self.recv_window_ms;
+        client.testnet = self.testnet;
+        Ok(client)
+    }
+
+    pub(crate) fn futures_fallback_allowed(&self) -> bool {
+        if !self.market.is_futures() {
+            return false;
+        }
+        let base_url = self.base_url.to_ascii_lowercase();
+        self.testnet
+            || base_url.contains("127.0.0.1")
+            || base_url.contains("localhost")
+            || base_url.contains("[::1]")
+            || base_url.contains("testnet")
     }
 
     pub fn futures_balance_url(&self) -> String {
@@ -1858,6 +1887,11 @@ fn lower_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    use reqwest::blocking::Client;
     use serde_json::json;
 
     use super::*;
@@ -1965,6 +1999,114 @@ mod tests {
             "https://coin.test/dapi/v1/allOpenOrders"
         );
         assert_eq!(spot.spot_account_url(), "https://spot.test/api/v3/account");
+    }
+
+    #[test]
+    fn futures_account_settings_read_and_mutations_use_python_compatible_wire_contract() {
+        fn serve_request(mut stream: TcpStream, expected_prefix: &str, body: &str) {
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream
+                    .read(&mut buffer)
+                    .expect("read account fixture request");
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request_line = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(
+                request_line.starts_with(expected_prefix),
+                "unexpected request line: {request_line}"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write account fixture response");
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind account fixture");
+        let address = listener.local_addr().expect("account fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("position-risk request");
+            serve_request(
+                stream,
+                "GET /fapi/v2/positionRisk?",
+                r#"[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0","marginType":"isolated","leverage":"5"}]"#,
+            );
+            let (stream, _) = listener.accept().expect("account request");
+            serve_request(
+                stream,
+                "GET /fapi/v2/account?",
+                r#"{"positions":[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0","marginType":"isolated","leverage":"5"}]}"#,
+            );
+            let (stream, _) = listener.accept().expect("margin mutation request");
+            serve_request(
+                stream,
+                "POST /fapi/v1/marginType?symbol=BTCUSDT&marginType=CROSSED&",
+                r#"{"code":200,"msg":"success"}"#,
+            );
+            let (stream, _) = listener.accept().expect("leverage mutation request");
+            serve_request(
+                stream,
+                "POST /fapi/v1/leverage?symbol=BTCUSDT&leverage=25&",
+                r#"{"symbol":"BTCUSDT","leverage":25,"maxNotionalValue":"100000"}"#,
+            );
+        });
+
+        let http = Client::builder()
+            .no_proxy()
+            .build()
+            .expect("proxy-free account fixture client");
+        let client = BinanceSignedRestClient::with_http_client(
+            BinanceMarket::Futures,
+            format!("http://{address}"),
+            http,
+        )
+        .expect("futures account fixture client");
+        let credentials = BinanceApiCredentials::new("key", "secret");
+        let snapshot = client
+            .fetch_futures_account_read_snapshot(&credentials, "btcusdt")
+            .expect("account read snapshot");
+        assert!(snapshot.positions.is_empty());
+        assert_eq!(
+            snapshot
+                .symbol_settings
+                .as_ref()
+                .and_then(|settings| settings.margin_type.as_deref()),
+            Some("ISOLATED")
+        );
+        assert_eq!(
+            snapshot
+                .symbol_settings
+                .as_ref()
+                .and_then(|settings| settings.leverage),
+            Some(5)
+        );
+        assert_eq!(
+            client
+                .change_futures_margin_type(&credentials, "btcusdt", "cross")
+                .expect("margin mutation")
+                .margin_type,
+            "CROSSED"
+        );
+        assert_eq!(
+            client
+                .change_futures_leverage(&credentials, "btcusdt", 25)
+                .expect("leverage mutation")
+                .leverage,
+            25
+        );
+        server.join().expect("account fixture server");
     }
 
     #[test]

@@ -28,6 +28,45 @@ pub const DEFAULT_OPTIMIZER_DURATION_SECONDS: u64 = 4 * 60 * 60;
 pub const MIN_OPTIMIZER_DURATION_SECONDS: u64 = 60;
 pub const MAX_OPTIMIZER_DURATION_SECONDS: u64 = 7 * 24 * 60 * 60;
 
+fn source_config_text_default(
+    defaults: &Value,
+    key: &str,
+    choices: &[(&str, &str)],
+    fallback: &str,
+) -> String {
+    defaults
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_config_choice(choices, fallback))
+}
+
+fn source_json_text_default(defaults: &Value, key: &str, fallback: &str) -> String {
+    defaults
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn first_python_ui_option_key(options: &[crate::NativePythonUiOption], fallback: &str) -> String {
+    options
+        .iter()
+        .find(|option| !option.disabled && !option.key.trim().is_empty())
+        .map(|option| option.key.to_owned())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn first_python_connector_key(fallback: &str) -> String {
+    crate::python_source_connector_options()
+        .iter()
+        .find(|option| !option.key.trim().is_empty())
+        .map(|option| option.key.to_owned())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
 #[derive(Debug, Clone)]
 pub struct CandleLoadResult {
     pub ok: bool,
@@ -123,14 +162,6 @@ impl Default for NativeBacktestBatchRequest {
                     .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
-        let text_default = |defaults: &Value, key: &str, fallback: &str| {
-            defaults
-                .get(key)
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(fallback)
-                .to_owned()
-        };
         let number_default = |key: &str, fallback: f64| {
             backtest_defaults
                 .get(key)
@@ -144,9 +175,24 @@ impl Default for NativeBacktestBatchRequest {
             indicator_configs: default_indicator_configs,
             run_template: NativeBacktestRequest::default(),
             optimizer_enabled: false,
-            optimizer_mode: text_default(backtest_defaults, "optimizer_mode", "current"),
-            optimizer_metric: text_default(backtest_defaults, "optimizer_metric", "roi_percent"),
-            optimizer_scope: text_default(backtest_defaults, "scan_scope", "selected"),
+            optimizer_mode: source_config_text_default(
+                backtest_defaults,
+                "optimizer_mode",
+                PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES,
+                "current",
+            ),
+            optimizer_metric: source_config_text_default(
+                backtest_defaults,
+                "optimizer_metric",
+                PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES,
+                "roi_percent",
+            ),
+            optimizer_scope: source_config_text_default(
+                backtest_defaults,
+                "scan_scope",
+                PYTHON_SCAN_SCOPE_CONFIG_CHOICES,
+                "selected",
+            ),
             optimizer_combo_size: number_default("optimizer_combo_size", 2.0)
                 .trunc()
                 .clamp(1.0, 5.0) as usize,
@@ -169,22 +215,24 @@ impl Default for NativeBacktestBatchRequest {
             start_ms: None,
             end_ms: None,
             warmup_bars: 50,
-            loop_interval_override: text_default(
+            loop_interval_override: source_json_text_default(
                 execution_defaults,
                 "loop_interval_override",
-                "1m",
+                &first_python_ui_option_key(crate::python_source_dashboard_loop_choices(), "1m"),
             ),
-            connector_backend: text_default(
+            connector_backend: source_json_text_default(
                 backtest_defaults,
                 "connector_backend",
-                "binance-connector",
+                &first_python_connector_key("binance-connector"),
             ),
             selected_exchange: ui_defaults
                 .get("selected_exchange")
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or("Binance")
-                .to_owned(),
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    first_python_ui_option_key(crate::python_source_exchange_options(), "Binance")
+                }),
             scan_top_n: number_default("scan_top_n", 200.0).trunc().max(1.0) as usize,
             resume_combo_offset: 0,
             resume_prior_runs: Vec::new(),
@@ -361,6 +409,29 @@ impl NativeBacktestBatchRequest {
     pub fn from_python_request(payload: &Value) -> Result<Self, String> {
         let object = request_object(payload)?;
         let defaults = python_source_default_backtest_config();
+        let execution_defaults = python_source_default_execution_config();
+        let default_logic =
+            source_config_text_default(defaults, "logic", PYTHON_LOGIC_CONFIG_CHOICES, "AND");
+        let default_side =
+            source_config_text_default(defaults, "side", PYTHON_SIDE_CONFIG_CHOICES, "BOTH");
+        let default_optimizer_mode = source_config_text_default(
+            defaults,
+            "optimizer_mode",
+            PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES,
+            "current",
+        );
+        let default_optimizer_scope = source_config_text_default(
+            defaults,
+            "scan_scope",
+            PYTHON_SCAN_SCOPE_CONFIG_CHOICES,
+            "selected",
+        );
+        let default_optimizer_metric = source_config_text_default(
+            defaults,
+            "optimizer_metric",
+            PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES,
+            "roi_percent",
+        );
         let mut symbols = request_text_list(object, "symbols");
         let intervals = unique_intervals(&request_text_list(object, "intervals"));
         let indicator_configs = object
@@ -387,26 +458,12 @@ impl NativeBacktestBatchRequest {
 
         let mut run_template = NativeBacktestRequest::default();
         run_template.logic = normalize_config_choice(
-            &request_text(
-                object,
-                "logic",
-                defaults
-                    .get("logic")
-                    .and_then(Value::as_str)
-                    .unwrap_or("AND"),
-            ),
+            &request_text(object, "logic", &default_logic),
             PYTHON_LOGIC_CONFIG_CHOICES,
             &default_config_choice(PYTHON_LOGIC_CONFIG_CHOICES, "AND"),
         );
         run_template.side = normalize_config_choice(
-            &request_text(
-                object,
-                "side",
-                defaults
-                    .get("side")
-                    .and_then(Value::as_str)
-                    .unwrap_or("BOTH"),
-            ),
+            &request_text(object, "side", &default_side),
             PYTHON_SIDE_CONFIG_CHOICES,
             &default_config_choice(PYTHON_SIDE_CONFIG_CHOICES, "BOTH"),
         );
@@ -475,26 +532,12 @@ impl NativeBacktestBatchRequest {
         );
 
         let optimizer_mode = normalize_config_choice(
-            &request_text(
-                object,
-                "optimizer_mode",
-                defaults
-                    .get("optimizer_mode")
-                    .and_then(Value::as_str)
-                    .unwrap_or("current"),
-            ),
+            &request_text(object, "optimizer_mode", &default_optimizer_mode),
             PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES,
             &default_config_choice(PYTHON_OPTIMIZER_MODE_CONFIG_CHOICES, "current"),
         );
         let optimizer_scope = normalize_config_choice(
-            &request_text(
-                object,
-                "scan_scope",
-                defaults
-                    .get("scan_scope")
-                    .and_then(Value::as_str)
-                    .unwrap_or("selected"),
-            ),
+            &request_text(object, "scan_scope", &default_optimizer_scope),
             PYTHON_SCAN_SCOPE_CONFIG_CHOICES,
             &default_config_choice(PYTHON_SCAN_SCOPE_CONFIG_CHOICES, "selected"),
         );
@@ -553,14 +596,7 @@ impl NativeBacktestBatchRequest {
             optimizer_enabled,
             optimizer_mode,
             optimizer_metric: normalize_config_choice(
-                &request_text(
-                    object,
-                    "optimizer_metric",
-                    defaults
-                        .get("optimizer_metric")
-                        .and_then(Value::as_str)
-                        .unwrap_or("roi_percent"),
-                ),
+                &request_text(object, "optimizer_metric", &default_optimizer_metric),
                 PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES,
                 &default_config_choice(PYTHON_OPTIMIZER_METRIC_CONFIG_CHOICES, "roi_percent"),
             ),
@@ -611,26 +647,32 @@ impl NativeBacktestBatchRequest {
             loop_interval_override: request_text(
                 object,
                 "loop_interval_override",
-                defaults
-                    .get("loop_interval_override")
-                    .and_then(Value::as_str)
-                    .unwrap_or("1m"),
+                &source_json_text_default(
+                    execution_defaults,
+                    "loop_interval_override",
+                    &first_python_ui_option_key(
+                        crate::python_source_dashboard_loop_choices(),
+                        "1m",
+                    ),
+                ),
             ),
             connector_backend: request_text(
                 object,
                 "connector_backend",
-                defaults
-                    .get("connector_backend")
-                    .and_then(Value::as_str)
-                    .unwrap_or("binance-connector"),
+                &source_json_text_default(
+                    defaults,
+                    "connector_backend",
+                    &first_python_connector_key("binance-connector"),
+                ),
             ),
             selected_exchange: request_text(
                 object,
                 "selected_exchange",
-                crate::python_source_ui_defaults()
-                    .get("selected_exchange")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Binance"),
+                &source_json_text_default(
+                    crate::python_source_ui_defaults(),
+                    "selected_exchange",
+                    &first_python_ui_option_key(crate::python_source_exchange_options(), "Binance"),
+                ),
             ),
             scan_top_n,
             resume_combo_offset: request_number(object, "resume_combo_offset", 0.0)
@@ -1857,6 +1899,15 @@ mod tests {
             })
             .cloned()
             .unwrap_or_else(|| panic!("missing generated backtest fixture {fixture_name}"))
+    }
+
+    #[test]
+    fn missing_batch_option_default_comes_from_the_python_choice_catalog() {
+        let choices = [("source-key", "Source Value")];
+        assert_eq!(
+            source_config_text_default(&json!({}), "missing", &choices, "stale literal"),
+            "Source Value"
+        );
     }
 
     #[test]

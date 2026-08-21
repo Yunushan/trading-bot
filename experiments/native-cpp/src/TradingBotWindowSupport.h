@@ -51,9 +51,11 @@ struct ServiceApiJsonResult {
 
 bool isTestnetModeLabel(const QString &modeText);
 bool isPaperTradingModeLabel(const QString &modeText);
+bool nativeRuntimeStandaloneExecutionAllowed(const QString &modeText);
 QString canonicalPythonExchangeKey(const QString &value);
 QString selectedDashboardExchange(const QComboBox *combo);
 bool exchangeUsesBinanceApi(const QString &exchangeKey);
+QString nativeRuntimeIndicatorSourceMarketFamily(const QString &indicatorSourceText);
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures);
 QString pythonSourceParityContractHash();
 QStringList pythonSourceParityDomainKeys();
@@ -73,6 +75,8 @@ QStringList pythonSourceServiceRouteRequestFields(const QString &routeName);
 QStringList pythonSourceServiceRouteResponseFields(const QString &routeName);
 QString serviceApiBaseUrl();
 QString serviceApiUrlForRoute(const QString &routeName);
+QString pythonDesktopEntrypointPath();
+QJsonObject projectPythonRemoteServiceConfig(const QJsonObject &config);
 ServiceApiJsonResult serviceApiRequestJson(
     const QString &method,
     const QString &routeName,
@@ -105,6 +109,12 @@ QJsonObject pythonSourceDefaultExecutionConfig();
 QJsonObject pythonSourceDefaultBacktestConfig();
 QJsonObject pythonSourceRiskDefaults();
 QJsonObject pythonSourceUiDefaults();
+QString pythonSourceDefaultExecutionText(const QString &key, const QString &fallback = {});
+QString pythonSourceDefaultExecutionFirstText(const QString &key, const QString &fallback = {});
+QString pythonSourceDefaultBacktestText(const QString &key, const QString &fallback = {});
+QString pythonSourceDefaultUiText(const QString &key, const QString &fallback = {});
+QString pythonSourceFirstOptionKey(const QStringList &keys, const QString &fallback = {});
+QString pythonSourceFirstOptionLabel(const QStringList &labels, const QString &fallback = {});
 QStringList pythonSourceChartMarketOptions();
 QStringList pythonSourceAccountModeOptions();
 QStringList pythonSourceDashboardLoopChoiceKeys();
@@ -113,6 +123,8 @@ QStringList pythonSourceLeadTraderOptionKeys();
 QStringList pythonSourceLeadTraderOptionLabels();
 QStringList pythonSourceLlmUseForOptionKeys();
 QStringList pythonSourceLlmUseForOptionLabels();
+QStringList pythonSourceLlmReasoningEffortOptionKeys();
+QStringList pythonSourceLlmReasoningEffortOptionLabels();
 QStringList pythonSourceDashboardStrategyTemplateKeys();
 QStringList pythonSourceDashboardStrategyTemplateLabels();
 QStringList pythonSourceBacktestTemplateKeys();
@@ -167,6 +179,8 @@ QStringList pythonSourceChartViewOptionKeys();
 QStringList pythonSourceChartViewOptionLabels();
 QStringList pythonSourcePositionsViewOptionKeys();
 QStringList pythonSourcePositionsViewOptionLabels();
+QStringList pythonSourcePositionPctUnitsOptionKeys();
+QStringList pythonSourcePositionPctUnitsOptionLabels();
 QStringList pythonSourceExchangeOptionDisabledLabels();
 void populateComboFromPythonSourceOptions(
     QComboBox *combo,

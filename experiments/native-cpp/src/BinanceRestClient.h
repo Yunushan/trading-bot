@@ -9,6 +9,7 @@
 #include <QVector>
 
 #include <functional>
+#include <optional>
 
 class BinanceRestClient final {
 public:
@@ -109,6 +110,28 @@ public:
     struct FuturesPositionsResult {
         bool ok = false;
         QVector<FuturesPosition> positions;
+        QString error;
+    };
+
+    // Unlike FuturesPositionsResult, this read preserves a flat symbol row so
+    // margin/leverage can be verified before the next entry order.
+    struct FuturesSymbolSettingsResult {
+        bool ok = false;
+        QString symbol;
+        QString marginType;
+        int leverage = 0;
+        double positionAmt = 0.0;
+        QString error;
+    };
+
+    struct FuturesOrderSettingsPlan {
+        bool allowed = false;
+        bool cancelOpenOrders = false;
+        bool changeMarginType = false;
+        bool changeLeverage = false;
+        QString symbol;
+        QString marginType;
+        int leverage = 0;
         QString error;
     };
 
@@ -234,6 +257,15 @@ public:
     struct FuturesMultiAssetsModeResult {
         bool ok = false;
         bool multiAssetsMargin = false;
+        QString error;
+    };
+
+    struct FuturesAccountModesPlan {
+        bool allowed = false;
+        bool desiredDualSidePosition = false;
+        bool desiredMultiAssetsMargin = false;
+        bool changePositionMode = false;
+        bool changeMultiAssetsMode = false;
         QString error;
     };
 
@@ -399,6 +431,23 @@ public:
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 
+    static FuturesSymbolSettingsResult fetchFuturesSymbolSettings(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        bool testnet = false,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesOrderSettingsPlan planFuturesOrderSettings(
+        const QString &symbol,
+        const QString &currentMarginType,
+        const QString &desiredMarginType,
+        int desiredLeverage,
+        double openPositionAmt,
+        int openOrdersCount,
+        int symbolMaxLeverage = 0);
+
     static FuturesOpenOrdersResult fetchOpenFuturesOrders(
         const QString &apiKey,
         const QString &apiSecret,
@@ -528,6 +577,12 @@ public:
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 
+    static FuturesAccountModesPlan planFuturesAccountModes(
+        bool desiredDualSidePosition,
+        bool desiredMultiAssetsMargin,
+        std::optional<bool> exchangeDualSidePosition,
+        std::optional<bool> exchangeMultiAssetsMargin);
+
     static FuturesForceOrdersResult fetchFuturesForceOrders(
         const QString &apiKey,
         const QString &apiSecret,
@@ -624,6 +679,14 @@ private:
         bool testnet,
         const QString &baseUrlOverride,
         const QString &endpoint,
+        const QList<QPair<QString, QString>> &params,
+        int timeoutMs,
+        QString *error);
+    static QJsonDocument signedFuturesOrderRequestJson(
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool testnet,
+        const QString &baseUrlOverride,
         const QList<QPair<QString, QString>> &params,
         int timeoutMs,
         QString *error);

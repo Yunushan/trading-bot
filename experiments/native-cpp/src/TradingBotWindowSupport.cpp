@@ -5,9 +5,11 @@
 #include <QColor>
 #include <QComboBox>
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -18,6 +20,7 @@
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QStandardItemModel>
 #include <QTableWidgetItem>
 #include <QTimer>
@@ -27,6 +30,10 @@
 #include <QtGlobal>
 
 #include <algorithm>
+
+#ifndef TB_NATIVE_PROJECT_ROOT
+#define TB_NATIVE_PROJECT_ROOT ""
+#endif
 
 namespace {
 
@@ -48,8 +55,6 @@ const QString kConnectorSpot = QStringLiteral("binance-sdk-spot");
 const QString kConnectorBinanceConnector = QStringLiteral("binance-connector");
 const QString kConnectorCcxt = QStringLiteral("ccxt");
 const QString kConnectorPyBinance = QStringLiteral("python-binance");
-const QString kConnectorLegacyGateway = QStringLiteral("gateway");
-const QString kConnectorLegacyCustom = QStringLiteral("custom");
 
 QString normalizeConnectorBackendInternal(const QString &value) {
     const QString textRaw = value.trimmed();
@@ -57,13 +62,6 @@ QString normalizeConnectorBackendInternal(const QString &value) {
         return kConnectorUsdsFutures;
     }
     const QString text = textRaw.toLower();
-
-    if (text.contains(QStringLiteral("gateway"))) {
-        return kConnectorLegacyGateway;
-    }
-    if (text.contains(QStringLiteral("custom")) || text.startsWith(QStringLiteral("http"))) {
-        return kConnectorLegacyCustom;
-    }
 
     if (text == kConnectorUsdsFutures
         || text == QStringLiteral("binance_sdk_derivatives_trading_usds_futures")
@@ -104,16 +102,6 @@ QString normalizeBaseUrl(QString url) {
         url.chop(1);
     }
     return url;
-}
-
-QString firstEnvValue(const QStringList &keys) {
-    for (const QString &key : keys) {
-        const QString value = qEnvironmentVariable(key.toUtf8().constData()).trimmed();
-        if (!value.isEmpty()) {
-            return value;
-        }
-    }
-    return QString();
 }
 
 QString environmentValue(const char *name, const QString &fallback = {}) {
@@ -446,6 +434,13 @@ bool isPaperTradingModeLabel(const QString &modeText) {
         || modeNorm.contains("paper trading");
 }
 
+bool nativeRuntimeStandaloneExecutionAllowed(const QString &modeText) {
+    // Local paper simulation is safe before promotion; exchange-backed native
+    // execution must follow Python's generated readiness boundary.
+    return PythonParityContract::kCppStandaloneRuntimeReady
+        || isPaperTradingModeLabel(modeText);
+}
+
 QString canonicalPythonExchangeKey(const QString &value) {
     QString normalized = value.trimmed();
     const int badgePos = normalized.indexOf('(');
@@ -491,6 +486,45 @@ bool exchangeUsesBinanceApi(const QString &exchangeKey) {
         }
     }
     return false;
+}
+
+QString nativeRuntimeIndicatorSourceMarketFamily(const QString &indicatorSourceText) {
+    const QString source = indicatorSourceText.trimmed();
+    if (source.isEmpty()) {
+        return {};
+    }
+
+    const auto canonical = [](QString value) {
+        value = value.trimmed().toLower();
+        value.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("_"));
+        while (value.startsWith(QLatin1Char('_'))) {
+            value.remove(0, 1);
+        }
+        while (value.endsWith(QLatin1Char('_'))) {
+            value.chop(1);
+        }
+        return value;
+    };
+    const QString sourceKey = canonical(source);
+    for (const auto &mapping : PythonParityContract::kPythonNativeRuntimeIndicatorSourceMarketFamilies) {
+        const QString mappingKey = parityString(mapping.key);
+        if (sourceKey == canonical(mappingKey)) {
+            return parityString(mapping.value);
+        }
+    }
+    for (const auto &option : PythonParityContract::kPythonIndicatorSourceOptions) {
+        if (sourceKey != canonical(parityString(option.key))
+            && sourceKey != canonical(parityString(option.label))) {
+            continue;
+        }
+        const QString optionKey = canonical(parityString(option.key));
+        for (const auto &mapping : PythonParityContract::kPythonNativeRuntimeIndicatorSourceMarketFamilies) {
+            if (optionKey == canonical(parityString(mapping.key))) {
+                return parityString(mapping.value);
+            }
+        }
+    }
+    return {};
 }
 
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures) {
@@ -605,6 +639,60 @@ QString serviceApiBaseUrl() {
         base = QStringLiteral("http://%1:%2").arg(displayHost, port);
     }
     return normalizeBaseUrl(base);
+}
+
+QString pythonDesktopEntrypointPath() {
+    QStringList roots;
+    const auto appendUniqueRoot = [&roots](const QString &value) {
+        const QString trimmed = value.trimmed();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+        const QString absolute = QDir(trimmed).absolutePath();
+        if (!roots.contains(absolute, Qt::CaseInsensitive)) {
+            roots.append(absolute);
+        }
+    };
+    const auto appendAncestors = [&appendUniqueRoot](const QString &start) {
+        QDir cursor(start);
+        for (int i = 0; i < 10; ++i) {
+            appendUniqueRoot(cursor.absolutePath());
+            if (!cursor.cdUp()) {
+                break;
+            }
+        }
+    };
+
+    appendUniqueRoot(QStringLiteral(TB_NATIVE_PROJECT_ROOT));
+    appendUniqueRoot(qEnvironmentVariable("TRADING_BOT_REPO_ROOT"));
+    appendUniqueRoot(qEnvironmentVariable("TB_PROJECT_ROOT"));
+    appendAncestors(QCoreApplication::applicationDirPath());
+    appendAncestors(QDir::currentPath());
+
+    const QStringList relativeCandidates = {
+        QStringLiteral("apps/desktop-pyqt/main.py"),
+        QStringLiteral("Languages/Python/main.py"),
+    };
+    for (const QString &root : roots) {
+        const QDir rootDir(root);
+        for (const QString &relative : relativeCandidates) {
+            const QFileInfo candidate(rootDir.filePath(relative));
+            if (!candidate.isFile()) {
+                continue;
+            }
+            const QString canonical = candidate.canonicalFilePath();
+            return canonical.isEmpty() ? candidate.absoluteFilePath() : canonical;
+        }
+    }
+    return {};
+}
+
+QJsonObject projectPythonRemoteServiceConfig(const QJsonObject &config) {
+    QJsonObject projected = config;
+    for (const std::string_view field : PythonParityContract::kPythonRemoteServiceConfigProtectedFields) {
+        projected.remove(QString::fromUtf8(field.data(), static_cast<qsizetype>(field.size())));
+    }
+    return projected;
 }
 
 QString serviceApiUrlForRoute(const QString &routeName) {
@@ -971,6 +1059,62 @@ QJsonObject pythonSourceUiDefaults() {
     return parityJsonObject(PythonParityContract::kPythonUiDefaultsJson);
 }
 
+namespace {
+
+QString sourceDefaultText(const QJsonObject &defaults, const QString &key, const QString &fallback) {
+    const QString value = defaults.value(key).toString().trimmed();
+    return value.isEmpty() ? fallback : value;
+}
+
+QString sourceDefaultFirstText(const QJsonObject &defaults, const QString &key, const QString &fallback) {
+    const QJsonValue value = defaults.value(key);
+    if (value.isArray()) {
+        const QJsonArray values = value.toArray();
+        for (const QJsonValue &item : values) {
+            const QString text = item.toString().trimmed();
+            if (!text.isEmpty()) {
+                return text;
+            }
+        }
+    }
+    return sourceDefaultText(defaults, key, fallback);
+}
+
+QString firstNonEmptyOption(const QStringList &values, const QString &fallback) {
+    for (const QString &value : values) {
+        if (!value.trimmed().isEmpty()) {
+            return value.trimmed();
+        }
+    }
+    return fallback;
+}
+
+} // namespace
+
+QString pythonSourceDefaultExecutionText(const QString &key, const QString &fallback) {
+    return sourceDefaultText(pythonSourceDefaultExecutionConfig(), key, fallback);
+}
+
+QString pythonSourceDefaultExecutionFirstText(const QString &key, const QString &fallback) {
+    return sourceDefaultFirstText(pythonSourceDefaultExecutionConfig(), key, fallback);
+}
+
+QString pythonSourceDefaultBacktestText(const QString &key, const QString &fallback) {
+    return sourceDefaultText(pythonSourceDefaultBacktestConfig(), key, fallback);
+}
+
+QString pythonSourceDefaultUiText(const QString &key, const QString &fallback) {
+    return sourceDefaultText(pythonSourceUiDefaults(), key, fallback);
+}
+
+QString pythonSourceFirstOptionKey(const QStringList &keys, const QString &fallback) {
+    return firstNonEmptyOption(keys, fallback);
+}
+
+QString pythonSourceFirstOptionLabel(const QStringList &labels, const QString &fallback) {
+    return firstNonEmptyOption(labels, fallback);
+}
+
 QStringList pythonSourceChartMarketOptions() {
     return parityStringList(PythonParityContract::kPythonChartMarketOptions);
 }
@@ -1001,6 +1145,14 @@ QStringList pythonSourceLlmUseForOptionKeys() {
 
 QStringList pythonSourceLlmUseForOptionLabels() {
     return parityUiOptionLabels(PythonParityContract::kPythonLlmUseForOptions);
+}
+
+QStringList pythonSourceLlmReasoningEffortOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonLlmReasoningEffortOptions);
+}
+
+QStringList pythonSourceLlmReasoningEffortOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonLlmReasoningEffortOptions);
 }
 
 QStringList pythonSourceDashboardStrategyTemplateKeys() {
@@ -1229,6 +1381,14 @@ QStringList pythonSourcePositionsViewOptionLabels() {
     return parityUiOptionLabels(PythonParityContract::kPythonPositionsViewOptions);
 }
 
+QStringList pythonSourcePositionPctUnitsOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonPositionPctUnitsOptions);
+}
+
+QStringList pythonSourcePositionPctUnitsOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonPositionPctUnitsOptions);
+}
+
 void populateComboFromPythonSourceOptions(
     QComboBox *combo,
     const QStringList &keys,
@@ -1316,24 +1476,26 @@ void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceD
         currentKey = normalizeConnectorBackendInternal(combo->currentText().trimmed());
     }
     const QString recommended = recommendedConnectorKey(futures);
-    const bool legacyConnector = currentKey == kConnectorLegacyGateway || currentKey == kConnectorLegacyCustom;
-    if (forceDefault || (!legacyConnector && !pythonConnectorOptionExists(currentKey))) {
+    if (forceDefault || !pythonConnectorOptionExists(currentKey)) {
         currentKey = recommended;
     }
 
     const QSignalBlocker blocker(combo);
     combo->clear();
     for (const auto &option : pythonConnectorOptions()) {
+        // Python's account runtime exposes only connectors declared for the
+        // selected market family. Keep the native dropdown identical instead
+        // of showing delegated providers that cannot be selected here.
+        if (!connectorAllowedForAccount(option.key, futures)) {
+            continue;
+        }
         combo->addItem(option.label, option.key);
         const int row = combo->count() - 1;
-        const bool nativeOwned = connectorAllowedForAccount(option.key, futures);
         combo->setItemData(
             row,
-            nativeOwned
-                ? QStringLiteral("Native C++ runtime connector.")
-                : QStringLiteral("Python Service API connector; C++ delegates this selection to the Python runtime."),
+            QStringLiteral("Native C++ runtime connector."),
             Qt::ToolTipRole);
-        combo->setItemData(row, nativeOwned ? QStringLiteral("native-cpp") : QStringLiteral("python-service"), Qt::UserRole + 1);
+        combo->setItemData(row, QStringLiteral("native-cpp"), Qt::UserRole + 1);
     }
 
     if (combo->count() <= 0) {
@@ -1353,57 +1515,7 @@ void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceD
 ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool futures) {
     ConnectorRuntimeConfig cfg;
     cfg.label = connectorText.trimmed();
-    const QString normalized = connectorText.trimmed().toLower();
     const QString selectedKey = normalizeConnectorBackendInternal(connectorText);
-
-    if (selectedKey == kConnectorLegacyGateway) {
-        cfg.key = kConnectorLegacyGateway;
-        const QString raw = firstEnvValue(
-            futures
-                ? QStringList{
-                      QStringLiteral("BINANCE_GATEWAY_FUTURES_BASE_URL"),
-                      QStringLiteral("BINANCE_GATEWAY_BASE_URL"),
-                      QStringLiteral("BINANCE_GATEWAY_URL"),
-                  }
-                : QStringList{
-                      QStringLiteral("BINANCE_GATEWAY_SPOT_BASE_URL"),
-                      QStringLiteral("BINANCE_GATEWAY_BASE_URL"),
-                      QStringLiteral("BINANCE_GATEWAY_URL"),
-                  });
-        cfg.baseUrl = normalizeBaseUrl(raw);
-        if (cfg.baseUrl.isEmpty()) {
-            cfg.error = futures
-                ? QStringLiteral("Gateway connector requires BINANCE_GATEWAY_FUTURES_BASE_URL (or BINANCE_GATEWAY_BASE_URL).")
-                : QStringLiteral("Gateway connector requires BINANCE_GATEWAY_SPOT_BASE_URL (or BINANCE_GATEWAY_BASE_URL).");
-        }
-        return cfg;
-    }
-
-    if (selectedKey == kConnectorLegacyCustom || normalized.startsWith(QStringLiteral("http"))) {
-        cfg.key = kConnectorLegacyCustom;
-        QString raw = normalized.startsWith(QStringLiteral("http")) ? connectorText.trimmed() : QString();
-        if (raw.isEmpty()) {
-            raw = firstEnvValue(
-                futures
-                    ? QStringList{
-                          QStringLiteral("CUSTOM_CONNECTOR_FUTURES_BASE_URL"),
-                          QStringLiteral("CUSTOM_CONNECTOR_BASE_URL"),
-                          QStringLiteral("CUSTOM_CONNECTOR_URL"),
-                      }
-                    : QStringList{
-                          QStringLiteral("CUSTOM_CONNECTOR_SPOT_BASE_URL"),
-                          QStringLiteral("CUSTOM_CONNECTOR_BASE_URL"),
-                          QStringLiteral("CUSTOM_CONNECTOR_URL"),
-                      });
-        }
-        cfg.baseUrl = normalizeBaseUrl(raw);
-        if (cfg.baseUrl.isEmpty()) {
-            cfg.error = futures
-                ? QStringLiteral("Custom connector requires CUSTOM_CONNECTOR_FUTURES_BASE_URL (or CUSTOM_CONNECTOR_BASE_URL).")
-                : QStringLiteral("Custom connector requires CUSTOM_CONNECTOR_SPOT_BASE_URL (or CUSTOM_CONNECTOR_BASE_URL).");
-        }
-        return cfg;
-    }
 
     auto setWarning = [&cfg](const QString &message) {
         if (cfg.warning.trimmed().isEmpty()) {

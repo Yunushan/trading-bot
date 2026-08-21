@@ -1036,6 +1036,7 @@ mod tests {
             loss_usdt: 25.0,
             price_loss_percent: 2.5,
             margin_loss_percent: 25.0,
+            indicator_entry_id: None,
         }];
         let mut calls = 0usize;
 

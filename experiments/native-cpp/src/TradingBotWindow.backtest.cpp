@@ -752,6 +752,36 @@ int appendBacktestRows(QTableWidget *table, const QJsonObject &snapshot, const Q
 
 } // namespace
 
+void TradingBotWindow::syncBacktestSymbolSourceConstraints(bool forceDefault) {
+    const QString source = symbolSourceCombo_
+        ? symbolSourceCombo_->currentText().trimmed()
+        : QStringLiteral("Futures");
+    const bool isFutures = !source.toLower().startsWith(QStringLiteral("spot"));
+    const auto applyFuturesWidget = [isFutures](QWidget *widget) {
+        if (!widget) {
+            return;
+        }
+        widget->setVisible(isFutures);
+        widget->setEnabled(isFutures);
+    };
+
+    applyFuturesWidget(backtestMarginModeCombo_);
+    applyFuturesWidget(backtestMarginModeLabel_);
+    applyFuturesWidget(backtestPositionModeCombo_);
+    applyFuturesWidget(backtestPositionModeLabel_);
+    applyFuturesWidget(backtestAssetsModeCombo_);
+    applyFuturesWidget(backtestAssetsModeLabel_);
+    applyFuturesWidget(backtestAccountModeCombo_);
+    applyFuturesWidget(backtestAccountModeLabel_);
+    applyFuturesWidget(backtestLeverageSpin_);
+    applyFuturesWidget(backtestLeverageLabel_);
+
+    if (backtestConnectorCombo_) {
+        TradingBotWindowSupport::rebuildConnectorComboForAccount(
+            backtestConnectorCombo_, isFutures, forceDefault);
+    }
+}
+
 void TradingBotWindow::refreshBacktestSymbolIntervalTable() {
     if (!backtestSymbolIntervalTable_) {
         return;
@@ -839,18 +869,31 @@ void TradingBotWindow::addSelectedBacktestSymbolIntervalPairs() {
     strategyControls.insert(QStringLiteral("leverage"), spinValue(
         backtestLeverageSpin_, backtestDefaults.value(QStringLiteral("leverage")).toInt(20)));
     strategyControls.insert(QStringLiteral("margin_mode"), comboValue(
-        backtestMarginModeCombo_, backtestDefaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"))));
+        backtestMarginModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("margin_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceMarginModeOptionLabels()))));
     strategyControls.insert(QStringLiteral("position_mode"), comboValue(
-        backtestPositionModeCombo_, backtestDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"))));
+        backtestPositionModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("position_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourcePositionModeOptionLabels()))));
     strategyControls.insert(QStringLiteral("assets_mode"), comboValue(
-        backtestAssetsModeCombo_, backtestDefaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"))));
+        backtestAssetsModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("assets_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels()))));
     strategyControls.insert(QStringLiteral("account_mode"), comboValue(
-        backtestAccountModeCombo_, backtestDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
+        backtestAccountModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("account_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceAccountModeOptions()))));
     strategyControls.insert(QStringLiteral("connector_backend"), comboValue(
         backtestConnectorCombo_, backtestDefaults.value(QStringLiteral("connector_backend")).toString()));
     strategyControls.insert(QStringLiteral("loop_interval_override"), comboValue(
         backtestLoopCombo_, backtestDefaults.value(QStringLiteral("loop_interval_override")).toString(
-            executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m")))));
+            TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+                QStringLiteral("loop_interval_override"), QStringLiteral("1m")))));
     strategyControls.insert(QStringLiteral("stop_loss"), stopLoss);
 
     int added = 0;
@@ -1023,7 +1066,10 @@ QJsonObject TradingBotWindow::buildBacktestServiceConfig() const {
         QStringLiteral("symbol_source"),
         symbolSourceCombo_ && !symbolSourceCombo_->currentText().trimmed().isEmpty()
             ? symbolSourceCombo_->currentText().trimmed()
-            : defaults.value(QStringLiteral("symbol_source")).toString(QStringLiteral("Futures")));
+            : TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+                  QStringLiteral("symbol_source"),
+                  TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                      TradingBotWindowSupport::pythonSourceChartMarketOptions())));
     config.insert(
         QStringLiteral("start_date"),
         backtestStartDateEdit_ && backtestStartDateEdit_->date().isValid()
@@ -1038,14 +1084,31 @@ QJsonObject TradingBotWindow::buildBacktestServiceConfig() const {
         backtestPositionPctSpin_, defaults.value(QStringLiteral("position_pct")).toDouble(2.0)));
     config.insert(QStringLiteral("side"), comboValue(
         backtestSideCombo_, defaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"))));
-    config.insert(QStringLiteral("margin_mode"), comboValue(
-        backtestMarginModeCombo_, defaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"))));
+    const QString accountMode = comboValue(
+        backtestAccountModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("account_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceAccountModeOptions())));
+    QString marginMode = comboValue(
+        backtestMarginModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("margin_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceMarginModeOptionLabels())));
+    if (accountMode.contains(QStringLiteral("portfolio"), Qt::CaseInsensitive)) {
+        marginMode = QStringLiteral("Cross");
+    }
+    config.insert(QStringLiteral("margin_mode"), marginMode);
     config.insert(QStringLiteral("position_mode"), comboValue(
-        backtestPositionModeCombo_, defaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"))));
+        backtestPositionModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("position_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourcePositionModeOptionLabels()))));
     config.insert(QStringLiteral("assets_mode"), comboValue(
-        backtestAssetsModeCombo_, defaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"))));
-    config.insert(QStringLiteral("account_mode"), comboValue(
-        backtestAccountModeCombo_, defaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
+        backtestAssetsModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("assets_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels()))));
+    config.insert(QStringLiteral("account_mode"), accountMode);
     config.insert(QStringLiteral("connector_backend"), comboValue(
         backtestConnectorCombo_, defaults.value(QStringLiteral("connector_backend")).toString()));
     config.insert(QStringLiteral("leverage"), spinValue(
@@ -1093,7 +1156,9 @@ bool TradingBotWindow::hydrateBacktestServiceConfig(const QJsonObject &config) {
     setComboValue(backtestPositionModeCombo_, config.value(QStringLiteral("position_mode")));
     setComboValue(backtestAssetsModeCombo_, config.value(QStringLiteral("assets_mode")));
     setComboValue(backtestAccountModeCombo_, config.value(QStringLiteral("account_mode")));
+    syncDashboardAccountModeConstraints();
     setComboValue(backtestConnectorCombo_, config.value(QStringLiteral("connector_backend")));
+    syncBacktestSymbolSourceConstraints(false);
     setComboValue(backtestMddLogicCombo_, config.value(QStringLiteral("mdd_logic")));
     setComboValue(backtestScanScopeCombo_, config.value(QStringLiteral("scan_scope")));
     setComboValue(backtestOptimizerModeCombo_, config.value(QStringLiteral("optimizer_mode")));
@@ -1333,6 +1398,11 @@ QWidget *TradingBotWindow::createBacktestTab() {
     page->setObjectName("backtestPage");
     backtestPnlActiveLabel_ = nullptr;
     backtestPnlClosedLabel_ = nullptr;
+    backtestMarginModeLabel_ = nullptr;
+    backtestPositionModeLabel_ = nullptr;
+    backtestAssetsModeLabel_ = nullptr;
+    backtestAccountModeLabel_ = nullptr;
+    backtestLeverageLabel_ = nullptr;
     auto *rootLayout = new QVBoxLayout(page);
     rootLayout->setContentsMargins(0, 0, 0, 0);
 
@@ -1530,7 +1600,8 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     const QString loopInterval = comboValue(
         backtestLoopCombo_,
         backtestDefaults.value(QStringLiteral("loop_interval_override")).toString(
-            executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m"))));
+            TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+                QStringLiteral("loop_interval_override"), QStringLiteral("1m"))));
     QJsonObject stopLoss;
     const QJsonObject stopLossDefaults = backtestDefaults.value(QStringLiteral("stop_loss")).toObject();
     const QJsonObject effectiveStopLossDefaults = stopLossDefaults.isEmpty()
@@ -1544,7 +1615,10 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
 
     const QString symbolSource = symbolSourceCombo_ && !symbolSourceCombo_->currentText().trimmed().isEmpty()
         ? symbolSourceCombo_->currentText().trimmed()
-        : backtestDefaults.value(QStringLiteral("symbol_source")).toString(QStringLiteral("Futures"));
+        : TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+              QStringLiteral("symbol_source"),
+              TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                  TradingBotWindowSupport::pythonSourceChartMarketOptions()));
     QJsonObject request;
     request.insert(QStringLiteral("symbols"), stringArray(symbols));
     request.insert(QStringLiteral("intervals"), stringArray(intervals));
@@ -1572,12 +1646,25 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
     request.insert(QStringLiteral("position_pct_units"), QStringLiteral("percent"));
     request.insert(QStringLiteral("loop_interval_override"), loopInterval);
     request.insert(QStringLiteral("side"), comboValue(backtestSideCombo_, backtestDefaults.value(QStringLiteral("side")).toString(QStringLiteral("BOTH"))));
-    request.insert(QStringLiteral("margin_mode"), comboValue(backtestMarginModeCombo_, backtestDefaults.value(QStringLiteral("margin_mode")).toString(QStringLiteral("Isolated"))));
-    request.insert(QStringLiteral("position_mode"), comboValue(backtestPositionModeCombo_, backtestDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"))));
-    request.insert(QStringLiteral("assets_mode"), comboValue(backtestAssetsModeCombo_, backtestDefaults.value(QStringLiteral("assets_mode")).toString(QStringLiteral("Single-Asset"))));
-    request.insert(QStringLiteral("account_mode"), comboValue(backtestAccountModeCombo_, backtestDefaults.value(QStringLiteral("account_mode")).toString(QStringLiteral("Classic Trading"))));
+    const QString requestAccountMode = comboValue(
+        backtestAccountModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("account_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceAccountModeOptions())));
+    QString requestMarginMode = comboValue(
+        backtestMarginModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("margin_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceMarginModeOptionLabels())));
+    if (requestAccountMode.contains(QStringLiteral("portfolio"), Qt::CaseInsensitive)) {
+        requestMarginMode = QStringLiteral("Cross");
+    }
+    request.insert(QStringLiteral("margin_mode"), requestMarginMode);
+    request.insert(QStringLiteral("position_mode"), comboValue(backtestPositionModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(QStringLiteral("position_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourcePositionModeOptionLabels()))));
+    request.insert(QStringLiteral("assets_mode"), comboValue(backtestAssetsModeCombo_, TradingBotWindowSupport::pythonSourceDefaultBacktestText(QStringLiteral("assets_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels()))));
+    request.insert(QStringLiteral("account_mode"), requestAccountMode);
     request.insert(QStringLiteral("connector_backend"), comboValue(backtestConnectorCombo_, backtestDefaults.value(QStringLiteral("connector_backend")).toString()));
-    request.insert(QStringLiteral("selected_exchange"), selectedExchange.isEmpty() ? uiDefaults.value(QStringLiteral("selected_exchange")).toString(QStringLiteral("Binance")) : selectedExchange);
+    request.insert(QStringLiteral("selected_exchange"), selectedExchange.isEmpty() ? TradingBotWindowSupport::pythonSourceDefaultUiText(QStringLiteral("selected_exchange"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceExchangeOptionLabels())) : selectedExchange);
     request.insert(QStringLiteral("leverage"), spinValue(backtestLeverageSpin_, backtestDefaults.value(QStringLiteral("leverage")).toInt(20)));
     request.insert(QStringLiteral("mdd_logic"), comboValue(backtestMddLogicCombo_, backtestDefaults.value(QStringLiteral("mdd_logic")).toString(QStringLiteral("per_trade"))));
     request.insert(QStringLiteral("scan_scope"), scanScope);
@@ -1628,10 +1715,10 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
             request,
             QStringLiteral("leverage"),
             backtestDefaults.value(QStringLiteral("leverage")).toDouble(20.0));
-        runTemplate.marginMode = jsonText(request, QStringLiteral("margin_mode"), QStringLiteral("Isolated"));
-        runTemplate.positionMode = jsonText(request, QStringLiteral("position_mode"), QStringLiteral("Hedge"));
-        runTemplate.assetsMode = jsonText(request, QStringLiteral("assets_mode"), QStringLiteral("Single-Asset"));
-        runTemplate.accountMode = jsonText(request, QStringLiteral("account_mode"), QStringLiteral("Classic Trading"));
+        runTemplate.marginMode = jsonText(request, QStringLiteral("margin_mode"), TradingBotWindowSupport::pythonSourceDefaultBacktestText(QStringLiteral("margin_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceMarginModeOptionLabels())));
+        runTemplate.positionMode = jsonText(request, QStringLiteral("position_mode"), TradingBotWindowSupport::pythonSourceDefaultBacktestText(QStringLiteral("position_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourcePositionModeOptionLabels())));
+        runTemplate.assetsMode = jsonText(request, QStringLiteral("assets_mode"), TradingBotWindowSupport::pythonSourceDefaultBacktestText(QStringLiteral("assets_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels())));
+        runTemplate.accountMode = jsonText(request, QStringLiteral("account_mode"), TradingBotWindowSupport::pythonSourceDefaultBacktestText(QStringLiteral("account_mode"), TradingBotWindowSupport::pythonSourceFirstOptionLabel(TradingBotWindowSupport::pythonSourceAccountModeOptions())));
         runTemplate.mddLogic = jsonText(request, QStringLiteral("mdd_logic"), QStringLiteral("per_trade"));
         runTemplate.feeBps = jsonNumber(request, QStringLiteral("fee_bps"), 5.0);
         runTemplate.slippageBps = jsonNumber(request, QStringLiteral("slippage_bps"), 2.0);
@@ -1652,6 +1739,9 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
             PythonParityContract::kPythonOptimizerModeConfigChoices,
             NativePythonParity::defaultConfigChoice(PythonParityContract::kPythonOptimizerModeConfigChoices));
         batchRequest.optimizerEnabled = normalizedOptimizerMode != QStringLiteral("current") && pairOverrides.isEmpty();
+        batchRequest.scanTopN = spinValue(
+            backtestScanTopNSpin_,
+            backtestDefaults.value(QStringLiteral("scan_top_n")).toInt(200));
         batchRequest.optimizerMaxDurationSeconds = batchRequest.optimizerEnabled
             ? static_cast<qint64>(jsonNumber(request, QStringLiteral("optimizer_max_duration_seconds"), 14'400.0))
             : 0;
@@ -1987,12 +2077,7 @@ QWidget *TradingBotWindow::createMarketsGroup() {
     connect(refreshBtn, &QPushButton::clicked, this, &TradingBotWindow::refreshBacktestSymbols);
     if (symbolSourceCombo_) {
         connect(symbolSourceCombo_, &QComboBox::currentTextChanged, this, [this](const QString &) {
-            if (backtestConnectorCombo_) {
-                const bool futures = symbolSourceCombo_
-                    ? symbolSourceCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
-                    : true;
-                TradingBotWindowSupport::rebuildConnectorComboForAccount(backtestConnectorCombo_, futures, true);
-            }
+            syncBacktestSymbolSourceConstraints(true);
             refreshBacktestSymbols();
         });
     }
@@ -2144,7 +2229,8 @@ QWidget *TradingBotWindow::createParametersGroup() {
         TradingBotWindowSupport::pythonSourceDashboardLoopChoiceKeys(),
         TradingBotWindowSupport::pythonSourceDashboardLoopChoiceLabels(),
         {},
-        executionDefaults.value(QStringLiteral("loop_interval_override")).toString(QStringLiteral("1m")),
+        TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("loop_interval_override"), QStringLiteral("1m")),
         QStringLiteral("1 minute"));
     backtestLoopCombo_ = loopCombo;
     form->addRow("Loop Interval Override:", loopCombo);
@@ -2233,18 +2319,26 @@ QWidget *TradingBotWindow::createParametersGroup() {
         TradingBotWindowSupport::pythonSourceMarginModeOptionKeys(),
         TradingBotWindowSupport::pythonSourceMarginModeOptionLabels(),
         {},
-        QStringLiteral("Isolated"));
+        TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("margin_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceMarginModeOptionLabels())));
     form->addRow("Margin Mode (Futures):", marginModeCombo);
     backtestMarginModeCombo_ = marginModeCombo;
+    backtestMarginModeLabel_ = qobject_cast<QLabel *>(form->labelForField(marginModeCombo));
     auto *positionModeCombo = new QComboBox(group);
     TradingBotWindowSupport::populateComboFromPythonSourceOptions(
         positionModeCombo,
         TradingBotWindowSupport::pythonSourcePositionModeOptionKeys(),
         TradingBotWindowSupport::pythonSourcePositionModeOptionLabels(),
         {},
-        QStringLiteral("Hedge"));
+        TradingBotWindowSupport::pythonSourceDefaultBacktestText(
+            QStringLiteral("position_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourcePositionModeOptionLabels())));
     form->addRow("Position Mode:", positionModeCombo);
     backtestPositionModeCombo_ = positionModeCombo;
+    backtestPositionModeLabel_ = qobject_cast<QLabel *>(form->labelForField(positionModeCombo));
     auto *assetsCombo = new QComboBox(group);
     TradingBotWindowSupport::populateComboFromPythonSourceOptions(
         assetsCombo,
@@ -2252,7 +2346,13 @@ QWidget *TradingBotWindow::createParametersGroup() {
         TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels());
     form->addRow("Assets Mode:", assetsCombo);
     backtestAssetsModeCombo_ = assetsCombo;
+    backtestAssetsModeLabel_ = qobject_cast<QLabel *>(form->labelForField(assetsCombo));
     backtestAccountModeCombo_ = addCombo("Account Mode:", TradingBotWindowSupport::pythonSourceAccountModeOptions());
+    backtestAccountModeLabel_ = qobject_cast<QLabel *>(form->labelForField(backtestAccountModeCombo_));
+    connect(backtestAccountModeCombo_, &QComboBox::currentTextChanged, this, [this](const QString &) {
+        syncDashboardAccountModeConstraints();
+    });
+    syncDashboardAccountModeConstraints();
 
     auto *connectorCombo = new QComboBox(group);
     const bool sourceFutures = symbolSourceCombo_
@@ -2271,6 +2371,8 @@ QWidget *TradingBotWindow::createParametersGroup() {
     leverageSpin->setValue(backtestDefaults.value(QStringLiteral("leverage")).toInt(20));
     backtestLeverageSpin_ = leverageSpin;
     form->addRow("Leverage (Futures):", leverageSpin);
+    backtestLeverageLabel_ = qobject_cast<QLabel *>(form->labelForField(leverageSpin));
+    syncBacktestSymbolSourceConstraints(true);
 
     auto *templateEnable = new QCheckBox("Enable", group);
     const QJsonObject templateDefaults = backtestDefaults.value(QStringLiteral("template")).toObject();

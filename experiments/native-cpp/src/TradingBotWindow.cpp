@@ -2,6 +2,7 @@
 #include "BinanceRestClient.h"
 #include "BinanceWsClient.h"
 #include "TradingBotWindowSupport.h"
+#include "generated/PythonParityContract.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -274,7 +275,10 @@ DashboardTemplatePreset dashboardTemplatePresetForKey(const QString &templateKey
         preset.valid = true;
         preset.positionPct = 2.0;
         preset.leverage = 1;
-        preset.marginMode = QStringLiteral("Isolated");
+        preset.marginMode = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("margin_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceMarginModeOptionLabels()));
         addDefaultSignalPack();
         return preset;
     }
@@ -282,7 +286,10 @@ DashboardTemplatePreset dashboardTemplatePresetForKey(const QString &templateKey
         preset.valid = true;
         preset.positionPct = 2.0;
         preset.leverage = 1;
-        preset.marginMode = QStringLiteral("Isolated");
+        preset.marginMode = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("margin_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceMarginModeOptionLabels()));
         addDefaultSignalPack();
         return preset;
     }
@@ -290,7 +297,10 @@ DashboardTemplatePreset dashboardTemplatePresetForKey(const QString &templateKey
         preset.valid = true;
         preset.positionPct = 1.0;
         preset.leverage = 1;
-        preset.marginMode = QStringLiteral("Isolated");
+        preset.marginMode = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+            QStringLiteral("margin_mode"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceMarginModeOptionLabels()));
         addDefaultSignalPack();
         return preset;
     }
@@ -498,52 +508,48 @@ QString normalizeExchangeKey(QString value) {
 
 QString selectedDashboardExchange(const QComboBox *combo) {
     if (!combo) {
-        return QStringLiteral("Binance");
+        return TradingBotWindowSupport::pythonSourceDefaultUiText(
+            QStringLiteral("selected_exchange"),
+            TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                TradingBotWindowSupport::pythonSourceExchangeOptionLabels()));
     }
     QString value = combo->currentData().toString().trimmed();
     if (value.isEmpty()) {
         value = combo->currentText().trimmed();
     }
     value = normalizeExchangeKey(value);
-    return value.isEmpty() ? QStringLiteral("Binance") : value;
+    return value.isEmpty()
+        ? TradingBotWindowSupport::pythonSourceDefaultUiText(
+              QStringLiteral("selected_exchange"),
+              TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                  TradingBotWindowSupport::pythonSourceExchangeOptionLabels()))
+        : value;
 }
 
 bool exchangeUsesBinanceApi(const QString &exchangeKey) {
-    return normalizeExchangeKey(exchangeKey).compare(QStringLiteral("Binance"), Qt::CaseInsensitive) == 0;
+    return TradingBotWindowSupport::exchangeUsesBinanceApi(exchangeKey);
 }
 
 QString exchangeFromIndicatorSource(const QString &sourceText) {
     const QString normalized = normalizeExchangeKey(sourceText);
-    static const QSet<QString> known = {
-        QStringLiteral("Binance"),
-        QStringLiteral("Bybit"),
-        QStringLiteral("OKX"),
-        QStringLiteral("Gate"),
-        QStringLiteral("Bitget"),
-        QStringLiteral("MEXC"),
-        QStringLiteral("KuCoin"),
-    };
-    if (known.contains(normalized)) {
-        return normalized;
+    for (const QString &exchangeKey : TradingBotWindowSupport::pythonSourceExchangeOptionKeys()) {
+        if (exchangeKey.compare(normalized, Qt::CaseInsensitive) == 0) {
+            return exchangeKey;
+        }
     }
     return QString();
 }
 
 QString preferredIndicatorSourceForExchange(const QString &exchangeKey, const QString &currentSource) {
-    const QString normalized = normalizeExchangeKey(exchangeKey);
-    if (normalized.compare(QStringLiteral("Binance"), Qt::CaseInsensitive) == 0) {
-        if (currentSource.trimmed().toLower().contains(QStringLiteral("binance"))) {
-            return currentSource.trimmed();
+    Q_UNUSED(exchangeKey);
+    const QStringList indicatorSources = TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels();
+    const QString current = currentSource.trimmed();
+    for (const QString &indicatorSource : indicatorSources) {
+        if (indicatorSource.compare(current, Qt::CaseInsensitive) == 0) {
+            return indicatorSource;
         }
-        return QStringLiteral("Binance futures");
     }
-    if (normalized == QStringLiteral("MEXC")) {
-        return QStringLiteral("Mexc");
-    }
-    if (normalized == QStringLiteral("KuCoin")) {
-        return QStringLiteral("Kucoin");
-    }
-    return normalized;
+    return TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels().value(0);
 }
 
 QString extractSemverFromText(const QString &value) {
@@ -1881,6 +1887,10 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
     });
 }
 
+TradingBotWindow::~TradingBotWindow() {
+    stopManagedPythonDesktopService();
+}
+
 QWidget *TradingBotWindow::createPlaceholderTab(const QString &title, const QString &body) {
     auto *page = new QWidget(this);
     auto *layout = new QVBoxLayout(page);
@@ -2038,63 +2048,109 @@ QWidget *TradingBotWindow::createCodeTab() {
         layout->addLayout(row);
     };
 
-    addSection("Choose your language",
-               {makeCard("Python", "Use Languages/Python/main.py for Python runtime", "#1f2937", "External",
-                         "#1f2937", false, [this]() {
-                             if (QMessageBox::question(
-                                     this,
-                                     tr("Switch to Python?"),
-                                     tr("This will close the current C++ trading bot window completely and open the Python trading bot instead.\n\nDo you want to continue?"),
-                                     QMessageBox::Yes | QMessageBox::No,
-                                     QMessageBox::No) != QMessageBox::Yes) {
-                                 return;
-                             }
-                             auto *splash = new LanguageSwitchSplash(QStringLiteral("Launching Python runtime…"));
-                             hide();
-                             QString launchError;
-                             if (!launchPythonRuntime(&launchError)) {
-                                 splash->close();
-                                 splash->deleteLater();
-                                 showMaximized();
-                                 raise();
-                                 activateWindow();
-                                 QMessageBox::warning(
-                                     this,
-                                     "Python runtime",
-                                     launchError);
-                                 return;
-                             }
-                             updateStatusMessage("Launching Python runtime...");
-                             QTimer::singleShot(450, splash, [splash]() {
-                                 splash->close();
-                                 splash->deleteLater();
-                             });
-                             QTimer::singleShot(450, this, []() {
-                                 QCoreApplication::quit();
-                             });
-                         }),
-                makeCard("C++", "Qt native desktop (active)", "#2563eb", "Active", "#1f2937", false, [this]() {
-                    if (tabs_ && backtestTab_) {
-                        tabs_->setCurrentWidget(backtestTab_);
-                    }
-                    updateStatusMessage("C++ workspace active.");
-                }),
-                makeCard("Rust", "Desktop Cargo workspace", "#fb923c", "Scaffold", "#7c2d12", false, [this]() {
-                    QString workspaceError;
-                    const QString rustWorkspace = ensureWorkspaceDirectory(QStringLiteral("experiments/rust-shells"), &workspaceError);
-                    if (rustWorkspace.isEmpty()) {
-                        QMessageBox::warning(this, "Rust workspace", workspaceError);
-                        return;
-                    }
-                    const bool opened = QDesktopServices::openUrl(QUrl::fromLocalFile(rustWorkspace));
-                    if (!opened) {
-                        QMessageBox::information(
-                            this,
-                            "Rust workspace",
-                            QStringLiteral("Rust workspace prepared at:\n%1").arg(rustWorkspace));
-                    }
-                    updateStatusMessage(QStringLiteral("Rust workspace ready: %1").arg(rustWorkspace));
-                })});
+    const auto parityText = [](const std::string_view value) {
+        return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
+    };
+    const auto launchPython = [this]() {
+        if (QMessageBox::question(
+                this,
+                tr("Switch to Python?"),
+                tr("This will close the current C++ trading bot window completely and open the Python trading bot instead.\n\nDo you want to continue?"),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+        auto *splash = new LanguageSwitchSplash(QStringLiteral("Launching Python runtime…"));
+        hide();
+        QString launchError;
+        if (!launchPythonRuntime(&launchError)) {
+            splash->close();
+            splash->deleteLater();
+            showMaximized();
+            raise();
+            activateWindow();
+            QMessageBox::warning(this, "Python runtime", launchError);
+            return;
+        }
+        updateStatusMessage("Launching Python runtime...");
+        QTimer::singleShot(450, splash, [splash]() {
+            splash->close();
+            splash->deleteLater();
+        });
+        QTimer::singleShot(450, this, []() {
+            QCoreApplication::quit();
+        });
+    };
+    const auto activateCpp = [this]() {
+        if (tabs_ && backtestTab_) {
+            tabs_->setCurrentWidget(backtestTab_);
+        }
+        updateStatusMessage("C++ workspace active.");
+    };
+    const auto openRustWorkspace = [this]() {
+        QString workspaceError;
+        const QString rustWorkspace = ensureWorkspaceDirectory(
+            QStringLiteral("experiments/rust-shells"), &workspaceError);
+        if (rustWorkspace.isEmpty()) {
+            QMessageBox::warning(this, "Rust workspace", workspaceError);
+            return;
+        }
+        const bool opened = QDesktopServices::openUrl(QUrl::fromLocalFile(rustWorkspace));
+        if (!opened) {
+            QMessageBox::information(
+                this,
+                "Rust workspace",
+                QStringLiteral("Rust workspace prepared at:\n%1").arg(rustWorkspace));
+        }
+        updateStatusMessage(QStringLiteral("Rust workspace ready: %1").arg(rustWorkspace));
+    };
+
+    QList<QWidget *> languageCards;
+    for (const auto &option : PythonParityContract::kPythonCodeLanguageOptions) {
+        const QString key = parityText(option.key);
+        std::function<void()> onClick;
+        if (key == QStringLiteral("Python (PyQt)")) {
+            onClick = launchPython;
+        } else if (key == QStringLiteral("C++ (Qt/C++23)")) {
+            onClick = activateCpp;
+        } else if (key == QStringLiteral("Rust")) {
+            onClick = openRustWorkspace;
+        }
+        auto *card = makeCard(
+            parityText(option.title),
+            parityText(option.subtitle),
+            parityText(option.accent),
+            parityText(option.badge),
+            QStringLiteral("#1f2937"),
+            option.disabled,
+            std::move(onClick));
+        card->setProperty("python-parity-key", key);
+        card->setProperty("python-parity-subtitle", parityText(option.subtitle));
+        languageCards.append(card);
+    }
+    addSection("Choose your language", languageCards);
+
+    QList<QWidget *> rustFrameworkCards;
+    for (const auto &option : PythonParityContract::kPythonRustFrameworkOptions) {
+        const QString key = parityText(option.key);
+        std::function<void()> onClick;
+        if (key == QStringLiteral("Tauri")) {
+            onClick = openRustWorkspace;
+        }
+        auto *card = makeCard(
+            parityText(option.title),
+            parityText(option.subtitle),
+            parityText(option.accent),
+            parityText(option.badge),
+            QStringLiteral("#1f2937"),
+            option.disabled,
+            std::move(onClick));
+        card->setToolTip(parityText(option.launchNote));
+        card->setProperty("python-parity-key", key);
+        card->setProperty("python-parity-subtitle", parityText(option.subtitle));
+        rustFrameworkCards.append(card);
+    }
+    addSection("Rust desktop framework", rustFrameworkCards);
 
     auto *envTitle = new QLabel("Environment Versions", container);
     envTitle->setStyleSheet(QString("font-size: 14px; font-weight: 700; color: %1;").arg(textColor));

@@ -42,6 +42,21 @@ class DesktopProductMainTests(unittest.TestCase):
         shortcut.assert_called_once_with()
         run_entrypoint.assert_called_once_with()
 
+    def test_headless_service_mode_dispatches_to_desktop_runtime_host(self):
+        bootstrap = ModuleType("app.desktop.bootstrap")
+        run_headless_service = Mock(return_value=9)
+        bootstrap._run_headless_service = run_headless_service
+        with (
+            patch.object(product_main, "_maybe_launch_via_shell_shortcut") as shortcut,
+            patch.dict(sys.modules, {"app.desktop.bootstrap": bootstrap}),
+            patch.dict(product_main.os.environ, {}, clear=False),
+        ):
+            self.assertEqual(product_main.main(["--headless-service"]), 9)
+            self.assertEqual(product_main.os.environ["BOT_ENABLE_DESKTOP_SERVICE_API"], "1")
+
+        shortcut.assert_not_called()
+        run_headless_service.assert_called_once_with()
+
     def test_packaged_smoke_imports_real_runtime_surface(self):
         self.assertEqual(product_main._run_packaged_smoke(), 0)
 

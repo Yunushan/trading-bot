@@ -32,6 +32,7 @@ class QTabWidget;
 class QWidget;
 class QTextEdit;
 class QVBoxLayout;
+class QProcess;
 class QJsonObject;
 class BinanceWsClient;
 
@@ -46,6 +47,11 @@ class TradingBotWindow final : public QMainWindow {
 
 public:
     explicit TradingBotWindow(QWidget *parent = nullptr);
+    ~TradingBotWindow() override;
+
+    // Run a bounded, non-trading integration check for the managed Python
+    // Service API execution host. This is used by release smoke tooling.
+    bool runManagedPythonServiceSmoke(QString *errorOut = nullptr);
 
 private slots:
     void handleAddCustomIntervals();
@@ -89,8 +95,10 @@ private:
     void startDashboardRuntime();
     void stopDashboardRuntime();
     void runDashboardRuntimeCycle();
-    bool startDashboardServiceRuntime();
-    void stopDashboardServiceRuntime();
+    bool startDashboardServiceRuntime(bool showDialogs = true);
+    void stopDashboardServiceRuntime(bool showDialogs = true);
+    bool ensureDashboardServiceApiAvailable(QString *errorOut = nullptr);
+    void stopManagedPythonDesktopService();
     void runDashboardServiceRuntimeCycle();
     void refreshDashboardOrderAuditStatus();
     void refreshDashboardOpenPositionIndicatorValuesForSignalKey(
@@ -106,6 +114,7 @@ private:
     void saveDashboardConfig();
     void loadDashboardConfig();
     QJsonObject buildDashboardServiceConfigPatch() const;
+    QJsonObject buildDashboardServiceApiConfigPatch() const;
     QJsonObject buildBacktestServiceConfig() const;
     QJsonArray buildBacktestSymbolIntervalPairs() const;
     bool hydrateDashboardServiceConfig(const QJsonObject &config);
@@ -130,10 +139,14 @@ private:
     void refreshPositionsSummaryLabels();
     bool openExternalUrl(const QString &url);
     void registerDashboardRuntimeLockWidget(QWidget *widget);
+    void syncDashboardAccountModeConstraints();
+    void syncDashboardAccountTypeConstraints();
+    void syncBacktestSymbolSourceConstraints(bool forceDefault = false);
     QString dashboardEnabledIndicatorsSummary() const;
     QString dashboardStopLossSummary() const;
     QString dashboardStrategySummary() const;
     bool dashboardOverridesHasPair(const QString &symbol, const QString &interval) const;
+    QJsonObject dashboardRuntimeOverridePayload(const QString &symbol, const QString &interval) const;
     bool addDashboardOverrideRow(const QString &symbolRaw, const QString &intervalRaw);
 
     void createDashboardAccountStatusSection(QWidget *page, QVBoxLayout *root);
@@ -177,6 +190,11 @@ private:
     QComboBox *backtestPositionModeCombo_;
     QComboBox *backtestAssetsModeCombo_;
     QComboBox *backtestAccountModeCombo_;
+    QLabel *backtestMarginModeLabel_ = nullptr;
+    QLabel *backtestPositionModeLabel_ = nullptr;
+    QLabel *backtestAssetsModeLabel_ = nullptr;
+    QLabel *backtestAccountModeLabel_ = nullptr;
+    QLabel *backtestLeverageLabel_ = nullptr;
     QComboBox *backtestExecutionBackendCombo_ = nullptr;
     QDoubleSpinBox *backtestFeeBpsSpin_ = nullptr;
     QDoubleSpinBox *backtestSlippageBpsSpin_ = nullptr;
@@ -328,9 +346,12 @@ private:
     QDoubleSpinBox *dashboardStopLossUsdtSpin_;
     QDoubleSpinBox *dashboardStopLossPercentSpin_;
     QJsonObject dashboardEffectiveRiskControls_;
+    // Preserve Python-owned code-language selections that have no C++ dashboard widget.
+    QJsonObject dashboardPythonConfigPassthrough_;
     bool dashboardRuntimeActive_ = false;
     bool dashboardRuntimeStopping_ = false;
     bool dashboardServiceRuntimeActive_ = false;
+    QProcess *managedPythonDesktopServiceProcess_ = nullptr;
     qint64 dashboardServiceLastLogSequenceId_ = 0;
     bool dashboardRuntimeCycleInProgress_ = false;
     int dashboardRuntimeLiveSubmitAttemptCount_ = 0;

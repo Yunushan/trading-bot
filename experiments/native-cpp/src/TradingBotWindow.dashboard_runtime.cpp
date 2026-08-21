@@ -72,6 +72,290 @@ NativeIndicatorRuntime::ConfigMap nativeIndicatorConfigsForKeys(
     return configs;
 }
 
+bool isBenignFuturesMarginMutationError(const QString &error) {
+    const QString normalized = error.toLower();
+    return normalized.contains(QStringLiteral("no need to change"))
+        || normalized.contains(QStringLiteral("-4046"))
+        || normalized.contains(QStringLiteral("-4099"));
+}
+
+bool prepareNativeFuturesOrderSettings(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    const QString &desiredMarginType,
+    int desiredLeverage,
+    int symbolMaxLeverage,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride,
+    QString *error) {
+    const auto currentSettings = BinanceRestClient::fetchFuturesSymbolSettings(
+        apiKey,
+        apiSecret,
+        symbol,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!currentSettings.ok) {
+        if (error) {
+            *error = QStringLiteral("Futures settings lookup failed for %1; order blocked: %2")
+                         .arg(symbol, currentSettings.error);
+        }
+        return false;
+    }
+
+    const auto openOrders = BinanceRestClient::fetchOpenFuturesOrders(
+        apiKey,
+        apiSecret,
+        symbol,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!openOrders.ok) {
+        if (error) {
+            *error = QStringLiteral("Unable to verify open futures orders for %1; order blocked: %2")
+                         .arg(symbol, openOrders.error);
+        }
+        return false;
+    }
+
+    const auto plan = BinanceRestClient::planFuturesOrderSettings(
+        symbol,
+        currentSettings.marginType,
+        desiredMarginType,
+        desiredLeverage,
+        currentSettings.positionAmt,
+        openOrders.orders.size(),
+        symbolMaxLeverage);
+    if (!plan.allowed) {
+        if (error) {
+            *error = plan.error;
+        }
+        return false;
+    }
+
+    if (plan.cancelOpenOrders) {
+        const auto cancelled = BinanceRestClient::cancelAllOpenFuturesOrders(
+            apiKey,
+            apiSecret,
+            symbol,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (!cancelled.ok) {
+            if (error) {
+                *error = QStringLiteral("Unable to cancel open futures orders for %1; order blocked: %2")
+                             .arg(symbol, cancelled.error);
+            }
+            return false;
+        }
+        const auto remaining = BinanceRestClient::fetchOpenFuturesOrders(
+            apiKey,
+            apiSecret,
+            symbol,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (!remaining.ok || !remaining.orders.isEmpty()) {
+            if (error) {
+                *error = QStringLiteral("Open futures orders remain for %1 after cancellation; order blocked.")
+                             .arg(symbol);
+            }
+            return false;
+        }
+    }
+
+    bool marginVerified = false;
+    QString lastMarginError;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        const auto changed = BinanceRestClient::changeFuturesMarginType(
+            apiKey,
+            apiSecret,
+            symbol,
+            plan.marginType,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (!changed.ok && !isBenignFuturesMarginMutationError(changed.error)) {
+            lastMarginError = changed.error;
+        }
+
+        const auto verified = BinanceRestClient::fetchFuturesSymbolSettings(
+            apiKey,
+            apiSecret,
+            symbol,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (verified.ok && verified.marginType == plan.marginType) {
+            marginVerified = true;
+            break;
+        }
+        lastMarginError = verified.ok
+            ? QStringLiteral("Binance returned margin %1 instead of %2")
+                  .arg(verified.marginType, plan.marginType)
+            : verified.error;
+        if (attempt < 4) {
+            QThread::msleep(200);
+        }
+    }
+    if (!marginVerified) {
+        if (error) {
+            *error = QStringLiteral("Unable to verify futures margin type for %1 as %2; order blocked: %3")
+                         .arg(symbol, plan.marginType, lastMarginError);
+        }
+        return false;
+    }
+
+    const auto leverage = BinanceRestClient::changeFuturesLeverage(
+        apiKey,
+        apiSecret,
+        symbol,
+        plan.leverage,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!leverage.ok || leverage.leverage != plan.leverage) {
+        if (error) {
+            *error = QStringLiteral("Unable to verify leverage for %1 as %2; order blocked: %3")
+                         .arg(symbol)
+                         .arg(plan.leverage)
+                         .arg(leverage.error.isEmpty()
+                                  ? QStringLiteral("Binance returned %1").arg(leverage.leverage)
+                                  : leverage.error);
+        }
+        return false;
+    }
+
+    const auto finalSettings = BinanceRestClient::fetchFuturesSymbolSettings(
+        apiKey,
+        apiSecret,
+        symbol,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!finalSettings.ok
+        || finalSettings.marginType != plan.marginType
+        || finalSettings.leverage != plan.leverage) {
+        if (error) {
+            *error = QStringLiteral("Final futures settings for %1 are not verified; order blocked.")
+                         .arg(symbol);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool prepareNativeFuturesAccountModes(
+    const QString &apiKey,
+    const QString &apiSecret,
+    bool desiredDualSidePosition,
+    bool desiredMultiAssetsMargin,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride,
+    QString *error) {
+    const auto positionMode = BinanceRestClient::fetchFuturesPositionMode(
+        apiKey,
+        apiSecret,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    const auto multiAssetsMode = BinanceRestClient::fetchFuturesMultiAssetsMode(
+        apiKey,
+        apiSecret,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!positionMode.ok || !multiAssetsMode.ok) {
+        if (error) {
+            QStringList failures;
+            if (!positionMode.ok) {
+                failures.append(positionMode.error);
+            }
+            if (!multiAssetsMode.ok) {
+                failures.append(multiAssetsMode.error);
+            }
+            *error = QStringLiteral(
+                         "Unable to verify Futures position/multi-assets mode; order blocked: %1")
+                         .arg(failures.join(QStringLiteral(" ")));
+        }
+        return false;
+    }
+
+    const auto plan = BinanceRestClient::planFuturesAccountModes(
+        desiredDualSidePosition,
+        desiredMultiAssetsMargin,
+        positionMode.dualSidePosition,
+        multiAssetsMode.multiAssetsMargin);
+    if (!plan.allowed) {
+        if (error) {
+            *error = plan.error;
+        }
+        return false;
+    }
+
+    if (plan.changePositionMode) {
+        const auto changed = BinanceRestClient::changeFuturesPositionMode(
+            apiKey,
+            apiSecret,
+            plan.desiredDualSidePosition,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (!changed.ok) {
+            if (error) {
+                *error = QStringLiteral(
+                             "Unable to apply Futures position mode; order blocked: %1")
+                             .arg(changed.error);
+            }
+            return false;
+        }
+    }
+    if (plan.changeMultiAssetsMode) {
+        const auto changed = BinanceRestClient::changeFuturesMultiAssetsMode(
+            apiKey,
+            apiSecret,
+            plan.desiredMultiAssetsMargin,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (!changed.ok) {
+            if (error) {
+                *error = QStringLiteral(
+                             "Unable to apply Futures multi-assets mode; order blocked: %1")
+                             .arg(changed.error);
+            }
+            return false;
+        }
+    }
+
+    const auto finalPositionMode = BinanceRestClient::fetchFuturesPositionMode(
+        apiKey,
+        apiSecret,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    const auto finalMultiAssetsMode = BinanceRestClient::fetchFuturesMultiAssetsMode(
+        apiKey,
+        apiSecret,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    if (!finalPositionMode.ok
+        || !finalMultiAssetsMode.ok
+        || finalPositionMode.dualSidePosition != plan.desiredDualSidePosition
+        || finalMultiAssetsMode.multiAssetsMargin != plan.desiredMultiAssetsMargin) {
+        if (error) {
+            *error = QStringLiteral(
+                "Final Futures account modes are not verified against Python configuration; order blocked.");
+        }
+        return false;
+    }
+    return true;
+}
+
 std::optional<double> optionalIndicatorThreshold(
     const QVariantMap &config,
     const QString &key
@@ -302,10 +586,24 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     const qint64 cycleNowMs = QDateTime::currentMSecsSinceEpoch();
     const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
     const QJsonObject effectiveDashboardConfig = buildDashboardServiceConfigPatch();
-    const QString defaultAccountType = executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures"));
-    const QString defaultMode = executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"));
-    const QString defaultIndicatorSource = executionDefaults.value(QStringLiteral("indicator_source")).toString(QStringLiteral("Binance futures"));
-    const QString defaultPositionMode = executionDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"));
+    const QString defaultAccountType = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+        QStringLiteral("account_type"),
+        TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+            TradingBotWindowSupport::pythonSourceAccountTypeOptionLabels()));
+    const QString defaultMode = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+        QStringLiteral("mode"), QStringLiteral("Demo/Testnet"));
+    const QString defaultIndicatorSource = TradingBotWindowSupport::pythonSourceDefaultUiText(
+        QStringLiteral("indicator_source"),
+        TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+            TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels()));
+    const QString defaultPositionMode = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+        QStringLiteral("position_mode"),
+        TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+            TradingBotWindowSupport::pythonSourcePositionModeOptionLabels()));
+    const QString defaultAssetsMode = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+        QStringLiteral("assets_mode"),
+        TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+            TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels()));
 
     const bool futures = dashboardAccountTypeCombo_
         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith("fut")
@@ -336,6 +634,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     const bool hedgeMode = dashboardPositionModeCombo_
         ? dashboardPositionModeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("hedge"))
         : defaultPositionMode.trimmed().toLower().startsWith(QStringLiteral("hedge"));
+    const bool multiAssetsMode = dashboardAssetsModeCombo_
+        ? dashboardAssetsModeCombo_->currentText().trimmed().toLower().contains(QStringLiteral("multi"))
+        : defaultAssetsMode.trimmed().toLower().contains(QStringLiteral("multi"));
     const QString liveActivePnlContextKey = QStringLiteral("%1|%2|%3")
                                                 .arg(apiKey.trimmed(),
                                                      dashboardAccountTypeCombo_
@@ -797,10 +1098,29 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             continue;
         }
 
+        const QJsonObject rowPayload = symbolItem->data(Qt::UserRole).toJsonObject();
+        const QJsonObject rowStrategyControls = rowPayload.value(QStringLiteral("strategy_controls")).toObject();
+        const auto payloadText = [](const QJsonValue &value) {
+            if (value.isString()) {
+                return value.toString().trimmed();
+            }
+            if (value.isDouble()) {
+                return QString::number(value.toDouble(), 'g', 15);
+            }
+            return QString();
+        };
+
         const auto *connectorItem = dashboardOverridesTable_->item(row, 5);
-        const QString rowConnectorText = connectorItem && !connectorItem->text().trimmed().isEmpty()
-            ? connectorItem->text().trimmed()
-            : defaultConnectorText;
+        QString rowConnectorText = payloadText(rowPayload.value(QStringLiteral("connector_backend")));
+        if (rowConnectorText.isEmpty()) {
+            rowConnectorText = payloadText(rowStrategyControls.value(QStringLiteral("connector_backend")));
+        }
+        if (rowConnectorText.isEmpty() && connectorItem) {
+            rowConnectorText = connectorItem->text().trimmed();
+        }
+        if (rowConnectorText.isEmpty()) {
+            rowConnectorText = defaultConnectorText;
+        }
         const ConnectorRuntimeConfig rowConnectorCfg = TradingBotWindowSupport::resolveConnectorConfig(rowConnectorText, futures);
         if (!rowConnectorCfg.ok()) {
             const QString warningKey = QStringLiteral("row-connector|%1|%2").arg(rowConnectorText, rowConnectorCfg.error);
@@ -823,7 +1143,14 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         const QString connectorToken = rowConnectorCfg.key + "|" + rowConnectorCfg.baseUrl;
         const QString key = runtimeKeyFor(symbol, interval, connectorToken);
         const auto *loopItem = dashboardOverridesTable_->item(row, 3);
-        const qint64 loopSeconds = std::max<qint64>(0, loopSecondsFromText(loopItem ? loopItem->text() : QString()));
+        QString loopText = payloadText(rowPayload.value(QStringLiteral("loop_interval_override")));
+        if (loopText.isEmpty()) {
+            loopText = payloadText(rowStrategyControls.value(QStringLiteral("loop_interval_override")));
+        }
+        if (loopText.isEmpty() && loopItem) {
+            loopText = loopItem->text().trimmed();
+        }
+        const qint64 loopSeconds = std::max<qint64>(0, loopSecondsFromText(loopText));
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 retryAfterMs = dashboardRuntimeEntryRetryAfterMs_.value(key, 0);
         if (retryAfterMs > nowMs) {
@@ -845,8 +1172,6 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         const QString indicatorSummary = indicatorItem ? indicatorItem->text() : QString();
         const auto *strategyControlsItem = dashboardOverridesTable_->item(row, 6);
         const QString strategySummary = strategyControlsItem ? strategyControlsItem->text() : QString();
-        const QJsonObject rowPayload = symbolItem->data(Qt::UserRole).toJsonObject();
-        const QJsonObject rowStrategyControls = rowPayload.value(QStringLiteral("strategy_controls")).toObject();
         const QJsonObject normalizedStrategyControls =
             NativeStrategyRuntime::normalizeStrategyControls(QStringLiteral("runtime"), rowStrategyControls);
         QJsonObject effectiveRiskInput = effectiveDashboardConfig;
@@ -858,6 +1183,12 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         const bool useLiveSignalCandles = normalizedRiskControls.value(QStringLiteral("indicator_use_live_values"))
                                               .toBool(strategyUsesLiveCandles(strategySummary));
         QSet<QString> indicatorKeys = parseIndicatorKeysFromSummary(indicatorSummary);
+        for (const QJsonValue &indicatorValue : rowPayload.value(QStringLiteral("indicators")).toArray()) {
+            const QString indicatorKey = normalizedIndicatorKey(indicatorValue.toString());
+            if (!indicatorKey.isEmpty() && indicatorKey != QStringLiteral("generic")) {
+                indicatorKeys.insert(indicatorKey);
+            }
+        }
         if (openIt != dashboardRuntimeOpenPositions_.end()) {
             const RuntimePosition &runtimePosition = openIt.value();
             QStringList runtimeSources = runtimePosition.signalSources;
@@ -906,9 +1237,11 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             const QString warningKey = QStringLiteral("indicator-source|unsupported|%1").arg(indicatorSourceKey);
             if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
                 dashboardRuntimeConnectorWarnings_.insert(warningKey);
+                const QString supportedIndicatorSources = TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels()
+                    .join(QStringLiteral("' or '"));
                 appendDashboardAllLog(
-                    QString("Indicator source '%1' is not wired for C++ runtime signals yet. Select 'Binance futures' or 'Binance spot'.")
-                        .arg(indicatorSourceText));
+                    QString("Indicator source '%1' is not wired for C++ runtime signals yet. Select '%2'.")
+                        .arg(indicatorSourceText, supportedIndicatorSources));
             }
             touchWaitingEntry(key, nowMs);
             continue;
@@ -1164,10 +1497,16 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             continue;
         }
 
-        const auto *levItem = dashboardOverridesTable_->item(row, 4);
-        bool levOk = false;
-        double leverage = levItem ? levItem->text().toDouble(&levOk) : 0.0;
-        if (!levOk || leverage <= 0.0) {
+        double leverage = normalizedStrategyControls.value(QStringLiteral("leverage")).toDouble(0.0);
+        if (leverage <= 0.0) {
+            leverage = rowPayload.value(QStringLiteral("leverage")).toDouble(0.0);
+        }
+        if (leverage <= 0.0) {
+            const auto *levItem = dashboardOverridesTable_->item(row, 4);
+            bool levOk = false;
+            leverage = levItem ? levItem->text().toDouble(&levOk) : 0.0;
+        }
+        if (leverage <= 0.0) {
             leverage = dashboardLeverageSpin_ ? dashboardLeverageSpin_->value() : 1.0;
         }
         leverage = std::max(1.0, leverage);
@@ -1261,6 +1600,36 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 continue;
             }
 
+            double spotBaseFree = 0.0;
+            if (!futures && !paperTrading) {
+                if (symbolFilters.baseAsset.trimmed().isEmpty()) {
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked: Spot base asset metadata is unavailable.")
+                            .arg(openSide, symbol, interval));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
+                const auto baseBalance = BinanceRestClient::fetchSpotBalance(
+                    apiKey,
+                    apiSecret,
+                    symbolFilters.baseAsset,
+                    isTestnet,
+                    10000,
+                    rowConnectorCfg.baseUrl);
+                if (!baseBalance.ok || !qIsFinite(baseBalance.free) || baseBalance.free < 0.0) {
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked: Spot %4 balance is unavailable: %5")
+                            .arg(openSide,
+                                 symbol,
+                                 interval,
+                                 symbolFilters.baseAsset,
+                                 baseBalance.error));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
+                spotBaseFree = baseBalance.free;
+            }
+
             double orderSizingPrice = price;
             if (!paperTrading) {
                 const auto *tickerPrice = fetchExecutionTickerPrice(symbol, rowConnectorCfg);
@@ -1290,11 +1659,38 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 globalPositionPct,
                 QStringLiteral("percent"));
             const double positionLeverage = futures ? leverage : 1.0;
+            const bool spotSell = !futures && openSide == QStringLiteral("SHORT");
+            if (spotSell && spotBaseFree <= 0.0) {
+                appendDashboardPositionLog(
+                    QString("%1 %2@%3 blocked: Spot cannot open a short without %4 balance.")
+                        .arg(openSide, symbol, interval, symbolFilters.baseAsset));
+                touchWaitingEntry(key, nowMs);
+                continue;
+            }
+            const double spotSellNotional = spotSell
+                ? spotBaseFree * orderSizingPrice * positionPctFraction
+                : 0.0;
+            if (spotSell && symbolFilters.minNotional > 0.0
+                && spotSellNotional + 1e-12 < symbolFilters.minNotional) {
+                appendDashboardPositionLog(
+                    QString("%1 %2@%3 blocked: Spot SELL position value %4 is below minNotional %5.")
+                        .arg(openSide,
+                             symbol,
+                             interval,
+                             QString::number(spotSellNotional, 'f', 8),
+                             QString::number(symbolFilters.minNotional, 'f', 8)));
+                touchWaitingEntry(key, nowMs);
+                continue;
+            }
             const double targetNotionalUsdt = futures
                 ? std::max(10.0, availableUsdt * positionPctFraction * positionLeverage)
+                : spotSell
+                    ? std::max(0.0, spotSellNotional)
                 : std::max(0.0, availableUsdt * positionPctFraction);
             const double requestedQty = std::max(0.000001, targetNotionalUsdt / orderSizingPrice);
-            double cappedRequestedQty = hasFlipCloseQuantity ? flipCloseQty : requestedQty;
+            // Python's Spot branch sizes directly from the account balance and
+            // does not reuse the futures flip-close quantity.
+            double cappedRequestedQty = futures && hasFlipCloseQuantity ? flipCloseQty : requestedQty;
             const double storedQtyCap = dashboardRuntimeOpenQtyCaps_.value(key, 0.0);
             if (qIsFinite(storedQtyCap) && storedQtyCap > 0.0) {
                 cappedRequestedQty = std::min(cappedRequestedQty, storedQtyCap);
@@ -1349,24 +1745,29 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             liveSafetyConfig.autoBumpPercentMultiplier = dashboardAutoBumpPercentMultiplierSpin_
                 ? dashboardAutoBumpPercentMultiplierSpin_->value()
                 : 10.0;
-            const NativeOrderSafety::MinimumOrderAutoBumpGuardResult minimumOrderGuard =
-                NativeOrderSafety::guardFuturesMinimumOrderAutoBump({
-                    modeText,
-                    requestedLegalQty,
-                    orderQty,
-                    orderSizingPrice,
-                    availableUsdt,
-                static_cast<int>(positionLeverage),
-                    positionPctFraction * 100.0,
-                    false,
-                    liveSafetyConfig,
-                });
-            if (!minimumOrderGuard.allowed) {
-                appendDashboardPositionLog(
-                    QString("%1 %2@%3 blocked by minimum-order safety: %4")
-                        .arg(openSide, symbol, interval, minimumOrderGuard.errors.join(QStringLiteral(" | "))));
-                touchWaitingEntry(key, nowMs);
-                continue;
+            if (futures) {
+                const NativeOrderSafety::MinimumOrderAutoBumpGuardResult minimumOrderGuard =
+                    NativeOrderSafety::guardFuturesMinimumOrderAutoBump({
+                        modeText,
+                        requestedLegalQty,
+                        orderQty,
+                        orderSizingPrice,
+                        availableUsdt,
+                        static_cast<int>(positionLeverage),
+                        positionPctFraction * 100.0,
+                        false,
+                        liveSafetyConfig,
+                    });
+                if (!minimumOrderGuard.allowed) {
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked by minimum-order safety: %4")
+                            .arg(openSide,
+                                 symbol,
+                                 interval,
+                                 minimumOrderGuard.errors.join(QStringLiteral(" | "))));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
             }
 
             const QString openOrderSide = (openSide == QStringLiteral("LONG"))
@@ -1535,6 +1936,52 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 openReduceOnly = exposureGuard.reduceOnly;
             }
 
+            if (!futures) {
+                NativeOrderSafety::CapitalExposureGuardInput spotExposureInput;
+                spotExposureInput.market = QStringLiteral("spot");
+                spotExposureInput.symbol = symbol;
+                spotExposureInput.interval = interval;
+                spotExposureInput.side = openOrderSide;
+                spotExposureInput.positionPctFraction = positionPctFraction;
+                spotExposureInput.availableUsdt = availableUsdt;
+                spotExposureInput.walletUsdt = qIsFinite(positionsLastTotalBalanceUsdt_)
+                    && positionsLastTotalBalanceUsdt_ > 0.0
+                    ? positionsLastTotalBalanceUsdt_
+                    : availableUsdt;
+                spotExposureInput.spotBaseFree = spotBaseFree;
+                spotExposureInput.price = orderSizingPrice;
+                spotExposureInput.leverage = 1;
+                spotExposureInput.hasFilters = true;
+                spotExposureInput.filters = {
+                    symbolFilters.stepSize,
+                    symbolFilters.tickSize,
+                    symbolFilters.minQty,
+                    symbolFilters.minNotional,
+                };
+                spotExposureInput.requestedQuantity = cappedRequestedQty;
+                spotExposureInput.normalizedQuantity = orderQty;
+                spotExposureInput.liveMode = modeText.trimmed().compare(QStringLiteral("Live"), Qt::CaseInsensitive) == 0;
+                spotExposureInput.liveAllowAutoBumpToMinOrder = liveSafetyConfig.liveAllowAutoBumpToMinOrder;
+                spotExposureInput.maxAutoBumpPercent = normalizedRiskControls.value(QStringLiteral("max_auto_bump_percent"))
+                    .toDouble(liveSafetyConfig.maxAutoBumpPercent);
+                spotExposureInput.autoBumpPercentMultiplier = normalizedRiskControls.value(QStringLiteral("auto_bump_percent_multiplier"))
+                    .toDouble(liveSafetyConfig.autoBumpPercentMultiplier);
+                spotExposureInput.marginOverTargetTolerance = 0.05;
+                spotExposureInput.marginFilterSlippage = 0.1;
+                spotExposureInput.addOnly = false;
+                spotExposureInput.dualSide = false;
+                const NativeOrderSafety::CapitalExposureGuardResult exposureGuard =
+                    NativeOrderSafety::guardFuturesCapitalExposure(spotExposureInput);
+                if (!exposureGuard.allowed) {
+                    appendDashboardPositionLog(
+                        QString("%1 %2@%3 blocked by Python-parity Spot capital guard: %4")
+                            .arg(openSide, symbol, interval, exposureGuard.reason));
+                    touchWaitingEntry(key, nowMs);
+                    continue;
+                }
+                orderQty = exposureGuard.quantityEstimate;
+            }
+
             const QString openPositionSide = futures && hedgeMode ? openSide : QString();
             QString openOrderId;
             double filledQty = orderQty;
@@ -1578,9 +2025,13 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 orderGuardInput.apiSecret = apiSecret;
                 orderGuardInput.accountType = futures ? QStringLiteral("FUTURES") : QStringLiteral("SPOT");
                 orderGuardInput.leverage = static_cast<int>(positionLeverage);
-                orderGuardInput.marginMode = dashboardMarginModeCombo_
+                const QString requestedMarginMode = dashboardMarginModeCombo_
                     ? dashboardMarginModeCombo_->currentText()
-                    : QStringLiteral("Isolated");
+                    : TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+                          QStringLiteral("margin_mode"),
+                          TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                              TradingBotWindowSupport::pythonSourceMarginModeOptionLabels()));
+                orderGuardInput.marginMode = requestedMarginMode;
                 // Python's submit guard validates the top-level live safety
                 // percentage; pair controls affect sizing above, not this cap.
                 orderGuardInput.positionPct = globalPositionPct;
@@ -1607,6 +2058,41 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                             .arg(openSide, symbol, interval, orderGuard.errors.join(QStringLiteral(" | "))));
                     touchWaitingEntry(key, nowMs);
                     continue;
+                }
+                if (futures && !paperTrading) {
+                    QString settingsError;
+                    if (!prepareNativeFuturesAccountModes(
+                            apiKey,
+                            apiSecret,
+                            hedgeMode,
+                            multiAssetsMode,
+                            isTestnet,
+                            10000,
+                            rowConnectorCfg.baseUrl,
+                            &settingsError)) {
+                        appendDashboardPositionLog(
+                            QString("%1 %2@%3 blocked by Futures account-mode guard: %4")
+                                .arg(openSide, symbol, interval, settingsError));
+                        touchWaitingEntry(key, nowMs);
+                        continue;
+                    }
+                    if (!prepareNativeFuturesOrderSettings(
+                            apiKey,
+                            apiSecret,
+                            symbol,
+                            requestedMarginMode,
+                            static_cast<int>(positionLeverage),
+                            symbolFilters.maxLeverage,
+                            isTestnet,
+                            10000,
+                            rowConnectorCfg.baseUrl,
+                            &settingsError)) {
+                        appendDashboardPositionLog(
+                            QString("%1 %2@%3 blocked by futures settings guard: %4")
+                                .arg(openSide, symbol, interval, settingsError));
+                        touchWaitingEntry(key, nowMs);
+                        continue;
+                    }
                 }
                 dashboardRuntimeLiveSubmitAttemptCount_ = orderGuard.nextSubmitAttemptCount;
                 const auto openOrder = futures
@@ -1941,12 +2427,17 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                         || livePosition.markPrice <= 0.0) {
                         continue;
                     }
+                    const double riskMarkPrice = livePosition.symbol.trimmed().compare(symbol, Qt::CaseInsensitive) == 0
+                        && qIsFinite(price)
+                        && price > 0.0
+                        ? price
+                        : livePosition.markPrice;
                     stopLossPositions.append(QJsonObject{
                         {QStringLiteral("symbol"), livePosition.symbol.trimmed().toUpper()},
                         {QStringLiteral("side"), side},
                         {QStringLiteral("quantity"), quantity},
                         {QStringLiteral("entry_price"), livePosition.entryPrice},
-                        {QStringLiteral("mark_price"), livePosition.markPrice},
+                        {QStringLiteral("mark_price"), riskMarkPrice},
                         {QStringLiteral("leverage"), livePosition.leverage},
                         {QStringLiteral("margin_usdt"), livePosition.initialMargin},
                         {QStringLiteral("dual_side"), hedgeMode},
@@ -2030,6 +2521,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 }
             }
         } else {
+            const double riskMarkPrice = qIsFinite(price) && price > 0.0 ? price : markPrice;
             stopLossDecision = NativeStrategyRuntime::evaluatePerTradeStopLoss(
                 normalizedRiskControls,
                 symbol,
@@ -2037,7 +2529,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 openPos.side,
                 rowQty,
                 openPos.entryPrice,
-                markPrice,
+                riskMarkPrice,
                 openPos.leverage,
                 displayMarginUsdt,
                 futures);

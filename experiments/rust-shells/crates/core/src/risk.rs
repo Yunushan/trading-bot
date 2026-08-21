@@ -49,6 +49,7 @@ pub struct FuturesLegEntry {
     pub entry_price: f64,
     pub leverage: f64,
     pub margin_usdt: f64,
+    pub entry_id: Option<u64>,
     pub ledger_id: String,
     pub indicator_keys: Vec<String>,
     pub trigger_signature: Vec<String>,
@@ -61,6 +62,7 @@ impl Default for FuturesLegEntry {
             entry_price: 0.0,
             leverage: 0.0,
             margin_usdt: 0.0,
+            entry_id: None,
             ledger_id: String::new(),
             indicator_keys: Vec::new(),
             trigger_signature: Vec::new(),
@@ -113,6 +115,7 @@ pub struct FuturesStopCloseDirective {
     pub loss_usdt: f64,
     pub price_loss_percent: f64,
     pub margin_loss_percent: f64,
+    pub indicator_entry_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,7 +234,7 @@ pub fn evaluate_per_trade_stop_loss(
     dual_side: bool,
     ctx: &StopLossRuntimeContext,
 ) -> Vec<FuturesStopCloseDirective> {
-    let Some(last_price) = last_price.filter(|value| value.is_finite()) else {
+    let Some(last_price) = last_price.filter(|value| value.is_finite() && *value > 0.0) else {
         return Vec::new();
     };
     if !ctx.stop_enabled || ctx.scope != "per_trade" || ctx.account_type != "FUTURES" {
@@ -260,6 +263,9 @@ pub fn evaluate_per_trade_stop_loss(
             } else {
                 (last_price - entry_price).max(0.0) * qty
             };
+            if !loss_usdt.is_finite() {
+                return None;
+            }
             let denom = entry_price * qty;
             let price_pct = if denom > 0.0 {
                 loss_usdt / denom * 100.0
@@ -293,6 +299,7 @@ pub fn evaluate_per_trade_stop_loss(
                 loss_usdt,
                 price_loss_percent: price_pct,
                 margin_loss_percent: margin_pct,
+                indicator_entry_id: entry.entry_id,
             })
         })
         .collect()
@@ -313,7 +320,7 @@ pub fn evaluate_directional_futures_stop_loss(
     dual_side: bool,
     ctx: &StopLossRuntimeContext,
 ) -> Vec<FuturesStopCloseDirective> {
-    let Some(last_price) = last_price.filter(|value| value.is_finite()) else {
+    let Some(last_price) = last_price.filter(|value| value.is_finite() && *value > 0.0) else {
         return Vec::new();
     };
     if !ctx.stop_enabled || ctx.scope == "per_trade" || ctx.is_cumulative {
@@ -357,7 +364,7 @@ pub fn evaluate_cumulative_futures_stop_loss(
     dual_side: bool,
     ctx: &StopLossRuntimeContext,
 ) -> Vec<FuturesStopCloseDirective> {
-    let Some(last_price) = last_price.filter(|value| value.is_finite()) else {
+    let Some(last_price) = last_price.filter(|value| value.is_finite() && *value > 0.0) else {
         return Vec::new();
     };
     if !ctx.stop_enabled || !ctx.is_cumulative || ctx.account_type != "FUTURES" {
@@ -382,6 +389,9 @@ pub fn evaluate_cumulative_futures_stop_loss(
         } else {
             (last_price - position.entry_price).max(0.0) * qty
         };
+        if !loss.is_finite() {
+            continue;
+        }
         let totals = if side_key == "LONG" {
             &mut long
         } else {
@@ -606,6 +616,9 @@ fn evaluate_directional_leg(
     } else {
         (last_price - entry_price).max(0.0) * qty
     };
+    if !loss_usdt.is_finite() {
+        return None;
+    }
     let denom = entry_price * qty;
     let price_pct = if denom > 0.0 {
         loss_usdt / denom * 100.0
@@ -657,6 +670,7 @@ fn evaluate_directional_leg(
         loss_usdt,
         price_loss_percent: price_pct,
         margin_loss_percent: margin_pct.max(ratio_pct),
+        indicator_entry_id: None,
     })
 }
 
@@ -695,6 +709,7 @@ fn cumulative_directive(
         loss_usdt: totals.loss,
         price_loss_percent: 0.0,
         margin_loss_percent: margin_pct,
+        indicator_entry_id: None,
     })
 }
 
@@ -910,6 +925,24 @@ mod tests {
         assert_eq!(directive.loss_usdt, 5.0);
         assert_eq!(directive.price_loss_percent, 5.0);
         assert_eq!(directive.margin_loss_percent, 25.0);
+
+        assert!(
+            evaluate_per_trade_stop_loss(
+                "btcusdt",
+                "1m",
+                "BUY",
+                &[FuturesLegEntry {
+                    qty: 1.0,
+                    entry_price: 100.0,
+                    leverage: 5.0,
+                    ..Default::default()
+                }],
+                Some(0.0),
+                true,
+                &ctx,
+            )
+            .is_empty()
+        );
     }
 
     #[test]

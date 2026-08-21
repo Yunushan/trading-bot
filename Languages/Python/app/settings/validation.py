@@ -233,6 +233,9 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "tif",
     }
 )
+# Public read-only view for adapters that must project richer UI state into the
+# strict service-runtime schema before validation.
+RUNTIME_CONFIG_KEYS = _ALLOWED_RUNTIME_CONFIG_KEYS
 _ALLOWED_CHART_CONFIG_KEYS = frozenset(
     {
         "auto_follow",
@@ -982,6 +985,7 @@ __all__ = [
     "BINANCE_MAX_FUTURES_LEVERAGE",
     "ConfigValidationError",
     "ConfigValidationIssue",
+    "RUNTIME_CONFIG_KEYS",
     "format_config_validation_issues",
     "validate_runtime_config",
 ]

@@ -426,6 +426,57 @@ def _uninstall_startup_window_suppression() -> None:
     startup_window_suppression_runtime._uninstall_startup_window_suppression()
 
 
+def _run_headless_service() -> int:
+    """Host the actual Python desktop execution bridge without showing its UI."""
+    os.environ["BOT_ENABLE_DESKTOP_SERVICE_API"] = "1"
+    os.environ.setdefault("BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH", "1")
+    os.environ.setdefault("BOT_DISABLE_PYTHONW_RELAUNCH", "1")
+    os.environ.setdefault("BOT_DISABLE_STARTUP_WINDOW_HOOKS", "1")
+    os.environ.setdefault("BOT_DISABLE_TASKBAR", "1")
+    os.environ.setdefault("BOT_DISABLE_SPLASH", "1")
+
+    from app.bootstrap import runtime_env  # noqa: F401,E402
+    from PyQt6 import QtCore  # noqa: E402
+    from PyQt6.QtWidgets import QApplication  # noqa: E402
+    from app.gui.window_shell import MainWindow  # noqa: E402
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([sys.argv[0] if sys.argv else "trading-bot-desktop-service"])
+    app.setQuitOnLastWindowClosed(False)
+
+    window = None
+    try:
+        window = MainWindow()
+        window.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        window.hide()
+        app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100)
+        status = window._get_desktop_service_api_host_status()
+        if not isinstance(status, dict) or not bool(status.get("running")):
+            detail = ""
+            if isinstance(status, dict):
+                detail = str(status.get("startup_error") or "").strip()
+            raise RuntimeError(
+                "The headless desktop service API did not become ready"
+                + (f": {detail}" if detail else ".")
+            )
+        _boot_log(f"headless desktop service API ready at {status.get('url', '')}")
+        return int(app.exec())
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("headless_service", exc)
+        try:
+            print(f"Headless desktop service failed: {exc}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        return 2
+    finally:
+        if window is not None:
+            try:
+                window._shutdown_desktop_service_api_host(log_result=False)
+            except Exception as exc:
+                _record_desktop_bootstrap_exception("headless_service_shutdown", exc)
+
+
 
 
 

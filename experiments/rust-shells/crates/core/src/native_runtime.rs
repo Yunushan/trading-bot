@@ -9,7 +9,13 @@ use crate::account::{
     BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceFuturesSymbolSettings,
     normalize_futures_margin_type,
 };
-use crate::generated_python_parity::{PYTHON_DEFAULT_EXECUTION_JSON, PYTHON_RISK_DEFAULTS_JSON};
+use crate::backtest_runtime::default_config_choice;
+use crate::generated_python_parity::{
+    PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES, PYTHON_ASSETS_MODE_CONFIG_CHOICES,
+    PYTHON_DEFAULT_EXECUTION_JSON, PYTHON_MARGIN_MODE_CONFIG_CHOICES,
+    PYTHON_POSITION_MODE_CONFIG_CHOICES, PYTHON_RISK_DEFAULTS_JSON, PYTHON_SIDE_CONFIG_CHOICES,
+    PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+};
 use crate::native_indicators::{
     compute_configured_indicator_series, default_runtime_indicator_configs,
     unsupported_enabled_indicator_keys,
@@ -91,6 +97,15 @@ fn python_default_text(
         .to_owned()
 }
 
+fn python_default_choice_text(
+    defaults: &serde_json::Map<String, Value>,
+    key: &str,
+    choices: &[(&str, &str)],
+    fallback: &str,
+) -> String {
+    python_default_text(defaults, key, &default_config_choice(choices, fallback))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeRuntimeLoopConfig {
     pub symbol: String,
@@ -118,35 +133,73 @@ impl Default for NativeRuntimeLoopConfig {
             .and_then(Value::as_array)
             .and_then(|values| values.first())
             .and_then(Value::as_str)
-            .unwrap_or("BTCUSDT")
+            .unwrap_or_else(|| {
+                crate::python_source_default_execution_symbols()
+                    .first()
+                    .copied()
+                    .unwrap_or("BTCUSDT")
+            })
             .to_owned();
         let interval = defaults
             .get("intervals")
             .and_then(Value::as_array)
             .and_then(|values| values.first())
             .and_then(Value::as_str)
-            .unwrap_or("1m")
+            .unwrap_or_else(|| {
+                crate::python_source_default_execution_intervals()
+                    .first()
+                    .copied()
+                    .unwrap_or("1m")
+            })
             .to_owned();
         let lookback = defaults
             .get("lookback")
             .and_then(Value::as_u64)
             .unwrap_or(200)
             .clamp(1, 1_000_000) as usize;
-        let assets_mode = python_default_text(&defaults, "assets_mode", "Single-Asset");
-        let loop_interval_override = python_default_text(&defaults, "loop_interval_override", "1m");
+        let assets_mode = python_default_choice_text(
+            &defaults,
+            "assets_mode",
+            PYTHON_ASSETS_MODE_CONFIG_CHOICES,
+            "Single-Asset",
+        );
+        let loop_interval_override = python_default_text(
+            &defaults,
+            "loop_interval_override",
+            // This is an execution default, not the first display option.
+            // Keep it aligned with Python ExecutionSettings when the generated
+            // defaults payload is missing the field.
+            "1m",
+        );
         Self {
             symbol,
             interval,
             lookback,
-            futures_account: true,
+            futures_account: python_default_choice_text(
+                &defaults,
+                "account_type",
+                PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES,
+                "Futures",
+            )
+            .eq_ignore_ascii_case("Futures"),
             mode: python_default_text(&defaults, "mode", "Demo/Testnet"),
             indicator_use_live_values: risk_controls
                 .get("indicator_use_live_values")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             risk_controls,
-            position_mode: python_default_text(&defaults, "position_mode", "Hedge"),
-            margin_mode: python_default_text(&defaults, "margin_mode", "Isolated"),
+            position_mode: python_default_choice_text(
+                &defaults,
+                "position_mode",
+                PYTHON_POSITION_MODE_CONFIG_CHOICES,
+                "Hedge",
+            ),
+            margin_mode: python_default_choice_text(
+                &defaults,
+                "margin_mode",
+                PYTHON_MARGIN_MODE_CONFIG_CHOICES,
+                "Isolated",
+            ),
             leverage: defaults
                 .get("leverage")
                 .and_then(Value::as_i64)
@@ -233,6 +286,55 @@ pub struct NativeRuntimeFuturesSettingsSnapshot {
     pub signal_evaluation_allowed: bool,
     pub status_message: String,
     pub trading_execution_supported: bool,
+}
+
+/// Pure decision input for the futures settings guard that runs immediately
+/// before a native entry order. Python performs this check in the exchange
+/// wrapper, so keeping the decision separate from HTTP mutation makes the
+/// native boundary directly testable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeRuntimeFuturesOrderPreparationInput {
+    pub symbol: String,
+    pub configured_margin_mode: String,
+    pub configured_leverage: i64,
+    pub exchange_margin_mode: Option<String>,
+    pub open_position_amt: f64,
+    pub open_orders_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeRuntimeFuturesOrderPreparationPlan {
+    pub symbol: String,
+    pub configured_margin_mode: String,
+    pub configured_leverage: i64,
+    pub allowed: bool,
+    pub cancel_open_orders: bool,
+    pub change_margin_mode: bool,
+    pub change_leverage: bool,
+    pub status_message: String,
+}
+
+/// Pure decision boundary for Python's explicit Futures account-mode controls.
+///
+/// Python applies position mode and multi-assets mode as account mutations. The
+/// native callers own the HTTP requests; this plan keeps unknown account state
+/// fail-closed and makes the mutation boundary independently testable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeRuntimeFuturesModesPreparationInput {
+    pub configured_position_mode: String,
+    pub configured_multi_assets_mode: bool,
+    pub exchange_dual_side_position: Option<bool>,
+    pub exchange_multi_assets_mode: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeRuntimeFuturesModesPreparationPlan {
+    pub configured_dual_side_position: bool,
+    pub configured_multi_assets_mode: bool,
+    pub allowed: bool,
+    pub change_position_mode: bool,
+    pub change_multi_assets_mode: bool,
+    pub status_message: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -330,8 +432,8 @@ impl NativeRuntimeReadOnlyMarketCycleInput {
             .get("side")
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or("BOTH")
-            .to_owned();
+            .map(str::to_owned)
+            .unwrap_or_else(|| default_config_choice(PYTHON_SIDE_CONFIG_CHOICES, "BOTH"));
         Ok(Self {
             now_ms,
             candles,
@@ -504,6 +606,9 @@ pub struct NativeRuntimeExposureGuardInput {
     pub position_pct_fraction: f64,
     pub available_usdt: f64,
     pub wallet_usdt: f64,
+    /// Available base-asset inventory for a Spot SELL. Python never opens a
+    /// Spot short, so this is the authoritative quantity source for that side.
+    pub spot_base_free: f64,
     pub ledger_margin_total: f64,
     pub existing_indicator_margin: f64,
     pub existing_side_margin: f64,
@@ -600,11 +705,13 @@ struct NativeRuntimeIndicatorOrderGuardState {
 
 #[derive(Debug, Clone, PartialEq)]
 struct NativeRuntimeIndicatorExposureEntry {
+    entry_id: u64,
     symbol: String,
     interval: String,
     indicators: BTreeSet<String>,
     side: String,
     quantity: f64,
+    entry_price: f64,
     margin_usdt: f64,
     opened_at_ms: i64,
 }
@@ -646,6 +753,7 @@ pub struct NativeRuntimeLoop {
     indicator_order_guard_states: BTreeMap<String, NativeRuntimeIndicatorOrderGuardState>,
     indicator_reentry_blocks: BTreeMap<String, i64>,
     indicator_exposure_entries: Vec<NativeRuntimeIndicatorExposureEntry>,
+    next_indicator_exposure_id: u64,
     flat_purge_miss_counts: BTreeMap<String, usize>,
     pending_flip_requests: BTreeMap<String, NativeRuntimePendingFlipRequest>,
     active_flip_close_quantities: BTreeMap<String, f64>,
@@ -672,6 +780,7 @@ impl NativeRuntimeLoop {
             indicator_order_guard_states: BTreeMap::new(),
             indicator_reentry_blocks: BTreeMap::new(),
             indicator_exposure_entries: Vec::new(),
+            next_indicator_exposure_id: 1,
             flat_purge_miss_counts: BTreeMap::new(),
             pending_flip_requests: BTreeMap::new(),
             active_flip_close_quantities: BTreeMap::new(),
@@ -689,6 +798,7 @@ impl NativeRuntimeLoop {
         self.indicator_order_guard_states.clear();
         self.indicator_reentry_blocks.clear();
         self.indicator_exposure_entries.clear();
+        self.next_indicator_exposure_id = 1;
         self.flat_purge_miss_counts.clear();
         self.pending_flip_requests.clear();
         self.active_flip_close_quantities.clear();
@@ -1323,11 +1433,31 @@ impl NativeRuntimeLoop {
         input.slot_already_active = !matching.is_empty();
     }
 
+    #[allow(dead_code)]
     fn record_indicator_position_open_at(
         &mut self,
         decision: &StrategySignalDecision,
         side: &str,
         quantity: f64,
+        margin_usdt: f64,
+        opened_at_ms: i64,
+    ) {
+        self.record_indicator_position_open_at_with_price(
+            decision,
+            side,
+            quantity,
+            0.0,
+            margin_usdt,
+            opened_at_ms,
+        );
+    }
+
+    fn record_indicator_position_open_at_with_price(
+        &mut self,
+        decision: &StrategySignalDecision,
+        side: &str,
+        quantity: f64,
+        entry_price: f64,
         margin_usdt: f64,
         opened_at_ms: i64,
     ) {
@@ -1352,16 +1482,83 @@ impl NativeRuntimeLoop {
         if indicators.is_empty() {
             return;
         }
+        let entry_id = self.next_indicator_exposure_id;
+        self.next_indicator_exposure_id = self.next_indicator_exposure_id.saturating_add(1).max(1);
         self.indicator_exposure_entries
             .push(NativeRuntimeIndicatorExposureEntry {
+                entry_id,
                 symbol,
                 interval,
                 indicators,
                 side,
                 quantity,
+                entry_price: if entry_price.is_finite() && entry_price > 0.0 {
+                    entry_price
+                } else {
+                    0.0
+                },
                 margin_usdt,
                 opened_at_ms: opened_at_ms.max(0),
             });
+    }
+
+    /// Reconcile a stop-loss close against the exact native ledger entry that
+    /// produced the directive. Python removes only the confirmed entry for a
+    /// per-trade close; a symbol-level purge would incorrectly erase other
+    /// indicator entries that remain open.
+    fn record_confirmed_indicator_entry_close(
+        &mut self,
+        entry_id: u64,
+        closed_quantity: f64,
+        timestamp_ms: i64,
+    ) {
+        if entry_id == 0
+            || !closed_quantity.is_finite()
+            || closed_quantity <= NATIVE_POSITION_EPSILON
+        {
+            return;
+        }
+        let Some(index) = self
+            .indicator_exposure_entries
+            .iter()
+            .position(|entry| entry.entry_id == entry_id)
+        else {
+            return;
+        };
+        let entry = self.indicator_exposure_entries[index].clone();
+        let closed_quantity = closed_quantity.min(entry.quantity.max(0.0));
+        if closed_quantity <= NATIVE_POSITION_EPSILON {
+            return;
+        }
+        let remaining_quantity = (entry.quantity - closed_quantity).max(0.0);
+        let tolerance = NATIVE_POSITION_EPSILON.max(entry.quantity.abs() * 1e-6);
+        if remaining_quantity > tolerance {
+            if let Some(current) = self.indicator_exposure_entries.get_mut(index) {
+                let ratio = (remaining_quantity / entry.quantity).clamp(0.0, 1.0);
+                current.quantity = remaining_quantity;
+                current.margin_usdt = finite_non_negative(entry.margin_usdt) * ratio;
+            }
+            return;
+        }
+
+        self.indicator_exposure_entries.remove(index);
+        for indicator in &entry.indicators {
+            self.record_indicator_close_for_slot(
+                &entry.symbol,
+                &entry.interval,
+                indicator,
+                &entry.side,
+                timestamp_ms,
+            );
+        }
+        self.queue_indicator_flip_on_close(
+            &entry.symbol,
+            &entry.interval,
+            &entry.indicators,
+            &entry.side,
+            closed_quantity,
+            timestamp_ms,
+        );
     }
 
     fn reduce_indicator_position_entries(
@@ -2192,8 +2389,12 @@ impl NativeRuntimeLoop {
         let market = input.market.clone();
         let now_ms = input.market_cycle.now_ms;
         let mut market_cycle = self.run_read_only_market_cycle(input.market_cycle)?;
-        let risk_directives =
-            self.evaluate_stop_loss(&market, &risk_positions, input.risk_wallet_usdt);
+        let risk_directives = self.evaluate_stop_loss(
+            &market,
+            &risk_positions,
+            input.risk_wallet_usdt,
+            Some(input.exposure.price),
+        );
         if let Some(directive) = risk_directives.first() {
             let mut executable_directives = risk_directives.clone();
             if directive.close_side.eq_ignore_ascii_case("CLOSE_ALL") {
@@ -2222,6 +2423,7 @@ impl NativeRuntimeLoop {
                             loss_usdt: directive.loss_usdt,
                             price_loss_percent: directive.price_loss_percent,
                             margin_loss_percent: directive.margin_loss_percent,
+                            indicator_entry_id: None,
                         })
                     })
                     .collect();
@@ -2242,6 +2444,15 @@ impl NativeRuntimeLoop {
                     ),
                 ));
             }
+            if !engine.dry_run && !rust_trading_execution_supported() {
+                return Ok(guarded_execution_snapshot(
+                    market_cycle,
+                    None,
+                    None,
+                    "blocked",
+                    "Standalone native execution is not runtime-ready; refusing to submit a stop-loss close.",
+                ));
+            }
             let close_result = engine.execute_stop_loss_closes(
                 &executable_directives,
                 &input.now_iso,
@@ -2254,11 +2465,19 @@ impl NativeRuntimeLoop {
             );
             if close_result.ok {
                 for close_directive in &executable_directives {
-                    self.record_confirmed_position_close(
-                        &close_directive.symbol,
-                        &close_directive.side_label,
-                        now_ms,
-                    );
+                    if let Some(entry_id) = close_directive.indicator_entry_id {
+                        self.record_confirmed_indicator_entry_close(
+                            entry_id,
+                            close_directive.qty,
+                            now_ms,
+                        );
+                    } else {
+                        self.record_confirmed_position_close(
+                            &close_directive.symbol,
+                            &close_directive.side_label,
+                            now_ms,
+                        );
+                    }
                 }
                 return Ok(guarded_execution_snapshot(
                     market_cycle,
@@ -2556,12 +2775,19 @@ impl NativeRuntimeLoop {
                             now_ms,
                         );
                     } else {
+                        let fill_price = submit
+                            .order_result
+                            .as_ref()
+                            .map(|result| result.avg_price)
+                            .filter(|price| price.is_finite() && *price > 0.0)
+                            .unwrap_or(last_price);
                         let filled_margin =
-                            filled_quantity * last_price / (self.config.leverage.max(1) as f64);
-                        self.record_indicator_position_open_at(
+                            filled_quantity * fill_price / (self.config.leverage.max(1) as f64);
+                        self.record_indicator_position_open_at_with_price(
                             decision,
                             signal,
                             filled_quantity,
+                            fill_price,
                             if filled_margin.is_finite() && filled_margin > 0.0 {
                                 filled_margin
                             } else {
@@ -2646,6 +2872,7 @@ impl NativeRuntimeLoop {
         market: &str,
         positions: &[NativeRuntimeRiskPositionInput],
         wallet_usdt: f64,
+        current_price: Option<f64>,
     ) -> Vec<FuturesStopCloseDirective> {
         if !matches!(
             market.trim().to_ascii_lowercase().as_str(),
@@ -2666,18 +2893,27 @@ impl NativeRuntimeLoop {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
+        let stop_loss_mode = stop_loss
+            .get("mode")
+            .and_then(Value::as_str)
+            .or_else(|| python_stop_loss.get("mode").and_then(Value::as_str))
+            .map(str::to_owned)
+            .unwrap_or_else(|| default_config_choice(PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, "usdt"));
+        let stop_loss_scope = stop_loss
+            .get("scope")
+            .and_then(Value::as_str)
+            .or_else(|| python_stop_loss.get("scope").and_then(Value::as_str))
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                default_config_choice(PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES, "per_trade")
+            });
         let settings = StopLossSettings {
             enabled: stop_loss
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .or_else(|| python_stop_loss.get("enabled").and_then(Value::as_bool))
                 .unwrap_or(false),
-            mode: stop_loss
-                .get("mode")
-                .and_then(Value::as_str)
-                .or_else(|| python_stop_loss.get("mode").and_then(Value::as_str))
-                .unwrap_or("usdt")
-                .to_owned(),
+            mode: stop_loss_mode,
             usdt: stop_loss
                 .get("usdt")
                 .and_then(value_f64)
@@ -2688,12 +2924,7 @@ impl NativeRuntimeLoop {
                 .and_then(value_f64)
                 .or_else(|| python_stop_loss.get("percent").and_then(value_f64))
                 .unwrap_or(0.0),
-            scope: stop_loss
-                .get("scope")
-                .and_then(Value::as_str)
-                .or_else(|| python_stop_loss.get("scope").and_then(Value::as_str))
-                .unwrap_or("per_trade")
-                .to_owned(),
+            scope: stop_loss_scope,
         };
         let context = build_stop_loss_runtime_context(settings, "FUTURES");
         if !context.stop_enabled {
@@ -2748,11 +2979,59 @@ impl NativeRuntimeLoop {
                     loss_usdt: decision.total_unrealized.abs(),
                     price_loss_percent: decision.loss_percent,
                     margin_loss_percent: 0.0,
+                    indicator_entry_id: None,
                 }];
             }
             return Vec::new();
         }
         if context.scope == "per_trade" {
+            let interval = normalize_indicator_slot_interval(&self.config.interval);
+            let last_price = current_price
+                .filter(|price| price.is_finite() && *price > 0.0)
+                .or_else(|| {
+                    matching_positions
+                        .iter()
+                        .map(|position| position.mark_price)
+                        .find(|price| price.is_finite() && *price > 0.0)
+                });
+            let mut tracked_directives = Vec::new();
+            let mut tracked_entry_count = 0usize;
+            for side in ["BUY", "SELL"] {
+                let entries: Vec<FuturesLegEntry> = self
+                    .indicator_exposure_entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.symbol.eq_ignore_ascii_case(&self.config.symbol)
+                            && entry.interval == interval
+                            && entry.side.eq_ignore_ascii_case(side)
+                            && entry.quantity.is_finite()
+                            && entry.quantity > NATIVE_POSITION_EPSILON
+                            && entry.entry_price.is_finite()
+                            && entry.entry_price > 0.0
+                    })
+                    .map(|entry| FuturesLegEntry {
+                        qty: entry.quantity,
+                        entry_price: entry.entry_price,
+                        leverage: self.config.leverage.max(1) as f64,
+                        margin_usdt: entry.margin_usdt,
+                        entry_id: Some(entry.entry_id),
+                        ..Default::default()
+                    })
+                    .collect();
+                tracked_entry_count += entries.len();
+                tracked_directives.extend(evaluate_per_trade_stop_loss(
+                    &self.config.symbol,
+                    &self.config.interval,
+                    side,
+                    &entries,
+                    last_price,
+                    self.hedge_mode_enabled(),
+                    &context,
+                ));
+            }
+            if tracked_entry_count > 0 {
+                return tracked_directives;
+            }
             return matching_positions
                 .iter()
                 .flat_map(|position| {
@@ -2772,7 +3051,12 @@ impl NativeRuntimeLoop {
                             margin_usdt: position.margin_usdt,
                             ..Default::default()
                         }],
-                        Some(position.mark_price),
+                        current_price
+                            .filter(|price| price.is_finite() && *price > 0.0)
+                            .or_else(|| {
+                                (position.mark_price.is_finite() && position.mark_price > 0.0)
+                                    .then_some(position.mark_price)
+                            }),
                         position.dual_side,
                         &context,
                     )
@@ -2820,10 +3104,14 @@ impl NativeRuntimeLoop {
             return Vec::new();
         }
         let dual_side = matching_positions.iter().any(|position| position.dual_side);
-        let last_price = matching_positions
-            .iter()
-            .map(|position| position.mark_price)
-            .find(|price| price.is_finite() && *price > 0.0);
+        let last_price = current_price
+            .filter(|price| price.is_finite() && *price > 0.0)
+            .or_else(|| {
+                matching_positions
+                    .iter()
+                    .map(|position| position.mark_price)
+                    .find(|price| price.is_finite() && *price > 0.0)
+            });
         if context.scope == "cumulative" {
             return evaluate_cumulative_futures_stop_loss(
                 &self.config.symbol,
@@ -3030,6 +3318,105 @@ pub fn normalize_native_margin_mode(value: impl AsRef<str>) -> String {
 
 pub fn clamp_native_futures_leverage(value: i64) -> i64 {
     value.clamp(1, 125)
+}
+
+/// Mirror Python's `_ensure_margin_and_leverage_or_block` decision boundary.
+///
+/// Python always attempts the margin mutation and leverage mutation before a
+/// futures order, even when the requested values already match. The native
+/// caller owns the HTTP calls; this function owns only the fail-closed policy:
+/// unknown margin state and non-flat exposure during a margin transition must
+/// never be treated as safe.
+pub fn plan_native_futures_order_preparation(
+    input: NativeRuntimeFuturesOrderPreparationInput,
+) -> NativeRuntimeFuturesOrderPreparationPlan {
+    let symbol = input.symbol.trim().to_ascii_uppercase();
+    let symbol = if symbol.is_empty() {
+        "UNKNOWN".to_owned()
+    } else {
+        symbol
+    };
+    let configured_margin_mode = normalize_native_margin_mode(&input.configured_margin_mode);
+    let configured_leverage = clamp_native_futures_leverage(input.configured_leverage);
+    let exchange_margin_mode = input
+        .exchange_margin_mode
+        .as_deref()
+        .map(normalize_native_margin_mode);
+    let margin_matches = exchange_margin_mode.as_deref() == Some(configured_margin_mode.as_str());
+    let exposure_unknown = !input.open_position_amt.is_finite();
+    let open_position = input.open_position_amt.abs() > NATIVE_POSITION_EPSILON;
+    let margin_change_blocked = !margin_matches && (exposure_unknown || open_position);
+    let allowed = exchange_margin_mode.is_some() && !margin_change_blocked;
+
+    let status_message = if exchange_margin_mode.is_none() {
+        format!("Futures margin mode for {symbol} is unknown; refusing native order preparation.")
+    } else if margin_change_blocked && exposure_unknown {
+        format!(
+            "Futures exposure for {symbol} is unknown; refusing margin-mode change before order."
+        )
+    } else if margin_change_blocked {
+        format!(
+            "{symbol} is {} with an open position; refusing order until margin type can be changed to {configured_margin_mode}.",
+            exchange_margin_mode.as_deref().unwrap_or("UNKNOWN")
+        )
+    } else {
+        format!(
+            "Futures order settings prepared for {symbol}: margin={configured_margin_mode}, leverage={configured_leverage}x."
+        )
+    };
+
+    NativeRuntimeFuturesOrderPreparationPlan {
+        symbol,
+        configured_margin_mode,
+        configured_leverage,
+        allowed,
+        cancel_open_orders: allowed && input.open_orders_count > 0,
+        change_margin_mode: allowed,
+        change_leverage: allowed,
+        status_message,
+    }
+}
+
+pub fn plan_native_futures_modes_preparation(
+    input: NativeRuntimeFuturesModesPreparationInput,
+) -> NativeRuntimeFuturesModesPreparationPlan {
+    let configured_dual_side_position =
+        normalize_native_position_mode(&input.configured_position_mode) == "Hedge";
+    let position_mode_known = input.exchange_dual_side_position.is_some();
+    let multi_assets_mode_known = input.exchange_multi_assets_mode.is_some();
+    let allowed = position_mode_known && multi_assets_mode_known;
+    let change_position_mode =
+        allowed && input.exchange_dual_side_position != Some(configured_dual_side_position);
+    let change_multi_assets_mode =
+        allowed && input.exchange_multi_assets_mode != Some(input.configured_multi_assets_mode);
+    let status_message = if !position_mode_known || !multi_assets_mode_known {
+        "Futures account modes are unknown; refusing native mode mutation.".to_owned()
+    } else if change_position_mode || change_multi_assets_mode {
+        format!(
+            "Futures account modes require reconciliation: position_mode={}, multiAssets={}",
+            if configured_dual_side_position {
+                "Hedge"
+            } else {
+                "One-way"
+            },
+            if input.configured_multi_assets_mode {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        )
+    } else {
+        "Futures account modes already match Python configuration.".to_owned()
+    };
+
+    NativeRuntimeFuturesModesPreparationPlan {
+        configured_dual_side_position,
+        configured_multi_assets_mode: input.configured_multi_assets_mode,
+        allowed,
+        change_position_mode,
+        change_multi_assets_mode,
+        status_message,
+    }
 }
 
 pub fn reconcile_native_futures_settings(
@@ -3426,13 +3813,32 @@ pub fn evaluate_native_exposure_guard(
         return exposure_block("position_pct_fraction must be > 0");
     }
 
-    let leverage = input.leverage as f64;
+    let is_spot = input.market.eq_ignore_ascii_case("spot");
+    let is_spot_sell = is_spot && side == "SELL";
+    let spot_base_free = finite_non_negative(input.spot_base_free);
+    if is_spot_sell && spot_base_free <= 0.0 {
+        return exposure_block("Spot SELL blocked: no available base-asset balance");
+    }
+
+    // Python Spot execution applies position percent to quote balance for BUY
+    // and to base inventory for SELL; Spot does not use futures leverage.
+    let leverage = if is_spot { 1.0 } else { input.leverage as f64 };
     let available_usdt = finite_non_negative(input.available_usdt);
     let ledger_margin_total = finite_non_negative(input.ledger_margin_total);
     let wallet_usdt = finite_non_negative(input.wallet_usdt);
-    let equity_usdt = wallet_usdt
-        .max(available_usdt + ledger_margin_total)
-        .max(ledger_margin_total);
+    let spot_sell_equity_usdt = spot_base_free * input.price;
+    let allocation_available_usdt = if is_spot_sell {
+        spot_sell_equity_usdt
+    } else {
+        available_usdt
+    };
+    let equity_usdt = if is_spot_sell {
+        spot_sell_equity_usdt
+    } else {
+        wallet_usdt
+            .max(available_usdt + ledger_margin_total)
+            .max(ledger_margin_total)
+    };
     if equity_usdt <= 0.0 {
         return exposure_block("capital guard: no wallet equity to allocate");
     }
@@ -3483,9 +3889,36 @@ pub fn evaluate_native_exposure_guard(
         );
     }
 
-    let flip_qty = input
-        .flip_close_qty
-        .filter(|value| value.is_finite() && *value > 0.0);
+    let flip_qty = if is_spot {
+        // Python's Spot branch computes BUY/SELL sizing from the account
+        // balance and never reuses the futures flip-close quantity.
+        None
+    } else {
+        input
+            .flip_close_qty
+            .filter(|value| value.is_finite() && *value > 0.0)
+    };
+    let requested_spot_sell_notional = if is_spot_sell {
+        spot_sell_equity_usdt * pct_fraction
+    } else {
+        0.0
+    };
+    if is_spot_sell
+        && input.filter_min_notional > 0.0
+        && requested_spot_sell_notional + 1e-12 < input.filter_min_notional
+    {
+        return exposure_block_with_values(
+            "Spot SELL blocked: position value is below minNotional",
+            equity_usdt,
+            target_margin_usdt,
+            max_indicator_margin_usdt,
+            requested_spot_sell_notional,
+            finite_non_negative(input.existing_side_margin),
+            0.0,
+            false,
+            None,
+        );
+    }
     let mut target_margin = if let Some(qty) = flip_qty {
         qty * input.price / leverage
     } else {
@@ -3504,7 +3937,7 @@ pub fn evaluate_native_exposure_guard(
             None,
         );
     }
-    if available_usdt <= 0.0 {
+    if allocation_available_usdt <= 0.0 {
         return exposure_block_with_values(
             "capital guard: no available USDT to allocate",
             equity_usdt,
@@ -3517,7 +3950,7 @@ pub fn evaluate_native_exposure_guard(
             None,
         );
     }
-    if available_usdt < target_margin * 0.95 {
+    if allocation_available_usdt < target_margin * 0.95 {
         return exposure_block_with_values(
             "capital guard: requested margin exceeds available USDT",
             equity_usdt,
@@ -3533,6 +3966,8 @@ pub fn evaluate_native_exposure_guard(
 
     let quantity_before_filter_adjustment = if let Some(qty) = flip_qty {
         qty
+    } else if is_spot_sell {
+        spot_base_free * pct_fraction
     } else {
         target_margin * leverage / input.price
     };
@@ -3580,7 +4015,7 @@ pub fn evaluate_native_exposure_guard(
         let requested_percent = pct_fraction * 100.0;
         let required_notional = quantity_estimate * input.price;
         let required_margin = required_notional / leverage;
-        let required_percent = required_notional / (available_usdt * leverage) * 100.0;
+        let required_percent = required_notional / (allocation_available_usdt * leverage) * 100.0;
         let multiplier = if input.auto_bump_percent_multiplier.is_finite()
             && input.auto_bump_percent_multiplier > 0.0
         {
@@ -3609,7 +4044,9 @@ pub fn evaluate_native_exposure_guard(
                 None,
             );
         }
-        if required_margin > available_usdt * 1.01 || required_percent > allowed_percent + 1e-9 {
+        if required_margin > allocation_available_usdt * 1.01
+            || required_percent > allowed_percent + 1e-9
+        {
             return exposure_block_with_values(
                 "capital guard: insufficient funds for exchange minimum order",
                 equity_usdt,
@@ -3898,6 +4335,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn missing_runtime_option_default_comes_from_the_python_choice_catalog() {
+        let defaults = serde_json::Map::new();
+        let choices = [("source-key", "Source Value")];
+        assert_eq!(
+            python_default_choice_text(&defaults, "missing", &choices, "stale literal"),
+            "Source Value"
+        );
+    }
+
+    #[test]
     fn native_runtime_default_config_matches_python_execution_defaults() {
         let config = NativeRuntimeLoopConfig::default();
         let python: Value = serde_json::from_str(PYTHON_DEFAULT_EXECUTION_JSON)
@@ -4062,6 +4509,7 @@ mod tests {
             position_pct_fraction: 0.02,
             available_usdt: 100.0,
             wallet_usdt: 1_000.0,
+            spot_base_free: 0.0,
             ledger_margin_total: 0.0,
             existing_indicator_margin: 0.0,
             existing_side_margin: 0.0,
@@ -4461,7 +4909,7 @@ mod tests {
             .get("params")
             .and_then(Value::as_object)
             .expect("spot request params");
-        assert_eq!(params.get("quantity").and_then(Value::as_str), Some("1"));
+        assert_eq!(params.get("quantity").and_then(Value::as_str), Some("0.2"));
         assert!(!params.contains_key("positionSide"));
         assert!(!params.contains_key("reduceOnly"));
         fs::remove_dir_all(directory).ok();
@@ -4482,6 +4930,7 @@ mod tests {
         runtime.start();
         let (mut engine, directory) = dry_run_engine();
         let mut input = guarded_execution_input(&runtime);
+        input.exposure.price = 94.0;
         input.risk_positions.push(NativeRuntimeRiskPositionInput {
             symbol: "BTCUSDT".to_owned(),
             side: "LONG".to_owned(),
@@ -4504,6 +4953,98 @@ mod tests {
         assert!(snapshot.order.is_none());
         assert!(snapshot.status_message.contains("per_trade_stop_loss"));
         fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn guarded_execution_cycle_refuses_non_dry_run_stop_loss_without_runtime_promotion() {
+        let mut runtime = loop_under_test();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "stop_loss": {
+                "enabled": true,
+                "mode": "percent",
+                "scope": "per_trade",
+                "percent": 5.0
+            }
+        }));
+        runtime.start();
+        let (mut engine, directory) = dry_run_engine();
+        engine.dry_run = false;
+        let mut input = guarded_execution_input(&runtime);
+        input.exposure.price = 94.0;
+        input.risk_positions.push(NativeRuntimeRiskPositionInput {
+            symbol: "BTCUSDT".to_owned(),
+            side: "LONG".to_owned(),
+            quantity: 1.0,
+            entry_price: 100.0,
+            leverage: 5.0,
+            margin_usdt: 20.0,
+            mark_price: 94.0,
+            dual_side: true,
+            opened_at_ms: 1_700_000_000_000,
+        });
+
+        let snapshot = runtime
+            .run_guarded_execution_cycle(&mut engine, input, |_| {
+                panic!("promotion gate must prevent a live stop-loss executor call")
+            })
+            .expect("guarded cycle");
+
+        assert_eq!(snapshot.state, "blocked");
+        assert!(snapshot.order.is_none());
+        assert!(snapshot.status_message.contains("not runtime-ready"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn native_runtime_per_trade_stop_preserves_python_entry_scope_and_identity() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
+            "stop_loss": {
+                "enabled": true,
+                "mode": "usdt",
+                "scope": "per_trade",
+                "usdt": 5.0
+            }
+        }));
+        let decision = StrategySignalDecision {
+            signal: Some("BUY".to_owned()),
+            description: "RSI <= 30.00 -> BUY".to_owned(),
+            trigger_price: Some(100.0),
+            trigger_sources: vec!["rsi".to_owned()],
+            trigger_actions: BTreeMap::from([("rsi".to_owned(), "buy".to_owned())]),
+            min_bars: 1,
+            signal_index_from_end: 0,
+        };
+        runtime.record_indicator_position_open_at_with_price(
+            &decision, "BUY", 1.0, 100.0, 20.0, 1_000,
+        );
+        runtime
+            .record_indicator_position_open_at_with_price(&decision, "BUY", 1.0, 90.0, 20.0, 2_000);
+        let first_id = runtime.indicator_exposure_entries[0].entry_id;
+        let second_id = runtime.indicator_exposure_entries[1].entry_id;
+        let positions = vec![NativeRuntimeRiskPositionInput {
+            symbol: "BTCUSDT".to_owned(),
+            side: "LONG".to_owned(),
+            quantity: 2.0,
+            entry_price: 95.0,
+            leverage: 5.0,
+            margin_usdt: 40.0,
+            mark_price: 94.0,
+            dual_side: true,
+            opened_at_ms: 1_000,
+        }];
+
+        let directives = runtime.evaluate_stop_loss("futures", &positions, 1_000.0, Some(94.0));
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].qty, 1.0);
+        assert_eq!(directives[0].indicator_entry_id, Some(first_id));
+
+        runtime.record_confirmed_indicator_entry_close(first_id, directives[0].qty, 3_000);
+        assert_eq!(runtime.indicator_exposure_entries.len(), 1);
+        assert_eq!(runtime.indicator_exposure_entries[0].entry_id, second_id);
+        assert_eq!(runtime.indicator_exposure_entries[0].entry_price, 90.0);
+        assert_eq!(runtime.indicator_exposure_entries[0].quantity, 1.0);
     }
 
     #[test]
@@ -5015,7 +5556,7 @@ mod tests {
                     "percent": percent
                 }
             }));
-            let directives = runtime.evaluate_stop_loss("futures", &positions, 1_000.0);
+            let directives = runtime.evaluate_stop_loss("futures", &positions, 1_000.0, Some(70.0));
             assert_eq!(directives.len(), 1, "scope={scope}");
             assert_eq!(directives[0].reason, expected_reason, "scope={scope}");
         }
@@ -5028,7 +5569,8 @@ mod tests {
                 "percent": 2.0
             }
         }));
-        let account_directives = runtime.evaluate_stop_loss("futures", &positions, 1_000.0);
+        let account_directives =
+            runtime.evaluate_stop_loss("futures", &positions, 1_000.0, Some(70.0));
         assert_eq!(account_directives.len(), 1);
         assert!(
             account_directives[0]
@@ -5419,6 +5961,112 @@ mod tests {
         assert_eq!(clamp_native_futures_leverage(0), 1);
         assert_eq!(clamp_native_futures_leverage(20), 20);
         assert_eq!(clamp_native_futures_leverage(150), 125);
+    }
+
+    #[test]
+    fn native_runtime_futures_order_preparation_matches_python_mutation_boundary() {
+        let plan =
+            plan_native_futures_order_preparation(NativeRuntimeFuturesOrderPreparationInput {
+                symbol: "btcusdt".to_owned(),
+                configured_margin_mode: "cross".to_owned(),
+                configured_leverage: 150,
+                exchange_margin_mode: Some("crossed".to_owned()),
+                open_position_amt: 0.0,
+                open_orders_count: 2,
+            });
+
+        assert!(plan.allowed);
+        assert_eq!(plan.symbol, "BTCUSDT");
+        assert_eq!(plan.configured_margin_mode, "CROSSED");
+        assert_eq!(plan.configured_leverage, 125);
+        assert!(plan.cancel_open_orders);
+        assert!(plan.change_margin_mode);
+        assert!(plan.change_leverage);
+    }
+
+    #[test]
+    fn native_runtime_futures_order_preparation_blocks_margin_change_with_exposure() {
+        let plan =
+            plan_native_futures_order_preparation(NativeRuntimeFuturesOrderPreparationInput {
+                symbol: "BTCUSDT".to_owned(),
+                configured_margin_mode: "Isolated".to_owned(),
+                configured_leverage: 5,
+                exchange_margin_mode: Some("CROSSED".to_owned()),
+                open_position_amt: 0.25,
+                open_orders_count: 3,
+            });
+
+        assert!(!plan.allowed);
+        assert!(!plan.cancel_open_orders);
+        assert!(!plan.change_margin_mode);
+        assert!(!plan.change_leverage);
+        assert!(plan.status_message.contains("open position"));
+    }
+
+    #[test]
+    fn native_runtime_futures_order_preparation_blocks_unknown_state_fail_closed() {
+        let plan =
+            plan_native_futures_order_preparation(NativeRuntimeFuturesOrderPreparationInput {
+                symbol: "BTCUSDT".to_owned(),
+                configured_margin_mode: "Isolated".to_owned(),
+                configured_leverage: 5,
+                exchange_margin_mode: None,
+                open_position_amt: f64::NAN,
+                open_orders_count: 0,
+            });
+
+        assert!(!plan.allowed);
+        assert!(!plan.change_margin_mode);
+        assert!(plan.status_message.contains("unknown"));
+    }
+
+    #[test]
+    fn native_runtime_futures_modes_preparation_matches_python_mutation_boundary() {
+        let plan =
+            plan_native_futures_modes_preparation(NativeRuntimeFuturesModesPreparationInput {
+                configured_position_mode: "One-way".to_owned(),
+                configured_multi_assets_mode: true,
+                exchange_dual_side_position: Some(true),
+                exchange_multi_assets_mode: Some(false),
+            });
+
+        assert!(plan.allowed);
+        assert!(!plan.configured_dual_side_position);
+        assert!(plan.change_position_mode);
+        assert!(plan.change_multi_assets_mode);
+        assert_eq!(plan.configured_multi_assets_mode, true);
+    }
+
+    #[test]
+    fn native_runtime_futures_modes_preparation_allows_matching_state_without_mutation() {
+        let plan =
+            plan_native_futures_modes_preparation(NativeRuntimeFuturesModesPreparationInput {
+                configured_position_mode: " Hedge ".to_owned(),
+                configured_multi_assets_mode: false,
+                exchange_dual_side_position: Some(true),
+                exchange_multi_assets_mode: Some(false),
+            });
+
+        assert!(plan.allowed);
+        assert!(!plan.change_position_mode);
+        assert!(!plan.change_multi_assets_mode);
+        assert!(plan.status_message.contains("already match"));
+    }
+
+    #[test]
+    fn native_runtime_futures_modes_preparation_blocks_unknown_state_fail_closed() {
+        let plan =
+            plan_native_futures_modes_preparation(NativeRuntimeFuturesModesPreparationInput {
+                configured_position_mode: "Hedge".to_owned(),
+                configured_multi_assets_mode: false,
+                exchange_dual_side_position: None,
+                exchange_multi_assets_mode: Some(false),
+            });
+
+        assert!(!plan.allowed);
+        assert!(!plan.change_position_mode);
+        assert!(!plan.change_multi_assets_mode);
+        assert!(plan.status_message.contains("unknown"));
     }
 
     #[test]
@@ -6143,6 +6791,55 @@ mod tests {
         assert_eq!(snapshot.desired_position_side.as_deref(), Some("LONG"));
         assert!(!snapshot.reduce_only);
         assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_spot_sell_uses_python_base_balance_sizing() {
+        let runtime = loop_under_test();
+        let mut input = exposure_input();
+        input.market = "spot".to_owned();
+        input.side = "SELL".to_owned();
+        input.available_usdt = 0.0;
+        input.wallet_usdt = 0.0;
+        input.spot_base_free = 10.0;
+        input.position_pct_fraction = 0.02;
+        input.price = 100.0;
+        input.leverage = 20;
+
+        let snapshot = runtime.evaluate_exposure_guard(input);
+
+        assert!(snapshot.allowed, "{}", snapshot.reason);
+        assert_eq!(snapshot.quantity_estimate, 0.2);
+        assert_eq!(snapshot.margin_estimate_usdt, 20.0);
+        assert_eq!(snapshot.target_margin_usdt, 20.0);
+    }
+
+    #[test]
+    fn native_runtime_spot_sell_blocks_without_base_inventory_or_min_notional() {
+        let runtime = loop_under_test();
+
+        let mut no_inventory = exposure_input();
+        no_inventory.market = "spot".to_owned();
+        no_inventory.side = "SELL".to_owned();
+        no_inventory.available_usdt = 100.0;
+        no_inventory.wallet_usdt = 100.0;
+        no_inventory.spot_base_free = 0.0;
+        let snapshot = runtime.evaluate_exposure_guard(no_inventory);
+        assert!(!snapshot.allowed);
+        assert!(snapshot.reason.contains("no available base-asset balance"));
+
+        let mut below_minimum = exposure_input();
+        below_minimum.market = "spot".to_owned();
+        below_minimum.side = "SELL".to_owned();
+        below_minimum.available_usdt = 0.0;
+        below_minimum.wallet_usdt = 0.0;
+        below_minimum.spot_base_free = 1.0;
+        below_minimum.position_pct_fraction = 0.02;
+        below_minimum.price = 100.0;
+        below_minimum.filter_min_notional = 5.0;
+        let snapshot = runtime.evaluate_exposure_guard(below_minimum);
+        assert!(!snapshot.allowed);
+        assert!(snapshot.reason.contains("below minNotional"));
     }
 
     #[test]

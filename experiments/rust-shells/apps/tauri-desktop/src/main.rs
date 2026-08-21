@@ -20,9 +20,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use trading_bot_core::{
     account::{
-        BinanceAccountSnapshot, BinanceApiCredentials, BinanceFuturesMultiAssetsMode,
-        BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceFuturesSymbolSettings,
-        BinanceSignedRestClient,
+        BinanceAccountSnapshot, BinanceApiCredentials, BinanceBalanceRow,
+        BinanceFuturesMultiAssetsMode, BinanceFuturesPosition, BinanceFuturesPositionMode,
+        BinanceFuturesSymbolSettings, BinanceSignedRestClient,
     },
     app_banner,
     config_persistence::{
@@ -40,10 +40,12 @@ use trading_bot_core::{
     native_runtime::{
         NativeRuntimeAccountPreflightSnapshot, NativeRuntimeClosePlanningInput,
         NativeRuntimeCycleInput, NativeRuntimeExposureGuardInput, NativeRuntimeFreshnessInput,
+        NativeRuntimeFuturesModesPreparationInput, NativeRuntimeFuturesOrderPreparationInput,
         NativeRuntimeGuardedExecutionCycleInput, NativeRuntimeGuardedExecutionCycleSnapshot,
         NativeRuntimeLoop, NativeRuntimeLoopConfig, NativeRuntimeOperationalPreflightInput,
         NativeRuntimeReadOnlyMarketCycleInput, NativeRuntimeRiskPositionInput,
-        native_runtime_position_signal,
+        native_runtime_position_signal, normalize_native_margin_mode,
+        plan_native_futures_modes_preparation, plan_native_futures_order_preparation,
     },
     order_audit::{ConnectorOrderCircuitBreakerConfig, OrderAuditConfig},
     order_guard::{LiveTradingSafetyConfig, OrderSymbolFilters},
@@ -64,11 +66,6 @@ use trading_bot_core::{
         StreamReconnectPolicy, build_stream_reconnect_decision,
     },
     supported_frameworks,
-};
-
-#[cfg(test)]
-use trading_bot_core::native_runtime::{
-    NativeRuntimeAccountPreflightInput, NativeRuntimeFuturesSettingsInput,
 };
 
 #[cfg(target_os = "windows")]
@@ -372,6 +369,7 @@ struct NativeRuntimeAccountBootstrapState {
     signal_evaluation_allowed: bool,
     status_message: String,
     balance: BinanceAccountSnapshot,
+    spot_balances: Vec<BinanceBalanceRow>,
     positions: Vec<BinanceFuturesPosition>,
     symbol_settings: Option<BinanceFuturesSymbolSettings>,
     position_mode: BinanceFuturesPositionMode,
@@ -654,6 +652,19 @@ impl NativeRuntimeState {
             };
             let mut runtime =
                 NativeRuntimeLoop::new(native_runtime_config_for_effective_config(&pair_config));
+            let preflight = runtime.build_operational_preflight(
+                native_runtime_start_preflight_input(&pair_config, now_ms, false),
+            );
+            if !preflight.start.allowed {
+                let reasons = if preflight.start.reasons.is_empty() {
+                    "the operational start gate is not satisfied".to_owned()
+                } else {
+                    preflight.start.reasons.join("; ")
+                };
+                return NativeRuntimeControlResponse::error(format!(
+                    "Start blocked: operational safety gate requires healthy fresh snapshots for live mode. {reasons}."
+                ));
+            }
             runtime.start();
             pairs.push(NativeRuntimePairState {
                 runtime: Some(runtime),
@@ -1117,14 +1128,31 @@ impl NativeRuntimeState {
                 return NativeRuntimeAccountPollResponse::error(error.to_string());
             }
         };
-        let (position_mode, multi_assets_mode, balance, positions, symbol_settings) =
+        let (position_mode, multi_assets_mode, balance, spot_balances, positions, symbol_settings) =
             if spec.market == BinanceMarket::Spot {
-                let balance = match client.fetch_spot_usdt_balance(&credentials) {
+                let spot_balances = match client.fetch_spot_balance_rows(&credentials) {
                     Ok(value) => value,
                     Err(error) => {
                         self.clear_account_bootstrap(&spec);
                         return NativeRuntimeAccountPollResponse::error(error.to_string());
                     }
+                };
+                let Some(usdt_row) = spot_balances
+                    .iter()
+                    .find(|row| row.asset.eq_ignore_ascii_case("USDT"))
+                else {
+                    self.clear_account_bootstrap(&spec);
+                    return NativeRuntimeAccountPollResponse::error(
+                        "USDT balance missing from spot account response.",
+                    );
+                };
+                let balance = BinanceAccountSnapshot {
+                    asset: "USDT".to_owned(),
+                    total_balance: usdt_row.total.max(0.0),
+                    available_balance: usdt_row.free.max(0.0),
+                    usdt_balance: usdt_row.total.max(0.0),
+                    total_usdt_balance: usdt_row.total.max(0.0),
+                    available_usdt_balance: usdt_row.free.max(0.0),
                 };
                 (
                     BinanceFuturesPositionMode {
@@ -1135,6 +1163,7 @@ impl NativeRuntimeState {
                         multi_assets_margin: false,
                     },
                     balance,
+                    spot_balances,
                     Vec::new(),
                     None,
                 )
@@ -1172,6 +1201,7 @@ impl NativeRuntimeState {
                     position_mode,
                     multi_assets_mode,
                     balance,
+                    Vec::new(),
                     account_read.positions,
                     account_read.symbol_settings,
                 )
@@ -1248,6 +1278,7 @@ impl NativeRuntimeState {
             signal_evaluation_allowed: snapshot.signal_evaluation_allowed,
             status_message: status_message.clone(),
             balance,
+            spot_balances,
             positions,
             symbol_settings: symbol_settings.clone(),
             position_mode,
@@ -1342,6 +1373,11 @@ impl NativeRuntimeState {
             };
             ensure_native_runtime_stream_worker(&mut managed.pairs[pair_index], &spec);
         }
+        if !rust_trading_execution_supported() {
+            return NativeRuntimeExecutionResponse::error(
+                "Native Rust guarded execution remains promotion-gated; no network request or order was sent.",
+            );
+        }
         if api_key.trim().is_empty() || api_secret.trim().is_empty() {
             return NativeRuntimeExecutionResponse::error(
                 "API key and API secret are required for native guarded execution.",
@@ -1371,13 +1407,18 @@ impl NativeRuntimeState {
             }
             Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
         };
-        let filters = match if spec.market == BinanceMarket::Spot {
-            account_client.fetch_spot_symbol_filters(&spec.symbol)
+        let (filters, spot_base_asset) = if spec.market == BinanceMarket::Spot {
+            let metadata = match account_client.fetch_spot_symbol_metadata(&spec.symbol) {
+                Ok(metadata) => metadata,
+                Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+            };
+            (metadata.filters, Some(metadata.base_asset))
         } else {
-            account_client.fetch_futures_symbol_filters(&spec.symbol)
-        } {
-            Ok(filters) => filters,
-            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+            let filters = match account_client.fetch_futures_symbol_filters(&spec.symbol) {
+                Ok(filters) => filters,
+                Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+            };
+            (filters, None)
         };
         let mut managed = match self.inner.lock() {
             Ok(value) => value,
@@ -1416,7 +1457,8 @@ impl NativeRuntimeState {
             Ok(input) => input,
             Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
         };
-        let Some(account_bootstrap) = managed.pairs[pair_index].account_bootstrap.clone() else {
+        let Some(mut account_bootstrap) = managed.pairs[pair_index].account_bootstrap.clone()
+        else {
             return NativeRuntimeExecutionResponse::error(
                 "A fresh native account bootstrap is required before guarded execution.",
             );
@@ -1429,12 +1471,35 @@ impl NativeRuntimeState {
                 "operational_account_snapshot_stale_seconds",
                 300.0,
             ),
-        ) || !account_bootstrap.signal_evaluation_allowed
-        {
+        ) {
             return NativeRuntimeExecutionResponse::error(format!(
                 "Native account bootstrap is not execution-ready: {}",
                 account_bootstrap.status_message
             ));
+        }
+
+        if spec.market != BinanceMarket::Spot {
+            let runtime_config = native_runtime_config_for_effective_config(&effective_config);
+            if let Err(error) = native_runtime_prepare_futures_account_modes(
+                &account_client,
+                &credentials,
+                &runtime_config.position_mode,
+                runtime_config.multi_assets_mode,
+                &mut account_bootstrap,
+            ) {
+                return NativeRuntimeExecutionResponse::error(error);
+            }
+            if let Err(error) = native_runtime_prepare_futures_order_settings(
+                &account_client,
+                &credentials,
+                &spec.symbol,
+                &runtime_config.margin_mode,
+                runtime_config.leverage,
+                filters.max_leverage,
+                &mut account_bootstrap,
+            ) {
+                return NativeRuntimeExecutionResponse::error(error);
+            }
         }
 
         let pair = &mut managed.pairs[pair_index];
@@ -1465,6 +1530,12 @@ impl NativeRuntimeState {
             Some(&account_bootstrap.multi_assets_mode),
             account_bootstrap.symbol_settings.as_ref(),
         );
+        if !account_snapshot.signal_evaluation_allowed {
+            return NativeRuntimeExecutionResponse::error(format!(
+                "Native account preflight is not execution-ready: {}",
+                account_snapshot.account_preflight.status_message
+            ));
+        }
         let execution_input = NativeRuntimeGuardedExecutionCycleInput {
             market_cycle: market_input,
             exposure: native_runtime_exposure_input(
@@ -1473,6 +1544,7 @@ impl NativeRuntimeState {
                 &account_bootstrap,
                 ticker.price,
                 &filters,
+                spot_base_asset.as_deref(),
             ),
             risk_positions: native_runtime_risk_positions(
                 &account_bootstrap.positions,
@@ -1491,7 +1563,7 @@ impl NativeRuntimeState {
                     &effective_config,
                     now_ms,
                     account_bootstrap.refreshed_at_ms,
-                    account_snapshot.account_preflight,
+                    Some(account_snapshot.account_preflight),
                     engine.circuit.is_open(),
                 ),
             ),
@@ -1503,8 +1575,24 @@ impl NativeRuntimeState {
             engine,
             execution_input,
             |close_directive| {
-                if spec.market == BinanceMarket::Spot {
-                    return Ok(());
+                if native_runtime_close_order_kind(spec.market)
+                    == NativeRuntimeCloseOrderKind::SpotMarket
+                {
+                    if !close_directive.quantity.is_finite() || close_directive.quantity <= 0.0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "Native Spot close quantity must be finite and positive.",
+                        )
+                        .into());
+                    }
+                    return account_client
+                        .place_spot_market_order(
+                            &credentials,
+                            &close_directive.symbol,
+                            &close_directive.side,
+                            close_directive.quantity,
+                        )
+                        .map(|_| ());
                 }
                 if account_client
                     .cancel_all_open_futures_orders(&credentials, &close_directive.symbol)
@@ -1583,6 +1671,12 @@ fn dispatch_native_runtime_position_closes(
     api_secret: String,
     now_ms: i64,
 ) -> Result<String, String> {
+    if !rust_trading_execution_supported() {
+        return Err(
+            "Native Rust close-all remains promotion-gated; no native close request was sent."
+                .to_owned(),
+        );
+    }
     let spec = native_runtime_market_poll_spec(config)?;
     let Some(pair_index) = native_runtime_pair_index(managed, &spec) else {
         return Err(
@@ -2014,6 +2108,10 @@ fn native_runtime_pair_configs(config: &Value) -> Result<Vec<Value>, String> {
             "account_mode",
             "add_only",
             "loop_interval_override",
+            // Python permits a connector backend override per runtime pair.
+            // Preserve it before market ownership/transport selection so a
+            // pair cannot silently inherit the top-level connector.
+            "connector_backend",
         ] {
             if let Some(value) = accumulator.controls.get(key) {
                 object.insert(key.to_owned(), value.clone());
@@ -2118,6 +2216,24 @@ fn python_ui_default_text(key: &str, fallback: &str) -> String {
         .to_owned()
 }
 
+fn python_default_exchange() -> String {
+    let fallback = trading_bot_core::python_source_exchange_options()
+        .iter()
+        .find(|option| !option.disabled)
+        .map(|option| option.key)
+        .unwrap_or("");
+    python_ui_default_text("selected_exchange", fallback)
+}
+
+fn python_default_indicator_source() -> String {
+    let fallback = trading_bot_core::python_source_indicator_source_options()
+        .iter()
+        .find(|option| !option.disabled)
+        .map(|option| option.key)
+        .unwrap_or("");
+    python_ui_default_text("indicator_source", fallback)
+}
+
 fn native_runtime_account_is_futures(config: &Value) -> bool {
     let default_account_type = python_execution_default_text("account_type", "Futures");
     let account_type = first_config_string(config, "account_type", &default_account_type);
@@ -2202,7 +2318,7 @@ fn native_runtime_effective_connector_backend(config: &Value) -> String {
 }
 
 fn native_runtime_ownership_error(config: &Value) -> Option<String> {
-    let default_exchange = python_ui_default_text("selected_exchange", "Binance");
+    let default_exchange = python_default_exchange();
     let selected_exchange = first_config_string(config, "selected_exchange", &default_exchange);
     let exchange_is_native = PYTHON_NATIVE_RUNTIME_EXCHANGES
         .iter()
@@ -2297,7 +2413,7 @@ fn native_runtime_market_poll_spec_for_config(
         return Err(error);
     }
     let connector_backend = native_runtime_effective_connector_backend(config);
-    let default_indicator_source = python_ui_default_text("indicator_source", "Binance futures");
+    let default_indicator_source = python_default_indicator_source();
     let configured_indicator_source = native_runtime_configured_indicator_source(config);
     let indicator_source = configured_indicator_source
         .as_deref()
@@ -2586,6 +2702,21 @@ fn native_runtime_order_guard_market(market: BinanceMarket) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeRuntimeCloseOrderKind {
+    FuturesReduceOnly,
+    SpotMarket,
+}
+
+fn native_runtime_close_order_kind(market: BinanceMarket) -> NativeRuntimeCloseOrderKind {
+    match market {
+        BinanceMarket::Spot => NativeRuntimeCloseOrderKind::SpotMarket,
+        BinanceMarket::Futures | BinanceMarket::CoinFutures => {
+            NativeRuntimeCloseOrderKind::FuturesReduceOnly
+        }
+    }
+}
+
 #[cfg(test)]
 fn native_runtime_account_bootstrap_is_fresh(
     bootstrap: &NativeRuntimeAccountBootstrapState,
@@ -2600,6 +2731,261 @@ fn native_runtime_account_bootstrap_is_fresh_with_max_age(
     max_age_ms: i64,
 ) -> bool {
     now_ms.saturating_sub(bootstrap.refreshed_at_ms).max(0) <= max_age_ms.max(0)
+}
+
+fn native_runtime_futures_open_position_amt(
+    positions: &[BinanceFuturesPosition],
+    symbol: &str,
+) -> f64 {
+    let mut total = 0.0;
+    for position in positions
+        .iter()
+        .filter(|position| position.symbol.eq_ignore_ascii_case(symbol))
+    {
+        if !position.position_amt.is_finite() {
+            return f64::INFINITY;
+        }
+        total += position.position_amt;
+        if !total.is_finite() {
+            return f64::INFINITY;
+        }
+    }
+    total
+}
+
+fn native_runtime_margin_mutation_is_benign(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("no need to change")
+        || normalized.contains("code=-4046")
+        || normalized.contains("-4046")
+        || normalized.contains("code=-4099")
+        || normalized.contains("-4099")
+}
+
+/// Apply Python's futures settings guard immediately before an entry order.
+///
+/// This function deliberately performs the exchange mutations only after the
+/// pure core plan allows them, and replaces the cached account fields with the
+/// post-mutation snapshot so the subsequent preflight cannot use stale state.
+fn native_runtime_prepare_futures_order_settings(
+    client: &BinanceSignedRestClient,
+    credentials: &BinanceApiCredentials,
+    symbol: &str,
+    configured_margin_mode: &str,
+    configured_leverage: i64,
+    symbol_max_leverage: i64,
+    account_bootstrap: &mut NativeRuntimeAccountBootstrapState,
+) -> Result<(), String> {
+    let current_settings = account_bootstrap.symbol_settings.as_ref().ok_or_else(|| {
+        format!("Futures margin/leverage settings for {symbol} are unknown; order blocked.")
+    })?;
+    let open_position_amt =
+        native_runtime_futures_open_position_amt(&account_bootstrap.positions, symbol);
+    let open_orders = client
+        .fetch_open_futures_orders(credentials, Some(symbol))
+        .map_err(|error| {
+            format!("Unable to verify open futures orders for {symbol}; order blocked: {error}")
+        })?;
+    let leverage_cap = if symbol_max_leverage > 0 {
+        symbol_max_leverage.clamp(1, 125)
+    } else {
+        125
+    };
+    let requested_leverage = configured_leverage.clamp(1, leverage_cap);
+    let plan = plan_native_futures_order_preparation(NativeRuntimeFuturesOrderPreparationInput {
+        symbol: symbol.to_owned(),
+        configured_margin_mode: configured_margin_mode.to_owned(),
+        configured_leverage: requested_leverage,
+        exchange_margin_mode: current_settings.margin_type.clone(),
+        open_position_amt,
+        open_orders_count: open_orders.len(),
+    });
+    if !plan.allowed {
+        return Err(plan.status_message);
+    }
+
+    if plan.cancel_open_orders {
+        client
+            .cancel_all_open_futures_orders(credentials, symbol)
+            .map_err(|error| {
+                format!("Unable to cancel open futures orders for {symbol}; order blocked: {error}")
+            })?;
+        let remaining = client
+            .fetch_open_futures_orders(credentials, Some(symbol))
+            .map_err(|error| {
+                format!(
+                    "Unable to verify cancelled futures orders for {symbol}; order blocked: {error}"
+                )
+            })?;
+        if !remaining.is_empty() {
+            return Err(format!(
+                "Open futures orders remain for {symbol} after cancellation; order blocked."
+            ));
+        }
+    }
+
+    let desired_margin = plan.configured_margin_mode.clone();
+    let mut margin_verified = false;
+    let mut last_margin_error = None;
+    for attempt in 0..5 {
+        match client.change_futures_margin_type(credentials, symbol, &desired_margin) {
+            Ok(result) if normalize_native_margin_mode(&result.margin_type) == desired_margin => {
+                last_margin_error = None;
+            }
+            Ok(result) => {
+                last_margin_error = Some(format!(
+                    "Binance acknowledged margin mutation as {} instead of {}",
+                    result.margin_type, desired_margin
+                ));
+            }
+            Err(error) if native_runtime_margin_mutation_is_benign(&error.to_string()) => {
+                last_margin_error = None;
+            }
+            Err(error) => {
+                last_margin_error = Some(error.to_string());
+            }
+        }
+
+        match client.fetch_futures_account_read_snapshot(credentials, symbol) {
+            Ok(snapshot) => {
+                let observed_margin = snapshot
+                    .symbol_settings
+                    .as_ref()
+                    .and_then(|settings| settings.margin_type.as_deref())
+                    .map(normalize_native_margin_mode);
+                if observed_margin.as_deref() == Some(desired_margin.as_str()) {
+                    margin_verified = true;
+                    break;
+                }
+                last_margin_error = Some(format!(
+                    "Binance margin verification returned {} instead of {}",
+                    observed_margin.as_deref().unwrap_or("UNKNOWN"),
+                    desired_margin
+                ));
+            }
+            Err(error) => {
+                last_margin_error = Some(format!("margin verification failed: {error}"));
+            }
+        }
+
+        if attempt < 4 {
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+    if !margin_verified {
+        return Err(format!(
+            "Unable to verify futures margin type for {symbol} as {desired_margin}; order blocked{}.",
+            last_margin_error
+                .map(|error| format!(" ({error})"))
+                .unwrap_or_default()
+        ));
+    }
+
+    let leverage_change = client
+        .change_futures_leverage(credentials, symbol, plan.configured_leverage)
+        .map_err(|error| format!("Unable to set leverage for {symbol}; order blocked: {error}"))?;
+    if leverage_change.leverage != plan.configured_leverage {
+        return Err(format!(
+            "Binance acknowledged leverage {} instead of {} for {symbol}; order blocked.",
+            leverage_change.leverage, plan.configured_leverage
+        ));
+    }
+
+    let final_snapshot = client
+        .fetch_futures_account_read_snapshot(credentials, symbol)
+        .map_err(|error| {
+            format!("Unable to verify final futures settings for {symbol}; order blocked: {error}")
+        })?;
+    let final_settings = final_snapshot.symbol_settings.as_ref().ok_or_else(|| {
+        format!("Final futures settings for {symbol} are missing; order blocked.")
+    })?;
+    let final_margin = final_settings
+        .margin_type
+        .as_deref()
+        .map(normalize_native_margin_mode);
+    if final_margin.as_deref() != Some(desired_margin.as_str())
+        || final_settings.leverage != Some(plan.configured_leverage)
+    {
+        return Err(format!(
+            "Final futures settings for {symbol} are margin={}, leverage={:?}; wanted margin={}, leverage={}; order blocked.",
+            final_margin.as_deref().unwrap_or("UNKNOWN"),
+            final_settings.leverage,
+            desired_margin,
+            plan.configured_leverage
+        ));
+    }
+
+    account_bootstrap.positions = final_snapshot.positions;
+    account_bootstrap.symbol_settings = final_snapshot.symbol_settings;
+    account_bootstrap.status_message = plan.status_message;
+    Ok(())
+}
+
+/// Apply Python's explicit Futures account-mode controls and verify both modes
+/// from the exchange before the native runtime evaluates a signal.
+fn native_runtime_prepare_futures_account_modes(
+    client: &BinanceSignedRestClient,
+    credentials: &BinanceApiCredentials,
+    configured_position_mode: &str,
+    configured_multi_assets_mode: bool,
+    account_bootstrap: &mut NativeRuntimeAccountBootstrapState,
+) -> Result<(), String> {
+    let plan = plan_native_futures_modes_preparation(NativeRuntimeFuturesModesPreparationInput {
+        configured_position_mode: configured_position_mode.to_owned(),
+        configured_multi_assets_mode,
+        exchange_dual_side_position: Some(account_bootstrap.position_mode.dual_side_position),
+        exchange_multi_assets_mode: Some(account_bootstrap.multi_assets_mode.multi_assets_margin),
+    });
+    if !plan.allowed {
+        return Err(plan.status_message);
+    }
+
+    if plan.change_position_mode {
+        client
+            .change_futures_position_mode(credentials, plan.configured_dual_side_position)
+            .map_err(|error| {
+                format!(
+                    "Unable to apply Futures position mode before native execution; order blocked: {error}"
+                )
+            })?;
+    }
+    if plan.change_multi_assets_mode {
+        client
+            .change_futures_multi_assets_mode(credentials, plan.configured_multi_assets_mode)
+            .map_err(|error| {
+                format!(
+                    "Unable to apply Futures multi-assets mode before native execution; order blocked: {error}"
+                )
+            })?;
+    }
+
+    let final_position_mode = client
+        .fetch_futures_position_mode(credentials)
+        .map_err(|error| {
+            format!(
+                "Unable to verify Futures position mode after native mutation; order blocked: {error}"
+            )
+        })?;
+    let final_multi_assets_mode = client
+        .fetch_futures_multi_assets_mode(credentials)
+        .map_err(|error| {
+            format!(
+                "Unable to verify Futures multi-assets mode after native mutation; order blocked: {error}"
+            )
+        })?;
+    if final_position_mode.dual_side_position != plan.configured_dual_side_position
+        || final_multi_assets_mode.multi_assets_margin != plan.configured_multi_assets_mode
+    {
+        return Err(format!(
+            "Final Futures account modes do not match Python configuration (position_mode={}, multiAssets={}); order blocked.",
+            final_position_mode.position_mode, final_multi_assets_mode.multi_assets_margin
+        ));
+    }
+
+    account_bootstrap.position_mode = final_position_mode;
+    account_bootstrap.multi_assets_mode = final_multi_assets_mode;
+    account_bootstrap.status_message = plan.status_message;
+    Ok(())
 }
 
 fn config_i64(config: &Value, key: &str, default: i64) -> i64 {
@@ -2876,7 +3262,7 @@ fn native_runtime_operational_preflight_input(
     config: &Value,
     now_ms: i64,
     account_refreshed_at_ms: i64,
-    account_preflight: NativeRuntimeAccountPreflightSnapshot,
+    account_preflight: Option<NativeRuntimeAccountPreflightSnapshot>,
     connector_order_circuit_active: bool,
 ) -> NativeRuntimeOperationalPreflightInput {
     let fresh = |timestamp_ms: i64,
@@ -2935,8 +3321,32 @@ fn native_runtime_operational_preflight_input(
             "operational_portfolio_snapshot_stale_seconds",
             python_execution_default_f64("operational_portfolio_snapshot_stale_seconds", 300.0),
         ),
-        account_preflight: Some(account_preflight),
+        account_preflight,
     }
+}
+
+fn native_runtime_start_preflight_input(
+    config: &Value,
+    now_ms: i64,
+    connector_order_circuit_active: bool,
+) -> NativeRuntimeOperationalPreflightInput {
+    let mut input = native_runtime_operational_preflight_input(
+        config,
+        now_ms,
+        now_ms,
+        None,
+        connector_order_circuit_active,
+    );
+    // Python's service start gate checks snapshot freshness before account
+    // reconciliation; the first native account read supplies that later.
+    input.account_preflight = None;
+    // Python's bootstrap execution snapshot has no heartbeat until an executor
+    // actually attaches. Do not manufacture a fresh native heartbeat at start.
+    input.execution.timestamp_ms = None;
+    input.execution.should_warn = false;
+    input.execution.state = "idle".to_owned();
+    input.execution.source = "native-runtime-bootstrap".to_owned();
+    input
 }
 
 fn native_runtime_exposure_input(
@@ -2945,6 +3355,7 @@ fn native_runtime_exposure_input(
     account: &NativeRuntimeAccountBootstrapState,
     price: f64,
     filters: &BinanceFuturesSymbolFilters,
+    spot_base_asset: Option<&str>,
 ) -> NativeRuntimeExposureGuardInput {
     let matching_positions: Vec<&BinanceFuturesPosition> = account
         .positions
@@ -2997,6 +3408,22 @@ fn native_runtime_exposure_input(
         .map(|position| position.position_amt)
         .filter(|value| value.is_finite())
         .sum();
+    let spot_base_free = if spec.market == BinanceMarket::Spot {
+        spot_base_asset
+            .map(str::trim)
+            .filter(|asset| !asset.is_empty())
+            .and_then(|asset| {
+                account
+                    .spot_balances
+                    .iter()
+                    .find(|row| row.asset.eq_ignore_ascii_case(asset))
+            })
+            .map(|row| row.free)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
     NativeRuntimeExposureGuardInput {
         market: match spec.market {
             BinanceMarket::Spot => "spot",
@@ -3010,6 +3437,7 @@ fn native_runtime_exposure_input(
         position_pct_fraction: native_runtime_position_pct_fraction(config),
         available_usdt: account.balance.available_balance.max(0.0),
         wallet_usdt: account.balance.total_balance.max(0.0),
+        spot_base_free,
         ledger_margin_total: total_margin,
         existing_indicator_margin: 0.0,
         existing_side_margin,
@@ -3246,10 +3674,12 @@ fn native_runtime_config_for_effective_config(config: &Value) -> NativeRuntimeLo
     let default_mode = python_execution_default_text("mode", "Demo/Testnet");
     let default_position_mode = python_execution_default_text("position_mode", "Hedge");
     let default_margin_mode = python_execution_default_text("margin_mode", "Isolated");
+    let default_account_mode = python_execution_default_text("account_mode", "Classic Trading");
     let default_assets_mode = python_execution_default_text("assets_mode", "Single-Asset");
     let default_loop_interval = python_execution_default_text("loop_interval_override", "");
     let position_mode = first_config_string(config, "position_mode", &default_position_mode);
     let margin_mode = first_config_string(config, "margin_mode", &default_margin_mode);
+    let account_mode = first_config_string(config, "account_mode", &default_account_mode);
     let assets_mode = first_config_string(config, "assets_mode", &default_assets_mode);
     let loop_interval_override =
         first_config_string(config, "loop_interval_override", &default_loop_interval);
@@ -3286,7 +3716,9 @@ fn native_runtime_config_for_effective_config(config: &Value) -> NativeRuntimeLo
         } else {
             "Hedge".to_owned()
         },
-        margin_mode: if margin_mode.to_ascii_lowercase().contains("cross") {
+        margin_mode: if account_mode.to_ascii_lowercase().contains("portfolio")
+            || margin_mode.to_ascii_lowercase().contains("cross")
+        {
             "CROSSED".to_owned()
         } else {
             "ISOLATED".to_owned()
@@ -3326,7 +3758,7 @@ fn native_runtime_snapshot(
     let trading_execution_supported = rust_trading_execution_supported();
     let pair_count = managed.pairs.len();
     let active_duration = format_active_duration(managed.started_at_ms, now_ms, managed.running);
-    let Some(pair) = managed.pairs.first_mut() else {
+    if managed.pairs.is_empty() {
         return NativeRuntimeControlResponse {
             ok: true,
             execution_backend: "native-rust".to_owned(),
@@ -3337,6 +3769,7 @@ fn native_runtime_snapshot(
                 "lifecycle_phase": "idle",
                 "paused": false,
                 "pair_count": 0,
+                "pair_results": [],
                 "account_bootstrap_fresh": false,
                 "execution_owner": "native-rust-coordinator"
             }),
@@ -3352,51 +3785,107 @@ fn native_runtime_snapshot(
             message: message.into(),
             error: String::new(),
         };
-    };
-    let account_bootstrap = pair.account_bootstrap.as_ref();
-    let Some(runtime) = pair.runtime.as_mut() else {
-        return NativeRuntimeControlResponse::error("Native Rust runtime state is unavailable.");
-    };
-
-    let cycle = runtime.run_cycle(NativeRuntimeCycleInput {
-        now_ms,
-        stream_event: None,
-        stream_disconnected: false,
-    });
-    let mut lifecycle = cycle.lifecycle;
-    if let Some(object) = lifecycle.as_object_mut() {
-        object.insert(
-            "execution_owner".to_owned(),
-            Value::String("native-rust-coordinator".to_owned()),
-        );
-        object.insert(
-            "native_trading_execution_enabled".to_owned(),
-            Value::Bool(trading_execution_supported),
-        );
     }
-    let lifecycle_phase = lifecycle
-        .get("lifecycle_phase")
-        .and_then(Value::as_str)
-        .unwrap_or(if managed.running { "running" } else { "idle" });
-    let stream = &cycle.stream;
-    let stream_payload = json!({
-        "connected": stream.connected,
-        "reconnect_attempts": stream.reconnect_attempts,
-        "last_event_time_ms": stream.last_event_time_ms,
-        "last_disconnect_time_ms": stream.last_disconnect_time_ms,
-        "kline_cache_health": {
-            "stale": stream.kline_cache_health.stale,
-            "reason": stream.kline_cache_health.reason,
-            "candle_count": stream.kline_cache_health.candle_count,
-            "latest_event_time_ms": stream.kline_cache_health.latest_event_time_ms,
-            "latest_closed_open_time_ms": stream.kline_cache_health.latest_closed_open_time_ms
-        },
-        "reconnect_decision": {
-            "should_reconnect": stream.reconnect_decision.should_reconnect,
-            "next_attempt": stream.reconnect_decision.next_attempt,
-            "delay_ms": stream.reconnect_decision.delay_ms,
-            "reason": stream.reconnect_decision.reason
+
+    // Advance every configured pair so status polling cannot make a multi-pair
+    // runtime look healthy while only its first worker is receiving lifecycle updates.
+    let mut primary_lifecycle = Value::Null;
+    let mut primary_stream = Value::Object(serde_json::Map::new());
+    let mut primary_lifecycle_phase = if managed.running {
+        "running".to_owned()
+    } else {
+        "idle".to_owned()
+    };
+    let mut primary_signal_evaluation_allowed = false;
+    let mut primary_status_message = String::new();
+    let mut all_signal_evaluation_allowed = true;
+    let mut pair_results = Vec::with_capacity(pair_count);
+    for (pair_index, pair) in managed.pairs.iter_mut().enumerate() {
+        let Some(runtime) = pair.runtime.as_mut() else {
+            return NativeRuntimeControlResponse::error(
+                "Native Rust runtime state is unavailable.",
+            );
+        };
+        let pair_symbol = runtime.config.symbol.clone();
+        let pair_interval = runtime.config.interval.clone();
+        let cycle = runtime.run_cycle(NativeRuntimeCycleInput {
+            now_ms,
+            stream_event: None,
+            stream_disconnected: false,
+        });
+        let mut lifecycle = cycle.lifecycle;
+        if let Some(object) = lifecycle.as_object_mut() {
+            object.insert(
+                "execution_owner".to_owned(),
+                Value::String("native-rust-coordinator".to_owned()),
+            );
+            object.insert(
+                "native_trading_execution_enabled".to_owned(),
+                Value::Bool(trading_execution_supported),
+            );
         }
+        let lifecycle_phase = lifecycle
+            .get("lifecycle_phase")
+            .and_then(Value::as_str)
+            .unwrap_or(if managed.running { "running" } else { "idle" });
+        let stream = &cycle.stream;
+        let stream_payload = json!({
+            "connected": stream.connected,
+            "reconnect_attempts": stream.reconnect_attempts,
+            "last_event_time_ms": stream.last_event_time_ms,
+            "last_disconnect_time_ms": stream.last_disconnect_time_ms,
+            "kline_cache_health": {
+                "stale": stream.kline_cache_health.stale,
+                "reason": stream.kline_cache_health.reason,
+                "candle_count": stream.kline_cache_health.candle_count,
+                "latest_event_time_ms": stream.kline_cache_health.latest_event_time_ms,
+                "latest_closed_open_time_ms": stream.kline_cache_health.latest_closed_open_time_ms
+            },
+            "reconnect_decision": {
+                "should_reconnect": stream.reconnect_decision.should_reconnect,
+                "next_attempt": stream.reconnect_decision.next_attempt,
+                "delay_ms": stream.reconnect_decision.delay_ms,
+                "reason": stream.reconnect_decision.reason
+            }
+        });
+        let signal_evaluation_allowed = cycle.signal_evaluation_allowed;
+        all_signal_evaluation_allowed &= signal_evaluation_allowed;
+        let status_message = cycle.status_message;
+        if pair_index == 0 {
+            primary_lifecycle = lifecycle.clone();
+            primary_stream = stream_payload.clone();
+            primary_lifecycle_phase = lifecycle_phase.to_owned();
+            primary_signal_evaluation_allowed = signal_evaluation_allowed;
+            primary_status_message = status_message.clone();
+        }
+        pair_results.push(json!({
+            "pair_index": pair_index,
+            "symbol": pair_symbol,
+            "interval": pair_interval,
+            "lifecycle": lifecycle,
+            "stream": stream_payload,
+            "signal_evaluation_allowed": signal_evaluation_allowed,
+            "status_message": status_message
+        }));
+    }
+
+    let account_bootstrap_fresh = managed.pairs.iter().all(|pair| {
+        pair.account_bootstrap
+            .as_ref()
+            .map(|snapshot| {
+                native_runtime_account_bootstrap_is_fresh_with_max_age(
+                    snapshot,
+                    now_ms,
+                    managed.account_snapshot_max_age_ms,
+                )
+            })
+            .unwrap_or(false)
+    });
+    let account_signal_evaluation_allowed = managed.pairs.iter().all(|pair| {
+        pair.account_bootstrap
+            .as_ref()
+            .map(|snapshot| snapshot.signal_evaluation_allowed)
+            .unwrap_or(false)
     });
     NativeRuntimeControlResponse {
         ok: true,
@@ -3405,27 +3894,19 @@ fn native_runtime_snapshot(
             "runtime_active": managed.running,
             "active_duration": active_duration,
             "active_time": active_duration,
-            "lifecycle_phase": lifecycle_phase,
+            "lifecycle_phase": primary_lifecycle_phase,
             "paused": managed.paused,
             "pair_count": pair_count,
-            "account_bootstrap_fresh": account_bootstrap
-                .map(|snapshot| {
-                    native_runtime_account_bootstrap_is_fresh_with_max_age(
-                        snapshot,
-                        now_ms,
-                        managed.account_snapshot_max_age_ms,
-                    )
-                })
-                .unwrap_or(false),
-            "account_signal_evaluation_allowed": account_bootstrap
-                .map(|snapshot| snapshot.signal_evaluation_allowed)
-                .unwrap_or(false),
-            "signal_evaluation_allowed": cycle.signal_evaluation_allowed,
+            "pair_results": pair_results,
+            "account_bootstrap_fresh": account_bootstrap_fresh,
+            "account_signal_evaluation_allowed": account_signal_evaluation_allowed,
+            "signal_evaluation_allowed": all_signal_evaluation_allowed,
             "execution_owner": "native-rust-coordinator",
-            "status_message": cycle.status_message
+            "status_message": primary_status_message,
+            "primary_signal_evaluation_allowed": primary_signal_evaluation_allowed
         }),
-        lifecycle,
-        stream: stream_payload,
+        lifecycle: primary_lifecycle,
+        stream: primary_stream,
         trading_execution_supported,
         promotion_required: !trading_execution_supported,
         message: message.into(),
@@ -4001,6 +4482,19 @@ fn python_executable() -> String {
     env::var("TRADING_BOT_PYTHON")
         .or_else(|_| env::var("PYTHON"))
         .unwrap_or_else(|_| "python".to_string())
+}
+
+fn python_service_runtime_is_desktop() -> bool {
+    // The Rust shell must expose the same Python-backed feature surface as the
+    // C++ shell by default. The lightweight service remains available as an
+    // explicit diagnostic/API-only opt-out.
+    env::var("TRADING_BOT_SERVICE_RUNTIME")
+        .map(|value| python_service_runtime_value_is_desktop(&value))
+        .unwrap_or(true)
+}
+
+fn python_service_runtime_value_is_desktop(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("desktop")
 }
 
 fn executable_names(base_name: &str) -> Vec<String> {
@@ -5117,25 +5611,53 @@ fn start_service_api(
             "Could not locate apps/service-api/main.py from the Tauri shell.",
         );
     };
-    let service_script = repo_root.join("apps").join("service-api").join("main.py");
+    let desktop_runtime = python_service_runtime_is_desktop();
+    let service_script = if desktop_runtime {
+        find_python_desktop_entrypoint(&repo_root).ok_or_else(|| {
+            "Could not locate the canonical Python desktop entrypoint for the headless execution host."
+                .to_owned()
+        })
+    } else {
+        Ok(repo_root.join("apps").join("service-api").join("main.py"))
+    };
+    let service_script = match service_script {
+        Ok(path) => path,
+        Err(error) => {
+            return ServiceProcessResponse::err(false, false, None, base_url, error);
+        }
+    };
     let mut command = Command::new(python_executable());
     command
         .arg(service_script)
-        .arg("--serve")
-        .arg("--host")
-        .arg(&bind_host)
-        .arg("--port")
-        .arg(port.to_string())
         .current_dir(&repo_root)
         .env("PYTHONPATH", service_pythonpath(&repo_root))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if !api_token.trim().is_empty() {
-        command.arg("--api-token").arg(api_token.trim());
-    }
-    if load_config {
-        command.arg("--load-config");
+    if desktop_runtime {
+        command
+            .arg("--headless-service")
+            .env("BOT_ENABLE_DESKTOP_SERVICE_API", "1")
+            .env("BOT_DESKTOP_SERVICE_API_HOST", &bind_host)
+            .env("BOT_DESKTOP_SERVICE_API_PORT", port.to_string());
+        if api_token.trim().is_empty() {
+            command.env_remove("BOT_SERVICE_API_TOKEN");
+        } else {
+            command.env("BOT_SERVICE_API_TOKEN", api_token.trim());
+        }
+    } else {
+        command
+            .arg("--serve")
+            .arg("--host")
+            .arg(&bind_host)
+            .arg("--port")
+            .arg(port.to_string());
+        if !api_token.trim().is_empty() {
+            command.arg("--api-token").arg(api_token.trim());
+        }
+        if load_config {
+            command.arg("--load-config");
+        }
     }
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -5172,7 +5694,11 @@ fn start_service_api(
             true,
             pid,
             base_url,
-            "Managed service API started.",
+            if desktop_runtime {
+                "Managed Python desktop execution host started."
+            } else {
+                "Managed service API started."
+            },
         ),
         Err(exc) => ServiceProcessResponse::err(true, true, pid, base_url, exc),
     }
@@ -5302,6 +5828,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trading_bot_core::native_runtime::{
+        NativeRuntimeAccountPreflightInput, NativeRuntimeFuturesSettingsInput,
+    };
 
     #[test]
     fn environment_tool_versions_extract_semver_without_build_metadata() {
@@ -5356,6 +5885,14 @@ mod tests {
     }
 
     #[test]
+    fn python_service_runtime_mode_defaults_to_python_desktop_host() {
+        assert!(python_service_runtime_value_is_desktop("desktop"));
+        assert!(python_service_runtime_value_is_desktop(" DESKTOP "));
+        assert!(!python_service_runtime_value_is_desktop("service"));
+        assert!(!python_service_runtime_value_is_desktop(""));
+    }
+
+    #[test]
     fn environment_versions_probe_the_real_checked_out_workspace() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../..")
@@ -5387,6 +5924,7 @@ mod tests {
                 total_usdt_balance: 100.0,
                 available_usdt_balance: 100.0,
             },
+            spot_balances: Vec::new(),
             positions: Vec::new(),
             symbol_settings: None,
             position_mode: BinanceFuturesPositionMode {
@@ -5689,13 +6227,41 @@ mod tests {
         .expect("Python indicator source market family");
         assert_eq!(connector_source_spot.market, BinanceMarket::Spot);
 
+        let futures_indicator_source = trading_bot_core::python_source_indicator_source_options()
+            .iter()
+            .find(|option| option.key.to_ascii_lowercase().contains("futures"))
+            .map(|option| option.key)
+            .expect("Python futures indicator source option");
         let connector_source_futures = native_runtime_market_poll_spec(&json!({
             "connector_backend": "binance-connector",
             "account_type": "Spot",
-            "indicator_source": "Binance futures"
+            "indicator_source": futures_indicator_source
         }))
         .expect("Python indicator source futures market family");
         assert_eq!(connector_source_futures.market, BinanceMarket::Futures);
+
+        for (source_key, market_family) in PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES {
+            let spec = native_runtime_market_poll_spec(&json!({
+                "connector_backend": "binance-connector",
+                "account_type": "Spot",
+                "indicator_source": source_key,
+            }))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Python indicator-source mapping {source_key}/{market_family} failed: {error}"
+                )
+            });
+            let expected_market = match *market_family {
+                "usd-m-futures" => BinanceMarket::Futures,
+                "coin-m-futures" => BinanceMarket::CoinFutures,
+                "spot" => BinanceMarket::Spot,
+                other => panic!("unsupported generated Python indicator market family: {other}"),
+            };
+            assert_eq!(
+                spec.market, expected_market,
+                "Python indicator-source mapping {source_key} should select {market_family}"
+            );
+        }
 
         let unsupported_source = native_runtime_market_poll_spec(&json!({
             "connector_backend": "binance-connector",
@@ -5737,6 +6303,22 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_close_dispatch_matches_python_spot_and_futures_paths() {
+        assert_eq!(
+            native_runtime_close_order_kind(BinanceMarket::Spot),
+            NativeRuntimeCloseOrderKind::SpotMarket
+        );
+        assert_eq!(
+            native_runtime_close_order_kind(BinanceMarket::Futures),
+            NativeRuntimeCloseOrderKind::FuturesReduceOnly
+        );
+        assert_eq!(
+            native_runtime_close_order_kind(BinanceMarket::CoinFutures),
+            NativeRuntimeCloseOrderKind::FuturesReduceOnly
+        );
+    }
+
+    #[test]
     fn native_runtime_exposure_input_preserves_python_margin_guard_options() {
         let bootstrap = account_bootstrap(1_700_000_000_000, true, "ready");
         let spec = NativeRuntimeMarketPollSpec {
@@ -5760,7 +6342,7 @@ mod tests {
         };
 
         let defaults =
-            native_runtime_exposure_input(&json!({}), &spec, &bootstrap, 100.0, &filters);
+            native_runtime_exposure_input(&json!({}), &spec, &bootstrap, 100.0, &filters, None);
         assert_eq!(defaults.margin_over_target_tolerance, 0.05);
         assert_eq!(defaults.margin_filter_slippage, 0.1);
 
@@ -5773,6 +6355,7 @@ mod tests {
             &bootstrap,
             100.0,
             &filters,
+            None,
         );
         assert_eq!(configured.margin_over_target_tolerance, 12.5);
         assert_eq!(configured.margin_filter_slippage, 0.25);
@@ -5825,7 +6408,8 @@ mod tests {
             max_leverage: 125,
         };
 
-        let input = native_runtime_exposure_input(&json!({}), &spec, &bootstrap, 100.0, &filters);
+        let input =
+            native_runtime_exposure_input(&json!({}), &spec, &bootstrap, 100.0, &filters, None);
 
         assert_eq!(input.existing_buy_side_margin, 12.0);
         assert_eq!(input.existing_sell_side_margin, 30.0);
@@ -5833,6 +6417,56 @@ mod tests {
         assert_eq!(input.active_sell_slot_count, 1);
         assert!(input.buy_slot_already_active);
         assert!(input.sell_slot_already_active);
+    }
+
+    #[test]
+    fn native_runtime_spot_exposure_input_uses_authoritative_base_asset_balance() {
+        let mut bootstrap = account_bootstrap(1_700_000_000_000, true, "ready");
+        bootstrap.spot_balances = vec![
+            BinanceBalanceRow {
+                asset: "USDT".to_owned(),
+                free: 100.0,
+                locked: 0.0,
+                total: 100.0,
+            },
+            BinanceBalanceRow {
+                asset: "ETH".to_owned(),
+                free: 1.25,
+                locked: 0.1,
+                total: 1.35,
+            },
+        ];
+        let spec = NativeRuntimeMarketPollSpec {
+            market: BinanceMarket::Spot,
+            symbol: "ETHUSDT".to_owned(),
+            interval: "1m".to_owned(),
+            lookback: 200,
+            testnet: true,
+        };
+        let filters = BinanceFuturesSymbolFilters {
+            symbol: "ETHUSDT".to_owned(),
+            min_qty: 0.001,
+            max_qty: 0.0,
+            step_size: 0.001,
+            min_notional: 5.0,
+            tick_size: 0.1,
+            quantity_precision: 3,
+            price_precision: 2,
+            quote_asset_precision: 8,
+            max_leverage: 125,
+        };
+
+        let input = native_runtime_exposure_input(
+            &json!({}),
+            &spec,
+            &bootstrap,
+            2_000.0,
+            &filters,
+            Some("ETH"),
+        );
+
+        assert_eq!(input.market, "spot");
+        assert_eq!(input.spot_base_free, 1.25);
     }
 
     #[test]
@@ -5967,6 +6601,7 @@ mod tests {
                         "leverage": "3",
                         "position_pct": "12.5",
                         "loop_interval_override": "15 m",
+                        "connector_backend": "binance-sdk-spot",
                         "stop_loss": {"enabled": true, "mode": "percent", "percent": 2.5}
                     }
                 },
@@ -5999,6 +6634,7 @@ mod tests {
         assert_eq!(first["leverage"], 4);
         assert_eq!(first["position_pct"], 12.5);
         assert_eq!(first["loop_interval_override"], "15m");
+        assert_eq!(first["connector_backend"], "binance-sdk-spot");
         assert_eq!(first["add_only"], true);
         assert_eq!(first["stop_loss"]["enabled"], true);
         assert_eq!(first["indicators"]["ema"]["enabled"], true);
@@ -6010,6 +6646,38 @@ mod tests {
         assert_eq!(second["interval"], "5m");
         assert_eq!(second["indicators"]["volume"]["enabled"], true);
         assert_eq!(second["indicators"]["rsi"]["enabled"], false);
+    }
+
+    #[test]
+    fn native_runtime_pair_connector_override_changes_owned_market_selection() {
+        let config = json!({
+            "selected_exchange": "Binance",
+            "account_type": "Futures",
+            "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
+            "runtime_symbol_interval_pairs": [{
+                "symbol": "BTCUSD_PERP",
+                "interval": "1m",
+                "strategy_controls": {
+                    "connector_backend": "binance-sdk-derivatives-trading-coin-futures"
+                }
+            }]
+        });
+        let pair_configs =
+            native_runtime_pair_configs(&config).expect("valid per-pair connector override");
+        assert_eq!(pair_configs.len(), 1);
+        assert_eq!(
+            pair_configs[0]["connector_backend"],
+            "binance-sdk-derivatives-trading-coin-futures"
+        );
+
+        let pair_spec = native_runtime_market_poll_spec_for_config(&pair_configs[0])
+            .expect("Coin-M pair connector should be owned by Rust");
+        assert_eq!(pair_spec.market, BinanceMarket::CoinFutures);
+        assert_eq!(pair_spec.symbol, "BTCUSD_PERP");
+
+        let primary_spec = native_runtime_market_poll_spec(&config)
+            .expect("primary runtime poll should use the effective pair");
+        assert_eq!(primary_spec.market, BinanceMarket::CoinFutures);
     }
 
     #[test]
@@ -6046,6 +6714,20 @@ mod tests {
         let started = state.start(&config, 1_700_000_000_000);
         assert!(started.ok, "{}", started.error);
         assert_eq!(started.status["pair_count"], 2);
+        assert_eq!(
+            started.status["pair_results"].as_array().map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(started.status["pair_results"][0]["symbol"], "BTCUSDT");
+        assert_eq!(started.status["pair_results"][1]["symbol"], "ETHUSDT");
+        assert_eq!(
+            started.status["pair_results"][0]["lifecycle"]["interval"],
+            "1m"
+        );
+        assert_eq!(
+            started.status["pair_results"][1]["lifecycle"]["interval"],
+            "5m"
+        );
         let managed = state.inner.lock().expect("runtime state lock");
         assert_eq!(managed.pairs.len(), 2);
         assert_eq!(
@@ -6298,6 +6980,18 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_config_forces_cross_margin_for_portfolio_mode() {
+        let runtime = native_runtime_config(&json!({
+            "mode": "Live",
+            "account_type": "Futures",
+            "account_mode": "Portfolio Margin",
+            "margin_mode": "Isolated",
+        }));
+
+        assert_eq!(runtime.margin_mode, "CROSSED");
+    }
+
+    #[test]
     fn native_runtime_position_pct_units_match_python_sizing_contract() {
         let cases = [
             (
@@ -6349,6 +7043,43 @@ mod tests {
             "I_UNDERSTAND_LIVE_TRADING_RISK"
         );
         assert!(engine.dry_run);
+    }
+
+    #[test]
+    fn native_runtime_close_dispatch_stays_gated_until_promotion() {
+        let mut managed = NativeRuntimeManagedState::default();
+        let result = dispatch_native_runtime_position_closes(
+            &mut managed,
+            &json!({}),
+            "test-key".to_owned(),
+            "test-secret".to_owned(),
+            1_700_000_000_000,
+        );
+
+        assert_eq!(
+            result.expect_err("close dispatch must remain promotion-gated"),
+            "Native Rust close-all remains promotion-gated; no native close request was sent."
+        );
+    }
+
+    #[test]
+    fn native_runtime_guarded_execution_is_gated_before_credentials_or_network() {
+        let state = NativeRuntimeState::default();
+        let config = json!({
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1m"]
+        });
+        let started = state.start(&config, 1_700_000_000_000);
+        assert!(started.ok, "{}", started.error);
+
+        let response =
+            state.execute_guarded_cycle(&config, String::new(), String::new(), 1_700_000_001_000);
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.error,
+            "Native Rust guarded execution remains promotion-gated; no network request or order was sent."
+        );
     }
 
     #[test]
@@ -6408,7 +7139,7 @@ mod tests {
             }),
             1_700_000_000_000,
             1_700_000_000_000,
-            account_preflight.clone(),
+            Some(account_preflight.clone()),
             false,
         );
 
@@ -6423,7 +7154,7 @@ mod tests {
             &json!({}),
             1_700_000_000_000,
             1_700_000_000_000,
-            account_preflight,
+            Some(account_preflight),
             false,
         );
         assert!(defaults.start_gate_enabled);
@@ -6432,6 +7163,46 @@ mod tests {
         assert_eq!(defaults.execution.max_age_ms, 10_000);
         assert_eq!(defaults.account.max_age_ms, 300_000);
         assert_eq!(defaults.portfolio.max_age_ms, 300_000);
+    }
+
+    #[test]
+    fn native_runtime_start_uses_python_bootstrap_heartbeat_semantics() {
+        let runtime = NativeRuntimeLoop::new(NativeRuntimeLoopConfig::default());
+        let input = native_runtime_start_preflight_input(
+            &json!({"mode": "Live"}),
+            1_700_000_000_000,
+            false,
+        );
+        assert!(input.execution.timestamp_ms.is_none());
+        assert_eq!(input.execution.state, "idle");
+        let live = runtime.build_operational_preflight(input);
+        assert!(live.start.allowed);
+        assert_eq!(live.start.state, "ok");
+
+        let demo = runtime.build_operational_preflight(native_runtime_start_preflight_input(
+            &json!({"mode": "Demo/Testnet"}),
+            1_700_000_000_000,
+            false,
+        ));
+        assert!(demo.start.allowed);
+        assert_eq!(demo.start.state, "ok");
+    }
+
+    #[test]
+    fn native_runtime_live_start_does_not_require_a_bootstrap_heartbeat() {
+        let state = NativeRuntimeState::default();
+        let response = state.start(
+            &json!({
+                "mode": "Live",
+                "symbols": ["BTCUSDT"],
+                "intervals": ["1m"]
+            }),
+            1_700_000_000_000,
+        );
+        assert!(response.ok, "{}", response.error);
+        let managed = state.inner.lock().expect("runtime state lock");
+        assert!(managed.running);
+        assert_eq!(managed.pairs.len(), 1);
     }
 
     #[test]

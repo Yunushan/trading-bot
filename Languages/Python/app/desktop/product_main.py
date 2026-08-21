@@ -124,10 +124,32 @@ def _run_packaged_smoke() -> int:
     return 0
 
 
+def _headless_service_requested(args: list[str]) -> bool:
+    return any(
+        str(arg or "").strip().lower() in {"--headless-service", "--desktop-service"}
+        for arg in args
+    )
+
+
+def _run_headless_service() -> int:
+    """Run the real desktop-owned Python runtime without presenting a window."""
+    os.environ["BOT_ENABLE_DESKTOP_SERVICE_API"] = "1"
+    os.environ.setdefault("BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH", "1")
+    os.environ.setdefault("BOT_DISABLE_PYTHONW_RELAUNCH", "1")
+    os.environ.setdefault("BOT_DISABLE_STARTUP_WINDOW_HOOKS", "1")
+    os.environ.setdefault("BOT_DISABLE_TASKBAR", "1")
+    os.environ.setdefault("BOT_DISABLE_SPLASH", "1")
+    from app.desktop.bootstrap import _run_headless_service as run_headless_service
+
+    return int(run_headless_service())
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if "--smoke" in {str(arg).strip().lower() for arg in args}:
         return _run_packaged_smoke()
+    if _headless_service_requested(args):
+        return _run_headless_service()
 
     _maybe_launch_via_shell_shortcut()
     from app.desktop.bootstrap import _run_entrypoint

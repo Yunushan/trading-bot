@@ -3,6 +3,7 @@
 #include "BinanceWsClient.h"
 #include "NativeOrderSafety.h"
 #include "TradingBotWindow.dashboard_runtime_shared.h"
+#include "generated/PythonParityContract.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -11,19 +12,26 @@
 #include <QDoubleSpinBox>
 #include <QDir>
 #include <QEventLoop>
+#include <QElapsedTimer>
 #include <QFileInfo>
+#include <QHostAddress>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
 #include <QMessageBox>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QVector>
 #include <QRegularExpression>
 #include <QPushButton>
+#include <QStandardPaths>
+#include <QSignalBlocker>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextEdit>
 #include <QTimer>
+#include <QUrl>
 #include <QWidget>
 
 #include <algorithm>
@@ -34,9 +42,232 @@
 using namespace TradingBotWindowDashboardRuntime;
 using ConnectorRuntimeConfig = TradingBotWindowSupport::ConnectorRuntimeConfig;
 
-bool TradingBotWindow::startDashboardServiceRuntime() {
+namespace {
+
+bool environmentFlag(const char *name, bool fallback) {
+    const QString value = qEnvironmentVariable(name).trimmed().toLower();
+    if (value.isEmpty()) {
+        return fallback;
+    }
+    return value == QStringLiteral("1")
+        || value == QStringLiteral("true")
+        || value == QStringLiteral("yes")
+        || value == QStringLiteral("on");
+}
+
+bool isLoopbackServiceApiEndpoint(const QString &baseUrl) {
+    const QUrl endpoint(baseUrl);
+    const QString host = endpoint.host().trimmed();
+    if (host.compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    QHostAddress address;
+    return address.setAddress(host) && address.isLoopback();
+}
+
+QString firstPythonInterpreter(const QString &entrypoint) {
+    const QFileInfo scriptInfo(entrypoint);
+    QDir repoRoot(scriptInfo.absolutePath());
+    repoRoot.cdUp();
+    repoRoot.cdUp();
+
+    QStringList candidates;
+    const auto appendCandidate = [&candidates](const QString &candidate) {
+        const QString trimmed = candidate.trimmed();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+        const QString resolved = QFileInfo(trimmed).isFile()
+            ? QFileInfo(trimmed).absoluteFilePath()
+            : QStandardPaths::findExecutable(trimmed);
+        if (!resolved.isEmpty() && !candidates.contains(resolved, Qt::CaseInsensitive)) {
+            candidates.append(resolved);
+        }
+    };
+
+    const QStringList explicitCandidates = {
+        qEnvironmentVariable("BOT_PYTHON_EXECUTABLE"),
+        qEnvironmentVariable("PYTHON_EXECUTABLE"),
+        repoRoot.filePath(QStringLiteral(".venv/Scripts/python.exe")),
+        repoRoot.filePath(QStringLiteral(".venv/bin/python3")),
+        repoRoot.filePath(QStringLiteral(".venv/bin/python")),
+    };
+    for (const QString &candidate : explicitCandidates) {
+        appendCandidate(candidate);
+    }
+#ifdef Q_OS_WIN
+    for (const QString &candidate : {QStringLiteral("python.exe"), QStringLiteral("python"), QStringLiteral("py.exe"), QStringLiteral("py")}) {
+        appendCandidate(candidate);
+    }
+#else
+    for (const QString &candidate : {QStringLiteral("python3"), QStringLiteral("python")}) {
+        appendCandidate(candidate);
+    }
+#endif
+    return candidates.isEmpty() ? QString() : candidates.front();
+}
+
+QString processOutputTail(QProcess *process) {
+    if (!process) {
+        return {};
+    }
+    QString output = QString::fromLocal8Bit(process->readAllStandardOutput());
+    if (output.size() > 1600) {
+        output = output.right(1600);
+    }
+    return output.trimmed();
+}
+
+} // namespace
+
+bool TradingBotWindow::ensureDashboardServiceApiAvailable(QString *errorOut) {
+    const auto serviceIsAvailable = [errorOut]() {
+        const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("GET"),
+            QStringLiteral("status"),
+            {},
+            900);
+        if (result.ok) {
+            return true;
+        }
+        if (errorOut) {
+            *errorOut = result.error;
+        }
+        return false;
+    };
+
+    if (serviceIsAvailable()) {
+        return true;
+    }
+    if (!environmentFlag("BOT_DESKTOP_SERVICE_API_AUTOSTART", true)) {
+        if (errorOut && errorOut->trimmed().isEmpty()) {
+            *errorOut = QStringLiteral("Python Service API is unavailable and autostart is disabled.");
+        }
+        return false;
+    }
+    if (!isLoopbackServiceApiEndpoint(TradingBotWindowSupport::serviceApiBaseUrl())) {
+        if (errorOut) {
+            *errorOut = QStringLiteral(
+                "Remote Service API is unavailable; C++ will not start a local Python host for a non-loopback endpoint.");
+        }
+        return false;
+    }
+
+    if (!managedPythonDesktopServiceProcess_
+        || managedPythonDesktopServiceProcess_->state() == QProcess::NotRunning) {
+        stopManagedPythonDesktopService();
+        const QString entrypoint = TradingBotWindowSupport::pythonDesktopEntrypointPath();
+        if (entrypoint.isEmpty()) {
+            if (errorOut) {
+                *errorOut = QStringLiteral(
+                    "Could not locate apps/desktop-pyqt/main.py or Languages/Python/main.py for managed Service API hosting.");
+            }
+            return false;
+        }
+        const QString interpreter = firstPythonInterpreter(entrypoint);
+        if (interpreter.isEmpty()) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("Could not locate a Python interpreter for the managed Service API host.");
+            }
+            return false;
+        }
+
+        auto *process = new QProcess(this);
+        process->setProgram(interpreter);
+        process->setArguments({entrypoint, QStringLiteral("--headless-service")});
+        process->setWorkingDirectory(QFileInfo(entrypoint).dir().absolutePath());
+        QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+        environment.insert(QStringLiteral("BOT_ENABLE_DESKTOP_SERVICE_API"), QStringLiteral("1"));
+        environment.insert(QStringLiteral("BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH"), QStringLiteral("1"));
+        environment.insert(QStringLiteral("BOT_DISABLE_PYTHONW_RELAUNCH"), QStringLiteral("1"));
+        environment.insert(QStringLiteral("BOT_DISABLE_STARTUP_WINDOW_HOOKS"), QStringLiteral("1"));
+        environment.insert(QStringLiteral("BOT_DISABLE_TASKBAR"), QStringLiteral("1"));
+        environment.insert(QStringLiteral("BOT_DISABLE_SPLASH"), QStringLiteral("1"));
+        environment.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+        if (qEnvironmentVariable("QT_QPA_PLATFORM").trimmed().isEmpty()
+            && qEnvironmentVariable("DISPLAY").trimmed().isEmpty()
+            && qEnvironmentVariable("WAYLAND_DISPLAY").trimmed().isEmpty()) {
+            environment.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
+        }
+        environment.remove(QStringLiteral("QT_PLUGIN_PATH"));
+        environment.remove(QStringLiteral("QT_QPA_PLATFORM_PLUGIN_PATH"));
+        environment.remove(QStringLiteral("QT_CONF_PATH"));
+        process->setProcessEnvironment(environment);
+        process->setProcessChannelMode(QProcess::MergedChannels);
+        managedPythonDesktopServiceProcess_ = process;
+        process->start();
+        if (!process->waitForStarted(5000)) {
+            const QString detail = process->errorString();
+            stopManagedPythonDesktopService();
+            if (errorOut) {
+                *errorOut = QStringLiteral("Managed Python desktop Service API failed to start: %1").arg(detail);
+            }
+            return false;
+        }
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    QString lastError = errorOut ? *errorOut : QString();
+    while (timer.elapsed() < 8000) {
+        if (!managedPythonDesktopServiceProcess_
+            || managedPythonDesktopServiceProcess_->state() == QProcess::NotRunning) {
+            break;
+        }
+        const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("GET"),
+            QStringLiteral("status"),
+            {},
+            900);
+        if (result.ok) {
+            return true;
+        }
+        lastError = result.error;
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+
+    const QString output = processOutputTail(managedPythonDesktopServiceProcess_);
+    stopManagedPythonDesktopService();
+    if (errorOut) {
+        *errorOut = QStringLiteral("Managed Python desktop Service API did not become ready: %1%2")
+                        .arg(lastError.trimmed(), output.isEmpty() ? QString() : QStringLiteral(" | %1").arg(output));
+    }
+    return false;
+}
+
+void TradingBotWindow::stopManagedPythonDesktopService() {
+    QProcess *process = managedPythonDesktopServiceProcess_;
+    managedPythonDesktopServiceProcess_ = nullptr;
+    if (!process) {
+        return;
+    }
+    process->disconnect(this);
+    if (process->state() != QProcess::NotRunning) {
+        process->terminate();
+        if (!process->waitForFinished(2500)) {
+            process->kill();
+            process->waitForFinished(1000);
+        }
+    }
+    delete process;
+}
+
+bool TradingBotWindow::startDashboardServiceRuntime(bool showDialogs) {
+    QString serviceError;
+    if (!ensureDashboardServiceApiAvailable(&serviceError)) {
+        const QString message = QStringLiteral("Python Service API runtime is unavailable: %1")
+                                    .arg(serviceError.trimmed().isEmpty()
+                                             ? QStringLiteral("unknown startup error")
+                                             : serviceError.trimmed());
+        appendDashboardAllLog(message);
+        updateStatusMessage(message);
+        if (showDialogs) {
+            QMessageBox::warning(this, tr("Python Service API unavailable"), message);
+        }
+        return false;
+    }
     QJsonObject configRequest;
-    configRequest.insert(QStringLiteral("config"), buildDashboardServiceConfigPatch());
+    configRequest.insert(QStringLiteral("config"), buildDashboardServiceApiConfigPatch());
     const auto configResult = TradingBotWindowSupport::serviceApiRequestJson(
         QStringLiteral("PATCH"),
         QStringLiteral("config"),
@@ -47,7 +278,10 @@ bool TradingBotWindow::startDashboardServiceRuntime() {
             "Python Service API runtime config patch failed: %1").arg(configResult.error);
         appendDashboardAllLog(message);
         updateStatusMessage(message);
-        QMessageBox::warning(this, tr("Python Service API unavailable"), message);
+        if (showDialogs) {
+            QMessageBox::warning(this, tr("Python Service API unavailable"), message);
+        }
+        stopManagedPythonDesktopService();
         return false;
     }
 
@@ -64,7 +298,10 @@ bool TradingBotWindow::startDashboardServiceRuntime() {
             "Python Service API runtime start failed: %1").arg(startResult.error);
         appendDashboardAllLog(message);
         updateStatusMessage(message);
-        QMessageBox::warning(this, tr("Start failed"), message);
+        if (showDialogs) {
+            QMessageBox::warning(this, tr("Start failed"), message);
+        }
+        stopManagedPythonDesktopService();
         return false;
     }
 
@@ -75,7 +312,10 @@ bool TradingBotWindow::startDashboardServiceRuntime() {
             QStringLiteral("Python Service API rejected the runtime start request."));
         appendDashboardAllLog(QStringLiteral("Service delegation start rejected: %1").arg(message));
         updateStatusMessage(message);
-        QMessageBox::information(this, tr("Start blocked"), message);
+        if (showDialogs) {
+            QMessageBox::information(this, tr("Start blocked"), message);
+        }
+        stopManagedPythonDesktopService();
         return false;
     }
 
@@ -109,7 +349,7 @@ bool TradingBotWindow::startDashboardServiceRuntime() {
     return true;
 }
 
-void TradingBotWindow::stopDashboardServiceRuntime() {
+void TradingBotWindow::stopDashboardServiceRuntime(bool showDialogs) {
     if (!dashboardServiceRuntimeActive_) {
         return;
     }
@@ -134,6 +374,9 @@ void TradingBotWindow::stopDashboardServiceRuntime() {
             "Python Service API runtime stop failed: %1").arg(stopResult.error);
         appendDashboardAllLog(message);
         updateStatusMessage(message);
+        if (showDialogs) {
+            QMessageBox::warning(this, tr("Stop failed"), message);
+        }
         return;
     }
     const QJsonObject response = stopResult.document.object();
@@ -144,6 +387,9 @@ void TradingBotWindow::stopDashboardServiceRuntime() {
             QStringLiteral("Python Service API rejected the runtime stop request."));
         appendDashboardAllLog(QStringLiteral("Service delegation stop rejected: %1").arg(message));
         updateStatusMessage(message);
+        if (showDialogs) {
+            QMessageBox::information(this, tr("Stop blocked"), message);
+        }
         return;
     }
 
@@ -169,6 +415,96 @@ void TradingBotWindow::stopDashboardServiceRuntime() {
     }
     appendDashboardAllLog(QStringLiteral("Python Service API runtime stopped."));
     updateStatusMessage(QStringLiteral("Python Service API runtime stopped."));
+    stopManagedPythonDesktopService();
+}
+
+bool TradingBotWindow::runManagedPythonServiceSmoke(QString *errorOut) {
+    const auto fail = [errorOut](const QString &message) {
+        if (errorOut) {
+            *errorOut = message;
+        }
+        return false;
+    };
+    const auto selectKey = [](QComboBox *combo, const QString &key) {
+        if (!combo) {
+            return false;
+        }
+        int index = combo->findData(key);
+        if (index < 0) {
+            index = combo->findText(key, Qt::MatchFixedString);
+        }
+        if (index < 0) {
+            return false;
+        }
+        const QSignalBlocker blocker(combo);
+        combo->setCurrentIndex(index);
+        return true;
+    };
+
+    if (!dashboardOverridesTable_ || !dashboardExchangeCombo_ || !dashboardConnectorCombo_) {
+        return fail(QStringLiteral("C++ managed-service smoke controls are unavailable."));
+    }
+    if (!selectKey(dashboardExchangeCombo_, QStringLiteral("Bybit"))) {
+        return fail(QStringLiteral("C++ managed-service smoke could not select the delegated Bybit exchange."));
+    }
+    if (!selectKey(dashboardConnectorCombo_, QStringLiteral("ccxt"))) {
+        return fail(QStringLiteral("C++ managed-service smoke could not select the delegated CCXT connector."));
+    }
+    if (dashboardModeCombo_) {
+        const int modeIndex = dashboardModeCombo_->findText(
+            QStringLiteral("Demo/Testnet"), Qt::MatchFixedString);
+        if (modeIndex >= 0) {
+            const QSignalBlocker blocker(dashboardModeCombo_);
+            dashboardModeCombo_->setCurrentIndex(modeIndex);
+        }
+    }
+    dashboardOverridesTable_->setRowCount(0);
+    if (!addDashboardOverrideRow(QStringLiteral("BTCUSDT"), QStringLiteral("1m"))) {
+        return fail(QStringLiteral("C++ managed-service smoke could not create its non-trading override."));
+    }
+    const QJsonObject overridePayload = dashboardOverridesTable_->item(0, 0)
+        ? dashboardOverridesTable_->item(0, 0)->data(Qt::UserRole).toJsonObject()
+        : QJsonObject();
+    const QJsonObject overrideControls = overridePayload.value(QStringLiteral("strategy_controls")).toObject();
+    if (overridePayload.value(QStringLiteral("symbol")).toString() != QStringLiteral("BTCUSDT")
+        || overridePayload.value(QStringLiteral("interval")).toString() != QStringLiteral("1m")
+        || !overridePayload.value(QStringLiteral("indicators")).isArray()
+        || overrideControls.value(QStringLiteral("position_pct_units")).toString() != QStringLiteral("percent")
+        || !overrideControls.contains(QStringLiteral("connector_backend"))
+        || !overrideControls.contains(QStringLiteral("loop_interval_override"))) {
+        return fail(QStringLiteral("C++ managed-service smoke created an incomplete Python-shaped override payload."));
+    }
+
+    if (!startDashboardServiceRuntime(false)) {
+        return fail(QStringLiteral("C++ managed-service smoke could not start the Python Service API: %1")
+                        .arg(statusLabel_ ? statusLabel_->text() : QStringLiteral("unknown error")));
+    }
+
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 150);
+    const auto statusResult = TradingBotWindowSupport::serviceApiRequestJson(
+        QStringLiteral("GET"),
+        QStringLiteral("status"),
+        {},
+        5000);
+    const QJsonObject status = statusResult.document.object();
+    const bool serviceReady = statusResult.ok
+        && status.value(QStringLiteral("service_mode")).toString()
+            == QStringLiteral("local-headless");
+    const QString statusError = statusResult.ok
+        ? QStringLiteral("managed Python status response did not identify the local-headless service runtime")
+        : statusResult.error;
+    const bool stopped = [&]() {
+        stopDashboardServiceRuntime(false);
+        return !dashboardServiceRuntimeActive_ && managedPythonDesktopServiceProcess_ == nullptr;
+    }();
+    if (!serviceReady) {
+        return fail(QStringLiteral("C++ managed-service smoke received an invalid Python status: %1")
+                        .arg(statusError));
+    }
+    if (!stopped) {
+        return fail(QStringLiteral("C++ managed-service smoke did not stop its managed Python child."));
+    }
+    return true;
 }
 
 void TradingBotWindow::startDashboardRuntime() {
@@ -189,11 +525,22 @@ void TradingBotWindow::startDashboardRuntime() {
     const bool futures = dashboardAccountTypeCombo_
         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
         : true;
+    const QString modeText = dashboardModeCombo_
+        ? dashboardModeCombo_->currentText().trimmed()
+        : QStringLiteral("Demo/Testnet");
+    const QString indicatorSourceText = dashboardIndicatorSourceCombo_
+        ? dashboardIndicatorSourceCombo_->currentText().trimmed()
+        : TradingBotWindowSupport::pythonSourceDefaultUiText(
+              QStringLiteral("indicator_source"),
+              TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+                  TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels()));
     const QString defaultConnectorText = dashboardConnectorCombo_
         ? dashboardConnectorCombo_->currentText().trimmed()
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
     bool serviceDelegationRequired = !TradingBotWindowSupport::exchangeUsesBinanceApi(selectedExchange)
-        || !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText);
+        || !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText)
+        || TradingBotWindowSupport::nativeRuntimeIndicatorSourceMarketFamily(indicatorSourceText).isEmpty()
+        || !TradingBotWindowSupport::nativeRuntimeStandaloneExecutionAllowed(modeText);
     for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
         const QTableWidgetItem *connectorItem = dashboardOverridesTable_->item(row, 5);
         const QString connectorText = connectorItem && !connectorItem->text().trimmed().isEmpty()
@@ -207,6 +554,77 @@ void TradingBotWindow::startDashboardRuntime() {
     }
     if (serviceDelegationRequired) {
         startDashboardServiceRuntime();
+        return;
+    }
+
+    const QDateTime preflightNow = QDateTime::currentDateTimeUtc();
+    const auto bootstrapFreshness = [&preflightNow](
+        double maxAgeSeconds,
+        const QString &state,
+        const QString &source) {
+        NativeOrderSafety::OperationalFreshnessInput input;
+        input.timestampField = QStringLiteral("generated_at");
+        input.timestamp = preflightNow;
+        input.maxAgeSeconds = maxAgeSeconds;
+        input.shouldWarn = true;
+        input.state = state;
+        input.source = source;
+        return input;
+    };
+    NativeOrderSafety::OperationalPreflightInput preflightInput;
+    preflightInput.mode = modeText;
+    preflightInput.health = QStringLiteral("ok");
+    preflightInput.startGateEnabled = dashboardOperationalLiveStartGateCheck_
+        ? dashboardOperationalLiveStartGateCheck_->isChecked()
+        : true;
+    preflightInput.orderGateEnabled = dashboardOperationalLiveOrderGateCheck_
+        ? dashboardOperationalLiveOrderGateCheck_->isChecked()
+        : true;
+    preflightInput.generatedAt = preflightNow;
+    preflightInput.exchangeConnector = bootstrapFreshness(
+        dashboardOperationalConnectorStaleSpin_
+            ? dashboardOperationalConnectorStaleSpin_->value()
+            : 120.0,
+        QStringLiteral("unknown"),
+        QStringLiteral("cpp-runtime-bootstrap"));
+    preflightInput.account = bootstrapFreshness(
+        dashboardOperationalAccountStaleSpin_
+            ? dashboardOperationalAccountStaleSpin_->value()
+            : 300.0,
+        QStringLiteral("unknown"),
+        QStringLiteral("cpp-runtime-bootstrap"));
+    preflightInput.portfolio = bootstrapFreshness(
+        dashboardOperationalPortfolioStaleSpin_
+            ? dashboardOperationalPortfolioStaleSpin_->value()
+            : 300.0,
+        QStringLiteral("unknown"),
+        QStringLiteral("cpp-runtime-bootstrap"));
+    preflightInput.execution.timestampField = QStringLiteral("heartbeat_at");
+    preflightInput.execution.maxAgeSeconds = dashboardOperationalExecutionStaleSpin_
+        ? dashboardOperationalExecutionStaleSpin_->value()
+        : 10.0;
+    // Python only requires an execution heartbeat after the executor enters
+    // running state; an idle bootstrap has no heartbeat yet.
+    preflightInput.execution.shouldWarn = false;
+    preflightInput.execution.state = QStringLiteral("idle");
+    preflightInput.execution.source = QStringLiteral("cpp-runtime-bootstrap");
+    const QJsonObject preflight = NativeOrderSafety::buildOperationalPreflightSnapshot(preflightInput);
+    if (!NativeOrderSafety::operationalPreflightStartAllowed(preflight)) {
+        QStringList reasons;
+        for (const QJsonValue &value : preflight.value(QStringLiteral("reasons")).toArray()) {
+            const QString reason = value.toString().trimmed();
+            if (!reason.isEmpty() && !reasons.contains(reason)) {
+                reasons.append(reason);
+            }
+        }
+        const QString message = QStringLiteral(
+            "Start blocked: operational safety gate requires healthy fresh snapshots for live mode. %1.")
+            .arg(reasons.isEmpty()
+                     ? QStringLiteral("the operational start gate is not satisfied")
+                     : reasons.join(QStringLiteral("; ")));
+        appendDashboardAllLog(message);
+        updateStatusMessage(message);
+        QMessageBox::warning(this, tr("Start blocked"), message);
         return;
     }
 
@@ -234,12 +652,6 @@ void TradingBotWindow::startDashboardRuntime() {
         dashboardRuntimeTimer_ = new QTimer(this);
         connect(dashboardRuntimeTimer_, &QTimer::timeout, this, &TradingBotWindow::runDashboardRuntimeCycle);
     }
-    const QString indicatorSourceText = dashboardIndicatorSourceCombo_
-        ? dashboardIndicatorSourceCombo_->currentText().trimmed()
-        : QStringLiteral("Binance futures");
-    const QString modeText = dashboardModeCombo_
-        ? dashboardModeCombo_->currentText().trimmed()
-        : QStringLiteral("Demo/Testnet");
     const bool isTestnet = TradingBotWindowSupport::isTestnetModeLabel(modeText);
     const bool useWebSocketFeed = pythonSourceUseWebSocketFeed(indicatorSourceText, isTestnet);
     const ConnectorRuntimeConfig defaultConnectorCfg = TradingBotWindowSupport::resolveConnectorConfig(defaultConnectorText, futures);
@@ -494,9 +906,16 @@ void TradingBotWindow::stopDashboardRuntime() {
     }
 
     const QJsonObject executionDefaults = TradingBotWindowSupport::pythonSourceDefaultExecutionConfig();
-    const QString defaultMode = executionDefaults.value(QStringLiteral("mode")).toString(QStringLiteral("Demo/Testnet"));
-    const QString defaultAccountType = executionDefaults.value(QStringLiteral("account_type")).toString(QStringLiteral("Futures"));
-    const QString defaultPositionMode = executionDefaults.value(QStringLiteral("position_mode")).toString(QStringLiteral("Hedge"));
+    const QString defaultMode = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+        QStringLiteral("mode"), QStringLiteral("Demo/Testnet"));
+    const QString defaultAccountType = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+        QStringLiteral("account_type"),
+        TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+            TradingBotWindowSupport::pythonSourceAccountTypeOptionLabels()));
+    const QString defaultPositionMode = TradingBotWindowSupport::pythonSourceDefaultExecutionText(
+        QStringLiteral("position_mode"),
+        TradingBotWindowSupport::pythonSourceFirstOptionLabel(
+            TradingBotWindowSupport::pythonSourcePositionModeOptionLabels()));
     const QString modeText = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : defaultMode;
     const bool paperTrading = TradingBotWindowSupport::isPaperTradingModeLabel(modeText);
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();

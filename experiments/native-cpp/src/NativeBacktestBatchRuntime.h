@@ -39,6 +39,7 @@ struct BatchRequest {
     QString optimizerMetric = QStringLiteral("roi_percent");
     QString optimizerScope = QStringLiteral("selected");
     bool optimizerEnabled = false;
+    int scanTopN = 200;
     int optimizerComboSize = 2;
     int optimizerMinTrades = 1;
     double optimizerMddLimit = 10.0;

@@ -406,8 +406,8 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             len(value) if isinstance(value, (dict, list, tuple)) else 1
             for value in option_catalogs.values()
         )
-        self.assertEqual(44, len(option_catalogs))
-        self.assertEqual(255, entry_count)
+        self.assertEqual(46, len(option_catalogs))
+        self.assertEqual(267, entry_count)
 
     def test_every_python_option_catalog_is_manifested_in_native_and_browser_contracts(self):
         manifest = _python_option_catalog_manifest()
@@ -416,14 +416,14 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         cpp_generated = _read(CPP_OUTPUT)
         tauri_generated = _read(TAURI_BROWSER_OUTPUT)
 
-        self.assertEqual(44, len(manifest))
-        self.assertEqual(255, sum(entry_count for _, entry_count in manifest))
+        self.assertEqual(46, len(manifest))
+        self.assertEqual(267, sum(entry_count for _, entry_count in manifest))
         self.assertIn(
             "pub const PYTHON_OPTION_CATALOG_MANIFEST: &[PythonOptionCatalogManifestEntry] = &[",
             rust_generated,
         )
         self.assertIn(
-            "inline constexpr std::array<PythonOptionCatalogManifestEntry, 44> "
+            "inline constexpr std::array<PythonOptionCatalogManifestEntry, 46> "
             "kPythonOptionCatalogManifest = {",
             cpp_generated,
         )
@@ -596,6 +596,11 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertFalse(summary["cpp_full_parity"])
         self.assertFalse(summary["rust_full_parity"])
         ownership = summary["native_runtime_ownership"]
+        self.assertEqual(
+            "binance-spot-usds-and-coin-futures",
+            ownership["native_execution_scope"],
+        )
+        self.assertTrue(ownership["native_execution_capability"])
         direct_backends = set(ownership["direct_connector_backends"])
         connector_market_families = ownership["direct_connector_market_families"]
         expected_backends = FUTURES_CONNECTOR_KEYS | SPOT_CONNECTOR_KEYS
@@ -737,8 +742,8 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn('"rustStandaloneRuntimeReady": false', tauri_generated)
         self.assertIn('"cppFullParityReady": false', tauri_generated)
         self.assertIn('"rustFullParityReady": false', tauri_generated)
-        self.assertIn('"optionCatalogCount": 44', tauri_generated)
-        self.assertIn('"optionCatalogEntryCount": 255', tauri_generated)
+        self.assertIn('"optionCatalogCount": 46', tauri_generated)
+        self.assertIn('"optionCatalogEntryCount": 267', tauri_generated)
         self.assertIn('"riskDefaults"', tauri_generated)
         self.assertIn('"uiDefaults"', tauri_generated)
         self.assertIn('"supportedBrokers"', tauri_generated)
@@ -941,12 +946,12 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         )
         option_catalog_consumers = feature_option_contract["option_catalog_consumers"]
         self.assertTrue(option_catalog_consumers["ok"], option_catalog_consumers)
-        self.assertEqual(44, option_catalog_consumers["catalog_count"])
+        self.assertEqual(46, option_catalog_consumers["catalog_count"])
         for target in ("cpp", "rust", "browser"):
             with self.subTest(option_catalog_consumer_target=target):
                 target_report = option_catalog_consumers["targets"][target]
                 self.assertTrue(target_report["ok"], target_report)
-                self.assertEqual(44, target_report["catalog_count"])
+                self.assertEqual(46, target_report["catalog_count"])
                 self.assertEqual(100.0, target_report["coverage_percent"])
                 self.assertEqual(
                     target_report["applicable_count"],
@@ -1299,6 +1304,11 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("kPythonLlmProviderChoices", cpp_generated)
         self.assertIn('"llmProviders"', tauri_generated)
         self.assertIn('"llmProviderChoices"', tauri_generated)
+        self.assertIn("pub struct PythonOllamaModelSizeHint", rust_generated)
+        self.assertIn("pub const PYTHON_OLLAMA_MODEL_SIZE_HINTS", rust_generated)
+        self.assertIn("struct PythonOllamaModelSizeHint", cpp_generated)
+        self.assertIn("kPythonOllamaModelSizeHints", cpp_generated)
+        self.assertIn('"ollamaModelSizeHints"', tauri_generated)
         self.assertIn('"configChoiceMaps"', tauri_generated)
         self.assertIn(
             f"PYTHON_LLM_PROVIDER_CATALOG_REVISION: &str = {_rust_string(summary['llm_catalog_revision'])}",
@@ -1368,6 +1378,22 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             )
             for note in provider["notes"]:
                 self.assertIn(json.dumps(str(note)), tauri_generated)
+
+        for hint in summary["ollama_model_size_hints"]:
+            model = str(hint["model"])
+            label = str(hint["label"])
+            self.assertIn(f"model: {_rust_string(model)}", rust_generated)
+            self.assertIn(f"label: {_rust_string(label)}", rust_generated)
+            self.assertIn(_cpp_string(model), cpp_generated)
+            self.assertIn(_cpp_string(label), cpp_generated)
+            self.assertIn(
+                f'"model": {json.dumps(model)}',
+                tauri_generated,
+            )
+            self.assertIn(
+                f'"label": {json.dumps(label)}',
+                tauri_generated,
+            )
 
         for choice in summary["llm_provider_choices"]:
             key = str(choice["key"])

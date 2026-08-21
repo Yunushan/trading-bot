@@ -19,6 +19,27 @@ QString nonEmptyOr(const QString &value, const QString &fallback) {
     return text.isEmpty() ? fallback : text;
 }
 
+QString pythonOllamaModelSizeLabel(const QString &model) {
+    const QString normalized = model.trimmed().toLower();
+    if (normalized.isEmpty()) {
+        return {};
+    }
+    for (const auto &hint : PythonParityContract::kPythonOllamaModelSizeHints) {
+        if (QString::fromUtf8(hint.model.data(), static_cast<int>(hint.model.size())) == normalized) {
+            return QString::fromUtf8(hint.label.data(), static_cast<int>(hint.label.size()));
+        }
+    }
+    if (!normalized.contains(QChar(':'))) {
+        const QString tagged = normalized + QStringLiteral(":latest");
+        for (const auto &hint : PythonParityContract::kPythonOllamaModelSizeHints) {
+            if (QString::fromUtf8(hint.model.data(), static_cast<int>(hint.model.size())) == tagged) {
+                return QString::fromUtf8(hint.label.data(), static_cast<int>(hint.label.size()));
+            }
+        }
+    }
+    return {};
+}
+
 bool containsAny(const QString &text, const QStringList &phrases) {
     for (const QString &phrase : phrases) {
         if (text.contains(phrase, Qt::CaseInsensitive)) {
@@ -734,9 +755,13 @@ QString describeLocalModelStatus(const QJsonObject &status, const QString &fallb
         ? QStringLiteral("installed")
         : QStringLiteral("not installed");
     const QString serverKind = nonEmptyOr(status.value(QStringLiteral("server_kind")).toString(), QStringLiteral("local server"));
-    const QString size = status.value(QStringLiteral("estimated_size_label")).toString().trimmed().isEmpty()
+    QString estimatedSize = status.value(QStringLiteral("estimated_size_label")).toString().trimmed();
+    if (estimatedSize.isEmpty()) {
+        estimatedSize = pythonOllamaModelSizeLabel(model);
+    }
+    const QString size = estimatedSize.isEmpty()
         ? QString()
-        : QStringLiteral(", estimated %1").arg(status.value(QStringLiteral("estimated_size_label")).toString().trimmed());
+        : QStringLiteral(", estimated %1").arg(estimatedSize);
     QString storage = status.value(QStringLiteral("storage_hint")).toString().trimmed();
     const QJsonArray storagePaths = status.value(QStringLiteral("storage_paths")).toArray();
     if (!storagePaths.isEmpty()) {
