@@ -732,6 +732,87 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(by_name[name]["expected_owned"])
 
+    def test_native_runtime_routing_preserves_python_json_scalar_coercion(self):
+        cases = (
+            (
+                "numeric-connector",
+                {"selected_exchange": "Binance", "connector_backend": 1, "indicator_source": "Binance spot"},
+                False,
+            ),
+            (
+                "array-connector",
+                {
+                    "selected_exchange": "Binance",
+                    "connector_backend": ["binance-sdk-spot"],
+                    "indicator_source": "Binance spot",
+                },
+                True,
+            ),
+            (
+                "numeric-exchange",
+                {"selected_exchange": 1, "connector_backend": "binance-sdk-spot"},
+                False,
+            ),
+            (
+                "array-exchange",
+                {"selected_exchange": ["Binance"], "connector_backend": "binance-sdk-spot"},
+                False,
+            ),
+            (
+                "numeric-indicator",
+                {
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": 1,
+                },
+                False,
+            ),
+            (
+                "false-indicator",
+                {
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": False,
+                },
+                False,
+            ),
+            (
+                "null-indicator",
+                {
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": None,
+                },
+                True,
+            ),
+            (
+                "empty-indicator-list",
+                {
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": [],
+                },
+                True,
+            ),
+            (
+                "numeric-first-indicator-list",
+                {
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": [0],
+                },
+                False,
+            ),
+            (
+                "false-exchange-default",
+                {"selected_exchange": False, "connector_backend": "binance-sdk-spot"},
+                True,
+            ),
+        )
+        for name, config, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(expected, native_runtime_routing_is_owned(config))
+
     def test_native_runtime_mode_reference_covers_python_testnet_policy(self):
         summary = native_python_source_contract_summary()
         self.assertEqual(

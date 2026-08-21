@@ -2139,20 +2139,61 @@ fn config_root(config: &Value) -> &Value {
         .unwrap_or(config)
 }
 
+fn python_json_value_is_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_none_or(|number| number != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+    }
+}
+
+fn python_json_value_to_text(value: &Value) -> String {
+    match value {
+        Value::Null => "None".to_owned(),
+        Value::Bool(value) => {
+            if *value {
+                "True".to_owned()
+            } else {
+                "False".to_owned()
+            }
+        }
+        Value::String(value) => value.to_owned(),
+        _ => value.to_string(),
+    }
+}
+
+fn python_config_text_or_empty(value: Option<&Value>) -> String {
+    value
+        .filter(|value| python_json_value_is_truthy(value))
+        .map(python_json_value_to_text)
+        .unwrap_or_default()
+}
+
+fn python_config_text_or_default(value: Option<&Value>, default: &str) -> String {
+    value
+        .filter(|value| python_json_value_is_truthy(value))
+        .map(python_json_value_to_text)
+        .unwrap_or_else(|| default.to_owned())
+}
+
 fn first_config_string(config: &Value, key: &str, default: &str) -> String {
     let value = config_root(config).get(key);
+    let value = value.and_then(|value| {
+        value
+            .as_array()
+            .and_then(|items| items.first())
+            .or(Some(value))
+    });
     let text = value
-        .and_then(|value| {
-            value
-                .as_array()
-                .and_then(|items| items.first())
-                .unwrap_or(value)
-                .as_str()
-        })
-        .map(str::trim)
+        .filter(|value| python_json_value_is_truthy(value))
+        .map(python_json_value_to_text)
+        .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
-        .unwrap_or(default);
-    text.to_owned()
+        .unwrap_or_else(|| default.to_owned());
+    text
 }
 
 fn python_execution_default_i64(key: &str, fallback: i64) -> i64 {
@@ -2266,9 +2307,7 @@ fn native_runtime_recommended_connector_for_account(futures: bool) -> String {
 }
 
 fn native_runtime_connector_input_is_owned(config: &Value) -> bool {
-    let default_connector =
-        python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND);
-    let raw_connector = first_config_string(config, "connector_backend", &default_connector);
+    let raw_connector = python_config_text_or_empty(config_root(config).get("connector_backend"));
     let raw = raw_connector.trim();
     if raw.is_empty() {
         return true;
@@ -2332,11 +2371,8 @@ fn native_runtime_ownership_error(config: &Value) -> Option<String> {
         ));
     }
 
-    let connector_backend = first_config_string(
-        config,
-        "connector_backend",
-        &python_execution_default_text("connector_backend", DEFAULT_CONNECTOR_BACKEND),
-    );
+    let connector_backend =
+        python_config_text_or_empty(config_root(config).get("connector_backend"));
     if !native_runtime_connector_input_is_owned(config) {
         return Some(format!(
             "Native Rust runtime coordinates only the Python-owned native connector boundary; '{connector_backend}' remains {PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER}-owned."
@@ -2382,22 +2418,22 @@ fn normalized_native_indicator_source_key(value: &str) -> String {
 
 fn native_runtime_selected_exchange(config: &Value, default_exchange: &str) -> String {
     let value = config_root(config).get("selected_exchange");
-    match value.and_then(Value::as_str) {
-        Some(text) if !text.is_empty() => text.to_owned(),
-        _ => default_exchange.to_owned(),
-    }
+    python_config_text_or_default(value, default_exchange)
 }
 
 fn native_runtime_configured_indicator_source(config: &Value) -> Option<String> {
     let value = config_root(config).get("indicator_source")?;
-    value
-        .as_array()
-        .and_then(|items| items.first())
-        .unwrap_or(value)
-        .as_str()
-        .map(str::trim)
-        .filter(|source| !source.is_empty())
-        .map(ToOwned::to_owned)
+    let value = if let Some(items) = value.as_array() {
+        items.first()
+    } else {
+        Some(value)
+    }?;
+    if value.is_null() {
+        return None;
+    }
+    let text = python_json_value_to_text(value);
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 fn native_runtime_indicator_source_market_family(config: &Value) -> Option<&'static str> {
@@ -6115,6 +6151,106 @@ mod tests {
                 case.expected_owned,
                 "native runtime routing diverged for Python case {}",
                 case.name
+            );
+        }
+    }
+
+    #[test]
+    fn native_runtime_routing_preserves_python_json_scalar_coercion() {
+        let cases = [
+            (
+                "numeric-connector",
+                json!({
+                    "selected_exchange": "Binance",
+                    "connector_backend": 1,
+                    "indicator_source": "Binance spot"
+                }),
+                false,
+            ),
+            (
+                "array-connector",
+                json!({
+                    "selected_exchange": "Binance",
+                    "connector_backend": ["binance-sdk-spot"],
+                    "indicator_source": "Binance spot"
+                }),
+                true,
+            ),
+            (
+                "numeric-exchange",
+                json!({
+                    "selected_exchange": 1,
+                    "connector_backend": "binance-sdk-spot"
+                }),
+                false,
+            ),
+            (
+                "array-exchange",
+                json!({
+                    "selected_exchange": ["Binance"],
+                    "connector_backend": "binance-sdk-spot"
+                }),
+                false,
+            ),
+            (
+                "numeric-indicator",
+                json!({
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": 1
+                }),
+                false,
+            ),
+            (
+                "false-indicator",
+                json!({
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": false
+                }),
+                false,
+            ),
+            (
+                "null-indicator",
+                json!({
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": null
+                }),
+                true,
+            ),
+            (
+                "empty-indicator-list",
+                json!({
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": []
+                }),
+                true,
+            ),
+            (
+                "numeric-first-indicator-list",
+                json!({
+                    "selected_exchange": "Binance",
+                    "connector_backend": "binance-sdk-spot",
+                    "indicator_source": [0]
+                }),
+                false,
+            ),
+            (
+                "false-exchange-default",
+                json!({
+                    "selected_exchange": false,
+                    "connector_backend": "binance-sdk-spot"
+                }),
+                true,
+            ),
+        ];
+        for (name, config, expected) in cases {
+            assert_eq!(
+                native_runtime_routing_is_owned(&config),
+                expected,
+                "native runtime routing diverged from Python scalar coercion for {name}"
             );
         }
     }
