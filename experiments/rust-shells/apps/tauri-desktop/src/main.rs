@@ -31,9 +31,12 @@ use trading_bot_core::{
     exchange_connectors::{DEFAULT_CONNECTOR_BACKEND, normalize_connector_backend},
     generated_python_parity::{
         PYTHON_CONNECTOR_OPTIONS, PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS,
-        PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES, PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER,
-        PYTHON_NATIVE_RUNTIME_EXCHANGES, PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
-        PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
+        PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES,
+        PYTHON_NATIVE_RUNTIME_CONNECTOR_OWNERSHIP_REFERENCE_CASES,
+        PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER, PYTHON_NATIVE_RUNTIME_EXCHANGES,
+        PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
+        PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES, PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES,
+        PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS, PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
     },
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
@@ -2319,7 +2322,7 @@ fn native_runtime_effective_connector_backend(config: &Value) -> String {
 
 fn native_runtime_ownership_error(config: &Value) -> Option<String> {
     let default_exchange = python_default_exchange();
-    let selected_exchange = first_config_string(config, "selected_exchange", &default_exchange);
+    let selected_exchange = native_runtime_selected_exchange(config, &default_exchange);
     let exchange_is_native = PYTHON_NATIVE_RUNTIME_EXCHANGES
         .iter()
         .any(|exchange| exchange.eq_ignore_ascii_case(&selected_exchange));
@@ -2352,12 +2355,37 @@ fn native_runtime_ownership_error(config: &Value) -> Option<String> {
     ))
 }
 
+fn native_runtime_routing_is_owned(config: &Value) -> bool {
+    if native_runtime_ownership_error(config).is_some() {
+        return false;
+    }
+    native_runtime_configured_indicator_source(config).is_none()
+        || native_runtime_indicator_source_market_family(config).is_some()
+}
+
 fn normalized_native_indicator_source_key(value: &str) -> String {
-    value
-        .trim()
-        .to_ascii_lowercase()
-        .replace(' ', "_")
-        .replace('-', "_")
+    let mut normalized = String::new();
+    let mut separator_pending = false;
+    for character in value.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+            separator_pending = false;
+        } else if !normalized.is_empty() {
+            separator_pending = true;
+        }
+        if separator_pending && !normalized.ends_with('_') {
+            normalized.push('_');
+        }
+    }
+    normalized.trim_end_matches('_').to_owned()
+}
+
+fn native_runtime_selected_exchange(config: &Value, default_exchange: &str) -> String {
+    let value = config_root(config).get("selected_exchange");
+    match value.and_then(Value::as_str) {
+        Some(text) if !text.is_empty() => text.to_owned(),
+        _ => default_exchange.to_owned(),
+    }
 }
 
 fn native_runtime_configured_indicator_source(config: &Value) -> Option<String> {
@@ -2682,7 +2710,7 @@ fn merge_native_runtime_stream_candle(
 
 fn python_mode_uses_testnet(mode: &str) -> bool {
     let normalized = mode.to_ascii_lowercase();
-    ["demo", "test", "sandbox"]
+    PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS
         .iter()
         .any(|marker| normalized.contains(marker))
 }
@@ -6059,6 +6087,48 @@ mod tests {
                 .error
                 .contains(PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER)
         );
+    }
+
+    #[test]
+    fn native_runtime_connector_ownership_matches_python_reference_cases() {
+        for case in PYTHON_NATIVE_RUNTIME_CONNECTOR_OWNERSHIP_REFERENCE_CASES {
+            let config = json!({"connector_backend": case.input});
+            assert_eq!(
+                native_runtime_connector_input_is_owned(&config),
+                case.expected_owned,
+                "connector ownership diverged for Python case {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn native_runtime_routing_matches_python_reference_cases() {
+        for case in PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES {
+            let config = json!({
+                "selected_exchange": case.selected_exchange,
+                "connector_backend": case.connector_backend,
+                "indicator_source": case.indicator_source,
+            });
+            assert_eq!(
+                native_runtime_routing_is_owned(&config),
+                case.expected_owned,
+                "native runtime routing diverged for Python case {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn native_runtime_mode_mapping_matches_python_reference_cases() {
+        for case in PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES {
+            assert_eq!(
+                python_mode_uses_testnet(case.input),
+                case.expected_testnet,
+                "native runtime mode mapping diverged for Python case {}",
+                case.name
+            );
+        }
     }
 
     #[test]

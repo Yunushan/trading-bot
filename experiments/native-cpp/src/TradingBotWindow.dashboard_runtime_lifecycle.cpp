@@ -537,9 +537,10 @@ void TradingBotWindow::startDashboardRuntime() {
     const QString defaultConnectorText = dashboardConnectorCombo_
         ? dashboardConnectorCombo_->currentText().trimmed()
         : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
-    bool serviceDelegationRequired = !TradingBotWindowSupport::exchangeUsesBinanceApi(selectedExchange)
-        || !TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(defaultConnectorText)
-        || TradingBotWindowSupport::nativeRuntimeIndicatorSourceMarketFamily(indicatorSourceText).isEmpty()
+    bool serviceDelegationRequired = !TradingBotWindowSupport::nativeRuntimeRoutingIsOwned(
+        selectedExchange,
+        defaultConnectorText,
+        indicatorSourceText)
         || !TradingBotWindowSupport::nativeRuntimeStandaloneExecutionAllowed(modeText);
     for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
         const QTableWidgetItem *connectorItem = dashboardOverridesTable_->item(row, 5);

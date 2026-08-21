@@ -1711,13 +1711,272 @@ pub const PYTHON_CONNECTOR_NORMALIZATION_REFERENCE_CASES: &[PythonConnectorNorma
         expected: "binance-sdk-derivatives-trading-usds-futures",
     },
 ];
+
+    pub struct PythonNativeRuntimeConnectorOwnershipReferenceCase {
+    pub name: &'static str,
+    pub input: &'static str,
+    pub expected_owned: bool,
+}
+
+pub const PYTHON_NATIVE_RUNTIME_CONNECTOR_OWNERSHIP_REFERENCE_CASES: &[PythonNativeRuntimeConnectorOwnershipReferenceCase] = &[
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "empty-default",
+        input: "",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "usds-key",
+        input: "binance-sdk-derivatives-trading-usds-futures",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "usds-underscore-alias",
+        input: "binance_sdk_derivatives_trading_usds_futures",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "usds-label",
+        input: "Binance SDK Derivatives Trading USD\u{24c8} Futures (Official Recommended)",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "usds-readable-alias",
+        input: "Binance SDK USD-M Futures",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "coin-key",
+        input: "binance-sdk-derivatives-trading-coin-futures",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "spot-key",
+        input: "binance-sdk-spot",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "binance-connector-key",
+        input: "binance-connector",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "ccxt-label",
+        input: "CCXT (Unified)",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "python-binance-label",
+        input: "python-binance (Community)",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "oanda-provider-option",
+        input: "OANDA REST-v20",
+        expected_owned: false,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "custom-provider",
+        input: "custom",
+        expected_owned: false,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "unknown-provider",
+        input: "unknown backend",
+        expected_owned: false,
+    },
+    PythonNativeRuntimeConnectorOwnershipReferenceCase {
+        name: "connector-url-alias",
+        input: "https://connector.example.test/api",
+        expected_owned: true,
+    },
+];
+
+    pub struct PythonNativeRuntimeRoutingReferenceCase {
+    pub name: &'static str,
+    pub selected_exchange: &'static str,
+    pub connector_backend: &'static str,
+    pub indicator_source: &'static str,
+    pub expected_owned: bool,
+}
+
+pub const PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES: &[PythonNativeRuntimeRoutingReferenceCase] = &[
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "binance-default",
+        selected_exchange: "Binance",
+        connector_backend: "",
+        indicator_source: "",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "binance-usds-canonical",
+        selected_exchange: "Binance",
+        connector_backend: "binance-sdk-derivatives-trading-usds-futures",
+        indicator_source: "binance_futures",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "binance-usds-label",
+        selected_exchange: "Binance",
+        connector_backend: "Binance SDK Derivatives Trading USD-M Futures (Official Recommended)",
+        indicator_source: "Binance futures",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "binance-coin-futures",
+        selected_exchange: "Binance",
+        connector_backend: "binance-sdk-derivatives-trading-coin-futures",
+        indicator_source: "",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "binance-spot",
+        selected_exchange: "Binance",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "Binance spot",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "non-native-exchange",
+        selected_exchange: "Bybit",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "Binance spot",
+        expected_owned: false,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "non-native-connector",
+        selected_exchange: "Binance",
+        connector_backend: "OANDA REST-v20",
+        indicator_source: "Binance spot",
+        expected_owned: false,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "unknown-connector",
+        selected_exchange: "Binance",
+        connector_backend: "unknown backend",
+        indicator_source: "Binance spot",
+        expected_owned: false,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "non-native-indicator",
+        selected_exchange: "Binance",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "TradingView",
+        expected_owned: false,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "indicator-key-alias",
+        selected_exchange: "Binance",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "spot",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "indicator-punctuation-alias",
+        selected_exchange: "Binance",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "Binance/futures",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "empty-indicator",
+        selected_exchange: "Binance",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "empty-exchange-default",
+        selected_exchange: "",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "Binance spot",
+        expected_owned: true,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "whitespace-exchange-rejected",
+        selected_exchange: "   ",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "Binance spot",
+        expected_owned: false,
+    },
+    PythonNativeRuntimeRoutingReferenceCase {
+        name: "exchange-display-badge-rejected",
+        selected_exchange: "Binance (official)",
+        connector_backend: "binance-sdk-spot",
+        indicator_source: "Binance spot",
+        expected_owned: false,
+    },
+];
+
+    pub struct PythonNativeRuntimeModeReferenceCase {
+    pub name: &'static str,
+    pub input: &'static str,
+    pub expected_testnet: bool,
+}
+
+pub const PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES: &[PythonNativeRuntimeModeReferenceCase] = &[
+    PythonNativeRuntimeModeReferenceCase {
+        name: "empty-live",
+        input: "",
+        expected_testnet: false,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "live",
+        input: "Live",
+        expected_testnet: false,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "production",
+        input: "Production",
+        expected_testnet: false,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "demo",
+        input: "Demo",
+        expected_testnet: true,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "demo-testnet",
+        input: "Demo/Testnet",
+        expected_testnet: true,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "testnet",
+        input: "Testnet",
+        expected_testnet: true,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "sandbox",
+        input: "Sandbox",
+        expected_testnet: true,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "embedded-test-marker",
+        input: "contest",
+        expected_testnet: true,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "embedded-demo-marker",
+        input: "my-demo-mode",
+        expected_testnet: true,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "paper-local",
+        input: "Paper Local",
+        expected_testnet: false,
+    },
+    PythonNativeRuntimeModeReferenceCase {
+        name: "trimmed-testnet",
+        input: "  Testnet  ",
+        expected_testnet: true,
+    },
+];
     pub const PYTHON_ORDER_SIZING_REFERENCE_JSON: &str = "{\"cases\":[{\"expected_error\":null,\"expected_quantity\":0.05,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"spot\",\"name\":\"spot_min_notional_bump\",\"price\":100.0,\"quantity\":0.023},{\"expected_error\":null,\"expected_quantity\":0.05,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"futures\",\"name\":\"futures_min_notional_bump\",\"price\":100.0,\"quantity\":0.023},{\"expected_error\":\"qty<=0\",\"expected_quantity\":0.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"spot\",\"name\":\"spot_rejects_zero_quantity\",\"price\":100.0,\"quantity\":0.0},{\"expected_error\":\"filters_error: stepSize must be a finite non-negative number\",\"expected_quantity\":0.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":-0.01},\"market\":\"futures\",\"name\":\"futures_invalid_step_filter\",\"price\":100.0,\"quantity\":1.0},{\"balance\":100.0,\"expected_percent\":1.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"leverage\":5.0,\"market\":\"futures\",\"name\":\"futures_required_percent\",\"price\":100.0}],\"rounding_cases\":[{\"decimals\":2,\"expected_ceil\":1.24,\"expected_floor\":1.23,\"name\":\"positive_decimal\",\"value\":1.231},{\"decimals\":2,\"expected_ceil\":-1.24,\"expected_floor\":-1.23,\"name\":\"negative_decimal\",\"value\":-1.231},{\"decimals\":0,\"expected_ceil\":-2.0,\"expected_floor\":-1.0,\"name\":\"negative_integer_precision\",\"value\":-1.9}],\"schema_version\":1}";
     pub const PYTHON_ORDER_INTENT_REFERENCE_JSON: &str = "{\"cases\":[{\"expected\":{\"filter_errors\":[],\"intent\":{\"close_position\":true,\"market\":\"futures\",\"order_type\":\"MARKET\",\"position_side\":\"\",\"price\":null,\"quantity\":null,\"reduce_only\":false,\"side\":\"SELL\",\"symbol\":\"BTCUSDT\"},\"intent_errors\":[]},\"filters\":{\"minNotional\":5.0,\"minQty\":0.01,\"stepSize\":0.001,\"tickSize\":0.1},\"last_price\":100.0,\"market\":\"futures\",\"name\":\"canonical-close-position\",\"params\":{\"closePosition\":\"true\",\"side\":\"SELL\",\"symbol\":\"BTCUSDT\",\"type\":\"MARKET\"}},{\"expected\":{\"filter_errors\":[],\"intent\":{\"close_position\":false,\"market\":\"futures\",\"order_type\":\"MARKET\",\"position_side\":\"\",\"price\":null,\"quantity\":0.001,\"reduce_only\":false,\"side\":\"SELL\",\"symbol\":\"BTCUSDT\"},\"intent_errors\":[]},\"filters\":{\"minNotional\":5.0,\"minQty\":0.01,\"stepSize\":0.001,\"tickSize\":0.1},\"last_price\":100.0,\"market\":\"futures\",\"name\":\"python-intent-y-is-false-filter-y-is-true\",\"params\":{\"closePosition\":\"y\",\"quantity\":\"0.001\",\"side\":\"SELL\",\"symbol\":\"BTCUSDT\",\"type\":\"MARKET\"}},{\"expected\":{\"filter_errors\":[],\"intent\":{\"close_position\":true,\"market\":\"futures\",\"order_type\":\"LIMIT\",\"position_side\":\"LONG\",\"price\":2000.0,\"quantity\":1.0,\"reduce_only\":true,\"side\":\"BUY\",\"symbol\":\"ETHUSDT\"},\"intent_errors\":[\"closePosition and reduceOnly cannot be used together\"]},\"filters\":{\"minNotional\":5.0,\"minQty\":0.01,\"stepSize\":0.001,\"tickSize\":0.1},\"last_price\":2000.0,\"market\":\"futures\",\"name\":\"canonical-aliases-and-conflicting-flags\",\"params\":{\"close_position\":\"yes\",\"position_side\":\"long\",\"price\":\"2000\",\"quantity\":\"1\",\"reduce_only\":\"on\",\"side\":\"BUY\",\"symbol\":\"ETHUSDT\",\"type\":\"LIMIT\"}},{\"expected\":{\"filter_errors\":[],\"intent\":{\"close_position\":true,\"market\":\"spot\",\"order_type\":\"MARKET\",\"position_side\":\"LONG\",\"price\":null,\"quantity\":null,\"reduce_only\":true,\"side\":\"BUY\",\"symbol\":\"ETHUSDT\"},\"intent_errors\":[\"positionSide is only supported for futures\",\"closePosition orders are only supported for futures\",\"reduceOnly orders are only supported for futures\",\"closePosition and reduceOnly cannot be used together\",\"order quantity must be > 0\"]},\"filters\":{\"minNotional\":5.0,\"minQty\":0.01,\"stepSize\":0.001,\"tickSize\":0.1},\"last_price\":2000.0,\"market\":\"spot\",\"name\":\"spot-rejects-futures-flags\",\"params\":{\"closePosition\":\"true\",\"positionSide\":\"LONG\",\"reduceOnly\":\"true\",\"side\":\"BUY\",\"symbol\":\"ETHUSDT\",\"type\":\"MARKET\"}}],\"schema_version\":1}";
     pub const PYTHON_LIVE_SAFETY_REFERENCE_JSON: &str = "{\"cases\":[{\"expected_errors\":[],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"\",\"api_secret\":\"\",\"config\":{},\"leverage\":0,\"margin_mode\":\"invalid\",\"mode\":\"Demo/Testnet\",\"position_pct\":0.0},\"name\":\"demo-mode-bypasses-live-gates\"},{\"expected_errors\":[\"set live_trading_enabled=true and live_trading_acknowledgement='I_UNDERSTAND_LIVE_TRADING_RISK' or set BOT_ENABLE_LIVE_TRADING=true and BOT_LIVE_TRADING_ACKNOWLEDGEMENT='I_UNDERSTAND_LIVE_TRADING_RISK'\"],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"live-api-key\",\"api_secret\":\"live-api-secret\",\"config\":{},\"leverage\":1,\"margin_mode\":\"\",\"mode\":\"Live\",\"position_pct\":2.0},\"name\":\"live-requires-confirmation\"},{\"expected_errors\":[],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"live-api-key\",\"api_secret\":\"live-api-secret\",\"config\":{\"live_trading_acknowledgement\":\"I_UNDERSTAND_LIVE_TRADING_RISK\",\"live_trading_enabled\":true,\"live_trading_max_leverage\":5,\"live_trading_max_position_pct\":3.0,\"live_trading_max_session_orders\":7},\"leverage\":3,\"margin_mode\":\"Isolated\",\"mode\":\"Live\",\"position_pct\":2.0},\"name\":\"live-safe-futures\"},{\"expected_errors\":[\"position_pct 4% exceeds live cap 3%\"],\"input\":{\"account_type\":\"Spot\",\"api_key\":\"live-api-key\",\"api_secret\":\"live-api-secret\",\"config\":{\"live_trading_acknowledgement\":\"I_UNDERSTAND_LIVE_TRADING_RISK\",\"live_trading_enabled\":true,\"live_trading_max_leverage\":5,\"live_trading_max_position_pct\":3.0,\"live_trading_max_session_orders\":7},\"leverage\":0,\"margin_mode\":\"invalid-is-ignored-for-spot\",\"mode\":\"Live\",\"position_pct\":4.0},\"name\":\"live-spot-position-cap\"},{\"expected_errors\":[\"live_trading_max_leverage must be between 1 and 125\",\"live_trading_max_position_pct must be > 0 and <= 100\",\"live_trading_max_session_orders must be between 1 and 100000\",\"position_pct must be > 0 and <= 100 for live trading\",\"leverage 130 exceeds live cap 126\",\"margin_mode must be Isolated or Cross for live futures trading\"],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"live-api-key\",\"api_secret\":\"live-api-secret\",\"config\":{\"live_trading_acknowledgement\":\"I_UNDERSTAND_LIVE_TRADING_RISK\",\"live_trading_enabled\":true,\"live_trading_max_leverage\":126,\"live_trading_max_position_pct\":0.0,\"live_trading_max_session_orders\":0},\"leverage\":130,\"margin_mode\":\"Portfolio\",\"mode\":\"Production\",\"position_pct\":0.0},\"name\":\"live-invalid-caps-and-futures-controls\"},{\"expected_errors\":[\"provide non-placeholder Binance API credentials\"],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"your_api_key\",\"api_secret\":\"testnet\",\"config\":{\"live_trading_acknowledgement\":\"I_UNDERSTAND_LIVE_TRADING_RISK\",\"live_trading_enabled\":true,\"live_trading_max_leverage\":5,\"live_trading_max_position_pct\":3.0,\"live_trading_max_session_orders\":7},\"leverage\":1,\"margin_mode\":\"Cross\",\"mode\":\"Live\",\"position_pct\":2.0},\"name\":\"live-rejects-placeholder-credentials\"}],\"schema_version\":1}";
     pub const PYTHON_CONNECTOR_HEALTH_REFERENCE_JSON: &str = "{\"cases\":[{\"expected_errors\":[\"connector health snapshot missing state\"],\"name\":\"missing-state\",\"snapshot\":{\"health\":\"ok\",\"state\":\"\"}},{\"expected_errors\":[\"connector health snapshot missing health\"],\"name\":\"missing-health\",\"snapshot\":{\"health\":\"\",\"state\":\"ready\"}},{\"expected_errors\":[\"connector health is degraded / paused\"],\"name\":\"not-ready\",\"snapshot\":{\"health\":\"degraded\",\"state\":\"paused\"}},{\"expected_errors\":[\"connector health is degraded\"],\"name\":\"degraded-health\",\"snapshot\":{\"health\":\"degraded\",\"state\":\"ready\"}},{\"expected_errors\":[],\"name\":\"ready-ok\",\"snapshot\":{\"health\":\"ok\",\"state\":\"ready\"}},{\"expected_errors\":[],\"name\":\"ready-unknown\",\"snapshot\":{\"health\":\"unknown\",\"state\":\"ready\"}}],\"schema_version\":1}";
     pub const PYTHON_LLM_OUTPUT_POLICY_REFERENCE_JSON: &str = "{\"cases\":[{\"expected_violations\":[\"order_execution_claim\",\"direct_order_action\"],\"name\":\"structured-order-and-status\",\"text\":\"{\\\"action\\\":\\\"place_order\\\",\\\"status\\\":\\\"executed\\\"}\"},{\"expected_violations\":[\"order_execution_claim\",\"risk_override\"],\"name\":\"natural-order-and-risk\",\"text\":\"I executed the trade and disabled stop loss.\"},{\"expected_violations\":[\"direct_order_action\"],\"name\":\"fenced-direct-order\",\"text\":\"```json\\n{\\\"tool\\\":\\\"submit_order\\\",\\\"symbol\\\":\\\"BTCUSDT\\\"}\\n```\"},{\"expected_violations\":[\"direct_order_action\",\"risk_override\"],\"name\":\"structured-command-and-risk\",\"text\":\"prefix {\\\"command\\\":\\\"create_order\\\",\\\"disable_stop_loss\\\":true} suffix\"},{\"expected_violations\":[\"order_execution_claim\",\"direct_order_action\",\"risk_override\"],\"name\":\"all-policy-categories\",\"text\":\"Order executed; place_order; disable stop loss.\"},{\"expected_violations\":[],\"name\":\"structured-advice\",\"text\":\"{\\\"action\\\":\\\"advise\\\",\\\"recommendation\\\":\\\"wait\\\",\\\"risk\\\":\\\"keep stop loss enabled\\\"}\"}],\"schema_version\":1}";
     pub const PYTHON_LLM_CHAT_REQUEST_REFERENCE_JSON: &str = "{\"cases\":[{\"config\":{\"llm_api_key\":\"parity-test-key\",\"llm_model\":\"gpt-5.5\",\"llm_provider\":\"openai\",\"llm_reasoning_effort\":\"high\"},\"context\":{\"config\":{\"account_type\":\"futures\",\"intervals\":[\"1m\"],\"llm\":{\"llm_api_key\":null,\"token\":\"secret-token\"},\"mode\":\"Live\",\"selected_exchange\":\"Binance\",\"symbols\":[\"BTCUSDT\",\"ETHUSDT\"]},\"logs\":[{\"message\":\"api_key=secret\"}],\"portfolio\":{\"active_pnl\":12.5,\"closed_pnl\":null,\"open_position_records\":{\"BTCUSDT:L\":{\"secret\":\"raw\"}}},\"runtime\":{\"control_plane\":\"python\",\"phase\":\"running\"}},\"expected\":{\"execution_policy\":{\"advisory_only\":true,\"can_execute_orders\":false,\"owner\":\"strategy_and_risk_runtime\"},\"headers\":{\"Authorization\":\"Bearer parity-test-key\",\"Content-Type\":\"application/json\"},\"json\":{\"messages\":[{\"content\":\"Execution boundary: this LLM is advisory only. It must not place orders, claim that an order was executed, or override deterministic strategy, risk, take-profit, or stop-loss logic.\",\"role\":\"system\"},{\"content\":\"Be concise\",\"role\":\"system\"},{\"content\":\"Trading context JSON: {\\\"config_summary\\\":{\\\"account_type\\\":\\\"futures\\\",\\\"interval_count\\\":1,\\\"llm\\\":{\\\"llm_api_key\\\":\\\"\\\",\\\"token\\\":\\\"<redacted>\\\"},\\\"mode\\\":\\\"Live\\\",\\\"raw_config_redacted\\\":true,\\\"selected_exchange\\\":\\\"Binance\\\",\\\"symbol_count\\\":2},\\\"execution\\\":{},\\\"logs\\\":{\\\"count\\\":1,\\\"redacted\\\":true},\\\"portfolio_summary\\\":{\\\"active_pnl\\\":12.5,\\\"closed_pnl\\\":null,\\\"closed_position_count\\\":0,\\\"open_position_count\\\":1,\\\"position_records_redacted\\\":true},\\\"privacy_notice\\\":\\\"Cloud LLM context minimized; credentials, raw config, logs, and position records are redacted.\\\",\\\"runtime\\\":{\\\"control_plane\\\":\\\"python\\\",\\\"phase\\\":\\\"running\\\"},\\\"status\\\":{}}\",\"role\":\"system\"},{\"content\":\"Summarize risk\",\"role\":\"user\"}],\"model\":\"gpt-5.5\",\"reasoning_effort\":\"high\"},\"mode\":\"cloud\",\"protocol\":\"openai-chat-completions\",\"provider\":\"openai\",\"url\":\"https://api.openai.com/v1/chat/completions\"},\"name\":\"openai-cloud-context-and-reasoning\",\"prompt\":\"Summarize risk\",\"system_prompt\":\"Be concise\"},{\"config\":{\"llm_api_key\":\"parity-test-key\",\"llm_model\":\"qwen3.7-max\",\"llm_provider\":\"qwen\",\"llm_reasoning_effort\":\"enabled\"},\"context\":null,\"expected\":{\"execution_policy\":{\"advisory_only\":true,\"can_execute_orders\":false,\"owner\":\"strategy_and_risk_runtime\"},\"headers\":{\"Authorization\":\"Bearer parity-test-key\",\"Content-Type\":\"application/json\"},\"json\":{\"enable_thinking\":true,\"messages\":[{\"content\":\"Execution boundary: this LLM is advisory only. It must not place orders, claim that an order was executed, or override deterministic strategy, risk, take-profit, or stop-loss logic.\",\"role\":\"system\"},{\"content\":\"Explain the signal\",\"role\":\"user\"}],\"model\":\"qwen3.7-max\"},\"mode\":\"cloud\",\"protocol\":\"openai-chat-completions\",\"provider\":\"qwen\",\"url\":\"https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions\"},\"name\":\"qwen-thinking-option\",\"prompt\":\"Explain the signal\",\"system_prompt\":\"\"},{\"config\":{\"llm_api_key\":\"parity-test-key\",\"llm_model\":\"claude-sonnet-4-5-20250929\",\"llm_provider\":\"anthropic\",\"llm_reasoning_effort\":\"high\"},\"context\":null,\"expected\":{\"execution_policy\":{\"advisory_only\":true,\"can_execute_orders\":false,\"owner\":\"strategy_and_risk_runtime\"},\"headers\":{\"Content-Type\":\"application/json\",\"anthropic-version\":\"2023-06-01\",\"x-api-key\":\"parity-test-key\"},\"json\":{\"max_tokens\":9216,\"messages\":[{\"content\":\"Summarize the trade plan\",\"role\":\"user\"}],\"model\":\"claude-sonnet-4-5-20250929\",\"system\":\"Execution boundary: this LLM is advisory only. It must not place orders, claim that an order was executed, or override deterministic strategy, risk, take-profit, or stop-loss logic.\\n\\nKeep the answer advisory\",\"thinking\":{\"budget_tokens\":8192,\"type\":\"enabled\"}},\"mode\":\"cloud\",\"protocol\":\"anthropic-messages\",\"provider\":\"anthropic\",\"url\":\"https://api.anthropic.com/v1/messages\"},\"name\":\"anthropic-high-thinking\",\"prompt\":\"Summarize the trade plan\",\"system_prompt\":\"Keep the answer advisory\"},{\"config\":{\"llm_api_key\":\"parity-test-key\",\"llm_model\":\"gemini-3-pro-preview\",\"llm_provider\":\"gemini\",\"llm_reasoning_effort\":\"medium\"},\"context\":null,\"expected\":{\"execution_policy\":{\"advisory_only\":true,\"can_execute_orders\":false,\"owner\":\"strategy_and_risk_runtime\"},\"headers\":{\"Content-Type\":\"application/json\"},\"json\":{\"contents\":[{\"parts\":[{\"text\":\"Execution boundary: this LLM is advisory only. It must not place orders, claim that an order was executed, or override deterministic strategy, risk, take-profit, or stop-loss logic.\"},{\"text\":\"Explain the risk\"}]}],\"generationConfig\":{\"thinkingConfig\":{\"thinkingLevel\":\"high\"}}},\"mode\":\"cloud\",\"protocol\":\"gemini-generate-content\",\"provider\":\"gemini\",\"url\":\"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=parity-test-key\"},\"name\":\"gemini-pro-thinking-level\",\"prompt\":\"Explain the risk\",\"system_prompt\":\"\"},{\"config\":{\"llm_allow_public_network\":true,\"llm_base_url\":\"https://llm.example.test/v1\",\"llm_model\":\"RWKV/rwkv-6-world\",\"llm_provider\":\"open-source\",\"llm_reasoning_effort\":\"disabled\"},\"context\":{\"config\":{\"api_key\":\"exchange-secret\",\"symbols\":[\"BTCUSDT\"]},\"custom\":{\"local_detail\":\"must-not-leave-private-runtime\"},\"logs\":[{\"message\":\"Bearer private-secret\"}],\"runtime\":{\"phase\":\"running\"}},\"expected\":{\"execution_policy\":{\"advisory_only\":true,\"can_execute_orders\":false,\"owner\":\"strategy_and_risk_runtime\"},\"headers\":{\"Content-Type\":\"application/json\"},\"json\":{\"messages\":[{\"content\":\"Execution boundary: this LLM is advisory only. It must not place orders, claim that an order was executed, or override deterministic strategy, risk, take-profit, or stop-loss logic.\",\"role\":\"system\"},{\"content\":\"Trading context JSON: {\\\"config_summary\\\":{\\\"account_type\\\":null,\\\"interval_count\\\":0,\\\"llm\\\":{},\\\"mode\\\":null,\\\"raw_config_redacted\\\":true,\\\"selected_exchange\\\":null,\\\"symbol_count\\\":1},\\\"execution\\\":{},\\\"logs\\\":{\\\"count\\\":1,\\\"redacted\\\":true},\\\"portfolio_summary\\\":{\\\"active_pnl\\\":null,\\\"closed_pnl\\\":null,\\\"closed_position_count\\\":0,\\\"open_position_count\\\":0,\\\"position_records_redacted\\\":true},\\\"privacy_notice\\\":\\\"Cloud LLM context minimized; credentials, raw config, logs, and position records are redacted.\\\",\\\"runtime\\\":{\\\"phase\\\":\\\"running\\\"},\\\"status\\\":{}}\",\"role\":\"system\"},{\"content\":\"Explain the risk\",\"role\":\"user\"}],\"model\":\"RWKV/rwkv-6-world\",\"reasoning_effort\":\"disabled\"},\"mode\":\"local\",\"protocol\":\"openai-chat-completions\",\"provider\":\"open-source\",\"url\":\"https://llm.example.test/v1/chat/completions\"},\"name\":\"open-source-public-endpoint-privacy\",\"prompt\":\"Explain the risk\",\"system_prompt\":\"\"},{\"config\":{\"llm_model\":\"Qwen/Qwen3-8B\",\"llm_provider\":\"local\",\"llm_reasoning_effort\":\"extra-high\"},\"context\":{\"custom\":{\"local_detail\":\"kept-on-loopback\"}},\"expected\":{\"execution_policy\":{\"advisory_only\":true,\"can_execute_orders\":false,\"owner\":\"strategy_and_risk_runtime\"},\"headers\":{\"Content-Type\":\"application/json\"},\"json\":{\"messages\":[{\"content\":\"Execution boundary: this LLM is advisory only. It must not place orders, claim that an order was executed, or override deterministic strategy, risk, take-profit, or stop-loss logic.\",\"role\":\"system\"},{\"content\":\"Trading context JSON: {\\\"custom\\\":{\\\"local_detail\\\":\\\"kept-on-loopback\\\"}}\",\"role\":\"system\"},{\"content\":\"Explain the risk\",\"role\":\"user\"}],\"model\":\"Qwen/Qwen3-8B\",\"reasoning_effort\":\"xhigh\"},\"mode\":\"local\",\"protocol\":\"openai-chat-completions\",\"provider\":\"local\",\"url\":\"http://127.0.0.1:11434/v1/chat/completions\"},\"name\":\"local-open-source-endpoint\",\"prompt\":\"Explain the risk\",\"system_prompt\":\"\"}],\"schema_version\":1}";
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "e8680aa352a151bd8def4b7b7e8820b4ca5f16381c80d7dfee96d6142ee075b8";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "6f29cd64645c60d568b17f85ca3c84b19fadb4f9a61ab7b725a103e9b5cebd02";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
@@ -1771,6 +2030,11 @@ pub const PYTHON_CONNECTOR_NORMALIZATION_REFERENCE_CASES: &[PythonConnectorNorma
     ("binance_futures", "usd-m-futures"),
     ("spot", "spot"),
     ("futures", "usd-m-futures"),
+];
+    pub const PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS: &[&str] = &[
+    "demo",
+    "test",
+    "sandbox",
 ];
     pub const PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER: &str = "Python Service API/provider connector";
     pub const PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES: bool = true;

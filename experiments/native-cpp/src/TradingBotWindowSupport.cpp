@@ -416,11 +416,12 @@ QString normalizeConnectorBackend(const QString &value) {
 
 bool isTestnetModeLabel(const QString &modeText) {
     const QString modeNorm = modeText.trimmed().toLower();
-    return modeNorm == QStringLiteral("demo")
-        || modeNorm.contains("testnet")
-        || modeNorm == QStringLiteral("test")
-        || modeNorm.contains("sandbox")
-        || modeNorm.contains("binance demo");
+    for (const auto marker : PythonParityContract::kPythonNativeRuntimeTestnetModeMarkers) {
+        if (modeNorm.contains(parityString(marker))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool isPaperTradingModeLabel(const QString &modeText) {
@@ -525,6 +526,33 @@ QString nativeRuntimeIndicatorSourceMarketFamily(const QString &indicatorSourceT
         }
     }
     return {};
+}
+
+bool nativeRuntimeRoutingIsOwned(
+    const QString &exchangeKey,
+    const QString &connectorText,
+    const QString &indicatorSourceText) {
+    // Match Python's routing gate exactly: an absent value uses the default,
+    // while a present whitespace-only value remains invalid after trimming.
+    QString selectedExchange = exchangeKey;
+    if (selectedExchange.isEmpty()) {
+        selectedExchange = parityString(PythonParityContract::kPythonNativeRuntimeExchanges.front());
+    } else {
+        selectedExchange = selectedExchange.trimmed();
+    }
+    bool ownsExchange = false;
+    for (const std::string_view directExchange : PythonParityContract::kPythonNativeRuntimeExchanges) {
+        if (selectedExchange.compare(parityString(directExchange), Qt::CaseInsensitive) == 0) {
+            ownsExchange = true;
+            break;
+        }
+    }
+    if (!ownsExchange
+        || !nativeRuntimeOwnsBinanceFuturesConnector(connectorText)) {
+        return false;
+    }
+    return indicatorSourceText.trimmed().isEmpty()
+        || !nativeRuntimeIndicatorSourceMarketFamily(indicatorSourceText).isEmpty();
 }
 
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures) {
@@ -1563,6 +1591,9 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
 
 bool nativeRuntimeOwnsBinanceFuturesConnector(const QString &connectorText) {
     const QString selected = connectorText.trimmed();
+    if (selected.isEmpty()) {
+        return true;
+    }
     const QString key = normalizeConnectorBackendInternal(selected);
     bool nativeBinanceKey = false;
     for (const std::string_view directBackend : PythonParityContract::kPythonNativeRuntimeConnectorBackends) {

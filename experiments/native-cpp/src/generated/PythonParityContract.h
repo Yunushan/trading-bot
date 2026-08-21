@@ -10,7 +10,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "e8680aa352a151bd8def4b7b7e8820b4ca5f16381c80d7dfee96d6142ee075b8";
+inline constexpr std::string_view kPythonSourceContractHash = "6f29cd64645c60d568b17f85ca3c84b19fadb4f9a61ab7b725a103e9b5cebd02";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -312,6 +312,75 @@ inline constexpr std::array<PythonConnectorNormalizationReferenceCase, 16> kPyth
     PythonConnectorNormalizationReferenceCase{"url-value-falls-back", "https://connector.example.test/api", "binance-connector"},
     PythonConnectorNormalizationReferenceCase{"unknown-falls-back", "unknown backend", "binance-sdk-derivatives-trading-usds-futures"},
 };
+
+struct PythonNativeRuntimeConnectorOwnershipReferenceCase {
+    std::string_view name;
+    std::string_view input;
+    bool expectedOwned;
+};
+
+inline constexpr std::array<PythonNativeRuntimeConnectorOwnershipReferenceCase, 14> kPythonNativeRuntimeConnectorOwnershipReferenceCases = {
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"empty-default", "", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"usds-key", "binance-sdk-derivatives-trading-usds-futures", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"usds-underscore-alias", "binance_sdk_derivatives_trading_usds_futures", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"usds-label", "Binance SDK Derivatives Trading USD\u24c8 Futures (Official Recommended)", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"usds-readable-alias", "Binance SDK USD-M Futures", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"coin-key", "binance-sdk-derivatives-trading-coin-futures", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"spot-key", "binance-sdk-spot", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"binance-connector-key", "binance-connector", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"ccxt-label", "CCXT (Unified)", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"python-binance-label", "python-binance (Community)", true},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"oanda-provider-option", "OANDA REST-v20", false},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"custom-provider", "custom", false},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"unknown-provider", "unknown backend", false},
+    PythonNativeRuntimeConnectorOwnershipReferenceCase{"connector-url-alias", "https://connector.example.test/api", true},
+};
+
+struct PythonNativeRuntimeRoutingReferenceCase {
+    std::string_view name;
+    std::string_view selectedExchange;
+    std::string_view connectorBackend;
+    std::string_view indicatorSource;
+    bool expectedOwned;
+};
+
+inline constexpr std::array<PythonNativeRuntimeRoutingReferenceCase, 15> kPythonNativeRuntimeRoutingReferenceCases = {
+    PythonNativeRuntimeRoutingReferenceCase{"binance-default", "Binance", "", "", true},
+    PythonNativeRuntimeRoutingReferenceCase{"binance-usds-canonical", "Binance", "binance-sdk-derivatives-trading-usds-futures", "binance_futures", true},
+    PythonNativeRuntimeRoutingReferenceCase{"binance-usds-label", "Binance", "Binance SDK Derivatives Trading USD-M Futures (Official Recommended)", "Binance futures", true},
+    PythonNativeRuntimeRoutingReferenceCase{"binance-coin-futures", "Binance", "binance-sdk-derivatives-trading-coin-futures", "", true},
+    PythonNativeRuntimeRoutingReferenceCase{"binance-spot", "Binance", "binance-sdk-spot", "Binance spot", true},
+    PythonNativeRuntimeRoutingReferenceCase{"non-native-exchange", "Bybit", "binance-sdk-spot", "Binance spot", false},
+    PythonNativeRuntimeRoutingReferenceCase{"non-native-connector", "Binance", "OANDA REST-v20", "Binance spot", false},
+    PythonNativeRuntimeRoutingReferenceCase{"unknown-connector", "Binance", "unknown backend", "Binance spot", false},
+    PythonNativeRuntimeRoutingReferenceCase{"non-native-indicator", "Binance", "binance-sdk-spot", "TradingView", false},
+    PythonNativeRuntimeRoutingReferenceCase{"indicator-key-alias", "Binance", "binance-sdk-spot", "spot", true},
+    PythonNativeRuntimeRoutingReferenceCase{"indicator-punctuation-alias", "Binance", "binance-sdk-spot", "Binance/futures", true},
+    PythonNativeRuntimeRoutingReferenceCase{"empty-indicator", "Binance", "binance-sdk-spot", "", true},
+    PythonNativeRuntimeRoutingReferenceCase{"empty-exchange-default", "", "binance-sdk-spot", "Binance spot", true},
+    PythonNativeRuntimeRoutingReferenceCase{"whitespace-exchange-rejected", "   ", "binance-sdk-spot", "Binance spot", false},
+    PythonNativeRuntimeRoutingReferenceCase{"exchange-display-badge-rejected", "Binance (official)", "binance-sdk-spot", "Binance spot", false},
+};
+
+struct PythonNativeRuntimeModeReferenceCase {
+    std::string_view name;
+    std::string_view input;
+    bool expectedTestnet;
+};
+
+inline constexpr std::array<PythonNativeRuntimeModeReferenceCase, 11> kPythonNativeRuntimeModeReferenceCases = {
+    PythonNativeRuntimeModeReferenceCase{"empty-live", "", false},
+    PythonNativeRuntimeModeReferenceCase{"live", "Live", false},
+    PythonNativeRuntimeModeReferenceCase{"production", "Production", false},
+    PythonNativeRuntimeModeReferenceCase{"demo", "Demo", true},
+    PythonNativeRuntimeModeReferenceCase{"demo-testnet", "Demo/Testnet", true},
+    PythonNativeRuntimeModeReferenceCase{"testnet", "Testnet", true},
+    PythonNativeRuntimeModeReferenceCase{"sandbox", "Sandbox", true},
+    PythonNativeRuntimeModeReferenceCase{"embedded-test-marker", "contest", true},
+    PythonNativeRuntimeModeReferenceCase{"embedded-demo-marker", "my-demo-mode", true},
+    PythonNativeRuntimeModeReferenceCase{"paper-local", "Paper Local", false},
+    PythonNativeRuntimeModeReferenceCase{"trimmed-testnet", "  Testnet  ", true},
+};
 inline constexpr std::string_view kPythonOrderSizingReferenceJson = "{\"cases\":[{\"expected_error\":null,\"expected_quantity\":0.05,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"spot\",\"name\":\"spot_min_notional_bump\",\"price\":100.0,\"quantity\":0.023},{\"expected_error\":null,\"expected_quantity\":0.05,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"futures\",\"name\":\"futures_min_notional_bump\",\"price\":100.0,\"quantity\":0.023},{\"expected_error\":\"qty<=0\",\"expected_quantity\":0.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"market\":\"spot\",\"name\":\"spot_rejects_zero_quantity\",\"price\":100.0,\"quantity\":0.0},{\"expected_error\":\"filters_error: stepSize must be a finite non-negative number\",\"expected_quantity\":0.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":-0.01},\"market\":\"futures\",\"name\":\"futures_invalid_step_filter\",\"price\":100.0,\"quantity\":1.0},{\"balance\":100.0,\"expected_percent\":1.0,\"filters\":{\"minNotional\":5.0,\"minQty\":0.02,\"stepSize\":0.01},\"leverage\":5.0,\"market\":\"futures\",\"name\":\"futures_required_percent\",\"price\":100.0}],\"rounding_cases\":[{\"decimals\":2,\"expected_ceil\":1.24,\"expected_floor\":1.23,\"name\":\"positive_decimal\",\"value\":1.231},{\"decimals\":2,\"expected_ceil\":-1.24,\"expected_floor\":-1.23,\"name\":\"negative_decimal\",\"value\":-1.231},{\"decimals\":0,\"expected_ceil\":-2.0,\"expected_floor\":-1.0,\"name\":\"negative_integer_precision\",\"value\":-1.9}],\"schema_version\":1}";
 inline constexpr std::string_view kPythonOrderIntentReferenceJson = "{\"cases\":[{\"expected\":{\"filter_errors\":[],\"intent\":{\"close_position\":true,\"market\":\"futures\",\"order_type\":\"MARKET\",\"position_side\":\"\",\"price\":null,\"quantity\":null,\"reduce_only\":false,\"side\":\"SELL\",\"symbol\":\"BTCUSDT\"},\"intent_errors\":[]},\"filters\":{\"minNotional\":5.0,\"minQty\":0.01,\"stepSize\":0.001,\"tickSize\":0.1},\"last_price\":100.0,\"market\":\"futures\",\"name\":\"canonical-close-position\",\"params\":{\"closePosition\":\"true\",\"side\":\"SELL\",\"symbol\":\"BTCUSDT\",\"type\":\"MARKET\"}},{\"expected\":{\"filter_errors\":[],\"intent\":{\"close_position\":false,\"market\":\"futures\",\"order_type\":\"MARKET\",\"position_side\":\"\",\"price\":null,\"quantity\":0.001,\"reduce_only\":false,\"side\":\"SELL\",\"symbol\":\"BTCUSDT\"},\"intent_errors\":[]},\"filters\":{\"minNotional\":5.0,\"minQty\":0.01,\"stepSize\":0.001,\"tickSize\":0.1},\"last_price\":100.0,\"market\":\"futures\",\"name\":\"python-intent-y-is-false-filter-y-is-true\",\"params\":{\"closePosition\":\"y\",\"quantity\":\"0.001\",\"side\":\"SELL\",\"symbol\":\"BTCUSDT\",\"type\":\"MARKET\"}},{\"expected\":{\"filter_errors\":[],\"intent\":{\"close_position\":true,\"market\":\"futures\",\"order_type\":\"LIMIT\",\"position_side\":\"LONG\",\"price\":2000.0,\"quantity\":1.0,\"reduce_only\":true,\"side\":\"BUY\",\"symbol\":\"ETHUSDT\"},\"intent_errors\":[\"closePosition and reduceOnly cannot be used together\"]},\"filters\":{\"minNotional\":5.0,\"minQty\":0.01,\"stepSize\":0.001,\"tickSize\":0.1},\"last_price\":2000.0,\"market\":\"futures\",\"name\":\"canonical-aliases-and-conflicting-flags\",\"params\":{\"close_position\":\"yes\",\"position_side\":\"long\",\"price\":\"2000\",\"quantity\":\"1\",\"reduce_only\":\"on\",\"side\":\"BUY\",\"symbol\":\"ETHUSDT\",\"type\":\"LIMIT\"}},{\"expected\":{\"filter_errors\":[],\"intent\":{\"close_position\":true,\"market\":\"spot\",\"order_type\":\"MARKET\",\"position_side\":\"LONG\",\"price\":null,\"quantity\":null,\"reduce_only\":true,\"side\":\"BUY\",\"symbol\":\"ETHUSDT\"},\"intent_errors\":[\"positionSide is only supported for futures\",\"closePosition orders are only supported for futures\",\"reduceOnly orders are only supported for futures\",\"closePosition and reduceOnly cannot be used together\",\"order quantity must be > 0\"]},\"filters\":{\"minNotional\":5.0,\"minQty\":0.01,\"stepSize\":0.001,\"tickSize\":0.1},\"last_price\":2000.0,\"market\":\"spot\",\"name\":\"spot-rejects-futures-flags\",\"params\":{\"closePosition\":\"true\",\"positionSide\":\"LONG\",\"reduceOnly\":\"true\",\"side\":\"BUY\",\"symbol\":\"ETHUSDT\",\"type\":\"MARKET\"}}],\"schema_version\":1}";
 inline constexpr std::string_view kPythonLiveSafetyReferenceJson = "{\"cases\":[{\"expected_errors\":[],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"\",\"api_secret\":\"\",\"config\":{},\"leverage\":0,\"margin_mode\":\"invalid\",\"mode\":\"Demo/Testnet\",\"position_pct\":0.0},\"name\":\"demo-mode-bypasses-live-gates\"},{\"expected_errors\":[\"set live_trading_enabled=true and live_trading_acknowledgement='I_UNDERSTAND_LIVE_TRADING_RISK' or set BOT_ENABLE_LIVE_TRADING=true and BOT_LIVE_TRADING_ACKNOWLEDGEMENT='I_UNDERSTAND_LIVE_TRADING_RISK'\"],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"live-api-key\",\"api_secret\":\"live-api-secret\",\"config\":{},\"leverage\":1,\"margin_mode\":\"\",\"mode\":\"Live\",\"position_pct\":2.0},\"name\":\"live-requires-confirmation\"},{\"expected_errors\":[],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"live-api-key\",\"api_secret\":\"live-api-secret\",\"config\":{\"live_trading_acknowledgement\":\"I_UNDERSTAND_LIVE_TRADING_RISK\",\"live_trading_enabled\":true,\"live_trading_max_leverage\":5,\"live_trading_max_position_pct\":3.0,\"live_trading_max_session_orders\":7},\"leverage\":3,\"margin_mode\":\"Isolated\",\"mode\":\"Live\",\"position_pct\":2.0},\"name\":\"live-safe-futures\"},{\"expected_errors\":[\"position_pct 4% exceeds live cap 3%\"],\"input\":{\"account_type\":\"Spot\",\"api_key\":\"live-api-key\",\"api_secret\":\"live-api-secret\",\"config\":{\"live_trading_acknowledgement\":\"I_UNDERSTAND_LIVE_TRADING_RISK\",\"live_trading_enabled\":true,\"live_trading_max_leverage\":5,\"live_trading_max_position_pct\":3.0,\"live_trading_max_session_orders\":7},\"leverage\":0,\"margin_mode\":\"invalid-is-ignored-for-spot\",\"mode\":\"Live\",\"position_pct\":4.0},\"name\":\"live-spot-position-cap\"},{\"expected_errors\":[\"live_trading_max_leverage must be between 1 and 125\",\"live_trading_max_position_pct must be > 0 and <= 100\",\"live_trading_max_session_orders must be between 1 and 100000\",\"position_pct must be > 0 and <= 100 for live trading\",\"leverage 130 exceeds live cap 126\",\"margin_mode must be Isolated or Cross for live futures trading\"],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"live-api-key\",\"api_secret\":\"live-api-secret\",\"config\":{\"live_trading_acknowledgement\":\"I_UNDERSTAND_LIVE_TRADING_RISK\",\"live_trading_enabled\":true,\"live_trading_max_leverage\":126,\"live_trading_max_position_pct\":0.0,\"live_trading_max_session_orders\":0},\"leverage\":130,\"margin_mode\":\"Portfolio\",\"mode\":\"Production\",\"position_pct\":0.0},\"name\":\"live-invalid-caps-and-futures-controls\"},{\"expected_errors\":[\"provide non-placeholder Binance API credentials\"],\"input\":{\"account_type\":\"Futures\",\"api_key\":\"your_api_key\",\"api_secret\":\"testnet\",\"config\":{\"live_trading_acknowledgement\":\"I_UNDERSTAND_LIVE_TRADING_RISK\",\"live_trading_enabled\":true,\"live_trading_max_leverage\":5,\"live_trading_max_position_pct\":3.0,\"live_trading_max_session_orders\":7},\"leverage\":1,\"margin_mode\":\"Cross\",\"mode\":\"Live\",\"position_pct\":2.0},\"name\":\"live-rejects-placeholder-credentials\"}],\"schema_version\":1}";
@@ -366,6 +435,11 @@ inline constexpr std::array<PythonStringPair, 9> kPythonNativeRuntimeConnectorMa
     PythonStringPair{"ccxt", "spot"},
     PythonStringPair{"python-binance", "usd-m-futures"},
     PythonStringPair{"python-binance", "spot"},
+};
+inline constexpr std::array<std::string_view, 3> kPythonNativeRuntimeTestnetModeMarkers = {
+    "demo",
+    "test",
+    "sandbox",
 };
 inline constexpr std::string_view kPythonNativeRuntimeDelegatedOwner = "Python Service API/provider connector";
 inline constexpr bool kPythonOrderGuardValidateIntentAllModes = true;

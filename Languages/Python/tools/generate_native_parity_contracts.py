@@ -2038,6 +2038,88 @@ def _rust_connector_normalization_reference_cases(cases: list[dict[str, str]]) -
     return "\n".join(lines)
 
 
+def _rust_native_runtime_connector_ownership_reference_cases(
+    cases: list[dict[str, object]],
+) -> str:
+    lines = [
+        "pub struct PythonNativeRuntimeConnectorOwnershipReferenceCase {",
+        "    pub name: &'static str,",
+        "    pub input: &'static str,",
+        "    pub expected_owned: bool,",
+        "}",
+        "",
+        "pub const PYTHON_NATIVE_RUNTIME_CONNECTOR_OWNERSHIP_REFERENCE_CASES: &[PythonNativeRuntimeConnectorOwnershipReferenceCase] = &[",
+    ]
+    for case in cases:
+        lines.extend(
+            [
+                "    PythonNativeRuntimeConnectorOwnershipReferenceCase {",
+                f"        name: {_rust_string(case['name'])},",
+                f"        input: {_rust_string(case['input'])},",
+                f"        expected_owned: {_rust_bool(case['expected_owned'])},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _rust_native_runtime_routing_reference_cases(
+    cases: list[dict[str, object]],
+) -> str:
+    lines = [
+        "pub struct PythonNativeRuntimeRoutingReferenceCase {",
+        "    pub name: &'static str,",
+        "    pub selected_exchange: &'static str,",
+        "    pub connector_backend: &'static str,",
+        "    pub indicator_source: &'static str,",
+        "    pub expected_owned: bool,",
+        "}",
+        "",
+        "pub const PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES: &[PythonNativeRuntimeRoutingReferenceCase] = &[",
+    ]
+    for case in cases:
+        lines.extend(
+            [
+                "    PythonNativeRuntimeRoutingReferenceCase {",
+                f"        name: {_rust_string(case['name'])},",
+                f"        selected_exchange: {_rust_string(case['selected_exchange'])},",
+                f"        connector_backend: {_rust_string(case['connector_backend'])},",
+                f"        indicator_source: {_rust_string(case['indicator_source'])},",
+                f"        expected_owned: {_rust_bool(case['expected_owned'])},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _rust_native_runtime_mode_reference_cases(
+    cases: list[dict[str, object]],
+) -> str:
+    lines = [
+        "pub struct PythonNativeRuntimeModeReferenceCase {",
+        "    pub name: &'static str,",
+        "    pub input: &'static str,",
+        "    pub expected_testnet: bool,",
+        "}",
+        "",
+        "pub const PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES: &[PythonNativeRuntimeModeReferenceCase] = &[",
+    ]
+    for case in cases:
+        lines.extend(
+            [
+                "    PythonNativeRuntimeModeReferenceCase {",
+                f"        name: {_rust_string(case['name'])},",
+                f"        input: {_rust_string(case['input'])},",
+                f"        expected_testnet: {_rust_bool(case['expected_testnet'])},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
 def _rust_connector_options(connectors: list[dict[str, object]]) -> str:
     lines = [
         "pub struct PythonConnectorOption {",
@@ -2640,6 +2722,91 @@ def _cpp_connector_normalization_reference_cases(cases: list[dict[str, str]]) ->
     return "\n".join(lines)
 
 
+def _cpp_native_runtime_connector_ownership_reference_cases(
+    cases: list[dict[str, object]],
+) -> str:
+    lines = [
+        "struct PythonNativeRuntimeConnectorOwnershipReferenceCase {",
+        "    std::string_view name;",
+        "    std::string_view input;",
+        "    bool expectedOwned;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonNativeRuntimeConnectorOwnershipReferenceCase, "
+            f"{len(cases)}> kPythonNativeRuntimeConnectorOwnershipReferenceCases = {{"
+        ),
+    ]
+    for case in cases:
+        lines.append(
+            "    PythonNativeRuntimeConnectorOwnershipReferenceCase{"
+            f"{_cpp_string(case['name'])}, "
+            f"{_cpp_string(case['input'])}, "
+            f"{str(bool(case['expected_owned'])).lower()}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _cpp_native_runtime_routing_reference_cases(
+    cases: list[dict[str, object]],
+) -> str:
+    lines = [
+        "struct PythonNativeRuntimeRoutingReferenceCase {",
+        "    std::string_view name;",
+        "    std::string_view selectedExchange;",
+        "    std::string_view connectorBackend;",
+        "    std::string_view indicatorSource;",
+        "    bool expectedOwned;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonNativeRuntimeRoutingReferenceCase, "
+            f"{len(cases)}> kPythonNativeRuntimeRoutingReferenceCases = {{"
+        ),
+    ]
+    for case in cases:
+        lines.append(
+            "    PythonNativeRuntimeRoutingReferenceCase{"
+            f"{_cpp_string(case['name'])}, "
+            f"{_cpp_string(case['selected_exchange'])}, "
+            f"{_cpp_string(case['connector_backend'])}, "
+            f"{_cpp_string(case['indicator_source'])}, "
+            f"{str(bool(case['expected_owned'])).lower()}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _cpp_native_runtime_mode_reference_cases(
+    cases: list[dict[str, object]],
+) -> str:
+    lines = [
+        "struct PythonNativeRuntimeModeReferenceCase {",
+        "    std::string_view name;",
+        "    std::string_view input;",
+        "    bool expectedTestnet;",
+        "};",
+        "",
+        (
+            "inline constexpr std::array<PythonNativeRuntimeModeReferenceCase, "
+            f"{len(cases)}> kPythonNativeRuntimeModeReferenceCases = {{"
+        ),
+    ]
+    for case in cases:
+        lines.append(
+            "    PythonNativeRuntimeModeReferenceCase{"
+            f"{_cpp_string(case['name'])}, "
+            f"{_cpp_string(case['input'])}, "
+            f"{str(bool(case['expected_testnet'])).lower()}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
 def _cpp_connector_options(connectors: list[dict[str, object]]) -> str:
     lines = [
         "struct PythonConnectorOption {",
@@ -2953,6 +3120,10 @@ def render_rust_module() -> str:
     llm_output_policy_reference = dict(summary["llm_output_policy_reference"])
     llm_chat_request_reference = dict(summary["llm_chat_request_reference"])
     connector_normalization_cases = _connector_normalization_reference_cases()
+    connector_ownership_cases = list(summary["native_runtime_connector_ownership_reference"])
+    routing_cases = list(summary["native_runtime_routing_reference"])
+    mode_policy = dict(summary["native_runtime_mode_policy"])
+    mode_reference_cases = list(summary["native_runtime_mode_reference"])
     option_catalog_json = _python_option_catalog_json()
     parts = [
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
@@ -3011,6 +3182,12 @@ def render_rust_module() -> str:
         ),
         "",
         _rust_connector_normalization_reference_cases(connector_normalization_cases),
+        "",
+        _rust_native_runtime_connector_ownership_reference_cases(connector_ownership_cases),
+        "",
+        _rust_native_runtime_routing_reference_cases(routing_cases),
+        "",
+        _rust_native_runtime_mode_reference_cases(mode_reference_cases),
         (
             "pub const PYTHON_ORDER_SIZING_REFERENCE_JSON: &str = "
             f"{_rust_string(_contract_json(dict(summary['order_sizing_reference'])))};"
@@ -3095,6 +3272,10 @@ def render_rust_module() -> str:
         _rust_string_pairs(
             "PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES",
             indicator_source_market_families,
+        ),
+        _rust_array(
+            "PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS",
+            list(mode_policy["testnet_markers"]),
         ),
         (
             "pub const PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER: &str = "
@@ -3252,6 +3433,10 @@ def render_cpp_header() -> str:
     llm_output_policy_reference = dict(summary["llm_output_policy_reference"])
     llm_chat_request_reference = dict(summary["llm_chat_request_reference"])
     connector_normalization_cases = _connector_normalization_reference_cases()
+    connector_ownership_cases = list(summary["native_runtime_connector_ownership_reference"])
+    routing_cases = list(summary["native_runtime_routing_reference"])
+    mode_policy = dict(summary["native_runtime_mode_policy"])
+    mode_reference_cases = list(summary["native_runtime_mode_reference"])
     option_catalog_json = _python_option_catalog_json()
     parts = [
         "// This file is generated from Languages/Python/app/native_parity.py.",
@@ -3325,6 +3510,12 @@ def render_cpp_header() -> str:
         ),
         "",
         _cpp_connector_normalization_reference_cases(connector_normalization_cases),
+        "",
+        _cpp_native_runtime_connector_ownership_reference_cases(connector_ownership_cases),
+        "",
+        _cpp_native_runtime_routing_reference_cases(routing_cases),
+        "",
+        _cpp_native_runtime_mode_reference_cases(mode_reference_cases),
         (
             "inline constexpr std::string_view kPythonOrderSizingReferenceJson = "
             f"{_cpp_string(_contract_json(dict(summary['order_sizing_reference'])))};"
@@ -3409,6 +3600,10 @@ def render_cpp_header() -> str:
         _cpp_string_pairs(
             "kPythonNativeRuntimeConnectorMarketFamilies",
             connector_market_families,
+        ),
+        _cpp_array(
+            "kPythonNativeRuntimeTestnetModeMarkers",
+            list(mode_policy["testnet_markers"]),
         ),
         (
             "inline constexpr std::string_view kPythonNativeRuntimeDelegatedOwner = "
@@ -3547,6 +3742,10 @@ def render_tauri_browser_contract() -> str:
     option_catalog_count = len(option_catalog_manifest)
     option_catalog_entry_count = sum(entry_count for _, entry_count in option_catalog_manifest)
     connector_normalization_cases = _connector_normalization_reference_cases()
+    connector_ownership_cases = list(summary["native_runtime_connector_ownership_reference"])
+    routing_cases = list(summary["native_runtime_routing_reference"])
+    mode_policy = dict(summary["native_runtime_mode_policy"])
+    mode_reference_cases = list(summary["native_runtime_mode_reference"])
     service_routes = list(summary["service_routes"])
     service_route_paths = {str(route["name"]): str(route["path"]) for route in service_routes}
     service_route_methods = {
@@ -3594,6 +3793,10 @@ def render_tauri_browser_contract() -> str:
         "indicatorKeys": list(summary["indicator_keys"]),
         "connectorOptions": list(summary["connectors"]),
         "connectorNormalizationReference": connector_normalization_cases,
+        "nativeRuntimeConnectorOwnershipReference": connector_ownership_cases,
+        "nativeRuntimeRoutingReference": routing_cases,
+        "nativeRuntimeModePolicy": mode_policy,
+        "nativeRuntimeModeReference": mode_reference_cases,
         "supportedBrokers": list(summary["supported_brokers"]),
         "supportedForexBrokers": list(summary["supported_forex_brokers"]),
         "brokerOrderRoutingBackends": list(summary["broker_order_routing_backends"]),

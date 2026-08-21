@@ -129,6 +129,10 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_native_exchange_connectors_use_python_source_connectors",
     "rust_native_exchange_connectors_use_python_reference_fixture",
     "rust_native_runtime_ownership_uses_python_source_policy",
+    "rust_native_runtime_ownership_uses_python_reference_fixture",
+    "rust_native_runtime_routing_uses_python_reference_fixture",
+    "rust_native_runtime_mode_uses_python_source_policy",
+    "rust_native_runtime_mode_uses_python_reference_fixture",
     "python_order_guard_implements_behavior_contract",
     "rust_order_guard_uses_python_behavior_contract",
     "rust_order_guard_uses_python_live_safety_environment",
@@ -163,6 +167,10 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_native_exchange_connectors_use_python_source_connectors",
     "cpp_native_exchange_connectors_use_python_reference_fixture",
     "cpp_native_runtime_ownership_uses_python_source_policy",
+    "cpp_native_runtime_ownership_uses_python_reference_fixture",
+    "cpp_native_runtime_routing_uses_python_reference_fixture",
+    "cpp_native_runtime_mode_uses_python_source_policy",
+    "cpp_native_runtime_mode_uses_python_reference_fixture",
     "cpp_native_indicator_source_uses_python_source_policy",
     "cpp_native_indicator_runtime_uses_python_source_policy",
     "cpp_native_strategy_runtime_uses_python_source_options",
@@ -184,6 +192,9 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_llm_chat_request_uses_python_reference_fixture",
     "cpp_dashboard_runtime_enforces_live_order_safety",
     "tauri_browser_consumes_generated_contract",
+    "tauri_native_runtime_ownership_uses_python_reference_fixture",
+    "tauri_native_runtime_mode_uses_python_reference_fixture",
+    "tauri_native_runtime_routing_uses_python_reference_fixture",
     "tauri_browser_consumes_generated_starter_catalogs",
     "tauri_browser_service_api_uses_python_source_routes",
     "tauri_llm_catalog_uses_python_source_route",
@@ -1029,6 +1040,41 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "rust_native_runtime_ownership_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "main.rs",
+            (
+                "PYTHON_NATIVE_RUNTIME_CONNECTOR_OWNERSHIP_REFERENCE_CASES",
+                "native_runtime_connector_ownership_matches_python_reference_cases",
+                "native_runtime_connector_input_is_owned",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_native_runtime_routing_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "main.rs",
+            (
+                "PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES",
+                "native_runtime_routing_matches_python_reference_cases",
+                "native_runtime_routing_is_owned",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_native_runtime_mode_uses_python_source_policy",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "main.rs",
+            (
+                "PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS",
+                "python_mode_uses_testnet",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_native_runtime_mode_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "main.rs",
+            (
+                "PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES",
+                "native_runtime_mode_mapping_matches_python_reference_cases",
+                "python_mode_uses_testnet",
+            ),
+        ),
+        ConsumerRequirement(
             "python_order_guard_implements_behavior_contract",
             REPO_ROOT
             / "Languages"
@@ -1544,6 +1590,41 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
             ),
         ),
         ConsumerRequirement(
+            "cpp_native_runtime_ownership_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeServiceApiContractTests.cpp",
+            (
+                "PythonParityContract::kPythonNativeRuntimeConnectorOwnershipReferenceCases",
+                "C++ native connector ownership should match Python",
+                "nativeRuntimeOwnsBinanceFuturesConnector",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_runtime_routing_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeServiceApiContractTests.cpp",
+            (
+                "PythonParityContract::kPythonNativeRuntimeRoutingReferenceCases",
+                "C++ native runtime routing should match Python",
+                "nativeRuntimeRoutingIsOwned",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_runtime_mode_uses_python_source_policy",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindowSupport.cpp",
+            (
+                "PythonParityContract::kPythonNativeRuntimeTestnetModeMarkers",
+                "isTestnetModeLabel",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_runtime_mode_uses_python_reference_fixture",
+            REPO_ROOT / "experiments" / "native-cpp" / "tests" / "NativeServiceApiContractTests.cpp",
+            (
+                "PythonParityContract::kPythonNativeRuntimeModeReferenceCases",
+                "C++ mode mapping should match Python",
+                "isTestnetModeLabel",
+            ),
+        ),
+        ConsumerRequirement(
             "cpp_native_indicator_source_uses_python_source_policy",
             REPO_ROOT
             / "experiments"
@@ -1817,6 +1898,52 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 'hydrateBacktestControls(result.config?.backtest)',
             ),
             forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
+        ),
+        ConsumerRequirement(
+            "tauri_native_runtime_ownership_uses_python_reference_fixture",
+            REPO_ROOT
+            / "experiments"
+            / "rust-shells"
+            / "apps"
+            / "tauri-desktop"
+            / "ui"
+            / "tauri-ui-behavior.test.cjs",
+            (
+                "nativeRuntimeConnectorOwnershipReference",
+                "connector ownership drifted for",
+                "nativeRuntimeDelegationRequired",
+            ),
+        ),
+        ConsumerRequirement(
+            "tauri_native_runtime_mode_uses_python_reference_fixture",
+            REPO_ROOT
+            / "experiments"
+            / "rust-shells"
+            / "apps"
+            / "tauri-desktop"
+            / "ui"
+            / "tauri-ui-behavior.test.cjs",
+            (
+                "nativeRuntimeModePolicy",
+                "nativeRuntimeModeReference",
+                "nativeRuntimeModeUsesTestnet",
+                "mode mapping drifted for",
+            ),
+        ),
+        ConsumerRequirement(
+            "tauri_native_runtime_routing_uses_python_reference_fixture",
+            REPO_ROOT
+            / "experiments"
+            / "rust-shells"
+            / "apps"
+            / "tauri-desktop"
+            / "ui"
+            / "tauri-ui-behavior.test.cjs",
+            (
+                "nativeRuntimeRoutingReference",
+                "combined native routing drifted for",
+                "nativeRuntimeDelegationRequired",
+            ),
         ),
         ConsumerRequirement(
             "tauri_browser_consumes_generated_starter_catalogs",

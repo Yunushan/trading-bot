@@ -122,6 +122,24 @@ int main(int argc, char **argv) {
               QStringLiteral("C++ native runtime connector normalization should match Python: %1")
                   .arg(caseName));
     }
+    for (const auto &referenceCase : PythonParityContract::kPythonNativeRuntimeConnectorOwnershipReferenceCases) {
+        const QString caseName = parityString(referenceCase.name);
+        const bool actual = TradingBotWindowSupport::nativeRuntimeOwnsBinanceFuturesConnector(
+            parityString(referenceCase.input));
+        check(
+            actual == referenceCase.expectedOwned,
+            QStringLiteral("C++ native connector ownership should match Python: %1").arg(caseName));
+    }
+    for (const auto &referenceCase : PythonParityContract::kPythonNativeRuntimeRoutingReferenceCases) {
+        const QString caseName = parityString(referenceCase.name);
+        const bool actual = TradingBotWindowSupport::nativeRuntimeRoutingIsOwned(
+            parityString(referenceCase.selectedExchange),
+            parityString(referenceCase.connectorBackend),
+            parityString(referenceCase.indicatorSource));
+        check(
+            actual == referenceCase.expectedOwned,
+            QStringLiteral("C++ native runtime routing should match Python: %1").arg(caseName));
+    }
 
     const QStringList routes = TradingBotWindowSupport::pythonSourceServiceRouteNames();
     check(routes.size() == 36,
@@ -535,6 +553,13 @@ int main(int argc, char **argv) {
     check(
         TradingBotWindowSupport::nativeRuntimeStandaloneExecutionAllowed(QStringLiteral("Paper Local")),
         QStringLiteral("C++ local paper simulation should remain available before promotion"));
+    for (const auto &modeCase : PythonParityContract::kPythonNativeRuntimeModeReferenceCases) {
+        check(
+            TradingBotWindowSupport::isTestnetModeLabel(parityString(modeCase.input))
+                == modeCase.expectedTestnet,
+            QStringLiteral("C++ mode mapping should match Python for %1")
+                .arg(parityString(modeCase.name)));
+    }
     for (const auto &mapping : PythonParityContract::kPythonNativeRuntimeIndicatorSourceMarketFamilies) {
         const QString sourceKey = parityString(mapping.key);
         const QString expectedFamily = parityString(mapping.value);

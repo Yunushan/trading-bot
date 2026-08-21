@@ -56,6 +56,10 @@ QString canonicalPythonExchangeKey(const QString &value);
 QString selectedDashboardExchange(const QComboBox *combo);
 bool exchangeUsesBinanceApi(const QString &exchangeKey);
 QString nativeRuntimeIndicatorSourceMarketFamily(const QString &indicatorSourceText);
+bool nativeRuntimeRoutingIsOwned(
+    const QString &exchangeKey,
+    const QString &connectorText,
+    const QString &indicatorSourceText);
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures);
 QString pythonSourceParityContractHash();
 QStringList pythonSourceParityDomainKeys();

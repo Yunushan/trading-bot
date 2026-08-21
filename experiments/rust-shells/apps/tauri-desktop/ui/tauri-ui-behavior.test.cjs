@@ -36,6 +36,7 @@ const {
   normalizePositionCloseSide,
   normalizeOverrideRow,
   nativeRuntimeDelegationRequired,
+  nativeRuntimeModeUsesTestnet,
   optionsMatchingKeys,
   overrideImportKey,
   pythonLoopIntervalSeconds,
@@ -232,6 +233,47 @@ for (const referenceCase of connectorNormalizationReference) {
     behavior.normalizeConnectorBackend(referenceCase.input),
     referenceCase.expected,
     `connector normalization drifted for ${referenceCase.name}`
+  );
+}
+const connectorOwnershipReference = parityContext.window.PythonParityContract.nativeRuntimeConnectorOwnershipReference;
+assert.ok(Array.isArray(connectorOwnershipReference) && connectorOwnershipReference.length > 0);
+for (const referenceCase of connectorOwnershipReference) {
+  assert.equal(
+    nativeRuntimeDelegationRequired({
+      config: { selected_exchange: "Binance", connector_backend: referenceCase.input },
+      ownership: generatedOwnership,
+      connectorOptions: generatedConnectorOptions
+    }),
+    !referenceCase.expected_owned,
+    `connector ownership drifted for ${referenceCase.name}`
+  );
+}
+const routingReference = parityContext.window.PythonParityContract.nativeRuntimeRoutingReference;
+assert.ok(Array.isArray(routingReference) && routingReference.length > 0);
+for (const referenceCase of routingReference) {
+  assert.equal(
+    nativeRuntimeDelegationRequired({
+      config: {
+        selected_exchange: referenceCase.selected_exchange,
+        connector_backend: referenceCase.connector_backend,
+        indicator_source: referenceCase.indicator_source
+      },
+      ownership: generatedOwnership,
+      connectorOptions: generatedConnectorOptions
+    }),
+    !referenceCase.expected_owned,
+    `combined native routing drifted for ${referenceCase.name}`
+  );
+}
+const modePolicy = parityContext.window.PythonParityContract.nativeRuntimeModePolicy;
+const modeReference = parityContext.window.PythonParityContract.nativeRuntimeModeReference;
+assert.ok(Array.isArray(modePolicy?.testnet_markers) && modePolicy.testnet_markers.length > 0);
+assert.ok(Array.isArray(modeReference) && modeReference.length > 0);
+for (const referenceCase of modeReference) {
+  assert.equal(
+    nativeRuntimeModeUsesTestnet(referenceCase.input, modePolicy.testnet_markers),
+    referenceCase.expected_testnet,
+    "mode mapping drifted for " + referenceCase.name
   );
 }
 assert.equal(nativeRuntimeDelegationRequired({

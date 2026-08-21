@@ -811,7 +811,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "e8680aa352a151bd8def4b7b7e8820b4ca5f16381c80d7dfee96d6142ee075b8",
+  "contractHash": "6f29cd64645c60d568b17f85ca3c84b19fadb4f9a61ab7b725a103e9b5cebd02",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -4615,6 +4615,142 @@
       "label": "Entire Account MDD"
     }
   ],
+  "nativeRuntimeConnectorOwnershipReference": [
+    {
+      "expected_owned": true,
+      "input": "",
+      "name": "empty-default"
+    },
+    {
+      "expected_owned": true,
+      "input": "binance-sdk-derivatives-trading-usds-futures",
+      "name": "usds-key"
+    },
+    {
+      "expected_owned": true,
+      "input": "binance_sdk_derivatives_trading_usds_futures",
+      "name": "usds-underscore-alias"
+    },
+    {
+      "expected_owned": true,
+      "input": "Binance SDK Derivatives Trading USD\u24c8 Futures (Official Recommended)",
+      "name": "usds-label"
+    },
+    {
+      "expected_owned": true,
+      "input": "Binance SDK USD-M Futures",
+      "name": "usds-readable-alias"
+    },
+    {
+      "expected_owned": true,
+      "input": "binance-sdk-derivatives-trading-coin-futures",
+      "name": "coin-key"
+    },
+    {
+      "expected_owned": true,
+      "input": "binance-sdk-spot",
+      "name": "spot-key"
+    },
+    {
+      "expected_owned": true,
+      "input": "binance-connector",
+      "name": "binance-connector-key"
+    },
+    {
+      "expected_owned": true,
+      "input": "CCXT (Unified)",
+      "name": "ccxt-label"
+    },
+    {
+      "expected_owned": true,
+      "input": "python-binance (Community)",
+      "name": "python-binance-label"
+    },
+    {
+      "expected_owned": false,
+      "input": "OANDA REST-v20",
+      "name": "oanda-provider-option"
+    },
+    {
+      "expected_owned": false,
+      "input": "custom",
+      "name": "custom-provider"
+    },
+    {
+      "expected_owned": false,
+      "input": "unknown backend",
+      "name": "unknown-provider"
+    },
+    {
+      "expected_owned": true,
+      "input": "https://connector.example.test/api",
+      "name": "connector-url-alias"
+    }
+  ],
+  "nativeRuntimeModePolicy": {
+    "testnet_markers": [
+      "demo",
+      "test",
+      "sandbox"
+    ]
+  },
+  "nativeRuntimeModeReference": [
+    {
+      "expected_testnet": false,
+      "input": "",
+      "name": "empty-live"
+    },
+    {
+      "expected_testnet": false,
+      "input": "Live",
+      "name": "live"
+    },
+    {
+      "expected_testnet": false,
+      "input": "Production",
+      "name": "production"
+    },
+    {
+      "expected_testnet": true,
+      "input": "Demo",
+      "name": "demo"
+    },
+    {
+      "expected_testnet": true,
+      "input": "Demo/Testnet",
+      "name": "demo-testnet"
+    },
+    {
+      "expected_testnet": true,
+      "input": "Testnet",
+      "name": "testnet"
+    },
+    {
+      "expected_testnet": true,
+      "input": "Sandbox",
+      "name": "sandbox"
+    },
+    {
+      "expected_testnet": true,
+      "input": "contest",
+      "name": "embedded-test-marker"
+    },
+    {
+      "expected_testnet": true,
+      "input": "my-demo-mode",
+      "name": "embedded-demo-marker"
+    },
+    {
+      "expected_testnet": false,
+      "input": "Paper Local",
+      "name": "paper-local"
+    },
+    {
+      "expected_testnet": true,
+      "input": "  Testnet  ",
+      "name": "trimmed-testnet"
+    }
+  ],
   "nativeRuntimeOwnership": {
     "delegated_owner": "Python Service API/provider connector",
     "direct_connector_backends": [
@@ -4692,6 +4828,113 @@
     "native_execution_capability": true,
     "native_execution_scope": "binance-spot-usds-and-coin-futures"
   },
+  "nativeRuntimeRoutingReference": [
+    {
+      "connector_backend": "",
+      "expected_owned": true,
+      "indicator_source": "",
+      "name": "binance-default",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
+      "expected_owned": true,
+      "indicator_source": "binance_futures",
+      "name": "binance-usds-canonical",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "Binance SDK Derivatives Trading USD-M Futures (Official Recommended)",
+      "expected_owned": true,
+      "indicator_source": "Binance futures",
+      "name": "binance-usds-label",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-derivatives-trading-coin-futures",
+      "expected_owned": true,
+      "indicator_source": "",
+      "name": "binance-coin-futures",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": true,
+      "indicator_source": "Binance spot",
+      "name": "binance-spot",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": false,
+      "indicator_source": "Binance spot",
+      "name": "non-native-exchange",
+      "selected_exchange": "Bybit"
+    },
+    {
+      "connector_backend": "OANDA REST-v20",
+      "expected_owned": false,
+      "indicator_source": "Binance spot",
+      "name": "non-native-connector",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "unknown backend",
+      "expected_owned": false,
+      "indicator_source": "Binance spot",
+      "name": "unknown-connector",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": false,
+      "indicator_source": "TradingView",
+      "name": "non-native-indicator",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": true,
+      "indicator_source": "spot",
+      "name": "indicator-key-alias",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": true,
+      "indicator_source": "Binance/futures",
+      "name": "indicator-punctuation-alias",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": true,
+      "indicator_source": "",
+      "name": "empty-indicator",
+      "selected_exchange": "Binance"
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": true,
+      "indicator_source": "Binance spot",
+      "name": "empty-exchange-default",
+      "selected_exchange": ""
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": false,
+      "indicator_source": "Binance spot",
+      "name": "whitespace-exchange-rejected",
+      "selected_exchange": "   "
+    },
+    {
+      "connector_backend": "binance-sdk-spot",
+      "expected_owned": false,
+      "indicator_source": "Binance spot",
+      "name": "exchange-display-badge-rejected",
+      "selected_exchange": "Binance (official)"
+    }
+  ],
   "ollamaModelSizeHints": [
     {
       "label": "about 1 GB",

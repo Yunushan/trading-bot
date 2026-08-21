@@ -206,6 +206,203 @@ NATIVE_RUNTIME_OWNERSHIP = {
     ),
     "delegated_owner": "Python Service API/provider connector",
 }
+
+NATIVE_RUNTIME_TESTNET_MODE_MARKERS = ("demo", "test", "sandbox")
+
+
+def native_runtime_mode_is_testnet(value: object) -> bool:
+    """Mirror Python's Binance mode-to-testnet URL selection policy."""
+
+    text = str(value or "").lower()
+    return any(marker in text for marker in NATIVE_RUNTIME_TESTNET_MODE_MARKERS)
+
+
+def native_runtime_mode_reference_cases() -> list[dict[str, object]]:
+    """Expose representative and adversarial mode strings to native targets."""
+
+    raw_cases = (
+        ("empty-live", ""),
+        ("live", "Live"),
+        ("production", "Production"),
+        ("demo", "Demo"),
+        ("demo-testnet", "Demo/Testnet"),
+        ("testnet", "Testnet"),
+        ("sandbox", "Sandbox"),
+        ("embedded-test-marker", "contest"),
+        ("embedded-demo-marker", "my-demo-mode"),
+        ("paper-local", "Paper Local"),
+        ("trimmed-testnet", "  Testnet  "),
+    )
+    return [
+        {
+            "name": name,
+            "input": input_value,
+            "expected_testnet": native_runtime_mode_is_testnet(input_value),
+        }
+        for name, input_value in raw_cases
+    ]
+
+
+def native_runtime_connector_input_is_owned(value: object) -> bool:
+    """Return whether native code may handle a connector input directly.
+
+    Connector normalization is intentionally permissive for configuration
+    persistence, but runtime ownership is fail-closed. Unknown text must not
+    silently become a Binance REST request just because normalization falls
+    back to the USD-M default.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return True
+
+    normalized = _normalize_connector_backend(raw)
+    direct_backends = set(NATIVE_RUNTIME_OWNERSHIP["direct_connector_backends"])
+    if normalized not in direct_backends:
+        return False
+
+    raw_folded = raw.casefold()
+    for label, key in _connector_options():
+        if str(key).casefold() != raw_folded and str(label).casefold() != raw_folded:
+            continue
+        return key in direct_backends
+
+    # Non-default normalized aliases are explicit native identities. The
+    # default backend needs an additional identity check to reject unknown
+    # providers that Python's configuration normalizer maps to USD-M.
+    default_backend = str(NATIVE_RUNTIME_OWNERSHIP["direct_connector_backends"][0])
+    if normalized != default_backend:
+        return True
+
+    text = raw.casefold()
+    return text == "binance_sdk_derivatives_trading_usds_futures" or (
+        "sdk" in text
+        and "future" in text
+        and ("usd" in text or "usds" in text)
+    )
+
+
+def native_runtime_connector_ownership_reference_cases() -> list[dict[str, object]]:
+    """Expose Python's native connector ownership boundary to native targets."""
+
+    labels_by_key = {key: label for label, key in _connector_options()}
+    raw_cases = (
+        ("empty-default", ""),
+        ("usds-key", "binance-sdk-derivatives-trading-usds-futures"),
+        ("usds-underscore-alias", "binance_sdk_derivatives_trading_usds_futures"),
+        ("usds-label", labels_by_key["binance-sdk-derivatives-trading-usds-futures"]),
+        ("usds-readable-alias", "Binance SDK USD-M Futures"),
+        ("coin-key", "binance-sdk-derivatives-trading-coin-futures"),
+        ("spot-key", "binance-sdk-spot"),
+        ("binance-connector-key", "binance-connector"),
+        ("ccxt-label", labels_by_key["ccxt"]),
+        ("python-binance-label", labels_by_key["python-binance"]),
+        ("oanda-provider-option", labels_by_key["oanda-rest"]),
+        ("custom-provider", "custom"),
+        ("unknown-provider", "unknown backend"),
+        ("connector-url-alias", "https://connector.example.test/api"),
+    )
+    return [
+        {
+            "name": name,
+            "input": input_value,
+            "expected_owned": native_runtime_connector_input_is_owned(input_value),
+        }
+        for name, input_value in raw_cases
+    ]
+
+
+def _native_runtime_indicator_source_key(value: object) -> str:
+    """Normalize indicator-source labels and keys for the native routing gate."""
+
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().casefold())
+    return normalized.strip("_")
+
+
+def native_runtime_routing_is_owned(config: object) -> bool:
+    """Return whether Python allows native handling for one runtime config."""
+
+    source = config if isinstance(config, dict) else {}
+    selected_exchange = str(
+        source.get("selected_exchange") or NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"][0]
+    ).strip()
+    direct_exchanges = {
+        str(exchange).casefold() for exchange in NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"]
+    }
+    if selected_exchange.casefold() not in direct_exchanges:
+        return False
+    if not native_runtime_connector_input_is_owned(source.get("connector_backend", "")):
+        return False
+
+    indicator_source = source.get("indicator_source")
+    if isinstance(indicator_source, (list, tuple)):
+        indicator_source = indicator_source[0] if indicator_source else None
+    if indicator_source is None or not str(indicator_source).strip():
+        return True
+
+    direct_sources = {
+        _native_runtime_indicator_source_key(key)
+        for key, _market_family in NATIVE_RUNTIME_OWNERSHIP["indicator_source_market_families"]
+    }
+    direct_sources.update(
+        _native_runtime_indicator_source_key(label) for label in INDICATOR_SOURCE_OPTIONS
+    )
+    return _native_runtime_indicator_source_key(indicator_source) in direct_sources
+
+
+def native_runtime_routing_reference_cases() -> list[dict[str, object]]:
+    """Expose combined exchange/connector/indicator routing decisions to native targets."""
+
+    raw_cases = (
+        ("binance-default", "Binance", "", ""),
+        (
+            "binance-usds-canonical",
+            "Binance",
+            "binance-sdk-derivatives-trading-usds-futures",
+            "binance_futures",
+        ),
+        (
+            "binance-usds-label",
+            "Binance",
+            "Binance SDK Derivatives Trading USD-M Futures (Official Recommended)",
+            "Binance futures",
+        ),
+        (
+            "binance-coin-futures",
+            "Binance",
+            "binance-sdk-derivatives-trading-coin-futures",
+            "",
+        ),
+        ("binance-spot", "Binance", "binance-sdk-spot", "Binance spot"),
+        ("non-native-exchange", "Bybit", "binance-sdk-spot", "Binance spot"),
+        ("non-native-connector", "Binance", "OANDA REST-v20", "Binance spot"),
+        ("unknown-connector", "Binance", "unknown backend", "Binance spot"),
+        ("non-native-indicator", "Binance", "binance-sdk-spot", "TradingView"),
+        ("indicator-key-alias", "Binance", "binance-sdk-spot", "spot"),
+        ("indicator-punctuation-alias", "Binance", "binance-sdk-spot", "Binance/futures"),
+        ("empty-indicator", "Binance", "binance-sdk-spot", ""),
+        ("empty-exchange-default", "", "binance-sdk-spot", "Binance spot"),
+        ("whitespace-exchange-rejected", "   ", "binance-sdk-spot", "Binance spot"),
+        ("exchange-display-badge-rejected", "Binance (official)", "binance-sdk-spot", "Binance spot"),
+    )
+    return [
+        {
+            "name": name,
+            "selected_exchange": selected_exchange,
+            "connector_backend": connector_backend,
+            "indicator_source": indicator_source,
+            "expected_owned": native_runtime_routing_is_owned(
+                {
+                    "selected_exchange": selected_exchange,
+                    "connector_backend": connector_backend,
+                    "indicator_source": indicator_source,
+                }
+            ),
+        }
+        for name, selected_exchange, connector_backend, indicator_source in raw_cases
+    ]
+
+
 LLM_USE_FOR_OPTIONS = (
     ("Advisory", "advisory"),
     ("Signal confirmation", "signal_confirmation"),
@@ -2351,6 +2548,12 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             ],
             "delegated_owner": str(NATIVE_RUNTIME_OWNERSHIP["delegated_owner"]),
         },
+        "native_runtime_connector_ownership_reference": native_runtime_connector_ownership_reference_cases(),
+        "native_runtime_routing_reference": native_runtime_routing_reference_cases(),
+        "native_runtime_mode_policy": {
+            "testnet_markers": list(NATIVE_RUNTIME_TESTNET_MODE_MARKERS),
+        },
+        "native_runtime_mode_reference": native_runtime_mode_reference_cases(),
         "domains": [_domain_payload(domain) for domain in NATIVE_PARITY_DOMAINS],
         "service_api": {
             **service_api_contract_payload(),
@@ -2523,6 +2726,12 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "contract_hash": native_python_source_contract_hash(),
         "order_guard_behavior": dict(payload["order_guard_behavior"]),
         "native_runtime_ownership": dict(payload["native_runtime_ownership"]),
+        "native_runtime_connector_ownership_reference": list(
+            payload["native_runtime_connector_ownership_reference"]
+        ),
+        "native_runtime_routing_reference": list(payload["native_runtime_routing_reference"]),
+        "native_runtime_mode_policy": dict(payload["native_runtime_mode_policy"]),
+        "native_runtime_mode_reference": list(payload["native_runtime_mode_reference"]),
         "domains": list(payload["domains"]),
         "domain_keys": [domain["key"] for domain in payload["domains"]],
         "route_names": list(SERVICE_API_ROUTE_SUFFIXES),

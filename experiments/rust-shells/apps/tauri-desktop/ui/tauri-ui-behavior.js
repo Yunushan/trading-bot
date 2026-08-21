@@ -677,6 +677,7 @@
     config = {},
     ownership = {},
     connectorOptions = [],
+    indicatorSourceOptions = [],
     defaultExchange = "Binance",
     defaultConnector = ""
   } = {}) => {
@@ -705,18 +706,32 @@
       ? source.indicator_source[0]
       : source.indicator_source;
     if (configuredIndicatorSource === undefined || configuredIndicatorSource === null) return false;
-    const normalizedIndicatorSource = String(configuredIndicatorSource || "")
+    const normalizeIndicatorSourceKey = (value) => String(value || "")
       .trim()
       .toLowerCase()
-      .replace(/[ -]+/g, "_");
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    const normalizedIndicatorSource = normalizeIndicatorSourceKey(configuredIndicatorSource);
     if (!normalizedIndicatorSource) return false;
     const directIndicatorSources = Array.isArray(ownership.indicator_source_market_families)
       ? ownership.indicator_source_market_families
         .map((item) => Array.isArray(item) ? item[0] : item?.key)
-        .map((item) => String(item || "").trim().toLowerCase().replace(/[ -]+/g, "_"))
+        .map(normalizeIndicatorSourceKey)
         .filter(Boolean)
       : [];
+    for (const option of Array.isArray(indicatorSourceOptions) ? indicatorSourceOptions : []) {
+      directIndicatorSources.push(normalizeIndicatorSourceKey(option?.key));
+      directIndicatorSources.push(normalizeIndicatorSourceKey(option?.label));
+    }
     return directIndicatorSources.length > 0 && !directIndicatorSources.includes(normalizedIndicatorSource);
+  };
+
+  const nativeRuntimeModeUsesTestnet = (value, markers = []) => {
+    const text = String(value || "").toLowerCase();
+    return (Array.isArray(markers) ? markers : [])
+      .map((marker) => String(marker || "").toLowerCase())
+      .filter(Boolean)
+      .some((marker) => text.includes(marker));
   };
 
   const dashboardPayloadFromStreamEvent = (event) => {
@@ -832,6 +847,7 @@
     normalizeDesign,
     normalizeTheme,
     nativeRuntimeDelegationRequired,
+    nativeRuntimeModeUsesTestnet,
     normalizeConnectorBackend,
     themeModeClass,
     titleizeLabel,

@@ -19,10 +19,12 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from app.native_parity import (  # noqa: E402
     INDICATOR_RUNTIME_OUTPUT_KEYS,
-        NATIVE_PARITY_DOMAINS,
-        native_python_source_contract_hash,
-        native_python_source_contract_payload,
-        native_python_source_contract_summary,
+    NATIVE_PARITY_DOMAINS,
+    native_runtime_mode_is_testnet,
+    native_runtime_routing_is_owned,
+    native_python_source_contract_hash,
+    native_python_source_contract_payload,
+    native_python_source_contract_summary,
 )
 from app.service.api_contract import (  # noqa: E402
     SERVICE_API_ROUTE_METHODS,
@@ -658,6 +660,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertNotIn("StoneX", summary["supported_forex_brokers"])
         self.assertIn("AI Gold Securities", summary["supported_brokers"])
         self.assertNotIn("AI Gold Securities", summary["supported_forex_brokers"])
+
         broker_canonical_names = {
             mapping["identity"]: mapping["canonical"] for mapping in summary["broker_canonical_names"]
         }
@@ -675,6 +678,74 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("order_execution_and_risk", summary["domain_keys"])
         self.assertFalse(summary["risk_defaults"]["indicator_use_live_values"])
         self.assertEqual(summary["risk_defaults"]["stop_loss"]["scope"], "per_trade")
+
+    def test_native_connector_ownership_reference_covers_python_fail_closed_boundary(self):
+        cases = native_python_source_contract_summary()[
+            "native_runtime_connector_ownership_reference"
+        ]
+        by_name = {case["name"]: case for case in cases}
+        self.assertEqual(
+            {
+                "empty-default",
+                "usds-key",
+                "usds-underscore-alias",
+                "usds-label",
+                "usds-readable-alias",
+                "coin-key",
+                "spot-key",
+                "binance-connector-key",
+                "ccxt-label",
+                "python-binance-label",
+                "oanda-provider-option",
+                "custom-provider",
+                "unknown-provider",
+                "connector-url-alias",
+            },
+            set(by_name),
+        )
+        self.assertTrue(by_name["empty-default"]["expected_owned"])
+        self.assertTrue(by_name["usds-readable-alias"]["expected_owned"])
+        self.assertTrue(by_name["connector-url-alias"]["expected_owned"])
+        for name in ("oanda-provider-option", "custom-provider", "unknown-provider"):
+            with self.subTest(name=name):
+                self.assertFalse(by_name[name]["expected_owned"])
+
+    def test_native_runtime_routing_reference_covers_combined_python_gate(self):
+        cases = native_python_source_contract_summary()["native_runtime_routing_reference"]
+        self.assertGreaterEqual(len(cases), 10)
+        for case in cases:
+            with self.subTest(name=case["name"]):
+                self.assertEqual(
+                    case["expected_owned"],
+                    native_runtime_routing_is_owned(
+                        {
+                            "selected_exchange": case["selected_exchange"],
+                            "connector_backend": case["connector_backend"],
+                            "indicator_source": case["indicator_source"],
+                        }
+                    ),
+                )
+        by_name = {case["name"]: case for case in cases}
+        self.assertTrue(by_name["binance-usds-canonical"]["expected_owned"])
+        self.assertTrue(by_name["binance-spot"]["expected_owned"])
+        for name in ("non-native-exchange", "non-native-connector", "unknown-connector", "non-native-indicator"):
+            with self.subTest(name=name):
+                self.assertFalse(by_name[name]["expected_owned"])
+
+    def test_native_runtime_mode_reference_covers_python_testnet_policy(self):
+        summary = native_python_source_contract_summary()
+        self.assertEqual(
+            ["demo", "test", "sandbox"],
+            summary["native_runtime_mode_policy"]["testnet_markers"],
+        )
+        cases = summary["native_runtime_mode_reference"]
+        self.assertGreaterEqual(len(cases), 10)
+        for case in cases:
+            with self.subTest(name=case["name"]):
+                self.assertEqual(
+                    case["expected_testnet"],
+                    native_runtime_mode_is_testnet(case["input"]),
+                )
 
     def test_rust_and_cpp_consume_generated_python_contracts(self):
         rust_core = _read(REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "lib.rs")
@@ -736,6 +807,13 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("PYTHON_SUPPORTED_BROKERS", rust_generated)
         self.assertIn("PYTHON_SUPPORTED_FOREX_BROKERS", rust_generated)
         self.assertIn("PYTHON_BROKER_ORDER_ROUTING_BACKENDS", rust_generated)
+        self.assertIn("PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES", rust_generated)
+        self.assertIn("PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES", rust_generated)
+        self.assertIn("PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS", rust_generated)
+        self.assertIn("kPythonNativeRuntimeRoutingReferenceCases", cpp_generated)
+        self.assertIn("kPythonNativeRuntimeModeReferenceCases", cpp_generated)
+        self.assertIn("kPythonNativeRuntimeTestnetModeMarkers", cpp_generated)
+        self.assertIn('"nativeRuntimeRoutingReference"', tauri_generated)
         self.assertIn('"cppContractParityReady": true', tauri_generated)
         self.assertIn('"rustContractParityReady": true', tauri_generated)
         self.assertIn('"cppStandaloneRuntimeReady": false', tauri_generated)
