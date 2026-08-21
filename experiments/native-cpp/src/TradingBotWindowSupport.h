@@ -60,6 +60,7 @@ bool nativeRuntimeRoutingIsOwned(
     const QString &exchangeKey,
     const QString &connectorText,
     const QString &indicatorSourceText);
+bool nativeRuntimeRoutingIsOwned(const QJsonObject &config);
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures);
 QString pythonSourceParityContractHash();
 QStringList pythonSourceParityDomainKeys();

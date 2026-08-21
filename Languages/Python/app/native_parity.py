@@ -403,6 +403,121 @@ def native_runtime_routing_reference_cases() -> list[dict[str, object]]:
     ]
 
 
+def native_runtime_routing_json_coercion_reference_cases() -> list[dict[str, object]]:
+    """Expose Python JSON truthiness/string coercion at the native routing boundary."""
+
+    raw_cases = (
+        (
+            "numeric-connector",
+            {
+                "selected_exchange": "Binance",
+                "connector_backend": 1,
+                "indicator_source": "Binance spot",
+            },
+            False,
+        ),
+        (
+            "empty-connector-list",
+            {
+                "selected_exchange": "Binance",
+                "connector_backend": [],
+                "indicator_source": "Binance spot",
+            },
+            True,
+        ),
+        (
+            "nonempty-connector-list",
+            {
+                "selected_exchange": "Binance",
+                "connector_backend": ["binance-sdk-spot"],
+                "indicator_source": "Binance spot",
+            },
+            True,
+        ),
+        (
+            "numeric-exchange",
+            {"selected_exchange": 1, "connector_backend": "binance-sdk-spot"},
+            False,
+        ),
+        (
+            "empty-exchange-list-default",
+            {"selected_exchange": [], "connector_backend": "binance-sdk-spot"},
+            True,
+        ),
+        (
+            "nonempty-exchange-list",
+            {"selected_exchange": ["Binance"], "connector_backend": "binance-sdk-spot"},
+            False,
+        ),
+        (
+            "numeric-indicator",
+            {
+                "selected_exchange": "Binance",
+                "connector_backend": "binance-sdk-spot",
+                "indicator_source": 1,
+            },
+            False,
+        ),
+        (
+            "false-indicator",
+            {
+                "selected_exchange": "Binance",
+                "connector_backend": "binance-sdk-spot",
+                "indicator_source": False,
+            },
+            False,
+        ),
+        (
+            "null-indicator",
+            {
+                "selected_exchange": "Binance",
+                "connector_backend": "binance-sdk-spot",
+                "indicator_source": None,
+            },
+            True,
+        ),
+        (
+            "empty-indicator-list",
+            {
+                "selected_exchange": "Binance",
+                "connector_backend": "binance-sdk-spot",
+                "indicator_source": [],
+            },
+            True,
+        ),
+        (
+            "numeric-first-indicator-list",
+            {
+                "selected_exchange": "Binance",
+                "connector_backend": "binance-sdk-spot",
+                "indicator_source": [0],
+            },
+            False,
+        ),
+        (
+            "false-exchange-default",
+            {"selected_exchange": False, "connector_backend": "binance-sdk-spot"},
+            True,
+        ),
+    )
+    cases: list[dict[str, object]] = []
+    for name, config, expected in raw_cases:
+        actual = native_runtime_routing_is_owned(config)
+        if actual != expected:
+            raise AssertionError(
+                f"Python routing JSON coercion fixture is inconsistent for {name}: "
+                f"expected {expected!r}, got {actual!r}"
+            )
+        cases.append(
+            {
+                "name": name,
+                "config": config,
+                "expected_owned": actual,
+            }
+        )
+    return cases
+
+
 LLM_USE_FOR_OPTIONS = (
     ("Advisory", "advisory"),
     ("Signal confirmation", "signal_confirmation"),
@@ -2550,6 +2665,7 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         },
         "native_runtime_connector_ownership_reference": native_runtime_connector_ownership_reference_cases(),
         "native_runtime_routing_reference": native_runtime_routing_reference_cases(),
+        "native_runtime_routing_json_coercion_reference": native_runtime_routing_json_coercion_reference_cases(),
         "native_runtime_mode_policy": {
             "testnet_markers": list(NATIVE_RUNTIME_TESTNET_MODE_MARKERS),
         },
@@ -2730,6 +2846,9 @@ def native_python_source_contract_summary() -> dict[str, object]:
             payload["native_runtime_connector_ownership_reference"]
         ),
         "native_runtime_routing_reference": list(payload["native_runtime_routing_reference"]),
+        "native_runtime_routing_json_coercion_reference": list(
+            payload["native_runtime_routing_json_coercion_reference"]
+        ),
         "native_runtime_mode_policy": dict(payload["native_runtime_mode_policy"]),
         "native_runtime_mode_reference": list(payload["native_runtime_mode_reference"]),
         "domains": list(payload["domains"]),

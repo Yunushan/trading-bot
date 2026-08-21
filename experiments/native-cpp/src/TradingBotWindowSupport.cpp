@@ -109,6 +109,71 @@ QString environmentValue(const char *name, const QString &fallback = {}) {
     return value.isEmpty() ? fallback : value;
 }
 
+bool pythonJsonValueTruthy(const QJsonValue &value) {
+    if (value.isNull() || value.isUndefined()) {
+        return false;
+    }
+    if (value.isBool()) {
+        return value.toBool();
+    }
+    if (value.isDouble()) {
+        return value.toDouble() != 0.0;
+    }
+    if (value.isString()) {
+        return !value.toString().isEmpty();
+    }
+    if (value.isArray()) {
+        return !value.toArray().isEmpty();
+    }
+    return !value.toObject().isEmpty();
+}
+
+QString pythonJsonValueText(const QJsonValue &value) {
+    if (value.isNull() || value.isUndefined()) {
+        return QStringLiteral("None");
+    }
+    if (value.isBool()) {
+        return value.toBool() ? QStringLiteral("True") : QStringLiteral("False");
+    }
+    if (value.isDouble()) {
+        return QString::number(value.toDouble(), 'g', 15);
+    }
+    if (value.isString()) {
+        return value.toString();
+    }
+    if (value.isArray()) {
+        return QString::fromUtf8(
+            QJsonDocument(value.toArray()).toJson(QJsonDocument::Compact));
+    }
+    return QString::fromUtf8(
+        QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact));
+}
+
+QString pythonConfigTextOrEmpty(const QJsonObject &config, const QString &key) {
+    const QJsonValue value = config.value(key);
+    return pythonJsonValueTruthy(value) ? pythonJsonValueText(value) : QString();
+}
+
+QString pythonConfigTextOrDefault(
+    const QJsonObject &config,
+    const QString &key,
+    const QString &fallback) {
+    const QJsonValue value = config.value(key);
+    return pythonJsonValueTruthy(value) ? pythonJsonValueText(value) : fallback;
+}
+
+QString pythonIndicatorSourceText(const QJsonObject &config) {
+    QJsonValue value = config.value(QStringLiteral("indicator_source"));
+    if (value.isArray()) {
+        const QJsonArray values = value.toArray();
+        value = values.isEmpty() ? QJsonValue() : values.first();
+    }
+    if (value.isNull() || value.isUndefined()) {
+        return {};
+    }
+    return pythonJsonValueText(value).trimmed();
+}
+
 bool environmentFlag(const char *name) {
     const QString value = environmentValue(name).toLower();
     return value == QStringLiteral("1") || value == QStringLiteral("true")
@@ -553,6 +618,20 @@ bool nativeRuntimeRoutingIsOwned(
     }
     return indicatorSourceText.trimmed().isEmpty()
         || !nativeRuntimeIndicatorSourceMarketFamily(indicatorSourceText).isEmpty();
+}
+
+bool nativeRuntimeRoutingIsOwned(const QJsonObject &config) {
+    const QString selectedExchange = pythonConfigTextOrDefault(
+        config,
+        QStringLiteral("selected_exchange"),
+        parityString(PythonParityContract::kPythonNativeRuntimeExchanges.front()));
+    const QString connectorBackend = pythonConfigTextOrEmpty(
+        config,
+        QStringLiteral("connector_backend"));
+    return nativeRuntimeRoutingIsOwned(
+        selectedExchange,
+        connectorBackend,
+        pythonIndicatorSourceText(config));
 }
 
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures) {

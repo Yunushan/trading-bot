@@ -811,7 +811,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "6f29cd64645c60d568b17f85ca3c84b19fadb4f9a61ab7b725a103e9b5cebd02",
+  "contractHash": "d3b37c88dbdad85a4d3c9ef21b47bd26f42e5cbc4ec9f91c31f5a0f61897a83e",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -4828,6 +4828,118 @@
     "native_execution_capability": true,
     "native_execution_scope": "binance-spot-usds-and-coin-futures"
   },
+  "nativeRuntimeRoutingJsonCoercionReference": [
+    {
+      "config": {
+        "connector_backend": 1,
+        "indicator_source": "Binance spot",
+        "selected_exchange": "Binance"
+      },
+      "expected_owned": false,
+      "name": "numeric-connector"
+    },
+    {
+      "config": {
+        "connector_backend": [],
+        "indicator_source": "Binance spot",
+        "selected_exchange": "Binance"
+      },
+      "expected_owned": true,
+      "name": "empty-connector-list"
+    },
+    {
+      "config": {
+        "connector_backend": [
+          "binance-sdk-spot"
+        ],
+        "indicator_source": "Binance spot",
+        "selected_exchange": "Binance"
+      },
+      "expected_owned": true,
+      "name": "nonempty-connector-list"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "selected_exchange": 1
+      },
+      "expected_owned": false,
+      "name": "numeric-exchange"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "selected_exchange": []
+      },
+      "expected_owned": true,
+      "name": "empty-exchange-list-default"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "selected_exchange": [
+          "Binance"
+        ]
+      },
+      "expected_owned": false,
+      "name": "nonempty-exchange-list"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "indicator_source": 1,
+        "selected_exchange": "Binance"
+      },
+      "expected_owned": false,
+      "name": "numeric-indicator"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "indicator_source": false,
+        "selected_exchange": "Binance"
+      },
+      "expected_owned": false,
+      "name": "false-indicator"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "indicator_source": null,
+        "selected_exchange": "Binance"
+      },
+      "expected_owned": true,
+      "name": "null-indicator"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "indicator_source": [],
+        "selected_exchange": "Binance"
+      },
+      "expected_owned": true,
+      "name": "empty-indicator-list"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "indicator_source": [
+          0
+        ],
+        "selected_exchange": "Binance"
+      },
+      "expected_owned": false,
+      "name": "numeric-first-indicator-list"
+    },
+    {
+      "config": {
+        "connector_backend": "binance-sdk-spot",
+        "selected_exchange": false
+      },
+      "expected_owned": true,
+      "name": "false-exchange-default"
+    }
+  ],
   "nativeRuntimeRoutingReference": [
     {
       "connector_backend": "",

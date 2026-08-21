@@ -141,6 +141,28 @@ int main(int argc, char **argv) {
             QStringLiteral("C++ native runtime routing should match Python: %1").arg(caseName));
     }
 
+    const QByteArray routingJsonCoercionJson(
+        PythonParityContract::kPythonNativeRuntimeRoutingJsonCoercionReferenceJson.data(),
+        static_cast<int>(PythonParityContract::kPythonNativeRuntimeRoutingJsonCoercionReferenceJson.size()));
+    QJsonParseError routingJsonCoercionError;
+    const QJsonDocument routingJsonCoercionDocument =
+        QJsonDocument::fromJson(routingJsonCoercionJson, &routingJsonCoercionError);
+    check(!routingJsonCoercionDocument.isNull() && routingJsonCoercionDocument.isArray(),
+          QStringLiteral("generated Python routing JSON coercion fixture should parse: %1")
+              .arg(routingJsonCoercionError.errorString()));
+    if (!routingJsonCoercionDocument.isNull() && routingJsonCoercionDocument.isArray()) {
+        for (const QJsonValue &fixtureValue : routingJsonCoercionDocument.array()) {
+            const QJsonObject fixture = fixtureValue.toObject();
+            const QString caseName = fixture.value(QStringLiteral("name")).toString();
+            const bool expected = fixture.value(QStringLiteral("expected_owned")).toBool(false);
+            const bool actual = TradingBotWindowSupport::nativeRuntimeRoutingIsOwned(
+                fixture.value(QStringLiteral("config")).toObject());
+            check(actual == expected,
+                  QStringLiteral("C++ native runtime JSON routing coercion should match Python: %1")
+                      .arg(caseName));
+        }
+    }
+
     const QStringList routes = TradingBotWindowSupport::pythonSourceServiceRouteNames();
     check(routes.size() == 36,
           QStringLiteral("generated Python Service API contract should expose all 36 routes"));

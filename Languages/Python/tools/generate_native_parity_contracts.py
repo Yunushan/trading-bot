@@ -3122,6 +3122,7 @@ def render_rust_module() -> str:
     connector_normalization_cases = _connector_normalization_reference_cases()
     connector_ownership_cases = list(summary["native_runtime_connector_ownership_reference"])
     routing_cases = list(summary["native_runtime_routing_reference"])
+    routing_json_coercion_cases = list(summary["native_runtime_routing_json_coercion_reference"])
     mode_policy = dict(summary["native_runtime_mode_policy"])
     mode_reference_cases = list(summary["native_runtime_mode_reference"])
     option_catalog_json = _python_option_catalog_json()
@@ -3186,6 +3187,10 @@ def render_rust_module() -> str:
         _rust_native_runtime_connector_ownership_reference_cases(connector_ownership_cases),
         "",
         _rust_native_runtime_routing_reference_cases(routing_cases),
+        (
+            "pub const PYTHON_NATIVE_RUNTIME_ROUTING_JSON_COERCION_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(routing_json_coercion_cases))};"
+        ),
         "",
         _rust_native_runtime_mode_reference_cases(mode_reference_cases),
         (
@@ -3435,6 +3440,7 @@ def render_cpp_header() -> str:
     connector_normalization_cases = _connector_normalization_reference_cases()
     connector_ownership_cases = list(summary["native_runtime_connector_ownership_reference"])
     routing_cases = list(summary["native_runtime_routing_reference"])
+    routing_json_coercion_cases = list(summary["native_runtime_routing_json_coercion_reference"])
     mode_policy = dict(summary["native_runtime_mode_policy"])
     mode_reference_cases = list(summary["native_runtime_mode_reference"])
     option_catalog_json = _python_option_catalog_json()
@@ -3514,6 +3520,10 @@ def render_cpp_header() -> str:
         _cpp_native_runtime_connector_ownership_reference_cases(connector_ownership_cases),
         "",
         _cpp_native_runtime_routing_reference_cases(routing_cases),
+        (
+            "inline constexpr std::string_view kPythonNativeRuntimeRoutingJsonCoercionReferenceJson = "
+            f"{_cpp_string(_contract_json(routing_json_coercion_cases))};"
+        ),
         "",
         _cpp_native_runtime_mode_reference_cases(mode_reference_cases),
         (
@@ -3744,6 +3754,7 @@ def render_tauri_browser_contract() -> str:
     connector_normalization_cases = _connector_normalization_reference_cases()
     connector_ownership_cases = list(summary["native_runtime_connector_ownership_reference"])
     routing_cases = list(summary["native_runtime_routing_reference"])
+    routing_json_coercion_cases = list(summary["native_runtime_routing_json_coercion_reference"])
     mode_policy = dict(summary["native_runtime_mode_policy"])
     mode_reference_cases = list(summary["native_runtime_mode_reference"])
     service_routes = list(summary["service_routes"])
@@ -3795,6 +3806,7 @@ def render_tauri_browser_contract() -> str:
         "connectorNormalizationReference": connector_normalization_cases,
         "nativeRuntimeConnectorOwnershipReference": connector_ownership_cases,
         "nativeRuntimeRoutingReference": routing_cases,
+        "nativeRuntimeRoutingJsonCoercionReference": routing_json_coercion_cases,
         "nativeRuntimeModePolicy": mode_policy,
         "nativeRuntimeModeReference": mode_reference_cases,
         "supportedBrokers": list(summary["supported_brokers"]),

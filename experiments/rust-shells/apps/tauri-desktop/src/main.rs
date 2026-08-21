@@ -35,8 +35,10 @@ use trading_bot_core::{
         PYTHON_NATIVE_RUNTIME_CONNECTOR_OWNERSHIP_REFERENCE_CASES,
         PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER, PYTHON_NATIVE_RUNTIME_EXCHANGES,
         PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
-        PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES, PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES,
-        PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS, PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
+        PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES,
+        PYTHON_NATIVE_RUNTIME_ROUTING_JSON_COERCION_REFERENCE_JSON,
+        PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES, PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS,
+        PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
     },
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
@@ -6157,100 +6159,19 @@ mod tests {
 
     #[test]
     fn native_runtime_routing_preserves_python_json_scalar_coercion() {
-        let cases = [
-            (
-                "numeric-connector",
-                json!({
-                    "selected_exchange": "Binance",
-                    "connector_backend": 1,
-                    "indicator_source": "Binance spot"
-                }),
-                false,
-            ),
-            (
-                "array-connector",
-                json!({
-                    "selected_exchange": "Binance",
-                    "connector_backend": ["binance-sdk-spot"],
-                    "indicator_source": "Binance spot"
-                }),
-                true,
-            ),
-            (
-                "numeric-exchange",
-                json!({
-                    "selected_exchange": 1,
-                    "connector_backend": "binance-sdk-spot"
-                }),
-                false,
-            ),
-            (
-                "array-exchange",
-                json!({
-                    "selected_exchange": ["Binance"],
-                    "connector_backend": "binance-sdk-spot"
-                }),
-                false,
-            ),
-            (
-                "numeric-indicator",
-                json!({
-                    "selected_exchange": "Binance",
-                    "connector_backend": "binance-sdk-spot",
-                    "indicator_source": 1
-                }),
-                false,
-            ),
-            (
-                "false-indicator",
-                json!({
-                    "selected_exchange": "Binance",
-                    "connector_backend": "binance-sdk-spot",
-                    "indicator_source": false
-                }),
-                false,
-            ),
-            (
-                "null-indicator",
-                json!({
-                    "selected_exchange": "Binance",
-                    "connector_backend": "binance-sdk-spot",
-                    "indicator_source": null
-                }),
-                true,
-            ),
-            (
-                "empty-indicator-list",
-                json!({
-                    "selected_exchange": "Binance",
-                    "connector_backend": "binance-sdk-spot",
-                    "indicator_source": []
-                }),
-                true,
-            ),
-            (
-                "numeric-first-indicator-list",
-                json!({
-                    "selected_exchange": "Binance",
-                    "connector_backend": "binance-sdk-spot",
-                    "indicator_source": [0]
-                }),
-                false,
-            ),
-            (
-                "false-exchange-default",
-                json!({
-                    "selected_exchange": false,
-                    "connector_backend": "binance-sdk-spot"
-                }),
-                true,
-            ),
-        ];
-        for (name, config, expected) in cases {
+        let cases: Vec<Value> =
+            serde_json::from_str(PYTHON_NATIVE_RUNTIME_ROUTING_JSON_COERCION_REFERENCE_JSON)
+                .expect("generated Python routing JSON coercion fixture should parse");
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("unknown");
+            let expected = case["expected_owned"]
+                .as_bool()
+                .expect("routing coercion fixture expected_owned");
+            let config = case["config"].clone();
             assert_eq!(
                 native_runtime_routing_is_owned(&config),
                 expected,
-                "native runtime routing diverged from Python scalar coercion for {name}"
+                "native runtime JSON routing coercion diverged for Python case {name}"
             );
         }
     }
