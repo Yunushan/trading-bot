@@ -187,8 +187,8 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         summary = native_python_source_contract_summary()
         strategy_cases = summary["indicator_enabled_reference"]
         backtest_cases = summary["backtest_indicator_enabled_reference"]
-        self.assertEqual(len(strategy_cases), 23)
-        self.assertEqual(len(backtest_cases), 23)
+        self.assertEqual(len(strategy_cases), 27)
+        self.assertEqual(len(backtest_cases), 27)
         strategy = {case["name"]: case["expected"] for case in strategy_cases}
         backtest = {case["name"]: case["expected"] for case in backtest_cases}
         self.assertFalse(strategy["indicator-enabled-string-y"])

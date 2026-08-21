@@ -1775,6 +1775,10 @@ def native_indicator_enabled_reference_cases() -> list[dict[str, object]]:
         ("indicator-enabled-fractional-one", 1.5),
         ("indicator-enabled-negative-fractional-zero", -0.5),
         ("indicator-enabled-negative-fractional-one", -1.5),
+        ("indicator-enabled-empty-list", []),
+        ("indicator-enabled-nonempty-list", [0]),
+        ("indicator-enabled-empty-object", {}),
+        ("indicator-enabled-nonempty-object", {"enabled": True}),
     )
     cases: list[dict[str, object]] = [
         {

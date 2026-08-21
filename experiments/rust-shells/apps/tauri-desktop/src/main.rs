@@ -3136,12 +3136,16 @@ fn config_bool(config: &Value, key: &str, default: bool) -> bool {
     };
     match value {
         Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
+        Value::Number(value) => value
+            .as_f64()
+            .is_some_and(|value| !value.is_finite() || value.trunc() != 0.0),
         Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => true,
             "0" | "false" | "no" | "off" => false,
             _ => default,
         },
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
         _ => default,
     }
 }
@@ -7450,6 +7454,29 @@ mod tests {
         assert!(message.contains("Trading Bot Tauri packaged smoke passed"));
         assert!(message.contains(python_source_contract_hash()));
         assert!(message.contains("native trading disabled"));
+    }
+
+    #[test]
+    fn desktop_config_bool_matches_python_indicator_reference() {
+        let cases: Vec<Value> = serde_json::from_str(
+            trading_bot_core::generated_python_parity::PYTHON_INDICATOR_ENABLED_REFERENCE_JSON,
+        )
+        .expect("generated Python indicator boolean reference should parse");
+        for case in cases {
+            let input = case["input"]
+                .as_object()
+                .expect("indicator boolean reference input should be an object");
+            let config = Value::Object(input.clone());
+            let expected = case["expected"]
+                .as_bool()
+                .expect("indicator boolean reference expected should be boolean");
+            assert_eq!(
+                config_bool(&config, "enabled", false),
+                expected,
+                "desktop config boolean coercion mismatch for {}",
+                case["name"]
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 #include "NativeIndicatorRuntime.h"
 
+#include <QJsonArray>
 #include <QJsonValue>
 
 #include <algorithm>
@@ -52,6 +53,16 @@ bool indicatorEnabled(
                 QStringLiteral("off"),
                 QStringLiteral("disabled"),
             }.contains(normalized);
+    }
+    if (value.isArray()) {
+        // Python coerce_bool uses container truthiness for strategy configs;
+        // backtest _enabled treats any non-string JSON container as non-empty text.
+        return semantics == NativeIndicatorRuntime::IndicatorEnableSemantics::Backtest
+            || !value.toArray().isEmpty();
+    }
+    if (value.isObject()) {
+        return semantics == NativeIndicatorRuntime::IndicatorEnableSemantics::Backtest
+            || !value.toObject().isEmpty();
     }
     return false;
 }

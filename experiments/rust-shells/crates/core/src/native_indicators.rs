@@ -68,6 +68,18 @@ pub fn indicator_enabled(config: &Value, semantics: IndicatorEnableSemantics) ->
             IndicatorEnableSemantics::Backtest => value != 0.0,
         };
     }
+    if let Some(value) = value.as_array() {
+        return match semantics {
+            IndicatorEnableSemantics::Strategy => !value.is_empty(),
+            IndicatorEnableSemantics::Backtest => true,
+        };
+    }
+    if let Some(value) = value.as_object() {
+        return match semantics {
+            IndicatorEnableSemantics::Strategy => !value.is_empty(),
+            IndicatorEnableSemantics::Backtest => true,
+        };
+    }
     let normalized = value
         .as_str()
         .unwrap_or_default()
