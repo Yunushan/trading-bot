@@ -201,17 +201,7 @@ void inspectWarmupObject(const QJsonObject &object, qint64 &maximum, bool &hasCa
 }
 
 bool jsonBool(const QJsonObject &object, const QString &key, bool fallback) {
-    const QJsonValue value = object.value(key);
-    if (value.isBool()) return value.toBool(fallback);
-    if (value.isDouble()) return value.toDouble() != 0.0;
-    const QString normalized = value.toString().trimmed().toLower();
-    if (QStringList{QStringLiteral("true"), QStringLiteral("1"), QStringLiteral("yes"), QStringLiteral("on")}.contains(normalized)) {
-        return true;
-    }
-    if (QStringList{QStringLiteral("false"), QStringLiteral("0"), QStringLiteral("no"), QStringLiteral("off")}.contains(normalized)) {
-        return false;
-    }
-    return fallback;
+    return NativeStrategyRuntime::coerceStrategyBool(object.value(key), fallback);
 }
 
 QJsonObject mergedPairControls(const QJsonObject &entry) {

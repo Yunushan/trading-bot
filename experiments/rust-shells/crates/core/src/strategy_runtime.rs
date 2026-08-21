@@ -74,12 +74,13 @@ pub fn coerce_strategy_bool(value: Option<&Value>, default: bool) -> bool {
             let lowered = text.trim().to_lowercase();
             match lowered.as_str() {
                 "" => default,
-                "0" | "false" | "no" | "off" | "n" => false,
+                "0" | "false" | "no" | "off" => false,
                 "1" | "true" | "yes" | "on" => true,
                 _ => default,
             }
         }
-        Some(_) => default,
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::Object(items)) => !items.is_empty(),
     }
 }
 

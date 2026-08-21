@@ -791,11 +791,17 @@ bool coerceStrategyBool(const QJsonValue &value, bool defaultValue) {
         const double number = value.toDouble();
         return !std::isfinite(number) || std::trunc(number) != 0.0;
     }
+    if (value.isArray()) {
+        return !value.toArray().isEmpty();
+    }
+    if (value.isObject()) {
+        return !value.toObject().isEmpty();
+    }
     const QString lowered = value.toString().trimmed().toLower();
     if (lowered.isEmpty()) {
         return defaultValue;
     }
-    if (QStringList{QStringLiteral("0"), QStringLiteral("false"), QStringLiteral("no"), QStringLiteral("off"), QStringLiteral("n")}.contains(lowered)) {
+    if (QStringList{QStringLiteral("0"), QStringLiteral("false"), QStringLiteral("no"), QStringLiteral("off")}.contains(lowered)) {
         return false;
     }
     if (QStringList{QStringLiteral("1"), QStringLiteral("true"), QStringLiteral("yes"), QStringLiteral("on")}.contains(lowered)) {

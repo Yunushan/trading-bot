@@ -38,7 +38,8 @@ use crate::runtime_order_engine::{
     RuntimeOrderEngine, RuntimeOrderSubmitInput, RuntimeOrderSubmitResult,
 };
 use crate::strategy_runtime::{
-    StrategyWorkerLifecycleInput, build_worker_lifecycle_snapshot, normalize_strategy_risk_controls,
+    StrategyWorkerLifecycleInput, build_worker_lifecycle_snapshot, coerce_strategy_bool,
+    normalize_strategy_risk_controls,
 };
 use crate::streams::{
     BinanceKlineStreamCandle, BinanceStreamEvent, BinanceWebSocket, BinanceWebSocketClient,
@@ -447,17 +448,7 @@ impl NativeRuntimeReadOnlyMarketCycleInput {
 }
 
 fn native_config_bool(value: Option<&Value>) -> bool {
-    match value {
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value
-            .as_f64()
-            .is_some_and(|value| !value.is_finite() || value.trunc() != 0.0),
-        Some(Value::String(value)) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        _ => false,
-    }
+    coerce_strategy_bool(value, false)
 }
 
 fn value_f64(value: &Value) -> Option<f64> {

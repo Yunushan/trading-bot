@@ -1728,10 +1728,15 @@ def native_strategy_risk_loose_reference_cases() -> list[dict[str, object]]:
     raw_cases: tuple[tuple[str, object], ...] = (
         ("risk-loose-string-y", "y"),
         ("risk-loose-unknown-string", "maybe"),
+        ("risk-loose-string-n", "n"),
         ("risk-loose-fractional-zero", 0.5),
         ("risk-loose-fractional-one", 1.5),
         ("risk-loose-negative-fractional-zero", -0.5),
         ("risk-loose-negative-fractional-one", -1.5),
+        ("risk-loose-empty-list", []),
+        ("risk-loose-nonempty-list", [0]),
+        ("risk-loose-empty-object", {}),
+        ("risk-loose-nonempty-object", {"enabled": True}),
     )
     cases: list[dict[str, object]] = []
     for name, value in raw_cases:

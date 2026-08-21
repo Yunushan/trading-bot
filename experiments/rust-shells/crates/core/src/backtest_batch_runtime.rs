@@ -20,7 +20,7 @@ use crate::native_indicators::{IndicatorEnableSemantics, indicator_enabled};
 use crate::python_source_default_backtest_config;
 use crate::python_source_default_execution_config;
 use crate::python_source_ui_defaults;
-use crate::strategy_runtime::normalize_backtest_interval;
+use crate::strategy_runtime::{coerce_strategy_bool, normalize_backtest_interval};
 
 pub const MAX_OPTIMIZER_RUNS: u64 = 100_000_000_000;
 pub const DEFAULT_RESULT_LIMIT: usize = 5_000;
@@ -275,26 +275,7 @@ fn request_number(object: &Map<String, Value>, key: &str, fallback: f64) -> f64 
 }
 
 fn request_bool(object: &Map<String, Value>, key: &str, fallback: bool) -> bool {
-    let Some(value) = object.get(key) else {
-        return fallback;
-    };
-    if let Some(boolean) = value.as_bool() {
-        return boolean;
-    }
-    if let Some(number) = value.as_f64() {
-        return number != 0.0;
-    }
-    match value
-        .as_str()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "true" | "1" | "yes" | "on" => true,
-        "false" | "0" | "no" | "off" => false,
-        _ => fallback,
-    }
+    coerce_strategy_bool(object.get(key), fallback)
 }
 
 fn request_text_list(object: &Map<String, Value>, key: &str) -> Vec<String> {
@@ -872,26 +853,7 @@ fn json_number(object: &Value, key: &str, fallback: f64) -> f64 {
 }
 
 fn json_bool(object: &Value, key: &str, fallback: bool) -> bool {
-    let Some(value) = object.get(key) else {
-        return fallback;
-    };
-    if let Some(value) = value.as_bool() {
-        return value;
-    }
-    if let Some(value) = value.as_f64() {
-        return value != 0.0;
-    }
-    match value
-        .as_str()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "true" | "1" | "yes" | "on" => true,
-        "false" | "0" | "no" | "off" => false,
-        _ => fallback,
-    }
+    coerce_strategy_bool(object.get(key), fallback)
 }
 
 fn merged_pair_controls(entry: &Value) -> Value {

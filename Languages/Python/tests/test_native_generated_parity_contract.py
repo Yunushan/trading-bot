@@ -168,10 +168,15 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             {
                 "risk-loose-string-y",
                 "risk-loose-unknown-string",
+                "risk-loose-string-n",
                 "risk-loose-fractional-zero",
                 "risk-loose-fractional-one",
                 "risk-loose-negative-fractional-zero",
                 "risk-loose-negative-fractional-one",
+                "risk-loose-empty-list",
+                "risk-loose-nonempty-list",
+                "risk-loose-empty-object",
+                "risk-loose-nonempty-object",
             },
             {case["name"] for case in cases},
         )
@@ -182,6 +187,16 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertFalse(fractional_zero["expected"]["indicator_use_live_values"])
         fractional_one = next(case for case in cases if case["name"] == "risk-loose-fractional-one")
         self.assertTrue(fractional_one["expected"]["indicator_use_live_values"])
+        string_n = next(case for case in cases if case["name"] == "risk-loose-string-n")
+        self.assertTrue(string_n["expected"]["allow_opposite_positions"])
+        empty_list = next(case for case in cases if case["name"] == "risk-loose-empty-list")
+        self.assertFalse(empty_list["expected"]["allow_opposite_positions"])
+        nonempty_list = next(case for case in cases if case["name"] == "risk-loose-nonempty-list")
+        self.assertTrue(nonempty_list["expected"]["indicator_use_live_values"])
+        empty_object = next(case for case in cases if case["name"] == "risk-loose-empty-object")
+        self.assertFalse(empty_object["expected"]["allow_opposite_positions"])
+        nonempty_object = next(case for case in cases if case["name"] == "risk-loose-nonempty-object")
+        self.assertTrue(nonempty_object["expected"]["indicator_use_live_values"])
 
     def test_indicator_enabled_references_preserve_python_context_semantics(self):
         summary = native_python_source_contract_summary()
