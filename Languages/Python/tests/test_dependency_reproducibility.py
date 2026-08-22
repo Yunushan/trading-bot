@@ -575,7 +575,8 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
         self.assertIn("container-vulnerability-audit", workflow)
         self.assertIn(
-            "docker build --pull --file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .",
+            "docker build --pull --provenance=false --sbom=false "
+            "--file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .",
             workflow,
         )
         self.assertIn("id: image-build", workflow)
