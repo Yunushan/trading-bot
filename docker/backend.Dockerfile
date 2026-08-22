@@ -39,15 +39,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH=/opt/venv/bin:$PATH \
     HOME=/home/nonroot
 
-# The pinned runtime venv below supplies the supported copies. Remove the
-# vulnerable Python distributions bundled in the base layer before copying it.
-USER root
-RUN ["python", "-c", "import shutil, site; from pathlib import Path; roots = [Path(path) for path in site.getsitepackages()]; names = ('setuptools', 'pkg_resources', 'msgpack', '_msgpack', 'setuptools-70.3.0.dist-info', 'msgpack-1.1.2.dist-info'); [shutil.rmtree(root / name, ignore_errors=True) for root in roots for name in names]"]
-
 WORKDIR /app
 
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot /home/nonroot/.trading-bot
+COPY docker/cleanup_python_packages.py /tmp/cleanup_python_packages.py
+
+# The pinned runtime venv supplies the supported copies. Remove vulnerable
+# distributions bundled in either base layer before dropping privileges.
+USER root
+RUN ["python", "/tmp/cleanup_python_packages.py"]
+
 COPY --chown=65532:65532 apps/service-api /app/apps/service-api
 COPY --chown=65532:65532 apps/web-dashboard /app/apps/web-dashboard
 COPY --chown=65532:65532 Languages/Python/app /app/Languages/Python/app
