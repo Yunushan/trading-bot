@@ -178,11 +178,15 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --entrypoint /opt/venv/bin/python trading-bot-service:supply-chain -c \
-            'import importlib.metadata as metadata; import sys; \
+            'import importlib.metadata as metadata; import json; import sys; \
              expected = {"setuptools": "84.0.0", "msgpack": "1.2.1"}; \
-             actual = {name: metadata.version(name) for name in expected}; \
-             print({"python": sys.version, "packages": actual}); \
-             assert actual == expected, actual'
+             found = {name: set() for name in expected}; \
+             [found[name].add(distribution.version) for distribution in metadata.distributions() \
+              if (name := (distribution.metadata.get("Name") or "").lower()) in found]; \
+             actual = {name: sorted(versions) for name, versions in found.items()}; \
+             print(json.dumps({"python": sys.version, "packages": actual})); \
+             assert actual == {name: [version] for name, version in expected.items()}, actual' \
+            | tee runtime-python-packages.json
 
       - name: Audit service container image
         if: steps.image-build.outcome == 'success'
@@ -211,13 +215,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: container-vulnerability-report
-          path: trivy-service-results.json
+          path: |
+            trivy-service-results.json
+            runtime-python-packages.json
           if-no-files-found: warn
 
       - name: Enforce container vulnerability policy
-        if: steps.trivy.outcome == 'failure'
+        if: always() && steps.trivy.outcome != 'skipped'
         shell: bash
         run: |
           set -euo pipefail
-          echo "Container image contains HIGH or CRITICAL vulnerabilities. See container-vulnerability-report." >&2
-          exit 1
+          python tools/check_container_vulnerability_policy.py \
+            --report trivy-service-results.json \
+            --runtime runtime-python-packages.json
