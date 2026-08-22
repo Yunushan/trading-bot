@@ -13,7 +13,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parents[1]
 PYPROJECT_PATH = PYTHON_ROOT / "pyproject.toml"
-PYINSTALLER_REQUIREMENT = "pyinstaller==6.21.0"
+PYINSTALLER_REQUIREMENT = "pyinstaller==6.22.0"
 
 EXPECTED_REQUIREMENT_SHIMS = {
     "requirements.backend.txt": ".",

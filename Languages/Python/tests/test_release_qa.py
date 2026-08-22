@@ -232,7 +232,7 @@ class ReleaseQaTests(unittest.TestCase):
         build_section, publish_section = freebsd.split("\n  publish-release:", 1)
         self.assertNotIn("id-token: write", build_section)
         self.assertNotIn("attestations: write", build_section)
-        self.assertIn("actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d", publish_section)
+        self.assertIn("actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6", publish_section)
 
     def test_release_publishers_use_protected_serialized_environment(self):
         for workflow_name in RELEASE_WORKFLOWS:

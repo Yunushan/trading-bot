@@ -372,12 +372,11 @@ jobs:
         working-directory: Languages/Python
         run: |
           set -euo pipefail
-          python -m unittest \
-            tests.test_settings_defaults \
-            tests.test_service_config_runtime \
-            tests.test_service_schema_contracts \
-            tests.test_llm_clients_privacy \
-            tests.test_llm_local_models
+          python -m unittest discover -s tests -p 'test_settings_defaults.py'
+          python -m unittest discover -s tests -p 'test_service_config_runtime.py'
+          python -m unittest discover -s tests -p 'test_service_schema_contracts.py'
+          python -m unittest discover -s tests -p 'test_llm_clients_privacy.py'
+          python -m unittest discover -s tests -p 'test_llm_local_models.py'
 
   web-dashboard-quality:
     name: Web Dashboard Quality
@@ -645,7 +644,7 @@ jobs:
           node-version: "26"
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           workspaces: |
             experiments/rust-shells -> target
