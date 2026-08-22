@@ -46,7 +46,7 @@ service = [
     "cryptography==50.0.0",
     "fastapi==0.141.1",
     "starlette==1.6.0",
-    "uvicorn==0.52.1",
+    "uvicorn==0.52.4",
 ]
 security = [
     "pip-audit==2.10.1",
