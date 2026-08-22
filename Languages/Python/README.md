@@ -67,7 +67,7 @@ Runtime config updates are validated before the service stores them. Invalid sym
 - Internet access for supported exchange or broker APIs
 - API credentials for a supported venue if you want live/demo connectivity
 
-Python 3.14 is recommended for local development and CI parity; Python 3.15 is covered by the compatibility, cross-platform service, and Windows package-smoke jobs.
+Python 3.14 is recommended for local development and CI parity; Python 3.15 is covered by the compatibility, release-smoke, cross-platform service, and Windows package-smoke jobs.
 
 On Python 3.15, the upstream Binance generated SDK packages are omitted because
 their current package metadata declares Python `<3.15`. The wrapper preserves

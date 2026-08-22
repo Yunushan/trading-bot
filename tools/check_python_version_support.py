@@ -120,6 +120,9 @@ def _check_ci_matrix(root: Path) -> list[str]:
         "python-315-cross-platform-smoke:",
         "Python 3.15 Cross-Platform Smoke",
         "apps/service-api/main.py --healthcheck",
+        "python-315-release-smoke:",
+        "Python 3.15 Release Smoke",
+        "python tools/release_smoke.py",
     )
     for fragment in required_fragments:
         if fragment not in workflow:

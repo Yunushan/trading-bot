@@ -811,6 +811,53 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual("3.14.5", payload["checks"]["python"]["actual"])
         self.assertEqual("python", payload["checks"]["python"]["command"])
 
+    def test_runtime_tool_version_checker_accepts_supported_compatibility_python(self):
+        module = _load_tool_version_module()
+        completed = module.subprocess.CompletedProcess(
+            ["python"],
+            0,
+            stdout="3.15.0\n",
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            payload = module.build_tool_version_report(
+                skip_node=True,
+                python_command=("python",),
+                allow_supported_python=True,
+            )
+
+        self.assertTrue(payload["checks"]["python"]["ok"])
+        self.assertTrue(payload["checks"]["python"]["supported_compatibility_target"])
+
+    def test_runtime_tool_version_checker_cli_can_enable_supported_compatibility_python(self):
+        module = _load_tool_version_module()
+
+        with mock.patch.object(
+            module,
+            "build_tool_version_report",
+            return_value={"ok": True, "checks": {}, "remediations": []},
+        ) as report:
+            self.assertEqual(
+                0,
+                module.main(
+                    [
+                        "--json",
+                        "--skip-node",
+                        "--python-command",
+                        "python",
+                        "--allow-supported-python",
+                    ]
+                ),
+            )
+
+        report.assert_called_once_with(
+            skip_python=False,
+            skip_node=True,
+            python_command=("python",),
+            allow_supported_python=True,
+        )
+
     def test_runtime_tool_version_checker_cli_accepts_selected_python_command(self):
         module = _load_tool_version_module()
 

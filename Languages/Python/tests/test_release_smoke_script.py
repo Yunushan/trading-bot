@@ -81,6 +81,7 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
 
         self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
         self.assertIn('python tools/check_local_tool_versions.py --strict --python-command python', stdout)
+        self.assertIn("--allow-supported-python", stdout)
         self.assertIn("python -m ruff check --no-cache", stdout)
         self.assertIn("python -m mypy --no-incremental --cache-dir", stdout)
         self.assertIn("--python-version", stdout)

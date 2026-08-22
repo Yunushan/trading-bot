@@ -79,6 +79,7 @@ def build_release_steps(
     python_executable: str | None = None,
     python_command: tuple[str, ...] | None = None,
     runtime_python_command_arg: str = "",
+    allow_supported_python: bool = False,
     skip_full_tests: bool,
     manual_smoke_mode: str,
 ) -> list[ReleaseStep]:
@@ -90,6 +91,8 @@ def build_release_steps(
     ]
     if runtime_python_command_arg:
         runtime_check_command.extend(["--python-command", runtime_python_command_arg])
+    if allow_supported_python:
+        runtime_check_command.append("--allow-supported-python")
     steps = [
         ReleaseStep(
             name="check runtime tool versions",
@@ -238,7 +241,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--python-command",
         default="",
-        help='Python command used for release checks, for example: "python" or python3.14.',
+        help='Python command used for release checks, for example: "python" or python3.15.',
     )
     parser.add_argument(
         "--skip-full-tests",
@@ -279,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     steps = build_release_steps(
         python_command=python_command,
         runtime_python_command_arg=runtime_python_command_arg,
+        allow_supported_python=bool(args.python or args.python_command),
         skip_full_tests=bool(args.skip_full_tests),
         manual_smoke_mode=str(args.manual_smoke_mode),
     )

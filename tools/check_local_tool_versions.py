@@ -9,6 +9,9 @@ import sys
 from pathlib import Path
 
 
+SUPPORTED_PYTHON_MINORS = ("3.10", "3.11", "3.12", "3.13", "3.14", "3.15")
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -76,6 +79,15 @@ def _matches(expected: str, actual: str) -> bool:
     return actual == expected or actual.startswith(f"{expected}.")
 
 
+def _python_minor(version: str) -> str:
+    parts = str(version or "").strip().split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else ""
+
+
+def _is_supported_python(version: str) -> bool:
+    return _python_minor(version) in SUPPORTED_PYTHON_MINORS
+
+
 def _default_python_command(expected: str) -> tuple[str, ...]:
     if sys.platform == "win32":
         return ("py", f"-{expected}") if shutil.which("py") else ("python",)
@@ -120,6 +132,7 @@ def build_tool_version_report(
     skip_python: bool = False,
     skip_node: bool = False,
     python_command: tuple[str, ...] | None = None,
+    allow_supported_python: bool = False,
 ) -> dict[str, object]:
     expected_python = _read_version_file(".python-version")
     expected_node = _read_version_file(".node-version")
@@ -128,11 +141,16 @@ def build_tool_version_report(
     checks: dict[str, dict[str, object]] = {}
     if not skip_python:
         python_ok = _matches(expected_python, actual_python)
+        compatibility_target = allow_supported_python and _is_supported_python(actual_python)
+        if compatibility_target:
+            python_ok = True
         checks["python"] = {
             "expected": expected_python,
             "actual": actual_python,
             "ok": python_ok,
         }
+        if compatibility_target and not _matches(expected_python, actual_python):
+            checks["python"]["supported_compatibility_target"] = True
         if not python_ok:
             checks["python"]["remediation"] = _runtime_remediation(
                 "python",
@@ -170,6 +188,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-python", action="store_true", help="Do not check the active Python version.")
     parser.add_argument("--skip-node", action="store_true", help="Do not check the active Node.js version.")
     parser.add_argument(
+        "--allow-supported-python",
+        action="store_true",
+        help="Accept any supported Python 3.10-3.15 compatibility target instead of only .python-version.",
+    )
+    parser.add_argument(
         "--python-command",
         default="",
         help='Python command to probe instead of the current interpreter, for example: "python" or python3.14.',
@@ -182,11 +205,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Invalid --python-command: {exc}", file=sys.stderr)
         return 2
 
-    report = build_tool_version_report(
-        skip_python=args.skip_python,
-        skip_node=args.skip_node,
-        python_command=python_command,
-    )
+    if args.allow_supported_python:
+        report = build_tool_version_report(
+            skip_python=args.skip_python,
+            skip_node=args.skip_node,
+            python_command=python_command,
+            allow_supported_python=True,
+        )
+    else:
+        report = build_tool_version_report(
+            skip_python=args.skip_python,
+            skip_node=args.skip_node,
+            python_command=python_command,
+        )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

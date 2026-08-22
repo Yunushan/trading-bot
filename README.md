@@ -247,7 +247,7 @@ python tools/update_loc_snapshot.py
 6. Use the **Positions** tab to monitor open trades and the **Chart/Backtest** tabs for analysis.
 
 Python 3.15 support is exercised by the compatibility, cross-platform service,
-and Windows package-smoke CI jobs. The upstream
+release-smoke, and Windows package-smoke CI jobs. The upstream
 Binance generated SDK packages currently publish Python `<3.15` metadata, so
 their dependencies are excluded only on Python 3.15 and the existing tested
 `python-binance` fallback handles those connector selections.

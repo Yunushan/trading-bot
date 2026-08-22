@@ -1689,6 +1689,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("Trading-Bot-Python-Py315", workflow)
         self.assertIn("python-315-cross-platform-smoke:", workflow)
         self.assertIn("Python 3.15 Cross-Platform Smoke", workflow)
+        self.assertIn("python-315-release-smoke:", workflow)
+        self.assertIn("Python 3.15 Release Smoke", workflow)
+        self.assertIn("python tools/release_smoke.py", workflow)
         self.assertIn("apps/service-api/main.py --healthcheck", workflow)
         self.assertIn("python tools/check_python_version_support.py --current", workflow)
         for version in report["supported_versions"]:

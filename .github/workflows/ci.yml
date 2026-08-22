@@ -522,6 +522,51 @@ jobs:
           set -euo pipefail
           python apps/service-api/main.py --healthcheck
 
+  python-315-release-smoke:
+    name: Python 3.15 Release Smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python 3.15
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.15"
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: |
+            Languages/Python/pyproject.toml
+
+      - name: Set up Node.js 26
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+
+      - name: Install Python 3.15 release-smoke dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python[desktop,service,dev]"
+
+      - name: Validate Python 3.15 release-smoke target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_python_version_support.py --current
+          python Languages/Python/tools/check_dependency_metadata.py
+
+      - name: Run Python 3.15 release smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/release_smoke.py \
+            --python-command "python" \
+            --skip-full-tests \
+            --manual-smoke-mode skip
+
   web-dashboard-quality:
     name: Web Dashboard Quality
     runs-on: ubuntu-24.04
