@@ -18,7 +18,7 @@ Run the Python dependency vulnerability audit with the explicit security extra:
 ```bash
 python -m venv .venv-security
 # POSIX
-.venv-security/bin/python -m pip install --upgrade pip==26.1.2 setuptools==83.0.0 wheel
+.venv-security/bin/python -m pip install --upgrade pip==26.2.1 setuptools==83.0.0 wheel
 .venv-security/bin/python -m pip install -e "Languages/Python[service,security]"
 .venv-security/bin/python tools/run_python_security_audit.py --skip-editable --progress-spinner=off
 # Windows: replace `.venv-security/bin/python` with `.venv-security\\Scripts\\python.exe`.
@@ -107,7 +107,7 @@ deliberate base-image refreshes; do not replace either digest with a mutable
 tag. Dependencies are installed in the `-dev` builder, while the production
 stage copies only the virtual environment into the unprivileged runtime image.
 This removes package-manager and compiler tooling from the release image. The
-image bootstrap also pins `pip` 26.1.2 rather than upgrading to an unreviewed
+image bootstrap also pins `pip` 26.2.1 rather than upgrading to an unreviewed
 latest version during a container build.
 
 For a hard local setup gate, use:

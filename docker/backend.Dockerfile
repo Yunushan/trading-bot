@@ -2,7 +2,7 @@
 #
 # The Chainguard Python images are pinned by immutable multi-platform digests.
 # The builder contains pip and build tools; the final Wolfi runtime is distroless.
-FROM cgr.dev/chainguard/python:latest-dev@sha256:5167939066134c84bc52d0e7a84ca3ade7b79866dc1f4a7b5ca9f654c2948a88 AS builder
+FROM cgr.dev/chainguard/python:latest-dev@sha256:4bf7e945777010672b8ccd5d2ae2c41c91ad6d3478878347c731ae536d506bef AS builder
 
 USER root
 
@@ -24,13 +24,13 @@ RUN --mount=type=secret,id=pip_ca,required=false,target=/run/secrets/pip_ca \
     if [ -s /run/secrets/pip_ca ]; then export PIP_CERT=/run/secrets/pip_ca; fi; \
     apk add --no-cache build-base linux-headers \
     && python -m venv "$VIRTUAL_ENV" \
-    && python -m pip install --upgrade "pip==26.1.2" \
+    && python -m pip install --upgrade "pip==26.2.1" \
     && pip install /build/Languages/Python[service] \
     && install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot \
     && touch /home/nonroot/.trading-bot/.keep \
     && chown 65532:65532 /home/nonroot/.trading-bot/.keep
 
-FROM cgr.dev/chainguard/python:latest@sha256:54d936802bbb82c517b4d535af7bc211a44a8ec418297142df2898b32c550193
+FROM cgr.dev/chainguard/python:latest@sha256:1f6779775c9f466890da563e411cb677045a6c20b6a65160eefad1deffb5012c
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -686,11 +686,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest-dev@sha256:5167939066134c84bc52d0e7a84ca3ade7b79866dc1f4a7b5ca9f654c2948a88 AS builder",
+            "FROM cgr.dev/chainguard/python:latest-dev@sha256:4bf7e945777010672b8ccd5d2ae2c41c91ad6d3478878347c731ae536d506bef AS builder",
             dockerfile,
         )
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest@sha256:54d936802bbb82c517b4d535af7bc211a44a8ec418297142df2898b32c550193",
+            "FROM cgr.dev/chainguard/python:latest@sha256:1f6779775c9f466890da563e411cb677045a6c20b6a65160eefad1deffb5012c",
             dockerfile,
         )
         self.assertIn("COPY --chown=65532:65532 apps/service-api /app/apps/service-api", dockerfile)
@@ -702,7 +702,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("# syntax=docker/dockerfile:1.7", dockerfile)
         self.assertIn("--mount=type=secret,id=pip_ca,required=false", dockerfile)
         self.assertIn("PIP_CERT=/run/secrets/pip_ca", dockerfile)
-        self.assertIn('python -m pip install --upgrade "pip==26.1.2"', dockerfile)
+        self.assertIn('python -m pip install --upgrade "pip==26.2.1"', dockerfile)
         self.assertIn("install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("HOME=/home/nonroot", dockerfile)

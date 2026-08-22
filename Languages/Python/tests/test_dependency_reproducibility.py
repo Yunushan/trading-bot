@@ -522,7 +522,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         self.assertIn("python -m venv .ci-python-audit", workflow)
         self.assertIn(
-            ".ci-python-audit/bin/python -m pip install --upgrade pip==26.1.2 setuptools==83.0.0 wheel",
+            ".ci-python-audit/bin/python -m pip install --upgrade pip==26.2.1 setuptools==83.0.0 wheel",
             workflow,
         )
         self.assertIn('.ci-python-audit/bin/python -m pip install -e "./Languages/Python[service,security]"', workflow)
