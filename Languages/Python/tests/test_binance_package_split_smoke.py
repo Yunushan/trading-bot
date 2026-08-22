@@ -638,6 +638,37 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             with self.assertRaises(LiveTradingSafetyError):
                 BinanceWrapper("key", "secret", mode="Live", account_type="Futures")
 
+    def test_missing_generated_sdk_falls_back_to_python_binance(self):
+        class _FallbackClient:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+
+        sdk_backends = (
+            ("binance-sdk-derivatives-trading-usds-futures", "BinanceSDKUsdsFuturesClient"),
+            ("binance-sdk-derivatives-trading-coin-futures", "BinanceSDKCoinFuturesClient"),
+            ("binance-sdk-spot", "BinanceSDKSpotClient"),
+        )
+        for backend, sdk_class_name in sdk_backends:
+            with self.subTest(backend=backend):
+                wrapper = BinanceWrapper.__new__(BinanceWrapper)
+                wrapper.api_key = "unit-api-key"
+                wrapper.api_secret = "unit-api-secret"
+                wrapper.mode = "Demo/Testnet"
+                wrapper.account_type = "FUTURES"
+                wrapper._connector_backend = backend
+                with (
+                    mock.patch(
+                        f"app.integrations.exchanges.binance.wrapper.{sdk_class_name}",
+                        side_effect=RuntimeError("generated SDK unavailable"),
+                    ),
+                    mock.patch("app.integrations.exchanges.binance.wrapper.Client", _FallbackClient),
+                ):
+                    client = wrapper._build_client()
+
+                self.assertIsInstance(client, _FallbackClient)
+                self.assertEqual("python-binance", wrapper._connector_backend)
+
     def test_spot_market_order_writes_append_only_audit_events(self):
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "orders.jsonl"

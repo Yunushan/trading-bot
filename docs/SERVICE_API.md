@@ -53,7 +53,7 @@ python tools/run_service_tests.py --check-list
 python tools/run_service_tests.py --check-docs
 ```
 
-That `dev` extra provides the bounded `httpx` FastAPI `TestClient` transport
+That `dev` extra provides the bounded `httpx2` FastAPI `TestClient` transport
 dependency used by the route-level contract tests. The focused service test runner covers HTTP
 contracts, config/runtime persistence, operational health, lifecycle controls,
 desktop integration boundaries, and background-hosted backtest HTTP routes.

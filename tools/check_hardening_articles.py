@@ -162,7 +162,7 @@ HARDENING_ARTICLES: tuple[Article, ...] = (
         "Dependency version and upgrade safety",
         (
             Evidence("Languages/Python/tools/check_dependency_metadata.py"),
-            Evidence("tools/check_python_version_support.py", ("3.10", "3.14")),
+            Evidence("tools/check_python_version_support.py", ("3.10", "3.15")),
             Evidence("docs/DEPENDENCY_REPRODUCIBILITY.md", ("bootstrap_local_dev.py",)),
         ),
     ),

@@ -84,20 +84,20 @@ class ServiceTestRunnerTests(unittest.TestCase):
 
     def test_service_test_runner_preflights_testclient_dependencies(self):
         def fake_find_spec(name: str):
-            return None if name == "httpx" else object()
+            return None if name == "httpx2" else object()
 
         with mock.patch("importlib.util.find_spec", side_effect=fake_find_spec):
-            self.assertEqual(["httpx"], run_service_tests.missing_service_test_dependencies())
+            self.assertEqual(["httpx2"], run_service_tests.missing_service_test_dependencies())
 
     def test_service_test_runner_dependency_check_prints_install_command(self):
         with (
-            mock.patch.object(run_service_tests, "missing_service_test_dependencies", return_value=["httpx"]),
+            mock.patch.object(run_service_tests, "missing_service_test_dependencies", return_value=["httpx2"]),
             mock.patch("sys.stderr") as stderr,
         ):
             self.assertEqual(1, run_service_tests.check_dependencies())
 
         writes = "".join(str(call.args[0]) for call in stderr.write.call_args_list if call.args)
-        self.assertIn("httpx", writes)
+        self.assertIn("httpx2", writes)
         self.assertIn("python tools/bootstrap_local_dev.py --python-command", writes)
         self.assertIn('Languages/Python[service,dev]', writes)
 

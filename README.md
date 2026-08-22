@@ -9,7 +9,7 @@
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-0BSD-blue.svg" alt="0BSD License" /></a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/python-3.10--3.14-3776AB?logo=python&amp;logoColor=white" alt="Python 3.10 to 3.14" />
+    <img src="https://img.shields.io/badge/python-3.10--3.15-3776AB?logo=python&amp;logoColor=white" alt="Python 3.10 to 3.15" />
     <img src="https://img.shields.io/badge/gui-PyQt6-41CD52?logo=qt&amp;logoColor=white" alt="PyQt6 GUI" />
     <img src="https://img.shields.io/badge/markets-Exchanges%20%7C%20FX%20%7C%20Crypto-111827" alt="Markets" />
     <img src="https://img.shields.io/badge/primary%20live%20integration-Binance-F3BA2F?logo=binance&amp;logoColor=black" alt="Primary live integration Binance" />
@@ -61,7 +61,7 @@ A desktop-first trading workspace centered on the **PyQt6 Python app** in `Langu
 
 ## System requirements
 
-- **Python**: 3.10 – 3.14 (3.14 is the pinned local development version in `.python-version`).
+- **Python**: 3.10 – 3.15 (3.14 is the pinned local development version in `.python-version`).
 - **Node.js**: 26 for the thin web dashboard tests, pinned in `.node-version`.
 - **pip**: bundled with Python, used to install dependencies.
 - **Internet access**: required for supported exchange/broker REST or WebSocket APIs. Binance is the primary current live path.
@@ -238,13 +238,19 @@ python tools/update_loc_snapshot.py
 ## Quick start
 
 1. **Clone or download** this repository.
-2. **Install Python 3.14** for local development and CI parity. Remember to check “Add Python to PATH” on Windows.
+2. **Install Python 3.14** for local development and CI parity, or Python 3.15 for the latest compatibility target. Remember to check “Add Python to PATH” on Windows.
 3. **Install dependencies** using the instructions for your OS below.
 4. **Launch the GUI:**
    - Canonical product path: run `python apps/desktop-pyqt/main.py` from the repository root, **or**
    - Deprecated compatibility path: double-click `Languages/Python/Trading-Bot-Python.bat` on Windows, or run `python main.py` from `Languages/Python/`.
 5. The dashboard opens. Fill in your exchange or broker API credentials, choose Demo/Testnet or Live, configure symbols and indicators, then click **Start**. Today the default live/demo integration path is Binance.
 6. Use the **Positions** tab to monitor open trades and the **Chart/Backtest** tabs for analysis.
+
+Python 3.15 support is exercised by the compatibility, cross-platform service,
+and Windows package-smoke CI jobs. The upstream
+Binance generated SDK packages currently publish Python `<3.15` metadata, so
+their dependencies are excluded only on Python 3.15 and the existing tested
+`python-binance` fallback handles those connector selections.
 
 ---
 
@@ -289,7 +295,7 @@ python tools/bootstrap_local_dev.py --python-command "python" --dry-run
 python tools/bootstrap_local_dev.py --python-command "python"
 ```
 
-The `dev` extra includes the bounded `httpx` FastAPI `TestClient` transport
+The `dev` extra includes the bounded `httpx2` FastAPI `TestClient` transport
 dependency used by service API contract tests. The `requirements*.txt`
 files below are lightweight runtime shims for launching specific app surfaces.
 

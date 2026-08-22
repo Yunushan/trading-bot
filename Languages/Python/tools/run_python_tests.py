@@ -21,7 +21,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 
-PYTHON_TEST_DEPENDENCIES = ("PyQt6", "fastapi", "httpx", "requests", "uvicorn")
+PYTHON_TEST_DEPENDENCIES = ("PyQt6", "fastapi", "httpx2", "requests", "uvicorn")
 PYTEST_TEST_DEPENDENCIES = ("pytest",)
 
 

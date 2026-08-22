@@ -62,12 +62,17 @@ Runtime config updates are validated before the service stores them. Invalid sym
 
 ## Requirements
 
-- Python 3.10 to 3.14 (`.python-version` pins local development to 3.14)
+- Python 3.10 to 3.15 (`.python-version` pins local development to 3.14)
 - `pip`
 - Internet access for supported exchange or broker APIs
 - API credentials for a supported venue if you want live/demo connectivity
 
-Python 3.14 is recommended for local development and CI parity.
+Python 3.14 is recommended for local development and CI parity; Python 3.15 is covered by the compatibility, cross-platform service, and Windows package-smoke jobs.
+
+On Python 3.15, the upstream Binance generated SDK packages are omitted because
+their current package metadata declares Python `<3.15`. The wrapper preserves
+the connector choices and uses the tested `python-binance` fallback until those
+SDKs publish compatible metadata.
 
 ## Install
 
@@ -86,7 +91,7 @@ python -m pip install -e ".[desktop,service,dev]"
 python tools/run_python_tests.py
 ```
 
-The `dev` extra includes the bounded `httpx` FastAPI `TestClient` transport
+The `dev` extra includes the bounded `httpx2` FastAPI `TestClient` transport
 dependency used by service API contract tests. Use the
 `requirements*.txt` shims below when you only need a runtime install for one app
 surface.
@@ -95,7 +100,7 @@ surface.
 
 One-click launch:
 
-- If Python 3.10 to 3.14 is already installed, double-click `Trading-Bot-Python.bat`.
+- If Python 3.10 to 3.15 is already installed, double-click `Trading-Bot-Python.bat`.
 
 Manual setup:
 

@@ -80,6 +80,11 @@ def _mypy_cache_dir() -> str:
     return str(Path(tempfile.gettempdir()) / "trading-bot-mypy-cache")
 
 
+def _mypy_python_version() -> str:
+    """Type-check against the interpreter running this verification pass."""
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
 def _checks(
     root: Path,
     *,
@@ -173,6 +178,8 @@ def _checks(
                 _mypy_cache_dir(),
                 "--config-file",
                 "pyproject.toml",
+                "--python-version",
+                _mypy_python_version(),
             ),
             root / "Languages" / "Python",
             remediation=_python_install_remediation("dev"),
@@ -214,7 +221,7 @@ def _checks(
             "python version support",
             (python, "tools/check_python_version_support.py", "--current"),
             root,
-            remediation="Keep pyproject Python metadata and the CI compatibility matrix aligned for Python 3.10-3.14.",
+            remediation="Keep pyproject Python metadata and the CI compatibility matrix aligned for Python 3.10-3.15.",
         ),
         Check(
             "release platform matrix",
@@ -548,8 +555,8 @@ def _rust_native_evidence_import_remediation(stdout: str) -> str:
 
 def _missing_python_dependency_remediation(output: str, *, extra: str = "service,dev") -> str:
     missing_modules = ("No module named", "ModuleNotFoundError")
-    dependency_names = ("PyQt6", "httpx", "requests", "fastapi", "uvicorn", "pydantic")
-    if any(marker in output for marker in missing_modules) or "pip install httpx" in output:
+    dependency_names = ("PyQt6", "httpx", "httpx2", "requests", "fastapi", "uvicorn", "pydantic")
+    if any(marker in output for marker in missing_modules) or "pip install httpx" in output or "pip install httpx2" in output:
         if any(name in output for name in dependency_names):
             return _python_install_remediation(extra)
     return ""

@@ -323,9 +323,9 @@ jobs:
           python ../../tools/check_critical_coverage.py --coverage-file coverage.xml
 
   python-version-compatibility:
-    name: Python 3.10-3.14 Compatibility (${{ matrix.python-version }})
+    name: Python 3.10-3.15 Compatibility (${{ matrix.python-version }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -335,6 +335,7 @@ jobs:
           - "3.12"
           - "3.13"
           - "3.14"
+          - "3.15"
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -343,6 +344,7 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
           cache: pip
           cache-dependency-path: |
             Languages/Python/pyproject.toml
@@ -353,6 +355,9 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e "./Languages/Python[service,dev]"
+          if [[ "${{ matrix.python-version }}" == "3.15" ]]; then
+            python -m pip install -e "./Languages/Python[desktop]"
+          fi
 
       - name: Validate Python version support metadata
         shell: bash
@@ -367,6 +372,14 @@ jobs:
           set -euo pipefail
           python tools/check_python_sources_compile.py apps/service-api/main.py Languages/Python/app/service Languages/Python/app/settings Languages/Python/app/integrations/llm Languages/Python/trading_core Languages/Python/tools tools
 
+      - name: Type-check Python 3.15 targets
+        if: matrix.python-version == '3.15'
+        shell: bash
+        working-directory: Languages/Python
+        run: |
+          set -euo pipefail
+          python -m mypy --no-incremental --cache-dir "$RUNNER_TEMP/trading-bot-mypy-cache" --config-file pyproject.toml --python-version 3.15
+
       - name: Run focused compatibility tests
         shell: bash
         working-directory: Languages/Python
@@ -377,6 +390,110 @@ jobs:
           python -m unittest discover -s tests -p 'test_service_schema_contracts.py'
           python -m unittest discover -s tests -p 'test_llm_clients_privacy.py'
           python -m unittest discover -s tests -p 'test_llm_local_models.py'
+
+      - name: Run full Python 3.15 readiness suite
+        if: matrix.python-version == '3.15'
+        shell: bash
+        working-directory: Languages/Python
+        run: |
+          set -euo pipefail
+          python tools/run_python_tests.py --runner pytest
+
+  python-315-windows-package-smoke:
+    name: Python 3.15 Windows Package Smoke
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python 3.15
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.15"
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: |
+            Languages/Python/pyproject.toml
+
+      - name: Install Python 3.15 packaging dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          python -m pip install -r Languages/Python/requirements.packaging.txt
+          python -m pip install -e "./Languages/Python[desktop,service]"
+
+      - name: Validate Python 3.15 package metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python tools/check_python_version_support.py --current
+          python Languages/Python/tools/check_dependency_metadata.py
+
+      - name: Build and smoke-test Python 3.15 executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $distPath = Join-Path $env:RUNNER_TEMP "trading-bot-py315-dist"
+          $workPath = Join-Path $env:RUNNER_TEMP "trading-bot-py315-build"
+          ./Languages/Python/tools/build_exe.ps1 `
+            -Python python `
+            -Name "Trading-Bot-Python-Py315" `
+            -SkipDependencyInstall `
+            -ReleaseTag "$env:GITHUB_SHA" `
+            -DistPath $distPath `
+            -WorkPath $workPath
+
+  python-315-cross-platform-smoke:
+    name: Python 3.15 Cross-Platform Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python 3.15
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.15"
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: |
+            Languages/Python/pyproject.toml
+
+      - name: Install Python 3.15 service dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python[service]"
+
+      - name: Validate Python 3.15 support metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_python_version_support.py --current
+          python Languages/Python/tools/check_dependency_metadata.py
+
+      - name: Compile Python 3.15 service surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_python_sources_compile.py apps/service-api/main.py Languages/Python/app/service Languages/Python/app/settings Languages/Python/trading_core
+
+      - name: Smoke-check Python 3.15 service launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/service-api/main.py --healthcheck
 
   web-dashboard-quality:
     name: Web Dashboard Quality

@@ -33,12 +33,12 @@ def _run_runner(*args: str) -> tuple[int, str, str]:
 class PythonTestRunnerTests(unittest.TestCase):
     def test_python_test_runner_preflights_full_test_dependencies(self):
         def fake_find_spec(name: str):
-            return None if name in {"PyQt6", "httpx"} else object()
+            return None if name in {"PyQt6", "httpx2"} else object()
 
         with mock.patch("importlib.util.find_spec", side_effect=fake_find_spec):
             missing = run_python_tests.missing_python_test_dependencies()
 
-        self.assertEqual(["PyQt6", "httpx"], missing)
+        self.assertEqual(["PyQt6", "httpx2"], missing)
 
     def test_python_test_runner_pytest_mode_preflights_pytest(self):
         def fake_find_spec(name: str):
@@ -51,14 +51,14 @@ class PythonTestRunnerTests(unittest.TestCase):
 
     def test_python_test_runner_dependency_check_prints_full_install_command(self):
         with (
-            mock.patch.object(run_python_tests, "missing_python_test_dependencies", return_value=["PyQt6", "httpx"]),
+            mock.patch.object(run_python_tests, "missing_python_test_dependencies", return_value=["PyQt6", "httpx2"]),
             mock.patch("sys.stderr") as stderr,
         ):
             self.assertEqual(1, run_python_tests.check_dependencies())
 
         writes = "".join(str(call.args[0]) for call in stderr.write.call_args_list if call.args)
         self.assertIn("PyQt6", writes)
-        self.assertIn("httpx", writes)
+        self.assertIn("httpx2", writes)
         self.assertIn("python tools/bootstrap_local_dev.py --python-command", writes)
         self.assertIn('Languages/Python[desktop,service,dev]', writes)
 

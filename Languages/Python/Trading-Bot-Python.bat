@@ -17,7 +17,7 @@ if not defined PYTHON_CMD (
     call :INSTALL_PYTHON
 )
 if not defined PYTHON_CMD (
-    echo Failed to locate or install Python. Please install Python 3.11 or newer and run this launcher again.
+    echo Failed to locate or install Python. Please install Python 3.10 through 3.15 and run this launcher again.
     pause
     goto END
 )
@@ -56,9 +56,32 @@ exit /b 0
 where python >nul 2>&1
 if %errorlevel%==0 (
     for /f "delims=" %%P in ('where python') do (
-        set "PYTHON_CMD=%%P"
-        goto DETECT_DONE
+        "%%P" -c "import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 16) else 1)" >nul 2>&1
+        if not errorlevel 1 (
+            set "PYTHON_CMD=%%P"
+            goto DETECT_DONE
+        )
     )
+)
+py -3.15 -c "import sys; print(sys.executable)" >"%TEMP%\_py_path.txt" 2>nul
+if exist "%TEMP%\_py_path.txt" (
+    set /p PYTHON_CMD=<"%TEMP%\_py_path.txt"
+    del "%TEMP%\_py_path.txt" >nul 2>&1
+    goto DETECT_DONE
+)
+if exist "%LocalAppData%\Programs\Python\Python315\python.exe" (
+    set "PYTHON_CMD=%LocalAppData%\Programs\Python\Python315\python.exe"
+    goto DETECT_DONE
+)
+if exist "C:\Python315\python.exe" (
+    set "PYTHON_CMD=C:\Python315\python.exe"
+    goto DETECT_DONE
+)
+py -3.14 -c "import sys; print(sys.executable)" >"%TEMP%\_py_path.txt" 2>nul
+if exist "%TEMP%\_py_path.txt" (
+    set /p PYTHON_CMD=<"%TEMP%\_py_path.txt"
+    del "%TEMP%\_py_path.txt" >nul 2>&1
+    goto DETECT_DONE
 )
 py -3 -c "import sys; print(sys.executable)" >"%TEMP%\_py_path.txt" 2>nul
 if exist "%TEMP%\_py_path.txt" (

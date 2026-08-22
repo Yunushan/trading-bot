@@ -149,6 +149,14 @@ editable development install was created under the wrong interpreter; recreate
 it with the Python version in `.python-version`. A Node mismatch means web and
 mobile client tests are not running under the same major Node release as CI.
 
+Python 3.15 is also a supported compatibility target. The CI compatibility
+matrix installs and tests it, and the Windows package-smoke job builds and
+launches the PyInstaller executable with Python 3.15. Keep `.python-version`
+pinned to 3.14 unless intentionally changing the repository's default local
+baseline. On Python 3.15, the generated Binance SDK packages remain guarded by
+their upstream `<3.15` metadata and the wrapper uses the tested Python Binance
+fallback path.
+
 Use `--strict` in CI or release scripts. The Python CI job checks Python only,
 and the Node CI jobs check Node after `actions/setup-node` has selected the
 declared version.

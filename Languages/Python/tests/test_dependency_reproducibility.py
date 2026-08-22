@@ -63,6 +63,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("mypy", check_by_name["python type check"].command)
         self.assertIn("--no-incremental", check_by_name["python type check"].command)
         self.assertIn("--cache-dir", check_by_name["python type check"].command)
+        self.assertIn("--python-version", check_by_name["python type check"].command)
+        version_index = check_by_name["python type check"].command.index("--python-version")
+        self.assertEqual(module._mypy_python_version(), check_by_name["python type check"].command[version_index + 1])
 
         full_checks = {check.name: check for check in module._checks(REPO_ROOT, skip_slow=False)}
         full_check_names = set(full_checks)
@@ -411,15 +414,15 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         self.assertIn("cd apps/mobile-client && npm install --package-lock-only", remediation)
 
-    def test_verify_all_service_dependency_remediation_handles_missing_httpx(self):
+    def test_verify_all_service_dependency_remediation_handles_missing_httpx2(self):
         module = _load_verify_all_module()
         check = module.Check("service tests", (sys.executable,), REPO_ROOT, remediation="generic")
 
         remediation = module._remediation_for(
             check,
             returncode=1,
-            stdout="You can install this with: $ pip install httpx",
-            stderr="ModuleNotFoundError: No module named 'httpx'",
+            stdout="You can install this with: $ pip install httpx2",
+            stderr="ModuleNotFoundError: No module named 'httpx2'",
         )
 
         self.assertIn("python tools/bootstrap_local_dev.py --python-command", remediation)
@@ -467,7 +470,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual([], module.run_checks())
         self.assertEqual(".[desktop]", module.EXPECTED_REQUIREMENT_SHIMS["requirements.txt"])
         self.assertEqual(".[service]", module.EXPECTED_REQUIREMENT_SHIMS["requirements.service.txt"])
-        self.assertIn("httpx", module.DEV_DEPENDENCY_NAMES)
+        self.assertIn("httpx2", module.DEV_DEPENDENCY_NAMES)
         self.assertEqual("pyinstaller==6.22.0", module.PYINSTALLER_REQUIREMENT)
         self.assertEqual(
             ["pyinstaller==6.22.0"],
@@ -480,6 +483,10 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual("3.14", (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip())
         self.assertEqual("26", (REPO_ROOT / ".node-version").read_text(encoding="utf-8").strip())
         launcher = (PYTHON_ROOT / "Trading-Bot-Python.bat").read_text(encoding="utf-8")
+        self.assertIn("py -3.15 -c", launcher)
+        self.assertIn("%LocalAppData%\\Programs\\Python\\Python315\\python.exe", launcher)
+        self.assertIn("C:\\Python315\\python.exe", launcher)
+        self.assertIn("sys.version_info[:2] < (3, 16)", launcher)
         self.assertIn("python-3.14.5-amd64.exe", launcher)
         docs = (REPO_ROOT / "docs" / "DEPENDENCY_REPRODUCIBILITY.md").read_text(encoding="utf-8")
         self.assertIn("python tools/check_local_tool_versions.py --strict", docs)

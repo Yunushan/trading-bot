@@ -22,7 +22,7 @@ from app.service.api_contract import SERVICE_API_ROUTE_PATHS  # noqa: E402
 from app.service.runtime import TradingBotService  # noqa: E402
 
 REPO_ROOT = PYTHON_ROOT.parents[1]
-FASTAPI_TESTCLIENT_AVAILABLE = FASTAPI_AVAILABLE and importlib.util.find_spec("httpx") is not None
+FASTAPI_TESTCLIENT_AVAILABLE = FASTAPI_AVAILABLE and importlib.util.find_spec("httpx2") is not None
 
 
 def _create_test_client(app, *, raise_server_exceptions: bool = True):

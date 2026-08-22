@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate declared and CI-checked Python support for 3.10 through 3.14."""
+"""Validate declared and CI-checked Python support for 3.10 through 3.15."""
 
 from __future__ import annotations
 
@@ -10,12 +10,20 @@ import sys
 from pathlib import Path
 
 
-SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
+SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.11", "3.12", "3.13", "3.14", "3.15")
 DEFAULT_PYTHON_VERSION = "3.14"
-PYTHON_REQUIRES = ">=3.10,<3.15"
+PYTHON_REQUIRES = ">=3.10,<3.16"
 DOCKER_PYTHON_BUILDER_IMAGE = "cgr.dev/chainguard/python:latest-dev@sha256:4bf7e945777010672b8ccd5d2ae2c41c91ad6d3478878347c731ae536d506bef"
 DOCKER_PYTHON_RUNTIME_IMAGE = "cgr.dev/chainguard/python:latest@sha256:1f6779775c9f466890da563e411cb677045a6c20b6a65160eefad1deffb5012c"
 WINDOWS_BOOTSTRAP_PYTHON_VERSION = "3.14.5"
+
+PYTHON_315_DEPENDENCY_FRAGMENTS = (
+    "numpy==2.5.2; python_version >= '3.15'",
+    "pandas==3.0.5; python_version >= '3.15'",
+    "binance-sdk-derivatives-trading-usds-futures==17.1.0; python_version < '3.15'",
+    "binance-sdk-derivatives-trading-coin-futures==13.0.0; python_version < '3.15'",
+    "binance-sdk-spot==11.1.0; python_version < '3.15'",
+)
 
 
 def _repo_root() -> Path:
@@ -53,6 +61,9 @@ def _check_pyproject(root: Path) -> list[str]:
         issues.append("mypy python_version must remain 3.10 for lowest-supported Python compatibility")
     if '"tomli>=2,<3; python_version < \'3.11\'"' not in text:
         issues.append("dev dependencies must include tomli for Python 3.10 metadata/test tooling")
+    for fragment in PYTHON_315_DEPENDENCY_FRAGMENTS:
+        if fragment not in text:
+            issues.append(f"pyproject is missing Python 3.15 dependency contract: {fragment}")
     return issues
 
 
@@ -80,6 +91,14 @@ def _check_deployment_versions(root: Path) -> list[str]:
             "Windows launcher must bootstrap Python "
             f"{WINDOWS_BOOTSTRAP_PYTHON_VERSION} from python.org"
         )
+    for fragment in (
+        "py -3.15 -c",
+        r"%LocalAppData%\Programs\Python\Python315\python.exe",
+        r"C:\Python315\python.exe",
+        "sys.version_info[:2] < (3, 16)",
+    ):
+        if fragment not in launcher:
+            issues.append(f"Windows launcher must probe Python 3.15: {fragment}")
     return issues
 
 
@@ -88,9 +107,19 @@ def _check_ci_matrix(root: Path) -> list[str]:
     issues: list[str] = []
     required_fragments = (
         "python-version-compatibility:",
-        "Python 3.10-3.14 Compatibility",
+        "Python 3.10-3.15 Compatibility",
+        "allow-prereleases: true",
+        'if [[ "${{ matrix.python-version }}" == "3.15" ]]',
+        'python -m pip install -e "./Languages/Python[desktop]"',
         "python tools/check_python_version_support.py --current",
         'python -m pip install -e "./Languages/Python[service,dev]"',
+        "python-315-windows-package-smoke:",
+        'python-version: "3.15"',
+        "build_exe.ps1",
+        'Trading-Bot-Python-Py315',
+        "python-315-cross-platform-smoke:",
+        "Python 3.15 Cross-Platform Smoke",
+        "apps/service-api/main.py --healthcheck",
     )
     for fragment in required_fragments:
         if fragment not in workflow:

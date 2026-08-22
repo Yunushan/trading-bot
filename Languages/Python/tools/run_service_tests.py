@@ -24,7 +24,7 @@ from tools.service_test_manifest import (  # noqa: E402
 )
 
 
-SERVICE_TEST_DEPENDENCIES = ("fastapi", "httpx")
+SERVICE_TEST_DEPENDENCIES = ("fastapi", "httpx2")
 
 
 def _read_declared_python_version() -> str:

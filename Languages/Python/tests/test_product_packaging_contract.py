@@ -82,7 +82,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("apps/desktop-pyqt", config["include"])
         self.assertIn("apps/service-api", config["include"])
         self.assertIn("Languages/Python/app", config["include"])
-        self.assertEqual("3.14", config["pythonVersion"])
+        self.assertEqual("3.15", config["pythonVersion"])
 
     def test_windows_build_script_targets_canonical_desktop_wrapper(self):
         script = (REPO_ROOT / "Languages" / "Python" / "tools" / "build_exe.ps1").read_text(encoding="utf-8")
@@ -1505,9 +1505,17 @@ class ProductPackagingContractTests(unittest.TestCase):
         runtime_dependencies = pyproject["project"]["dependencies"]
 
         self.assertIn("numpy==2.2.6; python_version < '3.11'", runtime_dependencies)
-        self.assertIn("numpy==2.4.4; python_version >= '3.11'", runtime_dependencies)
+        self.assertIn(
+            "numpy==2.4.4; python_version >= '3.11' and python_version < '3.15'",
+            runtime_dependencies,
+        )
+        self.assertIn("numpy==2.5.2; python_version >= '3.15'", runtime_dependencies)
         self.assertIn("pandas==2.3.2; python_version < '3.11'", runtime_dependencies)
-        self.assertIn("pandas==3.0.2; python_version >= '3.11'", runtime_dependencies)
+        self.assertIn(
+            "pandas==3.0.2; python_version >= '3.11' and python_version < '3.15'",
+            runtime_dependencies,
+        )
+        self.assertIn("pandas==3.0.5; python_version >= '3.15'", runtime_dependencies)
         self.assertIn("ccxt==4.5.73", runtime_dependencies)
         self.assertIn("aiohttp==3.14.3", runtime_dependencies)
         self.assertNotIn("numpy==2.4.4", runtime_dependencies)
@@ -1545,8 +1553,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         optional_dependencies = pyproject["project"]["optional-dependencies"]
 
-        self.assertIn("httpx>=0.27,<1", optional_dependencies["dev"])
-        self.assertNotIn("httpx>=0.27,<1", optional_dependencies["service"])
+        self.assertIn("httpx2>=2.9,<3", optional_dependencies["dev"])
+        self.assertNotIn("httpx2>=2.9,<3", optional_dependencies["service"])
 
         docs = {
             "root README": (REPO_ROOT / "README.md").read_text(encoding="utf-8"),
@@ -1651,7 +1659,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("--only rust-native-release-platform-evidence", rust_release_evidence_workflow)
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", rust_release_evidence_workflow)
 
-    def test_python_version_support_matrix_declares_and_checks_310_to_314(self):
+    def test_python_version_support_matrix_declares_and_checks_310_to_315(self):
         checker = REPO_ROOT / "tools" / "check_python_version_support.py"
         result = subprocess.run(
             [sys.executable, str(checker), "--current", "--json"],
@@ -1662,13 +1670,26 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         report = json.loads(result.stdout)
-        self.assertEqual(["3.10", "3.11", "3.12", "3.13", "3.14"], report["supported_versions"])
+        self.assertEqual(["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"], report["supported_versions"])
         self.assertEqual("3.14", report["default_version"])
-        self.assertEqual(">=3.10,<3.15", report["requires_python"])
+        self.assertEqual(">=3.10,<3.16", report["requires_python"])
 
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("python-version-compatibility:", workflow)
-        self.assertIn("Python 3.10-3.14 Compatibility", workflow)
+        self.assertIn("Python 3.10-3.15 Compatibility", workflow)
+        self.assertIn("allow-prereleases: true", workflow)
+        self.assertIn("if: matrix.python-version == '3.15'", workflow)
+        self.assertIn('python -m pip install -e "./Languages/Python[desktop]"', workflow)
+        self.assertIn("Type-check Python 3.15 targets", workflow)
+        self.assertIn("--python-version 3.15", workflow)
+        self.assertIn("python-315-windows-package-smoke:", workflow)
+        self.assertIn("Python 3.15 Windows Package Smoke", workflow)
+        self.assertIn('python-version: "3.15"', workflow)
+        self.assertIn("build_exe.ps1", workflow)
+        self.assertIn("Trading-Bot-Python-Py315", workflow)
+        self.assertIn("python-315-cross-platform-smoke:", workflow)
+        self.assertIn("Python 3.15 Cross-Platform Smoke", workflow)
+        self.assertIn("apps/service-api/main.py --healthcheck", workflow)
         self.assertIn("python tools/check_python_version_support.py --current", workflow)
         for version in report["supported_versions"]:
             self.assertIn(f'"{version}"', workflow)

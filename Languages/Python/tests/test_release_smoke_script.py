@@ -52,6 +52,7 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
         self.assertIn("check Python dependency metadata", stdout)
         self.assertIn("Languages/Python/tools/check_dependency_metadata.py", stdout)
         self.assertIn("python -m mypy --no-incremental --cache-dir", stdout)
+        self.assertIn("--python-version", stdout)
         self.assertIn("manual desktop/service smoke", stdout)
         self.assertIn("--skip-http", stdout)
         self.assertNotIn("python -m pytest", stdout)
@@ -82,6 +83,18 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
         self.assertIn('python tools/check_local_tool_versions.py --strict --python-command python', stdout)
         self.assertIn("python -m ruff check --no-cache", stdout)
         self.assertIn("python -m mypy --no-incremental --cache-dir", stdout)
+        self.assertIn("--python-version", stdout)
+
+    def test_release_smoke_uses_selected_interpreter_for_mypy_target(self):
+        module = _load_release_smoke_module()
+        steps = module.build_release_steps(
+            python_command=(sys.executable,),
+            skip_full_tests=True,
+            manual_smoke_mode="skip",
+        )
+        type_check = next(step for step in steps if step.name == "type-check configured Python targets")
+        version_index = type_check.command.index("--python-version")
+        self.assertEqual(f"{sys.version_info.major}.{sys.version_info.minor}", type_check.command[version_index + 1])
 
     def test_release_smoke_rejects_conflicting_python_options(self):
         returncode, stdout, stderr = _run_release_smoke(

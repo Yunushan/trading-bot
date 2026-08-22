@@ -28,6 +28,7 @@ SUPPORTED_PYTHON_CLASSIFIERS = {
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 }
 
 WINDOWS_ARM64_ALLOWLIST = {
@@ -35,7 +36,7 @@ WINDOWS_ARM64_ALLOWLIST = {
 }
 
 DEV_DEPENDENCY_NAMES = {
-    "httpx",
+    "httpx2",
     "mypy",
     "pre-commit",
     "pytest",
@@ -53,12 +54,20 @@ SECURITY_DEPENDENCIES = {
 PYTHON_VERSION_RUNTIME_PINS = {
     "numpy": {
         "numpy==2.2.6; python_version < '3.11'",
-        "numpy==2.4.4; python_version >= '3.11'",
+        "numpy==2.4.4; python_version >= '3.11' and python_version < '3.15'",
+        "numpy==2.5.2; python_version >= '3.15'",
     },
     "pandas": {
         "pandas==2.3.2; python_version < '3.11'",
-        "pandas==3.0.2; python_version >= '3.11'",
+        "pandas==3.0.2; python_version >= '3.11' and python_version < '3.15'",
+        "pandas==3.0.5; python_version >= '3.15'",
     },
+}
+
+PYTHON_315_FALLBACK_DEPENDENCIES = {
+    "binance-sdk-derivatives-trading-usds-futures": "binance-sdk-derivatives-trading-usds-futures==17.1.0; python_version < '3.15'",
+    "binance-sdk-derivatives-trading-coin-futures": "binance-sdk-derivatives-trading-coin-futures==13.0.0; python_version < '3.15'",
+    "binance-sdk-spot": "binance-sdk-spot==11.1.0; python_version < '3.15'",
 }
 
 PACKAGING_INSTALL_SURFACES = (
@@ -108,8 +117,8 @@ def _non_comment_lines(path: Path) -> list[str]:
 def _check_python_support(project: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     requires_python = str(project.get("requires-python") or "")
-    if requires_python != ">=3.10,<3.15":
-        errors.append(f"project.requires-python is {requires_python!r}; expected '>=3.10,<3.15'")
+    if requires_python != ">=3.10,<3.16":
+        errors.append(f"project.requires-python is {requires_python!r}; expected '>=3.10,<3.16'")
 
     classifiers = set(project.get("classifiers") or [])
     missing = sorted(SUPPORTED_PYTHON_CLASSIFIERS - classifiers)
@@ -154,6 +163,21 @@ def _check_runtime_python_version_pins(requirements: list[str]) -> list[str]:
     return errors
 
 
+def _check_python_315_fallback_dependencies(requirements: list[str]) -> list[str]:
+    errors: list[str] = []
+    by_name: dict[str, set[str]] = {}
+    for requirement in requirements:
+        by_name.setdefault(_dependency_name(requirement), set()).add(requirement)
+    for name, expected in PYTHON_315_FALLBACK_DEPENDENCIES.items():
+        actual = by_name.get(name, set())
+        if actual != {expected}:
+            errors.append(
+                f"Python 3.15 must omit upstream-incompatible SDK {name!r} via the guarded marker: "
+                f"expected {[expected]!r}; found {sorted(actual)!r}"
+            )
+    return errors
+
+
 def _check_windows_arm64_group(requirements: list[str]) -> list[str]:
     errors: list[str] = []
     for requirement in requirements:
@@ -190,6 +214,7 @@ def _check_dependency_groups(pyproject: dict[str, Any]) -> list[str]:
     runtime_dependencies = list(project.get("dependencies") or [])
     errors.extend(_check_exact_group("runtime", runtime_dependencies))
     errors.extend(_check_runtime_python_version_pins(runtime_dependencies))
+    errors.extend(_check_python_315_fallback_dependencies(runtime_dependencies))
     errors.extend(_check_exact_group("desktop", list(optional.get("desktop") or [])))
     errors.extend(_check_exact_group("service", list(optional.get("service") or [])))
     errors.extend(_check_windows_arm64_group(list(optional.get("windows-arm64") or [])))

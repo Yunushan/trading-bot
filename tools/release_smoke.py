@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -53,6 +54,24 @@ def _display_command(command: list[str], python_command: tuple[str, ...]) -> str
 
 def _mypy_cache_dir() -> str:
     return str(Path(tempfile.gettempdir()) / "trading-bot-release-mypy-cache")
+
+
+def _mypy_python_version(python_command: tuple[str, ...]) -> str:
+    """Type-check against the interpreter selected for this release smoke run."""
+    if python_command == (sys.executable,):
+        return f"{sys.version_info.major}.{sys.version_info.minor}"
+    try:
+        result = subprocess.run(
+            [*python_command, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return f"{sys.version_info.major}.{sys.version_info.minor}"
+    version = result.stdout.strip()
+    return version if re.fullmatch(r"\d+\.\d+", version) else f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
 def build_release_steps(
@@ -136,6 +155,8 @@ def build_release_steps(
                 _mypy_cache_dir(),
                 "--config-file",
                 "pyproject.toml",
+                "--python-version",
+                _mypy_python_version(python),
             ],
         ),
         ReleaseStep(
