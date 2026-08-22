@@ -704,6 +704,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("PIP_CERT=/run/secrets/pip_ca", dockerfile)
         self.assertIn('python -m pip install --upgrade "pip==26.2.1"', dockerfile)
         self.assertIn('pip install --upgrade "setuptools==84.0.0" "msgpack==1.2.1"', dockerfile)
+        self.assertIn('USER root', dockerfile)
+        self.assertIn(
+            'names = (\'setuptools\', \'pkg_resources\', \'msgpack\', \'_msgpack\', \'setuptools-70.3.0.dist-info\', \'msgpack-1.1.2.dist-info\')',
+            dockerfile,
+        )
         self.assertIn("install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("HOME=/home/nonroot", dockerfile)
