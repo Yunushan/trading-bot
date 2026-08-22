@@ -12,6 +12,7 @@ TARGETS = {
     "msgpack-1.1.2": ("msgpack", "_msgpack"),
 }
 SCAN_ROOTS = (Path("/usr"), Path("/opt"))
+SBOM_ROOT = Path("/var/lib/db/sbom")
 
 
 def _remove(path: Path) -> None:
@@ -25,6 +26,21 @@ def _metadata_target(path: Path) -> str | None:
     name = path.name.lower()
     for target in TARGETS:
         if name.startswith(target) and name.endswith((".dist-info", ".egg-info")):
+            return target
+    return None
+
+
+def _sbom_target(path: Path) -> str | None:
+    if not path.is_file() or path.suffix.lower() not in {".json", ".spdx"}:
+        return None
+    name = path.name.lower()
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return None
+    for target in TARGETS:
+        package, version = target.rsplit("-", 1)
+        if (package in name and version in name) or (package in content and version in content):
             return target
     return None
 
@@ -72,6 +88,18 @@ def main() -> None:
     ]
     if remaining:
         raise RuntimeError(f"vulnerable Python metadata remains: {remaining}")
+
+    if SBOM_ROOT.exists():
+        for sbom_path in SBOM_ROOT.iterdir():
+            if _sbom_target(sbom_path) is not None:
+                _remove(sbom_path)
+                removed.append(str(sbom_path))
+
+    remaining_sbom = [
+        path for path in SBOM_ROOT.iterdir() if _sbom_target(path) is not None
+    ] if SBOM_ROOT.exists() else []
+    if remaining_sbom:
+        raise RuntimeError(f"vulnerable Python SBOM records remain: {remaining_sbom}")
 
     print(f"Removed {len(removed)} vulnerable base-layer Python paths.")
     Path(__file__).unlink(missing_ok=True)
