@@ -721,6 +721,8 @@ class ProductPackagingContractTests(unittest.TestCase):
             "docker build --pull --provenance=false --sbom=false --file docker/backend.Dockerfile",
             supply_chain_workflow,
         )
+        self.assertIn("Verify runtime Python package versions", supply_chain_workflow)
+        self.assertIn('expected = {"setuptools": "84.0.0", "msgpack": "1.2.1"}', supply_chain_workflow)
         self.assertIn("http://127.0.0.1:18000/readyz", ci_workflow)
         self.assertIn("BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1", ci_workflow)
         self.assertIn("BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789", ci_workflow)

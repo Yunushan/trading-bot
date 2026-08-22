@@ -172,6 +172,18 @@ jobs:
             sleep "$((attempt * 10))"
           done
 
+      - name: Verify runtime Python package versions
+        if: steps.image-build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /opt/venv/bin/python trading-bot-service:supply-chain -c \
+            'import importlib.metadata as metadata; import sys; \
+             expected = {"setuptools": "84.0.0", "msgpack": "1.2.1"}; \
+             actual = {name: metadata.version(name) for name in expected}; \
+             print({"python": sys.version, "packages": actual}); \
+             assert actual == expected, actual'
+
       - name: Audit service container image
         if: steps.image-build.outcome == 'success'
         id: trivy
