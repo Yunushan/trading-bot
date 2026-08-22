@@ -26,6 +26,7 @@ RUN --mount=type=secret,id=pip_ca,required=false,target=/run/secrets/pip_ca \
     && python -m venv "$VIRTUAL_ENV" \
     && python -m pip install --upgrade "pip==26.2.1" \
     && pip install /build/Languages/Python[service] \
+    && pip install --upgrade "setuptools==84.0.0" "msgpack==1.2.1" \
     && install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot \
     && touch /home/nonroot/.trading-bot/.keep \
     && chown 65532:65532 /home/nonroot/.trading-bot/.keep

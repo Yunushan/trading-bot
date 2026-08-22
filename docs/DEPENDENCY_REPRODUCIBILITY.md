@@ -107,8 +107,8 @@ deliberate base-image refreshes; do not replace either digest with a mutable
 tag. Dependencies are installed in the `-dev` builder, while the production
 stage copies only the virtual environment into the unprivileged runtime image.
 This removes package-manager and compiler tooling from the release image. The
-image bootstrap also pins `pip` 26.2.1 rather than upgrading to an unreviewed
-latest version during a container build.
+image bootstrap also pins `pip` 26.2.1, `setuptools` 84.0.0, and `msgpack` 1.2.1
+rather than upgrading to unreviewed latest versions during a container build.
 
 For a hard local setup gate, use:
 

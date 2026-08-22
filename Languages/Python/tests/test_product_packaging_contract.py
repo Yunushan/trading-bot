@@ -703,6 +703,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("--mount=type=secret,id=pip_ca,required=false", dockerfile)
         self.assertIn("PIP_CERT=/run/secrets/pip_ca", dockerfile)
         self.assertIn('python -m pip install --upgrade "pip==26.2.1"', dockerfile)
+        self.assertIn('pip install --upgrade "setuptools==84.0.0" "msgpack==1.2.1"', dockerfile)
         self.assertIn("install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("HOME=/home/nonroot", dockerfile)
