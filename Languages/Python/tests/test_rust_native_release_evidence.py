@@ -5822,6 +5822,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 "tools/check_native_cpp.py",
                 "--config",
                 "Release",
+                "--cxx-standard",
+                "23",
                 "--timeout",
                 "1200",
             ],
