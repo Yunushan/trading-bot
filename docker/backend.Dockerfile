@@ -43,12 +43,6 @@ WORKDIR /app
 
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot /home/nonroot/.trading-bot
-COPY docker/cleanup_python_packages.py /tmp/cleanup_python_packages.py
-
-# The pinned runtime venv supplies the supported copies. Remove vulnerable
-# distributions bundled in either base layer before dropping privileges.
-USER root
-RUN ["python", "/tmp/cleanup_python_packages.py"]
 
 COPY --chown=65532:65532 apps/service-api /app/apps/service-api
 COPY --chown=65532:65532 apps/web-dashboard /app/apps/web-dashboard

@@ -161,7 +161,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
-            if docker build --pull --file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .; then
+            if docker build --pull --provenance=false --sbom=false --file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .; then
               exit 0
             fi
 

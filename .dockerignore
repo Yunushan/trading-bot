@@ -2,7 +2,6 @@
 **
 !docker/
 !docker/backend.Dockerfile
-!docker/cleanup_python_packages.py
 !apps/
 !apps/service-api/
 !apps/service-api/**

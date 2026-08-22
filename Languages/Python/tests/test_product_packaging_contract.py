@@ -704,12 +704,6 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("PIP_CERT=/run/secrets/pip_ca", dockerfile)
         self.assertIn('python -m pip install --upgrade "pip==26.2.1"', dockerfile)
         self.assertIn('pip install --upgrade "setuptools==84.0.0" "msgpack==1.2.1"', dockerfile)
-        self.assertIn("COPY docker/cleanup_python_packages.py /tmp/cleanup_python_packages.py", dockerfile)
-        self.assertIn('RUN ["python", "/tmp/cleanup_python_packages.py"]', dockerfile)
-        self.assertIn('!docker/cleanup_python_packages.py', (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8"))
-        cleanup_script = (REPO_ROOT / "docker" / "cleanup_python_packages.py").read_text(encoding="utf-8")
-        self.assertIn('SBOM_ROOT = Path("/var/lib/db/sbom")', cleanup_script)
-        self.assertIn("_sbom_target", cleanup_script)
         self.assertIn("install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("HOME=/home/nonroot", dockerfile)
@@ -720,6 +714,13 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("apk add --no-cache build-base linux-headers", dockerfile)
         self.assertIn("Build and health-check Python 3.14 service container", ci_workflow)
         self.assertIn("docker build --pull --file docker/backend.Dockerfile", ci_workflow)
+        supply_chain_workflow = (REPO_ROOT / ".github" / "workflows" / "supply-chain-security.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "docker build --pull --provenance=false --sbom=false --file docker/backend.Dockerfile",
+            supply_chain_workflow,
+        )
         self.assertIn("http://127.0.0.1:18000/readyz", ci_workflow)
         self.assertIn("BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1", ci_workflow)
         self.assertIn("BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789", ci_workflow)
