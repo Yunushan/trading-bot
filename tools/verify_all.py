@@ -96,12 +96,22 @@ def _checks(
     cargo = _command_path("cargo")
     node = _command_path("node")
     npm = _command_path("npm")
-    native_cpp_command = (python, "tools/check_native_cpp.py", "--json", "--timeout", "900")
+    native_cpp_command = (
+        python,
+        "tools/check_native_cpp.py",
+        "--json",
+        "--cxx-standard",
+        "23",
+        "--timeout",
+        "900",
+    )
     if skip_slow:
         native_cpp_command = (
             python,
             "tools/check_native_cpp.py",
             "--json",
+            "--cxx-standard",
+            "23",
             "--no-require-webengine",
             "--disable-webengine",
             "--no-enable-qt-deploy-script",

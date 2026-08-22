@@ -5,6 +5,20 @@ project(BinanceBacktestTabCpp LANGUAGES CXX)
 set(TB_EXECUTABLE_NAME "Trading-Bot-C++")
 set(TB_LEGACY_EXECUTABLE_NAME "binance_backtest_tab")
 set(TB_QT_VERSION "6.10.3" CACHE STRING "Minimum supported Qt version for the C++ build")
+set(
+    TB_CXX_STANDARD
+    "23"
+    CACHE STRING
+    "C++ language standard for the native build (23 by default; 26 is an explicit preview opt-in)"
+)
+set_property(CACHE TB_CXX_STANDARD PROPERTY STRINGS 23 26)
+
+if (NOT TB_CXX_STANDARD STREQUAL "23" AND NOT TB_CXX_STANDARD STREQUAL "26")
+    message(FATAL_ERROR "TB_CXX_STANDARD must be 23 or 26, got '${TB_CXX_STANDARD}'.")
+endif()
+if (TB_CXX_STANDARD STREQUAL "26" AND CMAKE_VERSION VERSION_LESS "3.25")
+    message(FATAL_ERROR "C++26 requires CMake 3.25 or newer; found CMake ${CMAKE_VERSION}.")
+endif()
 
 # CTest runs binaries with the build directory as their working directory.
 # Keep the checked-out Python launcher discoverable in isolated/temp builds
@@ -13,9 +27,51 @@ get_filename_component(TB_NATIVE_PROJECT_ROOT "${CMAKE_SOURCE_DIR}/../.." ABSOLU
 file(TO_CMAKE_PATH "${TB_NATIVE_PROJECT_ROOT}" TB_NATIVE_PROJECT_ROOT)
 set(TB_NATIVE_PROJECT_ROOT_DEFINE "TB_NATIVE_PROJECT_ROOT=\"${TB_NATIVE_PROJECT_ROOT}\"")
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(_tb_cxx26_mode_flag "")
+if (TB_CXX_STANDARD STREQUAL "23")
+    set(CMAKE_CXX_STANDARD 23)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    if (MSVC)
+        # Keep the default on the C++23 preview dialect instead of letting
+        # newer CMake/MSVC combinations promote CXX23 to c++latest.
+        set(CMAKE_CXX23_STANDARD_COMPILE_OPTION "-std:c++23preview")
+        set(CMAKE_CXX23_EXTENSION_COMPILE_OPTION "-std:c++23preview")
+    endif()
+else()
+    # CMake recognizes the numeric CXX26 property, but its compiler feature
+    # database can lag a compiler's working-draft mode (notably MSVC). Use the
+    # compiler's explicit preview flag so configure-time dependency probes use
+    # the same mode as the native targets and cannot silently decay to C++23.
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(_tb_cxx26_mode_flag "-std=c++26")
+    elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set(_tb_cxx26_mode_flag "-std=c++2c")
+    elseif (MSVC)
+        set(_tb_cxx26_mode_flag "/std:c++latest")
+    else()
+        message(FATAL_ERROR
+            "TB_CXX_STANDARD=26 is not configured for compiler '${CMAKE_CXX_COMPILER_ID}'. "
+            "Use a C++26-capable GCC, Clang, AppleClang, or MSVC toolchain."
+        )
+    endif()
+    unset(CMAKE_CXX_STANDARD)
+    unset(CMAKE_CXX_STANDARD CACHE)
+    set(CMAKE_CXX_STANDARD_REQUIRED OFF)
+    string(APPEND CMAKE_CXX_FLAGS " ${_tb_cxx26_mode_flag}")
+endif()
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+if (TB_CXX_STANDARD STREQUAL "26")
+    message(STATUS "Native C++ language standard: C++26 preview (${_tb_cxx26_mode_flag})")
+else()
+    message(STATUS "Native C++ language standard: C++23")
+endif()
+
+function(tb_apply_cxx26_mode target_name)
+    if (TB_CXX_STANDARD STREQUAL "26")
+        target_compile_options(${target_name} PRIVATE "${_tb_cxx26_mode_flag}")
+    endif()
+endfunction()
 
 # A Qt target has many translation units. MSVC otherwise lets concurrent cl.exe
 # processes contend for its shared program database during local and CI builds.
@@ -251,6 +307,7 @@ target_compile_definitions(
         HAS_QT_WEBSOCKETS=${HAS_QT_WEBSOCKETS}
         ${TB_NATIVE_PROJECT_ROOT_DEFINE}
 )
+tb_apply_cxx26_mode(binance_backtest_tab)
 
 if (WIN32)
     # Hide console window and use the embedded icon for the executable
@@ -262,6 +319,17 @@ if (MSVC)
 endif()
 
 if (BUILD_TESTING)
+    add_executable(native_cxx_standard_contract_tests
+        tests/NativeCxxStandardContractTests.cpp
+    )
+    target_compile_definitions(
+        native_cxx_standard_contract_tests
+        PRIVATE
+            TB_REQUESTED_CXX_STANDARD=${TB_CXX_STANDARD}
+    )
+    tb_apply_cxx26_mode(native_cxx_standard_contract_tests)
+    add_test(NAME native_cxx_standard_contract_tests COMMAND native_cxx_standard_contract_tests)
+
     add_executable(native_order_safety_tests
         tests/NativeOrderSafetyTests.cpp
         src/NativeBacktestRuntime.cpp
@@ -308,6 +376,7 @@ if (BUILD_TESTING)
     if (MSVC)
         target_compile_options(native_order_safety_tests PRIVATE /Zc:__cplusplus)
     endif()
+    tb_apply_cxx26_mode(native_order_safety_tests)
     target_compile_definitions(native_order_safety_tests PRIVATE ${TB_NATIVE_PROJECT_ROOT_DEFINE})
 
     add_executable(native_service_api_contract_tests
@@ -336,6 +405,7 @@ if (BUILD_TESTING)
     if (MSVC)
         target_compile_options(native_service_api_contract_tests PRIVATE /Zc:__cplusplus)
     endif()
+    tb_apply_cxx26_mode(native_service_api_contract_tests)
     target_compile_definitions(native_service_api_contract_tests PRIVATE ${TB_NATIVE_PROJECT_ROOT_DEFINE})
 
     if (WIN32)

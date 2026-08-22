@@ -216,6 +216,7 @@ jobs:
           cmake -S "experiments/native-cpp" \
                 -B "build/binance_cpp" \
                 -DCMAKE_BUILD_TYPE=Release \
+                -DTB_CXX_STANDARD=23 \
                 -DQt6_DIR="${QT_CMAKE_DIR}" \
                 -DTB_REQUIRE_QT_WEBENGINE=ON \
                 -DTB_ENABLE_QT_DEPLOY_SCRIPT=OFF

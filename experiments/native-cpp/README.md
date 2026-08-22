@@ -7,7 +7,8 @@ Today it is a C++ desktop re-platforming path with source-contract parity agains
 ## Current role
 
 - Native Qt Widgets desktop shell
-- C++23 / Qt 6 build target
+- C++23 / Qt 6 build target by default
+- Explicit optional C++26 preview-mode build path with compiler-mode validation
 - Dashboard, chart, positions, backtest, and web/runtime slices under active restructuring
 - Native exchange connectivity experiments, with Binance USD-M Futures, Coin-M Futures, and Spot as the current implemented connector paths inside the C++ tree, including signed account settings, force-order history, position-margin cleanup, and Spot trade history
 - Dashboard LLM settings for cloud providers and local/private OpenAI-compatible endpoints
@@ -108,6 +109,26 @@ Manual build:
 cmake -S experiments/native-cpp -B build/binance_cpp
 cmake --build build/binance_cpp
 ```
+
+The native build defaults to strict C++23. C++26 is an explicit opt-in and
+never changes the default:
+
+```bash
+cmake -S experiments/native-cpp -B build/binance_cpp26 \
+  -DTB_CXX_STANDARD=26 \
+  -DTB_ENABLE_QT_WEBENGINE=OFF \
+  -DTB_REQUIRE_QT_WEBENGINE=OFF
+cmake --build build/binance_cpp26
+ctest --test-dir build/binance_cpp26 --output-on-failure
+```
+
+C++26 requires CMake 3.25 or newer and a compiler preview mode that can build
+the complete native test surface: GCC 14+ (`-std=c++26`), Clang/AppleClang
+with C++2c support (`-std=c++2c`), or current MSVC (`/std:c++latest`). The
+configuration fails closed when the compiler is not recognized, and
+`native_cxx_standard_contract_tests` verifies the selected language mode. CI
+checks both the GCC 14 and Clang Unix paths; the Windows MSVC path is locally
+verified through the same contract and full desktop smoke surface.
 
 If Qt auto-detection fails, pass `-DQt6_DIR=/absolute/path/to/lib/cmake/Qt6`.
 

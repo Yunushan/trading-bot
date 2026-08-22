@@ -5982,11 +5982,35 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             )
 
         self.assertTrue(report["ok"])
+        self.assertEqual("23", report["cxx_standard"])
         configure_command = run_step.call_args_list[0].args[1]
         self.assertIn("-DCMAKE_BUILD_TYPE=Release", configure_command)
+        self.assertIn("-DTB_CXX_STANDARD=23", configure_command)
         commands = [call.args[1] for call in run_step.call_args_list]
         self.assertTrue(any("native_order_safety_tests" in command for command in commands))
         self.assertTrue(any("native_service_api_contract_tests" in command for command in commands))
+
+    def test_native_cpp_can_select_the_explicit_cxx26_mode(self):
+        with (
+            patch.object(native_cpp.sys, "platform", "linux"),
+            patch.object(native_cpp.shutil, "which", side_effect=["cmake", "ctest"]),
+            patch.object(native_cpp, "_run_step", return_value={"ok": True}) as run_step,
+        ):
+            report = native_cpp.check_native_cpp(
+                build_dir=REPO_ROOT / "build" / "test-native-cxx26",
+                config="Debug",
+                require_webengine=False,
+                enable_qt_deploy_script=False,
+                smoke_targets_only=True,
+                qt_version="6.4.0",
+                timeout=30,
+                cxx_standard="26",
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual("26", report["cxx_standard"])
+        configure_command = run_step.call_args_list[0].args[1]
+        self.assertIn("-DTB_CXX_STANDARD=26", configure_command)
 
     def test_native_cpp_rejects_ctest_when_no_tests_are_discovered(self):
         def run_step(name, command, *, cwd, timeout, env=None):

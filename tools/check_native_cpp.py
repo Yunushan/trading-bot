@@ -226,8 +226,17 @@ def check_native_cpp(
     qt_version: str | None,
     timeout: int,
     enable_webengine: bool | None = None,
+    cxx_standard: str = "23",
 ) -> dict[str, object]:
     root = _repo_root()
+    if cxx_standard not in {"23", "26"}:
+        return {
+            "ok": False,
+            "build_dir": str(build_dir),
+            "cxx_standard": cxx_standard,
+            "steps": [],
+            "remediation": "Choose --cxx-standard 23 (default) or 26 (explicit preview mode).",
+        }
     build_environment = _visual_studio_environment()
     cmake = shutil.which("cmake", path=build_environment.get("PATH"))
     ctest = shutil.which("ctest", path=build_environment.get("PATH"))
@@ -256,6 +265,7 @@ def check_native_cpp(
     if enable_webengine is not None:
         configure.append(f"-DTB_ENABLE_QT_WEBENGINE={'ON' if enable_webengine else 'OFF'}")
     configure.append(f"-DTB_REQUIRE_QT_WEBENGINE={'ON' if require_webengine else 'OFF'}")
+    configure.append(f"-DTB_CXX_STANDARD={cxx_standard}")
     configure.extend(_cmake_generator_args())
     if qt_version:
         configure.append(f"-DTB_QT_VERSION={qt_version}")
@@ -268,7 +278,11 @@ def check_native_cpp(
 
     steps = [_run_step("configure", configure, cwd=root, timeout=timeout, env=build_environment)]
     if smoke_targets_only:
-        for target in ("native_order_safety_tests", "native_service_api_contract_tests"):
+        for target in (
+            "native_cxx_standard_contract_tests",
+            "native_order_safety_tests",
+            "native_service_api_contract_tests",
+        ):
             steps.append(
                 _run_step(
                     f"build {target}",
@@ -309,7 +323,11 @@ def check_native_cpp(
     if not smoke_targets_only:
         # CMake's default target does not reliably build CTest executables on every
         # generator. Build them explicitly before invoking CTest.
-        for target in ("native_order_safety_tests", "native_service_api_contract_tests"):
+        for target in (
+            "native_cxx_standard_contract_tests",
+            "native_order_safety_tests",
+            "native_service_api_contract_tests",
+        ):
             steps.append(
                 _run_step(
                     f"build {target}",
@@ -342,6 +360,7 @@ def check_native_cpp(
         "ok": ok,
         "build_dir": str(build_dir),
         "config": config,
+        "cxx_standard": cxx_standard,
         "enable_qt_deploy_script": enable_qt_deploy_script,
         "enable_webengine": enable_webengine,
         "require_webengine": require_webengine,
@@ -364,6 +383,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--build-dir", default=str(_default_build_dir(root)), help="CMake build directory.")
     parser.add_argument("--config", default="Debug", help="CMake build configuration.")
+    parser.add_argument(
+        "--cxx-standard",
+        choices=("23", "26"),
+        default="23",
+        help="Native C++ language standard: 23 by default, or explicit 26 preview mode.",
+    )
     parser.add_argument(
         "--no-require-webengine",
         action="store_true",
@@ -408,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
     report = check_native_cpp(
         build_dir=Path(args.build_dir),
         config=str(args.config or "Debug"),
+        cxx_standard=str(args.cxx_standard),
         require_webengine=not args.no_require_webengine and not args.disable_webengine,
         enable_webengine=False if args.disable_webengine else None,
         enable_qt_deploy_script=args.enable_qt_deploy_script,

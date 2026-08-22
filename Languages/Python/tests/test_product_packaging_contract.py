@@ -1341,6 +1341,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("python tools/clean_workspace_artifacts.py --apply", workflow)
         self.assertIn("Native C++ Smoke", workflow)
         self.assertIn("python tools/check_native_cpp.py", workflow)
+        self.assertIn("--cxx-standard 23", workflow)
+        self.assertIn("Native C++26 Smoke", workflow)
         self.assertIn('"desktop release smoke"', native_cpp_checker)
         self.assertIn('"--smoke"', native_cpp_checker)
         self.assertIn('env.setdefault("QT_QPA_PLATFORM", "offscreen")', native_cpp_checker)

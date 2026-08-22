@@ -110,6 +110,7 @@ jobs:
             -S experiments/native-cpp
             -B build/binance_cpp
             -DCMAKE_BUILD_TYPE=Release
+            -DTB_CXX_STANDARD=23
             -DTB_REQUIRE_QT_WEBENGINE=OFF
           )
           if [[ -n "${QT_CMAKE_DIR:-}" ]]; then

@@ -779,12 +779,77 @@ jobs:
         run: |
           set -euo pipefail
           python tools/check_native_cpp.py \
+            --cxx-standard 23 \
             --no-require-webengine \
             --disable-webengine \
             --no-enable-qt-deploy-script \
             --smoke-targets-only \
             --qt-version 6.4.0 \
             --build-dir build/binance_cpp_ci
+
+  native-cpp-cxx26-smoke:
+    name: Native C++26 Smoke (${{ matrix.id }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: gcc14
+            cc: gcc-14
+            cxx: g++-14
+            standard_flag: -std=c++26
+          - id: clang
+            cc: clang
+            cxx: clang++
+            standard_flag: -std=c++2c
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install C++26 compiler and Qt dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            g++-14 \
+            libgl1-mesa-dev \
+            qt6-base-dev \
+            qt6-base-dev-tools
+
+      - name: Verify C++26 compiler mode
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          set -euo pipefail
+          "${{ matrix.cxx }}" --version
+          printf 'int main() { return 0; }\n' | "${{ matrix.cxx }}" "${{ matrix.standard_flag }}" -x c++ - -o "/tmp/trading-bot-cxx26-${{ matrix.id }}-probe"
+
+      - name: Configure, build, and test native C++26 smoke surface
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          set -euo pipefail
+          python tools/check_native_cpp.py \
+            --cxx-standard 26 \
+            --no-require-webengine \
+            --disable-webengine \
+            --no-enable-qt-deploy-script \
+            --qt-version 6.4.0 \
+            --build-dir build/binance_cpp_cxx26_${{ matrix.id }}_ci
 
   rust-smoke:
     name: Rust Smoke

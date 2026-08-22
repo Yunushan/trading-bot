@@ -64,6 +64,8 @@ DEFAULT_DESKTOP_RELEASE_SMOKE_COMMAND = (
     "tools/check_native_cpp.py",
     "--config",
     "Release",
+    "--cxx-standard",
+    "23",
     "--timeout",
     "1200",
 )
