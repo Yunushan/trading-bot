@@ -324,6 +324,11 @@ committed.
   It also reports `source_tree_clean` and `native_source_sync_guard`; a dirty
   source tree or failed native source-sync audit blocks both preflight success
   and the final aggregate writer before any network request or artifact write.
+  The requested release tag must also resolve locally to the current checked-out
+  commit. Preflight reports `current_commit`, `release_tag_commit`, and
+  `release_tag_matches_current_commit`; a missing or stale tag blocks the writer
+  before it queries GitHub release assets, so assets from an older release cannot
+  be combined with newer platform evidence.
   It also includes `local_browser_batch_plan`, which lists the current host's
   built-in Chrome/Edge browser targets, the batch collection command, and the
   per-target validation commands when such local browser evidence can be

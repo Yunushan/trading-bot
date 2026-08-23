@@ -1378,6 +1378,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 patch.object(release_evidence, "_read_evidence", side_effect=_read_platform_evidence),
                 patch.object(release_evidence, "_sha256_file", return_value="a" * 64),
                 patch.object(release_evidence, "_current_git_commit", return_value="abc123"),
+                patch.object(release_evidence, "_local_tag_commit", return_value="abc123"),
                 patch.object(release_evidence, "_source_tree_clean", return_value=True),
             ):
                 artifact, issues = release_evidence.build_release_evidence(
@@ -1396,6 +1397,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("release_platform", artifact["evidence_scope"])
         self.assertFalse(artifact["runtime_ready_claimed"])
         self.assertTrue(artifact["source_tree_clean"])
+        self.assertEqual("abc123", artifact["release_tag_commit"])
+        self.assertTrue(artifact["release_tag_matches_current_commit"])
         self.assertEqual(PYTHON_SOURCE_CONTRACT_HASH, artifact["python_source_contract_hash"])
         self.assertEqual(PYTHON_SOURCE_CONTRACT_HASH, artifact["native_source_sync"]["contract_hash"])
         self.assertTrue(artifact["native_source_sync"]["surface_contract_required"])
@@ -1413,6 +1416,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         with (
             patch.object(release_evidence, "_source_tree_clean", return_value=True),
+            patch.object(release_evidence, "_current_git_commit", return_value="abc123"),
+            patch.object(release_evidence, "_local_tag_commit", return_value="abc123"),
             patch.object(release_evidence, "_fetch_release", return_value=release_payload),
         ):
             artifact, issues = release_evidence.build_release_evidence(
@@ -1426,6 +1431,28 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertIsNone(artifact)
         self.assertTrue(any("missing required Rust release assets" in issue for issue in issues))
+
+    def test_build_release_evidence_blocks_stale_release_tag_before_network(self):
+        with (
+            patch.object(release_evidence, "_source_tree_clean", return_value=True),
+            patch.object(release_evidence, "_current_git_commit", return_value="current-commit"),
+            patch.object(release_evidence, "_local_tag_commit", return_value="older-commit"),
+            patch.object(release_evidence, "_fetch_release", side_effect=AssertionError("network forbidden")),
+        ):
+            artifact, issues = release_evidence.build_release_evidence(
+                tag="v1.2.3",
+                owner="Yunushan",
+                repo="trading-bot",
+                timeout=1.0,
+                matrix_path=Path("docs/release-platform-test-matrix.json"),
+                platform_evidence_dir=Path("release-platform-evidence"),
+            )
+
+        self.assertIsNone(artifact)
+        self.assertEqual(
+            ["release tag v1.2.3 must point to current git commit current-commit; observed older-commit"],
+            issues,
+        )
 
     def test_build_release_evidence_blocks_dirty_source_before_network(self):
         with (
@@ -1503,6 +1530,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "release_platform",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "release_tag_commit": "abc123",
+            "release_tag_matches_current_commit": True,
             "source_tree_clean": True,
             "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "native_source_sync": _native_source_sync_binding(),
@@ -1534,6 +1563,17 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             payload["environment"]["platform_evidence_dir"] = str(platform_evidence_dir)
             evidence_path.write_text(json.dumps(payload), encoding="utf-8")
             valid = runtime_evidence.validate(
+                runtime_evidence.DEFAULT_MANIFEST_PATH,
+                require_evidence=True,
+                evidence_dir_override=evidence_dir,
+                requirement_ids={"rust-native-release-platform-evidence"},
+            )
+
+            stale_tag_payload = json.loads(json.dumps(payload))
+            stale_tag_payload["release_tag_commit"] = "older-commit"
+            stale_tag_payload["release_tag_matches_current_commit"] = False
+            evidence_path.write_text(json.dumps(stale_tag_payload), encoding="utf-8")
+            stale_tag = runtime_evidence.validate(
                 runtime_evidence.DEFAULT_MANIFEST_PATH,
                 require_evidence=True,
                 evidence_dir_override=evidence_dir,
@@ -1651,6 +1691,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             )
 
         self.assertTrue(valid["ok"], valid["issues"])
+        self.assertFalse(stale_tag["ok"])
+        self.assertTrue(any("release_tag_commit must match artifact commit" in issue for issue in stale_tag["issues"]))
+        self.assertTrue(any("release_tag_matches_current_commit must be true" in issue for issue in stale_tag["issues"]))
         self.assertFalse(missing_asset["ok"])
         self.assertTrue(any("missing required Rust release assets" in issue for issue in missing_asset["issues"]))
         self.assertFalse(missing_platform["ok"])
@@ -1794,6 +1837,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])
                 ),
                 patch.object(release_evidence, "_source_tree_clean", return_value=True),
+                patch.object(release_evidence, "_current_git_commit", return_value="abc123"),
+                patch.object(release_evidence, "_local_tag_commit", return_value="abc123"),
                 patch.object(
                     release_evidence,
                     "_observed_platform",
@@ -1819,6 +1864,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(result["release_asset_presence_verified"])
         self.assertTrue(result["release_asset_presence_requires_network"])
         self.assertTrue(result["secrets_redacted"])
+        self.assertEqual("abc123", result["current_commit"])
+        self.assertEqual("abc123", result["release_tag_commit"])
+        self.assertTrue(result["release_tag_resolved"])
+        self.assertTrue(result["release_tag_matches_current_commit"])
         self.assertEqual(PYTHON_SOURCE_CONTRACT_HASH, result["native_source_sync"]["contract_hash"])
         self.assertTrue(result["native_source_sync"]["surface_contract_required"])
         self.assertTrue(result["native_source_sync_guard"]["ok"], result["native_source_sync_guard"]["issues"])

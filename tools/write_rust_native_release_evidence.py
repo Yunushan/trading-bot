@@ -53,6 +53,7 @@ DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE = (
 FAILED_SOURCE_SYNC_RELEASE_EVIDENCE_ISSUE = (
     "native source sync audit must pass before writing Rust native release-platform evidence"
 )
+UNRESOLVED_RELEASE_TAG_ISSUE = "release tag must resolve to a local git commit"
 PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
@@ -81,6 +82,48 @@ def _current_git_commit() -> str:
     except (OSError, subprocess.SubprocessError):
         return "unknown-local-commit"
     return output.stdout.strip() or "unknown-local-commit"
+
+
+def _local_tag_commit(tag: str) -> str | None:
+    try:
+        output = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"],
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = output.stdout.strip()
+    return commit or None
+
+
+def _release_tag_binding(tag: str) -> dict[str, Any]:
+    current_commit = _current_git_commit()
+    release_tag_commit = _local_tag_commit(tag)
+    release_tag_resolved = bool(release_tag_commit)
+    release_tag_matches_current_commit = bool(
+        release_tag_commit
+        and current_commit != "unknown-local-commit"
+        and release_tag_commit == current_commit
+    )
+    issues: list[str] = []
+    if not release_tag_resolved:
+        issues.append(f"{UNRESOLVED_RELEASE_TAG_ISSUE}: {tag}")
+    elif not release_tag_matches_current_commit:
+        issues.append(
+            f"release tag {tag} must point to current git commit {current_commit}; "
+            f"observed {release_tag_commit}"
+        )
+    return {
+        "current_commit": current_commit,
+        "release_tag_commit": release_tag_commit,
+        "release_tag_resolved": release_tag_resolved,
+        "release_tag_matches_current_commit": release_tag_matches_current_commit,
+        "issues": issues,
+    }
 
 
 def _source_tree_status_command(untracked_files: str) -> list[str]:
@@ -526,6 +569,8 @@ def preflight_release_evidence_inputs(
         if not asset.required and asset.name.startswith("Trading-Bot-Rust-")
     )
     issues: list[str] = []
+    release_tag_binding = _release_tag_binding(tag)
+    issues.extend(str(issue) for issue in release_tag_binding["issues"])
     source_tree_clean = _source_tree_clean()
     if not source_tree_clean:
         issues.append(DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE)
@@ -602,6 +647,10 @@ def preflight_release_evidence_inputs(
         "release_asset_presence_requires_network": True,
         "github_token_present": github_token_present,
         "tag": tag,
+        "current_commit": release_tag_binding["current_commit"],
+        "release_tag_commit": release_tag_binding["release_tag_commit"],
+        "release_tag_resolved": release_tag_binding["release_tag_resolved"],
+        "release_tag_matches_current_commit": release_tag_binding["release_tag_matches_current_commit"],
         "asset_version": version,
         "owner": owner,
         "repo": repo,
@@ -665,6 +714,11 @@ def build_release_evidence(
             FAILED_SOURCE_SYNC_RELEASE_EVIDENCE_ISSUE,
             *[str(issue) for issue in native_source_sync_guard["issues"]],
         ]
+    release_tag_binding = _release_tag_binding(tag)
+    if release_tag_binding["issues"]:
+        return None, [str(issue) for issue in release_tag_binding["issues"]]
+    current_commit = str(release_tag_binding["current_commit"])
+    release_tag_commit = str(release_tag_binding["release_tag_commit"])
     token = (
         str(os.environ.get("GITHUB_TOKEN") or "").strip()
         or str(os.environ.get("GH_TOKEN") or "").strip()
@@ -707,7 +761,9 @@ def build_release_evidence(
         "status": "passed",
         "evidence_scope": "release_platform",
         "generated_at": _current_unix_timestamp_label(),
-        "commit": _current_git_commit(),
+        "commit": current_commit,
+        "release_tag_commit": release_tag_commit,
+        "release_tag_matches_current_commit": True,
         "source_tree_clean": _source_tree_clean(),
         "python_source_contract_hash": native_python_source_contract_hash(),
         "native_source_sync": _native_source_sync_binding(),
@@ -728,6 +784,12 @@ def build_release_evidence(
                 "name": "required_rust_release_assets_present",
                 "status": "passed",
                 "observed_count": len(release_artifacts),
+            },
+            {
+                "name": "release_tag_matches_current_commit",
+                "status": "passed",
+                "tag": tag,
+                "release_tag_commit": release_tag_commit,
             },
             {
                 "name": "release_platform_matrix_evidence_present",

@@ -733,6 +733,17 @@ def _release_evidence_environment(payload: dict[str, Any], artifact_path: Path, 
 def _validate_release_artifact_contract(payload: dict[str, Any], artifact_path: Path, issues: list[str]) -> None:
     environment = _release_evidence_environment(payload, artifact_path, issues)
     tag = str(environment.get("tag") or "").strip()
+    artifact_commit = str(payload.get("commit") or "").strip()
+    release_tag_commit = str(payload.get("release_tag_commit") or "").strip()
+    if not release_tag_commit:
+        issues.append(f"{artifact_path} release_tag_commit is required for release evidence")
+    elif release_tag_commit != artifact_commit:
+        issues.append(
+            f"{artifact_path} release_tag_commit must match artifact commit {artifact_commit or '<empty>'}; "
+            f"observed {release_tag_commit}"
+        )
+    if payload.get("release_tag_matches_current_commit") is not True:
+        issues.append(f"{artifact_path} release_tag_matches_current_commit must be true")
     release_artifacts = payload.get("release_artifacts")
     if not isinstance(release_artifacts, list):
         return
