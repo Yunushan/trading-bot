@@ -452,7 +452,11 @@ committed.
   `npm --prefix apps/web-dashboard run test:browser -- --browser=firefox`.
   Firefox is executed with the pinned Playwright runtime; first run
   `npx --prefix apps/web-dashboard playwright install firefox` after `npm ci`.
-  automatically when `npm` and the matching browser are available. Local
+  On Windows, a failed headless Firefox launch retries once in a real headed
+  browser session and records `launchMode: headed-fallback` in the probe output.
+  Set `TB_FIREFOX_ALLOW_HEADED_FALLBACK=0` when headless-only coverage is
+  required. These browser contracts run automatically when `npm` and the
+  matching browser are available. Local
   operators can run
   `tools/run_release_platform_probe.py --list-local-browser-targets` to see the
   matching host/browser targets and

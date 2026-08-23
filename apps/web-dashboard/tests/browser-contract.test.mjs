@@ -138,6 +138,14 @@ async function readPlaywrightBrowserResult(page, browser) {
   return payload;
 }
 
+function firefoxHeadedFallbackAllowed() {
+  const configured = String(process.env.TB_FIREFOX_ALLOW_HEADED_FALLBACK || "").trim().toLowerCase();
+  if (!configured) {
+    return process.platform === "win32";
+  }
+  return !["0", "false", "no", "off"].includes(configured);
+}
+
 async function runFirefoxBrowserContract(targetUrl) {
   let firefox;
   try {
@@ -149,12 +157,23 @@ async function runFirefoxBrowserContract(targetUrl) {
   }
 
   let browser;
+  let launchMode = "headless";
   try {
     browser = await firefox.launch({ headless: true, timeout: 30_000 });
-  } catch (error) {
-    throw new Error(
-      `Firefox contract requires the Playwright Firefox browser. Run npx --prefix apps/web-dashboard playwright install firefox first. ${error?.message || error}`,
-    );
+  } catch (headlessError) {
+    if (!firefoxHeadedFallbackAllowed()) {
+      throw new Error(
+        `Firefox contract requires the Playwright Firefox browser. Run npx --prefix apps/web-dashboard playwright install firefox first. ${headlessError?.message || headlessError}`,
+      );
+    }
+    try {
+      browser = await firefox.launch({ headless: false, timeout: 30_000 });
+      launchMode = "headed-fallback";
+    } catch (headedError) {
+      throw new Error(
+        `Firefox failed in headless mode and the Windows headed fallback also failed. Headless: ${headlessError?.message || headlessError} Headed: ${headedError?.message || headedError}`,
+      );
+    }
   }
 
   try {
@@ -164,6 +183,7 @@ async function runFirefoxBrowserContract(targetUrl) {
     return {
       browser: "firefox",
       executable: "playwright-firefox",
+      launchMode,
       payload,
     };
   } finally {
@@ -197,6 +217,7 @@ async function runEdgeBrowserContract(targetUrl) {
     return {
       browser: "edge",
       executable: "msedge",
+      launchMode: "headless",
       payload,
     };
   } finally {
@@ -350,6 +371,35 @@ async function serveDashboard() {
   return { server, port: address.port };
 }
 
+async function closeDashboardServer(server, timeoutMs = 5000) {
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout;
+    const finish = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      if (error && error.code !== "ERR_SERVER_NOT_RUNNING") {
+        reject(error);
+        return;
+      }
+      resolve();
+    };
+
+    timeout = setTimeout(() => {
+      server.closeAllConnections?.();
+      server.unref();
+      finish();
+    }, timeoutMs);
+    timeout.unref?.();
+    server.close(finish);
+    server.closeIdleConnections?.();
+    server.closeAllConnections?.();
+  });
+}
+
 function parseBrowserResult(stdout) {
   const match = stdout.match(new RegExp(`${RESULT_ATTRIBUTE}="([^"]+)"`));
   if (!match) {
@@ -397,7 +447,7 @@ async function main() {
       if (!payload.ok) {
         throw new Error(`${args.browser} browser contract failed in page: ${payload.error}`);
       }
-      browserResult = { browser: args.browser, executable, payload };
+      browserResult = { browser: args.browser, executable, launchMode: "headless", payload };
     }
     console.log(
       JSON.stringify(
@@ -405,6 +455,7 @@ async function main() {
           ok: true,
           browser: browserResult.browser,
           executable: browserResult.executable,
+          launchMode: browserResult.launchMode,
           userAgent: browserResult.payload.userAgent,
           tests: browserResult.payload.tests,
           targetUrl,
@@ -414,7 +465,7 @@ async function main() {
       ),
     );
   } finally {
-    await new Promise((resolve) => server.close(resolve));
+    await closeDashboardServer(server);
     if (profileDir) {
       await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
     }
