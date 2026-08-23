@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,10 +38,125 @@ REQUIRED_TRADING212_GROUP = "trading212-public-api-order-routing"
 REQUIRED_MOOMOO_GROUP = "moomoo-opend-order-routing"
 REQUIRED_CITIC_CTP_GROUP = "citic-futures-ctp-order-routing"
 REQUEST_COVERAGE_FIELD = "request_coverage"
+ALLOWED_EVIDENCE_SCOPES = ("sandbox", "testnet", "approved-live-paper")
+ORDER_CAPABILITY_FRAGMENTS = ("order-execution", "order-routing", "order-cancellation")
+SAFE_REDACTED_VALUES = {"", "***", "<redacted>", "[redacted]", "redacted", "...", "none", "null"}
+SAFE_SECRET_METADATA_KEYS = {
+    "credentials_present",
+    "secrets_in_artifact",
+    "secrets_redacted",
+}
+SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)\b(api[_-]?key|api[_-]?secret|password|token|signature|authorization)\b\s*[:=]\s*([^\s,;&]+)"
+)
+BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+([^\s,;&]+)")
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _current_git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def _current_source_tree_clean() -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all", "--", "."],
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not result.stdout.strip()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _target_contract_sha256(target: dict[str, Any]) -> str:
+    payload = {
+        key: target[key]
+        for key in (
+            "id",
+            "group",
+            "venue",
+            "backend",
+            "status",
+            "capabilities_required",
+            "capabilities_gated",
+        )
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _valid_timestamp(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = key.strip().lower().replace("-", "_")
+    if normalized in SAFE_SECRET_METADATA_KEYS or normalized.endswith("_present"):
+        return False
+    return any(
+        fragment in normalized
+        for fragment in ("api_key", "apikey", "api_secret", "secret", "password", "token", "signature", "authorization")
+    )
+
+
+def _validate_secret_free(value: Any, artifact_path: Path, issues: list[str], *, key: str = "") -> None:
+    if key and _is_sensitive_key(key):
+        if isinstance(value, str):
+            if value.strip().lower() not in SAFE_REDACTED_VALUES:
+                issues.append(f"{artifact_path} contains unredacted secret field: {key}")
+        elif isinstance(value, bool):
+            pass
+        elif value not in (None, ""):
+            issues.append(f"{artifact_path} contains non-redacted secret field: {key}")
+    if isinstance(value, dict):
+        for child_key, child_value in value.items():
+            _validate_secret_free(child_value, artifact_path, issues, key=str(child_key))
+    elif isinstance(value, list):
+        for child_value in value:
+            _validate_secret_free(child_value, artifact_path, issues)
+    elif isinstance(value, str):
+        for match in SECRET_ASSIGNMENT_PATTERN.finditer(value):
+            secret_value = match.group(2).strip().strip("\"'").lower()
+            if secret_value not in SAFE_REDACTED_VALUES:
+                issues.append(f"{artifact_path} contains unredacted secret assignment for {match.group(1)}")
+        for match in BEARER_PATTERN.finditer(value):
+            bearer_value = match.group(1).strip().strip("\"'").lower()
+            if bearer_value not in SAFE_REDACTED_VALUES:
+                issues.append(f"{artifact_path} contains unredacted bearer token text")
 
 
 def _slug(value: str) -> str:
@@ -605,8 +723,16 @@ def _expanded_targets(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return targets
 
 
-def _validate_evidence(targets: list[dict[str, Any]], evidence_dir: Path) -> list[str]:
+def _validate_evidence(
+    targets: list[dict[str, Any]],
+    evidence_dir: Path,
+    *,
+    matrix_sha256: str,
+    require_current_commit: bool,
+    require_clean_source: bool,
+) -> list[str]:
     issues: list[str] = []
+    current_commit = _current_git_commit()
     for target in targets:
         artifact_path = evidence_dir / f"{target['id']}.json"
         if not artifact_path.exists():
@@ -623,13 +749,111 @@ def _validate_evidence(targets: list[dict[str, Any]], evidence_dir: Path) -> lis
             issues.append(f"{artifact_path} venue must be {target['venue']}")
         if artifact.get("backend") != target["backend"]:
             issues.append(f"{artifact_path} backend must be {target['backend']}")
+        if artifact.get("group") != target["group"]:
+            issues.append(f"{artifact_path} group must be {target['group']}")
+        if artifact.get("schema_version") != 1:
+            issues.append(f"{artifact_path} schema_version must be 1")
+        if artifact.get("evidence_id") != target["id"]:
+            issues.append(f"{artifact_path} evidence_id must be {target['id']}")
         if artifact.get("passed") is not True:
             issues.append(f"{artifact_path} passed must be true")
+        if artifact.get("status") != "passed":
+            issues.append(f"{artifact_path} status must be passed")
+        if not _valid_timestamp(artifact.get("generated_at")):
+            issues.append(f"{artifact_path} generated_at must be a timezone-aware ISO-8601 timestamp")
+        if not str(artifact.get("command") or "").strip():
+            issues.append(f"{artifact_path} command is required")
+        artifact_commit = str(artifact.get("commit") or "").strip()
+        if not artifact_commit:
+            issues.append(f"{artifact_path} commit is required")
+        if require_current_commit and artifact_commit != current_commit:
+            issues.append(
+                f"{artifact_path} commit must match current git commit {current_commit or '<unresolved>'}; "
+                f"observed {artifact_commit or '<empty>'}"
+            )
+        if not isinstance(artifact.get("source_tree_clean"), bool):
+            issues.append(f"{artifact_path} source_tree_clean must be boolean")
+        if require_clean_source and artifact.get("source_tree_clean") is not True:
+            issues.append(f"{artifact_path} source_tree_clean must be true for promotion evidence")
+        if artifact.get("matrix_sha256") != matrix_sha256:
+            issues.append(f"{artifact_path} matrix_sha256 must match the current connector support matrix")
+        target_hash = _target_contract_sha256(target)
+        if artifact.get("target_contract_sha256") != target_hash:
+            issues.append(f"{artifact_path} target_contract_sha256 must match the current target contract")
+        scope = str(artifact.get("evidence_scope") or "").strip()
+        if scope not in ALLOWED_EVIDENCE_SCOPES:
+            issues.append(f"{artifact_path} evidence_scope must be one of {list(ALLOWED_EVIDENCE_SCOPES)}")
+        if artifact.get("secrets_redacted") is not True:
+            issues.append(f"{artifact_path} secrets_redacted must be true")
+        if artifact.get("secrets_in_artifact") is not False:
+            issues.append(f"{artifact_path} secrets_in_artifact must be false")
+        if artifact.get("runtime_ready_claimed") is not False:
+            issues.append(f"{artifact_path} runtime_ready_claimed must be false")
+        environment = artifact.get("environment")
+        if not isinstance(environment, dict) or not environment:
+            issues.append(f"{artifact_path} environment must be a non-empty object")
+
+        capabilities_tested = artifact.get("capabilities_tested")
+        expected_capabilities = list(target["capabilities_required"])
+        if capabilities_tested != expected_capabilities:
+            issues.append(
+                f"{artifact_path} capabilities_tested must exactly match {expected_capabilities}"
+            )
+        suite_results = artifact.get("suite_results")
+        suite_by_name: dict[str, dict[str, Any]] = {}
+        if not isinstance(suite_results, list) or not suite_results:
+            issues.append(f"{artifact_path} suite_results must be a non-empty list")
+        else:
+            for index, row in enumerate(suite_results):
+                if not isinstance(row, dict):
+                    issues.append(f"{artifact_path} suite_results[{index}] must be an object")
+                    continue
+                name = str(row.get("name") or "").strip()
+                if not name:
+                    issues.append(f"{artifact_path} suite_results[{index}].name is required")
+                elif name in suite_by_name:
+                    issues.append(f"{artifact_path} suite_results contains duplicate name: {name}")
+                else:
+                    suite_by_name[name] = row
+            for capability in expected_capabilities:
+                row = suite_by_name.get(capability)
+                if row is None:
+                    issues.append(f"{artifact_path} suite_results must include {capability}")
+                elif row.get("status") != "passed":
+                    issues.append(f"{artifact_path} suite_results[{capability}].status must be passed")
+
+        order_capability_required = any(
+            any(fragment in capability for fragment in ORDER_CAPABILITY_FRAGMENTS)
+            for capability in expected_capabilities
+        )
+        if order_capability_required:
+            lifecycle = artifact.get("order_lifecycle")
+            if not isinstance(lifecycle, dict):
+                issues.append(f"{artifact_path} order_lifecycle must be an object")
+            else:
+                if lifecycle.get("mode") != scope:
+                    issues.append(f"{artifact_path} order_lifecycle.mode must match evidence_scope")
+                for field in ("submission_attempted", "acknowledged", "cleanup_confirmed", "order_identifier_redacted"):
+                    if lifecycle.get(field) is not True:
+                        issues.append(f"{artifact_path} order_lifecycle.{field} must be true")
+                if lifecycle.get("production_funds_at_risk") is not False:
+                    issues.append(f"{artifact_path} order_lifecycle.production_funds_at_risk must be false")
+        _validate_secret_free(artifact, artifact_path, issues)
     return issues
 
 
-def validate(matrix_path: Path, *, require_evidence: bool) -> dict[str, Any]:
+def validate(
+    matrix_path: Path,
+    *,
+    require_evidence: bool,
+    require_current_commit: bool = False,
+    require_clean_source: bool = False,
+    evidence_dir_override: Path | None = None,
+) -> dict[str, Any]:
     matrix = _load_json(matrix_path)
+    matrix_sha256 = _sha256_file(matrix_path)
+    current_commit = _current_git_commit()
+    current_source_tree_clean = _current_source_tree_clean()
     issues: list[str] = []
     if matrix.get("schema_version") != 1:
         issues.append("schema_version must be 1")
@@ -640,9 +864,21 @@ def validate(matrix_path: Path, *, require_evidence: bool) -> dict[str, Any]:
     else:
         if policy.get("no_assumed_passes") is not True:
             issues.append("policy.no_assumed_passes must be true")
+        if policy.get("evidence_must_match_current_commit") is not True:
+            issues.append("policy.evidence_must_match_current_commit must be true")
+        if policy.get("evidence_requires_clean_source") is not True:
+            issues.append("policy.evidence_requires_clean_source must be true")
+        if policy.get("secrets_must_be_redacted") is not True:
+            issues.append("policy.secrets_must_be_redacted must be true")
+        if policy.get("order_lifecycle_required") is not True:
+            issues.append("policy.order_lifecycle_required must be true")
+        if policy.get("allowed_evidence_scopes") != list(ALLOWED_EVIDENCE_SCOPES):
+            issues.append(f"policy.allowed_evidence_scopes must be {list(ALLOWED_EVIDENCE_SCOPES)}")
         evidence_dir = Path(
             str(policy.get("evidence_artifact_dir") or "connector-support-evidence")
         )
+    if evidence_dir_override is not None:
+        evidence_dir = evidence_dir_override
 
     try:
         groups = _target_groups(matrix)
@@ -655,16 +891,37 @@ def validate(matrix_path: Path, *, require_evidence: bool) -> dict[str, Any]:
     request_issues, request_counts = _validate_request_coverage(matrix)
     issues.extend(request_issues)
     targets = _expanded_targets(groups) if groups else []
+    if require_current_commit and current_commit is None:
+        issues.append("could not resolve current git commit for connector promotion evidence")
+    if require_clean_source and not current_source_tree_clean:
+        issues.append("current source tree must be clean for connector promotion evidence")
     if require_evidence and targets:
-        issues.extend(_validate_evidence(targets, _repo_root() / evidence_dir))
+        resolved_evidence_dir = evidence_dir if evidence_dir.is_absolute() else _repo_root() / evidence_dir
+        issues.extend(
+            _validate_evidence(
+                targets,
+                resolved_evidence_dir,
+                matrix_sha256=matrix_sha256,
+                require_current_commit=require_current_commit,
+                require_clean_source=require_clean_source,
+            )
+        )
+    else:
+        resolved_evidence_dir = evidence_dir if evidence_dir.is_absolute() else _repo_root() / evidence_dir
 
     return {
         "ok": not issues,
         "schema_version": matrix.get("schema_version"),
         "matrix_path": str(matrix_path),
+        "matrix_sha256": matrix_sha256,
+        "evidence_dir": str(resolved_evidence_dir),
+        "current_commit": current_commit,
+        "current_source_tree_clean": current_source_tree_clean,
         "target_count": len(targets),
         "request_coverage": request_counts,
         "evidence_required": bool(require_evidence),
+        "require_current_commit": bool(require_current_commit),
+        "require_clean_source": bool(require_clean_source),
         "issues": issues,
         "targets": targets,
     }
@@ -687,13 +944,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Require passed evidence artifacts.",
     )
+    parser.add_argument("--require-current-commit", action="store_true", help="Require evidence for the checked-out commit.")
+    parser.add_argument("--require-clean-source", action="store_true", help="Require clean-source promotion evidence.")
+    parser.add_argument("--evidence-dir", help="Override the connector evidence directory.")
     parser.add_argument(
         "--json", action="store_true", help="Print machine-readable JSON."
     )
     args = parser.parse_args(argv)
 
     require_evidence = bool(args.require_evidence and not args.schema_only)
-    result = validate(Path(args.matrix), require_evidence=require_evidence)
+    result = validate(
+        Path(args.matrix),
+        require_evidence=require_evidence,
+        require_current_commit=bool(args.require_current_commit),
+        require_clean_source=bool(args.require_clean_source),
+        evidence_dir_override=Path(args.evidence_dir) if args.evidence_dir else None,
+    )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     elif result["ok"]:

@@ -6,6 +6,15 @@
     "diagnostics_support_definition": "A venue may be marked diagnostics-supported when the runtime can instantiate the connector and exercise market/account snapshot interfaces through deterministic tests.",
     "order_routing_support_definition": "A venue may be marked order-routing-supported when the runtime has a guarded submit path with deterministic dry-run and injected-client tests. Official live support still requires a passed evidence artifact.",
     "no_assumed_passes": true,
+    "evidence_must_match_current_commit": true,
+    "evidence_requires_clean_source": true,
+    "secrets_must_be_redacted": true,
+    "order_lifecycle_required": true,
+    "allowed_evidence_scopes": [
+      "sandbox",
+      "testnet",
+      "approved-live-paper"
+    ],
     "evidence_artifact_dir": "connector-support-evidence"
   },
   "request_coverage": {

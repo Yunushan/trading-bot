@@ -59,6 +59,14 @@ committed.
   code exists.
 - Attach logs or artifacts for live connector, mobile device, and unusual OS
   promotions. A local developer note without reproducible output is not enough.
+- Connector promotion uses
+  `python tools/check_connector_support_matrix.py --require-evidence --require-current-commit --require-clean-source`.
+  Every per-venue artifact must identify the exact target, current commit and
+  target-contract hash; cover every declared capability with passing suite rows;
+  record a sandbox, testnet, or approved live-paper order lifecycle through
+  acknowledgement and cleanup; and prove secrets are redacted. A hand-authored
+  `passed: true` file, stale artifact, dry-run-only result, or production-funds
+  order cannot satisfy this gate.
 - When an external check cannot run locally, keep it represented as a required
   document, CI job, or support-matrix evidence row so the gap is visible.
 - Source-contract parity is not standalone product/runtime parity. Native C++

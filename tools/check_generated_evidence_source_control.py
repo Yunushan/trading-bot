@@ -17,14 +17,18 @@ GENERATED_EVIDENCE_PATTERNS = (
     "artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md",
     "artifacts/rust-native-runtime-evidence-plan.md",
     "artifacts/native-source-sync/*.json",
+    "artifacts/operational-readiness/*.json",
     "release-platform-evidence/*.json",
+    "connector-support-evidence/*.json",
 )
 
 EVIDENCE_SCAN_ROOTS = (
     "artifacts/rust-native-runtime-evidence",
     "artifacts/rust-native-runtime-evidence-plan.md",
     "artifacts/native-source-sync",
+    "artifacts/operational-readiness",
     "release-platform-evidence",
+    "connector-support-evidence",
 )
 
 
@@ -120,7 +124,8 @@ def generated_evidence_write_guard(
         issues.append(
             "refusing to write generated evidence artifact outside generated evidence "
             f"directories inside the repository: {joined}. Use artifacts/rust-native-runtime-evidence, "
-            "artifacts/native-source-sync, release-platform-evidence, or an absolute path outside the repository."
+            "artifacts/native-source-sync, artifacts/operational-readiness, release-platform-evidence, "
+            "connector-support-evidence, or an absolute path outside the repository."
         )
     if tracked_targets:
         joined = ", ".join(tracked_targets)
