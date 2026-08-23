@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -193,6 +194,45 @@ def _matrix_targets(
     return platform_targets, browser_targets
 
 
+def _decode_process_output(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        taskkill = shutil.which("taskkill.exe") or shutil.which("taskkill")
+        if taskkill:
+            try:
+                subprocess.run(
+                    [taskkill, "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                process.kill()
+        if process.poll() is None:
+            process.kill()
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=5)
+    except ProcessLookupError:
+        return
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+
+
 def _run_command(
     name: str,
     command: list[str],
@@ -202,19 +242,24 @@ def _run_command(
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     started = time.time()
+    popen_options: dict[str, Any] = {
+        "cwd": cwd,
+        "env": env,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    if os.name == "nt":
+        popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_options["start_new_session"] = True
+
     try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            env=env,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        process = subprocess.Popen(command, **popen_options)
+        stdout, stderr = process.communicate(timeout=timeout)
+    except OSError as exc:
         return {
             "name": name,
             "status": "failed",
@@ -224,14 +269,35 @@ def _run_command(
             "stdout": "",
             "stderr": str(exc),
         }
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_tree(process)
+        stdout = _decode_process_output(exc.stdout)
+        stderr = _decode_process_output(exc.stderr)
+        try:
+            completed_stdout, completed_stderr = process.communicate(timeout=10)
+            stdout = completed_stdout or stdout
+            stderr = completed_stderr or stderr
+        except subprocess.TimeoutExpired:
+            process.kill()
+        timeout_message = f"command timed out after {timeout} seconds"
+        stderr = f"{stderr.rstrip()}\n{timeout_message}" if stderr.strip() else timeout_message
+        return {
+            "name": name,
+            "status": "failed",
+            "command": command,
+            "duration_seconds": round(time.time() - started, 3),
+            "returncode": process.returncode,
+            "stdout": "\n".join(stdout.strip().splitlines()[-40:]),
+            "stderr": "\n".join(stderr.strip().splitlines()[-40:]),
+        }
     return {
         "name": name,
-        "status": "passed" if result.returncode == 0 else "failed",
+        "status": "passed" if process.returncode == 0 else "failed",
         "command": command,
         "duration_seconds": round(time.time() - started, 3),
-        "returncode": result.returncode,
-        "stdout": "\n".join(result.stdout.strip().splitlines()[-40:]),
-        "stderr": "\n".join(result.stderr.strip().splitlines()[-40:]),
+        "returncode": process.returncode,
+        "stdout": "\n".join(stdout.strip().splitlines()[-40:]),
+        "stderr": "\n".join(stderr.strip().splitlines()[-40:]),
     }
 
 

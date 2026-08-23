@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 import zipfile
@@ -5426,6 +5427,27 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("failed", result["status"])
         self.assertEqual("browser output\N{REPLACEMENT CHARACTER}", result["stdout"])
         self.assertEqual("browser diagnostic\N{REPLACEMENT CHARACTER}", result["stderr"])
+
+    def test_release_platform_probe_timeout_terminates_descendant_processes(self):
+        child_script = "import time; print('child started', flush=True); time.sleep(30)"
+        parent_script = (
+            "import subprocess, sys, time; "
+            f"subprocess.Popen([sys.executable, '-u', '-c', {child_script!r}]); "
+            "print('parent started', flush=True); "
+            "time.sleep(30)"
+        )
+        started = time.monotonic()
+
+        result = release_platform_probe._run_command(
+            "browser-contract",
+            [sys.executable, "-u", "-c", parent_script],
+            cwd=REPO_ROOT,
+            timeout=1,
+        )
+
+        self.assertEqual("failed", result["status"])
+        self.assertIn("command timed out after 1 seconds", result["stderr"])
+        self.assertLess(time.monotonic() - started, 10)
 
     def test_release_platform_probe_writes_source_binding_fields(self):
         target = {
