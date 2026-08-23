@@ -74,14 +74,14 @@ def deep_merge(base: dict, patch: dict) -> dict:
 def coerce_number(value, default: float = 0.0) -> float:  # noqa: ANN001
     try:
         return float(value)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return float(default)
 
 
 def coerce_int(value, default: int = 0) -> int:  # noqa: ANN001
     try:
         return int(float(value))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return int(default)
 
 
@@ -186,7 +186,7 @@ def build_pair_overrides(overrides_payload) -> list[PairOverride] | None:  # noq
                 raw_leverage = strategy_controls.get("leverage")
             if raw_leverage is not None:
                 leverage = int(float(raw_leverage))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             leverage = None
         overrides.append(
             PairOverride(
@@ -306,7 +306,7 @@ def sort_runs(records: list) -> list:  # noqa: ANN001
     def _optimizer_rank_sort(item) -> int:  # noqa: ANN001
         try:
             rank = int(_field(item, "optimizer_rank", 0) or 0)
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             rank = 0
         return rank if rank > 0 else 1_000_000
 

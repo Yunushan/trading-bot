@@ -90,7 +90,7 @@ class BotRuntimeControlMixin:
             if isinstance(rate_limit, dict):
                 try:
                     seconds = max(0.0, float(rate_limit.get("seconds_until_unban") or 0.0))
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     seconds = 0.0
             warning = "Warning: exchange connector is rate limited."
             if seconds > 0.0:
@@ -538,7 +538,7 @@ class BotRuntimeControlMixin:
             self._runtime_active = bool(active)
             try:
                 self._active_engine_count = max(0, int(active_engine_count))
-            except Exception:
+            except (TypeError, ValueError, OverflowError):
                 self._active_engine_count = 0
             self._runtime_source = str(source or "service")
             custom_status_message = str(status_message or "").strip()

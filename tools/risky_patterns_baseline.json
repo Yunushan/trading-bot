@@ -1,10 +1,10 @@
 {
   "counts": {
-    "broad_exception": 3156,
-    "silent_pass": 1021
+    "broad_exception": 2964,
+    "silent_pass": 755
   },
-  "finding_count": 4177,
+  "finding_count": 3719,
   "severity_counts": {
-    "medium": 4177
+    "medium": 3719
   }
 }

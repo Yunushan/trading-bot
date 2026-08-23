@@ -132,12 +132,12 @@ class BotRuntimeStateMixin:
             if total_balance is not _MISSING:
                 try:
                     self._account_total_balance = None if total_balance is None else float(total_balance)
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     self._account_total_balance = None
             if available_balance is not _MISSING:
                 try:
                     self._account_available_balance = None if available_balance is None else float(available_balance)
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     self._account_available_balance = None
             self._account_snapshot = build_account_snapshot(
                 config=self._config,
@@ -183,32 +183,32 @@ class BotRuntimeStateMixin:
             if active_pnl is not _MISSING:
                 try:
                     self._active_pnl = None if active_pnl is None else float(active_pnl)
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     self._active_pnl = None
             if active_margin is not _MISSING:
                 try:
                     self._active_margin = None if active_margin is None else float(active_margin)
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     self._active_margin = None
             if closed_pnl is not _MISSING:
                 try:
                     self._closed_pnl = None if closed_pnl is None else float(closed_pnl)
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     self._closed_pnl = None
             if closed_margin is not _MISSING:
                 try:
                     self._closed_margin = None if closed_margin is None else float(closed_margin)
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     self._closed_margin = None
             if total_balance is not _MISSING:
                 try:
                     self._account_total_balance = None if total_balance is None else float(total_balance)
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     self._account_total_balance = None
             if available_balance is not _MISSING:
                 try:
                     self._account_available_balance = None if available_balance is None else float(available_balance)
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     self._account_available_balance = None
             self._portfolio_snapshot = build_portfolio_snapshot(
                 config=self._config,
@@ -277,14 +277,14 @@ class BotRuntimeStateMixin:
         active = bool(raw.get("active", False)) or raw_state in {"open", "paused", "tripped"}
         try:
             block_count = max(0, int(raw.get("block_count") or 0))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             block_count = 0
         try:
             threshold = max(
                 1,
                 int(raw.get("block_threshold") or self._config.get("connector_order_block_pause_threshold") or 2),
             )
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             threshold = 2
         try:
             window_seconds = max(
@@ -293,7 +293,7 @@ class BotRuntimeStateMixin:
                     raw.get("block_window_seconds") or self._config.get("connector_order_block_window_seconds") or 60.0
                 ),
             )
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             window_seconds = 60.0
         message = str(raw.get("message") or "").strip()
         if active and not message:
@@ -369,7 +369,7 @@ class BotRuntimeStateMixin:
             return 1
         try:
             return max(0, min(100, int(float(str(raw_value).strip()))))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             return 1
 
     def _connector_order_circuit_incident_log_info_unlocked(self) -> tuple[str, str, str]:
@@ -381,7 +381,7 @@ class BotRuntimeStateMixin:
     def _connector_order_circuit_incident_log_max_bytes_unlocked(self) -> int:
         try:
             return max(1, int(self._config.get("connector_order_circuit_incident_log_max_bytes") or 2 * 1024 * 1024))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             return 2 * 1024 * 1024
 
     def _connector_order_circuit_incident_log_backup_count_unlocked(self) -> int:
@@ -390,7 +390,7 @@ class BotRuntimeStateMixin:
             return 1
         try:
             return max(0, min(100, int(float(str(raw_value).strip()))))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             return 1
 
     def _record_connector_order_circuit_incident_unlocked(
@@ -434,7 +434,7 @@ class BotRuntimeStateMixin:
             )
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
-        except Exception:
+        except (OSError, TypeError, ValueError, RecursionError):
             error_message = "Incident log could not be written."
             self._connector_order_circuit_incident_log_last_write_error = {
                 "ts": self._now_iso(),
@@ -458,7 +458,7 @@ class BotRuntimeStateMixin:
             effective_path, path_source, configured_path = self._connector_order_circuit_incident_log_info_unlocked()
         try:
             max_items = max(1, min(200, int(limit or 20)))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             max_items = 20
         path = Path(effective_path).expanduser()
         events: deque[dict[str, object]] = deque(maxlen=max_items)
@@ -480,7 +480,7 @@ class BotRuntimeStateMixin:
                         total_read += 1
                         try:
                             decoded = json.loads(text)
-                        except Exception:
+                        except (json.JSONDecodeError, RecursionError):
                             decoded = {
                                 "event": "connector_order_circuit_log_parse_error",
                                 "action": "parse_error",
@@ -498,7 +498,7 @@ class BotRuntimeStateMixin:
                             }
                             parse_errors.append(copy.deepcopy(decoded))
                         events.append(redact_value(decoded))
-            except Exception:
+            except (OSError, UnicodeError):
                 read_failed = True
                 break
         payload = {
@@ -655,7 +655,7 @@ class BotRuntimeStateMixin:
         with self._lock:
             try:
                 max_items = max(1, int(limit))
-            except Exception:
+            except (TypeError, ValueError, OverflowError):
                 max_items = 100
             items = list(self._recent_logs)
             return tuple(items[-max_items:])
@@ -750,14 +750,14 @@ class BotRuntimeStateMixin:
             return f"{label} {timestamp_name} is missing."
         try:
             age_text = f"{float(age):.0f}s"
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             age_text = "unknown age"
         return f"{label} is stale (last {timestamp_name} {age_text} ago)."
 
     def _freshness_threshold_unlocked(self, key: str, default: float) -> float:
         try:
             value = float(self._config.get(key, default))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             return float(default)
         return value if value > 0 else float(default)
 
@@ -786,7 +786,7 @@ class BotRuntimeStateMixin:
         effective_audit_path = audit_path or DEFAULT_ORDER_AUDIT_DISPLAY_PATH
         try:
             audit_max_bytes = max(1, int(self._config.get("order_audit_max_bytes") or 10 * 1024 * 1024))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             audit_max_bytes = 10 * 1024 * 1024
         audit_backup_count = self._order_audit_backup_count_unlocked()
         incident_log_path, incident_log_path_source, incident_configured_path = (

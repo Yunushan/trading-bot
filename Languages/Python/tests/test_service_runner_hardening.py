@@ -5,9 +5,10 @@ import unittest
 from unittest import mock
 
 from app.service.api.host import ServiceApiBackgroundHost
+from app.service.runtime import TradingBotService
 from app.service.runners import backtest_executor_worker_runtime, bot_runtime_state
 from app.service.runners.backtest_executor_snapshot_runtime import finish_snapshots
-from app.service.runners.backtest_executor_request_runtime import coerce_datetime
+from app.service.runners.backtest_executor_request_runtime import coerce_datetime, coerce_int, coerce_number
 
 
 class _StoppedThread:
@@ -34,6 +35,14 @@ class _BrokenShutdownServer:
     @force_exit.setter
     def force_exit(self, _value: bool) -> None:
         raise RuntimeError("force-exit denied")
+
+
+class _BrokenNumericValue:
+    def __float__(self) -> float:
+        raise RuntimeError("unexpected numeric conversion failure")
+
+    def __int__(self) -> int:
+        raise RuntimeError("unexpected numeric conversion failure")
 
 
 class ServiceRunnerHardeningTests(unittest.TestCase):
@@ -129,6 +138,39 @@ class ServiceRunnerHardeningTests(unittest.TestCase):
         self.assertEqual("2026-01-02", date_only.date().isoformat())
         self.assertEqual("2026-01-02T03:04:05", date_time.isoformat())
         self.assertIsNone(coerce_datetime("not-a-date"))
+
+    def test_backtest_numeric_coercion_only_defaults_expected_input_errors(self):
+        for value in (None, "", "not-a-number", object()):
+            with self.subTest(value=value):
+                self.assertEqual(3.5, coerce_number(value, 3.5))
+                self.assertEqual(4, coerce_int(value, 4))
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected numeric conversion failure"):
+            coerce_number(_BrokenNumericValue(), 3.5)
+        with self.assertRaisesRegex(RuntimeError, "unexpected numeric conversion failure"):
+            coerce_int(_BrokenNumericValue(), 4)
+
+    def test_service_snapshot_numeric_parsing_does_not_hide_programming_errors(self):
+        service = TradingBotService()
+
+        account = service.set_account_snapshot(
+            total_balance="not-a-number",
+            available_balance="also-not-a-number",
+            source="unit-test",
+        )
+        self.assertIsNone(account.total_balance)
+        self.assertIsNone(account.available_balance)
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected numeric conversion failure"):
+            service.set_account_snapshot(total_balance=_BrokenNumericValue(), source="unit-test")
+        with self.assertRaisesRegex(RuntimeError, "unexpected numeric conversion failure"):
+            service.set_portfolio_snapshot(active_pnl=_BrokenNumericValue(), source="unit-test")
+        with self.assertRaisesRegex(RuntimeError, "unexpected numeric conversion failure"):
+            service.set_runtime_state(
+                active=True,
+                active_engine_count=_BrokenNumericValue(),
+                source="unit-test",
+            )
 
 
 if __name__ == "__main__":

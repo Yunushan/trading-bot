@@ -31,14 +31,9 @@ use trading_bot_core::{
     exchange_connectors::{DEFAULT_CONNECTOR_BACKEND, normalize_connector_backend},
     generated_python_parity::{
         PYTHON_CONNECTOR_OPTIONS, PYTHON_NATIVE_RUNTIME_CONNECTOR_BACKENDS,
-        PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES,
-        PYTHON_NATIVE_RUNTIME_CONNECTOR_OWNERSHIP_REFERENCE_CASES,
-        PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER, PYTHON_NATIVE_RUNTIME_EXCHANGES,
-        PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
-        PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES,
-        PYTHON_NATIVE_RUNTIME_ROUTING_JSON_COERCION_REFERENCE_JSON,
-        PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES, PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS,
-        PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
+        PYTHON_NATIVE_RUNTIME_CONNECTOR_MARKET_FAMILIES, PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER,
+        PYTHON_NATIVE_RUNTIME_EXCHANGES, PYTHON_NATIVE_RUNTIME_INDICATOR_SOURCE_MARKET_FAMILIES,
+        PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS, PYTHON_POSITION_PCT_UNITS_CONFIG_CHOICES,
     },
     market_data::{BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient},
     native_python_app_contract_parity_ready,
@@ -71,6 +66,14 @@ use trading_bot_core::{
         StreamReconnectPolicy, build_stream_reconnect_decision,
     },
     supported_frameworks,
+};
+
+#[cfg(test)]
+use trading_bot_core::generated_python_parity::{
+    PYTHON_NATIVE_RUNTIME_CONNECTOR_OWNERSHIP_REFERENCE_CASES,
+    PYTHON_NATIVE_RUNTIME_MODE_REFERENCE_CASES,
+    PYTHON_NATIVE_RUNTIME_ROUTING_JSON_COERCION_REFERENCE_JSON,
+    PYTHON_NATIVE_RUNTIME_ROUTING_REFERENCE_CASES,
 };
 
 #[cfg(target_os = "windows")]
@@ -2393,6 +2396,7 @@ fn native_runtime_ownership_error(config: &Value) -> Option<String> {
     ))
 }
 
+#[cfg(test)]
 fn native_runtime_routing_is_owned(config: &Value) -> bool {
     if native_runtime_ownership_error(config).is_some() {
         return false;
