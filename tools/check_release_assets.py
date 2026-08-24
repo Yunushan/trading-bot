@@ -226,6 +226,66 @@ Invoke-RestMethod -Uri $env:TB_RELEASE_URL -Headers $headers -TimeoutSec $timeou
     return result
 
 
+def _github_json_from_gh_cli(
+    url: str,
+    *,
+    timeout: float,
+    token: str | None,
+) -> dict:
+    """Fetch a GitHub API object through the authenticated GitHub CLI."""
+
+    gh = shutil.which("gh")
+    if not gh:
+        raise RuntimeError("GitHub CLI fallback is unavailable.")
+
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "api.github.com" or not parsed.path:
+        raise RuntimeError("GitHub CLI fallback only supports api.github.com URLs.")
+
+    endpoint = parsed.path.lstrip("/")
+    if parsed.query:
+        endpoint = f"{endpoint}?{parsed.query}"
+
+    env = os.environ.copy()
+    if token:
+        env["GH_TOKEN"] = token
+
+    try:
+        completed = subprocess.run(
+            [
+                gh,
+                "api",
+                endpoint,
+                "--header",
+                "Accept: application/vnd.github+json",
+                "--header",
+                f"User-Agent: {USER_AGENT}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(10.0, float(timeout or 10.0) + 5.0),
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"GitHub CLI fallback failed to run: {exc}") from exc
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        message = "GitHub API request failed through GitHub CLI fallback."
+        if detail:
+            message = f"{message} {detail}"
+        raise RuntimeError(message)
+
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("GitHub CLI fallback returned invalid JSON.") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("GitHub CLI fallback returned an unexpected response type.")
+    return result
+
+
 def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
     headers = {
         "User-Agent": USER_AGENT,
@@ -251,6 +311,7 @@ def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
         raise RuntimeError(message) from exc
     except urllib.error.URLError as exc:
         if _is_ssl_certificate_error(exc):
+            fallback_error: RuntimeError | None = None
             try:
                 return _github_json_from_windows_certificate_store(
                     url,
@@ -258,9 +319,18 @@ def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
                     token=token,
                 )
             except RuntimeError as fallback_exc:
+                fallback_error = fallback_exc
+            try:
+                return _github_json_from_gh_cli(
+                    url,
+                    timeout=timeout,
+                    token=token,
+                )
+            except RuntimeError as cli_exc:
                 raise RuntimeError(
-                    "Could not reach GitHub API with Python TLS validation, and the "
-                    f"Windows certificate-store fallback also failed: {fallback_exc}"
+                    "Could not reach GitHub API with Python TLS validation; the "
+                    f"Windows certificate-store fallback failed: {fallback_error}; "
+                    f"the GitHub CLI fallback also failed: {cli_exc}"
                 ) from exc
         raise RuntimeError(f"Could not reach GitHub API: {exc}") from exc
 

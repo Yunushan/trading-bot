@@ -1266,6 +1266,40 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     token=None,
                 )
 
+    def test_release_asset_fetch_uses_gh_cli_after_ssl_fallback_failure(self):
+        cli_payload = {
+            "html_url": "https://github.com/Yunushan/trading-bot/releases/tag/v1.0.36",
+            "assets": [{"name": "Trading-Bot-Rust-windows-x64-1.0.36.exe"}],
+        }
+        ssl_error = urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        completed = subprocess.CompletedProcess(
+            ["gh", "api"],
+            0,
+            json.dumps(cli_payload),
+            "",
+        )
+
+        with (
+            patch.object(release_assets.urllib.request, "urlopen", side_effect=ssl_error),
+            patch.object(
+                release_assets,
+                "_github_json_from_windows_certificate_store",
+                side_effect=RuntimeError("certificate store unavailable"),
+            ),
+            patch.object(release_assets.shutil, "which", return_value="gh"),
+            patch.object(release_assets.subprocess, "run", return_value=completed) as run,
+        ):
+            payload = release_assets._github_json(
+                "https://api.github.com/repos/Yunushan/trading-bot/releases/tags/v1.0.36",
+                timeout=1.0,
+                token="token-not-rendered",
+            )
+
+        self.assertEqual(cli_payload, payload)
+        command = run.call_args.args[0]
+        self.assertEqual("repos/Yunushan/trading-bot/releases/tags/v1.0.36", command[2])
+        self.assertEqual("token-not-rendered", run.call_args.kwargs["env"]["GH_TOKEN"])
+
     def test_required_rust_release_assets_match_tagged_desktop_publishers(self):
         version, assets = release_assets._build_expected_assets("v1.2.3")
         required_rust_assets = {
