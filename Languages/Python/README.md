@@ -174,7 +174,7 @@ Exact OS package names for Python, `pip`, `venv`, and Qt vary by platform, so th
 4. Press `Start`.
 5. Use the `Positions`, `Chart`, and `Backtest` tabs to monitor and analyze activity.
 
-The current shipped live/demo connector path is Binance. Other exchange and broker selections are allowed in config for planning/UI work, but the service connector snapshot marks them unsupported until a real connector is implemented.
+The current shipped live/demo connector path is Binance. The service connector snapshot reports the selected connector's actual scope: the listed ccxt exchanges and broker integrations expose diagnostics and guarded order-routing surfaces, while official live support remains evidence-gated per venue or account. Five requested brokers (Mitrade, AXPM, Spreadex, Jefferies, and Marex) remain explicitly blocked because an authorized public API or client FIX contract is required. See the repository [support matrix](../../docs/SUPPORT_MATRIX.md) for the complete scope and evidence status.
 
 ## Optional service API
 
