@@ -22,7 +22,7 @@ The Python desktop release asset is built from the canonical product wrapper at 
 
 Tauri is the only Rust desktop shell release target unless another Rust shell is explicitly promoted.
 
-> FreeBSD release workflow depends on a matching self-hosted runner. Other BSD-family systems and Solaris/illumos currently rely on manual validation against the service/backend path.
+> FreeBSD release workflow depends on a matching self-hosted runner and is explicitly opt-in through workflow dispatch; tag releases skip it when no runner is configured. Other BSD-family systems and Solaris/illumos currently rely on manual validation against the service/backend path.
 
 ## Release preflight
 

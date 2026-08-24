@@ -221,6 +221,14 @@ class ReleaseQaTests(unittest.TestCase):
 
         freebsd = (REPO_ROOT / ".github" / "workflows" / "release-freebsd.yml").read_text(encoding="utf-8")
         self.assertIn("permissions:\n  contents: read\n  actions: read", freebsd)
+        self.assertIn(
+            "github.event_name == 'workflow_dispatch' && github.event.inputs.run_freebsd == 'true'",
+            freebsd,
+        )
+        self.assertIn(
+            "if: startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success'",
+            freebsd,
+        )
         self.assertRegex(
             freebsd,
             r"(?ms)^  build:\n    permissions:\n      contents: read\n      actions: read",
