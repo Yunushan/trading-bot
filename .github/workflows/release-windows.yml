@@ -782,7 +782,8 @@ jobs:
 
       - name: Install Python verification dependencies
         shell: bash
-        run: python -m pip install --disable-pip-version-check --no-input -r Languages/Python/requirements.txt
+        working-directory: Languages/Python
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
 
       - name: Verify required release platform evidence
         uses: ./.github/actions/verify-release-platform-evidence
