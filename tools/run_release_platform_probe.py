@@ -75,6 +75,8 @@ DEFAULT_DESKTOP_RELEASE_SMOKE_COMMAND = (
 # longer than ten minutes. Keep a finite outer budget while allowing the
 # dedicated desktop executable build to finish before smoke verification.
 DEFAULT_DESKTOP_RELEASE_SMOKE_TIMEOUT = 2400
+WINDOWS_TASKKILL_TIMEOUT_SECONDS = 5
+POST_TERMINATION_DRAIN_TIMEOUT_SECONDS = 2
 
 
 def _repo_root() -> Path:
@@ -212,7 +214,7 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
                     [taskkill, "/PID", str(process.pid), "/T", "/F"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=30,
+                    timeout=WINDOWS_TASKKILL_TIMEOUT_SECONDS,
                     check=False,
                 )
             except (OSError, subprocess.SubprocessError):
@@ -274,7 +276,9 @@ def _run_command(
         stdout = _decode_process_output(exc.stdout)
         stderr = _decode_process_output(exc.stderr)
         try:
-            completed_stdout, completed_stderr = process.communicate(timeout=10)
+            completed_stdout, completed_stderr = process.communicate(
+                timeout=POST_TERMINATION_DRAIN_TIMEOUT_SECONDS
+            )
             stdout = completed_stdout or stdout
             stderr = completed_stderr or stderr
         except subprocess.TimeoutExpired:
