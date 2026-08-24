@@ -45,6 +45,7 @@ from tools.generate_native_parity_contracts import (  # noqa: E402
     RUST_PORTFOLIO_REFERENCE_OUTPUT,
     TAURI_BROWSER_OUTPUT,
     _cpp_string,
+    _cpp_string_chunks,
     _exchange_support_reference_payload,
     _indicator_reference_payload,
     _python_option_catalog_manifest,
@@ -452,8 +453,13 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         )
         self.assertIn(
             "inline constexpr std::string_view kPythonOptionCatalogsJson = "
-            f"{_cpp_string(option_catalog_json)};",
+            f"{_cpp_string_chunks(option_catalog_json)};",
             cpp_generated,
+        )
+        self.assertLess(
+            max(len(line) for line in cpp_generated.splitlines()),
+            12_000,
+            "generated C++ literals must remain below MSVC's single-literal limit",
         )
         self.assertIn(
             f'"optionCatalogsJson": {json.dumps(option_catalog_json)}',

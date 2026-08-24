@@ -3480,7 +3480,7 @@ def render_cpp_header() -> str:
         ),
         (
             "inline constexpr std::string_view kPythonOptionCatalogsJson = "
-            f"{_cpp_string(option_catalog_json)};"
+            f"{_cpp_string_chunks(option_catalog_json)};"
         ),
         "",
         _cpp_runtime_config_reference_cases(runtime_config_cases),

@@ -28,6 +28,7 @@ from app.settings.validation import (  # noqa: E402
 )
 from tools.generate_native_parity_contracts import (  # noqa: E402
     _cpp_string,
+    _cpp_string_chunks,
     _python_option_catalog_manifest,
     _python_option_catalog_json,
     _rust_string,
@@ -2385,7 +2386,7 @@ def _option_catalog_manifest_contract() -> dict[str, object]:
     expected_catalog_json = {
         "cpp": (
             "inline constexpr std::string_view kPythonOptionCatalogsJson = "
-            f"{_cpp_string(option_catalog_json)};"
+            f"{_cpp_string_chunks(option_catalog_json)};"
         ),
         "rust": (
             "pub const PYTHON_OPTION_CATALOGS_JSON: &str = "
