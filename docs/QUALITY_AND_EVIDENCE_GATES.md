@@ -364,6 +364,11 @@ committed.
   `pwsh -File tools/Setup-Windows11ReleaseRunner.ps1 -RepositoryUrl https://github.com/<owner>/<repo> -RegistrationToken <short-lived-token> -InstallService`;
   the helper validates the host, uses only the required custom labels, and
   refuses to overwrite an existing runner directory. Operators can also run the
+  self-hosted scope only after configuring the repository secret
+  `RELEASE_RUNNER_STATUS_TOKEN` with runner-inventory read access. The workflow
+  checks the selected runner labels and online/not-busy state before creating
+  any self-hosted matrix jobs, so a missing or unavailable runner fails fast
+  instead of leaving real-target jobs queued indefinitely. Operators can also run the
   manual `.github/workflows/rust-native-release-evidence.yml` workflow with a
   release tag and a platform-evidence Actions run id; it downloads
   `release-platform-evidence-*` artifacts after the native source-sync audit
