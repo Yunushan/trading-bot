@@ -35,6 +35,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -84,6 +85,17 @@ jobs:
           fi
           targets="$(python tools/check_release_platform_matrix.py "${args[@]}")"
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+      - name: Verify selected self-hosted runners are available
+        if: ${{ inputs.include_self_hosted == true }}
+        shell: bash
+        env:
+          TARGETS_JSON: ${{ steps.matrix.outputs.targets }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_RUNNER_STATUS_TOKEN: ${{ secrets.RELEASE_RUNNER_STATUS_TOKEN }}
+        run: |
+          set -euo pipefail
+          python tools/check_release_runner_availability.py --json
 
   run-target:
     name: Real Target Probe (${{ matrix.target.target_id }})
