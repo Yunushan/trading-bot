@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trading-bot-python"
-version = "1.0.37"
+version = "1.0.38"
 description = "Desktop-first Python workspace for the Trading Bot project."
 readme = "README.md"
 requires-python = ">=3.10,<3.16"
