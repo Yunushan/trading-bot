@@ -1741,6 +1741,18 @@ class ProductPackagingContractTests(unittest.TestCase):
             self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
             self.assertIn("softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228", workflow)
 
+    def test_release_publish_restores_tagged_checkout_after_evidence_validation(self):
+        for workflow_name in ("release-windows.yml", "release-linux-macos.yml"):
+            workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(
+                encoding="utf-8"
+            )
+            evidence_index = workflow.index("uses: ./.github/actions/verify-release-platform-evidence")
+            restore_index = workflow.index("- name: Restore tagged release checkout")
+            download_index = workflow.index("- name: Download built assets")
+            self.assertLess(evidence_index, restore_index)
+            self.assertLess(restore_index, download_index)
+            self.assertIn('run: git checkout --detach "${GITHUB_SHA}"', workflow)
+
     def test_release_workflows_generate_attested_sboms(self):
         workflows = (
             REPO_ROOT / ".github" / "workflows" / "release-windows.yml",
