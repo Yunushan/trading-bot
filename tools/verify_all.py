@@ -20,6 +20,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by package imports
     from tools.rust_command import run_cargo_with_secure_wsl_fallback
 
 
+DEFAULT_CHECK_TIMEOUT_SECONDS = 900
+
+
 @dataclass(frozen=True, slots=True)
 class Check:
     name: str
@@ -28,10 +31,10 @@ class Check:
     required: bool = True
     remediation: str = ""
     blocks_success: bool = False
-    # The full Python suite includes coverage and currently takes just over
-    # four minutes on the supported Windows Python 3.14 environment. Keep a
-    # margin so a healthy run is not misreported as a timeout.
-    timeout_seconds: int = 360
+    # The full Python suite includes coverage and can take over six minutes on
+    # the supported Windows Python 3.14 environment. Keep a bounded margin so
+    # a healthy run is not misreported as a timeout.
+    timeout_seconds: int = DEFAULT_CHECK_TIMEOUT_SECONDS
 
 
 def _repo_root() -> Path:

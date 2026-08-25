@@ -72,6 +72,8 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("python tests", full_check_names)
         self.assertIn("python source compile", full_check_names)
         self.assertIn("Languages/Python/tools/run_python_tests.py", full_checks["python tests"].command)
+        self.assertEqual(module.DEFAULT_CHECK_TIMEOUT_SECONDS, full_checks["python tests"].timeout_seconds)
+        self.assertGreaterEqual(full_checks["python tests"].timeout_seconds, 600)
         self.assertEqual(900, full_checks["native c++ build and tests"].timeout_seconds)
         self.assertEqual("900", full_checks["native c++ build and tests"].command[-1])
         self.assertIn("Cargo can securely access", full_checks["rust workspace check"].remediation)
