@@ -15,15 +15,13 @@
             "metro"
           ],
           "reviewed": "2026-08-26",
-          "fix_availability": "breaking-graph-only",
-          "verified_fix_target": "react-native",
-          "verified_fix_version": "0.86.3",
+          "fix_availability": "none-published",
           "mitigation_control": "mobile-image-size-build-only-v1",
           "verified_package_version": "1.2.1",
           "verified_consumers": [
             "metro@0.87.0"
           ],
-          "reason": "GitHub's reviewed advisory records report no patched image-size release. npm's only graph remediation is the reviewed breaking React Native 0.86.3 downgrade. The exact Expo 57 lock graph resolves image-size 1.2.1 only through Metro 0.87.0. The required mitigation control verifies that application source does not import image-size, Metro has a single guarded import, and Metro rejects ICNS, JXL, HEIF, HEIC, and AVIF before parser invocation. Exposure is therefore limited to repository-controlled build assets. Re-review by the expiry date and remove this exception immediately when an installable package fix appears or the verified dependency or remediation boundary changes."
+          "reason": "GitHub's reviewed advisory records and npm audit report no patched image-size release. The exact Expo 57 lock graph resolves image-size 1.2.1 only through Metro 0.87.0. The required mitigation control verifies that application source does not import image-size, Metro has a single guarded import, and Metro rejects ICNS, JXL, HEIF, HEIC, and AVIF before parser invocation. Exposure is therefore limited to repository-controlled build assets. Re-review by the expiry date and remove this exception immediately when an installable package fix appears or the verified dependency boundary changes."
         }
       ]
     }

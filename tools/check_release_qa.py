@@ -18,12 +18,27 @@ REQUIRED_SCENARIOS = (
     "LLM/local-model flow",
     "Release package",
 )
+NATIVE_SIGNING_SCENARIO = "Native signing and notarization"
+NATIVE_SIGNING_REQUIRED_SINCE = (1, 0, 41)
+VERSION_TAG_PATTERN = re.compile(
+    r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)(?:[-+][0-9A-Za-z.-]+)?$"
+)
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 EVIDENCE_RUN_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
 EVIDENCE_RUN_URL_PATTERN = re.compile(
     r"^https://github\.com/[^/\s]+/[^/\s]+/actions/runs/([1-9][0-9]*)/?$"
 )
 EVIDENCE_SCOPES = ("full", "hosted-only")
+
+
+def _required_scenarios(tag: str) -> tuple[str, ...]:
+    match = VERSION_TAG_PATTERN.fullmatch(tag)
+    if not match:
+        return REQUIRED_SCENARIOS
+    version = tuple(int(match.group(part)) for part in ("major", "minor", "patch"))
+    if version >= NATIVE_SIGNING_REQUIRED_SINCE:
+        return (*REQUIRED_SCENARIOS, NATIVE_SIGNING_SCENARIO)
+    return REQUIRED_SCENARIOS
 
 
 def _field(text: str, label: str) -> str:
@@ -62,14 +77,20 @@ def validate_release_qa_note(
 
     recorded_revision = _field(text, "Source revision")
     if not REVISION_PATTERN.fullmatch(recorded_revision):
-        issues.append("QA note Source revision must be a 40-character lowercase Git commit SHA")
+        issues.append(
+            "QA note Source revision must be a 40-character lowercase Git commit SHA"
+        )
     if source_revision and recorded_revision != source_revision:
-        issues.append("QA note Source revision does not match the release source revision")
+        issues.append(
+            "QA note Source revision does not match the release source revision"
+        )
 
     if require_platform_evidence_run:
         evidence_run_id = _field(text, "Release platform evidence run ID")
         if not EVIDENCE_RUN_ID_PATTERN.fullmatch(evidence_run_id):
-            issues.append("QA note Release platform evidence run ID must be a positive GitHub Actions run ID")
+            issues.append(
+                "QA note Release platform evidence run ID must be a positive GitHub Actions run ID"
+            )
         evidence_run_url = _field(text, "Release platform evidence run URL")
         evidence_url_match = EVIDENCE_RUN_URL_PATTERN.fullmatch(evidence_run_url)
         if not evidence_url_match:
@@ -87,14 +108,16 @@ def validate_release_qa_note(
                 + ", ".join(EVIDENCE_SCOPES)
             )
 
-    for scenario in REQUIRED_SCENARIOS:
+    for scenario in _required_scenarios(tag):
         pattern = rf"(?mi)^-\s*\[x\]\s*{re.escape(scenario)}:\s*\S"
         if not re.search(pattern, text):
             issues.append(f"QA note must record a completed {scenario} check")
     return issues
 
 
-def _release_qa_parent_revision(note: Path, release_revision: str) -> tuple[str, list[str]]:
+def _release_qa_parent_revision(
+    note: Path, release_revision: str
+) -> tuple[str, list[str]]:
     """Return the tested parent revision for a metadata-only tagged QA commit."""
 
     try:
@@ -114,7 +137,14 @@ def _release_qa_parent_revision(note: Path, release_revision: str) -> tuple[str,
             text=True,
         ).stdout.strip()
         changed_files = subprocess.run(
-            ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", release_revision],
+            [
+                "git",
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                release_revision,
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -135,7 +165,9 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Validate the versioned manual QA record required before release publication.",
     )
     parser.add_argument("--tag", required=True, help="Release tag, for example v1.2.3.")
-    parser.add_argument("--note", type=Path, required=True, help="Path to the release QA Markdown note.")
+    parser.add_argument(
+        "--note", type=Path, required=True, help="Path to the release QA Markdown note."
+    )
     parser.add_argument(
         "--require-current-revision",
         action="store_true",
@@ -186,7 +218,10 @@ def main(argv: list[str] | None = None) -> int:
     ) and not args.require_current_revision:
         parser.error("print options require --require-current-revision")
     if args.require_current_revision and not REVISION_PATTERN.fullmatch(revision):
-        print("error: GITHUB_SHA must contain the 40-character release commit SHA", file=sys.stderr)
+        print(
+            "error: GITHUB_SHA must contain the 40-character release commit SHA",
+            file=sys.stderr,
+        )
         return 2
     issues: list[str] = []
     if args.allow_release_qa_commit:
@@ -207,9 +242,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_source_revision:
         print(revision)
     elif args.print_platform_evidence_run_id:
-        print(_field(args.note.read_text(encoding="utf-8"), "Release platform evidence run ID"))
+        print(
+            _field(
+                args.note.read_text(encoding="utf-8"),
+                "Release platform evidence run ID",
+            )
+        )
     elif args.print_platform_evidence_scope:
-        print(_field(args.note.read_text(encoding="utf-8"), "Release platform evidence scope"))
+        print(
+            _field(
+                args.note.read_text(encoding="utf-8"), "Release platform evidence scope"
+            )
+        )
     else:
         print(f"release QA note approved: {args.note}")
     return 0

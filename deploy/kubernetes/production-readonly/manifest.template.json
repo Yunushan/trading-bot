@@ -1,0 +1,440 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "trading-bot-readonly",
+        "labels": {
+          "pod-security.kubernetes.io/enforce": "restricted",
+          "pod-security.kubernetes.io/enforce-version": "latest",
+          "pod-security.kubernetes.io/audit": "restricted",
+          "pod-security.kubernetes.io/audit-version": "latest",
+          "pod-security.kubernetes.io/warn": "restricted",
+          "pod-security.kubernetes.io/warn-version": "latest"
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "trading-bot-readonly-api",
+        "namespace": "trading-bot-readonly"
+      },
+      "automountServiceAccountToken": false
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "trading-bot-readonly-api",
+        "namespace": "trading-bot-readonly",
+        "labels": {
+          "app.kubernetes.io/name": "trading-bot-readonly-api",
+          "app.kubernetes.io/component": "service-api"
+        },
+        "annotations": {
+          "trading-bot-build-commit": "0000000000000000000000000000000000000000"
+        }
+      },
+      "spec": {
+        "replicas": 3,
+        "revisionHistoryLimit": 10,
+        "minReadySeconds": 10,
+        "progressDeadlineSeconds": 600,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxUnavailable": 0,
+            "maxSurge": 1
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "trading-bot-readonly-api"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "trading-bot-readonly-api",
+              "app.kubernetes.io/component": "service-api"
+            },
+            "annotations": {
+              "trading-bot-build-commit": "0000000000000000000000000000000000000000"
+            }
+          },
+          "spec": {
+            "serviceAccountName": "trading-bot-readonly-api",
+            "automountServiceAccountToken": false,
+            "enableServiceLinks": false,
+            "terminationGracePeriodSeconds": 30,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 65532,
+              "runAsGroup": 65532,
+              "fsGroup": 65532,
+              "fsGroupChangePolicy": "OnRootMismatch",
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "affinity": {
+              "podAntiAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": [
+                  {
+                    "labelSelector": {
+                      "matchLabels": {
+                        "app.kubernetes.io/name": "trading-bot-readonly-api"
+                      }
+                    },
+                    "topologyKey": "kubernetes.io/hostname"
+                  }
+                ]
+              }
+            },
+            "topologySpreadConstraints": [
+              {
+                "maxSkew": 1,
+                "topologyKey": "topology.kubernetes.io/zone",
+                "whenUnsatisfiable": "ScheduleAnyway",
+                "labelSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "trading-bot-readonly-api"
+                  }
+                }
+              },
+              {
+                "maxSkew": 1,
+                "topologyKey": "kubernetes.io/hostname",
+                "whenUnsatisfiable": "DoNotSchedule",
+                "labelSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "trading-bot-readonly-api"
+                  }
+                }
+              }
+            ],
+            "containers": [
+              {
+                "name": "service-api",
+                "image": "registry.invalid/trading-bot/service@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "imagePullPolicy": "IfNotPresent",
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8000,
+                    "protocol": "TCP"
+                  }
+                ],
+                "env": [
+                  {
+                    "name": "BOT_SERVICE_API_READ_ONLY",
+                    "value": "1"
+                  },
+                  {
+                    "name": "BOT_SERVICE_API_TRUST_PROXY_TLS",
+                    "value": "1"
+                  },
+                  {
+                    "name": "BOT_SERVICE_API_TOKEN_FILE",
+                    "value": "/run/secrets/trading-bot/service-api-token"
+                  },
+                  {
+                    "name": "BOT_SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ",
+                    "value": "1"
+                  },
+                  {
+                    "name": "BOT_SERVICE_API_MAX_REQUEST_BYTES",
+                    "value": "1048576"
+                  },
+                  {
+                    "name": "TRADING_BOT_BUILD_COMMIT",
+                    "value": "0000000000000000000000000000000000000000"
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "runAsNonRoot": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "250m",
+                    "memory": "256Mi",
+                    "ephemeral-storage": "256Mi"
+                  },
+                  "limits": {
+                    "cpu": "1",
+                    "memory": "1Gi",
+                    "ephemeral-storage": "512Mi"
+                  }
+                },
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/livez",
+                    "port": "http",
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 2,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 30
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/readyz",
+                    "port": "http",
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 3,
+                  "successThreshold": 1
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/livez",
+                    "port": "http",
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 10,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 3
+                },
+                "volumeMounts": [
+                  {
+                    "name": "service-api-token",
+                    "mountPath": "/run/secrets/trading-bot",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "runtime-state",
+                    "mountPath": "/home/nonroot/.trading-bot"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "service-api-token",
+                "secret": {
+                  "secretName": "trading-bot-service-api",
+                  "defaultMode": 288,
+                  "optional": false,
+                  "items": [
+                    {
+                      "key": "token",
+                      "path": "service-api-token",
+                      "mode": 288
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "runtime-state",
+                "emptyDir": {
+                  "sizeLimit": "128Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "medium": "Memory",
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "trading-bot-readonly-api",
+        "namespace": "trading-bot-readonly",
+        "labels": {
+          "app.kubernetes.io/name": "trading-bot-readonly-api"
+        }
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "selector": {
+          "app.kubernetes.io/name": "trading-bot-readonly-api"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 80,
+            "targetPort": "http",
+            "protocol": "TCP",
+            "appProtocol": "http"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "policy/v1",
+      "kind": "PodDisruptionBudget",
+      "metadata": {
+        "name": "trading-bot-readonly-api",
+        "namespace": "trading-bot-readonly"
+      },
+      "spec": {
+        "minAvailable": 2,
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "trading-bot-readonly-api"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "autoscaling/v2",
+      "kind": "HorizontalPodAutoscaler",
+      "metadata": {
+        "name": "trading-bot-readonly-api",
+        "namespace": "trading-bot-readonly"
+      },
+      "spec": {
+        "scaleTargetRef": {
+          "apiVersion": "apps/v1",
+          "kind": "Deployment",
+          "name": "trading-bot-readonly-api"
+        },
+        "minReplicas": 3,
+        "maxReplicas": 10,
+        "behavior": {
+          "scaleUp": {
+            "stabilizationWindowSeconds": 0,
+            "selectPolicy": "Max",
+            "policies": [
+              {
+                "type": "Percent",
+                "value": 100,
+                "periodSeconds": 60
+              },
+              {
+                "type": "Pods",
+                "value": 4,
+                "periodSeconds": 60
+              }
+            ]
+          },
+          "scaleDown": {
+            "stabilizationWindowSeconds": 300,
+            "selectPolicy": "Max",
+            "policies": [
+              {
+                "type": "Percent",
+                "value": 25,
+                "periodSeconds": 60
+              }
+            ]
+          }
+        },
+        "metrics": [
+          {
+            "type": "Resource",
+            "resource": {
+              "name": "cpu",
+              "target": {
+                "type": "Utilization",
+                "averageUtilization": 70
+              }
+            }
+          },
+          {
+            "type": "Resource",
+            "resource": {
+              "name": "memory",
+              "target": {
+                "type": "Utilization",
+                "averageUtilization": 75
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "trading-bot-readonly-api",
+        "namespace": "trading-bot-readonly"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "trading-bot-readonly-api"
+          }
+        },
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "trading-bot-ingress-access": "true"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "trading-bot-ingress-client": "true"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 8000
+              }
+            ]
+          },
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "trading-bot-monitoring-access": "true"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "trading-bot-monitoring-client": "true"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 8000
+              }
+            ]
+          }
+        ],
+        "egress": []
+      }
+    }
+  ]
+}

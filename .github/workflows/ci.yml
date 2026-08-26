@@ -223,6 +223,21 @@ jobs:
           set -euo pipefail
           python Languages/Python/tools/check_service_api_contracts.py
 
+      - name: Check production read-only deployment contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_production_deployment.py --json
+          python tools/render_production_deployment.py \
+            --image "registry.example.com/trading-bot/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+            --build-commit "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+            --output "${RUNNER_TEMP}/trading-bot-production-readonly.json" \
+            --json
+          python tools/check_production_deployment.py \
+            --manifest "${RUNNER_TEMP}/trading-bot-production-readonly.json" \
+            --require-rendered \
+            --json
+
       - name: Run focused service API tests
         shell: bash
         working-directory: Languages/Python
@@ -243,6 +258,17 @@ jobs:
         run: |
           set -euo pipefail
           python tools/run_service_sustained_probe.py --profile quick
+
+      - name: Run bounded service capacity regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/run_service_capacity_probe.py \
+            --requests 600 \
+            --concurrency 16 \
+            --max-p95-ms 500 \
+            --minimum-throughput-rps 10 \
+            --json
 
       - name: Run operational recovery drill
         shell: bash
@@ -284,16 +310,29 @@ jobs:
             --cap-drop ALL \
             --env BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789 \
             --env BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1 \
+            --env BOT_SERVICE_API_READ_ONLY=1 \
             "$image"
           trap 'docker logs "$container" || true; docker stop "$container" || true' EXIT
+          ready=0
           for _ in {1..30}; do
             if curl --fail --silent --show-error http://127.0.0.1:18000/readyz >/dev/null; then
-              exit 0
+              ready=1
+              break
             fi
             sleep 1
           done
-          echo "Service container did not become healthy in 30 seconds." >&2
-          exit 1
+          if [ "$ready" -ne 1 ]; then
+            echo "Service container did not become healthy in 30 seconds." >&2
+            exit 1
+          fi
+          BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789 \
+            python tools/run_service_capacity_probe.py \
+              --base-url http://127.0.0.1:18000 \
+              --requests 600 \
+              --concurrency 16 \
+              --max-p95-ms 1000 \
+              --minimum-throughput-rps 10 \
+              --json
 
       - name: Dry-run release smoke plan
         shell: bash
@@ -735,6 +774,10 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e "./Languages/Python"
+
+      - name: Validate native release signing policy
+        shell: bash
+        run: python tools/check_release_signing_policy.py --json
 
       - name: Validate release platform/browser matrix
         shell: bash

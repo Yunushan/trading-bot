@@ -51,6 +51,7 @@ RELEASE_METADATA_IDS = (
 REQUIRED_RUST_PREFIXES = (
     "Trading-Bot-Rust-tauri",
 )
+NATIVE_SIGNING_REQUIRED_SINCE = (1, 0, 41)
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,15 @@ def _extract_release_version(tag: str) -> str:
     if not match:
         return "0.0.0"
     return match.group(1).replace("_", ".").replace("-", ".")
+
+
+def _native_signing_required(tag: str) -> bool:
+    match = VERSION_PATTERN.search(str(tag or "").strip())
+    if not match:
+        return False
+    numeric_parts = [int(part) for part in re.findall(r"\d+", match.group(1))[:3]]
+    numeric_parts.extend([0] * (3 - len(numeric_parts)))
+    return tuple(numeric_parts) >= NATIVE_SIGNING_REQUIRED_SINCE
 
 
 def _build_expected_assets(tag: str) -> tuple[str, list[ExpectedAsset]]:
@@ -128,6 +138,17 @@ def _build_expected_assets(tag: str) -> tuple[str, list[ExpectedAsset]]:
                 ExpectedAsset(f"release-manifest-{release_id}.json", True, group),
                 ExpectedAsset(f"release-sbom-{release_id}.spdx.json", True, group),
             ]
+        )
+
+    signing_required = _native_signing_required(tag)
+    for release_id in (*WINDOWS_ASSET_TAGS, *MACOS_ASSET_TAGS):
+        group = f"Native signing {release_id}"
+        assets.append(
+            ExpectedAsset(
+                f"release-signing-{release_id}.json",
+                signing_required,
+                group,
+            )
         )
 
     return version, assets

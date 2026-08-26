@@ -653,6 +653,17 @@ jobs:
           $cppZipAsset = "release/Trading-Bot-C++-$assetTag-$releaseVersion.zip"
           Compress-Archive -Path "$cppBundleDir/*" -DestinationPath $cppZipAsset -Force
 
+      - name: Authenticode-sign required Windows release binaries
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_B64: ${{ secrets.WINDOWS_CODESIGN_PFX_B64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: |
+          & ./tools/Sign-WindowsReleaseBinaries.ps1 `
+            -TargetId "${{ matrix.id }}" `
+            -SourceRevision "${{ github.sha }}"
+
       - name: Smoke packaged native binaries
         shell: pwsh
         run: |
@@ -753,6 +764,7 @@ jobs:
             release/Trading-Bot-C++*.zip
             release/native-cpp-windows-smoke-*.json
             release/rust-package-smoke-*.json
+            release/release-signing-windows-*.json
             release/release-manifest-*.json
             release/release-sbom-*.spdx.json
           if-no-files-found: error
@@ -816,12 +828,17 @@ jobs:
           }
           manifest_count="$(count_regular_files release/release-manifest-*.json)"
           sbom_count="$(count_regular_files release/release-sbom-*.spdx.json)"
+          signing_count="$(count_regular_files release/release-signing-windows-*.json)"
           if [[ "$manifest_count" -ne 2 ]]; then
             echo "Expected two Windows release manifests, found $manifest_count." >&2
             exit 1
           fi
           if [[ "$sbom_count" -ne 2 ]]; then
             echo "Expected two Windows release SBOMs, found $sbom_count." >&2
+            exit 1
+          fi
+          if [[ "$signing_count" -ne 2 ]]; then
+            echo "Expected two Windows native-signing evidence files, found $signing_count." >&2
             exit 1
           fi
           for manifest in release/release-manifest-*.json; do
@@ -831,6 +848,11 @@ jobs:
               --repo-root "${GITHUB_WORKSPACE}" \
               --require-current-revision
           done
+          python tools/check_release_signing_evidence.py \
+            release/release-signing-windows-*.json \
+            --asset-dir release \
+            --require-complete-platform-set windows \
+            --require-current-revision
           ls -lah release
 
       - name: Publish GitHub release

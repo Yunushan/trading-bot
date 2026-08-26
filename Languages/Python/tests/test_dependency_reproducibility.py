@@ -645,9 +645,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
 
         self.assertEqual("image-size", exception["package"])
-        self.assertEqual("breaking-graph-only", exception["fix_availability"])
-        self.assertEqual("react-native", exception["verified_fix_target"])
-        self.assertEqual("0.86.3", exception["verified_fix_version"])
+        self.assertEqual("none-published", exception["fix_availability"])
+        self.assertNotIn("verified_fix_target", exception)
+        self.assertNotIn("verified_fix_version", exception)
         self.assertEqual("2026-08-26", exception["reviewed"])
         self.assertEqual("2026-09-30", exception["expires"])
         self.assertEqual("mobile-image-size-build-only-v1", exception["mitigation_control"])

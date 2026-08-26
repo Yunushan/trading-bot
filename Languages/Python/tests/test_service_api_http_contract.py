@@ -32,6 +32,7 @@ from app.service.api_contract import (  # noqa: E402
 )
 from app.service.auth import (  # noqa: E402
     MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH,
+    SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ_ENV,
     SERVICE_API_TOKEN_FILE_ENV,
     auth_required,
     host_requires_service_api_token,
@@ -155,9 +156,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             app.state.service.describe_runtime().to_dict()["control_plane"]["execution_scope"],
             "service-lifecycle-heartbeat",
         )
-        self.assertFalse(
-            app.state.service.describe_runtime().to_dict()["control_plane"]["trading_execution_supported"]
-        )
+        self.assertFalse(app.state.service.describe_runtime().to_dict()["control_plane"]["trading_execution_supported"])
 
     @unittest.skipUnless(
         FASTAPI_TESTCLIENT_AVAILABLE,
@@ -583,20 +582,22 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 clear=True,
             ):
                 validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "BOT_SERVICE_API_TLS_CERTFILE": str(certificate),
-                    "BOT_SERVICE_API_TLS_KEYFILE": str(private_key),
-                },
-                clear=True,
-            ), mock.patch(
-                "app.service.auth.token.os.name", "posix"
-            ), mock.patch(
-                "app.service.auth.token.os.fstat",
-                return_value=mock.Mock(
-                    st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP,
-                    st_size=len("private-key"),
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "BOT_SERVICE_API_TLS_CERTFILE": str(certificate),
+                        "BOT_SERVICE_API_TLS_KEYFILE": str(private_key),
+                    },
+                    clear=True,
+                ),
+                mock.patch("app.service.auth.token.os.name", "posix"),
+                mock.patch(
+                    "app.service.auth.token.os.fstat",
+                    return_value=mock.Mock(
+                        st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP,
+                        st_size=len("private-key"),
+                    ),
                 ),
             ):
                 with self.assertRaisesRegex(RuntimeError, "private-key file must not grant group or other permissions"):
@@ -634,23 +635,76 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             ):
                 self.assertEqual("environment-token", resolve_service_api_token())
 
-            with mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True), mock.patch(
-                "app.service.auth.token.os.name", "posix"
-            ), mock.patch(
-                "app.service.auth.token.os.fstat",
-                return_value=mock.Mock(st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR, st_size=len("file-token\n")),
+            with (
+                mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True),
+                mock.patch("app.service.auth.token.os.name", "posix"),
+                mock.patch(
+                    "app.service.auth.token.os.fstat",
+                    return_value=mock.Mock(
+                        st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR, st_size=len("file-token\n")
+                    ),
+                ),
             ):
                 self.assertEqual("file-token", resolve_service_api_token())
-            with mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True), mock.patch(
-                "app.service.auth.token.os.name", "posix"
-            ), mock.patch(
-                "app.service.auth.token.os.fstat",
-                return_value=mock.Mock(
-                    st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP,
-                    st_size=len("file-token\n"),
+            with (
+                mock.patch.dict(os.environ, {SERVICE_API_TOKEN_FILE_ENV: str(token_file)}, clear=True),
+                mock.patch("app.service.auth.token.os.name", "posix"),
+                mock.patch(
+                    "app.service.auth.token.os.fstat",
+                    return_value=mock.Mock(
+                        st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP,
+                        st_size=len("file-token\n"),
+                    ),
                 ),
             ):
                 with self.assertRaisesRegex(RuntimeError, "must not grant group or other permissions"):
+                    resolve_service_api_token()
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        SERVICE_API_TOKEN_FILE_ENV: str(token_file),
+                        SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ_ENV: "1",
+                    },
+                    clear=True,
+                ),
+                mock.patch("app.service.auth.token.os.name", "posix"),
+                mock.patch(
+                    "app.service.auth.token.os.fstat",
+                    return_value=mock.Mock(
+                        st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IRGRP,
+                        st_size=len("file-token\n"),
+                        st_gid=65532,
+                    ),
+                ),
+                mock.patch("app.service.auth.token.os.getegid", return_value=65532, create=True),
+                mock.patch("app.service.auth.token.os.getgroups", return_value=[], create=True),
+            ):
+                self.assertEqual("file-token", resolve_service_api_token())
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        SERVICE_API_TOKEN_FILE_ENV: str(token_file),
+                        SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ_ENV: "1",
+                    },
+                    clear=True,
+                ),
+                mock.patch("app.service.auth.token.os.name", "posix"),
+                mock.patch(
+                    "app.service.auth.token.os.fstat",
+                    return_value=mock.Mock(
+                        st_mode=stat.S_IFREG | stat.S_IRUSR | stat.S_IRGRP,
+                        st_size=len("file-token\n"),
+                        st_gid=12345,
+                    ),
+                ),
+                mock.patch("app.service.auth.token.os.getegid", return_value=65532, create=True),
+                mock.patch("app.service.auth.token.os.getgroups", return_value=[], create=True),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "effective process group"):
                     resolve_service_api_token()
 
             token_file.write_text("x" * 4097, encoding="utf-8")
@@ -850,13 +904,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             (
                 "patch",
                 f"{SERVICE_API_BASE_PATH}/config",
-                {
-                    "config": {
-                        "runtime": {
-                            "connector_order_circuit_incident_log_path": "C:/remote/incidents.jsonl"
-                        }
-                    }
-                },
+                {"config": {"runtime": {"connector_order_circuit_incident_log_path": "C:/remote/incidents.jsonl"}}},
                 "C:/remote/incidents.jsonl",
             ),
             (
@@ -959,6 +1007,76 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         )
         self.assertEqual(403, write_response.status_code)
         self.assertIn("Write endpoints require", write_response.json()["detail"])
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_read_only_service_api_disables_local_executor_and_all_mutation_methods(self):
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "BOT_SERVICE_API_READ_ONLY": "1",
+                    "BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES": "1",
+                },
+                clear=False,
+            ),
+            mock.patch.object(TradingBotService, "enable_local_executor", autospec=True) as enable_executor,
+        ):
+            app = create_service_api_app(
+                service=TradingBotService(),
+                host_context="standalone-service",
+                host_owner="service-process",
+                api_token="token-123",
+                enable_local_executor=True,
+            )
+            client = _create_test_client(app)
+
+            health = client.get("/health")
+            readiness = client.get("/readyz")
+            dashboard = client.get(
+                f"{SERVICE_API_BASE_PATH}/dashboard",
+                headers={"Authorization": "Bearer token-123"},
+            )
+            mutation_responses = [
+                client.post(
+                    f"{SERVICE_API_BASE_PATH}/logs",
+                    headers={"Authorization": "Bearer token-123"},
+                    json={"message": "blocked"},
+                ),
+                client.put(f"{SERVICE_API_BASE_PATH}/not-a-route"),
+                client.patch(
+                    f"{SERVICE_API_BASE_PATH}/config",
+                    headers={"Authorization": "Bearer token-123"},
+                    json={"config": {"theme": "Dark"}},
+                ),
+                client.delete(f"{SERVICE_API_BASE_PATH}/not-a-route"),
+                client.request("PROPFIND", f"{SERVICE_API_BASE_PATH}/not-a-route"),
+            ]
+
+        enable_executor.assert_not_called()
+        self.assertEqual(200, health.status_code)
+        self.assertTrue(health.json()["service_api"]["read_only"])
+        self.assertFalse(health.json()["service_api"]["mutation_routes_enabled"])
+        self.assertEqual(200, readiness.status_code)
+        self.assertTrue(readiness.json()["read_only"])
+        self.assertEqual(
+            "BOT_SERVICE_API_READ_ONLY",
+            health.json()["service_api"]["limits"]["env_vars"]["read_only"],
+        )
+        self.assertEqual(200, dashboard.status_code)
+        for response in mutation_responses:
+            self.assertEqual(403, response.status_code)
+            self.assertIn("BOT_SERVICE_API_READ_ONLY=1", response.json()["detail"])
+            self.assertEqual("no-store", response.headers.get("cache-control"))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_read_only_service_api_rejects_an_ambiguous_environment_value(self):
+        with mock.patch.dict(
+            os.environ,
+            {"BOT_SERVICE_API_READ_ONLY": "treu"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "must be an explicit boolean value"):
+                create_service_api_app(service=TradingBotService())
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_reports_unsafe_escape_hatches_in_metadata(self):

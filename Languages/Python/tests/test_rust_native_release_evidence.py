@@ -1413,6 +1413,17 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertEqual([missing_manifest], missing)
 
+    def test_native_signing_evidence_is_required_from_v1_0_41_without_retroactive_failure(self):
+        _, legacy_assets = release_assets._build_expected_assets("v1.0.40")
+        _, current_assets = release_assets._build_expected_assets("v1.0.41")
+        legacy_signing = [asset for asset in legacy_assets if asset.name.startswith("release-signing-")]
+        current_signing = [asset for asset in current_assets if asset.name.startswith("release-signing-")]
+
+        self.assertEqual(6, len(legacy_signing))
+        self.assertFalse(any(asset.required for asset in legacy_signing))
+        self.assertEqual(6, len(current_signing))
+        self.assertTrue(all(asset.required for asset in current_signing))
+
     def test_build_release_evidence_requires_rust_assets_and_platform_results(self):
         tag = "v1.2.3"
         _, expected_assets = release_evidence._build_expected_assets(tag)

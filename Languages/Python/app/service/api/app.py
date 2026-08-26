@@ -111,18 +111,26 @@ except Exception as exc:  # pragma: no cover - handled via runtime check
     FASTAPI_AVAILABLE = False
     _FASTAPI_IMPORT_ERROR = exc
 
-_HTTP_422_UNPROCESSABLE_CONTENT = (
-    getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422) if FASTAPI_AVAILABLE else 422
-)
-_HTTP_413_CONTENT_TOO_LARGE = (
-    getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413) if FASTAPI_AVAILABLE else 413
-)
+_HTTP_422_UNPROCESSABLE_CONTENT = getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422) if FASTAPI_AVAILABLE else 422
+_HTTP_413_CONTENT_TOO_LARGE = getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413) if FASTAPI_AVAILABLE else 413
 SERVICE_API_MAX_REQUEST_BYTES_ENV = "BOT_SERVICE_API_MAX_REQUEST_BYTES"
 SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE"
 SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS"
+SERVICE_API_READ_ONLY_ENV = "BOT_SERVICE_API_READ_ONLY"
 SERVICE_BUILD_COMMIT_ENV = "TRADING_BOT_BUILD_COMMIT"
 DEFAULT_SERVICE_API_MAX_REQUEST_BYTES = 1_048_576
 DEFAULT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS = 10_000
+
+
+def _service_api_read_only_mode() -> bool:
+    raw = str(os.environ.get(SERVICE_API_READ_ONLY_ENV) or "").strip().lower()
+    if not raw or raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    raise RuntimeError(f"{SERVICE_API_READ_ONLY_ENV} must be an explicit boolean value.")
+
+
 SERVICE_API_SENSITIVE_RESPONSE_HEADERS = {
     "Cache-Control": "no-store",
     "Pragma": "no-cache",
@@ -142,7 +150,7 @@ def _require_fastapi() -> None:
     raise RuntimeError(
         "FastAPI is not installed. Install optional service dependencies first "
         "(for example: pip install -r requirements.service.txt)."
-        ) from _FASTAPI_IMPORT_ERROR
+    ) from _FASTAPI_IMPORT_ERROR
 
 
 def _resolve_web_client_dir() -> Path:
@@ -163,11 +171,9 @@ if FASTAPI_AVAILABLE:
         requested_job_count: int = 0
         source: str = "api"
 
-
     class StopControlRequest(BaseModel):
         close_positions: bool = False
         source: str = "api"
-
 
     class PositionCloseRequest(BaseModel):
         symbol: str
@@ -178,17 +184,14 @@ if FASTAPI_AVAILABLE:
         confirm_close: bool = False
         source: str = "api"
 
-
     class StartFailureRequest(BaseModel):
         reason: str = ""
         source: str = "api"
-
 
     class RuntimeStateRequest(BaseModel):
         active: bool
         active_engine_count: int = 0
         source: str = "api"
-
 
     class ConfigReplaceRequest(BaseModel):
         config: dict | None = None
@@ -197,7 +200,6 @@ if FASTAPI_AVAILABLE:
         path: str | None = None
         source: str = "api"
         allow_unsafe_path: bool = False
-
 
     class LogEventRequest(BaseModel):
         message: str
@@ -222,12 +224,10 @@ if FASTAPI_AVAILABLE:
         model: str = ""
         source: str = "api-llm-local-model"
 
-
     class AccountSnapshotRequest(BaseModel):
         total_balance: float | None = None
         available_balance: float | None = None
         source: str = "api"
-
 
     class PortfolioSnapshotRequest(BaseModel):
         open_position_records: dict | None = None
@@ -241,22 +241,18 @@ if FASTAPI_AVAILABLE:
         available_balance: float | None = None
         source: str = "api"
 
-
     class ExchangeConnectorSnapshotRequest(BaseModel):
         snapshot: dict | None = None
         source: str = "api"
-
 
     class ConnectorOrderCircuitBreakerSnapshotRequest(BaseModel):
         snapshot: dict | None = None
         source: str = "api"
         force: bool = False
 
-
     class BacktestRunRequest(BaseModel):
         request: dict | None = None
         source: str = "api"
-
 
     class BacktestStopRequest(BaseModel):
         source: str = "api"
@@ -279,8 +275,11 @@ def create_service_api_app(
     resolved_host_context = str(host_context or "standalone-service").strip() or "standalone-service"
     resolved_host_owner = str(host_owner or "service-process").strip() or "service-process"
     service_instance = service or TradingBotService()
+    read_only_mode = _service_api_read_only_mode()
     if enable_local_executor is None:
         enable_local_executor = service is None and resolved_host_context == "standalone-service"
+    if read_only_mode:
+        enable_local_executor = False
     if enable_local_executor:
         try:
             service_instance.enable_local_executor()
@@ -305,6 +304,7 @@ def create_service_api_app(
     app.state.service_api_host_context = resolved_host_context
     app.state.service_api_host_owner = resolved_host_owner
     app.state.service_api_non_loopback_bind = host_requires_service_api_token(bound_host)
+    app.state.service_api_read_only = read_only_mode
     app.state.service_api_streaming = True
     app.state.service_api_version = SERVICE_API_VERSION
     app.state.service_api_base_path = SERVICE_API_BASE_PATH
@@ -332,6 +332,8 @@ def create_service_api_app(
             "build_commit": _service_build_commit(),
             "auth_required": auth_required(app.state.api_token),
             "write_auth_required": _write_auth_required(),
+            "read_only": bool(app.state.service_api_read_only),
+            "mutation_routes_enabled": not bool(app.state.service_api_read_only),
             "web_ui_available": app.state.web_ui_available,
             "sse_available": bool(app.state.service_api_streaming),
             "execution_scope": control_plane.get("execution_scope", ""),
@@ -365,6 +367,7 @@ def create_service_api_app(
             "host_context": app.state.service_api_host_context,
             "host_owner": app.state.service_api_host_owner,
             "build_commit": _service_build_commit(),
+            "read_only": bool(app.state.service_api_read_only),
         }
 
     def _build_dashboard_payload(*, log_limit: int = 30, incident_limit: int = 20) -> dict[str, object]:
@@ -447,6 +450,7 @@ def create_service_api_app(
                 "max_request_bytes": SERVICE_API_MAX_REQUEST_BYTES_ENV,
                 "write_rate_limit_per_minute": SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV,
                 "write_rate_limit_max_clients": SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS_ENV,
+                "read_only": SERVICE_API_READ_ONLY_ENV,
             },
             "cors_allowed_origins": [],
         }
@@ -454,13 +458,15 @@ def create_service_api_app(
     def _write_method(method: str) -> bool:
         return str(method or "").upper() in {"POST", "PUT", "PATCH", "DELETE"}
 
+    def _read_only_method_allowed(method: str) -> bool:
+        return str(method or "").upper() in {"GET", "HEAD", "OPTIONS"}
+
     def _request_too_large_response(*, request_bytes: int, max_request_bytes: int) -> JSONResponse:
         return JSONResponse(
             status_code=_HTTP_413_CONTENT_TOO_LARGE,
             content={
                 "detail": (
-                    f"Request body is too large ({request_bytes} bytes). "
-                    f"Maximum allowed is {max_request_bytes} bytes."
+                    f"Request body is too large ({request_bytes} bytes). Maximum allowed is {max_request_bytes} bytes."
                 )
             },
         )
@@ -506,6 +512,15 @@ def create_service_api_app(
 
     @app.middleware("http")
     async def _enforce_request_limits(request: Request, call_next):
+        if app.state.service_api_read_only and not _read_only_method_allowed(request.method):
+            return _apply_service_api_response_headers(
+                JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": (f"Mutation routes are disabled because {SERVICE_API_READ_ONLY_ENV}=1.")},
+                ),
+                path=request.url.path,
+            )
+
         max_request_bytes = _max_request_bytes()
         content_length = request.headers.get("content-length")
         request_bytes = 0
@@ -545,9 +560,7 @@ def create_service_api_app(
                     return _apply_service_api_response_headers(
                         JSONResponse(
                             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                            content={
-                                "detail": "Write request rate-limit client capacity has been reached."
-                            },
+                            content={"detail": "Write request rate-limit client capacity has been reached."},
                             headers={"Retry-After": "60"},
                         ),
                         path=request.url.path,
@@ -1032,9 +1045,7 @@ def create_service_api_app(
                 get_local_model_status(
                     payload.base_url,
                     payload.model,
-                    allow_public_network=bool(
-                        _service().get_llm_config_payload().get("allow_public_network")
-                    ),
+                    allow_public_network=bool(_service().get_llm_config_payload().get("allow_public_network")),
                 )
             ),
         }
@@ -1053,9 +1064,7 @@ def create_service_api_app(
                 get_local_model_status(
                     payload.base_url,
                     payload.model,
-                    allow_public_network=bool(
-                        _service().get_llm_config_payload().get("allow_public_network")
-                    ),
+                    allow_public_network=bool(_service().get_llm_config_payload().get("allow_public_network")),
                 )
             ),
         }

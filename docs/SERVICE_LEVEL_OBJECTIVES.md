@@ -39,6 +39,23 @@ Fast local regression gate:
 
 ```powershell
 python tools/run_service_sustained_probe.py --profile quick --json
+python tools/run_service_capacity_probe.py --json
+```
+
+The capacity command starts the canonical service as a separate read-only child
+process and sends 600 concurrent, bounded GET requests across health, runtime,
+status, and metrics routes. It enforces zero errors, a 500 ms local p95 ceiling,
+and at least 10 requests/second. CI repeats the same shape against the hardened
+container image. This is a deterministic regression floor, not production
+capacity or promotion evidence; size real resource limits and HPA targets from
+load tests in the actual cluster and retain those results with the deployment.
+
+For a deployed HTTPS target, provide its bearer token through an environment
+variable and never in the URL or command line:
+
+```powershell
+$env:BOT_SERVICE_API_TOKEN = '<secret-manager-value>'
+python tools/run_service_capacity_probe.py --base-url https://service.example.test --json
 ```
 
 Promotion evidence gate:

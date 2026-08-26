@@ -30,7 +30,8 @@ Create a versioned QA note from `docs/release-qa/TEMPLATE.md` after committing
 the tested product changes. The note must use the future tag as its filename,
 record that tested product commit SHA, date, accountable operator, approved
 outcome, a release-platform evidence scope, the positive GitHub Actions run ID
-for that scope, and all four completed checks. The cited matrix run must have
+for that scope, and all required completed checks. Releases from v1.0.41 also
+require the native signing and notarization review item. The cited matrix run must have
 passed for the tested product commit. Use `full` for a standard release; it
 requires every declared target. Use `hosted-only` only for an explicitly labeled
 prerelease when self-hosted Windows evidence is intentionally unavailable; it
@@ -47,6 +48,43 @@ product commit, which will be the parent of the QA-note commit:
 ```bash
 python tools/check_release_qa.py --tag v1.0.0 --note docs/release-qa/v1.0.0.md --require-platform-evidence-run
 ```
+
+## Native trust gate (v1.0.41 and later)
+
+Tagged Windows assets are Authenticode-signed with SHA-256 and an RFC 3161
+timestamp. Tagged macOS assets are Developer ID-signed with Hardened Runtime and
+a secure timestamp; the C++ application ticket is stapled, and all four macOS
+asset families are accepted by Apple's notary service before publication.
+Signing happens before digest manifests, SBOM generation, and provenance
+attestation. The publication jobs re-download and validate hash-bound,
+commit-bound `release-signing-*.json` evidence before creating the GitHub
+Release.
+
+Configure these repository or organization secrets before creating a release
+tag:
+
+- `WINDOWS_CODESIGN_PFX_B64`
+- `WINDOWS_CODESIGN_PFX_PASSWORD`
+- `MACOS_CODESIGN_P12_B64`
+- `MACOS_CODESIGN_P12_PASSWORD`
+- `MACOS_CODESIGN_IDENTITY`
+- `APPLE_NOTARY_KEY_B64`
+- `APPLE_NOTARY_KEY_ID`
+- `APPLE_NOTARY_ISSUER_ID`
+
+The workflows expose credentials only to their signing/notarization steps and
+clean temporary certificate material. A missing, invalid, expired, or
+non-matching credential fails a tagged build; it is never treated as an unsigned
+fallback. Manual `workflow_dispatch` builds remain non-publishable and do not
+claim native trust. The exact machine-readable contract is
+`docs/release-signing-policy.json`; validate it with:
+
+```bash
+python tools/check_release_signing_policy.py --json
+```
+
+The gate starts at v1.0.41. It deliberately does not retroactively label or
+require new signing evidence for the already-published v1.0.40 assets.
 
 Run the local release smoke before creating a tag:
 
@@ -101,6 +139,8 @@ git push origin v1.0.0
    - Linux, macOS, and FreeBSD artifacts from their respective workflows
    - Per-platform `release-manifest-*.json` SHA-256 manifests and
      `release-sbom-*.spdx.json` software bills of materials
+   - For v1.0.41 and later, two Windows and four macOS
+     `release-signing-*.json` native-trust evidence files
 6. Verify the published release automatically:
 
 ```bash

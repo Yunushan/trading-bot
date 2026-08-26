@@ -45,6 +45,7 @@ def _approved_note(tag: str = "v1.2.3") -> str:
 - [x] Service API flow: Passed health, authentication, and unavailable-service checks.
 - [x] LLM/local-model flow: Passed disabled, missing-token, and unavailable-model checks.
 - [x] Release package: Passed clean start, provenance, SBOM, and uninstall checks.
+- [x] Native signing and notarization: Protected credentials and fail-closed trust gates were reviewed.
 """
 
 
@@ -60,10 +61,50 @@ class ReleaseQaTests(unittest.TestCase):
         checker = _load_checker()
         with tempfile.TemporaryDirectory() as temp_dir:
             note = Path(temp_dir) / "v1.2.3.md"
-            note.write_text(_approved_note().replace("- Outcome: approved", "- Outcome: pending").replace("- [x] Release package", "- [ ] Release package"), encoding="utf-8")
+            note.write_text(
+                _approved_note()
+                .replace("- Outcome: approved", "- Outcome: pending")
+                .replace("- [x] Release package", "- [ ] Release package"),
+                encoding="utf-8",
+            )
             issues = checker.validate_release_qa_note(note, tag="v1.2.3", source_revision=REVISION)
         self.assertIn("QA note Outcome must be approved", issues)
         self.assertIn("QA note must record a completed Release package check", issues)
+
+    def test_v1_0_40_does_not_retroactively_require_native_signing(self):
+        checker = _load_checker()
+        note_text = _approved_note("v1.0.40").replace(
+            "- [x] Native signing and notarization: Protected credentials and fail-closed trust gates were reviewed.\n",
+            "",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / "v1.0.40.md"
+            note.write_text(note_text, encoding="utf-8")
+            issues = checker.validate_release_qa_note(
+                note,
+                tag="v1.0.40",
+                source_revision=REVISION,
+            )
+        self.assertEqual([], issues)
+
+    def test_v1_0_41_requires_native_signing_and_notarization_review(self):
+        checker = _load_checker()
+        note_text = _approved_note("v1.0.41").replace(
+            "- [x] Native signing and notarization: Protected credentials and fail-closed trust gates were reviewed.\n",
+            "",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / "v1.0.41.md"
+            note.write_text(note_text, encoding="utf-8")
+            issues = checker.validate_release_qa_note(
+                note,
+                tag="v1.0.41",
+                source_revision=REVISION,
+            )
+        self.assertIn(
+            "QA note must record a completed Native signing and notarization check",
+            issues,
+        )
 
     def test_requires_a_positive_platform_evidence_run_id_when_requested(self):
         checker = _load_checker()
@@ -86,7 +127,9 @@ class ReleaseQaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             note = Path(temp_dir) / "v1.2.3.md"
             note.write_text(
-                _approved_note().replace("- Release platform evidence scope: full", "- Release platform evidence scope: partial"),
+                _approved_note().replace(
+                    "- Release platform evidence scope: full", "- Release platform evidence scope: partial"
+                ),
                 encoding="utf-8",
             )
             issues = checker.validate_release_qa_note(
@@ -178,9 +221,7 @@ class ReleaseQaTests(unittest.TestCase):
                 self.assertRegex(workflow, r'(?ms)^\s*push:\s*\n\s*tags:\s*\n\s*- "v\*"')
 
     def test_workflow_lint_uses_actionlint_compatible_go_toolchain(self):
-        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
         self.assertIn('go-version: "1.25"', workflow)
         self.assertIn(
@@ -194,9 +235,9 @@ class ReleaseQaTests(unittest.TestCase):
                 workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
                 self.assertIn("./.github/actions/verify-release-platform-evidence", workflow)
 
-        action = (
-            REPO_ROOT / ".github" / "actions" / "verify-release-platform-evidence" / "action.yml"
-        ).read_text(encoding="utf-8")
+        action = (REPO_ROOT / ".github" / "actions" / "verify-release-platform-evidence" / "action.yml").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131", action)
         self.assertIn("--require-evidence", action)
         self.assertIn("--require-current-commit", action)
@@ -245,9 +286,7 @@ class ReleaseQaTests(unittest.TestCase):
     def test_release_publishers_use_protected_serialized_environment(self):
         for workflow_name in RELEASE_WORKFLOWS:
             with self.subTest(workflow=workflow_name):
-                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(
-                    encoding="utf-8"
-                )
+                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
                 _, publish_section = workflow.split("\n  publish-release:", 1)
                 self.assertIn("environment: production", publish_section)
                 self.assertRegex(
@@ -257,9 +296,7 @@ class ReleaseQaTests(unittest.TestCase):
                 )
 
     def test_freebsd_release_publisher_provisions_pinned_python(self):
-        workflow = (REPO_ROOT / ".github" / "workflows" / "release-freebsd.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow = (REPO_ROOT / ".github" / "workflows" / "release-freebsd.yml").read_text(encoding="utf-8")
         _, publish_section = workflow.split("\n  publish-release:", 1)
         self.assertIn(
             "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
@@ -274,9 +311,7 @@ class ReleaseQaTests(unittest.TestCase):
         }
         for workflow_name, count_word in expected_counts.items():
             with self.subTest(workflow=workflow_name):
-                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(
-                    encoding="utf-8"
-                )
+                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
                 _, publish_section = workflow.split("\n  publish-release:", 1)
                 self.assertIn(
                     "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
@@ -304,9 +339,7 @@ class ReleaseQaTests(unittest.TestCase):
     def test_native_release_packaging_uses_portable_file_enumeration(self):
         for workflow_name in ("release-freebsd.yml", "release-linux-macos.yml"):
             with self.subTest(workflow=workflow_name):
-                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(
-                    encoding="utf-8"
-                )
+                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
                 build_section, _ = workflow.split("\n  publish-release:", 1)
                 self.assertNotIn("find release -maxdepth", workflow)
                 self.assertIn("for artifact in release/*; do", build_section)
@@ -322,9 +355,9 @@ class ReleaseQaTests(unittest.TestCase):
                 self.assertIn(f"{path} @Yunushan", owners)
 
     def test_operational_readiness_evidence_workflow_is_manual_and_fail_closed(self):
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "operational-readiness-evidence.yml"
-        ).read_text(encoding="utf-8")
+        workflow = (REPO_ROOT / ".github" / "workflows" / "operational-readiness-evidence.yml").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("service_base_url:", workflow)
@@ -347,21 +380,15 @@ class ReleaseQaTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("permissions:\n  actions: read\n  contents: read", workflow)
-        self.assertIn(
-            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", workflow
-        )
-        self.assertIn(
-            "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97", workflow
-        )
-        self.assertIn(
-            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow
-        )
+        self.assertIn("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", workflow)
+        self.assertIn("actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97", workflow)
+        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
         self.assertIn("--require-evidence", workflow)
         self.assertIn("--require-current-commit", workflow)
         self.assertIn("--require-clean-source", workflow)
         self.assertIn("if-no-files-found: warn", workflow)
         self.assertIn("if: ${{ steps.validate_inputs.outcome == 'success' }}", workflow)
-        self.assertIn('GH_TOKEN: ${{ github.token }}', workflow)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertIn('gh run view "${SLO_TELEMETRY_RUN_ID}"', workflow)
         self.assertIn(
             "--json databaseId,status,conclusion,headSha,workflowName,event",
@@ -372,9 +399,7 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("telemetry Actions run metadata is incomplete", workflow)
         self.assertNotIn("inputs.slo_telemetry_run_id != ''", workflow)
 
-        runbook = (REPO_ROOT / "docs" / "OPERATOR_RUNBOOK.md").read_text(
-            encoding="utf-8"
-        )
+        runbook = (REPO_ROOT / "docs" / "OPERATOR_RUNBOOK.md").read_text(encoding="utf-8")
         self.assertIn("protected GitHub `production` environment variable", runbook)
         self.assertIn("BOT_SERVICE_API_TOKEN` secret in the same protected environment", runbook)
         self.assertIn("service_base_url` input must exactly match", runbook)
@@ -400,9 +425,7 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertNotIn("attestations: write", workflow)
 
     def test_rust_live_smoke_limits_signed_credentials_to_smoke_step(self):
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "rust-native-live-smoke.yml"
-        ).read_text(encoding="utf-8")
+        workflow = (REPO_ROOT / ".github" / "workflows" / "rust-native-live-smoke.yml").read_text(encoding="utf-8")
 
         signed_job = workflow.split("  public-market-data-smoke:", 1)[0]
         self.assertIn("    environment: production\n", signed_job)
@@ -421,21 +444,17 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("RUST_NATIVE_RUNTIME_EVIDENCE_INPUT: ${{ inputs.evidence_dir }}", workflow)
         self.assertEqual(
             2,
-            workflow.count(
-                "^artifacts/rust-native-runtime-evidence(/[A-Za-z0-9._-]+)*$"
-            ),
+            workflow.count("^artifacts/rust-native-runtime-evidence(/[A-Za-z0-9._-]+)*$"),
         )
 
     def test_rust_release_evidence_validates_paths_and_shell_inputs(self):
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "rust-native-release-evidence.yml"
-        ).read_text(encoding="utf-8")
+        workflow = (REPO_ROOT / ".github" / "workflows" / "rust-native-release-evidence.yml").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("RUST_NATIVE_RUNTIME_EVIDENCE_INPUT: ${{ inputs.evidence_dir }}", workflow)
         self.assertIn("MISSING_LIMIT: ${{ inputs.missing_limit }}", workflow)
-        self.assertIn(
-            "^artifacts/rust-native-runtime-evidence(/[A-Za-z0-9._-]+)*$", workflow
-        )
+        self.assertIn("^artifacts/rust-native-runtime-evidence(/[A-Za-z0-9._-]+)*$", workflow)
         self.assertIn('[[ ! "${MISSING_LIMIT}" =~ ^[0-9]+$ ]]', workflow)
         self.assertIn('--missing-limit "${MISSING_LIMIT}"', workflow)
         self.assertNotIn('--missing-limit "${{ inputs.missing_limit }}"', workflow)
@@ -451,14 +470,10 @@ class ReleaseQaTests(unittest.TestCase):
         )
 
     def test_rust_promotion_audit_limits_evidence_path_and_token_scope(self):
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "rust-native-promotion-audit.yml"
-        ).read_text(encoding="utf-8")
+        workflow = (REPO_ROOT / ".github" / "workflows" / "rust-native-promotion-audit.yml").read_text(encoding="utf-8")
 
         self.assertIn("RUST_NATIVE_RUNTIME_EVIDENCE_INPUT: ${{ inputs.evidence_dir }}", workflow)
-        self.assertIn(
-            "^artifacts/rust-native-runtime-evidence(/[A-Za-z0-9._-]+)*$", workflow
-        )
+        self.assertIn("^artifacts/rust-native-runtime-evidence(/[A-Za-z0-9._-]+)*$", workflow)
         job = workflow.split("  promotion-audit:\n", 1)[1]
         self.assertIn("    environment: production\n", job)
         job_env = job.split("    env:\n", 1)[1].split("    steps:\n", 1)[0]
@@ -470,9 +485,7 @@ class ReleaseQaTests(unittest.TestCase):
         )
 
     def test_loc_snapshot_workflow_cannot_mutate_main(self):
-        workflow = (REPO_ROOT / ".github" / "workflows" / "update-loc-snapshot.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow = (REPO_ROOT / ".github" / "workflows" / "update-loc-snapshot.yml").read_text(encoding="utf-8")
         self.assertIn("pull_request:", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertIn("tools/update_loc_snapshot.py --readme README.md --check", workflow)

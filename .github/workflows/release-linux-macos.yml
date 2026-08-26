@@ -32,7 +32,7 @@ jobs:
       id-token: write
       attestations: write
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     if: >
       github.event_name != 'workflow_dispatch' ||
       github.event.inputs.build_linux == 'true' ||
@@ -282,6 +282,31 @@ jobs:
             exit 1
           fi
 
+      - name: Developer ID-sign required macOS release binaries
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          MACOS_CODESIGN_P12_B64: ${{ secrets.MACOS_CODESIGN_P12_B64 }}
+          MACOS_CODESIGN_P12_PASSWORD: ${{ secrets.MACOS_CODESIGN_P12_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          bash tools/sign_macos_release.sh "${{ matrix.id }}"
+
+      - name: Notarize and staple the macOS C++ app bundle
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          APPLE_NOTARY_KEY_B64: ${{ secrets.APPLE_NOTARY_KEY_B64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          bash tools/notarize_macos_release.sh \
+            staple-app \
+            "${{ matrix.id }}" \
+            "${{ github.sha }}"
+
       - name: Smoke packaged native binaries
         shell: bash
         run: |
@@ -322,6 +347,20 @@ jobs:
         run: |
           set -euo pipefail
           bash .github/scripts/package_linux_macos_release.sh
+
+      - name: Notarize final macOS release archives
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          APPLE_NOTARY_KEY_B64: ${{ secrets.APPLE_NOTARY_KEY_B64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          bash tools/notarize_macos_release.sh \
+            archives \
+            "${{ matrix.id }}" \
+            "${{ github.sha }}"
 
       - name: Write and verify artifact digest manifest
         shell: bash
@@ -429,12 +468,17 @@ jobs:
           }
           manifest_count="$(count_regular_files release/release-manifest-*.json)"
           sbom_count="$(count_regular_files release/release-sbom-*.spdx.json)"
+          signing_count="$(count_regular_files release/release-signing-macos-*.json)"
           if [[ "$manifest_count" -ne 6 ]]; then
             echo "Expected six Linux/macOS release manifests, found $manifest_count." >&2
             exit 1
           fi
           if [[ "$sbom_count" -ne 6 ]]; then
             echo "Expected six Linux/macOS release SBOMs, found $sbom_count." >&2
+            exit 1
+          fi
+          if [[ "$signing_count" -ne 4 ]]; then
+            echo "Expected four macOS native-signing evidence files, found $signing_count." >&2
             exit 1
           fi
           for manifest in release/release-manifest-*.json; do
@@ -444,6 +488,11 @@ jobs:
               --repo-root "${GITHUB_WORKSPACE}" \
               --require-current-revision
           done
+          python tools/check_release_signing_evidence.py \
+            release/release-signing-macos-*.json \
+            --asset-dir release \
+            --require-complete-platform-set macos \
+            --require-current-revision
           ls -lah release
 
       - name: Publish GitHub release assets

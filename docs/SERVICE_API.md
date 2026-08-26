@@ -70,6 +70,7 @@ Focused service test map:
 | --- | --- |
 | `tests.test_service_api_http_contract` | HTTP route contracts, auth behavior, SSE auth, and runtime/dashboard responses |
 | `tests.test_service_api_metrics` | Prometheus export, bounded request labels, correlation IDs, and alert-rule contracts |
+| `tests.test_service_capacity_probe` | bounded concurrent read-only load, child-process isolation, and remote transport safeguards |
 | `tests.test_service_schema_contracts` | service response schema builders, payload normalization, and secret redaction contracts |
 | `tests.test_service_config_runtime` | service config validation and durable config persistence |
 | `tests.test_service_operational_runtime` | operational health snapshots, connector incidents, JSONL rotation, and redaction |
@@ -122,6 +123,28 @@ started.
 
 Use the desktop-hosted API mode below for desktop-owned live/demo trading state
 until a dedicated headless trading executor is implemented.
+
+### Fail-closed read-only mode
+
+Set `BOT_SERVICE_API_READ_ONLY=1` for an observer-only Service API. In this
+mode, every `POST`, `PUT`, `PATCH`, and `DELETE` request returns `403` before
+route execution, including requests with a valid bearer token and requests made
+while the local unauthenticated-write development escape hatch is enabled. The
+standalone local lifecycle executor is not attached, even if the caller asks to
+enable it. GET/HEAD health and observation routes remain available.
+
+The active state is exposed as `service_api.read_only`,
+`service_api.mutation_routes_enabled`, and `read_only` in `/readyz`. This mode
+protects the remote API boundary; it does not stop an already-running runtime
+object supplied by an embedding host. Do not use it to claim high availability
+for live trading execution.
+
+The provider-neutral Kubernetes baseline in
+`deploy/kubernetes/production-readonly/` uses this mode for three stateless API
+replicas with immutable image/commit rendering, disruption protection,
+autoscaling bounds, restricted pod security, and deny-all egress. Its README
+lists the required external TLS ingress, secret manager, metrics, capacity, and
+deployed-evidence steps.
 
 ### Runtime control-plane descriptor
 
@@ -192,6 +215,12 @@ BOT_SERVICE_API_TOKEN_FILE=/run/secrets/service_api_token \
 The token resolution order is explicit CLI token, `BOT_SERVICE_API_TOKEN`, then
 `BOT_SERVICE_API_TOKEN_FILE`. The file is limited to 4 KiB and must not be
 checked into source control.
+
+POSIX token files reject all group and other-user permissions by default. For a
+Kubernetes Secret volume owned by an effective process group, set
+`BOT_SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ=1`; only group-read (`0440`), no
+group write/execute or other-user permission, and a group id present in the
+process credentials are accepted.
 
 PowerShell:
 

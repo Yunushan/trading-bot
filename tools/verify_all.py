@@ -204,6 +204,24 @@ def _checks(
             remediation=_python_install_remediation("service"),
         ),
         Check(
+            "production read-only deployment contract",
+            (python, "tools/check_production_deployment.py", "--json"),
+            root,
+            remediation=(
+                "Keep the immutable read-only Kubernetes template, HA safeguards, "
+                "network policy, and deployment scope documentation aligned."
+            ),
+        ),
+        Check(
+            "native release signing policy",
+            (python, "tools/check_release_signing_policy.py", "--json"),
+            root,
+            remediation=(
+                "Keep the v1.0.41+ Authenticode, Developer ID, notarization, "
+                "stapling, evidence, QA, and publication contracts aligned."
+            ),
+        ),
+        Check(
             "operational readiness policy",
             (python, "tools/check_operational_readiness.py", "--schema-only"),
             root,
@@ -212,6 +230,12 @@ def _checks(
         Check(
             "service API quick readiness probe",
             (python, "tools/run_service_sustained_probe.py", "--profile", "quick"),
+            root,
+            remediation=_python_install_remediation("service,dev"),
+        ),
+        Check(
+            "service API bounded capacity regression",
+            (python, "tools/run_service_capacity_probe.py", "--json"),
             root,
             remediation=_python_install_remediation("service,dev"),
         ),

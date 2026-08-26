@@ -1518,7 +1518,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             runtime_dependencies,
         )
         self.assertIn("pandas==3.0.5; python_version >= '3.15'", runtime_dependencies)
-        self.assertIn("ccxt==4.5.73", runtime_dependencies)
+        self.assertIn("ccxt==4.5.75", runtime_dependencies)
         self.assertIn("aiohttp==3.14.3", runtime_dependencies)
         self.assertNotIn("numpy==2.4.4", runtime_dependencies)
         self.assertNotIn("pandas==3.0.2", runtime_dependencies)

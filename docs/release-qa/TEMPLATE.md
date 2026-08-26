@@ -15,6 +15,7 @@
 - [ ] Service API flow: Record `/readyz`, authenticated request, invalid-token, and unavailable-service result.
 - [ ] LLM/local-model flow: Record disabled, cloud-token-missing, and local-model-unavailable behavior without exposing any secret.
 - [ ] Release package: Record clean-machine install/start, provenance/SBOM verification, and uninstall result for every published asset family.
+- [ ] Native signing and notarization: For v1.0.41 and later, confirm protected signing credentials are available and the tagged workflows' fail-closed Authenticode, Developer ID, notarization, stapling, and evidence gates are enabled.
 
 ## Evidence
 

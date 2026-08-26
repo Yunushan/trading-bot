@@ -273,9 +273,7 @@ function runSelfTest() {
           max_severity: "high",
           required_effects: ["metro"],
           reviewed: "2026-08-26",
-          fix_availability: "breaking-graph-only",
-          verified_fix_target: "react-native",
-          verified_fix_version: "0.86.3",
+          fix_availability: "none-published",
           mitigation_control: "mobile-image-size-build-only-v1",
           verified_package_version: "1.2.1",
           verified_consumers: ["metro@0.87.0"],
@@ -293,7 +291,7 @@ function runSelfTest() {
           { url: "https://github.com/advisories/GHSA-5p2g-fcmc-qvqq", source: 2 },
         ],
         effects: ["metro"],
-        fixAvailable: { name: "react-native", version: "0.86.3", isSemVerMajor: true },
+        fixAvailable: false,
       },
       metro: { severity: "high", via: ["image-size"], effects: [] },
     },
@@ -371,7 +369,7 @@ function runSelfTest() {
     mitigationReports,
   });
   assert.equal(newlyFixableResult.ok, false);
-  assert.match(newlyFixableResult.errors[0], /requires a breaking graph remediation path/);
+  assert.match(newlyFixableResult.errors[0], /valid only while npm reports no fix/);
 
   const missingMitigationResult = evaluateAuditReport(report, policy, {
     project: "apps/mobile-client",
