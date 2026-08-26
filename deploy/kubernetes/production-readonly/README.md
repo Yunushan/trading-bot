@@ -75,6 +75,22 @@ with the token supplied only through `BOT_SERVICE_API_TOKEN` as a bounded
 concurrency regression, then perform the deployment-specific load test used to
 justify resource and HPA settings.
 
+The repository also provides a protected manual workflow,
+`.github/workflows/deploy-production-readonly.yml`. It accepts only a stable,
+protected semantic-version tag, requires the exact tag commit in the image and
+manifest, checks the image's `org.opencontainers.image.revision` label, performs
+a Kubernetes server-side dry run, waits for rollout, and runs a post-deploy
+HTTPS identity smoke. Configure `PRODUCTION_KUBECONFIG_B64` and
+`BOT_SERVICE_API_TOKEN` as protected `production` environment secrets and
+`PRODUCTION_SERVICE_API_ORIGIN` as its exact HTTPS origin variable. The image
+publisher must pass the source commit when building, for example:
+
+```bash
+docker build --build-arg BUILD_COMMIT=<40-hex-git-commit> \
+  --file docker/backend.Dockerfile \
+  --tag registry.example.com/trading-bot/service:<tag> .
+```
+
 ## Rollback and failure behavior
 
 The Deployment retains ten ReplicaSet revisions and updates with
