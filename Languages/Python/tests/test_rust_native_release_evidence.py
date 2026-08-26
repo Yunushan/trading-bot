@@ -304,13 +304,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--require-native-source-sync", release_platform_workflow_text)
         self.assertIn("Evidence Gate (selected scope)", release_platform_workflow_text)
         self.assertIn("args+=(--exclude-self-hosted)", release_platform_workflow_text)
-        self.assertIn("REQUIRE_ALL_EVIDENCE: ${{ inputs.require_all_evidence }}", release_platform_workflow_text)
+        self.assertIn(
+            "REQUIRE_ALL_EVIDENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.require_all_evidence || github.event_name == 'workflow_run' }}",
+            release_platform_workflow_text,
+        )
         self.assertNotIn(
             "Strict all-target evidence requires include_self_hosted=true",
             release_platform_workflow_text,
         )
         self.assertIn(
-            "if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}",
+            "if: ${{ github.event_name == 'workflow_run' || inputs.require_all_evidence || inputs.target_id == 'all' }}",
             release_platform_workflow_text,
         )
         for workflow_name in (
