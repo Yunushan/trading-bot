@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -58,6 +59,27 @@ class ServiceCapacityProbeTests(unittest.TestCase):
         self.assertIn("configured API token environment variable", report["issues"][0])
         self.assertNotIn(credential_name, rendered)
         self.assertNotIn("Authorization", rendered)
+
+    def test_cli_report_is_an_explicit_non_secret_projection(self) -> None:
+        rendered = json.dumps(
+            probe._cli_report(
+                {
+                    "ok": False,
+                    "status": "fail",
+                    "issues": ["probe failed: password=operator-secret"],
+                    "token": "service-token",
+                    "api_secret": "exchange-secret",
+                    "deployed_commit": "not-a-commit",
+                }
+            )
+        )
+
+        self.assertNotIn("operator-secret", rendered)
+        self.assertNotIn("service-token", rendered)
+        self.assertNotIn("exchange-secret", rendered)
+        self.assertNotIn("password", rendered)
+        self.assertEqual(["probe_failed"], probe._cli_report({"issues": ["arbitrary"]})["issue_codes"])
+        self.assertTrue(probe._cli_report({})["secrets_redacted"])
 
     def test_non_finite_thresholds_fail_before_starting_a_target(self) -> None:
         for field, value in (

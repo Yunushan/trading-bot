@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,7 @@ MACOS_SECRETS = {
     "APPLE_NOTARY_KEY_ID",
     "APPLE_NOTARY_ISSUER_ID",
 }
+WINDOWS_TIMESTAMP_HOST = "timestamp.digicert.com"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -55,6 +57,26 @@ def _contains_in_order(text: str, markers: tuple[str, ...]) -> bool:
         if cursor < 0:
             return False
     return True
+
+
+def _is_exact_timestamp_url(value: object) -> bool:
+    """Validate the timestamp endpoint by parsed URL components, not substrings."""
+    try:
+        parsed = urlsplit(str(value or "").strip())
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() == "http"
+        and hostname == WINDOWS_TIMESTAMP_HOST
+        and parsed.username is None
+        and parsed.password is None
+        and port is None
+        and parsed.path == ""
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def audit_policy(
@@ -104,8 +126,7 @@ def audit_policy(
         windows_policy.get("method") == "authenticode"
         and windows_policy.get("digest_algorithm") == "sha256"
         and windows_policy.get("timestamp_protocol") == "rfc3161"
-        and windows_policy.get("timestamp_url")
-        == "http://timestamp.digicert.com",
+        and _is_exact_timestamp_url(windows_policy.get("timestamp_url")),
         "Windows policy must require SHA-256 Authenticode with RFC 3161 timestamping",
     )
     check(

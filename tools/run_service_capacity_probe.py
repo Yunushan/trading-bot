@@ -38,6 +38,33 @@ LOCAL_API_TOKEN = "capacity-regression-probe-token-0123456789"
 DEFAULT_API_TOKEN_ENV = "BOT_SERVICE_API_TOKEN"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 ENV_NAME_PATTERN = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+CLI_SAFE_KEYS = (
+    "ok",
+    "status",
+    "generated_at",
+    "profile",
+    "evidence_scope",
+    "promotion_eligible",
+    "environment",
+    "process_boundary",
+    "platform",
+    "python_version",
+    "deployed_commit",
+    "read_only",
+    "secrets_redacted",
+    "order_submission_attempted",
+    "methods",
+    "concurrency",
+    "request_count",
+    "error_count",
+    "error_rate",
+    "duration_seconds",
+    "throughput_requests_per_second",
+    "latency_ms",
+    "thresholds",
+    "suite_results",
+)
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -255,6 +282,54 @@ def _stop_local_service(process: subprocess.Popen[str], output: Any) -> None:
             process.kill()
             process.wait(timeout=5)
     output.close()
+
+
+def _safe_deployed_commit(value: object) -> str:
+    candidate = str(value or "").strip().lower()
+    return candidate if COMMIT_PATTERN.fullmatch(candidate) else ""
+
+
+def _safe_issue_codes(value: object) -> list[str]:
+    """Expose failure classes to logs without copying arbitrary issue text."""
+    if not isinstance(value, list):
+        return []
+    codes: list[str] = []
+    for issue in value:
+        normalized = str(issue or "").strip().lower()
+        if normalized.startswith("error rate "):
+            code = "error_rate_threshold"
+        elif normalized.startswith("p95 latency "):
+            code = "p95_latency_threshold"
+        elif normalized.startswith("throughput "):
+            code = "throughput_threshold"
+        elif "api token environment variable is required" in normalized:
+            code = "missing_api_token"
+        elif "finite number" in normalized:
+            code = "invalid_numeric_parameter"
+        elif "only on loopback" in normalized:
+            code = "unsafe_http_origin"
+        elif "read-only service api mode" in normalized:
+            code = "read_only_preflight_failed"
+        elif normalized:
+            code = "probe_failed"
+        else:
+            continue
+        if code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _cli_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Return an explicit, non-secret projection for stdout and CI logs."""
+    safe: dict[str, Any] = {}
+    for key in CLI_SAFE_KEYS:
+        if key not in report:
+            continue
+        value = report[key]
+        safe[key] = _safe_deployed_commit(value) if key == "deployed_commit" else value
+    safe["issue_codes"] = _safe_issue_codes(report.get("issues"))
+    safe["secrets_redacted"] = True
+    return safe
 
 
 def run_capacity_probe(
@@ -540,17 +615,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.output:
         _write_json(args.output, report)
+    cli_report = _cli_report(report)
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
+        print(json.dumps(cli_report, indent=2, sort_keys=True, allow_nan=False))
     else:
         print(
             "Service capacity regression: "
-            f"{report.get('status', 'fail')} requests={report.get('request_count', 0)} "
-            f"rps={report.get('throughput_requests_per_second', 0)} "
-            f"p95={report.get('latency_ms', {}).get('p95', 0)}ms"
+            f"{cli_report.get('status', 'fail')} requests={cli_report.get('request_count', 0)} "
+            f"rps={cli_report.get('throughput_requests_per_second', 0)} "
+            f"p95={cli_report.get('latency_ms', {}).get('p95', 0)}ms"
         )
-        for issue in report.get("issues", []):
-            print(f"- {issue}")
+        for issue_code in cli_report.get("issue_codes", []):
+            print(f"- issue_code={issue_code}")
     return 0 if report.get("ok") else 1
 
 
