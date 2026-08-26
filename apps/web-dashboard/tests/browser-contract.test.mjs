@@ -146,6 +146,23 @@ function firefoxHeadedFallbackAllowed() {
   return !["0", "false", "no", "off"].includes(configured);
 }
 
+async function closePlaywrightBrowser(browser, browserName, timeoutMs = 10_000) {
+  let timeout;
+  try {
+    await Promise.race([
+      browser.close(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`${browserName} browser shutdown timed out after ${timeoutMs}ms.`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function runFirefoxBrowserContract(targetUrl) {
   let firefox;
   try {
@@ -187,7 +204,7 @@ async function runFirefoxBrowserContract(targetUrl) {
       payload,
     };
   } finally {
-    await browser.close();
+    await closePlaywrightBrowser(browser, "Firefox");
   }
 }
 
@@ -221,7 +238,7 @@ async function runEdgeBrowserContract(targetUrl) {
       payload,
     };
   } finally {
-    await browser.close();
+    await closePlaywrightBrowser(browser, "Edge");
   }
 }
 
@@ -474,5 +491,10 @@ async function main() {
 
 main().catch((error) => {
   console.error(error?.stack || String(error));
-  process.exitCode = 1;
+  // Playwright can retain its transport handle after a timed-out Firefox
+  // launch on headless Windows hosts. The main promise rejects only after the
+  // dashboard server/profile cleanup above, so terminate the standalone test
+  // process here instead of leaving the release probe hung until its 15-minute
+  // outer timeout.
+  process.exit(1);
 });
