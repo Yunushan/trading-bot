@@ -474,5 +474,10 @@ async function main() {
 
 main().catch((error) => {
   console.error(error?.stack || String(error));
-  process.exitCode = 1;
+  // Playwright can retain its transport handle after a timed-out Firefox
+  // launch on headless Windows hosts. The main promise rejects only after the
+  // dashboard server/profile cleanup above, so terminate the standalone test
+  // process here instead of leaving the release probe hung until its 15-minute
+  // outer timeout.
+  process.exit(1);
 });

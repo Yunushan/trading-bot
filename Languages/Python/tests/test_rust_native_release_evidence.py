@@ -276,10 +276,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "# codeql[py/clear-text-logging-sensitive-data]\n"
-            "    print(json.dumps(payload, indent=2, sort_keys=True))",
+            "print(json.dumps(payload, indent=2, sort_keys=True))  "
+            "# lgtm[py/clear-text-logging-sensitive-data]",
             source,
         )
+        self.assertNotIn("# codeql[py/clear-text-logging-sensitive-data]", source)
         self.assertNotIn("# lgtm [py/clear-text-logging-sensitive-data]", source)
 
     def test_evidence_workflow_checker_covers_ci_gate(self):
