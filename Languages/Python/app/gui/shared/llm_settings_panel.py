@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -13,7 +14,13 @@ from ...integrations.llm.local_models import (
     pull_ollama_model,
     start_ollama_server,
 )
-from ...integrations.llm.providers import build_llm_config_payload, list_llm_provider_specs
+from ...integrations.llm.discovery import discover_llm_models
+from ...integrations.llm.providers import (
+    LLM_API_STYLE_OPTIONS,
+    LLM_SPEED_OPTIONS,
+    build_llm_config_payload,
+    list_llm_provider_specs,
+)
 
 _USE_FOR_OPTIONS = (
     ("Advisory", "advisory"),
@@ -73,6 +80,18 @@ class _LocalModelDownloadWorker(QtCore.QObject):
         self.finished.emit(self._model, error)
 
 
+class _ModelDiscoveryWorker(QtCore.QObject):
+    finished = QtCore.pyqtSignal(object)
+
+    def __init__(self, config: dict[str, object]) -> None:
+        super().__init__()
+        self._config = dict(config)
+
+    @QtCore.pyqtSlot()
+    def run(self) -> None:
+        self.finished.emit(discover_llm_models(self._config))
+
+
 class LLMSettingsPanel(QtWidgets.QGroupBox):
     def __init__(
         self,
@@ -93,6 +112,9 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self._local_model_download_thread: QtCore.QThread | None = None
         self._local_model_download_worker: _LocalModelDownloadWorker | None = None
         self._local_model_download_restore_apply_enabled = True
+        self._model_discovery_thread: QtCore.QThread | None = None
+        self._model_discovery_worker: _ModelDiscoveryWorker | None = None
+        self._discovered_models_by_id: dict[str, dict[str, object]] = {}
         self._build_ui()
         self.refresh_from_config()
 
@@ -126,12 +148,25 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self.enabled_check.setChecked(bool(payload.get("enabled")))
             self._refresh_models_for_provider(provider_key, str(payload.get("model") or ""))
             self._refresh_reasoning_for_provider(provider_key, str(payload.get("reasoning_effort") or ""))
+            self._refresh_api_styles_for_provider(provider_key, str(payload.get("api_style") or "provider-default"))
+            self._refresh_speed_for_provider(provider_key, str(payload.get("speed") or "default"))
             self.base_url_edit.setText(str(payload.get("base_url") or ""))
             self.api_key_env_edit.setText(str(payload.get("api_key_env") or ""))
             self.api_key_edit.setText("********" if payload.get("api_key_present") else "")
             use_for = str(payload.get("use_for") or "advisory")
             use_idx = self.use_for_combo.findData(use_for)
             self.use_for_combo.setCurrentIndex(use_idx if use_idx >= 0 else 0)
+            self.context_window_spin.setValue(int(payload.get("context_window") or 0))
+            self.max_output_tokens_spin.setValue(int(payload.get("max_output_tokens") or 0))
+            self.verbosity_combo.setCurrentText(str(payload.get("verbosity") or "default"))
+            self.temperature_spin.setValue(
+                float(payload["temperature"]) if payload.get("temperature") is not None else -1.0
+            )
+            self.top_p_spin.setValue(float(payload["top_p"]) if payload.get("top_p") is not None else -1.0)
+            self.timeout_spin.setValue(int(payload.get("timeout_seconds") or 30))
+            self.request_options_edit.setPlainText(
+                json.dumps(payload.get("request_options") or {}, ensure_ascii=False, sort_keys=True)
+            )
             self._set_status(payload)
             self._set_dependent_controls_enabled(bool(payload.get("enabled")))
         finally:
@@ -144,6 +179,9 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         base_url = str(self.base_url_edit.text() or "").strip()
         api_key_env = str(self.api_key_env_edit.text() or "").strip()
         api_key = str(self.api_key_edit.text() or "").strip()
+        request_options = self._request_options_from_editor(show_error=True)
+        if request_options is None:
+            return
 
         enabled = bool(self.enabled_check.isChecked())
         if not self._ensure_local_model_available(
@@ -162,7 +200,16 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self._config["llm_api_key_env"] = api_key_env or str(provider.get("api_key_env") or "")
         self._config["llm_use_for"] = str(self.use_for_combo.currentData() or "advisory")
         self._config["llm_allow_public_network"] = bool(self.allow_public_network_check.isChecked())
+        self._config["llm_api_style"] = str(self.api_style_combo.currentText() or "provider-default").strip()
         self._config["llm_reasoning_effort"] = str(self.reasoning_combo.currentText() or "default").strip()
+        self._config["llm_speed"] = str(self.speed_combo.currentText() or "default").strip()
+        self._config["llm_context_window"] = int(self.context_window_spin.value())
+        self._config["llm_max_output_tokens"] = int(self.max_output_tokens_spin.value())
+        self._config["llm_verbosity"] = str(self.verbosity_combo.currentText() or "default").strip()
+        self._config["llm_temperature"] = None if self.temperature_spin.value() < 0 else float(self.temperature_spin.value())
+        self._config["llm_top_p"] = None if self.top_p_spin.value() < 0 else float(self.top_p_spin.value())
+        self._config["llm_timeout_seconds"] = int(self.timeout_spin.value())
+        self._config["llm_request_options"] = request_options
         if api_key and api_key != "********":
             self._config["llm_api_key"] = api_key
 
@@ -549,6 +596,9 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self.model_combo.setEditable(True)
         self.model_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
         layout.addWidget(self.model_combo, 1, 3)
+        self.refresh_models_btn = QtWidgets.QPushButton("Refresh Models", self)
+        self.refresh_models_btn.setToolTip("Merge the provider's live /models response with catalog, custom, and historical IDs.")
+        layout.addWidget(self.refresh_models_btn, 1, 4)
 
         self.base_url_label = QtWidgets.QLabel("Base URL / IP:", self)
         layout.addWidget(self.base_url_label, 2, 0)
@@ -579,20 +629,92 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self.reasoning_label = QtWidgets.QLabel("Reasoning / Thinking:", self)
         layout.addWidget(self.reasoning_label, 4, 2)
         self.reasoning_combo = QtWidgets.QComboBox(self)
-        self.reasoning_combo.setEditable(False)
+        self.reasoning_combo.setEditable(True)
         layout.addWidget(self.reasoning_combo, 4, 3)
 
+        self.api_style_label = QtWidgets.QLabel("API style:", self)
+        layout.addWidget(self.api_style_label, 5, 0)
+        self.api_style_combo = QtWidgets.QComboBox(self)
+        self.api_style_combo.setEditable(True)
+        layout.addWidget(self.api_style_combo, 5, 1)
+
+        self.speed_label = QtWidgets.QLabel("Speed / service tier:", self)
+        layout.addWidget(self.speed_label, 5, 2)
+        self.speed_combo = QtWidgets.QComboBox(self)
+        self.speed_combo.setEditable(True)
+        layout.addWidget(self.speed_combo, 5, 3)
+
+        self.context_window_label = QtWidgets.QLabel("Context window:", self)
+        layout.addWidget(self.context_window_label, 6, 0)
+        self.context_window_spin = QtWidgets.QSpinBox(self)
+        self.context_window_spin.setRange(0, 10_000_000)
+        self.context_window_spin.setSpecialValueText("Auto / model default")
+        self.context_window_spin.setSingleStep(1024)
+        layout.addWidget(self.context_window_spin, 6, 1)
+
+        self.max_output_tokens_label = QtWidgets.QLabel("Max output tokens:", self)
+        layout.addWidget(self.max_output_tokens_label, 6, 2)
+        self.max_output_tokens_spin = QtWidgets.QSpinBox(self)
+        self.max_output_tokens_spin.setRange(0, 2_000_000)
+        self.max_output_tokens_spin.setSpecialValueText("Provider default")
+        self.max_output_tokens_spin.setSingleStep(256)
+        layout.addWidget(self.max_output_tokens_spin, 6, 3)
+
+        self.verbosity_label = QtWidgets.QLabel("Verbosity:", self)
+        layout.addWidget(self.verbosity_label, 7, 0)
+        self.verbosity_combo = QtWidgets.QComboBox(self)
+        self.verbosity_combo.setEditable(True)
+        self.verbosity_combo.addItems(["default", "low", "medium", "high"])
+        layout.addWidget(self.verbosity_combo, 7, 1)
+
+        self.timeout_label = QtWidgets.QLabel("Timeout seconds:", self)
+        layout.addWidget(self.timeout_label, 7, 2)
+        self.timeout_spin = QtWidgets.QSpinBox(self)
+        self.timeout_spin.setRange(1, 3600)
+        self.timeout_spin.setValue(30)
+        layout.addWidget(self.timeout_spin, 7, 3)
+
+        self.temperature_label = QtWidgets.QLabel("Temperature:", self)
+        layout.addWidget(self.temperature_label, 8, 0)
+        self.temperature_spin = QtWidgets.QDoubleSpinBox(self)
+        self.temperature_spin.setRange(-1.0, 2.0)
+        self.temperature_spin.setDecimals(2)
+        self.temperature_spin.setSingleStep(0.05)
+        self.temperature_spin.setSpecialValueText("Provider default")
+        self.temperature_spin.setValue(-1.0)
+        layout.addWidget(self.temperature_spin, 8, 1)
+
+        self.top_p_label = QtWidgets.QLabel("Top P:", self)
+        layout.addWidget(self.top_p_label, 8, 2)
+        self.top_p_spin = QtWidgets.QDoubleSpinBox(self)
+        self.top_p_spin.setRange(-1.0, 1.0)
+        self.top_p_spin.setDecimals(2)
+        self.top_p_spin.setSingleStep(0.05)
+        self.top_p_spin.setSpecialValueText("Provider default")
+        self.top_p_spin.setValue(-1.0)
+        layout.addWidget(self.top_p_spin, 8, 3)
+
+        self.request_options_label = QtWidgets.QLabel("Advanced request JSON:", self)
+        layout.addWidget(self.request_options_label, 9, 0)
+        self.request_options_edit = QtWidgets.QPlainTextEdit(self)
+        self.request_options_edit.setPlaceholderText('{"seed": 42, "response_format": {"type": "json_object"}}')
+        self.request_options_edit.setMaximumHeight(64)
+        self.request_options_edit.setToolTip(
+            "Provider-specific JSON options. Model, prompts, tools, streaming, and advisory-boundary fields are protected."
+        )
+        layout.addWidget(self.request_options_edit, 9, 1, 1, 4)
+
         self.apply_btn = QtWidgets.QPushButton("Apply LLM Settings", self)
-        layout.addWidget(self.apply_btn, 5, 2)
+        layout.addWidget(self.apply_btn, 10, 2)
         self.local_model_btn = QtWidgets.QPushButton("Check / Download Local Model", self)
-        layout.addWidget(self.local_model_btn, 5, 1)
+        layout.addWidget(self.local_model_btn, 10, 1)
         self.remove_local_model_btn = QtWidgets.QPushButton("Remove Local Model", self)
-        layout.addWidget(self.remove_local_model_btn, 6, 1)
+        layout.addWidget(self.remove_local_model_btn, 11, 1)
 
         self.status_label = QtWidgets.QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet("color: #94a3b8; font-weight: 600;")
-        layout.addWidget(self.status_label, 5, 3, 2, 1)
+        layout.addWidget(self.status_label, 10, 3, 2, 2)
 
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 2)
@@ -603,6 +725,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self.provider_combo,
             self.model_label,
             self.model_combo,
+            self.refresh_models_btn,
             self.base_url_label,
             self.base_url_edit,
             self.api_key_env_label,
@@ -613,6 +736,24 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self.use_for_combo,
             self.reasoning_label,
             self.reasoning_combo,
+            self.api_style_label,
+            self.api_style_combo,
+            self.speed_label,
+            self.speed_combo,
+            self.context_window_label,
+            self.context_window_spin,
+            self.max_output_tokens_label,
+            self.max_output_tokens_spin,
+            self.verbosity_label,
+            self.verbosity_combo,
+            self.timeout_label,
+            self.timeout_spin,
+            self.temperature_label,
+            self.temperature_spin,
+            self.top_p_label,
+            self.top_p_spin,
+            self.request_options_label,
+            self.request_options_edit,
             self.local_model_btn,
             self.remove_local_model_btn,
         ]
@@ -621,6 +762,9 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self.allow_public_network_check.toggled.connect(self._on_allow_public_network_toggled)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         self.reasoning_combo.currentIndexChanged.connect(self._on_reasoning_changed)
+        self.api_style_combo.currentIndexChanged.connect(self._on_reasoning_changed)
+        self.speed_combo.currentIndexChanged.connect(self._on_reasoning_changed)
+        self.refresh_models_btn.clicked.connect(self._on_refresh_models_clicked)
         self.apply_btn.clicked.connect(self.apply_to_config)
         self.local_model_btn.clicked.connect(self._on_local_model_action_clicked)
         self.remove_local_model_btn.clicked.connect(self._on_remove_local_model_clicked)
@@ -662,6 +806,8 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             return
         self._refresh_models_for_provider(provider_key, "")
         self._refresh_reasoning_for_provider(provider_key, "")
+        self._refresh_api_styles_for_provider(provider_key, "provider-default")
+        self._refresh_speed_for_provider(provider_key, "default")
         self._sync_local_model_action_visibility(provider_key)
         provider = self._provider_by_key.get(provider_key) or {}
         self.base_url_edit.setText(str(provider.get("default_base_url") or ""))
@@ -725,6 +871,62 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         provider = self._provider_by_key.get(str(provider_key or "")) or {}
         return str(provider.get("mode") or "") == "local"
 
+    def _on_refresh_models_clicked(self) -> None:
+        thread = self._model_discovery_thread
+        if thread is not None and thread.isRunning():
+            self.status_label.setText("Model discovery is already running.")
+            return
+        self.refresh_models_btn.setEnabled(False)
+        self.refresh_models_btn.setText("Refreshing...")
+        self.status_label.setText("Discovering live models and preserving catalog/custom IDs...")
+        worker = _ModelDiscoveryWorker(self._current_config_from_widgets())
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_model_discovery_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._model_discovery_thread = thread
+        self._model_discovery_worker = worker
+        thread.start()
+
+    def _on_model_discovery_finished(self, result: object) -> None:
+        self._model_discovery_thread = None
+        self._model_discovery_worker = None
+        self.refresh_models_btn.setEnabled(bool(self.enabled_check.isChecked()))
+        self.refresh_models_btn.setText("Refresh Models")
+        payload = result if isinstance(result, dict) else {}
+        models = payload.get("models") if isinstance(payload.get("models"), list) else []
+        current_model = str(self.model_combo.currentText() or "").strip()
+        self._discovered_models_by_id = {
+            str(record.get("id") or ""): dict(record)
+            for record in models
+            if isinstance(record, dict) and str(record.get("id") or "").strip()
+        }
+        suggestions = list(self._discovered_models_by_id)
+        if current_model and current_model not in suggestions:
+            suggestions.insert(0, current_model)
+        with QtCore.QSignalBlocker(self.model_combo):
+            self.model_combo.clear()
+            self.model_combo.addItems(suggestions)
+            self.model_combo.setCurrentText(current_model or (suggestions[0] if suggestions else ""))
+        selected = self._discovered_models_by_id.get(str(self.model_combo.currentText() or "")) or {}
+        if self.context_window_spin.value() == 0 and selected.get("context_window"):
+            self.context_window_spin.setValue(int(selected["context_window"]))
+        if self.max_output_tokens_spin.value() == 0 and selected.get("max_output_tokens"):
+            self.max_output_tokens_spin.setValue(int(selected["max_output_tokens"]))
+        dynamic_count = int(payload.get("dynamic_count") or 0)
+        if payload.get("ok"):
+            self.status_label.setText(
+                f"Discovered {dynamic_count} live models; {len(suggestions)} total IDs remain selectable."
+            )
+        else:
+            error = str(payload.get("error") or "Model discovery failed.")
+            self.status_label.setText(
+                f"Live discovery unavailable; {len(suggestions)} catalog/custom IDs remain selectable. {error}"
+            )
+
     def _refresh_models_for_provider(self, provider_key: str, current_model: str) -> None:
         provider = self._provider_by_key.get(provider_key) or {}
         suggestions = [
@@ -755,29 +957,94 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         if default_effort and default_effort not in suggestions:
             suggestions.insert(0, default_effort)
         requested_effort = str(current_effort or "").strip()
-        effort_text = requested_effort if requested_effort in suggestions else str(default_effort or (suggestions[0] if suggestions else "default")).strip()
+        if requested_effort and requested_effort not in suggestions:
+            suggestions.insert(0, requested_effort)
+        effort_text = requested_effort or str(default_effort or (suggestions[0] if suggestions else "default")).strip()
         with QtCore.QSignalBlocker(self.reasoning_combo):
             self.reasoning_combo.clear()
             self.reasoning_combo.addItems(suggestions)
-            idx = self.reasoning_combo.findText(effort_text)
-            self.reasoning_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self.reasoning_combo.setCurrentText(effort_text)
 
-    def _current_payload_from_widgets(self) -> dict[str, object]:
+    def _refresh_api_styles_for_provider(self, provider_key: str, current_style: str) -> None:
+        provider = self._provider_by_key.get(provider_key) or {}
+        suggestions = ["provider-default"]
+        for item in (*tuple(provider.get("api_styles", []) or []), *LLM_API_STYLE_OPTIONS):
+            text = str(item or "").strip()
+            if text and text not in suggestions:
+                suggestions.append(text)
+        requested = str(current_style or "provider-default").strip() or "provider-default"
+        if requested not in suggestions:
+            suggestions.insert(0, requested)
+        with QtCore.QSignalBlocker(self.api_style_combo):
+            self.api_style_combo.clear()
+            self.api_style_combo.addItems(suggestions)
+            self.api_style_combo.setCurrentText(requested)
+
+    def _refresh_speed_for_provider(self, provider_key: str, current_speed: str) -> None:
+        provider = self._provider_by_key.get(provider_key) or {}
+        suggestions: list[str] = []
+        for item in (*tuple(provider.get("speed_options", []) or []), *LLM_SPEED_OPTIONS):
+            text = str(item or "").strip()
+            if text and text not in suggestions:
+                suggestions.append(text)
+        requested = str(current_speed or provider.get("default_speed") or "default").strip() or "default"
+        if requested not in suggestions:
+            suggestions.insert(0, requested)
+        with QtCore.QSignalBlocker(self.speed_combo):
+            self.speed_combo.clear()
+            self.speed_combo.addItems(suggestions)
+            self.speed_combo.setCurrentText(requested)
+
+    def _request_options_from_editor(self, *, show_error: bool) -> dict[str, object] | None:
+        raw = str(self.request_options_edit.toPlainText() or "").strip()
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            if show_error:
+                QtWidgets.QMessageBox.warning(self, "Invalid advanced request JSON", str(exc))
+            return None
+        if not isinstance(value, dict):
+            if show_error:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Invalid advanced request JSON",
+                    "Advanced request options must be a JSON object.",
+                )
+            return None
+        return value
+
+    def _current_config_from_widgets(self) -> dict[str, object]:
+        config = dict(self._config)
         api_key = str(self.api_key_edit.text() or "").strip()
-        return build_llm_config_payload(
+        config.update(
             {
-                **self._config,
                 "llm_enabled": bool(self.enabled_check.isChecked()),
                 "llm_provider": str(self.provider_combo.currentData() or "openai"),
                 "llm_model": str(self.model_combo.currentText() or "").strip(),
                 "llm_base_url": str(self.base_url_edit.text() or "").strip(),
                 "llm_api_key_env": str(self.api_key_env_edit.text() or "").strip(),
-                "llm_api_key": "" if api_key == "********" else api_key,
                 "llm_use_for": str(self.use_for_combo.currentData() or "advisory"),
                 "llm_allow_public_network": bool(self.allow_public_network_check.isChecked()),
+                "llm_api_style": str(self.api_style_combo.currentText() or "provider-default").strip(),
                 "llm_reasoning_effort": str(self.reasoning_combo.currentText() or "default").strip(),
+                "llm_speed": str(self.speed_combo.currentText() or "default").strip(),
+                "llm_context_window": int(self.context_window_spin.value()),
+                "llm_max_output_tokens": int(self.max_output_tokens_spin.value()),
+                "llm_verbosity": str(self.verbosity_combo.currentText() or "default").strip(),
+                "llm_temperature": None if self.temperature_spin.value() < 0 else float(self.temperature_spin.value()),
+                "llm_top_p": None if self.top_p_spin.value() < 0 else float(self.top_p_spin.value()),
+                "llm_timeout_seconds": int(self.timeout_spin.value()),
+                "llm_request_options": self._request_options_from_editor(show_error=False) or {},
             }
         )
+        if api_key and api_key != "********":
+            config["llm_api_key"] = api_key
+        return config
+
+    def _current_payload_from_widgets(self) -> dict[str, object]:
+        return build_llm_config_payload(self._current_config_from_widgets())
 
     def _set_status(self, payload: dict[str, object]) -> None:
         if not payload.get("enabled"):
@@ -792,7 +1059,14 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         else:
             credential_status = "token missing"
         reasoning = str(payload.get("reasoning_effort") or "default")
-        self.status_label.setText(f"{provider_label} ({mode}) - {credential_status} - reasoning: {reasoning}")
+        api_style = str(payload.get("protocol") or payload.get("api_style") or "provider-default")
+        speed = str(payload.get("speed") or "default")
+        context_window = int(payload.get("context_window") or 0)
+        context_label = f"{context_window:,}" if context_window else "model default"
+        self.status_label.setText(
+            f"{provider_label} ({mode}) - {credential_status} - {api_style} - "
+            f"reasoning: {reasoning} - speed: {speed} - context: {context_label}"
+        )
 
 
 def create_llm_settings_panel(

@@ -483,7 +483,10 @@ class SettingsDefaultsTests(unittest.TestCase):
                 "llm_allow_public_network": "later",
                 "llm_provider": "unknown-ai",
                 "llm_use_for": "auto_trade",
-                "llm_reasoning_effort": "turbo",
+                "llm_reasoning_effort": "turbo mode",
+                "llm_api_style": "responses beta",
+                "llm_speed": "fast lane",
+                "llm_verbosity": "very verbose",
                 "chart": {"market": "margin", "interval": "bad", "view_mode": "external"},
                 "positions_auto_resize_rows": "sometimes",
                 "positions_auto_resize_columns": "later",
@@ -506,6 +509,9 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("llm_provider", fields)
         self.assertIn("llm_use_for", fields)
         self.assertIn("llm_reasoning_effort", fields)
+        self.assertIn("llm_api_style", fields)
+        self.assertIn("llm_speed", fields)
+        self.assertIn("llm_verbosity", fields)
         self.assertIn("chart.market", fields)
         self.assertIn("chart.interval", fields)
         self.assertIn("chart.view_mode", fields)
@@ -515,6 +521,36 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("backtest.execution_backend", fields)
         self.assertIn("backtest.optimizer_mode", fields)
         self.assertIn("backtest.optimizer_metric", fields)
+
+    def test_runtime_validation_accepts_future_provider_option_tokens_and_llm_limits(self):
+        config = build_default_config()
+        config.update(
+            {
+                "llm_api_style": "responses-v2",
+                "llm_reasoning_effort": "turbo",
+                "llm_speed": "ultra-fast",
+                "llm_context_window": "1000000",
+                "llm_max_output_tokens": "32768",
+                "llm_verbosity": "compact-v2",
+                "llm_temperature": "0.25",
+                "llm_top_p": "0.9",
+                "llm_timeout_seconds": "120",
+                "llm_request_options": {"seed": 7, "provider": {"variant": "legacy"}},
+            }
+        )
+
+        normalized = validate_runtime_config(config)
+
+        self.assertEqual("responses-v2", normalized["llm_api_style"])
+        self.assertEqual("turbo", normalized["llm_reasoning_effort"])
+        self.assertEqual("ultra-fast", normalized["llm_speed"])
+        self.assertEqual(1_000_000, normalized["llm_context_window"])
+        self.assertEqual(32_768, normalized["llm_max_output_tokens"])
+        self.assertEqual("compact-v2", normalized["llm_verbosity"])
+        self.assertEqual(0.25, normalized["llm_temperature"])
+        self.assertEqual(0.9, normalized["llm_top_p"])
+        self.assertEqual(120, normalized["llm_timeout_seconds"])
+        self.assertEqual(7, normalized["llm_request_options"]["seed"])
 
     def test_runtime_validation_rejects_leverage_above_shared_binance_limit(self):
         config = build_default_config()

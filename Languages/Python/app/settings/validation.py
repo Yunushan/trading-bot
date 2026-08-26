@@ -132,6 +132,7 @@ _LLM_REASONING_EFFORT_CHOICES = {
     "none": "none",
     "xhigh": "xhigh",
 }
+_LLM_OPTION_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$")
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _NULL_BOOL_VALUES = {"", "none", "null"}
@@ -188,6 +189,7 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "live_trading_max_position_pct",
         "live_trading_max_session_orders",
         "llm_allow_public_network",
+        "llm_api_style",
         "llm_api_key",
         "llm_api_key_env",
         "llm_base_url",
@@ -195,6 +197,14 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "llm_model",
         "llm_provider",
         "llm_reasoning_effort",
+        "llm_speed",
+        "llm_context_window",
+        "llm_max_output_tokens",
+        "llm_verbosity",
+        "llm_temperature",
+        "llm_top_p",
+        "llm_timeout_seconds",
+        "llm_request_options",
         "llm_use_for",
         "lookback",
         "loop_interval_override",
@@ -399,6 +409,43 @@ def _validate_text(
         issues.append(ConfigValidationIssue(_field(prefix, key), message))
         return
     cfg[key] = value
+
+
+def _validate_llm_option_token(
+    cfg: dict[str, object],
+    key: str,
+    issues: list[ConfigValidationIssue],
+    *,
+    known_choices: dict[str, str] | None = None,
+) -> None:
+    if key not in cfg:
+        return
+    value = _string_value(cfg.get(key))
+    if value is None or _LLM_OPTION_TOKEN_RE.fullmatch(value) is None:
+        issues.append(
+            ConfigValidationIssue(
+                key,
+                "must be a 1-64 character provider option token using letters, numbers, '.', '_', ':', '/', or '-'",
+            )
+        )
+        return
+    raw_value = value.lower()
+    cfg[key] = (known_choices or {}).get(raw_value, raw_value.replace("_", "-"))
+
+
+def _validate_optional_float_range(
+    cfg: dict[str, object],
+    key: str,
+    issues: list[ConfigValidationIssue],
+    *,
+    min_value: float,
+    max_value: float,
+) -> None:
+    if key not in cfg or cfg.get(key) in (None, "", "default", "auto"):
+        if key in cfg:
+            cfg[key] = None
+        return
+    _validate_float_range(cfg, key, issues, min_value=min_value, max_value=max_value)
 
 
 def _validate_nullable_text(
@@ -970,7 +1017,21 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     _validate_text(cfg, "llm_api_key_env", issues, allow_empty=True)
     _validate_choice(cfg, "llm_use_for", _LLM_USE_FOR_CHOICES, issues)
     _validate_bool(cfg, "llm_allow_public_network", issues)
-    _validate_choice(cfg, "llm_reasoning_effort", _LLM_REASONING_EFFORT_CHOICES, issues)
+    _validate_llm_option_token(cfg, "llm_api_style", issues)
+    _validate_llm_option_token(
+        cfg,
+        "llm_reasoning_effort",
+        issues,
+        known_choices=_LLM_REASONING_EFFORT_CHOICES,
+    )
+    _validate_llm_option_token(cfg, "llm_speed", issues)
+    _validate_int_range(cfg, "llm_context_window", issues, min_value=0, max_value=10_000_000)
+    _validate_int_range(cfg, "llm_max_output_tokens", issues, min_value=0, max_value=2_000_000)
+    _validate_llm_option_token(cfg, "llm_verbosity", issues)
+    _validate_optional_float_range(cfg, "llm_temperature", issues, min_value=0.0, max_value=2.0)
+    _validate_optional_float_range(cfg, "llm_top_p", issues, min_value=0.0, max_value=1.0)
+    _validate_int_range(cfg, "llm_timeout_seconds", issues, min_value=1, max_value=3_600)
+    _validate_mapping(cfg, "llm_request_options", issues)
     _validate_stop_loss(cfg, "stop_loss", issues)
     _validate_mapping(cfg, "indicators", issues)
     _validate_chart_config(cfg, issues)

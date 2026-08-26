@@ -2428,7 +2428,7 @@ def _print_cli_json(result: dict[str, Any]) -> None:
         payload["credential_presence_fields_redacted"] = True
     # The recursive redactor removes credential values and presence metadata;
     # this is the single machine-readable output boundary for the audit.
-    # lgtm [py/clear-text-logging-sensitive-data]
+    # codeql[py/clear-text-logging-sensitive-data]
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 

@@ -11,6 +11,8 @@
 #include <QVector>
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 
 namespace {
 
@@ -102,6 +104,44 @@ QString canonicalJsonText(const QJsonValue &value) {
     wrapper.append(value);
     const QByteArray encoded = QJsonDocument(wrapper).toJson(QJsonDocument::Compact);
     return QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
+}
+
+QString boundedContextJsonText(
+    const QJsonValue &context,
+    int contextWindow,
+    int maxOutputTokens,
+    const QString &prompt,
+    const QString &systemPrompt) {
+    const QString serialized = canonicalJsonText(context);
+    if (contextWindow <= 0) {
+        return serialized;
+    }
+    const int fixedCharacters = prompt.size() + systemPrompt.size() + NativeLlmAdvisory::executionBoundaryText().size();
+    const int fixedTokens = std::max(256, (fixedCharacters + 3) / 4);
+    const int outputReserve = maxOutputTokens > 0
+        ? maxOutputTokens
+        : std::min(4096, std::max(256, contextWindow / 8));
+    const int availableTokens = std::max(0, contextWindow - fixedTokens - outputReserve);
+    const int characterBudget = availableTokens * 4;
+    if (serialized.size() <= characterBudget) {
+        return serialized;
+    }
+    if (characterBudget < 160) {
+        return canonicalJsonText(QJsonObject{
+            {QStringLiteral("context_truncated"), true},
+            {QStringLiteral("original_characters"), serialized.size()},
+            {QStringLiteral("excerpt"), QString()},
+        });
+    }
+    const int excerptBudget = std::max(32, characterBudget - 120);
+    const int prefixLength = std::max(16, excerptBudget * 2 / 3);
+    const int suffixLength = std::max(16, excerptBudget - prefixLength);
+    return canonicalJsonText(QJsonObject{
+        {QStringLiteral("context_truncated"), true},
+        {QStringLiteral("original_characters"), serialized.size()},
+        {QStringLiteral("prefix"), serialized.left(prefixLength)},
+        {QStringLiteral("suffix"), serialized.right(suffixLength)},
+    });
 }
 
 bool isSensitiveKey(const QString &key) {
@@ -300,6 +340,20 @@ QStringList csvValues(std::string_view value) {
     return values;
 }
 
+bool safeOptionToken(const QString &value) {
+    const QString text = value.trimmed();
+    if (text.isEmpty() || text.size() > 64) {
+        return false;
+    }
+    for (const QChar character : text) {
+        if (!character.isLetterOrNumber()
+            && !QStringLiteral("-_./:").contains(character)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 QString normalizeReasoningEffort(const PythonParityContract::PythonLlmProvider &provider, const QString &value) {
     const QStringList efforts = csvValues(provider.reasoningEfforts);
     if (efforts.isEmpty()) {
@@ -314,15 +368,137 @@ QString normalizeReasoningEffort(const PythonParityContract::PythonLlmProvider &
     if (raw.isEmpty()) {
         normalized = defaultEffort.isEmpty() ? efforts.first() : defaultEffort;
     } else if (raw == QStringLiteral("auto")) {
-        normalized = QStringLiteral("default");
+        normalized = efforts.contains(QStringLiteral("auto"))
+            ? QStringLiteral("auto")
+            : defaultEffort;
     } else if (raw == QStringLiteral("off") || raw == QStringLiteral("no") || raw == QStringLiteral("false")) {
         normalized = efforts.contains(QStringLiteral("none")) ? QStringLiteral("none") : QStringLiteral("disabled");
     } else if (raw == QStringLiteral("extra-high")) {
         normalized = QStringLiteral("xhigh");
     }
-    return efforts.contains(normalized)
+    return efforts.contains(normalized) || safeOptionToken(normalized)
         ? normalized
         : (defaultEffort.isEmpty() ? efforts.first() : defaultEffort);
+}
+
+QPair<QString, QString> normalizeApiStyle(
+    const PythonParityContract::PythonLlmProvider &provider,
+    const QString &value) {
+    const QString providerProtocol = QString::fromUtf8(
+        provider.protocol.data(), static_cast<int>(provider.protocol.size()));
+    const QString raw = value.trimmed().toLower().replace(QChar('_'), QChar('-'));
+    QString requested = raw;
+    if (raw.isEmpty()
+        || raw == QStringLiteral("auto")
+        || raw == QStringLiteral("default")
+        || raw == QStringLiteral("provider")
+        || raw == QStringLiteral("provider-default")) {
+        requested = QStringLiteral("provider-default");
+    } else if (QStringList{QStringLiteral("chat"), QStringLiteral("chat-completions"), QStringLiteral("openai-compatible")}.contains(raw)) {
+        requested = QStringLiteral("openai-chat-completions");
+    } else if (raw == QStringLiteral("response") || raw == QStringLiteral("responses")) {
+        requested = QStringLiteral("openai-responses");
+    } else if (raw == QStringLiteral("messages") || raw == QStringLiteral("anthropic")) {
+        requested = QStringLiteral("anthropic-messages");
+    } else if (raw == QStringLiteral("generate-content") || raw == QStringLiteral("gemini")) {
+        requested = QStringLiteral("gemini-generate-content");
+    }
+    if (requested == QStringLiteral("provider-default")) {
+        return {requested, providerProtocol};
+    }
+    if (QStringList{
+            QStringLiteral("openai-chat-completions"),
+            QStringLiteral("openai-responses"),
+            QStringLiteral("anthropic-messages"),
+            QStringLiteral("gemini-generate-content"),
+        }.contains(requested)) {
+        return {requested, requested};
+    }
+    return {QStringLiteral("provider-default"), providerProtocol};
+}
+
+QString normalizeOptionToken(const QString &value, const QString &fallback) {
+    const QString normalized = value.trimmed().toLower().replace(QChar('_'), QChar('-'));
+    return safeOptionToken(normalized) ? normalized : fallback;
+}
+
+QString normalizeSpeed(const PythonParityContract::PythonLlmProvider &provider, const QString &value) {
+    const QString fallback = QString::fromUtf8(
+        provider.defaultSpeed.data(), static_cast<int>(provider.defaultSpeed.size())).trimmed();
+    QString normalized = value.trimmed().toLower().replace(QChar('_'), QChar('-'));
+    if (normalized.isEmpty()) {
+        normalized = fallback.isEmpty() ? QStringLiteral("default") : fallback;
+    } else if (normalized == QStringLiteral("normal") || normalized == QStringLiteral("standard")) {
+        normalized = QStringLiteral("balanced");
+    } else if (normalized == QStringLiteral("slow")) {
+        normalized = QStringLiteral("quality");
+    } else if (normalized == QStringLiteral("economy")) {
+        normalized = QStringLiteral("flex");
+    }
+    return safeOptionToken(normalized)
+        ? normalized
+        : (fallback.isEmpty() ? QStringLiteral("default") : fallback);
+}
+
+int configInteger(
+    const QJsonObject &config,
+    const QString &key,
+    int fallback,
+    int minimum,
+    int maximum) {
+    const QJsonValue value = config.value(key);
+    bool ok = false;
+    double parsed = value.isDouble()
+        ? value.toDouble()
+        : jsonScalarText(value).toDouble(&ok);
+    if (value.isDouble()) {
+        ok = std::isfinite(parsed);
+    }
+    if (!ok || !std::isfinite(parsed)) {
+        parsed = fallback;
+    }
+    parsed = std::clamp(
+        parsed,
+        static_cast<double>(minimum),
+        static_cast<double>(maximum));
+    return static_cast<int>(parsed);
+}
+
+std::optional<double> configOptionalDouble(
+    const QJsonObject &config,
+    const QString &key,
+    double minimum,
+    double maximum) {
+    const QJsonValue value = config.value(key);
+    const QString text = jsonScalarText(value).trimmed().toLower();
+    if (value.isUndefined() || value.isNull() || text.isEmpty()
+        || text == QStringLiteral("default") || text == QStringLiteral("auto")) {
+        return std::nullopt;
+    }
+    bool ok = false;
+    const double parsed = value.isDouble() ? value.toDouble() : text.toDouble(&ok);
+    if (value.isDouble()) {
+        ok = std::isfinite(parsed);
+    }
+    if (!ok || !std::isfinite(parsed)) {
+        return std::nullopt;
+    }
+    return std::clamp(parsed, minimum, maximum);
+}
+
+QJsonObject requestOptions(const QJsonObject &config) {
+    const QJsonValue value = config.value(QStringLiteral("llm_request_options"));
+    if (value.isObject()) {
+        return value.toObject();
+    }
+    if (!value.isString() || value.toString().trimmed().isEmpty()) {
+        return {};
+    }
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(value.toString().toUtf8(), &parseError);
+    return parseError.error == QJsonParseError::NoError && document.isObject()
+        ? document.object()
+        : QJsonObject{};
 }
 
 QJsonObject openAiReasoningBody(const QString &provider, const QString &model, const QString &effort) {
@@ -359,7 +535,7 @@ QJsonObject openAiReasoningBody(const QString &provider, const QString &model, c
     return QJsonObject{{QStringLiteral("reasoning_effort"), effort}};
 }
 
-QJsonObject anthropicThinkingBody(const QString &effort) {
+QJsonObject anthropicThinkingBody(const QString &effort, int maxOutputTokens = 0) {
     if (effort.isEmpty() || effort == QStringLiteral("default")) {
         return {};
     }
@@ -375,11 +551,158 @@ QJsonObject anthropicThinkingBody(const QString &effort) {
     if (!budgets.contains(effort)) {
         return {};
     }
-    const int budget = budgets.value(effort);
+    int budget = budgets.value(effort);
+    if (maxOutputTokens > 0) {
+        budget = std::min(budget, std::max(0, maxOutputTokens - 1));
+        if (budget <= 0) {
+            return QJsonObject{{QStringLiteral("max_tokens"), maxOutputTokens}};
+        }
+        return QJsonObject{
+            {QStringLiteral("max_tokens"), maxOutputTokens},
+            {QStringLiteral("thinking"), QJsonObject{{QStringLiteral("type"), QStringLiteral("enabled")}, {QStringLiteral("budget_tokens"), budget}}},
+        };
+    }
     return QJsonObject{
         {QStringLiteral("max_tokens"), std::max(1024, budget + 1024)},
         {QStringLiteral("thinking"), QJsonObject{{QStringLiteral("type"), QStringLiteral("enabled")}, {QStringLiteral("budget_tokens"), budget}}},
     };
+}
+
+QJsonObject openAiResponsesReasoningBody(const QString &effort) {
+    if (effort.isEmpty() || effort == QStringLiteral("default") || effort == QStringLiteral("auto")) {
+        return {};
+    }
+    const QString normalized = effort == QStringLiteral("disabled") || effort == QStringLiteral("off")
+        ? QStringLiteral("none")
+        : effort;
+    return QJsonObject{{QStringLiteral("reasoning"), QJsonObject{{QStringLiteral("effort"), normalized}}}};
+}
+
+QString serviceTierForSpeed(const QString &speed) {
+    if (speed == QStringLiteral("balanced") || speed == QStringLiteral("quality")) {
+        return QStringLiteral("default");
+    }
+    if (speed == QStringLiteral("economy")) {
+        return QStringLiteral("flex");
+    }
+    if (speed == QStringLiteral("fast")) {
+        return QStringLiteral("priority");
+    }
+    return speed;
+}
+
+bool usesModernOpenAiOutputLimit(const QString &provider, const QString &model) {
+    if (provider != QStringLiteral("openai")) {
+        return false;
+    }
+    const QString normalized = model.trimmed().toLower();
+    return normalized.startsWith(QStringLiteral("gpt-5"))
+        || normalized.startsWith(QStringLiteral("o1"))
+        || normalized.startsWith(QStringLiteral("o3"))
+        || normalized.startsWith(QStringLiteral("o4"));
+}
+
+bool requestOptionIsReserved(const QString &key) {
+    return QStringList{
+        QStringLiteral("contents"),
+        QStringLiteral("functions"),
+        QStringLiteral("input"),
+        QStringLiteral("instructions"),
+        QStringLiteral("messages"),
+        QStringLiteral("model"),
+        QStringLiteral("stream"),
+        QStringLiteral("system"),
+        QStringLiteral("tool_choice"),
+        QStringLiteral("tools"),
+    }.contains(key.trimmed().toLower());
+}
+
+void mergeJsonObject(QJsonObject *target, const QJsonObject &values) {
+    if (target == nullptr) {
+        return;
+    }
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+        if (target->value(it.key()).isObject() && it.value().isObject()) {
+            QJsonObject nested = target->value(it.key()).toObject();
+            mergeJsonObject(&nested, it.value().toObject());
+            target->insert(it.key(), nested);
+        } else {
+            target->insert(it.key(), it.value());
+        }
+    }
+}
+
+void applyConfiguredRequestOptions(
+    QJsonObject *body,
+    const QString &provider,
+    const QString &model,
+    const QString &protocol,
+    const QString &speed,
+    const QString &verbosity,
+    int maxOutputTokens,
+    const std::optional<double> &temperature,
+    const std::optional<double> &topP,
+    const QJsonObject &options) {
+    if (body == nullptr) {
+        return;
+    }
+    if (protocol == QStringLiteral("gemini-generate-content")) {
+        QJsonObject generationConfig = body->value(QStringLiteral("generationConfig")).toObject();
+        if (maxOutputTokens > 0) {
+            generationConfig.insert(QStringLiteral("maxOutputTokens"), maxOutputTokens);
+        }
+        if (temperature.has_value()) {
+            generationConfig.insert(QStringLiteral("temperature"), *temperature);
+        }
+        if (topP.has_value()) {
+            generationConfig.insert(QStringLiteral("topP"), *topP);
+        }
+        if (!generationConfig.isEmpty()) {
+            body->insert(QStringLiteral("generationConfig"), generationConfig);
+        }
+    } else {
+        if (maxOutputTokens > 0) {
+            QString key = QStringLiteral("max_tokens");
+            if (protocol == QStringLiteral("openai-responses")) {
+                key = QStringLiteral("max_output_tokens");
+            } else if (usesModernOpenAiOutputLimit(provider, model)) {
+                key = QStringLiteral("max_completion_tokens");
+            }
+            body->insert(key, maxOutputTokens);
+        }
+        if (temperature.has_value()) {
+            body->insert(QStringLiteral("temperature"), *temperature);
+        }
+        if (topP.has_value()) {
+            body->insert(QStringLiteral("top_p"), *topP);
+        }
+    }
+
+    if (QStringList{
+            QStringLiteral("openai-compatible"),
+            QStringLiteral("openai-chat-completions"),
+            QStringLiteral("openai-responses"),
+        }.contains(protocol)
+        && !speed.isEmpty() && speed != QStringLiteral("default")) {
+        body->insert(QStringLiteral("service_tier"), serviceTierForSpeed(speed));
+    }
+    if (protocol == QStringLiteral("openai-responses")
+        && !QStringList{QString(), QStringLiteral("default"), QStringLiteral("auto")}.contains(verbosity)) {
+        QJsonObject textOptions = body->value(QStringLiteral("text")).toObject();
+        textOptions.insert(QStringLiteral("verbosity"), verbosity);
+        body->insert(QStringLiteral("text"), textOptions);
+    } else if (QStringList{QStringLiteral("openai-compatible"), QStringLiteral("openai-chat-completions")}.contains(protocol)
+        && !QStringList{QString(), QStringLiteral("default"), QStringLiteral("auto")}.contains(verbosity)) {
+        body->insert(QStringLiteral("verbosity"), verbosity);
+    }
+
+    QJsonObject safeOptions;
+    for (auto it = options.constBegin(); it != options.constEnd(); ++it) {
+        if (!requestOptionIsReserved(it.key())) {
+            safeOptions.insert(it.key(), it.value());
+        }
+    }
+    mergeJsonObject(body, safeOptions);
 }
 
 QJsonObject geminiGenerationConfig(const QString &effort, const QString &model) {
@@ -585,7 +908,10 @@ QJsonObject buildChatRequest(
     }
     const QString providerLabel = QString::fromUtf8(provider->label.data(), static_cast<int>(provider->label.size()));
     const QString mode = QString::fromUtf8(provider->mode.data(), static_cast<int>(provider->mode.size()));
-    const QString protocol = QString::fromUtf8(provider->protocol.data(), static_cast<int>(provider->protocol.size()));
+    const QPair<QString, QString> apiStyleAndProtocol = normalizeApiStyle(
+        *provider,
+        jsonScalarText(config.value(QStringLiteral("llm_api_style"))));
+    const QString protocol = apiStyleAndProtocol.second;
     const QString defaultBaseUrl = QString::fromUtf8(provider->defaultBaseUrl.data(), static_cast<int>(provider->defaultBaseUrl.size()));
     const QString defaultModel = QString::fromUtf8(provider->defaultModel.data(), static_cast<int>(provider->defaultModel.size()));
     const QString defaultApiKeyEnv = QString::fromUtf8(provider->apiKeyEnv.data(), static_cast<int>(provider->apiKeyEnv.size()));
@@ -598,6 +924,23 @@ QJsonObject buildChatRequest(
     const QString reasoningEffort = normalizeReasoningEffort(
         *provider,
         jsonScalarText(config.value(QStringLiteral("llm_reasoning_effort"))));
+    const QString speed = normalizeSpeed(
+        *provider,
+        jsonScalarText(config.value(QStringLiteral("llm_speed"))));
+    const QString verbosity = normalizeOptionToken(
+        jsonScalarText(config.value(QStringLiteral("llm_verbosity"))),
+        QStringLiteral("default"));
+    const int contextWindow = configInteger(
+        config, QStringLiteral("llm_context_window"), 0, 0, 10'000'000);
+    const int maxOutputTokens = configInteger(
+        config, QStringLiteral("llm_max_output_tokens"), 0, 0, 2'000'000);
+    const int timeoutSeconds = configInteger(
+        config, QStringLiteral("llm_timeout_seconds"), 30, 1, 3'600);
+    const std::optional<double> temperature = configOptionalDouble(
+        config, QStringLiteral("llm_temperature"), 0.0, 2.0);
+    const std::optional<double> topP = configOptionalDouble(
+        config, QStringLiteral("llm_top_p"), 0.0, 1.0);
+    const QJsonObject advancedOptions = requestOptions(config);
     const QJsonValue allowPublicValue = config.value(QStringLiteral("llm_allow_public_network"));
     const bool allowPublicNetwork = allowPublicValue.isBool()
         ? allowPublicValue.toBool()
@@ -629,6 +972,14 @@ QJsonObject buildChatRequest(
             : context;
     }
     const bool hasContext = contextForRequest.isObject() && !contextForRequest.toObject().isEmpty();
+    const QString contextText = hasContext
+        ? boundedContextJsonText(
+              contextForRequest,
+              contextWindow,
+              maxOutputTokens,
+              userPrompt,
+              systemPrompt)
+        : QString();
 
     QJsonObject headers{{QStringLiteral("Content-Type"), QStringLiteral("application/json")}};
     QJsonObject body;
@@ -648,13 +999,33 @@ QJsonObject buildChatRequest(
         if (hasContext) {
             messages.append(QJsonObject{
                 {QStringLiteral("role"), QStringLiteral("system")},
-                {QStringLiteral("content"), QStringLiteral("Trading context JSON: ") + canonicalJsonText(contextForRequest)},
+                    {QStringLiteral("content"), QStringLiteral("Trading context JSON: ") + contextText},
             });
         }
         messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("user")}, {QStringLiteral("content"), userPrompt}});
         body.insert(QStringLiteral("model"), model);
         body.insert(QStringLiteral("messages"), messages);
         const QJsonObject reasoningBody = openAiReasoningBody(providerKey, model, reasoningEffort);
+        for (auto it = reasoningBody.constBegin(); it != reasoningBody.constEnd(); ++it) {
+            body.insert(it.key(), it.value());
+        }
+    } else if (protocol == QStringLiteral("openai-responses")) {
+        if (!apiKey.isEmpty()) {
+            headers.insert(QStringLiteral("Authorization"), QStringLiteral("Bearer ") + apiKey);
+        }
+        url = joinUrl(baseUrl, QStringLiteral("responses"));
+        QStringList instructionParts{executionBoundaryText()};
+        const QString trimmedSystemPrompt = systemPrompt.trimmed();
+        if (!trimmedSystemPrompt.isEmpty()) {
+            instructionParts.append(trimmedSystemPrompt);
+        }
+        if (!contextText.isEmpty()) {
+            instructionParts.append(QStringLiteral("Trading context JSON: ") + contextText);
+        }
+        body.insert(QStringLiteral("model"), model);
+        body.insert(QStringLiteral("instructions"), instructionParts.join(QStringLiteral("\n\n")));
+        body.insert(QStringLiteral("input"), userPrompt);
+        const QJsonObject reasoningBody = openAiResponsesReasoningBody(reasoningEffort);
         for (auto it = reasoningBody.constBegin(); it != reasoningBody.constEnd(); ++it) {
             body.insert(it.key(), it.value());
         }
@@ -669,7 +1040,7 @@ QJsonObject buildChatRequest(
         if (hasContext) {
             messages.insert(0, QJsonObject{
                 {QStringLiteral("role"), QStringLiteral("user")},
-                {QStringLiteral("content"), QStringLiteral("Trading context JSON: ") + canonicalJsonText(contextForRequest)},
+                {QStringLiteral("content"), QStringLiteral("Trading context JSON: ") + contextText},
             });
         }
         QStringList systemParts{executionBoundaryText()};
@@ -681,7 +1052,7 @@ QJsonObject buildChatRequest(
         body.insert(QStringLiteral("max_tokens"), 1024);
         body.insert(QStringLiteral("messages"), messages);
         body.insert(QStringLiteral("system"), systemParts.join(QStringLiteral("\n\n")));
-        const QJsonObject thinkingBody = anthropicThinkingBody(reasoningEffort);
+        const QJsonObject thinkingBody = anthropicThinkingBody(reasoningEffort, maxOutputTokens);
         for (auto it = thinkingBody.constBegin(); it != thinkingBody.constEnd(); ++it) {
             body.insert(it.key(), it.value());
         }
@@ -698,7 +1069,7 @@ QJsonObject buildChatRequest(
             parts.append(QJsonObject{{QStringLiteral("text"), trimmedSystemPrompt}});
         }
         if (hasContext) {
-            parts.append(QJsonObject{{QStringLiteral("text"), QStringLiteral("Trading context JSON: ") + canonicalJsonText(contextForRequest)}});
+            parts.append(QJsonObject{{QStringLiteral("text"), QStringLiteral("Trading context JSON: ") + contextText}});
         }
         parts.append(QJsonObject{{QStringLiteral("text"), userPrompt}});
         body.insert(QStringLiteral("contents"), QJsonArray{QJsonObject{{QStringLiteral("parts"), parts}}});
@@ -710,6 +1081,18 @@ QJsonObject buildChatRequest(
         return fail(QStringLiteral("Unsupported LLM protocol for provider %1: %2").arg(providerKey, protocol));
     }
 
+    applyConfiguredRequestOptions(
+        &body,
+        providerKey,
+        model,
+        protocol,
+        speed,
+        verbosity,
+        maxOutputTokens,
+        temperature,
+        topP,
+        advancedOptions);
+
     return QJsonObject{
         {QStringLiteral("provider"), providerKey},
         {QStringLiteral("mode"), mode},
@@ -717,6 +1100,7 @@ QJsonObject buildChatRequest(
         {QStringLiteral("url"), url},
         {QStringLiteral("headers"), headers},
         {QStringLiteral("json"), body},
+        {QStringLiteral("timeout_seconds"), timeoutSeconds},
         {QStringLiteral("execution_policy"), QJsonObject{
              {QStringLiteral("advisory_only"), true},
              {QStringLiteral("can_execute_orders"), false},

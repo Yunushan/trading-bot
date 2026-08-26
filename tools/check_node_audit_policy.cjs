@@ -11,6 +11,8 @@ const SEVERITY_RANK = {
   critical: 4,
 };
 
+const MAX_EXCEPTION_REVIEW_DAYS = 45;
+
 function normalizeSeverity(value) {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -41,6 +43,35 @@ function sameValues(left, right) {
   return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
 }
 
+function isoDateToUtc(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) {
+    return null;
+  }
+  const timestamp = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function elapsedDays(start, end) {
+  return Math.floor((end - start) / (24 * 60 * 60 * 1000));
+}
+
+function mitigationReportsByControl(reports, errors) {
+  const controls = new Map();
+  for (const report of reports) {
+    const controlId = typeof report?.control_id === "string" ? report.control_id.trim() : "";
+    if (!controlId) {
+      errors.push("every mitigation report must declare control_id");
+      continue;
+    }
+    if (controls.has(controlId)) {
+      errors.push(`duplicate mitigation report for ${controlId}`);
+      continue;
+    }
+    controls.set(controlId, report);
+  }
+  return controls;
+}
+
 function evaluateAuditReport(report, policy, options = {}) {
   const project = options.project || "";
   const asOf = options.asOf || new Date().toISOString().slice(0, 10);
@@ -49,6 +80,7 @@ function evaluateAuditReport(report, policy, options = {}) {
   const allowedPackages = new Set();
   const projectPolicy = policy?.projects?.[project];
   const exceptions = Array.isArray(projectPolicy?.exceptions) ? projectPolicy.exceptions : [];
+  const mitigationControls = mitigationReportsByControl(options.mitigationReports || [], errors);
   const vulnerabilityMap = report?.vulnerabilities;
   const hasVulnerabilityMap = vulnerabilityMap
     && typeof vulnerabilityMap === "object"
@@ -86,11 +118,17 @@ function evaluateAuditReport(report, policy, options = {}) {
     const matchingEntry = vulnerabilities.find(([name]) => name === packageName);
     const vulnerability = matchingEntry?.[1];
 
-    if (!packageName || !exception.expires || !exception.reason) {
-      errors.push("every Node audit exception must declare package, expires, and reason");
+    if (!packageName || !exception.reviewed || !exception.expires || !exception.reason) {
+      errors.push("every Node audit exception must declare package, reviewed, expires, and reason");
       continue;
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(exception.expires) || exception.expires < asOf) {
+    const reviewedAt = isoDateToUtc(exception.reviewed);
+    const expiresAt = isoDateToUtc(exception.expires);
+    if (reviewedAt === null || expiresAt === null || expiresAt < reviewedAt) {
+      errors.push(`Node audit exception for ${packageName} has an invalid review window`);
+      continue;
+    }
+    if (exception.expires < asOf) {
       errors.push(`Node audit exception for ${packageName} expired on ${exception.expires}`);
       continue;
     }
@@ -119,8 +157,50 @@ function evaluateAuditReport(report, policy, options = {}) {
       errors.push(`Node audit exception for ${packageName} is outside its declared dependency effects`);
       continue;
     }
-    if (exception.require_major_fix && vulnerability.fixAvailable?.isSemVerMajor !== true) {
-      errors.push(`Node audit exception for ${packageName} requires a breaking-only remediation path`);
+    const fixAvailability = String(exception.fix_availability || "").trim();
+    if (fixAvailability === "breaking-graph-only") {
+      if (vulnerability.fixAvailable?.isSemVerMajor !== true) {
+        errors.push(`Node audit exception for ${packageName} requires a breaking graph remediation path`);
+        continue;
+      }
+      if (
+        vulnerability.fixAvailable.name !== exception.verified_fix_target
+        || vulnerability.fixAvailable.version !== exception.verified_fix_version
+      ) {
+        errors.push(`Node audit exception for ${packageName} has an unreviewed npm remediation target`);
+        continue;
+      }
+    } else if (fixAvailability === "none-published") {
+      if (vulnerability.fixAvailable !== false) {
+        errors.push(`Node audit exception for ${packageName} is valid only while npm reports no fix`);
+        continue;
+      }
+    } else {
+      errors.push(`Node audit exception for ${packageName} has unknown fix_availability`);
+      continue;
+    }
+    if (elapsedDays(reviewedAt, expiresAt) > MAX_EXCEPTION_REVIEW_DAYS) {
+      errors.push(
+        `Node audit exception for ${packageName} exceeds the ${MAX_EXCEPTION_REVIEW_DAYS}-day review window`,
+      );
+      continue;
+    }
+    const controlId = String(exception.mitigation_control || "").trim();
+    const mitigation = mitigationControls.get(controlId);
+    if (!controlId || !mitigation || mitigation.ok !== true) {
+      errors.push(`Node audit exception for ${packageName} lacks passing mitigation evidence`);
+      continue;
+    }
+    if (mitigation.project !== project || mitigation.finding_package !== packageName) {
+      errors.push(`Node audit mitigation evidence for ${packageName} has the wrong scope`);
+      continue;
+    }
+    if (mitigation.package_version !== exception.verified_package_version) {
+      errors.push(`Node audit mitigation evidence for ${packageName} has an unreviewed package version`);
+      continue;
+    }
+    if (!sameValues(mitigation.consumers || [], exception.verified_consumers || [])) {
+      errors.push(`Node audit mitigation evidence for ${packageName} has unreviewed consumers`);
       continue;
     }
 
@@ -192,7 +272,13 @@ function runSelfTest() {
           expires: "2026-09-30",
           max_severity: "high",
           required_effects: ["metro"],
-          require_major_fix: true,
+          reviewed: "2026-08-26",
+          fix_availability: "breaking-graph-only",
+          verified_fix_target: "react-native",
+          verified_fix_version: "0.86.3",
+          mitigation_control: "mobile-image-size-build-only-v1",
+          verified_package_version: "1.2.1",
+          verified_consumers: ["metro@0.87.0"],
           reason: "test exception",
         }],
       },
@@ -207,12 +293,24 @@ function runSelfTest() {
           { url: "https://github.com/advisories/GHSA-5p2g-fcmc-qvqq", source: 2 },
         ],
         effects: ["metro"],
-        fixAvailable: { isSemVerMajor: true },
+        fixAvailable: { name: "react-native", version: "0.86.3", isSemVerMajor: true },
       },
       metro: { severity: "high", via: ["image-size"], effects: [] },
     },
   };
-  const allowedResult = evaluateAuditReport(report, policy, { project: "apps/mobile-client", asOf: "2026-08-09" });
+  const mitigationReports = [{
+    control_id: "mobile-image-size-build-only-v1",
+    ok: true,
+    project: "apps/mobile-client",
+    finding_package: "image-size",
+    package_version: "1.2.1",
+    consumers: ["metro@0.87.0"],
+  }];
+  const allowedResult = evaluateAuditReport(report, policy, {
+    project: "apps/mobile-client",
+    asOf: "2026-08-26",
+    mitigationReports,
+  });
   assert.equal(allowedResult.ok, true);
   assert.equal(allowedResult.unresolved.length, 0);
 
@@ -223,7 +321,11 @@ function runSelfTest() {
       "critical-through-metro": { severity: "critical", via: ["image-size"], effects: [] },
     },
   };
-  const unsafeResult = evaluateAuditReport(unsafeReport, policy, { project: "apps/mobile-client", asOf: "2026-08-09" });
+  const unsafeResult = evaluateAuditReport(unsafeReport, policy, {
+    project: "apps/mobile-client",
+    asOf: "2026-08-26",
+    mitigationReports,
+  });
   assert.equal(unsafeResult.ok, false);
   assert.equal(unsafeResult.unresolved[0].package, "unexpected-package");
   assert.equal(unsafeResult.unresolved[1].package, "critical-through-metro");
@@ -256,6 +358,35 @@ function runSelfTest() {
   });
   assert.equal(uppercaseSeverityResult.high_or_critical_findings, 1);
   assert.equal(uppercaseSeverityResult.unresolved[0].severity, "critical");
+
+  const newlyFixableReport = JSON.parse(JSON.stringify(report));
+  newlyFixableReport.vulnerabilities["image-size"].fixAvailable = {
+    name: "image-size",
+    version: "2.0.3",
+    isSemVerMajor: false,
+  };
+  const newlyFixableResult = evaluateAuditReport(newlyFixableReport, policy, {
+    project: "apps/mobile-client",
+    asOf: "2026-08-26",
+    mitigationReports,
+  });
+  assert.equal(newlyFixableResult.ok, false);
+  assert.match(newlyFixableResult.errors[0], /requires a breaking graph remediation path/);
+
+  const missingMitigationResult = evaluateAuditReport(report, policy, {
+    project: "apps/mobile-client",
+    asOf: "2026-08-26",
+  });
+  assert.equal(missingMitigationResult.ok, false);
+  assert.match(missingMitigationResult.errors[0], /lacks passing mitigation evidence/);
+
+  const changedConsumerResult = evaluateAuditReport(report, policy, {
+    project: "apps/mobile-client",
+    asOf: "2026-08-26",
+    mitigationReports: [{ ...mitigationReports[0], consumers: ["metro@0.88.0"] }],
+  });
+  assert.equal(changedConsumerResult.ok, false);
+  assert.match(changedConsumerResult.errors[0], /unreviewed consumers/);
   console.log("Node audit policy self-test passed");
 }
 
@@ -284,7 +415,11 @@ if (require.main === module) {
     process.exit(2);
   }
 
-  const result = evaluateAuditReport(readJson(args.report), readJson(args.policy), { project: args.project });
+  const mitigationReports = args["mitigation-report"] ? [readJson(args["mitigation-report"])] : [];
+  const result = evaluateAuditReport(readJson(args.report), readJson(args.policy), {
+    project: args.project,
+    mitigationReports,
+  });
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.ok ? 0 : 1);
 }

@@ -1,0 +1,10 @@
+---
+description: Trading Bot architecture, safety, LLM compatibility, and verification rules
+alwaysApply: true
+---
+
+Follow the repository-wide instructions in `AGENTS.md`.
+
+When changing LLM support, keep arbitrary model IDs editable, retain historical IDs as fallbacks, merge live `/api/v1/llm/models` discovery, and preserve Chat Completions, Responses, Anthropic Messages, and Gemini request paths. Provider-specific effort, speed, and verbosity values may be future tokens, but advanced options must never replace the advisory prompt, model, tools, or stream policy.
+
+Python is the source of truth. Regenerate native parity contracts after changing Python catalogs or service contracts, and verify Python, Rust, C++, and Tauri consumers in proportion to the change.

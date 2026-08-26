@@ -811,7 +811,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "49afcdd2a1f65a22b83c37e1f6517a0074bb912fe8398ccf4e5b12adb67d4e91",
+  "contractHash": "c2b58e4b6019d0ac1087c9746f3ff95700d8591bfc0416223908bd3f489e0735",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -1827,6 +1827,33 @@
       "value": "spot_private"
     }
   ],
+  "llmApiStyleOptions": [
+    {
+      "key": "provider-default",
+      "label": "provider-default",
+      "value": "provider-default"
+    },
+    {
+      "key": "openai-chat-completions",
+      "label": "openai-chat-completions",
+      "value": "openai-chat-completions"
+    },
+    {
+      "key": "openai-responses",
+      "label": "openai-responses",
+      "value": "openai-responses"
+    },
+    {
+      "key": "anthropic-messages",
+      "label": "anthropic-messages",
+      "value": "anthropic-messages"
+    },
+    {
+      "key": "gemini-generate-content",
+      "label": "gemini-generate-content",
+      "value": "gemini-generate-content"
+    }
+  ],
   "llmProviderChoices": [
     {
       "key": "",
@@ -1971,6 +1998,26 @@
     {
       "key": "jais",
       "value": "open-source"
+    },
+    {
+      "key": "kilo",
+      "value": "kilo"
+    },
+    {
+      "key": "kilo-ai",
+      "value": "kilo"
+    },
+    {
+      "key": "kilo-code",
+      "value": "kilo"
+    },
+    {
+      "key": "kilo.ai",
+      "value": "kilo"
+    },
+    {
+      "key": "kilocode",
+      "value": "kilo"
     },
     {
       "key": "kimi",
@@ -2199,6 +2246,7 @@
   ],
   "llmProviderKeys": [
     "openai",
+    "kilo",
     "anthropic",
     "gemini",
     "deepseek",
@@ -2217,15 +2265,21 @@
   "llmProviders": [
     {
       "api_key_env": "OPENAI_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-responses",
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_OPENAI",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.openai.com/v1",
       "default_model": "gpt-5.5",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "openai",
       "label": "OpenAI / ChatGPT",
       "mode": "cloud",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "gpt-5.6",
         "gpt-5.6-sol",
@@ -2255,11 +2309,26 @@
         "gpt-5-nano",
         "gpt-4.1",
         "gpt-4.1-mini",
-        "gpt-4.1-nano"
+        "gpt-4.1-nano",
+        "gpt-4o",
+        "gpt-4o-2024-11-20",
+        "gpt-4o-2024-08-06",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "gpt-4-turbo-preview",
+        "gpt-4",
+        "gpt-3.5-turbo",
+        "o4-mini",
+        "o3",
+        "o3-mini",
+        "o1",
+        "o1-preview",
+        "o1-mini"
       ],
       "notes": [
-        "Uses the OpenAI-compatible chat completions endpoint.",
-        "GPT-5.6 Sol, Terra, and Luna support reasoning levels through max; availability depends on the API account."
+        "Supports the OpenAI Responses and Chat Completions APIs; choose the API style per model.",
+        "GPT-5.6 Sol, Terra, and Luna support reasoning levels through max; availability depends on the API account.",
+        "Historical model IDs remain selectable, but retired upstream models may no longer accept requests."
       ],
       "protocol": "openai-chat-completions",
       "reasoning_efforts": [
@@ -2271,19 +2340,98 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
+    },
+    {
+      "api_key_env": "KILO_API_KEY",
+      "api_styles": [
+        "openai-chat-completions",
+        "openai-responses"
+      ],
+      "catalog_revision": "2026-08-26",
+      "custom_models_env": "BOT_LLM_EXTRA_MODELS_KILO",
+      "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
+      "default_base_url": "https://api.kilo.ai/api/gateway",
+      "default_model": "kilo-auto/frontier",
+      "default_reasoning_effort": "default",
+      "default_speed": "default",
+      "key": "kilo",
+      "label": "Kilo AI Gateway",
+      "mode": "cloud",
+      "model_discovery_path": "models",
+      "model_suggestions": [
+        "kilo-auto/frontier",
+        "kilo-auto/efficient",
+        "kilo-auto/small",
+        "kilo-auto/free",
+        "openrouter/free",
+        "anthropic/claude-opus-4.7",
+        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-5.5",
+        "openai/gpt-5.4",
+        "openai/gpt-5.4-mini",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-2.5-flash",
+        "x-ai/grok-4",
+        "x-ai/grok-code-fast-1",
+        "deepseek/deepseek-v3.2",
+        "moonshotai/kimi-k2.5",
+        "minimax/minimax-m2.7"
+      ],
+      "notes": [
+        "Uses Kilo's OpenAI-compatible gateway and provider/model identifiers.",
+        "Refresh model discovery to merge every model currently returned by Kilo with historical and custom IDs.",
+        "Kilo auto model IDs remain stable while their routed backing models can change server-side."
+      ],
+      "protocol": "openai-chat-completions",
+      "reasoning_efforts": [
+        "default",
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "ANTHROPIC_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "anthropic-messages"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_ANTHROPIC",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.anthropic.com",
       "default_model": "claude-sonnet-4-5-20250929",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "anthropic",
       "label": "Anthropic Claude",
       "mode": "cloud",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "claude-sonnet-4-5-20250929",
         "claude-haiku-4-5-20251001",
@@ -2296,7 +2444,14 @@
         "claude-opus-4-5",
         "claude-opus-4-1",
         "claude-opus-4-0",
-        "claude-sonnet-4-0"
+        "claude-sonnet-4-0",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-sonnet-20240620",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
+        "claude-3-sonnet-20240229",
+        "claude-3-haiku-20240307"
       ],
       "notes": [
         "Uses the Anthropic messages endpoint with the 2023-06-01 API version header."
@@ -2309,19 +2464,34 @@
         "low",
         "medium",
         "high"
-      ]
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "GEMINI_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "gemini-generate-content"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_GEMINI",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
       "default_model": "gemini-3-flash-preview",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "gemini",
       "label": "Google Gemini",
       "mode": "cloud",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "gemini-3.1-pro-preview",
         "gemini-3.1-pro-preview-customtools",
@@ -2331,7 +2501,11 @@
         "gemini-2.5-flash",
         "gemini-2.5-flash-preview-09-2025",
         "gemini-2.5-flash-lite",
-        "gemini-2.5-flash-lite-preview-09-2025"
+        "gemini-2.5-flash-lite-preview-09-2025",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash"
       ],
       "notes": [
         "Uses the Gemini generateContent endpoint."
@@ -2343,19 +2517,34 @@
         "low",
         "medium",
         "high"
-      ]
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "DEEPSEEK_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_DEEPSEEK",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.deepseek.com",
       "default_model": "deepseek-v4-flash",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "deepseek",
       "label": "DeepSeek",
       "mode": "cloud",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "deepseek-v4-flash",
         "deepseek-v4-pro",
@@ -2372,19 +2561,34 @@
         "enabled",
         "high",
         "max"
-      ]
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "MISTRAL_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_MISTRAL",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.mistral.ai/v1",
       "default_model": "mistral-small-latest",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "mistral",
       "label": "Mistral AI",
       "mode": "cloud",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "mistral-large-latest",
         "mistral-medium-latest",
@@ -2401,19 +2605,34 @@
         "low",
         "medium",
         "high"
-      ]
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "XAI_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_GROK",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.x.ai/v1",
       "default_model": "grok-4.3",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "grok",
       "label": "xAI Grok",
       "mode": "cloud",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "grok-4.3",
         "grok-4.3-latest",
@@ -2432,19 +2651,34 @@
         "low",
         "medium",
         "high"
-      ]
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "DASHSCOPE_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_QWEN",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       "default_model": "qwen3.6-plus",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "qwen",
       "label": "Alibaba Qwen / DashScope",
       "mode": "cloud",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "qwen3.7-max",
         "qwen3.7-max-2026-06-08",
@@ -2480,19 +2714,34 @@
         "medium",
         "high",
         "max"
-      ]
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "MOONSHOT_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_MOONSHOT",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "https://api.moonshot.ai/v1",
       "default_model": "kimi-k3",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "moonshot",
       "label": "Moonshot AI / Kimi",
       "mode": "cloud",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "kimi-k3",
         "kimi-k2.7-code",
@@ -2511,19 +2760,35 @@
         "disabled",
         "enabled",
         "max"
-      ]
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "LOCAL_LLM_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions",
+        "openai-responses"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_LOCAL",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:11434/v1",
       "default_model": "qwen3:8b",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "local",
       "label": "Local / Custom OpenAI-Compatible",
       "mode": "local",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "qwen3:0.6b",
         "qwen3:1.7b",
@@ -2890,24 +3155,41 @@
         "default",
         "none",
         "disabled",
+        "minimal",
         "auto",
         "low",
         "medium",
         "high",
-        "xhigh"
-      ]
+        "xhigh",
+        "max"
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "OLLAMA_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_OLLAMA",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:11434/v1",
       "default_model": "qwen3:8b",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "ollama",
       "label": "Ollama",
       "mode": "local",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "qwen3:0.6b",
         "qwen3:1.7b",
@@ -3036,24 +3318,41 @@
         "default",
         "none",
         "disabled",
+        "minimal",
         "auto",
         "low",
         "medium",
         "high",
-        "xhigh"
-      ]
+        "xhigh",
+        "max"
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "VLLM_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_VLLM",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:8000/v1",
       "default_model": "Qwen/Qwen3-8B",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "vllm",
       "label": "vLLM / SGLang",
       "mode": "local",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "Qwen/Qwen3-0.6B",
         "Qwen/Qwen3-1.7B",
@@ -3303,24 +3602,41 @@
         "default",
         "none",
         "disabled",
+        "minimal",
         "auto",
         "low",
         "medium",
         "high",
-        "xhigh"
-      ]
+        "xhigh",
+        "max"
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "LLAMACPP_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_LLAMACPP",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:8080/v1",
       "default_model": "local-model",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "llamacpp",
       "label": "llama.cpp server",
       "mode": "local",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "local-model",
         "qwen3-8b-q4_k_m.gguf",
@@ -3587,24 +3903,41 @@
         "default",
         "none",
         "disabled",
+        "minimal",
         "auto",
         "low",
         "medium",
         "high",
-        "xhigh"
-      ]
+        "xhigh",
+        "max"
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "LMSTUDIO_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_LMSTUDIO",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:1234/v1",
       "default_model": "local-model",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "lmstudio",
       "label": "LM Studio",
       "mode": "local",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "local-model",
         "Qwen/Qwen3-0.6B",
@@ -3855,24 +4188,41 @@
         "default",
         "none",
         "disabled",
+        "minimal",
         "auto",
         "low",
         "medium",
         "high",
-        "xhigh"
-      ]
+        "xhigh",
+        "max"
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "HUGGINGFACE_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_TGI",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:3000/v1",
       "default_model": "tgi",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "tgi",
       "label": "Hugging Face TGI",
       "mode": "local",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "tgi",
         "Qwen/Qwen3-0.6B",
@@ -4123,24 +4473,42 @@
         "default",
         "none",
         "disabled",
+        "minimal",
         "auto",
         "low",
         "medium",
         "high",
-        "xhigh"
-      ]
+        "xhigh",
+        "max"
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     },
     {
       "api_key_env": "OPEN_SOURCE_LLM_API_KEY",
-      "catalog_revision": "2026-07-16",
+      "api_styles": [
+        "openai-chat-completions",
+        "openai-responses"
+      ],
+      "catalog_revision": "2026-08-26",
       "custom_models_env": "BOT_LLM_EXTRA_MODELS_OPEN_SOURCE",
       "custom_models_path_env": "BOT_LLM_MODEL_CATALOG_PATH",
       "default_base_url": "http://127.0.0.1:8000/v1",
       "default_model": "Qwen/Qwen3-8B",
       "default_reasoning_effort": "default",
+      "default_speed": "default",
       "key": "open-source",
       "label": "Generic Open-Source / Remote",
       "mode": "local",
+      "model_discovery_path": "models",
       "model_suggestions": [
         "Qwen/Qwen3-0.6B",
         "Qwen/Qwen3-1.7B",
@@ -4507,12 +4875,24 @@
         "default",
         "none",
         "disabled",
+        "minimal",
         "auto",
         "low",
         "medium",
         "high",
-        "xhigh"
-      ]
+        "xhigh",
+        "max"
+      ],
+      "speed_options": [
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority"
+      ],
+      "supports_model_discovery": true
     }
   ],
   "llmReasoningEffortOptions": [
@@ -4565,6 +4945,43 @@
       "key": "none",
       "label": "none",
       "value": "none"
+    }
+  ],
+  "llmSpeedOptions": [
+    {
+      "key": "default",
+      "label": "default",
+      "value": "default"
+    },
+    {
+      "key": "auto",
+      "label": "auto",
+      "value": "auto"
+    },
+    {
+      "key": "fast",
+      "label": "fast",
+      "value": "fast"
+    },
+    {
+      "key": "balanced",
+      "label": "balanced",
+      "value": "balanced"
+    },
+    {
+      "key": "quality",
+      "label": "quality",
+      "value": "quality"
+    },
+    {
+      "key": "flex",
+      "label": "flex",
+      "value": "flex"
+    },
+    {
+      "key": "priority",
+      "label": "priority",
+      "value": "priority"
     }
   ],
   "llmUseForOptions": [
@@ -5258,8 +5675,8 @@
       "value": "combinations"
     }
   ],
-  "optionCatalogCount": 46,
-  "optionCatalogEntryCount": 267,
+  "optionCatalogCount": 48,
+  "optionCatalogEntryCount": 279,
   "optionCatalogManifest": [
     {
       "entryCount": 38,
@@ -5348,6 +5765,14 @@
     {
       "entryCount": 10,
       "name": "llm_reasoning_effort_options"
+    },
+    {
+      "entryCount": 5,
+      "name": "llm_api_style_options"
+    },
+    {
+      "entryCount": 7,
+      "name": "llm_speed_options"
     },
     {
       "entryCount": 2,
@@ -5446,7 +5871,7 @@
       "name": "indicators"
     }
   ],
-  "optionCatalogsJson": "{\"account_mode_options\":[\"Classic Trading\",\"Portfolio Margin\"],\"account_type_options\":[{\"key\":\"Spot\",\"label\":\"Spot\",\"value\":\"Spot\"},{\"key\":\"Futures\",\"label\":\"Futures\",\"value\":\"Futures\"}],\"assets_mode_options\":[{\"key\":\"Single-Asset\",\"label\":\"Single-Asset Mode\",\"value\":\"Single-Asset\"},{\"key\":\"Multi-Assets\",\"label\":\"Multi-Assets Mode\",\"value\":\"Multi-Assets\"}],\"backtest_execution_backend_options\":[{\"key\":\"local\",\"label\":\"local\",\"value\":\"local\"},{\"key\":\"service\",\"label\":\"service\",\"value\":\"service\"}],\"backtest_templates\":[{\"key\":\"volume_top50\",\"label\":\"First 50 Highest Volume\"},{\"key\":\"volume_last_week\",\"label\":\"Last 1 week \\u00b7 2% per trade \\u00b7 50 highest volume\"},{\"key\":\"top100_isolated_1pct_sl\",\"label\":\"Top 100, %2 per trade, isolated, %20 per trade SL\"}],\"chart_market_options\":[\"Futures\",\"Spot\"],\"chart_view_keys\":[\"tradingview\",\"original\",\"lightweight\"],\"chart_view_options\":[{\"key\":\"tradingview\",\"label\":\"TradingView\",\"value\":\"tradingview\"},{\"key\":\"original\",\"label\":\"Original\",\"value\":\"original\"},{\"key\":\"lightweight\",\"label\":\"TradingView Lightweight\",\"value\":\"lightweight\"}],\"code_language_options\":[{\"accent\":\"#3b82f6\",\"badge\":\"Recommended\",\"disabled\":false,\"key\":\"Python (PyQt)\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"Fast to build - Huge ecosystem\",\"title\":\"Python\"},{\"accent\":\"#38bdf8\",\"badge\":\"Experiment\",\"disabled\":false,\"key\":\"C++ (Qt/C++23)\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"Qt native desktop experiment\",\"title\":\"C++\"},{\"accent\":\"#fb923c\",\"badge\":\"Experiment\",\"disabled\":false,\"key\":\"Rust\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"Service API client + guarded runtime (promotion-gated)\",\"title\":\"Rust\"}],\"config_mode_options\":[{\"key\":\"Live\",\"label\":\"Live\",\"value\":\"Live\"},{\"key\":\"Demo\",\"label\":\"Demo\",\"value\":\"Demo\"},{\"key\":\"Testnet\",\"label\":\"Testnet\",\"value\":\"Testnet\"}],\"connectors\":[{\"key\":\"binance-sdk-derivatives-trading-usds-futures\",\"label\":\"Binance SDK Derivatives Trading USD\\u24c8 Futures (Official Recommended)\"},{\"key\":\"binance-sdk-derivatives-trading-coin-futures\",\"label\":\"Binance SDK Derivatives Trading COIN-M Futures\"},{\"key\":\"binance-sdk-spot\",\"label\":\"Binance SDK Spot (Official Recommended)\"},{\"key\":\"binance-connector\",\"label\":\"Binance Connector Python\"},{\"key\":\"ccxt\",\"label\":\"CCXT (Unified)\"},{\"key\":\"oanda-rest\",\"label\":\"OANDA REST-v20\"},{\"key\":\"fxcmpy\",\"label\":\"FXCM fxcmpy\"},{\"key\":\"ig-rest\",\"label\":\"IG REST Trading API\"},{\"key\":\"citic-ctp\",\"label\":\"CITIC Futures CTP (Local/Remote TCP Front)\"},{\"key\":\"metatrader4-bridge\",\"label\":\"MetaTrader 4 Bridge (Local/Remote Expert Advisor)\"},{\"key\":\"metatrader5\",\"label\":\"MetaTrader 5 (Official Python Integration)\"},{\"key\":\"trading212-public-api\",\"label\":\"Trading 212 Public API (Invest/Stocks ISA equities)\"},{\"key\":\"moomoo-opend\",\"label\":\"moomoo OpenD (Local/Remote Gateway)\"},{\"key\":\"python-binance\",\"label\":\"python-binance (Community)\"}],\"dashboard_loop_choices\":[{\"key\":\"30s\",\"label\":\"30 seconds\",\"value\":\"30s\"},{\"key\":\"45s\",\"label\":\"45 seconds\",\"value\":\"45s\"},{\"key\":\"1m\",\"label\":\"1 minute\",\"value\":\"1m\"},{\"key\":\"2m\",\"label\":\"2 minutes\",\"value\":\"2m\"},{\"key\":\"3m\",\"label\":\"3 minutes\",\"value\":\"3m\"},{\"key\":\"5m\",\"label\":\"5 minutes\",\"value\":\"5m\"},{\"key\":\"10m\",\"label\":\"10 minutes\",\"value\":\"10m\"},{\"key\":\"30m\",\"label\":\"30 minutes\",\"value\":\"30m\"},{\"key\":\"1h\",\"label\":\"1 hour\",\"value\":\"1h\"},{\"key\":\"2h\",\"label\":\"2 hours\",\"value\":\"2h\"}],\"dashboard_strategy_templates\":[{\"key\":\"\",\"label\":\"No Template\"},{\"key\":\"top10\",\"label\":\"Top 10 %2 per trade 1x Isolated\"},{\"key\":\"top50\",\"label\":\"Top 50 %2 per trade 1x\"},{\"key\":\"top100\",\"label\":\"Top 100 %1 per trade 1x\"}],\"default_backtest_intervals\":[\"1h\"],\"default_backtest_symbols\":[\"BTCUSDT\"],\"default_chart_symbols\":[\"BTCUSDT\",\"ETHUSDT\",\"BNBUSDT\",\"SOLUSDT\",\"XRPUSDT\",\"ADAUSDT\",\"DOGEUSDT\",\"AVAXUSDT\",\"LINKUSDT\",\"TRXUSDT\"],\"default_execution_intervals\":[\"1m\"],\"default_execution_symbols\":[\"BTCUSDT\"],\"design_options\":[{\"key\":\"Classic\",\"label\":\"Classic\",\"value\":\"Classic\"},{\"key\":\"Workstation\",\"label\":\"Workstation\",\"value\":\"Workstation\"}],\"exchange_options\":[{\"badge\":\"\",\"disabled\":false,\"key\":\"Binance\",\"label\":\"Binance\",\"title\":\"Binance\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Bybit\",\"label\":\"Bybit (ccxt order routing)\",\"title\":\"Bybit\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"OKX\",\"label\":\"OKX (ccxt order routing)\",\"title\":\"OKX\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Gate\",\"label\":\"Gate (ccxt order routing)\",\"title\":\"Gate\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Bitget\",\"label\":\"Bitget (ccxt order routing)\",\"title\":\"Bitget\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"MEXC\",\"label\":\"MEXC (ccxt order routing)\",\"title\":\"MEXC\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"KuCoin\",\"label\":\"KuCoin (ccxt order routing)\",\"title\":\"KuCoin\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"HTX\",\"label\":\"HTX (ccxt order routing)\",\"title\":\"HTX\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Crypto.com Exchange\",\"label\":\"Crypto.com Exchange (ccxt order routing)\",\"title\":\"Crypto.com Exchange\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Kraken\",\"label\":\"Kraken (ccxt order routing)\",\"title\":\"Kraken\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Bitfinex\",\"label\":\"Bitfinex (ccxt order routing)\",\"title\":\"Bitfinex\"}],\"indicator_ma_type_options\":[{\"key\":\"SMA\",\"label\":\"SMA\",\"value\":\"SMA\"},{\"key\":\"EMA\",\"label\":\"EMA\",\"value\":\"EMA\"}],\"indicator_source_options\":[{\"key\":\"Binance spot\",\"label\":\"Binance spot\",\"value\":\"Binance spot\"},{\"key\":\"Binance futures\",\"label\":\"Binance futures\",\"value\":\"Binance futures\"}],\"indicators\":[{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\",\"type\":\"SMA\"},\"default_enabled\":false,\"display_name\":\"Moving Average (MA)\",\"key\":\"ma\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"type\":\"SMA\"},\"runtime_output_keys\":[\"ma\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"default_enabled\":false,\"display_name\":\"Donchian Channels (DC)\",\"key\":\"donchian\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"donchian_high\",\"donchian_low\",\"donchian\"]},{\"backtest_config\":{\"af\":0.02,\"buy_value\":0,\"enabled\":false,\"max_af\":0.2,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"default_enabled\":false,\"display_name\":\"Parabolic SAR (PSAR)\",\"key\":\"psar\",\"runtime_config\":{\"af\":0.02,\"buy_value\":null,\"enabled\":false,\"max_af\":0.2,\"sell_value\":null},\"runtime_output_keys\":[\"psar\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\",\"std\":2},\"default_enabled\":false,\"display_name\":\"Bollinger Bands (BB)\",\"key\":\"bb\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2},\"runtime_output_keys\":[\"bb_upper\",\"bb_mid\",\"bb_lower\"]},{\"backtest_config\":{\"buy_value\":5.0,\"enabled\":false,\"length\":20,\"sell_value\":2.0,\"std\":2},\"default_enabled\":false,\"display_name\":\"Bollinger Band Width (BBW)\",\"key\":\"bbw\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2},\"runtime_output_keys\":[\"bbw\"]},{\"backtest_config\":{\"atr_length\":10,\"buy_value\":0,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"default_enabled\":false,\"display_name\":\"Keltner Channels (KC)\",\"key\":\"keltner\",\"runtime_config\":{\"atr_length\":10,\"buy_value\":null,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":null},\"runtime_output_keys\":[\"keltner_upper\",\"keltner_mid\",\"keltner_lower\"]},{\"backtest_config\":{\"base_length\":26,\"buy_value\":0,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":0,\"span_b_length\":52},\"default_enabled\":false,\"display_name\":\"Ichimoku Cloud (IC)\",\"key\":\"ichimoku\",\"runtime_config\":{\"base_length\":26,\"buy_value\":null,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":null,\"span_b_length\":52},\"runtime_output_keys\":[\"ichimoku_tenkan\",\"ichimoku_kijun\",\"ichimoku_span_a\",\"ichimoku_span_b\",\"ichimoku_chikou\",\"ichimoku\"]},{\"backtest_config\":{\"buy_value\":30,\"enabled\":true,\"length\":14,\"sell_value\":70},\"default_enabled\":true,\"display_name\":\"Relative Strength Index (RSI)\",\"key\":\"rsi\",\"runtime_config\":{\"buy_value\":null,\"enabled\":true,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"rsi\"]},{\"backtest_config\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":20,\"sell_value\":null,\"signal_mode\":\"relative_to_sma\",\"signal_role\":\"filter\"},\"default_enabled\":false,\"display_name\":\"Volume\",\"key\":\"volume\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"sell_value\":null},\"runtime_output_keys\":[\"volume\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":3,\"sell_value\":0,\"signal_mode\":\"slope\"},\"default_enabled\":false,\"display_name\":\"On-Balance Volume (OBV)\",\"key\":\"obv\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"sell_value\":null},\"runtime_output_keys\":[\"obv\"]},{\"backtest_config\":{\"buy_value\":1.5,\"enabled\":false,\"length\":20,\"sell_value\":0.75},\"default_enabled\":false,\"display_name\":\"Relative Volume (RVOL)\",\"key\":\"rvol\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"rvol\"]},{\"backtest_config\":{\"buy_value\":0.05,\"enabled\":false,\"length\":20,\"sell_value\":-0.05},\"default_enabled\":false,\"display_name\":\"Chaikin Money Flow (CMF)\",\"key\":\"cmf\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"cmf\"]},{\"backtest_config\":{\"buy_value\":-100,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":100},\"default_enabled\":false,\"display_name\":\"Commodity Channel Index (CCI)\",\"key\":\"cci\",\"runtime_config\":{\"buy_value\":null,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"cci\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":12,\"sell_value\":0},\"default_enabled\":false,\"display_name\":\"Rate of Change (ROC)\",\"key\":\"roc\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":12,\"sell_value\":null},\"runtime_output_keys\":[\"roc\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":15,\"sell_value\":0},\"default_enabled\":false,\"display_name\":\"Triple Exponential Average (TRIX)\",\"key\":\"trix\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":15,\"sell_value\":null},\"runtime_output_keys\":[\"trix\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"default_enabled\":false,\"display_name\":\"Percentage Price Oscillator (PPO)\",\"key\":\"ppo\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26},\"runtime_output_keys\":[\"ppo\",\"ppo_signal\",\"ppo_hist\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"fast\":5,\"sell_value\":0,\"slow\":34},\"default_enabled\":false,\"display_name\":\"Awesome Oscillator (AO)\",\"key\":\"ao\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"fast\":5,\"sell_value\":null,\"slow\":34},\"runtime_output_keys\":[\"ao\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":0,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15},\"default_enabled\":false,\"display_name\":\"Know Sure Thing (KST)\",\"key\":\"kst\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":null,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15},\"runtime_output_keys\":[\"kst\",\"kst_signal\",\"kst_hist\"]},{\"backtest_config\":{\"buy_value\":50,\"enabled\":false,\"length\":25,\"sell_value\":-50},\"default_enabled\":false,\"display_name\":\"Aroon Oscillator (AROON)\",\"key\":\"aroon\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":25,\"sell_value\":null},\"runtime_output_keys\":[\"aroon_up\",\"aroon_down\",\"aroon\"]},{\"backtest_config\":{\"buy_value\":38.2,\"enabled\":false,\"length\":14,\"sell_value\":61.8},\"default_enabled\":false,\"display_name\":\"Choppiness Index (CHOP)\",\"key\":\"chop\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"chop\"]},{\"backtest_config\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_mode\":\"percent_of_close\",\"signal_role\":\"filter\"},\"default_enabled\":false,\"display_name\":\"Average True Range (ATR)\",\"key\":\"atr\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"atr\"]},{\"backtest_config\":{\"buy_value\":2.0,\"enabled\":false,\"length\":14,\"sell_value\":1.0},\"default_enabled\":false,\"display_name\":\"Normalized Average True Range (NATR)\",\"key\":\"natr\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"natr\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"default_enabled\":false,\"display_name\":\"Volume Weighted Average Price (VWAP)\",\"key\":\"vwap\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"vwap\"]},{\"backtest_config\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80},\"default_enabled\":false,\"display_name\":\"Money Flow Index (MFI)\",\"key\":\"mfi\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"mfi\"]},{\"backtest_config\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"default_enabled\":false,\"display_name\":\"Stochastic RSI (SRSI)\",\"key\":\"stoch_rsi\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3},\"runtime_output_keys\":[\"stoch_rsi\",\"stoch_rsi_k\",\"stoch_rsi_d\"]},{\"backtest_config\":{\"buy_value\":-80,\"enabled\":false,\"length\":14,\"sell_value\":-20},\"default_enabled\":false,\"display_name\":\"Williams %R\",\"key\":\"willr\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"willr\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"default_enabled\":false,\"display_name\":\"Moving Average Convergence/Divergence (MACD)\",\"key\":\"macd\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26},\"runtime_output_keys\":[\"macd_line\",\"macd_signal\"]},{\"backtest_config\":{\"buy_value\":30,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":70,\"short\":7},\"default_enabled\":false,\"display_name\":\"Ultimate Oscillator (UO)\",\"key\":\"uo\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":null,\"short\":7},\"runtime_output_keys\":[\"uo\"]},{\"backtest_config\":{\"buy_value\":20,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_role\":\"filter\"},\"default_enabled\":false,\"display_name\":\"Average Directional Index (ADX)\",\"key\":\"adx\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"adx\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":14,\"sell_value\":0},\"default_enabled\":false,\"display_name\":\"Directional Movement Index (DMI)\",\"key\":\"dmi\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"dmi_plus\",\"dmi_minus\",\"dmi\"]},{\"backtest_config\":{\"atr_period\":10,\"buy_value\":0,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"default_enabled\":false,\"display_name\":\"SuperTrend (ST)\",\"key\":\"supertrend\",\"runtime_config\":{\"atr_period\":10,\"buy_value\":null,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":null},\"runtime_output_keys\":[\"supertrend\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"default_enabled\":false,\"display_name\":\"Exponential Moving Average (EMA)\",\"key\":\"ema\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"ema\"]},{\"backtest_config\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"default_enabled\":false,\"display_name\":\"Stochastic Oscillator\",\"key\":\"stochastic\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3},\"runtime_output_keys\":[\"stochastic\",\"stochastic_k\",\"stochastic_d\"]}],\"intervals\":[\"1m\",\"3m\",\"5m\",\"10m\",\"15m\",\"20m\",\"30m\",\"1h\",\"2h\",\"3h\",\"4h\",\"5h\",\"6h\",\"7h\",\"8h\",\"9h\",\"10h\",\"11h\",\"12h\",\"1d\",\"2d\",\"3d\",\"4d\",\"5d\",\"6d\",\"1w\",\"2w\",\"3w\",\"1month\",\"2months\",\"3months\",\"6months\",\"1mo\",\"2mo\",\"3mo\",\"6mo\",\"1y\",\"2y\"],\"lead_trader_options\":[{\"key\":\"futures_public\",\"label\":\"Futures Public Lead Trader\",\"value\":\"futures_public\"},{\"key\":\"futures_private\",\"label\":\"Futures Private Lead Trader\",\"value\":\"futures_private\"},{\"key\":\"spot_public\",\"label\":\"Spot Public Lead Trader\",\"value\":\"spot_public\"},{\"key\":\"spot_private\",\"label\":\"Spot Private Lead Trader\",\"value\":\"spot_private\"}],\"llm_reasoning_effort_options\":[{\"key\":\"default\",\"label\":\"default\",\"value\":\"default\"},{\"key\":\"disabled\",\"label\":\"disabled\",\"value\":\"disabled\"},{\"key\":\"enabled\",\"label\":\"enabled\",\"value\":\"enabled\"},{\"key\":\"xhigh\",\"label\":\"xhigh\",\"value\":\"xhigh\"},{\"key\":\"high\",\"label\":\"high\",\"value\":\"high\"},{\"key\":\"low\",\"label\":\"low\",\"value\":\"low\"},{\"key\":\"max\",\"label\":\"max\",\"value\":\"max\"},{\"key\":\"medium\",\"label\":\"medium\",\"value\":\"medium\"},{\"key\":\"minimal\",\"label\":\"minimal\",\"value\":\"minimal\"},{\"key\":\"none\",\"label\":\"none\",\"value\":\"none\"}],\"llm_use_for_options\":[{\"key\":\"advisory\",\"label\":\"Advisory\",\"value\":\"advisory\"},{\"key\":\"signal_confirmation\",\"label\":\"Signal confirmation\",\"value\":\"signal_confirmation\"},{\"key\":\"risk_review\",\"label\":\"Risk review\",\"value\":\"risk_review\"},{\"key\":\"backtest_explanation\",\"label\":\"Backtest explanation\",\"value\":\"backtest_explanation\"}],\"margin_mode_options\":[{\"key\":\"Isolated\",\"label\":\"Isolated\",\"value\":\"Isolated\"},{\"key\":\"Cross\",\"label\":\"Cross\",\"value\":\"Cross\"}],\"mdd_logic_options\":[{\"key\":\"per_trade\",\"label\":\"Per Trade MDD\"},{\"key\":\"cumulative\",\"label\":\"Cumulative MDD\"},{\"key\":\"entire_account\",\"label\":\"Entire Account MDD\"}],\"optimizer_metric_options\":[{\"key\":\"roi_percent\",\"label\":\"roi_percent\",\"value\":\"roi_percent\"},{\"key\":\"roi_percent_mdd\",\"label\":\"roi_percent_mdd\",\"value\":\"roi_percent_mdd\"},{\"key\":\"roi_drawdown\",\"label\":\"roi_drawdown\",\"value\":\"roi_drawdown\"},{\"key\":\"roi_value\",\"label\":\"roi_value\",\"value\":\"roi_value\"}],\"optimizer_mode_options\":[{\"key\":\"current\",\"label\":\"current\",\"value\":\"current\"},{\"key\":\"single\",\"label\":\"single\",\"value\":\"single\"},{\"key\":\"pairs\",\"label\":\"pairs\",\"value\":\"pairs\"},{\"key\":\"combinations\",\"label\":\"combinations\",\"value\":\"combinations\"}],\"order_type_options\":[{\"key\":\"MARKET\",\"label\":\"MARKET\",\"value\":\"MARKET\"},{\"key\":\"LIMIT\",\"label\":\"LIMIT\",\"value\":\"LIMIT\"}],\"position_mode_options\":[{\"key\":\"Hedge\",\"label\":\"Hedge\",\"value\":\"Hedge\"},{\"key\":\"One-way\",\"label\":\"One-way\",\"value\":\"One-way\"}],\"position_pct_units_options\":[{\"key\":\"percent\",\"label\":\"percent\",\"value\":\"percent\"},{\"key\":\"fraction\",\"label\":\"fraction\",\"value\":\"fraction\"}],\"positions_view_options\":[{\"key\":\"cumulative\",\"label\":\"Cumulative View\",\"value\":\"cumulative\"},{\"key\":\"per_trade\",\"label\":\"Per Trade View\",\"value\":\"per_trade\"}],\"rust_environment_dependencies\":[{\"key\":\"rustc\",\"kind\":\"rust_rustc\",\"label\":\"rustc\",\"latest\":\"Install rustup\",\"path\":\"\",\"usage\":\"\"},{\"key\":\"cargo\",\"kind\":\"rust_cargo\",\"label\":\"cargo\",\"latest\":\"Install rustup\",\"path\":\"\",\"usage\":\"\"},{\"key\":\"experiments/rust-shells/Cargo.toml\",\"kind\":\"rust_file_version\",\"label\":\"Trading Bot Rust workspace\",\"latest\":\"\",\"path\":\"experiments/rust-shells/Cargo.toml\",\"usage\":\"Active\"},{\"key\":\"experiments/rust-shells/crates/core/Cargo.toml\",\"kind\":\"rust_file_version\",\"label\":\"trading-bot-core\",\"latest\":\"\",\"path\":\"experiments/rust-shells/crates/core/Cargo.toml\",\"usage\":\"Active\"},{\"key\":\"experiments/rust-shells/crates/contracts/Cargo.toml\",\"kind\":\"rust_file_version\",\"label\":\"trading-bot-contracts\",\"latest\":\"\",\"path\":\"experiments/rust-shells/crates/contracts/Cargo.toml\",\"usage\":\"Active\"},{\"key\":\"experiments/rust-shells/apps/tauri-desktop/Cargo.toml\",\"kind\":\"rust_file_version\",\"label\":\"Tauri (Primary)\",\"latest\":\"\",\"path\":\"experiments/rust-shells/apps/tauri-desktop/Cargo.toml\",\"usage\":\"Active\"}],\"rust_framework_options\":[{\"accent\":\"#f59e0b\",\"badge\":\"Primary\",\"disabled\":false,\"key\":\"Tauri\",\"launch_note\":\"Tauri can manage/connect to the local Python Service API, but Python still owns strategy, risk, account, order, and exchange execution.\",\"operational\":true,\"operational_status\":\"Interactive Service API client\",\"subtitle\":\"Operational Service API client\",\"title\":\"Tauri\"}],\"scan_scope_options\":[{\"key\":\"selected\",\"label\":\"selected\",\"value\":\"selected\"},{\"key\":\"top_n\",\"label\":\"top_n\",\"value\":\"top_n\"},{\"key\":\"all_loaded\",\"label\":\"all_loaded\",\"value\":\"all_loaded\"}],\"side_options\":[{\"key\":\"BUY\",\"label\":\"Buy (Long)\"},{\"key\":\"SELL\",\"label\":\"Sell (Short)\"},{\"key\":\"BOTH\",\"label\":\"Both (Long/Short)\"}],\"signal_logic_options\":[{\"key\":\"AND\",\"label\":\"AND\",\"value\":\"AND\"},{\"key\":\"OR\",\"label\":\"OR\",\"value\":\"OR\"},{\"key\":\"SEPARATE\",\"label\":\"SEPARATE\",\"value\":\"SEPARATE\"}],\"starter_market_options\":[{\"accent\":\"#34d399\",\"badge\":\"\",\"disabled\":false,\"key\":\"crypto\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"Binance, Bybit, KuCoin\",\"title\":\"Crypto Exchange\"},{\"accent\":\"#93c5fd\",\"badge\":\"Evidence required\",\"disabled\":false,\"key\":\"forex\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"REST, MT4 bridge, MetaTrader 5, and scoped provider APIs\",\"title\":\"Forex Exchange\"}],\"stop_loss_modes\":[{\"key\":\"usdt\",\"label\":\"USDT Based Stop Loss\"},{\"key\":\"percent\",\"label\":\"Percentage Based Stop Loss\"},{\"key\":\"both\",\"label\":\"Both Stop Loss (USDT & Percentage)\"}],\"stop_loss_scopes\":[{\"key\":\"per_trade\",\"label\":\"Per Trade Stop Loss\"},{\"key\":\"cumulative\",\"label\":\"Cumulative Stop Loss\"},{\"key\":\"entire_account\",\"label\":\"Entire Account Stop Loss\"}],\"theme_options\":[{\"key\":\"Light\",\"label\":\"Light\",\"value\":\"Light\"},{\"key\":\"Dark\",\"label\":\"Dark\",\"value\":\"Dark\"},{\"key\":\"Blue\",\"label\":\"Blue\",\"value\":\"Blue\"},{\"key\":\"Yellow\",\"label\":\"Yellow\",\"value\":\"Yellow\"},{\"key\":\"Green\",\"label\":\"Green\",\"value\":\"Green\"},{\"key\":\"Red\",\"label\":\"Red\",\"value\":\"Red\"}],\"time_in_force_options\":[{\"key\":\"GTC\",\"label\":\"GTC\",\"value\":\"GTC\"},{\"key\":\"IOC\",\"label\":\"IOC\",\"value\":\"IOC\"},{\"key\":\"FOK\",\"label\":\"FOK\",\"value\":\"FOK\"},{\"key\":\"GTD\",\"label\":\"GTD\",\"value\":\"GTD\"}],\"tradingview_interval_map\":{\"10h\":\"600\",\"10m\":\"10\",\"11h\":\"660\",\"12h\":\"720\",\"15m\":\"15\",\"1d\":\"1D\",\"1h\":\"60\",\"1m\":\"1\",\"1mo\":\"1M\",\"1month\":\"1M\",\"1w\":\"1W\",\"1y\":\"12M\",\"20m\":\"20\",\"2d\":\"2D\",\"2h\":\"120\",\"2mo\":\"2M\",\"2months\":\"2M\",\"2w\":\"2W\",\"2y\":\"24M\",\"30m\":\"30\",\"3d\":\"3D\",\"3h\":\"180\",\"3m\":\"3\",\"3mo\":\"3M\",\"3months\":\"3M\",\"3w\":\"3W\",\"45m\":\"45\",\"4d\":\"4D\",\"4h\":\"240\",\"5d\":\"5D\",\"5h\":\"300\",\"5m\":\"5\",\"6d\":\"6D\",\"6h\":\"360\",\"6mo\":\"6M\",\"6months\":\"6M\",\"7h\":\"420\",\"8h\":\"480\",\"9h\":\"540\"}}",
+  "optionCatalogsJson": "{\"account_mode_options\":[\"Classic Trading\",\"Portfolio Margin\"],\"account_type_options\":[{\"key\":\"Spot\",\"label\":\"Spot\",\"value\":\"Spot\"},{\"key\":\"Futures\",\"label\":\"Futures\",\"value\":\"Futures\"}],\"assets_mode_options\":[{\"key\":\"Single-Asset\",\"label\":\"Single-Asset Mode\",\"value\":\"Single-Asset\"},{\"key\":\"Multi-Assets\",\"label\":\"Multi-Assets Mode\",\"value\":\"Multi-Assets\"}],\"backtest_execution_backend_options\":[{\"key\":\"local\",\"label\":\"local\",\"value\":\"local\"},{\"key\":\"service\",\"label\":\"service\",\"value\":\"service\"}],\"backtest_templates\":[{\"key\":\"volume_top50\",\"label\":\"First 50 Highest Volume\"},{\"key\":\"volume_last_week\",\"label\":\"Last 1 week \\u00b7 2% per trade \\u00b7 50 highest volume\"},{\"key\":\"top100_isolated_1pct_sl\",\"label\":\"Top 100, %2 per trade, isolated, %20 per trade SL\"}],\"chart_market_options\":[\"Futures\",\"Spot\"],\"chart_view_keys\":[\"tradingview\",\"original\",\"lightweight\"],\"chart_view_options\":[{\"key\":\"tradingview\",\"label\":\"TradingView\",\"value\":\"tradingview\"},{\"key\":\"original\",\"label\":\"Original\",\"value\":\"original\"},{\"key\":\"lightweight\",\"label\":\"TradingView Lightweight\",\"value\":\"lightweight\"}],\"code_language_options\":[{\"accent\":\"#3b82f6\",\"badge\":\"Recommended\",\"disabled\":false,\"key\":\"Python (PyQt)\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"Fast to build - Huge ecosystem\",\"title\":\"Python\"},{\"accent\":\"#38bdf8\",\"badge\":\"Experiment\",\"disabled\":false,\"key\":\"C++ (Qt/C++23)\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"Qt native desktop experiment\",\"title\":\"C++\"},{\"accent\":\"#fb923c\",\"badge\":\"Experiment\",\"disabled\":false,\"key\":\"Rust\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"Service API client + guarded runtime (promotion-gated)\",\"title\":\"Rust\"}],\"config_mode_options\":[{\"key\":\"Live\",\"label\":\"Live\",\"value\":\"Live\"},{\"key\":\"Demo\",\"label\":\"Demo\",\"value\":\"Demo\"},{\"key\":\"Testnet\",\"label\":\"Testnet\",\"value\":\"Testnet\"}],\"connectors\":[{\"key\":\"binance-sdk-derivatives-trading-usds-futures\",\"label\":\"Binance SDK Derivatives Trading USD\\u24c8 Futures (Official Recommended)\"},{\"key\":\"binance-sdk-derivatives-trading-coin-futures\",\"label\":\"Binance SDK Derivatives Trading COIN-M Futures\"},{\"key\":\"binance-sdk-spot\",\"label\":\"Binance SDK Spot (Official Recommended)\"},{\"key\":\"binance-connector\",\"label\":\"Binance Connector Python\"},{\"key\":\"ccxt\",\"label\":\"CCXT (Unified)\"},{\"key\":\"oanda-rest\",\"label\":\"OANDA REST-v20\"},{\"key\":\"fxcmpy\",\"label\":\"FXCM fxcmpy\"},{\"key\":\"ig-rest\",\"label\":\"IG REST Trading API\"},{\"key\":\"citic-ctp\",\"label\":\"CITIC Futures CTP (Local/Remote TCP Front)\"},{\"key\":\"metatrader4-bridge\",\"label\":\"MetaTrader 4 Bridge (Local/Remote Expert Advisor)\"},{\"key\":\"metatrader5\",\"label\":\"MetaTrader 5 (Official Python Integration)\"},{\"key\":\"trading212-public-api\",\"label\":\"Trading 212 Public API (Invest/Stocks ISA equities)\"},{\"key\":\"moomoo-opend\",\"label\":\"moomoo OpenD (Local/Remote Gateway)\"},{\"key\":\"python-binance\",\"label\":\"python-binance (Community)\"}],\"dashboard_loop_choices\":[{\"key\":\"30s\",\"label\":\"30 seconds\",\"value\":\"30s\"},{\"key\":\"45s\",\"label\":\"45 seconds\",\"value\":\"45s\"},{\"key\":\"1m\",\"label\":\"1 minute\",\"value\":\"1m\"},{\"key\":\"2m\",\"label\":\"2 minutes\",\"value\":\"2m\"},{\"key\":\"3m\",\"label\":\"3 minutes\",\"value\":\"3m\"},{\"key\":\"5m\",\"label\":\"5 minutes\",\"value\":\"5m\"},{\"key\":\"10m\",\"label\":\"10 minutes\",\"value\":\"10m\"},{\"key\":\"30m\",\"label\":\"30 minutes\",\"value\":\"30m\"},{\"key\":\"1h\",\"label\":\"1 hour\",\"value\":\"1h\"},{\"key\":\"2h\",\"label\":\"2 hours\",\"value\":\"2h\"}],\"dashboard_strategy_templates\":[{\"key\":\"\",\"label\":\"No Template\"},{\"key\":\"top10\",\"label\":\"Top 10 %2 per trade 1x Isolated\"},{\"key\":\"top50\",\"label\":\"Top 50 %2 per trade 1x\"},{\"key\":\"top100\",\"label\":\"Top 100 %1 per trade 1x\"}],\"default_backtest_intervals\":[\"1h\"],\"default_backtest_symbols\":[\"BTCUSDT\"],\"default_chart_symbols\":[\"BTCUSDT\",\"ETHUSDT\",\"BNBUSDT\",\"SOLUSDT\",\"XRPUSDT\",\"ADAUSDT\",\"DOGEUSDT\",\"AVAXUSDT\",\"LINKUSDT\",\"TRXUSDT\"],\"default_execution_intervals\":[\"1m\"],\"default_execution_symbols\":[\"BTCUSDT\"],\"design_options\":[{\"key\":\"Classic\",\"label\":\"Classic\",\"value\":\"Classic\"},{\"key\":\"Workstation\",\"label\":\"Workstation\",\"value\":\"Workstation\"}],\"exchange_options\":[{\"badge\":\"\",\"disabled\":false,\"key\":\"Binance\",\"label\":\"Binance\",\"title\":\"Binance\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Bybit\",\"label\":\"Bybit (ccxt order routing)\",\"title\":\"Bybit\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"OKX\",\"label\":\"OKX (ccxt order routing)\",\"title\":\"OKX\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Gate\",\"label\":\"Gate (ccxt order routing)\",\"title\":\"Gate\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Bitget\",\"label\":\"Bitget (ccxt order routing)\",\"title\":\"Bitget\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"MEXC\",\"label\":\"MEXC (ccxt order routing)\",\"title\":\"MEXC\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"KuCoin\",\"label\":\"KuCoin (ccxt order routing)\",\"title\":\"KuCoin\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"HTX\",\"label\":\"HTX (ccxt order routing)\",\"title\":\"HTX\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Crypto.com Exchange\",\"label\":\"Crypto.com Exchange (ccxt order routing)\",\"title\":\"Crypto.com Exchange\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Kraken\",\"label\":\"Kraken (ccxt order routing)\",\"title\":\"Kraken\"},{\"badge\":\"ccxt order routing\",\"disabled\":false,\"key\":\"Bitfinex\",\"label\":\"Bitfinex (ccxt order routing)\",\"title\":\"Bitfinex\"}],\"indicator_ma_type_options\":[{\"key\":\"SMA\",\"label\":\"SMA\",\"value\":\"SMA\"},{\"key\":\"EMA\",\"label\":\"EMA\",\"value\":\"EMA\"}],\"indicator_source_options\":[{\"key\":\"Binance spot\",\"label\":\"Binance spot\",\"value\":\"Binance spot\"},{\"key\":\"Binance futures\",\"label\":\"Binance futures\",\"value\":\"Binance futures\"}],\"indicators\":[{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\",\"type\":\"SMA\"},\"default_enabled\":false,\"display_name\":\"Moving Average (MA)\",\"key\":\"ma\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"type\":\"SMA\"},\"runtime_output_keys\":[\"ma\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"default_enabled\":false,\"display_name\":\"Donchian Channels (DC)\",\"key\":\"donchian\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"donchian_high\",\"donchian_low\",\"donchian\"]},{\"backtest_config\":{\"af\":0.02,\"buy_value\":0,\"enabled\":false,\"max_af\":0.2,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"default_enabled\":false,\"display_name\":\"Parabolic SAR (PSAR)\",\"key\":\"psar\",\"runtime_config\":{\"af\":0.02,\"buy_value\":null,\"enabled\":false,\"max_af\":0.2,\"sell_value\":null},\"runtime_output_keys\":[\"psar\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":100,\"signal_mode\":\"band_position\",\"std\":2},\"default_enabled\":false,\"display_name\":\"Bollinger Bands (BB)\",\"key\":\"bb\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2},\"runtime_output_keys\":[\"bb_upper\",\"bb_mid\",\"bb_lower\"]},{\"backtest_config\":{\"buy_value\":5.0,\"enabled\":false,\"length\":20,\"sell_value\":2.0,\"std\":2},\"default_enabled\":false,\"display_name\":\"Bollinger Band Width (BBW)\",\"key\":\"bbw\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2},\"runtime_output_keys\":[\"bbw\"]},{\"backtest_config\":{\"atr_length\":10,\"buy_value\":0,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":100,\"signal_mode\":\"band_position\"},\"default_enabled\":false,\"display_name\":\"Keltner Channels (KC)\",\"key\":\"keltner\",\"runtime_config\":{\"atr_length\":10,\"buy_value\":null,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":null},\"runtime_output_keys\":[\"keltner_upper\",\"keltner_mid\",\"keltner_lower\"]},{\"backtest_config\":{\"base_length\":26,\"buy_value\":0,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":0,\"span_b_length\":52},\"default_enabled\":false,\"display_name\":\"Ichimoku Cloud (IC)\",\"key\":\"ichimoku\",\"runtime_config\":{\"base_length\":26,\"buy_value\":null,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":null,\"span_b_length\":52},\"runtime_output_keys\":[\"ichimoku_tenkan\",\"ichimoku_kijun\",\"ichimoku_span_a\",\"ichimoku_span_b\",\"ichimoku_chikou\",\"ichimoku\"]},{\"backtest_config\":{\"buy_value\":30,\"enabled\":true,\"length\":14,\"sell_value\":70},\"default_enabled\":true,\"display_name\":\"Relative Strength Index (RSI)\",\"key\":\"rsi\",\"runtime_config\":{\"buy_value\":null,\"enabled\":true,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"rsi\"]},{\"backtest_config\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":20,\"sell_value\":null,\"signal_mode\":\"relative_to_sma\",\"signal_role\":\"filter\"},\"default_enabled\":false,\"display_name\":\"Volume\",\"key\":\"volume\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"sell_value\":null},\"runtime_output_keys\":[\"volume\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":3,\"sell_value\":0,\"signal_mode\":\"slope\"},\"default_enabled\":false,\"display_name\":\"On-Balance Volume (OBV)\",\"key\":\"obv\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"sell_value\":null},\"runtime_output_keys\":[\"obv\"]},{\"backtest_config\":{\"buy_value\":1.5,\"enabled\":false,\"length\":20,\"sell_value\":0.75},\"default_enabled\":false,\"display_name\":\"Relative Volume (RVOL)\",\"key\":\"rvol\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"rvol\"]},{\"backtest_config\":{\"buy_value\":0.05,\"enabled\":false,\"length\":20,\"sell_value\":-0.05},\"default_enabled\":false,\"display_name\":\"Chaikin Money Flow (CMF)\",\"key\":\"cmf\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"cmf\"]},{\"backtest_config\":{\"buy_value\":-100,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":100},\"default_enabled\":false,\"display_name\":\"Commodity Channel Index (CCI)\",\"key\":\"cci\",\"runtime_config\":{\"buy_value\":null,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"cci\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":12,\"sell_value\":0},\"default_enabled\":false,\"display_name\":\"Rate of Change (ROC)\",\"key\":\"roc\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":12,\"sell_value\":null},\"runtime_output_keys\":[\"roc\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":15,\"sell_value\":0},\"default_enabled\":false,\"display_name\":\"Triple Exponential Average (TRIX)\",\"key\":\"trix\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":15,\"sell_value\":null},\"runtime_output_keys\":[\"trix\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"default_enabled\":false,\"display_name\":\"Percentage Price Oscillator (PPO)\",\"key\":\"ppo\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26},\"runtime_output_keys\":[\"ppo\",\"ppo_signal\",\"ppo_hist\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"fast\":5,\"sell_value\":0,\"slow\":34},\"default_enabled\":false,\"display_name\":\"Awesome Oscillator (AO)\",\"key\":\"ao\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"fast\":5,\"sell_value\":null,\"slow\":34},\"runtime_output_keys\":[\"ao\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":0,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15},\"default_enabled\":false,\"display_name\":\"Know Sure Thing (KST)\",\"key\":\"kst\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":null,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15},\"runtime_output_keys\":[\"kst\",\"kst_signal\",\"kst_hist\"]},{\"backtest_config\":{\"buy_value\":50,\"enabled\":false,\"length\":25,\"sell_value\":-50},\"default_enabled\":false,\"display_name\":\"Aroon Oscillator (AROON)\",\"key\":\"aroon\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":25,\"sell_value\":null},\"runtime_output_keys\":[\"aroon_up\",\"aroon_down\",\"aroon\"]},{\"backtest_config\":{\"buy_value\":38.2,\"enabled\":false,\"length\":14,\"sell_value\":61.8},\"default_enabled\":false,\"display_name\":\"Choppiness Index (CHOP)\",\"key\":\"chop\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"chop\"]},{\"backtest_config\":{\"buy_value\":1.0,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_mode\":\"percent_of_close\",\"signal_role\":\"filter\"},\"default_enabled\":false,\"display_name\":\"Average True Range (ATR)\",\"key\":\"atr\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"atr\"]},{\"backtest_config\":{\"buy_value\":2.0,\"enabled\":false,\"length\":14,\"sell_value\":1.0},\"default_enabled\":false,\"display_name\":\"Normalized Average True Range (NATR)\",\"key\":\"natr\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"natr\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"default_enabled\":false,\"display_name\":\"Volume Weighted Average Price (VWAP)\",\"key\":\"vwap\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"vwap\"]},{\"backtest_config\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80},\"default_enabled\":false,\"display_name\":\"Money Flow Index (MFI)\",\"key\":\"mfi\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"mfi\"]},{\"backtest_config\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"default_enabled\":false,\"display_name\":\"Stochastic RSI (SRSI)\",\"key\":\"stoch_rsi\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3},\"runtime_output_keys\":[\"stoch_rsi\",\"stoch_rsi_k\",\"stoch_rsi_d\"]},{\"backtest_config\":{\"buy_value\":-80,\"enabled\":false,\"length\":14,\"sell_value\":-20},\"default_enabled\":false,\"display_name\":\"Williams %R\",\"key\":\"willr\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"willr\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"fast\":12,\"sell_value\":0,\"signal\":9,\"slow\":26},\"default_enabled\":false,\"display_name\":\"Moving Average Convergence/Divergence (MACD)\",\"key\":\"macd\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26},\"runtime_output_keys\":[\"macd_line\",\"macd_signal\"]},{\"backtest_config\":{\"buy_value\":30,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":70,\"short\":7},\"default_enabled\":false,\"display_name\":\"Ultimate Oscillator (UO)\",\"key\":\"uo\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":null,\"short\":7},\"runtime_output_keys\":[\"uo\"]},{\"backtest_config\":{\"buy_value\":20,\"enabled\":false,\"filter_operator\":\"gte\",\"length\":14,\"sell_value\":null,\"signal_role\":\"filter\"},\"default_enabled\":false,\"display_name\":\"Average Directional Index (ADX)\",\"key\":\"adx\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"adx\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":14,\"sell_value\":0},\"default_enabled\":false,\"display_name\":\"Directional Movement Index (DMI)\",\"key\":\"dmi\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null},\"runtime_output_keys\":[\"dmi_plus\",\"dmi_minus\",\"dmi\"]},{\"backtest_config\":{\"atr_period\":10,\"buy_value\":0,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"default_enabled\":false,\"display_name\":\"SuperTrend (ST)\",\"key\":\"supertrend\",\"runtime_config\":{\"atr_period\":10,\"buy_value\":null,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":null},\"runtime_output_keys\":[\"supertrend\"]},{\"backtest_config\":{\"buy_value\":0,\"enabled\":false,\"length\":20,\"sell_value\":0,\"signal_mode\":\"price_cross\"},\"default_enabled\":false,\"display_name\":\"Exponential Moving Average (EMA)\",\"key\":\"ema\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null},\"runtime_output_keys\":[\"ema\"]},{\"backtest_config\":{\"buy_value\":20,\"enabled\":false,\"length\":14,\"sell_value\":80,\"smooth_d\":3,\"smooth_k\":3},\"default_enabled\":false,\"display_name\":\"Stochastic Oscillator\",\"key\":\"stochastic\",\"runtime_config\":{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3},\"runtime_output_keys\":[\"stochastic\",\"stochastic_k\",\"stochastic_d\"]}],\"intervals\":[\"1m\",\"3m\",\"5m\",\"10m\",\"15m\",\"20m\",\"30m\",\"1h\",\"2h\",\"3h\",\"4h\",\"5h\",\"6h\",\"7h\",\"8h\",\"9h\",\"10h\",\"11h\",\"12h\",\"1d\",\"2d\",\"3d\",\"4d\",\"5d\",\"6d\",\"1w\",\"2w\",\"3w\",\"1month\",\"2months\",\"3months\",\"6months\",\"1mo\",\"2mo\",\"3mo\",\"6mo\",\"1y\",\"2y\"],\"lead_trader_options\":[{\"key\":\"futures_public\",\"label\":\"Futures Public Lead Trader\",\"value\":\"futures_public\"},{\"key\":\"futures_private\",\"label\":\"Futures Private Lead Trader\",\"value\":\"futures_private\"},{\"key\":\"spot_public\",\"label\":\"Spot Public Lead Trader\",\"value\":\"spot_public\"},{\"key\":\"spot_private\",\"label\":\"Spot Private Lead Trader\",\"value\":\"spot_private\"}],\"llm_api_style_options\":[{\"key\":\"provider-default\",\"label\":\"provider-default\",\"value\":\"provider-default\"},{\"key\":\"openai-chat-completions\",\"label\":\"openai-chat-completions\",\"value\":\"openai-chat-completions\"},{\"key\":\"openai-responses\",\"label\":\"openai-responses\",\"value\":\"openai-responses\"},{\"key\":\"anthropic-messages\",\"label\":\"anthropic-messages\",\"value\":\"anthropic-messages\"},{\"key\":\"gemini-generate-content\",\"label\":\"gemini-generate-content\",\"value\":\"gemini-generate-content\"}],\"llm_reasoning_effort_options\":[{\"key\":\"default\",\"label\":\"default\",\"value\":\"default\"},{\"key\":\"disabled\",\"label\":\"disabled\",\"value\":\"disabled\"},{\"key\":\"enabled\",\"label\":\"enabled\",\"value\":\"enabled\"},{\"key\":\"xhigh\",\"label\":\"xhigh\",\"value\":\"xhigh\"},{\"key\":\"high\",\"label\":\"high\",\"value\":\"high\"},{\"key\":\"low\",\"label\":\"low\",\"value\":\"low\"},{\"key\":\"max\",\"label\":\"max\",\"value\":\"max\"},{\"key\":\"medium\",\"label\":\"medium\",\"value\":\"medium\"},{\"key\":\"minimal\",\"label\":\"minimal\",\"value\":\"minimal\"},{\"key\":\"none\",\"label\":\"none\",\"value\":\"none\"}],\"llm_speed_options\":[{\"key\":\"default\",\"label\":\"default\",\"value\":\"default\"},{\"key\":\"auto\",\"label\":\"auto\",\"value\":\"auto\"},{\"key\":\"fast\",\"label\":\"fast\",\"value\":\"fast\"},{\"key\":\"balanced\",\"label\":\"balanced\",\"value\":\"balanced\"},{\"key\":\"quality\",\"label\":\"quality\",\"value\":\"quality\"},{\"key\":\"flex\",\"label\":\"flex\",\"value\":\"flex\"},{\"key\":\"priority\",\"label\":\"priority\",\"value\":\"priority\"}],\"llm_use_for_options\":[{\"key\":\"advisory\",\"label\":\"Advisory\",\"value\":\"advisory\"},{\"key\":\"signal_confirmation\",\"label\":\"Signal confirmation\",\"value\":\"signal_confirmation\"},{\"key\":\"risk_review\",\"label\":\"Risk review\",\"value\":\"risk_review\"},{\"key\":\"backtest_explanation\",\"label\":\"Backtest explanation\",\"value\":\"backtest_explanation\"}],\"margin_mode_options\":[{\"key\":\"Isolated\",\"label\":\"Isolated\",\"value\":\"Isolated\"},{\"key\":\"Cross\",\"label\":\"Cross\",\"value\":\"Cross\"}],\"mdd_logic_options\":[{\"key\":\"per_trade\",\"label\":\"Per Trade MDD\"},{\"key\":\"cumulative\",\"label\":\"Cumulative MDD\"},{\"key\":\"entire_account\",\"label\":\"Entire Account MDD\"}],\"optimizer_metric_options\":[{\"key\":\"roi_percent\",\"label\":\"roi_percent\",\"value\":\"roi_percent\"},{\"key\":\"roi_percent_mdd\",\"label\":\"roi_percent_mdd\",\"value\":\"roi_percent_mdd\"},{\"key\":\"roi_drawdown\",\"label\":\"roi_drawdown\",\"value\":\"roi_drawdown\"},{\"key\":\"roi_value\",\"label\":\"roi_value\",\"value\":\"roi_value\"}],\"optimizer_mode_options\":[{\"key\":\"current\",\"label\":\"current\",\"value\":\"current\"},{\"key\":\"single\",\"label\":\"single\",\"value\":\"single\"},{\"key\":\"pairs\",\"label\":\"pairs\",\"value\":\"pairs\"},{\"key\":\"combinations\",\"label\":\"combinations\",\"value\":\"combinations\"}],\"order_type_options\":[{\"key\":\"MARKET\",\"label\":\"MARKET\",\"value\":\"MARKET\"},{\"key\":\"LIMIT\",\"label\":\"LIMIT\",\"value\":\"LIMIT\"}],\"position_mode_options\":[{\"key\":\"Hedge\",\"label\":\"Hedge\",\"value\":\"Hedge\"},{\"key\":\"One-way\",\"label\":\"One-way\",\"value\":\"One-way\"}],\"position_pct_units_options\":[{\"key\":\"percent\",\"label\":\"percent\",\"value\":\"percent\"},{\"key\":\"fraction\",\"label\":\"fraction\",\"value\":\"fraction\"}],\"positions_view_options\":[{\"key\":\"cumulative\",\"label\":\"Cumulative View\",\"value\":\"cumulative\"},{\"key\":\"per_trade\",\"label\":\"Per Trade View\",\"value\":\"per_trade\"}],\"rust_environment_dependencies\":[{\"key\":\"rustc\",\"kind\":\"rust_rustc\",\"label\":\"rustc\",\"latest\":\"Install rustup\",\"path\":\"\",\"usage\":\"\"},{\"key\":\"cargo\",\"kind\":\"rust_cargo\",\"label\":\"cargo\",\"latest\":\"Install rustup\",\"path\":\"\",\"usage\":\"\"},{\"key\":\"experiments/rust-shells/Cargo.toml\",\"kind\":\"rust_file_version\",\"label\":\"Trading Bot Rust workspace\",\"latest\":\"\",\"path\":\"experiments/rust-shells/Cargo.toml\",\"usage\":\"Active\"},{\"key\":\"experiments/rust-shells/crates/core/Cargo.toml\",\"kind\":\"rust_file_version\",\"label\":\"trading-bot-core\",\"latest\":\"\",\"path\":\"experiments/rust-shells/crates/core/Cargo.toml\",\"usage\":\"Active\"},{\"key\":\"experiments/rust-shells/crates/contracts/Cargo.toml\",\"kind\":\"rust_file_version\",\"label\":\"trading-bot-contracts\",\"latest\":\"\",\"path\":\"experiments/rust-shells/crates/contracts/Cargo.toml\",\"usage\":\"Active\"},{\"key\":\"experiments/rust-shells/apps/tauri-desktop/Cargo.toml\",\"kind\":\"rust_file_version\",\"label\":\"Tauri (Primary)\",\"latest\":\"\",\"path\":\"experiments/rust-shells/apps/tauri-desktop/Cargo.toml\",\"usage\":\"Active\"}],\"rust_framework_options\":[{\"accent\":\"#f59e0b\",\"badge\":\"Primary\",\"disabled\":false,\"key\":\"Tauri\",\"launch_note\":\"Tauri can manage/connect to the local Python Service API, but Python still owns strategy, risk, account, order, and exchange execution.\",\"operational\":true,\"operational_status\":\"Interactive Service API client\",\"subtitle\":\"Operational Service API client\",\"title\":\"Tauri\"}],\"scan_scope_options\":[{\"key\":\"selected\",\"label\":\"selected\",\"value\":\"selected\"},{\"key\":\"top_n\",\"label\":\"top_n\",\"value\":\"top_n\"},{\"key\":\"all_loaded\",\"label\":\"all_loaded\",\"value\":\"all_loaded\"}],\"side_options\":[{\"key\":\"BUY\",\"label\":\"Buy (Long)\"},{\"key\":\"SELL\",\"label\":\"Sell (Short)\"},{\"key\":\"BOTH\",\"label\":\"Both (Long/Short)\"}],\"signal_logic_options\":[{\"key\":\"AND\",\"label\":\"AND\",\"value\":\"AND\"},{\"key\":\"OR\",\"label\":\"OR\",\"value\":\"OR\"},{\"key\":\"SEPARATE\",\"label\":\"SEPARATE\",\"value\":\"SEPARATE\"}],\"starter_market_options\":[{\"accent\":\"#34d399\",\"badge\":\"\",\"disabled\":false,\"key\":\"crypto\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"Binance, Bybit, KuCoin\",\"title\":\"Crypto Exchange\"},{\"accent\":\"#93c5fd\",\"badge\":\"Evidence required\",\"disabled\":false,\"key\":\"forex\",\"launch_note\":\"\",\"operational\":false,\"operational_status\":\"\",\"subtitle\":\"REST, MT4 bridge, MetaTrader 5, and scoped provider APIs\",\"title\":\"Forex Exchange\"}],\"stop_loss_modes\":[{\"key\":\"usdt\",\"label\":\"USDT Based Stop Loss\"},{\"key\":\"percent\",\"label\":\"Percentage Based Stop Loss\"},{\"key\":\"both\",\"label\":\"Both Stop Loss (USDT & Percentage)\"}],\"stop_loss_scopes\":[{\"key\":\"per_trade\",\"label\":\"Per Trade Stop Loss\"},{\"key\":\"cumulative\",\"label\":\"Cumulative Stop Loss\"},{\"key\":\"entire_account\",\"label\":\"Entire Account Stop Loss\"}],\"theme_options\":[{\"key\":\"Light\",\"label\":\"Light\",\"value\":\"Light\"},{\"key\":\"Dark\",\"label\":\"Dark\",\"value\":\"Dark\"},{\"key\":\"Blue\",\"label\":\"Blue\",\"value\":\"Blue\"},{\"key\":\"Yellow\",\"label\":\"Yellow\",\"value\":\"Yellow\"},{\"key\":\"Green\",\"label\":\"Green\",\"value\":\"Green\"},{\"key\":\"Red\",\"label\":\"Red\",\"value\":\"Red\"}],\"time_in_force_options\":[{\"key\":\"GTC\",\"label\":\"GTC\",\"value\":\"GTC\"},{\"key\":\"IOC\",\"label\":\"IOC\",\"value\":\"IOC\"},{\"key\":\"FOK\",\"label\":\"FOK\",\"value\":\"FOK\"},{\"key\":\"GTD\",\"label\":\"GTD\",\"value\":\"GTD\"}],\"tradingview_interval_map\":{\"10h\":\"600\",\"10m\":\"10\",\"11h\":\"660\",\"12h\":\"720\",\"15m\":\"15\",\"1d\":\"1D\",\"1h\":\"60\",\"1m\":\"1\",\"1mo\":\"1M\",\"1month\":\"1M\",\"1w\":\"1W\",\"1y\":\"12M\",\"20m\":\"20\",\"2d\":\"2D\",\"2h\":\"120\",\"2mo\":\"2M\",\"2months\":\"2M\",\"2w\":\"2W\",\"2y\":\"24M\",\"30m\":\"30\",\"3d\":\"3D\",\"3h\":\"180\",\"3m\":\"3\",\"3mo\":\"3M\",\"3months\":\"3M\",\"3w\":\"3W\",\"45m\":\"45\",\"4d\":\"4D\",\"4h\":\"240\",\"5d\":\"5D\",\"5h\":\"300\",\"5m\":\"5\",\"6d\":\"6D\",\"6h\":\"360\",\"6mo\":\"6M\",\"6months\":\"6M\",\"7h\":\"420\",\"8h\":\"480\",\"9h\":\"540\"}}",
   "orderGuardBehavior": {
     "environment_bool_true_values": [
       "1",
@@ -5716,6 +6141,9 @@
     "llm_local_model_status": [
       "GET"
     ],
+    "llm_models": [
+      "GET"
+    ],
     "llm_prompt": [
       "POST"
     ],
@@ -5789,6 +6217,7 @@
     "terminal_run",
     "llm_providers",
     "llm_config",
+    "llm_models",
     "llm_prompt",
     "llm_local_model_status",
     "llm_local_model_start",
@@ -5820,6 +6249,7 @@
     "llm_local_model_pull": "/api/v1/llm/local-model/pull",
     "llm_local_model_start": "/api/v1/llm/local-model/start",
     "llm_local_model_status": "/api/v1/llm/local-model/status",
+    "llm_models": "/api/v1/llm/models",
     "llm_prompt": "/api/v1/llm/prompt",
     "llm_providers": "/api/v1/llm/providers",
     "logs": "/api/v1/logs",
@@ -5866,6 +6296,7 @@
       "base_url",
       "model"
     ],
+    "llm_models": [],
     "llm_prompt": [],
     "llm_providers": [],
     "logs": [
@@ -5964,6 +6395,7 @@
       "source"
     ],
     "llm_local_model_status": [],
+    "llm_models": [],
     "llm_prompt": [
       "prompt",
       "system_prompt",
@@ -6300,6 +6732,9 @@
       "provider_label",
       "mode",
       "protocol",
+      "provider_protocol",
+      "api_style",
+      "api_styles",
       "catalog_revision",
       "catalog_path",
       "custom_models_env",
@@ -6313,6 +6748,18 @@
       "reasoning_effort",
       "default_reasoning_effort",
       "reasoning_efforts",
+      "speed",
+      "default_speed",
+      "speed_options",
+      "context_window",
+      "max_output_tokens",
+      "verbosity",
+      "temperature",
+      "top_p",
+      "timeout_seconds",
+      "request_options",
+      "supports_model_discovery",
+      "model_discovery_path",
       "model_suggestions",
       "notes",
       "execution_policy"
@@ -6351,6 +6798,14 @@
       "recommended_free_disk_gb",
       "disk_space_warning"
     ],
+    "llm_models": [
+      "ok",
+      "provider",
+      "catalog_revision",
+      "dynamic_count",
+      "models",
+      "error"
+    ],
     "llm_prompt": [
       "provider",
       "model",
@@ -6371,6 +6826,11 @@
       "model_suggestions",
       "reasoning_efforts",
       "default_reasoning_effort",
+      "api_styles",
+      "speed_options",
+      "default_speed",
+      "supports_model_discovery",
+      "model_discovery_path",
       "catalog_revision",
       "catalog_path",
       "custom_models_env",
@@ -7141,6 +7601,11 @@
         "model_suggestions",
         "reasoning_efforts",
         "default_reasoning_effort",
+        "api_styles",
+        "speed_options",
+        "default_speed",
+        "supports_model_discovery",
+        "model_discovery_path",
         "catalog_revision",
         "catalog_path",
         "custom_models_env",
@@ -7161,6 +7626,9 @@
         "provider_label",
         "mode",
         "protocol",
+        "provider_protocol",
+        "api_style",
+        "api_styles",
         "catalog_revision",
         "catalog_path",
         "custom_models_env",
@@ -7174,9 +7642,34 @@
         "reasoning_effort",
         "default_reasoning_effort",
         "reasoning_efforts",
+        "speed",
+        "default_speed",
+        "speed_options",
+        "context_window",
+        "max_output_tokens",
+        "verbosity",
+        "temperature",
+        "top_p",
+        "timeout_seconds",
+        "request_options",
+        "supports_model_discovery",
+        "model_discovery_path",
         "model_suggestions",
         "notes",
         "execution_policy"
+      ]
+    },
+    {
+      "name": "llm_models",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "ok",
+        "provider",
+        "catalog_revision",
+        "dynamic_count",
+        "models",
+        "error"
       ]
     },
     {
@@ -7500,6 +7993,13 @@
       ],
       "name": "llm_config",
       "path": "/api/v1/llm/config"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "llm_models",
+      "path": "/api/v1/llm/models"
     },
     {
       "methods": [

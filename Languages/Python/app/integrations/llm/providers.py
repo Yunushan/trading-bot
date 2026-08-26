@@ -19,31 +19,67 @@ class LLMProviderSpec:
     model_suggestions: tuple[str, ...] = ()
     reasoning_efforts: tuple[str, ...] = ("default",)
     default_reasoning_effort: str = "default"
+    api_styles: tuple[str, ...] = ()
+    speed_options: tuple[str, ...] = (
+        "default",
+        "auto",
+        "fast",
+        "balanced",
+        "quality",
+        "flex",
+        "priority",
+    )
+    default_speed: str = "default"
+    model_discovery_path: str = "models"
+    supports_model_discovery: bool = True
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["model_suggestions"] = list(self.model_suggestions)
         payload["reasoning_efforts"] = list(self.reasoning_efforts)
+        payload["api_styles"] = list(self.api_styles or (self.protocol,))
+        payload["speed_options"] = list(self.speed_options)
         payload["notes"] = list(self.notes)
         return payload
 
 
 OPENAI_COMPATIBLE_PROTOCOL = "openai-chat-completions"
+OPENAI_RESPONSES_PROTOCOL = "openai-responses"
 ANTHROPIC_MESSAGES_PROTOCOL = "anthropic-messages"
 GEMINI_GENERATE_CONTENT_PROTOCOL = "gemini-generate-content"
-LLM_PROVIDER_CATALOG_REVISION = "2026-07-16"
+LLM_PROVIDER_CATALOG_REVISION = "2026-08-26"
 LLM_MODEL_CATALOG_PATH_ENV = "BOT_LLM_MODEL_CATALOG_PATH"
+
+LLM_API_STYLE_OPTIONS = (
+    "provider-default",
+    OPENAI_COMPATIBLE_PROTOCOL,
+    OPENAI_RESPONSES_PROTOCOL,
+    ANTHROPIC_MESSAGES_PROTOCOL,
+    GEMINI_GENERATE_CONTENT_PROTOCOL,
+)
+
+LLM_SPEED_OPTIONS = (
+    "default",
+    "auto",
+    "fast",
+    "balanced",
+    "quality",
+    "flex",
+    "priority",
+)
 
 _OPEN_SOURCE_REASONING_EFFORTS = (
     "default",
     "none",
     "disabled",
+    "minimal",
     "auto",
     "low",
     "medium",
     "high",
     "xhigh",
+    "max",
 )
 
 _OPENAI_REASONING_EFFORTS = (
@@ -471,11 +507,63 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
             "gpt-4.1",
             "gpt-4.1-mini",
             "gpt-4.1-nano",
+            "gpt-4o",
+            "gpt-4o-2024-11-20",
+            "gpt-4o-2024-08-06",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-4-turbo-preview",
+            "gpt-4",
+            "gpt-3.5-turbo",
+            "o4-mini",
+            "o3",
+            "o3-mini",
+            "o1",
+            "o1-preview",
+            "o1-mini",
         ),
         reasoning_efforts=_OPENAI_REASONING_EFFORTS,
+        api_styles=(OPENAI_RESPONSES_PROTOCOL, OPENAI_COMPATIBLE_PROTOCOL),
         notes=(
-            "Uses the OpenAI-compatible chat completions endpoint.",
+            "Supports the OpenAI Responses and Chat Completions APIs; choose the API style per model.",
             "GPT-5.6 Sol, Terra, and Luna support reasoning levels through max; availability depends on the API account.",
+            "Historical model IDs remain selectable, but retired upstream models may no longer accept requests.",
+        ),
+    ),
+    LLMProviderSpec(
+        key="kilo",
+        label="Kilo AI Gateway",
+        mode="cloud",
+        protocol=OPENAI_COMPATIBLE_PROTOCOL,
+        default_base_url="https://api.kilo.ai/api/gateway",
+        default_model="kilo-auto/frontier",
+        api_key_env="KILO_API_KEY",
+        model_suggestions=(
+            "kilo-auto/frontier",
+            "kilo-auto/efficient",
+            "kilo-auto/small",
+            "kilo-auto/free",
+            "openrouter/free",
+            "anthropic/claude-opus-4.7",
+            "anthropic/claude-sonnet-4.6",
+            "anthropic/claude-haiku-4.5",
+            "openai/gpt-5.5",
+            "openai/gpt-5.4",
+            "openai/gpt-5.4-mini",
+            "google/gemini-3.1-pro-preview",
+            "google/gemini-2.5-flash",
+            "x-ai/grok-4",
+            "x-ai/grok-code-fast-1",
+            "deepseek/deepseek-v3.2",
+            "moonshotai/kimi-k2.5",
+            "minimax/minimax-m2.7",
+        ),
+        reasoning_efforts=_OPENAI_REASONING_EFFORTS,
+        api_styles=(OPENAI_COMPATIBLE_PROTOCOL, OPENAI_RESPONSES_PROTOCOL),
+        notes=(
+            "Uses Kilo's OpenAI-compatible gateway and provider/model identifiers.",
+            "Refresh model discovery to merge every model currently returned by Kilo with historical and custom IDs.",
+            "Kilo auto model IDs remain stable while their routed backing models can change server-side.",
         ),
     ),
     LLMProviderSpec(
@@ -499,8 +587,16 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
             "claude-opus-4-1",
             "claude-opus-4-0",
             "claude-sonnet-4-0",
+            "claude-3-7-sonnet-20250219",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-sonnet-20240620",
+            "claude-3-5-haiku-20241022",
+            "claude-3-opus-20240229",
+            "claude-3-sonnet-20240229",
+            "claude-3-haiku-20240307",
         ),
         reasoning_efforts=("default", "disabled", "enabled", "low", "medium", "high"),
+        api_styles=(ANTHROPIC_MESSAGES_PROTOCOL,),
         notes=("Uses the Anthropic messages endpoint with the 2023-06-01 API version header.",),
     ),
     LLMProviderSpec(
@@ -521,8 +617,13 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
             "gemini-2.5-flash-preview-09-2025",
             "gemini-2.5-flash-lite",
             "gemini-2.5-flash-lite-preview-09-2025",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
         ),
         reasoning_efforts=("default", "minimal", "low", "medium", "high"),
+        api_styles=(GEMINI_GENERATE_CONTENT_PROTOCOL,),
         notes=("Uses the Gemini generateContent endpoint.",),
     ),
     LLMProviderSpec(
@@ -647,6 +748,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
             _LINKED_SOURCE_OPEN_SOURCE_MODELS,
         ),
         reasoning_efforts=_OPEN_SOURCE_REASONING_EFFORTS,
+        api_styles=(OPENAI_COMPATIBLE_PROTOCOL, OPENAI_RESPONSES_PROTOCOL),
         notes=(
             "Use this for any local, LAN, private IP, or custom OpenAI-compatible endpoint.",
             "The model field is intentionally editable so arbitrary Ollama, GGUF, or Hugging Face IDs can be used.",
@@ -759,6 +861,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
             _OLLAMA_OPEN_SOURCE_MODELS,
         ),
         reasoning_efforts=_OPEN_SOURCE_REASONING_EFFORTS,
+        api_styles=(OPENAI_COMPATIBLE_PROTOCOL, OPENAI_RESPONSES_PROTOCOL),
         notes=(
             "Use this for any OpenAI-compatible open-source runtime, including remote IP or URL endpoints.",
             "For public endpoints, enable Allow public network endpoint so context is minimized.",
@@ -771,6 +874,11 @@ _PROVIDER_ALIASES = {
     "": "openai",
     "chatgpt": "openai",
     "openai-chatgpt": "openai",
+    "kilo": "kilo",
+    "kilo-ai": "kilo",
+    "kilo.ai": "kilo",
+    "kilocode": "kilo",
+    "kilo-code": "kilo",
     "claude": "anthropic",
     "anthropic-claude": "anthropic",
     "google": "gemini",
@@ -868,7 +976,16 @@ _LLM_CONFIG_KEYS = {
     "llm_api_key_env",
     "llm_use_for",
     "llm_allow_public_network",
+    "llm_api_style",
     "llm_reasoning_effort",
+    "llm_speed",
+    "llm_context_window",
+    "llm_max_output_tokens",
+    "llm_verbosity",
+    "llm_temperature",
+    "llm_top_p",
+    "llm_timeout_seconds",
+    "llm_request_options",
 }
 
 
@@ -883,6 +1000,48 @@ def _coerce_bool(value, default: bool = False) -> bool:
     if text in {"0", "false", "no", "off", "disabled"}:
         return False
     return bool(default)
+
+
+def _coerce_int(value: object, default: int = 0, *, minimum: int = 0, maximum: int = 10_000_000) -> int:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        parsed = int(default)
+    return max(int(minimum), min(int(maximum), parsed))
+
+
+def _coerce_optional_float(
+    value: object,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float | None:
+    if value in (None, "", "default", "auto"):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return max(float(minimum), min(float(maximum), parsed))
+
+
+def _coerce_request_options(value: object) -> dict[str, object]:
+    candidate = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            candidate = json.loads(text)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(candidate, dict):
+        return {}
+    return {
+        str(key): copy.deepcopy(item)
+        for key, item in candidate.items()
+        if str(key).strip()
+    }
 
 
 def normalize_llm_provider_key(value: str | None) -> str:
@@ -979,7 +1138,7 @@ def _normalize_reasoning_effort(provider: LLMProviderSpec, value: object) -> str
     default_effort = str(provider.default_reasoning_effort or efforts[0]).strip().lower() or efforts[0]
     aliases = {
         "": default_effort,
-        "auto": "default",
+        "auto": "auto" if "auto" in efforts else default_effort,
         "off": "none" if "none" in efforts else "disabled",
         "no": "none" if "none" in efforts else "disabled",
         "false": "none" if "none" in efforts else "disabled",
@@ -987,7 +1146,60 @@ def _normalize_reasoning_effort(provider: LLMProviderSpec, value: object) -> str
         "extra_high": "xhigh",
     }
     normalized = aliases.get(raw_value, raw_value)
-    return normalized if normalized in efforts else default_effort
+    if normalized in efforts:
+        return normalized
+    return normalized if _safe_option_token(normalized) else default_effort
+
+
+def _safe_option_token(value: object, *, maximum_length: int = 64) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and len(text) <= maximum_length and all(
+        character.isalnum() or character in {"-", "_", ".", "/", ":"}
+        for character in text
+    )
+
+
+def _normalize_api_style(provider: LLMProviderSpec, value: object) -> tuple[str, str]:
+    raw = str(value or "provider-default").strip().lower().replace("_", "-")
+    aliases = {
+        "": "provider-default",
+        "auto": "provider-default",
+        "default": "provider-default",
+        "provider": "provider-default",
+        "chat": OPENAI_COMPATIBLE_PROTOCOL,
+        "chat-completions": OPENAI_COMPATIBLE_PROTOCOL,
+        "openai-compatible": OPENAI_COMPATIBLE_PROTOCOL,
+        "responses": OPENAI_RESPONSES_PROTOCOL,
+        "response": OPENAI_RESPONSES_PROTOCOL,
+        "messages": ANTHROPIC_MESSAGES_PROTOCOL,
+        "anthropic": ANTHROPIC_MESSAGES_PROTOCOL,
+        "generate-content": GEMINI_GENERATE_CONTENT_PROTOCOL,
+        "gemini": GEMINI_GENERATE_CONTENT_PROTOCOL,
+    }
+    requested = aliases.get(raw, raw)
+    if requested == "provider-default":
+        return requested, provider.protocol
+    if requested not in LLM_API_STYLE_OPTIONS:
+        return "provider-default", provider.protocol
+    return requested, requested
+
+
+def _normalize_speed(provider: LLMProviderSpec, value: object) -> str:
+    raw = str(value or provider.default_speed or "default").strip().lower().replace("_", "-")
+    aliases = {
+        "": provider.default_speed or "default",
+        "normal": "balanced",
+        "standard": "balanced",
+        "slow": "quality",
+        "economy": "flex",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if _safe_option_token(normalized) else (provider.default_speed or "default")
+
+
+def _normalize_verbosity(value: object) -> str:
+    raw = str(value or "default").strip().lower().replace("_", "-")
+    return raw if _safe_option_token(raw) else "default"
 
 
 def build_llm_config_payload(config: dict | None) -> dict[str, object]:
@@ -997,12 +1209,20 @@ def build_llm_config_payload(config: dict | None) -> dict[str, object]:
     base_url = str(cfg.get("llm_base_url") or provider.default_base_url).strip() or provider.default_base_url
     model = str(cfg.get("llm_model") or provider.default_model).strip()
     reasoning_effort = _normalize_reasoning_effort(provider, cfg.get("llm_reasoning_effort"))
+    requested_api_style, protocol = _normalize_api_style(provider, cfg.get("llm_api_style"))
+    speed = _normalize_speed(provider, cfg.get("llm_speed"))
+    context_window = _coerce_int(cfg.get("llm_context_window"), 0, maximum=10_000_000)
+    max_output_tokens = _coerce_int(cfg.get("llm_max_output_tokens"), 0, maximum=2_000_000)
+    timeout_seconds = _coerce_int(cfg.get("llm_timeout_seconds"), 30, minimum=1, maximum=3_600)
     return {
         "enabled": _coerce_bool(cfg.get("llm_enabled"), False),
         "provider": provider.key,
         "provider_label": provider.label,
         "mode": provider.mode,
-        "protocol": provider.protocol,
+        "protocol": protocol,
+        "provider_protocol": provider.protocol,
+        "api_style": requested_api_style,
+        "api_styles": list(provider.api_styles or (provider.protocol,)),
         "catalog_revision": LLM_PROVIDER_CATALOG_REVISION,
         "catalog_path": str(_catalog_path()),
         "custom_models_env": f"BOT_LLM_EXTRA_MODELS_{provider.key.upper().replace('-', '_')}",
@@ -1016,6 +1236,18 @@ def build_llm_config_payload(config: dict | None) -> dict[str, object]:
         "reasoning_effort": reasoning_effort,
         "default_reasoning_effort": provider.default_reasoning_effort,
         "reasoning_efforts": list(provider.reasoning_efforts),
+        "speed": speed,
+        "default_speed": provider.default_speed,
+        "speed_options": list(provider.speed_options),
+        "context_window": context_window,
+        "max_output_tokens": max_output_tokens,
+        "verbosity": _normalize_verbosity(cfg.get("llm_verbosity")),
+        "temperature": _coerce_optional_float(cfg.get("llm_temperature"), minimum=0.0, maximum=2.0),
+        "top_p": _coerce_optional_float(cfg.get("llm_top_p"), minimum=0.0, maximum=1.0),
+        "timeout_seconds": timeout_seconds,
+        "request_options": _coerce_request_options(cfg.get("llm_request_options")),
+        "supports_model_discovery": provider.supports_model_discovery,
+        "model_discovery_path": provider.model_discovery_path,
         "model_suggestions": _model_suggestions_for_provider(provider),
         "notes": list(provider.notes),
         "execution_policy": {
@@ -1039,6 +1271,35 @@ def update_llm_config(config: dict | None, patch: dict | None) -> dict[str, obje
         elif key == "llm_reasoning_effort":
             provider = llm_provider_spec_for_key(str(updated.get("llm_provider") or "openai"))
             updated[key] = _normalize_reasoning_effort(provider, value)
+        elif key == "llm_api_style":
+            provider = llm_provider_spec_for_key(str(updated.get("llm_provider") or "openai"))
+            updated[key] = _normalize_api_style(provider, value)[0]
+        elif key == "llm_speed":
+            provider = llm_provider_spec_for_key(str(updated.get("llm_provider") or "openai"))
+            updated[key] = _normalize_speed(provider, value)
+        elif key in {"llm_context_window", "llm_max_output_tokens", "llm_timeout_seconds"}:
+            defaults = {"llm_timeout_seconds": 30}
+            maximums = {
+                "llm_context_window": 10_000_000,
+                "llm_max_output_tokens": 2_000_000,
+                "llm_timeout_seconds": 3_600,
+            }
+            updated[key] = _coerce_int(
+                value,
+                defaults.get(key, 0),
+                minimum=1 if key == "llm_timeout_seconds" else 0,
+                maximum=maximums[key],
+            )
+        elif key in {"llm_temperature", "llm_top_p"}:
+            updated[key] = _coerce_optional_float(
+                value,
+                minimum=0.0,
+                maximum=2.0 if key == "llm_temperature" else 1.0,
+            )
+        elif key == "llm_request_options":
+            updated[key] = _coerce_request_options(value)
+        elif key == "llm_verbosity":
+            updated[key] = _normalize_verbosity(value)
         elif key == "llm_api_key" and str(value or "").strip() in {"", "********"}:
             updated.pop(key, None)
         else:
@@ -1048,4 +1309,9 @@ def update_llm_config(config: dict | None, patch: dict | None) -> dict[str, obje
     if "llm_reasoning_effort" in updated:
         provider = llm_provider_spec_for_key(str(updated.get("llm_provider") or "openai"))
         updated["llm_reasoning_effort"] = _normalize_reasoning_effort(provider, updated.get("llm_reasoning_effort"))
+    provider = llm_provider_spec_for_key(str(updated.get("llm_provider") or "openai"))
+    if "llm_api_style" in updated:
+        updated["llm_api_style"] = _normalize_api_style(provider, updated.get("llm_api_style"))[0]
+    if "llm_speed" in updated:
+        updated["llm_speed"] = _normalize_speed(provider, updated.get("llm_speed"))
     return updated

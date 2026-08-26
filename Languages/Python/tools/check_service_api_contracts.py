@@ -18,6 +18,16 @@ CLIENT_ROUTE_CONTRACT_PATHS = (
     REPO_ROOT / "apps" / "mobile-client" / "service-contract.js",
     REPO_ROOT / "apps" / "web-dashboard" / "modules" / "service-contract.js",
 )
+CLIENT_REQUIRED_ROUTE_CONTRACTS = {
+    CLIENT_ROUTE_CONTRACT_PATHS[0]: (
+        "MOBILE_REQUIRED_ROUTE_NAMES",
+        "mobile_required_routes",
+    ),
+    CLIENT_ROUTE_CONTRACT_PATHS[1]: (
+        "DASHBOARD_REQUIRED_ROUTE_NAMES",
+        "dashboard_required_routes",
+    ),
+}
 
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
@@ -106,9 +116,18 @@ def _client_route_object_text() -> str:
     )
 
 
+def _client_required_routes_text(route_names: object) -> str:
+    if not isinstance(route_names, list) or not all(
+        isinstance(route_name, str) for route_name in route_names
+    ):
+        raise AssertionError("service API client required routes must be a list of strings")
+    return "".join(f'  "{route_name}",\n' for route_name in route_names)
+
+
 def _check_client_route_contracts(*, write: bool) -> None:
-    expected = _client_route_object_text()
-    pattern = re.compile(
+    payload = service_api_contract_payload()
+    expected_routes = _client_route_object_text()
+    route_pattern = re.compile(
         r"(?P<prefix>SERVICE_API_ROUTE_SUFFIXES\s*=\s*Object\.freeze\(\{\n)"
         r"(?P<routes>.*?)"
         r"(?P<suffix>\}\);)",
@@ -116,22 +135,59 @@ def _check_client_route_contracts(*, write: bool) -> None:
     )
     for path in CLIENT_ROUTE_CONTRACT_PATHS:
         source = path.read_text(encoding="utf-8")
-        match = pattern.search(source)
-        if match is None:
+        route_match = route_pattern.search(source)
+        if route_match is None:
             raise AssertionError(f"{path.relative_to(REPO_ROOT)} has no service route registry")
+
+        required_constant, payload_key = CLIENT_REQUIRED_ROUTE_CONTRACTS[path]
+        expected_required_routes = _client_required_routes_text(payload[payload_key])
+        required_pattern = re.compile(
+            rf"(?P<prefix>{required_constant}\s*=\s*Object\.freeze\(\[\n)"
+            r"(?P<routes>.*?)"
+            r"(?P<suffix>\]\);)",
+            re.DOTALL,
+        )
+        required_match = required_pattern.search(source)
+        if required_match is None:
+            raise AssertionError(
+                f"{path.relative_to(REPO_ROOT)} has no required route registry"
+            )
+
         if write:
-            source, replacements = pattern.subn(
-                f"\\g<prefix>{expected}\\g<suffix>",
+            source, replacements = route_pattern.subn(
+                f"\\g<prefix>{expected_routes}\\g<suffix>",
                 source,
                 count=1,
             )
             if replacements != 1:
                 raise AssertionError(f"could not update {path.relative_to(REPO_ROOT)}")
+
+            source, replacements = required_pattern.subn(
+                f"\\g<prefix>{expected_required_routes}\\g<suffix>",
+                source,
+                count=1,
+            )
+            if replacements != 1:
+                raise AssertionError(
+                    f"could not update required routes in {path.relative_to(REPO_ROOT)}"
+                )
             path.write_text(source, encoding="utf-8")
-            match = pattern.search(source)
-            if match is None:
+
+            route_match = route_pattern.search(source)
+            required_match = required_pattern.search(source)
+            if route_match is None or required_match is None:
                 raise AssertionError(f"could not reread {path.relative_to(REPO_ROOT)}")
-        _assert_equal(str(path.relative_to(REPO_ROOT)), expected, match.group("routes"))
+
+        _assert_equal(
+            str(path.relative_to(REPO_ROOT)),
+            expected_routes,
+            route_match.group("routes"),
+        )
+        _assert_equal(
+            f"{path.relative_to(REPO_ROOT)} required routes",
+            expected_required_routes,
+            required_match.group("routes"),
+        )
 
 
 def _check_runtime_sample() -> None:

@@ -425,19 +425,6 @@ ChoicePairs configChoicePairs(
     return choices;
 }
 
-template <std::size_t N>
-ChoicePairs llmProviderChoicesFromSource(
-    const std::array<PythonParityContract::PythonLlmProviderChoice, N> &providerChoices) {
-    ChoicePairs choices;
-    for (const auto &providerChoice : providerChoices) {
-        appendChoice(
-            &choices,
-            parityText(providerChoice.key),
-            parityText(providerChoice.value));
-    }
-    return choices;
-}
-
 void appendCsvChoices(ChoicePairs *choices, std::string_view csv) {
     const QStringList parts = parityText(csv).split(QLatin1Char(','), Qt::SkipEmptyParts);
     for (const QString &part : parts) {
@@ -447,13 +434,25 @@ void appendCsvChoices(ChoicePairs *choices, std::string_view csv) {
 }
 
 template <std::size_t N>
-ChoicePairs llmReasoningEffortChoicesFromSource(const std::array<PythonParityContract::PythonLlmProvider, N> &providers) {
-    ChoicePairs choices{
-        {QStringLiteral("extra-high"), QStringLiteral("xhigh")},
-        {QStringLiteral("extra_high"), QStringLiteral("xhigh")},
-    };
+ChoicePairs llmReasoningEffortChoicesFromSource(
+    const std::array<PythonParityContract::PythonLlmProvider, N> &providers) {
+    ChoicePairs choices = configChoicePairs(
+        PythonParityContract::kPythonLlmReasoningEffortConfigChoices);
     for (const auto &provider : providers) {
         appendCsvChoices(&choices, provider.reasoningEfforts);
+    }
+    return choices;
+}
+
+template <std::size_t N>
+ChoicePairs llmProviderChoicesFromSource(
+    const std::array<PythonParityContract::PythonLlmProviderChoice, N> &providerChoices) {
+    ChoicePairs choices;
+    for (const auto &providerChoice : providerChoices) {
+        appendChoice(
+            &choices,
+            parityText(providerChoice.key),
+            parityText(providerChoice.value));
     }
     return choices;
 }
@@ -587,8 +586,8 @@ const ChoicePairs &llmUseForChoices() {
 }
 
 const ChoicePairs &llmReasoningEffortChoices() {
-    static const ChoicePairs choices = configChoicePairs(
-        PythonParityContract::kPythonLlmReasoningEffortConfigChoices);
+    static const ChoicePairs choices = llmReasoningEffortChoicesFromSource(
+        PythonParityContract::kPythonLlmProviders);
     return choices;
 }
 
@@ -616,8 +615,11 @@ const QStringList &runtimeAllowedKeys() {
         QStringLiteral("live_allow_auto_bump_to_min_order"), QStringLiteral("live_trading_max_leverage"),
         QStringLiteral("live_trading_max_position_pct"), QStringLiteral("live_trading_max_session_orders"),
         QStringLiteral("llm_allow_public_network"), QStringLiteral("llm_api_key"), QStringLiteral("llm_api_key_env"),
-        QStringLiteral("llm_base_url"), QStringLiteral("llm_enabled"), QStringLiteral("llm_model"),
-        QStringLiteral("llm_provider"), QStringLiteral("llm_reasoning_effort"), QStringLiteral("llm_use_for"),
+        QStringLiteral("llm_api_style"), QStringLiteral("llm_base_url"), QStringLiteral("llm_context_window"),
+        QStringLiteral("llm_enabled"), QStringLiteral("llm_max_output_tokens"), QStringLiteral("llm_model"),
+        QStringLiteral("llm_provider"), QStringLiteral("llm_reasoning_effort"), QStringLiteral("llm_request_options"),
+        QStringLiteral("llm_speed"), QStringLiteral("llm_temperature"), QStringLiteral("llm_timeout_seconds"),
+        QStringLiteral("llm_top_p"), QStringLiteral("llm_use_for"), QStringLiteral("llm_verbosity"),
         QStringLiteral("lookback"), QStringLiteral("loop_interval_override"), QStringLiteral("margin_mode"),
         QStringLiteral("max_auto_bump_percent"), QStringLiteral("mode"), QStringLiteral("operational_account_snapshot_stale_seconds"),
         QStringLiteral("operational_connector_snapshot_stale_seconds"), QStringLiteral("operational_execution_heartbeat_stale_seconds"),
@@ -764,6 +766,38 @@ void validateChoice(
     cfg->insert(key, normalized);
 }
 
+void validateLlmOptionToken(
+    QJsonObject *cfg,
+    const QString &key,
+    QJsonArray *issues,
+    const ChoicePairs *knownChoices = nullptr) {
+    if (!cfg || !cfg->contains(key)) {
+        return;
+    }
+    const QString value = valueToText(cfg->value(key)).trimmed();
+    bool valid = !value.isEmpty() && value.size() <= 64;
+    for (const QChar character : value) {
+        if (!character.isLetterOrNumber()
+            && !QStringLiteral("._-:/").contains(character)) {
+            valid = false;
+            break;
+        }
+    }
+    if (!valid) {
+        addValidationIssue(
+            issues,
+            key,
+            QStringLiteral("must be a 1-64 character provider option token using letters, numbers, '.', '_', ':', '/', or '-'"));
+        return;
+    }
+    const QString knownValue = knownChoices ? choiceValue(cfg->value(key), *knownChoices) : QString();
+    cfg->insert(
+        key,
+        knownValue.isEmpty()
+            ? QString(value).toLower().replace(QChar('_'), QChar('-'))
+            : knownValue);
+}
+
 void validateIntRange(
     QJsonObject *cfg,
     const QString &key,
@@ -812,6 +846,25 @@ void validateFloatRange(
         return;
     }
     cfg->insert(key, number);
+}
+
+void validateOptionalFloatRange(
+    QJsonObject *cfg,
+    const QString &key,
+    QJsonArray *issues,
+    double minValue,
+    double maxValue) {
+    if (!cfg || !cfg->contains(key)) {
+        return;
+    }
+    const QJsonValue value = cfg->value(key);
+    const QString text = valueToText(value).trimmed().toLower();
+    if (value.isNull() || value.isUndefined() || text.isEmpty()
+        || text == QStringLiteral("default") || text == QStringLiteral("auto")) {
+        cfg->insert(key, QJsonValue(QJsonValue::Null));
+        return;
+    }
+    validateFloatRange(cfg, key, issues, minValue, maxValue);
 }
 
 void validateBool(QJsonObject *cfg, const QString &key, QJsonArray *issues, const QString &prefix = {}, bool defaultValue = false) {
@@ -1153,7 +1206,9 @@ QString ensureServiceConfigPathAllowed(const QString &path, bool allowUnsafePath
 
 bool isServiceConfigSecretKey(const QString &key) {
     QString text = key.trimmed().toLower().replace(QLatin1Char('-'), QLatin1Char('_'));
-    if (text.endsWith(QStringLiteral("_env")) || text.endsWith(QStringLiteral("_env_var"))) {
+    if (text == QStringLiteral("llm_max_output_tokens")
+        || text.endsWith(QStringLiteral("_env"))
+        || text.endsWith(QStringLiteral("_env_var"))) {
         return false;
     }
     static const QStringList tokens = {
@@ -1335,7 +1390,20 @@ ServiceConfigValidationResult validateServiceRuntimeConfig(const QJsonObject &co
     validateText(&cfg, QStringLiteral("llm_api_key_env"), &issues, {}, true);
     validateChoice(&cfg, QStringLiteral("llm_use_for"), llmUseForChoices(), &issues);
     validateBool(&cfg, QStringLiteral("llm_allow_public_network"), &issues);
-    validateChoice(&cfg, QStringLiteral("llm_reasoning_effort"), llmReasoningEffortChoices(), &issues);
+    validateLlmOptionToken(&cfg, QStringLiteral("llm_api_style"), &issues);
+    validateLlmOptionToken(
+        &cfg,
+        QStringLiteral("llm_reasoning_effort"),
+        &issues,
+        &llmReasoningEffortChoices());
+    validateLlmOptionToken(&cfg, QStringLiteral("llm_speed"), &issues);
+    validateIntRange(&cfg, QStringLiteral("llm_context_window"), &issues, 0, 10'000'000);
+    validateIntRange(&cfg, QStringLiteral("llm_max_output_tokens"), &issues, 0, 2'000'000);
+    validateLlmOptionToken(&cfg, QStringLiteral("llm_verbosity"), &issues);
+    validateOptionalFloatRange(&cfg, QStringLiteral("llm_temperature"), &issues, 0.0, 2.0);
+    validateOptionalFloatRange(&cfg, QStringLiteral("llm_top_p"), &issues, 0.0, 1.0);
+    validateIntRange(&cfg, QStringLiteral("llm_timeout_seconds"), &issues, 1, 3'600);
+    validateMapping(&cfg, QStringLiteral("llm_request_options"), &issues);
     validateStopLoss(&cfg, QStringLiteral("stop_loss"), &issues);
     validateMapping(&cfg, QStringLiteral("indicators"), &issues);
     validateChartConfig(&cfg, &issues);

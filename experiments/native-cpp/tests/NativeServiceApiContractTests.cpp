@@ -164,8 +164,8 @@ int main(int argc, char **argv) {
     }
 
     const QStringList routes = TradingBotWindowSupport::pythonSourceServiceRouteNames();
-    check(routes.size() == 36,
-          QStringLiteral("generated Python Service API contract should expose all 36 routes"));
+    check(routes.size() == 37,
+          QStringLiteral("generated Python Service API contract should expose all 37 routes"));
     check(contains(routes, QStringLiteral("dashboard")),
           QStringLiteral("generated route names should include dashboard"));
     check(contains(routes, QStringLiteral("config")),
@@ -309,6 +309,8 @@ int main(int argc, char **argv) {
         {QStringLiteral("lead trader"), QStringLiteral("lead_trader_options")},
         {QStringLiteral("LLM use-for"), QStringLiteral("llm_use_for_options")},
         {QStringLiteral("LLM reasoning effort"), QStringLiteral("llm_reasoning_effort_options")},
+        {QStringLiteral("LLM API style"), QStringLiteral("llm_api_style_options")},
+        {QStringLiteral("LLM speed"), QStringLiteral("llm_speed_options")},
         {QStringLiteral("position percentage units"), QStringLiteral("position_pct_units_options")},
         {QStringLiteral("dashboard strategy templates"), QStringLiteral("dashboard_strategy_templates")},
         {QStringLiteral("backtest templates"), QStringLiteral("backtest_templates")},
@@ -729,6 +731,32 @@ int main(int argc, char **argv) {
     checkGeneratedChoiceGroup(
         QStringLiteral("llm_reasoning_effort"),
         PythonParityContract::kPythonLlmReasoningEffortConfigChoices);
+    const NativeConfigPersistence::ServiceConfigValidationResult futureLlmOptions =
+        NativeConfigPersistence::validateServiceRuntimeConfig(QJsonObject{
+            {QStringLiteral("llm_api_style"), QStringLiteral("responses_v2")},
+            {QStringLiteral("llm_reasoning_effort"), QStringLiteral("turbo")},
+            {QStringLiteral("llm_speed"), QStringLiteral("ultra_fast")},
+            {QStringLiteral("llm_context_window"), 1'000'000},
+            {QStringLiteral("llm_max_output_tokens"), 32'768},
+            {QStringLiteral("llm_verbosity"), QStringLiteral("compact_v2")},
+            {QStringLiteral("llm_temperature"), 0.25},
+            {QStringLiteral("llm_top_p"), 0.9},
+            {QStringLiteral("llm_timeout_seconds"), 120},
+            {QStringLiteral("llm_request_options"), QJsonObject{{QStringLiteral("seed"), 7}}},
+        });
+    check(futureLlmOptions.ok,
+          QStringLiteral("C++ config validation should accept future provider option tokens and bounded LLM controls"));
+    check(!NativeConfigPersistence::isServiceConfigSecretKey(QStringLiteral("llm_max_output_tokens")),
+          QStringLiteral("LLM output token limits must remain numeric config rather than being redacted as credentials"));
+    check(futureLlmOptions.config.value(QStringLiteral("llm_api_style")).toString() == QStringLiteral("responses-v2")
+              && futureLlmOptions.config.value(QStringLiteral("llm_speed")).toString() == QStringLiteral("ultra-fast")
+              && futureLlmOptions.config.value(QStringLiteral("llm_verbosity")).toString() == QStringLiteral("compact-v2"),
+          QStringLiteral("C++ config validation should normalize future LLM option tokens like Python"));
+    const NativeConfigPersistence::ServiceConfigValidationResult invalidLlmOption =
+        NativeConfigPersistence::validateServiceRuntimeConfig(
+            QJsonObject{{QStringLiteral("llm_reasoning_effort"), QStringLiteral("turbo mode")}});
+    check(!invalidLlmOption.ok,
+          QStringLiteral("C++ config validation should reject unsafe LLM option tokens"));
     for (const std::string_view market : PythonParityContract::kPythonChartMarketOptions) {
         const QString marketValue = parityString(market);
         QJsonObject chartConfig;
@@ -847,6 +875,16 @@ int main(int argc, char **argv) {
               QStringLiteral("native LLM reasoning options should match Python: %1").arg(providerLabel));
         check(actual.defaultReasoningEffort == parityString(expected.defaultReasoningEffort),
               QStringLiteral("native LLM default reasoning option should match Python: %1").arg(providerLabel));
+        check(actual.apiStyles == parityCsv(expected.apiStyles),
+              QStringLiteral("native LLM API styles should match Python: %1").arg(providerLabel));
+        check(actual.speedOptions == parityCsv(expected.speedOptions),
+              QStringLiteral("native LLM speed options should match Python: %1").arg(providerLabel));
+        check(actual.defaultSpeed == parityString(expected.defaultSpeed),
+              QStringLiteral("native LLM default speed should match Python: %1").arg(providerLabel));
+        check(actual.supportsModelDiscovery == expected.supportsModelDiscovery,
+              QStringLiteral("native LLM discovery support should match Python: %1").arg(providerLabel));
+        check(actual.modelDiscoveryPath == parityString(expected.modelDiscoveryPath),
+              QStringLiteral("native LLM discovery path should match Python: %1").arg(providerLabel));
         check(actual.catalogRevision == parityString(expected.catalogRevision),
               QStringLiteral("native LLM catalog revision should match Python: %1").arg(providerLabel));
         check(actual.customModelsEnv == parityString(expected.customModelsEnv),
@@ -1891,6 +1929,11 @@ int main(int argc, char **argv) {
              QStringLiteral("model_suggestions"),
              QStringLiteral("reasoning_efforts"),
              QStringLiteral("default_reasoning_effort"),
+             QStringLiteral("api_styles"),
+             QStringLiteral("speed_options"),
+             QStringLiteral("default_speed"),
+             QStringLiteral("supports_model_discovery"),
+             QStringLiteral("model_discovery_path"),
              QStringLiteral("catalog_revision"),
              QStringLiteral("catalog_path"),
              QStringLiteral("custom_models_env"),
@@ -1911,11 +1954,38 @@ int main(int argc, char **argv) {
              QStringLiteral("custom_models_path_env"),
              QStringLiteral("default_reasoning_effort"),
              QStringLiteral("reasoning_efforts"),
+             QStringLiteral("api_style"),
+             QStringLiteral("api_styles"),
+             QStringLiteral("speed"),
+             QStringLiteral("speed_options"),
+             QStringLiteral("context_window"),
+             QStringLiteral("max_output_tokens"),
+             QStringLiteral("verbosity"),
+             QStringLiteral("temperature"),
+             QStringLiteral("top_p"),
+             QStringLiteral("timeout_seconds"),
+             QStringLiteral("request_options"),
+             QStringLiteral("supports_model_discovery"),
+             QStringLiteral("model_discovery_path"),
              QStringLiteral("model_suggestions"),
              QStringLiteral("execution_policy"),
          }) {
         check(contains(llmConfigResponseFields, field),
               QStringLiteral("llm_config route should expose Python catalog field %1").arg(field));
+    }
+
+    const QStringList llmModelsResponseFields =
+        TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("llm_models"));
+    for (const QString &field : {
+             QStringLiteral("ok"),
+             QStringLiteral("provider"),
+             QStringLiteral("catalog_revision"),
+             QStringLiteral("dynamic_count"),
+             QStringLiteral("models"),
+             QStringLiteral("error"),
+         }) {
+        check(contains(llmModelsResponseFields, field),
+              QStringLiteral("llm_models route should expose discovery field %1").arg(field));
     }
 
     const QStringList accountResponseFields =

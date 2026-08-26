@@ -1,0 +1,7 @@
+{
+  // Shared project guidance; model and mode stay user-selectable in Kilo.
+  "instructions": [
+    "AGENTS.md",
+    ".kilo/rules/trading-bot.md"
+  ]
+}

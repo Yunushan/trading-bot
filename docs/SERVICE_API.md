@@ -440,6 +440,15 @@ LLM responses are also inspected before returning to the app. Output that tries
 to submit orders, claims execution, or overrides risk controls is marked
 `ok: false` with `output_policy.blocked: true`.
 
+The shared LLM config supports selectable Chat Completions, Responses,
+Anthropic Messages, and Gemini `generateContent` request styles plus editable
+reasoning, speed/service-tier, context, output, verbosity, sampling, timeout,
+and protected advanced JSON options. `GET /api/v1/llm/models` merges live
+provider discovery with current, historical, and custom model IDs. Kilo AI
+Gateway is available as a first-class provider. See
+[LLM_COMPATIBILITY.md](LLM_COMPATIBILITY.md) for the compatibility contract and
+Cursor/Kilo project setup.
+
 Local Ollama models are downloaded by Ollama into its own model cache, commonly
 `~/.ollama/models` on Linux/macOS and `%USERPROFILE%\.ollama\models` on Windows.
 They are outside this repository and are not part of Git. The desktop LLM panel

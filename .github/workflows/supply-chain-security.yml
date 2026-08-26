@@ -2,14 +2,6 @@ name: Supply Chain Security
 
 on:
   pull_request:
-    paths:
-      - "Languages/Python/**"
-      - "apps/web-dashboard/**"
-      - "apps/mobile-client/**"
-      - "experiments/rust-shells/**"
-      - "docker/**"
-      - ".github/dependabot.yml"
-      - ".github/workflows/supply-chain-security.yml"
   push:
     branches: [main]
     paths:
@@ -91,13 +83,22 @@ jobs:
         run: |
           set -euo pipefail
           audit_file="$(mktemp)"
-          trap 'rm -f "$audit_file"' EXIT
+          mitigation_file="$(mktemp)"
+          trap 'rm -f "$audit_file" "$mitigation_file"' EXIT
+          mitigation_args=()
+          if [[ "${{ matrix.client }}" == "apps/mobile-client" ]]; then
+            node ../../tools/check_mobile_image_size_exposure.cjs \
+              --project-root . \
+              --json > "$mitigation_file"
+            mitigation_args=(--mitigation-report "$mitigation_file")
+          fi
           audit_status=0
           npm audit --omit=dev --audit-level=high --json > "$audit_file" || audit_status=$?
           node ../../tools/check_node_audit_policy.cjs \
             --report "$audit_file" \
             --policy ../../tools/node-audit-policy.json \
-            --project "${{ matrix.client }}"
+            --project "${{ matrix.client }}" \
+            "${mitigation_args[@]}"
           if [[ "$audit_status" -gt 1 ]]; then
             echo "npm audit did not complete successfully (exit code $audit_status)." >&2
             exit "$audit_status"
@@ -114,6 +115,11 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Set up Python 3.14 for policy validation
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
 
       - name: Install pinned cargo-audit
         shell: bash
@@ -134,10 +140,14 @@ jobs:
           audit_status=0
           cargo audit --db "$audit_db" --file Cargo.lock --format json > "$audit_report" || audit_status=$?
           cat "$audit_report"
-          if [[ "$audit_status" -ne 0 ]]; then
-            echo "cargo audit failed with exit code $audit_status; see the uploaded JSON report." >&2
+          python ../../tools/check_rust_audit_policy.py \
+            --report "$audit_report" \
+            --policy ../../tools/rust-audit-policy.json
+          if [[ "$audit_status" -gt 1 ]]; then
+            echo "cargo audit did not complete successfully (exit code $audit_status)." >&2
             exit "$audit_status"
           fi
+          echo "cargo audit exit code: $audit_status (policy evaluation is authoritative)"
 
       - name: Upload Rust dependency audit report
         if: always()

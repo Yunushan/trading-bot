@@ -206,6 +206,7 @@ Contributor-facing structure and maintenance docs now live here:
 - `docs/DEVELOPMENT.md`
 - `docs/PLATFORM_EXPANSION_PLAN.md`
 - `docs/SERVICE_API.md`
+- `docs/LLM_COMPATIBILITY.md`
 - `docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md`
 - `docs/OPERATOR_RUNBOOK.md`
 - `docs/ARCHITECTURE_BOUNDARIES.md`

@@ -409,13 +409,35 @@ fn validate_service_runtime_config_state(
         "",
     );
     validate_bool(&mut cfg, "llm_allow_public_network", &mut issues, "", false);
-    validate_choice(
+    validate_llm_option_token(&mut cfg, "llm_api_style", &mut issues, None);
+    validate_llm_option_token(
         &mut cfg,
         "llm_reasoning_effort",
-        LLM_REASONING_EFFORT_CHOICES,
+        &mut issues,
+        Some(LLM_REASONING_EFFORT_CHOICES),
+    );
+    validate_llm_option_token(&mut cfg, "llm_speed", &mut issues, None);
+    validate_int_range(
+        &mut cfg,
+        "llm_context_window",
         &mut issues,
         "",
+        0,
+        10_000_000,
     );
+    validate_int_range(
+        &mut cfg,
+        "llm_max_output_tokens",
+        &mut issues,
+        "",
+        0,
+        2_000_000,
+    );
+    validate_llm_option_token(&mut cfg, "llm_verbosity", &mut issues, None);
+    validate_optional_float_range(&mut cfg, "llm_temperature", &mut issues, 0.0, 2.0);
+    validate_optional_float_range(&mut cfg, "llm_top_p", &mut issues, 0.0, 1.0);
+    validate_int_range(&mut cfg, "llm_timeout_seconds", &mut issues, "", 1, 3_600);
+    validate_mapping(&cfg, "llm_request_options", &mut issues, "");
     validate_stop_loss(&mut cfg, "stop_loss", &mut issues, "");
     validate_mapping(&cfg, "indicators", &mut issues, "");
     validate_chart_config(&mut cfg, &mut issues);
@@ -460,7 +482,7 @@ fn normalize_service_runtime_config(config: &Value) -> Value {
 
 pub fn is_service_config_secret_key(key: impl AsRef<str>) -> bool {
     let text = key.as_ref().trim().to_ascii_lowercase().replace('-', "_");
-    if text.ends_with("_env") || text.ends_with("_env_var") {
+    if text == "llm_max_output_tokens" || text.ends_with("_env") || text.ends_with("_env_var") {
         return false;
     }
     SECRET_KEY_TOKENS
@@ -983,6 +1005,7 @@ const RUNTIME_ALLOWED_KEYS: &[&str] = &[
     "live_trading_max_position_pct",
     "live_trading_max_session_orders",
     "llm_allow_public_network",
+    "llm_api_style",
     "llm_api_key",
     "llm_api_key_env",
     "llm_base_url",
@@ -990,6 +1013,14 @@ const RUNTIME_ALLOWED_KEYS: &[&str] = &[
     "llm_model",
     "llm_provider",
     "llm_reasoning_effort",
+    "llm_speed",
+    "llm_context_window",
+    "llm_max_output_tokens",
+    "llm_verbosity",
+    "llm_temperature",
+    "llm_top_p",
+    "llm_timeout_seconds",
+    "llm_request_options",
     "llm_use_for",
     "lookback",
     "loop_interval_override",
@@ -1245,6 +1276,58 @@ fn validate_text(
         return;
     }
     cfg.insert(key.to_owned(), Value::String(raw_text));
+}
+
+fn validate_llm_option_token(
+    cfg: &mut Map<String, Value>,
+    key: &str,
+    issues: &mut Vec<ServiceConfigValidationIssue>,
+    known_choices: Option<ChoiceList>,
+) {
+    let Some(value) = cfg.get(key) else {
+        return;
+    };
+    let raw = value_to_text(value).trim().to_owned();
+    let normalized = known_choices
+        .and_then(|choices| choice_value_from_text(&raw, choices))
+        .unwrap_or_else(|| raw.to_ascii_lowercase().replace('_', "-"));
+    let valid = !normalized.is_empty()
+        && normalized.len() <= 64
+        && normalized
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_./:".contains(character));
+    if !valid {
+        issues.push(ServiceConfigValidationIssue::new(
+            key,
+            "must be a 1-64 character provider option token using letters, numbers, '.', '_', ':', '/', or '-'",
+        ));
+        return;
+    }
+    cfg.insert(key.to_owned(), Value::String(normalized));
+}
+
+fn validate_optional_float_range(
+    cfg: &mut Map<String, Value>,
+    key: &str,
+    issues: &mut Vec<ServiceConfigValidationIssue>,
+    min: f64,
+    max: f64,
+) {
+    let Some(value) = cfg.get(key) else {
+        return;
+    };
+    if value.is_null()
+        || value.as_str().is_some_and(|text| {
+            matches!(
+                text.trim().to_ascii_lowercase().as_str(),
+                "" | "default" | "auto"
+            )
+        })
+    {
+        cfg.insert(key.to_owned(), Value::Null);
+        return;
+    }
+    validate_float_range(cfg, key, issues, "", min, max, false);
 }
 
 fn validate_nullable_text(
@@ -2192,6 +2275,7 @@ mod tests {
             "api_key": "exchange-key",
             "api_secret": "exchange-secret",
             "api_key_env": "BINANCE_API_KEY",
+            "llm_max_output_tokens": 32_768,
             "llm": {
                 "llm_api_key": "llm-secret",
                 "token_env_var": "TOKEN_ENV"
@@ -2226,6 +2310,7 @@ mod tests {
         assert_eq!(payload["config"]["llm"]["llm_api_key"], "");
         assert_eq!(payload["config"]["providers"][0]["authorization"], "");
         assert_eq!(payload["config"]["api_key_env"], "BINANCE_API_KEY");
+        assert_eq!(payload["config"]["llm_max_output_tokens"], 32_768);
     }
 
     #[test]
@@ -2683,6 +2768,40 @@ mod tests {
             PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
             Some("stop_loss"),
         );
+    }
+
+    #[test]
+    fn future_llm_option_tokens_and_bounded_controls_validate_like_python() {
+        let validated = validate_service_runtime_config(&json!({
+            "llm_api_style": "responses_v2",
+            "llm_reasoning_effort": "turbo",
+            "llm_speed": "ultra_fast",
+            "llm_context_window": 1_000_000,
+            "llm_max_output_tokens": 32_768,
+            "llm_verbosity": "compact_v2",
+            "llm_temperature": 0.25,
+            "llm_top_p": 0.9,
+            "llm_timeout_seconds": 120,
+            "llm_request_options": {"seed": 7},
+        }))
+        .expect("future provider option tokens should validate");
+
+        assert_eq!(validated["llm_api_style"], "responses-v2");
+        assert_eq!(validated["llm_reasoning_effort"], "turbo");
+        assert_eq!(validated["llm_speed"], "ultra-fast");
+        assert_eq!(validated["llm_context_window"], 1_000_000);
+        assert_eq!(validated["llm_max_output_tokens"], 32_768);
+        assert_eq!(validated["llm_verbosity"], "compact-v2");
+        assert_eq!(validated["llm_temperature"], 0.25);
+        assert_eq!(validated["llm_top_p"], 0.9);
+        assert_eq!(validated["llm_timeout_seconds"], 120);
+        assert_eq!(validated["llm_request_options"]["seed"], 7);
+
+        let error = validate_service_runtime_config(&json!({
+            "llm_reasoning_effort": "turbo mode"
+        }))
+        .expect_err("unsafe option tokens should be rejected");
+        assert!(error.contains("llm_reasoning_effort"));
     }
 
     #[test]

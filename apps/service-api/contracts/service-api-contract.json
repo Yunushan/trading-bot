@@ -40,6 +40,7 @@
     "terminal_run": "/terminal/run",
     "llm_providers": "/llm/providers",
     "llm_config": "/llm/config",
+    "llm_models": "/llm/models",
     "llm_prompt": "/llm/prompt",
     "llm_local_model_status": "/llm/local-model/status",
     "llm_local_model_start": "/llm/local-model/start",
@@ -78,6 +79,7 @@
     "terminal_run": "/api/v1/terminal/run",
     "llm_providers": "/api/v1/llm/providers",
     "llm_config": "/api/v1/llm/config",
+    "llm_models": "/api/v1/llm/models",
     "llm_prompt": "/api/v1/llm/prompt",
     "llm_local_model_status": "/api/v1/llm/local-model/status",
     "llm_local_model_start": "/api/v1/llm/local-model/start",
@@ -116,6 +118,7 @@
     "terminal_run": "/api/terminal/run",
     "llm_providers": "/api/llm/providers",
     "llm_config": "/api/llm/config",
+    "llm_models": "/api/llm/models",
     "llm_prompt": "/api/llm/prompt",
     "llm_local_model_status": "/api/llm/local-model/status",
     "llm_local_model_start": "/api/llm/local-model/start",
@@ -221,6 +224,9 @@
     "llm_config": [
       "GET",
       "PATCH"
+    ],
+    "llm_models": [
+      "GET"
     ],
     "llm_prompt": [
       "POST"
@@ -847,6 +853,11 @@
         "model_suggestions",
         "reasoning_efforts",
         "default_reasoning_effort",
+        "api_styles",
+        "speed_options",
+        "default_speed",
+        "supports_model_discovery",
+        "model_discovery_path",
         "catalog_revision",
         "catalog_path",
         "custom_models_env",
@@ -866,6 +877,9 @@
         "provider_label",
         "mode",
         "protocol",
+        "provider_protocol",
+        "api_style",
+        "api_styles",
         "catalog_revision",
         "catalog_path",
         "custom_models_env",
@@ -879,9 +893,33 @@
         "reasoning_effort",
         "default_reasoning_effort",
         "reasoning_efforts",
+        "speed",
+        "default_speed",
+        "speed_options",
+        "context_window",
+        "max_output_tokens",
+        "verbosity",
+        "temperature",
+        "top_p",
+        "timeout_seconds",
+        "request_options",
+        "supports_model_discovery",
+        "model_discovery_path",
         "model_suggestions",
         "notes",
         "execution_policy"
+      ]
+    },
+    "llm_models": {
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "ok",
+        "provider",
+        "catalog_revision",
+        "dynamic_count",
+        "models",
+        "error"
       ]
     },
     "llm_prompt": {
@@ -1001,6 +1039,7 @@
     "dashboard",
     "llm_providers",
     "llm_config",
+    "llm_models",
     "config_persistence",
     "config_save",
     "config_load",
