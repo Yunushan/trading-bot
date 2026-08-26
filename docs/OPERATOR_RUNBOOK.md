@@ -135,6 +135,10 @@ before publishing a release:
 
 - require at least one independent reviewer;
 - restrict deployment branches/tags to version tags such as `v*`;
+- configure an active repository tag ruleset for version tags such as `v*`, so
+  `github.ref_protected` is true for stable publication;
+- require platform publishers to finish their prerelease candidate uploads,
+  then dispatch `Finalize Stable Release` from that same protected tag;
 - keep release credentials and signing material in environment secrets, never
   in workflow inputs or committed files; and
 - review the platform evidence and release manifest before approving the job.

@@ -101,11 +101,14 @@ jobs:
       - name: Validate tagged release QA sign-off
         if: github.ref_type == 'tag'
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_QA_NOTE: docs/release-qa/${{ github.ref_name }}.md
         run: |
           set -euo pipefail
           python tools/check_release_qa.py \
-            --tag "${{ github.ref_name }}" \
-            --note "docs/release-qa/${{ github.ref_name }}.md" \
+            --tag "${RELEASE_TAG}" \
+            --note "${RELEASE_QA_NOTE}" \
             --require-current-revision \
             --allow-release-qa-commit \
             --require-platform-evidence-run
@@ -113,7 +116,9 @@ jobs:
       - name: Validate tagged release metadata versions
         if: github.ref_type == 'tag'
         shell: bash
-        run: python tools/check_release_version.py --tag "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/check_release_version.py --tag "${RELEASE_TAG}"
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -418,6 +423,7 @@ jobs:
     concurrency:
       group: release-publish-${{ github.ref_name }}
       cancel-in-progress: false
+      queue: max
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -438,6 +444,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
 
       - name: Verify required release platform evidence
+        id: release_platform_evidence
         uses: ./.github/actions/verify-release-platform-evidence
         with:
           tag: ${{ github.ref_name }}
@@ -495,7 +502,23 @@ jobs:
             --require-current-revision
           ls -lah release
 
+      - name: Require mutable prerelease candidate state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_OWNER: ${{ github.repository_owner }}
+          RELEASE_REPO: ${{ github.event.repository.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_publication_state.py \
+            --tag "${RELEASE_TAG}" \
+            --owner "${RELEASE_OWNER}" \
+            --repo "${RELEASE_REPO}"
+
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
+          prerelease: true
+          make_latest: false
           files: release/*

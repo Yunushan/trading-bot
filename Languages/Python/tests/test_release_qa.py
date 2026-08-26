@@ -37,6 +37,12 @@ def _approved_note(tag: str = "v1.2.3") -> str:
 - Completed on: 2026-07-18
 - Operator: Release engineering
 - Outcome: approved
+- Candidate CI run ID: 123456780
+- Candidate CI run URL: https://github.com/example/trading-bot/actions/runs/123456780
+- CodeQL run ID: 123456781
+- CodeQL run URL: https://github.com/example/trading-bot/actions/runs/123456781
+- Supply chain security run ID: 123456782
+- Supply chain security run URL: https://github.com/example/trading-bot/actions/runs/123456782
 - Release platform evidence run ID: 123456789
 - Release platform evidence run URL: https://github.com/example/trading-bot/actions/runs/123456789
 - Release platform evidence scope: full
@@ -71,12 +77,60 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("QA note Outcome must be approved", issues)
         self.assertIn("QA note must record a completed Release package check", issues)
 
+    def test_rejects_non_semantic_release_tag_and_displaced_heading(self):
+        checker = _load_checker()
+        tag = "vnot-a-version"
+        note_text = "Unexpected preface\n" + _approved_note(tag)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / f"{tag}.md"
+            note.write_text(note_text, encoding="utf-8")
+            issues = checker.validate_release_qa_note(
+                note,
+                tag=tag,
+                source_revision=REVISION,
+            )
+        self.assertIn(
+            f"release tag must use vMAJOR.MINOR.PATCH form: {tag}",
+            issues,
+        )
+        self.assertIn(
+            f"QA note must start with the release heading for {tag}",
+            issues,
+        )
+
+    def test_rejects_ambiguous_duplicate_release_metadata(self):
+        checker = _load_checker()
+        note_text = _approved_note().replace(
+            "- Outcome: approved\n",
+            "- Outcome: approved\n- Outcome: approved\n",
+        )
+        note_text += "- CodeQL run ID: 123456781\n"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / "v1.2.3.md"
+            note.write_text(note_text, encoding="utf-8")
+            issues = checker.validate_release_qa_note(
+                note,
+                tag="v1.2.3",
+                source_revision=REVISION,
+            )
+        self.assertIn("QA note Outcome must appear exactly once", issues)
+        self.assertIn("QA note CodeQL run ID must appear exactly once", issues)
+
     def test_v1_0_40_does_not_retroactively_require_native_signing(self):
         checker = _load_checker()
         note_text = _approved_note("v1.0.40").replace(
             "- [x] Native signing and notarization: Protected credentials and fail-closed trust gates were reviewed.\n",
             "",
         )
+        for line in (
+            "- Candidate CI run ID: 123456780\n",
+            "- Candidate CI run URL: https://github.com/example/trading-bot/actions/runs/123456780\n",
+            "- CodeQL run ID: 123456781\n",
+            "- CodeQL run URL: https://github.com/example/trading-bot/actions/runs/123456781\n",
+            "- Supply chain security run ID: 123456782\n",
+            "- Supply chain security run URL: https://github.com/example/trading-bot/actions/runs/123456782\n",
+        ):
+            note_text = note_text.replace(line, "")
         with tempfile.TemporaryDirectory() as temp_dir:
             note = Path(temp_dir) / "v1.0.40.md"
             note.write_text(note_text, encoding="utf-8")
@@ -104,6 +158,48 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn(
             "QA note must record a completed Native signing and notarization check",
             issues,
+        )
+
+    def test_v1_0_41_requires_exact_source_ci_and_security_run_bindings(self):
+        checker = _load_checker()
+        note_text = _approved_note("v1.0.41").replace(
+            "- CodeQL run ID: 123456781\n",
+            "",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / "v1.0.41.md"
+            note.write_text(note_text, encoding="utf-8")
+            issues = checker.validate_release_qa_note(
+                note,
+                tag="v1.0.41",
+                source_revision=REVISION,
+            )
+        self.assertIn(
+            "QA note CodeQL run ID must be a positive GitHub Actions run ID",
+            issues,
+        )
+
+    def test_release_run_urls_must_match_ids_and_current_repository(self):
+        checker = _load_checker()
+        note_text = _approved_note().replace(
+            "actions/runs/123456781",
+            "actions/runs/987654321",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            note = Path(temp_dir) / "v1.2.3.md"
+            note.write_text(note_text, encoding="utf-8")
+            issues = checker.validate_release_qa_note(
+                note,
+                tag="v1.2.3",
+                source_revision=REVISION,
+                repository="current/trading-bot",
+            )
+        self.assertIn(
+            "QA note CodeQL run URL must reference the recorded run ID",
+            issues,
+        )
+        self.assertTrue(
+            any("must reference the current repository current/trading-bot" in issue for issue in issues)
         )
 
     def test_requires_a_positive_platform_evidence_run_id_when_requested(self):
@@ -212,6 +308,10 @@ class ReleaseQaTests(unittest.TestCase):
                 self.assertIn("--require-current-revision", workflow)
                 self.assertIn("--allow-release-qa-commit", workflow)
                 self.assertIn("--require-platform-evidence-run", workflow)
+                self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", workflow)
+                self.assertIn("RELEASE_QA_NOTE: docs/release-qa/${{ github.ref_name }}.md", workflow)
+                self.assertNotIn('--tag "${{ github.ref_name }}"', workflow)
+                self.assertNotIn('--note "docs/release-qa/${{ github.ref_name }}.md"', workflow)
                 self.assertIn("fetch-depth: 0", workflow)
 
     def test_tagged_release_workflows_trigger_on_version_tags(self):
@@ -244,7 +344,99 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("--require-clean-source", action)
         self.assertIn("--require-platform-evidence-run", action)
         self.assertIn("--print-platform-evidence-scope", action)
+        self.assertIn("--print-production-run-evidence-required", action)
+        self.assertIn("--print-candidate-ci-run-id", action)
+        self.assertIn("--print-codeql-run-id", action)
+        self.assertIn("--print-supply-chain-run-id", action)
         self.assertIn("--exclude-self-hosted", action)
+        self.assertIn("outputs:", action)
+        self.assertIn("value: ${{ steps.release_qa.outputs.source_revision }}", action)
+        self.assertIn("value: ${{ steps.release_qa.outputs.evidence_run_id }}", action)
+        self.assertIn("value: ${{ steps.release_qa.outputs.evidence_scope }}", action)
+        self.assertIn("Verify exact-source CI and security workflow runs", action)
+        self.assertIn("tools/check_release_workflow_run.py", action)
+        self.assertIn(".github/workflows/ci.yml", action)
+        self.assertIn(".github/workflows/codeql.yml", action)
+        self.assertIn(".github/workflows/supply-chain-security.yml", action)
+        self.assertIn("Require stable release source on the default branch", action)
+        self.assertIn("steps.release_qa.outputs.evidence_scope == 'full'", action)
+        self.assertIn("github.event.repository.default_branch", action)
+        self.assertIn("git merge-base --is-ancestor", action)
+        self.assertIn("Require protected release tag for stable publication", action)
+        self.assertIn("RELEASE_REF_PROTECTED: ${{ github.ref_protected }}", action)
+        self.assertIn('[[ "${RELEASE_REF_PROTECTED}" != "true" ]]', action)
+        self.assertIn("RELEASE_TAG: ${{ inputs.tag }}", action)
+        self.assertIn("RELEASE_QA_NOTE: ${{ inputs.note }}", action)
+        self.assertIn('--tag "${RELEASE_TAG}"', action)
+        self.assertIn('--note "${RELEASE_QA_NOTE}"', action)
+        self.assertNotIn('--tag "${{ inputs.tag }}"', action)
+        self.assertNotIn('--note "${{ inputs.note }}"', action)
+        self.assertNotIn('--evidence-dir "${{ inputs.evidence_dir }}"', action)
+
+    def test_platform_publishers_create_only_prerelease_candidates(self):
+        for workflow_name in RELEASE_WORKFLOWS:
+            with self.subTest(workflow=workflow_name):
+                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+                _, publish_section = workflow.split("\n  publish-release:", 1)
+                self.assertIn("id: release_platform_evidence", publish_section)
+                self.assertIn("prerelease: true", publish_section)
+                self.assertIn("make_latest: false", publish_section)
+                self.assertNotIn("make_latest: true", publish_section)
+                self.assertIn("queue: max", publish_section)
+                self.assertIn("tools/check_release_publication_state.py", publish_section)
+                state_index = publish_section.index("tools/check_release_publication_state.py")
+                upload_index = publish_section.index("uses: softprops/action-gh-release@")
+                self.assertLess(state_index, upload_index)
+
+        release_guide = (REPO_ROOT / "docs" / "RELEASES.md").read_text(encoding="utf-8")
+        self.assertIn("publishers always create or update a non-latest", release_guide)
+        self.assertIn("A `hosted-only` candidate must remain", release_guide)
+        self.assertIn("`Finalize Stable Release`", release_guide)
+
+    def test_stable_release_finalizer_is_aggregate_and_fail_closed(self):
+        finalizer = (REPO_ROOT / ".github" / "workflows" / "finalize-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"on":\n  workflow_dispatch:', finalizer)
+        self.assertIn("actions: read\n      contents: write", finalizer)
+        self.assertIn("environment: production", finalizer)
+        self.assertIn("group: release-publish-${{ github.ref_name }}", finalizer)
+        self.assertIn("cancel-in-progress: false", finalizer)
+        self.assertIn("queue: max", finalizer)
+        self.assertIn("RELEASE_REF_TYPE: ${{ github.ref_type }}", finalizer)
+        self.assertIn("uses: ./.github/actions/verify-release-platform-evidence", finalizer)
+        self.assertIn("Only full release-platform evidence may become stable/latest", finalizer)
+        self.assertIn("tools/check_release_assets.py", finalizer)
+        self.assertIn("--require-prerelease-candidate", finalizer)
+        self.assertIn("tools/check_release_workflow_run_set.py", finalizer)
+        self.assertIn(".github/workflows/release-windows.yml", finalizer)
+        self.assertIn(".github/workflows/release-linux-macos.yml", finalizer)
+        self.assertIn("tools/check_release_candidate_manifests.py", finalizer)
+        self.assertIn("release-manifest-*.json", finalizer)
+        self.assertIn("--expected-source-revision", finalizer)
+        self.assertIn("RELEASE_BUILD_REVISION: ${{ github.sha }}", finalizer)
+        self.assertIn("name: Restore tagged release checkout", finalizer)
+        self.assertIn("prerelease: false", finalizer)
+        self.assertIn("make_latest: true", finalizer)
+        self.assertLess(
+            finalizer.index("--require-prerelease-candidate"),
+            finalizer.index("name: Promote complete candidate to stable latest release"),
+        )
+
+    def test_actionlint_queue_compatibility_exception_is_release_scoped(self):
+        config = (REPO_ROOT / ".github" / "actionlint.yaml").read_text(encoding="utf-8")
+        self.assertIn(".github/workflows/*release*.yml:", config)
+        self.assertIn('unexpected key "queue" for "concurrency" section', config)
+        self.assertNotIn(".github/workflows/**/*.yml", config)
+
+    def test_release_publishers_restore_tagged_checkout_after_platform_evidence(self):
+        for workflow_name in RELEASE_WORKFLOWS:
+            with self.subTest(workflow=workflow_name):
+                workflow = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+                _, publish_section = workflow.split("\n  publish-release:", 1)
+                evidence_index = publish_section.index("uses: ./.github/actions/verify-release-platform-evidence")
+                restore_index = publish_section.index("name: Restore tagged release checkout")
+                self.assertLess(evidence_index, restore_index)
 
     def test_split_release_workflows_use_job_scoped_permissions(self):
         for workflow_name in ("release-windows.yml", "release-linux-macos.yml"):
@@ -294,6 +486,7 @@ class ReleaseQaTests(unittest.TestCase):
                     r"(?ms)concurrency:\n      group: release-publish-\$\{\{ github\.ref_name \}\}\n"
                     r"      cancel-in-progress: false",
                 )
+                self.assertIn("queue: max", publish_section)
 
     def test_freebsd_release_publisher_provisions_pinned_python(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "release-freebsd.yml").read_text(encoding="utf-8")

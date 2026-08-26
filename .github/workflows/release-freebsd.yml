@@ -44,11 +44,14 @@ jobs:
       - name: Validate tagged release QA sign-off
         if: github.ref_type == 'tag'
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_QA_NOTE: docs/release-qa/${{ github.ref_name }}.md
         run: |
           set -euo pipefail
           python3 tools/check_release_qa.py \
-            --tag "${{ github.ref_name }}" \
-            --note "docs/release-qa/${{ github.ref_name }}.md" \
+            --tag "${RELEASE_TAG}" \
+            --note "${RELEASE_QA_NOTE}" \
             --require-current-revision \
             --allow-release-qa-commit \
             --require-platform-evidence-run
@@ -56,7 +59,9 @@ jobs:
       - name: Validate tagged release metadata versions
         if: github.ref_type == 'tag'
         shell: bash
-        run: python tools/check_release_version.py --tag "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/check_release_version.py --tag "${RELEASE_TAG}"
 
       - name: Validate FreeBSD runner prerequisites
         shell: bash
@@ -210,6 +215,7 @@ jobs:
     concurrency:
       group: release-publish-${{ github.ref_name }}
       cancel-in-progress: false
+      queue: max
     environment: production
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -225,10 +231,15 @@ jobs:
           python-version: "3.14"
 
       - name: Verify required release platform evidence
+        id: release_platform_evidence
         uses: ./.github/actions/verify-release-platform-evidence
         with:
           tag: ${{ github.ref_name }}
           note: docs/release-qa/${{ github.ref_name }}.md
+
+      - name: Restore tagged release checkout
+        shell: bash
+        run: git checkout --detach "${GITHUB_SHA}"
 
       - name: Download FreeBSD assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -268,9 +279,25 @@ jobs:
           subject-path: release/*
           sbom-path: release/release-sbom-freebsd.spdx.json
 
+      - name: Require mutable prerelease candidate state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_OWNER: ${{ github.repository_owner }}
+          RELEASE_REPO: ${{ github.event.repository.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_publication_state.py \
+            --tag "${RELEASE_TAG}" \
+            --owner "${RELEASE_OWNER}" \
+            --repo "${RELEASE_REPO}"
+
       - name: Publish FreeBSD release assets
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
+          prerelease: true
+          make_latest: false
           files: |
             release/Trading-Bot-Python-freebsd-*.tar.gz
             release/Trading-Bot-C++-freebsd-*.tar.gz

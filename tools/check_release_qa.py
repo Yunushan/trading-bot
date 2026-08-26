@@ -20,15 +20,38 @@ REQUIRED_SCENARIOS = (
 )
 NATIVE_SIGNING_SCENARIO = "Native signing and notarization"
 NATIVE_SIGNING_REQUIRED_SINCE = (1, 0, 41)
+PRODUCTION_RUN_EVIDENCE_REQUIRED_SINCE = (1, 0, 41)
+PRODUCTION_RUN_BINDINGS = (
+    ("Candidate CI", "Candidate CI run ID", "Candidate CI run URL"),
+    ("CodeQL", "CodeQL run ID", "CodeQL run URL"),
+    (
+        "Supply chain security",
+        "Supply chain security run ID",
+        "Supply chain security run URL",
+    ),
+)
 VERSION_TAG_PATTERN = re.compile(
     r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)(?:[-+][0-9A-Za-z.-]+)?$"
 )
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 EVIDENCE_RUN_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
 EVIDENCE_RUN_URL_PATTERN = re.compile(
-    r"^https://github\.com/[^/\s]+/[^/\s]+/actions/runs/([1-9][0-9]*)/?$"
+    r"^https://github\.com/(?P<repository>[^/\s]+/[^/\s]+)/actions/runs/"
+    r"(?P<run_id>[1-9][0-9]*)/?$"
 )
 EVIDENCE_SCOPES = ("full", "hosted-only")
+BASE_METADATA_FIELDS = (
+    "Release tag",
+    "Source revision",
+    "Completed on",
+    "Operator",
+    "Outcome",
+)
+PLATFORM_EVIDENCE_FIELDS = (
+    "Release platform evidence run ID",
+    "Release platform evidence run URL",
+    "Release platform evidence scope",
+)
 
 
 def _required_scenarios(tag: str) -> tuple[str, ...]:
@@ -41,9 +64,52 @@ def _required_scenarios(tag: str) -> tuple[str, ...]:
     return REQUIRED_SCENARIOS
 
 
+def _requires_production_run_evidence(tag: str) -> bool:
+    match = VERSION_TAG_PATTERN.fullmatch(tag)
+    if not match:
+        return False
+    version = tuple(int(match.group(part)) for part in ("major", "minor", "patch"))
+    return version >= PRODUCTION_RUN_EVIDENCE_REQUIRED_SINCE
+
+
 def _field(text: str, label: str) -> str:
     match = re.search(rf"(?mi)^-\s*{re.escape(label)}:\s*(.+?)\s*$", text)
     return match.group(1).strip() if match else ""
+
+
+def _duplicate_metadata_issues(text: str, labels: tuple[str, ...]) -> list[str]:
+    issues: list[str] = []
+    for label in labels:
+        matches = re.findall(rf"(?mi)^-\s*{re.escape(label)}:\s*(.+?)\s*$", text)
+        if len(matches) > 1:
+            issues.append(f"QA note {label} must appear exactly once")
+    return issues
+
+
+def _validate_run_binding(
+    text: str,
+    *,
+    name: str,
+    id_label: str,
+    url_label: str,
+    repository: str = "",
+) -> list[str]:
+    issues: list[str] = []
+    run_id = _field(text, id_label)
+    if not EVIDENCE_RUN_ID_PATTERN.fullmatch(run_id):
+        issues.append(f"QA note {id_label} must be a positive GitHub Actions run ID")
+    run_url = _field(text, url_label)
+    url_match = EVIDENCE_RUN_URL_PATTERN.fullmatch(run_url)
+    if not url_match:
+        issues.append(f"QA note {url_label} must be a GitHub Actions run URL")
+        return issues
+    if run_id and url_match.group("run_id") != run_id:
+        issues.append(f"QA note {url_label} must reference the recorded run ID")
+    if repository and url_match.group("repository").casefold() != repository.casefold():
+        issues.append(
+            f"QA note {name} run URL must reference the current repository {repository}"
+        )
+    return issues
 
 
 def validate_release_qa_note(
@@ -52,14 +118,27 @@ def validate_release_qa_note(
     tag: str,
     source_revision: str = "",
     require_platform_evidence_run: bool = False,
+    repository: str = "",
 ) -> list[str]:
     if not note.is_file():
         return [f"missing release QA note: {note}"]
 
     text = note.read_text(encoding="utf-8")
     issues: list[str] = []
-    if f"# Release QA: {tag}" not in text:
+    if not VERSION_TAG_PATTERN.fullmatch(tag):
+        issues.append(f"release tag must use vMAJOR.MINOR.PATCH form: {tag}")
+    first_line = text.splitlines()[0].strip() if text.splitlines() else ""
+    if first_line != f"# Release QA: {tag}":
         issues.append(f"QA note must start with the release heading for {tag}")
+
+    metadata_fields = list(BASE_METADATA_FIELDS)
+    if require_platform_evidence_run:
+        metadata_fields.extend(PLATFORM_EVIDENCE_FIELDS)
+    if _requires_production_run_evidence(tag):
+        for _, id_label, url_label in PRODUCTION_RUN_BINDINGS:
+            metadata_fields.extend((id_label, url_label))
+    issues.extend(_duplicate_metadata_issues(text, tuple(metadata_fields)))
+
     if _field(text, "Release tag") != tag:
         issues.append(f"QA note Release tag must equal {tag}")
 
@@ -86,26 +165,32 @@ def validate_release_qa_note(
         )
 
     if require_platform_evidence_run:
-        evidence_run_id = _field(text, "Release platform evidence run ID")
-        if not EVIDENCE_RUN_ID_PATTERN.fullmatch(evidence_run_id):
-            issues.append(
-                "QA note Release platform evidence run ID must be a positive GitHub Actions run ID"
+        issues.extend(
+            _validate_run_binding(
+                text,
+                name="Release platform evidence",
+                id_label="Release platform evidence run ID",
+                url_label="Release platform evidence run URL",
+                repository=repository,
             )
-        evidence_run_url = _field(text, "Release platform evidence run URL")
-        evidence_url_match = EVIDENCE_RUN_URL_PATTERN.fullmatch(evidence_run_url)
-        if not evidence_url_match:
-            issues.append(
-                "QA note Release platform evidence run URL must be a GitHub Actions run URL"
-            )
-        elif evidence_run_id and evidence_url_match.group(1) != evidence_run_id:
-            issues.append(
-                "QA note Release platform evidence run URL must reference the recorded run ID"
-            )
+        )
         evidence_scope = _field(text, "Release platform evidence scope")
         if evidence_scope not in EVIDENCE_SCOPES:
             issues.append(
                 "QA note Release platform evidence scope must be one of: "
                 + ", ".join(EVIDENCE_SCOPES)
+            )
+
+    if _requires_production_run_evidence(tag):
+        for name, id_label, url_label in PRODUCTION_RUN_BINDINGS:
+            issues.extend(
+                _validate_run_binding(
+                    text,
+                    name=name,
+                    id_label=id_label,
+                    url_label=url_label,
+                    repository=repository,
+                )
             )
 
     for scenario in _required_scenarios(tag):
@@ -202,6 +287,26 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the validated release-platform evidence scope from the QA note.",
     )
+    output_group.add_argument(
+        "--print-production-run-evidence-required",
+        action="store_true",
+        help="Print true when exact-source CI and security run evidence is required.",
+    )
+    output_group.add_argument(
+        "--print-candidate-ci-run-id",
+        action="store_true",
+        help="Print the validated candidate CI workflow run ID.",
+    )
+    output_group.add_argument(
+        "--print-codeql-run-id",
+        action="store_true",
+        help="Print the validated CodeQL workflow run ID.",
+    )
+    output_group.add_argument(
+        "--print-supply-chain-run-id",
+        action="store_true",
+        help="Print the validated supply-chain workflow run ID.",
+    )
     return parser
 
 
@@ -209,12 +314,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     revision = os.environ.get("GITHUB_SHA", "") if args.require_current_revision else ""
+    repository = os.environ.get("GITHUB_REPOSITORY", "") if args.require_current_revision else ""
     if args.allow_release_qa_commit and not args.require_current_revision:
         parser.error("--allow-release-qa-commit requires --require-current-revision")
     if (
         args.print_source_revision
         or args.print_platform_evidence_run_id
         or args.print_platform_evidence_scope
+        or args.print_production_run_evidence_required
+        or args.print_candidate_ci_run_id
+        or args.print_codeql_run_id
+        or args.print_supply_chain_run_id
     ) and not args.require_current_revision:
         parser.error("print options require --require-current-revision")
     if args.require_current_revision and not REVISION_PATTERN.fullmatch(revision):
@@ -233,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
             tag=args.tag,
             source_revision=revision,
             require_platform_evidence_run=args.require_platform_evidence_run,
+            repository=repository,
         )
     )
     if issues:
@@ -252,6 +363,19 @@ def main(argv: list[str] | None = None) -> int:
         print(
             _field(
                 args.note.read_text(encoding="utf-8"), "Release platform evidence scope"
+            )
+        )
+    elif args.print_production_run_evidence_required:
+        print("true" if _requires_production_run_evidence(args.tag) else "false")
+    elif args.print_candidate_ci_run_id:
+        print(_field(args.note.read_text(encoding="utf-8"), "Candidate CI run ID"))
+    elif args.print_codeql_run_id:
+        print(_field(args.note.read_text(encoding="utf-8"), "CodeQL run ID"))
+    elif args.print_supply_chain_run_id:
+        print(
+            _field(
+                args.note.read_text(encoding="utf-8"),
+                "Supply chain security run ID",
             )
         )
     else:

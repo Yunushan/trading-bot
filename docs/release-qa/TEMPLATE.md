@@ -5,6 +5,12 @@
 - Completed on: YYYY-MM-DD
 - Operator: Full name or accountable team
 - Outcome: approved
+- Candidate CI run ID: Positive GitHub Actions run ID for the exact source revision
+- Candidate CI run URL: Full GitHub Actions URL for the same run ID
+- CodeQL run ID: Positive GitHub Actions run ID for the exact source revision
+- CodeQL run URL: Full GitHub Actions URL for the same run ID
+- Supply chain security run ID: Positive GitHub Actions run ID for the exact source revision
+- Supply chain security run URL: Full GitHub Actions URL for the same run ID
 - Release platform evidence run ID: Positive GitHub Actions run ID for the selected release-platform scope
 - Release platform evidence run URL: Full GitHub Actions URL for the same run ID
 - Release platform evidence scope: full

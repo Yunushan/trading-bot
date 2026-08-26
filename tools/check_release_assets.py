@@ -52,6 +52,22 @@ REQUIRED_RUST_PREFIXES = (
     "Trading-Bot-Rust-tauri",
 )
 NATIVE_SIGNING_REQUIRED_SINCE = (1, 0, 41)
+RELEASE_ASSET_INTEGRITY_REQUIRED_SINCE = (1, 0, 41)
+SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+HTTP_STATUS_PATTERN = re.compile(r"\bHTTP\s+(?P<status>[1-5][0-9]{2})\b", re.IGNORECASE)
+
+
+class GitHubApiError(RuntimeError):
+    """GitHub API failure with an optional HTTP status for fail-closed callers."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _http_status_from_error_text(value: str) -> int | None:
+    match = HTTP_STATUS_PATTERN.search(str(value or ""))
+    return int(match.group("status")) if match else None
 
 
 @dataclass(frozen=True)
@@ -87,6 +103,15 @@ def _native_signing_required(tag: str) -> bool:
     numeric_parts = [int(part) for part in re.findall(r"\d+", match.group(1))[:3]]
     numeric_parts.extend([0] * (3 - len(numeric_parts)))
     return tuple(numeric_parts) >= NATIVE_SIGNING_REQUIRED_SINCE
+
+
+def _asset_integrity_metadata_required(tag: str) -> bool:
+    match = VERSION_PATTERN.search(str(tag or "").strip())
+    if not match:
+        return False
+    numeric_parts = [int(part) for part in re.findall(r"\d+", match.group(1))[:3]]
+    numeric_parts.extend([0] * (3 - len(numeric_parts)))
+    return tuple(numeric_parts) >= RELEASE_ASSET_INTEGRITY_REQUIRED_SINCE
 
 
 def _build_expected_assets(tag: str) -> tuple[str, list[ExpectedAsset]]:
@@ -166,6 +191,66 @@ def _missing_required_assets(
     )
 
 
+def _release_payload_issues(
+    payload: dict,
+    *,
+    tag: str,
+    expected_assets: list[ExpectedAsset],
+    require_prerelease_candidate: bool = False,
+) -> list[str]:
+    """Return release-state and required-asset metadata defects."""
+
+    issues: list[str] = []
+    if str(payload.get("tag_name") or "").strip() != tag:
+        issues.append("release payload tag_name does not match the requested tag")
+    if require_prerelease_candidate:
+        if payload.get("draft") is not False:
+            issues.append("release candidate must be published, not draft")
+        if payload.get("prerelease") is not True:
+            issues.append("release candidate must still be marked prerelease")
+
+    rows = payload.get("assets")
+    if not isinstance(rows, list):
+        issues.append("release payload does not contain an asset list")
+        return issues
+
+    rows_by_name: dict[str, list[dict]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if name:
+            rows_by_name.setdefault(name, []).append(row)
+
+    require_digest = _asset_integrity_metadata_required(tag)
+    for expected in expected_assets:
+        if not expected.required or expected.name not in rows_by_name:
+            continue
+        matching_rows = rows_by_name[expected.name]
+        if len(matching_rows) != 1:
+            issues.append(
+                f"required release asset {expected.name!r} must appear exactly once"
+            )
+            continue
+        row = matching_rows[0]
+        if str(row.get("state") or "").strip().lower() != "uploaded":
+            issues.append(
+                f"required release asset {expected.name!r} is not fully uploaded"
+            )
+        size = row.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            issues.append(
+                f"required release asset {expected.name!r} must have a positive byte size"
+            )
+        if require_digest and not SHA256_DIGEST_PATTERN.fullmatch(
+            str(row.get("digest") or "").strip()
+        ):
+            issues.append(
+                f"required release asset {expected.name!r} must expose a GitHub SHA-256 digest"
+            )
+    return issues
+
+
 def _is_ssl_certificate_error(exc: urllib.error.URLError) -> bool:
     text = str(exc.reason if hasattr(exc, "reason") else exc)
     return "CERTIFICATE_VERIFY_FAILED" in text or "[SSL:" in text
@@ -236,7 +321,10 @@ Invoke-RestMethod -Uri $env:TB_RELEASE_URL -Headers $headers -TimeoutSec $timeou
         message = "GitHub API request failed through Windows certificate-store fallback."
         if detail:
             message = f"{message} {detail}"
-        raise RuntimeError(message)
+        raise GitHubApiError(
+            message,
+            status=_http_status_from_error_text(detail),
+        )
 
     try:
         result = json.loads(completed.stdout)
@@ -296,7 +384,10 @@ def _github_json_from_gh_cli(
         message = "GitHub API request failed through GitHub CLI fallback."
         if detail:
             message = f"{message} {detail}"
-        raise RuntimeError(message)
+        raise GitHubApiError(
+            message,
+            status=_http_status_from_error_text(detail),
+        )
 
     try:
         result = json.loads(completed.stdout)
@@ -329,7 +420,7 @@ def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
         message = f"GitHub API request failed with HTTP {exc.code}."
         if detail:
             message = f"{message} {detail}"
-        raise RuntimeError(message) from exc
+        raise GitHubApiError(message, status=exc.code) from exc
     except urllib.error.URLError as exc:
         if _is_ssl_certificate_error(exc):
             fallback_error: RuntimeError | None = None
@@ -339,6 +430,10 @@ def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
                     timeout=timeout,
                     token=token,
                 )
+            except GitHubApiError as fallback_exc:
+                if fallback_exc.status is not None:
+                    raise
+                fallback_error = fallback_exc
             except RuntimeError as fallback_exc:
                 fallback_error = fallback_exc
             try:
@@ -347,6 +442,14 @@ def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
                     timeout=timeout,
                     token=token,
                 )
+            except GitHubApiError as cli_exc:
+                if cli_exc.status is not None:
+                    raise
+                raise RuntimeError(
+                    "Could not reach GitHub API with Python TLS validation; the "
+                    f"Windows certificate-store fallback failed: {fallback_error}; "
+                    f"the GitHub CLI fallback also failed: {cli_exc}"
+                ) from exc
             except RuntimeError as cli_exc:
                 raise RuntimeError(
                     "Could not reach GitHub API with Python TLS validation; the "
@@ -434,6 +537,14 @@ def main() -> int:
         action="store_true",
         help="Also print the expected assets that are present on the release.",
     )
+    parser.add_argument(
+        "--require-prerelease-candidate",
+        action="store_true",
+        help=(
+            "Require a published prerelease candidate with complete, non-empty, "
+            "digest-bearing required assets before stable promotion."
+        ),
+    )
     args = parser.parse_args()
 
     if args.list_expected:
@@ -472,6 +583,12 @@ def main() -> int:
         for row in release_asset_rows
         if isinstance(row, dict) and str(row.get("name") or "").strip()
     }
+    payload_issues = _release_payload_issues(
+        payload,
+        tag=args.tag,
+        expected_assets=expected_assets,
+        require_prerelease_candidate=args.require_prerelease_candidate,
+    )
 
     present_required = sorted(asset.name for asset in required_assets if asset.name in release_asset_names)
     missing_required = _missing_required_assets(expected_assets, release_asset_names)
@@ -505,8 +622,10 @@ def main() -> int:
     _print_asset_list("Missing optional assets", missing_optional)
     print()
     _print_asset_list("Additional release assets", additional_assets)
+    print()
+    _print_asset_list("Release payload issues", payload_issues)
 
-    if missing_required:
+    if missing_required or payload_issues:
         return 1
     return 0
 
