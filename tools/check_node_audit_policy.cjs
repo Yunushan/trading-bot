@@ -175,6 +175,17 @@ function evaluateAuditReport(report, policy, options = {}) {
         errors.push(`Node audit exception for ${packageName} is valid only while npm reports no fix`);
         continue;
       }
+    } else if (fixAvailability === "none-published-or-reviewed-breaking-graph") {
+      const fix = vulnerability.fixAvailable;
+      const reviewedBreakingGraph = fix?.isSemVerMajor === true
+        && fix.name === exception.verified_fix_target
+        && fix.version === exception.verified_fix_version;
+      if (fix !== false && !reviewedBreakingGraph) {
+        errors.push(
+          `Node audit exception for ${packageName} permits only no published fix or the reviewed breaking graph remediation`,
+        );
+        continue;
+      }
     } else {
       errors.push(`Node audit exception for ${packageName} has unknown fix_availability`);
       continue;
@@ -273,7 +284,9 @@ function runSelfTest() {
           max_severity: "high",
           required_effects: ["metro"],
           reviewed: "2026-08-26",
-          fix_availability: "none-published",
+          fix_availability: "none-published-or-reviewed-breaking-graph",
+          verified_fix_target: "react-native",
+          verified_fix_version: "0.86.3",
           mitigation_control: "mobile-image-size-build-only-v1",
           verified_package_version: "1.2.1",
           verified_consumers: ["metro@0.87.0"],
@@ -311,6 +324,20 @@ function runSelfTest() {
   });
   assert.equal(allowedResult.ok, true);
   assert.equal(allowedResult.unresolved.length, 0);
+
+  const breakingGraphReport = JSON.parse(JSON.stringify(report));
+  breakingGraphReport.vulnerabilities["image-size"].fixAvailable = {
+    name: "react-native",
+    version: "0.86.3",
+    isSemVerMajor: true,
+  };
+  const breakingGraphResult = evaluateAuditReport(breakingGraphReport, policy, {
+    project: "apps/mobile-client",
+    asOf: "2026-08-26",
+    mitigationReports,
+  });
+  assert.equal(breakingGraphResult.ok, true);
+  assert.equal(breakingGraphResult.unresolved.length, 0);
 
   const unsafeReport = {
     vulnerabilities: {
@@ -369,7 +396,7 @@ function runSelfTest() {
     mitigationReports,
   });
   assert.equal(newlyFixableResult.ok, false);
-  assert.match(newlyFixableResult.errors[0], /valid only while npm reports no fix/);
+  assert.match(newlyFixableResult.errors[0], /reviewed breaking graph remediation/);
 
   const missingMitigationResult = evaluateAuditReport(report, policy, {
     project: "apps/mobile-client",
