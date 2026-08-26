@@ -594,11 +594,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("rust-dependency-audit-report", workflow)
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
         self.assertIn("container-vulnerability-audit", workflow)
-        self.assertIn(
-            "docker build --pull --provenance=false --sbom=false "
-            "--file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .",
-            workflow,
-        )
+        self.assertIn("docker build --pull \\", workflow)
+        self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', workflow)
+        self.assertIn("Verify image source revision label", workflow)
         self.assertIn("id: image-build", workflow)
         self.assertIn("if: steps.image-build.outcome == 'success'", workflow)
         self.assertIn(
