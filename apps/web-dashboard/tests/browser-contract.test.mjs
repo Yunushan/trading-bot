@@ -146,6 +146,23 @@ function firefoxHeadedFallbackAllowed() {
   return !["0", "false", "no", "off"].includes(configured);
 }
 
+async function closePlaywrightBrowser(browser, browserName, timeoutMs = 10_000) {
+  let timeout;
+  try {
+    await Promise.race([
+      browser.close(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`${browserName} browser shutdown timed out after ${timeoutMs}ms.`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function runFirefoxBrowserContract(targetUrl) {
   let firefox;
   try {
@@ -187,7 +204,7 @@ async function runFirefoxBrowserContract(targetUrl) {
       payload,
     };
   } finally {
-    await browser.close();
+    await closePlaywrightBrowser(browser, "Firefox");
   }
 }
 
@@ -221,7 +238,7 @@ async function runEdgeBrowserContract(targetUrl) {
       payload,
     };
   } finally {
-    await browser.close();
+    await closePlaywrightBrowser(browser, "Edge");
   }
 }
 
