@@ -713,14 +713,15 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("USER 65532", dockerfile)
         self.assertIn("apk add --no-cache build-base linux-headers", dockerfile)
         self.assertIn("Build and health-check Python 3.14 service container", ci_workflow)
-        self.assertIn("docker build --pull --file docker/backend.Dockerfile", ci_workflow)
+        self.assertIn("docker build --pull \\", ci_workflow)
+        self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', ci_workflow)
+        self.assertIn("image_revision", ci_workflow)
         supply_chain_workflow = (REPO_ROOT / ".github" / "workflows" / "supply-chain-security.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn(
-            "docker build --pull --provenance=false --sbom=false --file docker/backend.Dockerfile",
-            supply_chain_workflow,
-        )
+        self.assertIn("docker build --pull \\", supply_chain_workflow)
+        self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', supply_chain_workflow)
+        self.assertIn("Verify image source revision label", supply_chain_workflow)
         self.assertIn("Verify runtime Python package versions", supply_chain_workflow)
         self.assertIn('expected = {"setuptools": "84.0.0", "msgpack": "1.2.1"}', supply_chain_workflow)
         self.assertIn("runtime-python-packages.json", supply_chain_workflow)
