@@ -626,6 +626,9 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("workflow_run:", workflow)
         self.assertIn("- CI", workflow)
         self.assertIn("- completed", workflow)
+        self.assertIn("pull_request:", workflow)
+        self.assertIn("branches:\n      - main", workflow)
+        self.assertIn("- synchronize", workflow)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", workflow)
         self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", workflow)
         self.assertIn("github.event.workflow_run.head_sha", workflow)
@@ -637,7 +640,7 @@ class ReleaseQaTests(unittest.TestCase):
             "REQUIRE_ALL_EVIDENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.require_all_evidence || github.event_name == 'workflow_run' }}",
             workflow,
         )
-        self.assertIn("github.event_name == 'workflow_run' || inputs.require_all_evidence", workflow)
+        self.assertIn("github.event_name != 'workflow_dispatch' || inputs.require_all_evidence", workflow)
 
     def test_rust_live_smoke_limits_signed_credentials_to_smoke_step(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "rust-native-live-smoke.yml").read_text(encoding="utf-8")

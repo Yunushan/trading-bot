@@ -313,7 +313,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             release_platform_workflow_text,
         )
         self.assertIn(
-            "if: ${{ github.event_name == 'workflow_run' || inputs.require_all_evidence || inputs.target_id == 'all' }}",
+            "if: ${{ github.event_name != 'workflow_dispatch' || inputs.require_all_evidence || inputs.target_id == 'all' }}",
             release_platform_workflow_text,
         )
         for workflow_name in (

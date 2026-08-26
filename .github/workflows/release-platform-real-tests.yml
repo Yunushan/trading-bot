@@ -38,6 +38,13 @@ on:
       - CI
     types:
       - completed
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   actions: read
@@ -326,7 +333,7 @@ jobs:
   full-evidence-gate:
     name: Evidence Gate (selected scope)
     needs: [prepare-targets, run-target]
-    if: ${{ github.event_name == 'workflow_run' || inputs.require_all_evidence || inputs.target_id == 'all' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.require_all_evidence || inputs.target_id == 'all' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
