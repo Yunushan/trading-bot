@@ -206,10 +206,8 @@ def _contains_all(source: str, needles: tuple[str, ...]) -> list[str]:
     return [needle for needle in needles if needle not in source]
 
 
-def _env_present(name: str) -> bool:
-    # Readiness reports only whether the process received a variable. The
-    # execution preflight validates its value without propagating credentials
-    # into generated evidence or CLI output.
+def _environment_name_present(name: str) -> bool:
+    """Check non-sensitive orchestration flags without reading their values."""
     return name in os.environ
 
 
@@ -231,8 +229,6 @@ def _live_smoke_workflow_inputs(
 
 
 def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = True) -> dict[str, Any]:
-    api_key_available = _env_present("BINANCE_API_KEY")
-    signing_credential_available = _env_present("BINANCE_API_SECRET")
     confirmed = str(os.environ.get("TRADING_BOT_RUST_LIVE_SMOKE") or "").strip() == "1"
     market_confirmed = str(os.environ.get("TRADING_BOT_RUST_MARKET_SMOKE") or "").strip() == "1"
     binance_testnet = str(os.environ.get("BINANCE_TESTNET") or "true").strip() or "true"
@@ -273,8 +269,12 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
     account_missing_prerequisites = _missing_named_prerequisites(
         [
             ("clean source tree", source_tree_clean),
-            ("BINANCE_API_KEY", api_key_available),
-            ("BINANCE_API_SECRET", signing_credential_available),
+            # Credential presence is deliberately not inspected by this
+            # report. Doing so would leak a credential-presence side channel
+            # through ready/missing fields. The execution preflight owns the
+            # protected secret validation and fails closed before any request.
+            ("BINANCE_API_KEY", False),
+            ("BINANCE_API_SECRET", False),
             ("TRADING_BOT_RUST_LIVE_SMOKE=1", confirmed),
             ("generated evidence write guard", account_write_guard_ok),
         ]
@@ -288,13 +288,8 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
         "source_tree_clean": source_tree_clean,
         "market_missing_prerequisites": market_missing_prerequisites,
         "account_missing_prerequisites": account_missing_prerequisites,
-        "can_run_live_smoke": (
-            source_tree_clean
-            and api_key_available
-            and signing_credential_available
-            and confirmed
-            and account_write_guard_ok
-        ),
+        "can_run_live_smoke": False,
+        "credential_validation_deferred_to_execution_preflight": True,
         "can_run_market_smoke": source_tree_clean and market_confirmed and market_write_guard_ok,
         "market_source_control_write_guard": market_source_control_write_guard,
         "account_source_control_write_guard": account_source_control_write_guard,
@@ -341,7 +336,7 @@ def _release_evidence_prerequisites(root: Path, *, missing_limit: int = 10) -> d
     release_tag = str(os.environ.get("TRADING_BOT_RELEASE_TAG") or "v0.0.0").strip() or "v0.0.0"
     result: dict[str, Any] = {
         "release_tag": release_tag,
-        "release_tag_configured": _env_present("TRADING_BOT_RELEASE_TAG"),
+        "release_tag_configured": _environment_name_present("TRADING_BOT_RELEASE_TAG"),
         "platform_evidence_dir": str(platform_evidence_dir),
         "platform_evidence_dir_exists": platform_evidence_dir.is_dir(),
         "platform_evidence_json_count": platform_evidence_count,
@@ -2427,10 +2422,8 @@ def _print_cli_json(result: dict[str, Any]) -> None:
     if isinstance(payload, dict):
         payload["credential_presence_fields_redacted"] = True
     # The recursive redactor removes credential values and presence metadata;
-    # this is the single machine-readable output boundary for the audit. Keep
-    # the targeted suppression on the sink itself so CodeQL associates it with
-    # the proven-redacted value instead of an adjacent explanatory comment.
-    print(json.dumps(payload, indent=2, sort_keys=True))  # lgtm[py/clear-text-logging-sensitive-data]
+    # this is the single machine-readable output boundary for the audit.
+    print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def main(argv: list[str] | None = None) -> int:
