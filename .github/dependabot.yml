@@ -4,7 +4,7 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 10
     groups:
       github-actions:
         patterns:
@@ -14,7 +14,7 @@ updates:
     directory: "/Languages/Python"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 10
     groups:
       binance-sdk:
         patterns:
@@ -26,22 +26,38 @@ updates:
     directory: "/apps/web-dashboard"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 5
+    groups:
+      web-dashboard:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: "/apps/mobile-client"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 5
+    groups:
+      mobile-client:
+        patterns:
+          - "*"
 
   - package-ecosystem: cargo
     directory: "/experiments/rust-shells"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 10
+    groups:
+      rust-workspace:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
     directory: "/docker"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 5
+    groups:
+      container-images:
+        patterns:
+          - "*"

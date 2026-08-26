@@ -53,8 +53,10 @@ from .gui.runtime.strategy import controls_format_runtime, controls_shared_runti
 from .gui.runtime.ui.theme_styles import DESIGN_OPTIONS
 from .integrations.llm.clients import build_llm_chat_request, llm_output_policy_violations
 from .integrations.llm.providers import (
+    LLM_API_STYLE_OPTIONS,
     LLM_MODEL_CATALOG_PATH_ENV,
     LLM_PROVIDER_CATALOG_REVISION,
+    LLM_SPEED_OPTIONS,
     _PROVIDER_SPECS,
     llm_provider_choices,
 )
@@ -1267,6 +1269,11 @@ def _llm_provider_payload() -> list[dict[str, object]]:
             "model_suggestions": list(provider.model_suggestions),
             "reasoning_efforts": list(provider.reasoning_efforts),
             "default_reasoning_effort": provider.default_reasoning_effort,
+            "api_styles": list(provider.api_styles or (provider.protocol,)),
+            "speed_options": list(provider.speed_options),
+            "default_speed": provider.default_speed,
+            "supports_model_discovery": provider.supports_model_discovery,
+            "model_discovery_path": provider.model_discovery_path,
             "catalog_revision": LLM_PROVIDER_CATALOG_REVISION,
             "custom_models_env": f"BOT_LLM_EXTRA_MODELS_{provider.key.upper().replace('-', '_')}",
             "custom_models_path_env": LLM_MODEL_CATALOG_PATH_ENV,
@@ -2713,6 +2720,8 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "lead_trader_options": _choice_payload(LEAD_TRADER_OPTIONS),
             "llm_use_for_options": _choice_payload(LLM_USE_FOR_OPTIONS),
             "llm_reasoning_effort_options": _canonical_choice_payload(_LLM_REASONING_EFFORT_CHOICES),
+            "llm_api_style_options": _value_option_payload(list(LLM_API_STYLE_OPTIONS)),
+            "llm_speed_options": _value_option_payload(list(LLM_SPEED_OPTIONS)),
             "position_pct_units_options": _canonical_choice_payload(
                 dict(controls_shared_runtime.POSITION_PCT_UNITS_CHOICES)
             ),
@@ -2933,6 +2942,8 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "lead_trader_options": list(payload["ui_options"]["lead_trader_options"]),
         "llm_use_for_options": list(payload["ui_options"]["llm_use_for_options"]),
         "llm_reasoning_effort_options": list(payload["ui_options"]["llm_reasoning_effort_options"]),
+        "llm_api_style_options": list(payload["ui_options"]["llm_api_style_options"]),
+        "llm_speed_options": list(payload["ui_options"]["llm_speed_options"]),
         "position_pct_units_options": list(payload["ui_options"]["position_pct_units_options"]),
         "dashboard_strategy_templates": list(payload["ui_options"]["dashboard_strategy_templates"]),
         "side_options": list(payload["ui_options"]["side_options"]),

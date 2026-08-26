@@ -64,15 +64,23 @@ audit result; the database is removed when the step exits.
 The Rust audit step also writes the machine-readable result to a temporary JSON
 file and uploads it as `rust-dependency-audit-report`, including when the audit
 fails. This makes the exact advisory set reviewable from the workflow run
-instead of relying on truncated console output. The report is evidence only;
-the command's exit status remains authoritative.
+instead of relying on truncated console output. `tools/check_rust_audit_policy.py`
+is the authoritative release gate: it rejects every vulnerability, a RustSec
+database older than seven days, malformed findings, new warning identities,
+package or version drift, stale exceptions, review windows longer than 45 days,
+and expired exceptions. The exact warning identities and expiry dates are in
+`tools/rust-audit-policy.json`; do not use Cargo's broad advisory ignore flags.
 
 `cargo audit` can exit successfully while reporting informational warnings. The
 current Tauri Linux dependency path may therefore still show upstream GTK/glib
 unmaintained or unsound warnings even when no known vulnerable dependency is
-reported. Those warnings are not hidden with an advisory ignore list. They must
-be reviewed after every Tauri or GTK dependency update, and they remain a
-release risk until the upstream dependency path has a compatible remediation.
+reported. A second time-bounded path is the unmaintained Unicode family pulled
+through `tauri-utils` and `urlpattern` 0.3. These warnings are not hidden with an
+advisory ignore list: each is matched on category, advisory ID, package, and
+version. They must be reviewed after every Tauri or GTK dependency update, and
+they remain a release risk until upstream has compatible remediations. CI starts
+rejecting all current exceptions after 2026-10-10 unless a fresh documented
+review deliberately renews or removes them.
 Treat a clean audit report as necessary, not sufficient, for production
 promotion.
 
@@ -172,19 +180,32 @@ versions.
 The mobile production audit has one explicit, time-boxed exception for the current
 Expo/Metro build graph. `apps/mobile-client/package.json` pins `nanoid` to 3.3.18,
 which is above its published security floor. Expo 57 currently resolves
-`image-size` through Metro, and the registry still reports the two ICNS/JXL/HEIF
-infinite-loop advisories (`GHSA-w3rx-r6r6-pgpr` and `GHSA-5p2g-fcmc-qvqq`) for the
-latest 2.0.2 release. The only npm remediation currently offered is a breaking
-Expo/React Native downgrade, so this build-time-only path is recorded in
-`tools/node-audit-policy.json` until 2026-09-30. The policy checker is fail-closed:
+`image-size` through Metro, and GitHub's reviewed advisory records report the two
+ICNS/JXL/HEIF infinite-loop advisories (`GHSA-w3rx-r6r6-pgpr` and
+`GHSA-5p2g-fcmc-qvqq`) with no published patched version. The exact reviewed graph
+is `metro@0.87.0` to `image-size@1.2.1`, so this build-time-only path is recorded in
+`tools/node-audit-policy.json` until 2026-09-30. npm's current graph remediation is
+the incompatible React Native 0.86.3 downgrade; the policy pins that exact
+breaking-only suggestion so any remediation change forces a new review. The policy
+checker is fail-closed:
 new high/critical findings, critical findings inherited through the Metro chain,
-unknown or malformed severity records, stale exceptions, changed advisory IDs, and
-expired exceptions fail CI. Remove the exception as soon as Expo or `image-size`
-provides a supported fixed path.
+unknown or malformed severity records, stale exceptions, changed advisory IDs,
+newly available non-breaking fixes, changed package/consumer/remediation versions, missing mitigation
+evidence, review windows longer than 45 days, and expired exceptions fail CI.
+
+`tools/check_mobile_image_size_exposure.cjs` supplies the required executable
+mitigation evidence. It verifies that application source never imports
+`image-size`, that Metro is the only lockfile consumer, that Metro has one guarded
+import in `Assets.js`, and that Metro rejects ICNS, JXL, HEIF, HEIC, and AVIF before
+calling the parser. The remaining exposure is a denial of the repository-controlled
+build process by a malicious committed asset; no parser path is shipped or exposed
+to runtime user input. Remove the exception immediately when npm reports a fix or
+the verified dependency boundary changes.
 
 The workflow evaluates the JSON audit report with
-`tools/check_node_audit_policy.cjs` after `npm audit`; the policy evaluation remains
-authoritative even when npm exits non-zero for the documented, exact exception.
+`tools/check_mobile_image_size_exposure.cjs` and then evaluates the JSON audit report
+with `tools/check_node_audit_policy.cjs`; the policy evaluation remains authoritative
+even when npm exits non-zero for the documented, exact exception.
 
 `tools/verify_all.py` also runs the worktree summary and workspace-hygiene
 advisory checks so dependency drift, missing client lockfiles, generated

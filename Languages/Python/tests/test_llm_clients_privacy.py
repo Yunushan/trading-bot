@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -165,6 +166,102 @@ class LLMClientPrivacyTests(unittest.TestCase):
             prompt="Explain risk.",
         )
         self.assertEqual({"type": "disabled"}, kimi_k2_request["json"]["thinking"])
+
+    def test_kilo_responses_supports_dynamic_options_and_protects_advisory_fields(self):
+        request = build_llm_chat_request(
+            {
+                "llm_provider": "kilo",
+                "llm_model": "vendor/future-model-v9",
+                "llm_api_key": "kilo-secret-token",
+                "llm_api_style": "responses",
+                "llm_reasoning_effort": "turbo",
+                "llm_speed": "fast",
+                "llm_context_window": 1_024,
+                "llm_max_output_tokens": 256,
+                "llm_verbosity": "high",
+                "llm_temperature": 0.2,
+                "llm_top_p": 0.8,
+                "llm_timeout_seconds": 45,
+                "llm_request_options": json.dumps(
+                    {
+                        "seed": 7,
+                        "metadata": {"compatibility": "kilo"},
+                        "text": {"format": {"type": "text"}},
+                        "model": "unsafe-model-override",
+                        "input": "unsafe prompt override",
+                        "instructions": "unsafe instructions override",
+                        "tools": [{"type": "computer"}],
+                        "stream": True,
+                    }
+                ),
+            },
+            prompt="Explain risk.",
+            system_prompt="Be concise.",
+            context={"config": {"llm": {"large_context": "x" * 10_000}}},
+        )
+
+        body = request["json"]
+        self.assertEqual("kilo", request["provider"])
+        self.assertEqual("openai-responses", request["protocol"])
+        self.assertEqual("https://api.kilo.ai/api/gateway/responses", request["url"])
+        self.assertEqual("vendor/future-model-v9", body["model"])
+        self.assertEqual("Explain risk.", body["input"])
+        self.assertIn("Execution boundary", body["instructions"])
+        self.assertIn("context_truncated", body["instructions"])
+        self.assertEqual({"effort": "turbo"}, body["reasoning"])
+        self.assertEqual("priority", body["service_tier"])
+        self.assertEqual(256, body["max_output_tokens"])
+        self.assertEqual(0.2, body["temperature"])
+        self.assertEqual(0.8, body["top_p"])
+        self.assertEqual("high", body["text"]["verbosity"])
+        self.assertEqual({"type": "text"}, body["text"]["format"])
+        self.assertEqual(7, body["seed"])
+        self.assertNotIn("tools", body)
+        self.assertNotIn("stream", body)
+        self.assertEqual(45, request["timeout_seconds"])
+
+    def test_historical_openai_chat_model_uses_legacy_output_limit(self):
+        request = build_llm_chat_request(
+            {
+                "llm_provider": "openai",
+                "llm_model": "gpt-3.5-turbo",
+                "llm_api_key": "cloud-secret-token",
+                "llm_api_style": "chat-completions",
+                "llm_max_output_tokens": 512,
+            },
+            prompt="Explain risk.",
+        )
+
+        self.assertEqual(512, request["json"]["max_tokens"])
+        self.assertNotIn("max_completion_tokens", request["json"])
+
+    def test_kilo_responses_text_is_extracted(self):
+        with mock.patch("app.integrations.llm.clients.requests.post") as post:
+            post.return_value = _Response(
+                {
+                    "output": [
+                        {
+                            "content": [
+                                {"type": "output_text", "text": "Keep deterministic risk controls."}
+                            ]
+                        }
+                    ]
+                }
+            )
+            result = call_llm(
+                {
+                    "llm_provider": "kilo",
+                    "llm_model": "kilo-auto/frontier",
+                    "llm_api_key": "kilo-secret-token",
+                    "llm_api_style": "responses",
+                },
+                prompt="Explain risk.",
+                dry_run=False,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("Keep deterministic risk controls.", result["text"])
+        self.assertEqual(30, post.call_args.kwargs["timeout"])
 
     def test_llm_output_policy_detects_execution_boundary_violations(self):
         self.assertIn(

@@ -8,7 +8,7 @@
   },
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "test": "node tests/service-contract.test.cjs && node tests/app-logic.test.cjs && node ../../tools/check_node_audit_policy.cjs --self-test",
+    "test": "node tests/service-contract.test.cjs && node tests/app-logic.test.cjs && node ../../tools/check_mobile_image_size_exposure.cjs --project-root . && node ../../tools/check_node_audit_policy.cjs --self-test",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import ipaddress
 import json
 import os
@@ -13,6 +14,7 @@ from .providers import (
     ANTHROPIC_MESSAGES_PROTOCOL,
     GEMINI_GENERATE_CONTENT_PROTOCOL,
     OPENAI_COMPATIBLE_PROTOCOL,
+    OPENAI_RESPONSES_PROTOCOL,
     build_llm_config_payload,
 )
 
@@ -37,6 +39,48 @@ def _context_json_text(context: dict) -> str:
     """Serialize the already-redacted context consistently across native clients."""
 
     return json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _bounded_context_json_text(
+    context: dict,
+    *,
+    context_window: int,
+    max_output_tokens: int,
+    prompt: str,
+    system_prompt: str,
+) -> str:
+    serialized = _context_json_text(context)
+    if context_window <= 0:
+        return serialized
+    fixed_characters = len(prompt) + len(system_prompt) + len(_execution_boundary_text())
+    fixed_tokens = max(256, (fixed_characters + 3) // 4)
+    output_reserve = max_output_tokens if max_output_tokens > 0 else min(4096, max(256, context_window // 8))
+    available_tokens = max(0, context_window - fixed_tokens - output_reserve)
+    character_budget = available_tokens * 4
+    if len(serialized) <= character_budget:
+        return serialized
+    if character_budget < 160:
+        return json.dumps(
+            {
+                "context_truncated": True,
+                "original_characters": len(serialized),
+                "excerpt": "",
+            },
+            separators=(",", ":"),
+        )
+    excerpt_budget = max(32, character_budget - 120)
+    prefix_length = max(16, excerpt_budget * 2 // 3)
+    suffix_length = max(16, excerpt_budget - prefix_length)
+    return json.dumps(
+        {
+            "context_truncated": True,
+            "original_characters": len(serialized),
+            "prefix": serialized[:prefix_length],
+            "suffix": serialized[-suffix_length:],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _execution_boundary_text() -> str:
@@ -149,7 +193,7 @@ def _openai_compatible_reasoning_body(provider: str, model: str, effort: str) ->
     return {"reasoning_effort": effort}
 
 
-def _anthropic_thinking_body(effort: str) -> dict[str, object]:
+def _anthropic_thinking_body(effort: str, *, max_output_tokens: int = 0) -> dict[str, object]:
     if effort in {"", "default"}:
         return {}
     if effort in {"none", "disabled", "off"}:
@@ -163,6 +207,14 @@ def _anthropic_thinking_body(effort: str) -> dict[str, object]:
     budget_tokens = budgets.get(effort)
     if not budget_tokens:
         return {}
+    if max_output_tokens > 0:
+        budget_tokens = min(budget_tokens, max(0, max_output_tokens - 1))
+        if budget_tokens <= 0:
+            return {"max_tokens": max_output_tokens}
+        return {
+            "max_tokens": max_output_tokens,
+            "thinking": {"type": "enabled", "budget_tokens": budget_tokens},
+        }
     return {
         "max_tokens": max(1024, budget_tokens + 1024),
         "thinking": {"type": "enabled", "budget_tokens": budget_tokens},
@@ -180,6 +232,119 @@ def _gemini_generation_config(effort: str, model: str) -> dict[str, object]:
     return {"thinkingConfig": {"thinkingLevel": thinking_level}}
 
 
+_RESERVED_REQUEST_OPTION_KEYS = {
+    "contents",
+    "functions",
+    "input",
+    "instructions",
+    "messages",
+    "model",
+    "stream",
+    "system",
+    "tool_choice",
+    "tools",
+}
+
+
+def _request_options(payload: dict[str, object]) -> dict[str, object]:
+    options = payload.get("request_options")
+    if not isinstance(options, dict):
+        return {}
+    return {
+        str(key): copy.deepcopy(value)
+        for key, value in options.items()
+        if str(key).strip().lower() not in _RESERVED_REQUEST_OPTION_KEYS
+    }
+
+
+def _merge_mapping(target: dict[str, object], values: dict[str, object]) -> None:
+    for key, value in values.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            nested = dict(target[key])
+            _merge_mapping(nested, value)
+            target[key] = nested
+        else:
+            target[key] = copy.deepcopy(value)
+
+
+def _service_tier_for_speed(speed: str) -> str:
+    normalized = str(speed or "default").strip().lower().replace("_", "-")
+    aliases = {
+        "balanced": "default",
+        "economy": "flex",
+        "fast": "priority",
+        "quality": "default",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _uses_modern_openai_output_limit(provider: str, model: str) -> bool:
+    if provider != "openai":
+        return False
+    normalized = str(model or "").strip().lower()
+    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _apply_configured_request_options(
+    body: dict[str, object],
+    *,
+    payload: dict[str, object],
+    provider: str,
+    model: str,
+    protocol: str,
+) -> None:
+    max_output_tokens = int(payload.get("max_output_tokens") or 0)
+    temperature = payload.get("temperature")
+    top_p = payload.get("top_p")
+    speed = str(payload.get("speed") or "default")
+    verbosity = str(payload.get("verbosity") or "default")
+
+    if protocol == GEMINI_GENERATE_CONTENT_PROTOCOL:
+        generation_config = body.get("generationConfig")
+        if not isinstance(generation_config, dict):
+            generation_config = {}
+        if max_output_tokens > 0:
+            generation_config["maxOutputTokens"] = max_output_tokens
+        if temperature is not None:
+            generation_config["temperature"] = temperature
+        if top_p is not None:
+            generation_config["topP"] = top_p
+        if generation_config:
+            body["generationConfig"] = generation_config
+    else:
+        if max_output_tokens > 0:
+            if protocol == OPENAI_RESPONSES_PROTOCOL:
+                body["max_output_tokens"] = max_output_tokens
+            elif protocol == ANTHROPIC_MESSAGES_PROTOCOL:
+                body["max_tokens"] = max_output_tokens
+            elif _uses_modern_openai_output_limit(provider, model):
+                body["max_completion_tokens"] = max_output_tokens
+            else:
+                body["max_tokens"] = max_output_tokens
+        if temperature is not None:
+            body["temperature"] = temperature
+        if top_p is not None:
+            body["top_p"] = top_p
+
+    if protocol in {OPENAI_COMPATIBLE_PROTOCOL, OPENAI_RESPONSES_PROTOCOL} and speed not in {"", "default"}:
+        body["service_tier"] = _service_tier_for_speed(speed)
+    if protocol == OPENAI_RESPONSES_PROTOCOL and verbosity not in {"", "default", "auto"}:
+        text_options = body.get("text") if isinstance(body.get("text"), dict) else {}
+        text_options["verbosity"] = verbosity
+        body["text"] = text_options
+    elif protocol == OPENAI_COMPATIBLE_PROTOCOL and verbosity not in {"", "default", "auto"}:
+        body["verbosity"] = verbosity
+
+    _merge_mapping(body, _request_options(payload))
+
+
+def _openai_responses_reasoning_body(effort: str) -> dict[str, object]:
+    if effort in {"", "default", "auto"}:
+        return {}
+    normalized = "none" if effort in {"disabled", "off"} else effort
+    return {"reasoning": {"effort": normalized}}
+
+
 def build_llm_chat_request(
     config: dict | None,
     *,
@@ -195,6 +360,8 @@ def build_llm_chat_request(
     base_url = str(payload["base_url"])
     model = str(payload["model"])
     reasoning_effort = _reasoning_effort(payload)
+    context_window = int(payload.get("context_window") or 0)
+    max_output_tokens = int(payload.get("max_output_tokens") or 0)
     allow_public_network = bool(payload.get("allow_public_network"))
     base_url_uses_public_network = _base_url_uses_public_network(base_url)
     if mode != "cloud" and base_url_uses_public_network and not allow_public_network:
@@ -217,6 +384,17 @@ def build_llm_chat_request(
     headers: dict[str, str] = {"Content-Type": "application/json"}
     body: dict[str, object]
     url: str
+    context_text = (
+        _bounded_context_json_text(
+            context_for_request,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+        )
+        if context_for_request
+        else ""
+    )
 
     if protocol == OPENAI_COMPATIBLE_PROTOCOL:
         if api_key:
@@ -227,16 +405,31 @@ def build_llm_chat_request(
             *_system_message(system_prompt),
             {"role": "user", "content": user_prompt},
         ]
-        if context_for_request:
+        if context_text:
             messages.insert(
                 len(messages) - 1,
                 {
                     "role": "system",
-                    "content": f"Trading context JSON: {_context_json_text(context_for_request)}",
+                    "content": f"Trading context JSON: {context_text}",
                 },
             )
         body = {"model": model, "messages": messages}
         body.update(_openai_compatible_reasoning_body(provider, model, reasoning_effort))
+    elif protocol == OPENAI_RESPONSES_PROTOCOL:
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        url = _join_url(base_url, "responses")
+        instruction_parts = [_execution_boundary_text()]
+        if system_prompt:
+            instruction_parts.append(str(system_prompt))
+        if context_text:
+            instruction_parts.append(f"Trading context JSON: {context_text}")
+        body = {
+            "model": model,
+            "instructions": "\n\n".join(instruction_parts),
+            "input": user_prompt,
+        }
+        body.update(_openai_responses_reasoning_body(reasoning_effort))
     elif protocol == ANTHROPIC_MESSAGES_PROTOCOL:
         if not api_key:
             raise ValueError("Anthropic Claude requires an API key.")
@@ -252,15 +445,15 @@ def build_llm_chat_request(
         if system_prompt:
             system_parts.append(str(system_prompt))
         body["system"] = "\n\n".join(system_parts)
-        if context_for_request:
+        if context_text:
             body["messages"].insert(
                 0,
                 {
                     "role": "user",
-                    "content": f"Trading context JSON: {_context_json_text(context_for_request)}",
+                    "content": f"Trading context JSON: {context_text}",
                 },
             )
-        body.update(_anthropic_thinking_body(reasoning_effort))
+        body.update(_anthropic_thinking_body(reasoning_effort, max_output_tokens=max_output_tokens))
     elif protocol == GEMINI_GENERATE_CONTENT_PROTOCOL:
         if not api_key:
             raise ValueError("Google Gemini requires an API key.")
@@ -271,8 +464,8 @@ def build_llm_chat_request(
         parts.append({"text": _execution_boundary_text()})
         if system_prompt:
             parts.append({"text": str(system_prompt)})
-        if context_for_request:
-            parts.append({"text": f"Trading context JSON: {_context_json_text(context_for_request)}"})
+        if context_text:
+            parts.append({"text": f"Trading context JSON: {context_text}"})
         parts.append({"text": user_prompt})
         body = {"contents": [{"parts": parts}]}
         generation_config = _gemini_generation_config(reasoning_effort, model)
@@ -281,6 +474,14 @@ def build_llm_chat_request(
     else:
         raise ValueError(f"Unsupported LLM protocol for provider {provider}: {protocol}")
 
+    _apply_configured_request_options(
+        body,
+        payload=payload,
+        provider=provider,
+        model=model,
+        protocol=protocol,
+    )
+
     return {
         "provider": provider,
         "mode": str(payload["mode"]),
@@ -288,6 +489,7 @@ def build_llm_chat_request(
         "url": url,
         "headers": headers,
         "json": body,
+        "timeout_seconds": int(payload.get("timeout_seconds") or 30),
         "execution_policy": payload.get("execution_policy"),
     }
 
@@ -316,6 +518,27 @@ def _extract_response_text(protocol: str, payload: object) -> str:
                 message = first.get("message")
                 if isinstance(message, dict):
                     return str(message.get("content") or "").strip()
+    if protocol == OPENAI_RESPONSES_PROTOCOL:
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+        output = payload.get("output")
+        if isinstance(output, list):
+            text_parts: list[str] = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, list):
+                    continue
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    text = part.get("text")
+                    if isinstance(text, str) and text:
+                        text_parts.append(text)
+            if text_parts:
+                return "\n".join(text_parts).strip()
     if protocol == ANTHROPIC_MESSAGES_PROTOCOL:
         content = payload.get("content")
         if isinstance(content, list):
@@ -472,7 +695,7 @@ def call_llm(
     system_prompt: str = "",
     context: dict | None = None,
     dry_run: bool = True,
-    timeout: float = 30.0,
+    timeout: float | None = None,
 ) -> dict[str, object]:
     request_payload = build_llm_chat_request(
         config,
@@ -509,7 +732,7 @@ def call_llm(
         str(request_payload["url"]),
         headers=headers,
         json=request_payload["json"],
-        timeout=max(1.0, float(timeout or 30.0)),
+        timeout=max(1.0, float(timeout or request_payload.get("timeout_seconds") or 30.0)),
     )
     try:
         payload = response.json()

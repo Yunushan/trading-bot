@@ -14,13 +14,6 @@ name: CodeQL
   pull_request:
     branches:
       - main
-    paths:
-      - "Languages/Python/**"
-      - "apps/web-dashboard/**"
-      - "apps/mobile-client/**"
-      - "experiments/native-cpp/**"
-      - "experiments/rust-shells/**"
-      - ".github/workflows/codeql.yml"
   schedule:
     - cron: "41 3 * * 1"
   workflow_dispatch:

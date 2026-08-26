@@ -1,0 +1,177 @@
+{
+  "version": 1,
+  "max_database_age_days": 7,
+  "max_exception_days": 45,
+  "exceptions": [
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0370",
+      "package": "proc-macro-error",
+      "version": "1.0.4",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this transitive macro helper; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0411",
+      "package": "gdkwayland-sys",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0412",
+      "package": "gdk",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0413",
+      "package": "atk",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0414",
+      "package": "gdkx11-sys",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0415",
+      "package": "gtk",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0416",
+      "package": "atk-sys",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0417",
+      "package": "gdkx11",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0418",
+      "package": "gdk-sys",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0419",
+      "package": "gtk3-macros",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained macro crate; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2024-0420",
+      "package": "gtk-sys",
+      "version": "0.18.2",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Tauri's Linux GTK3/WebKitGTK path pins this unmaintained binding; remove the exception on the upstream migration."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2025-0075",
+      "package": "unic-char-range",
+      "version": "0.9.0",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "tauri-utils-urlpattern-transitive",
+      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2025-0080",
+      "package": "unic-common",
+      "version": "0.9.0",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "tauri-utils-urlpattern-transitive",
+      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2025-0081",
+      "package": "unic-char-property",
+      "version": "0.9.0",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "tauri-utils-urlpattern-transitive",
+      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2025-0098",
+      "package": "unic-ucd-version",
+      "version": "0.9.0",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "tauri-utils-urlpattern-transitive",
+      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
+    },
+    {
+      "kind": "unmaintained",
+      "id": "RUSTSEC-2025-0100",
+      "package": "unic-ucd-ident",
+      "version": "0.9.0",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "tauri-utils-urlpattern-transitive",
+      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
+    },
+    {
+      "kind": "unsound",
+      "id": "RUSTSEC-2024-0429",
+      "package": "glib",
+      "version": "0.18.5",
+      "reviewed": "2026-08-26",
+      "expires": "2026-10-10",
+      "scope": "linux-tauri-webkitgtk-transitive",
+      "reason": "Owned code does not call the affected VariantStrIter APIs; Tauri's GTK3 path pins glib 0.18, so remove this on the glib 0.20-or-newer migration."
+    }
+  ]
+}

@@ -535,11 +535,33 @@
               </div>
               <div class="grid-2">
                 <label>Use for:<select id="llm-use-for"></select></label>
-                <label>Reasoning / Thinking:<select id="llm-reasoning"></select></label>
+                <label>Reasoning / Thinking:<input id="llm-reasoning" list="llm-reasoning-options" autocomplete="off"></label>
+                <datalist id="llm-reasoning-options"></datalist>
               </div>
+              <div class="grid-2">
+                <label>API style:<input id="llm-api-style" list="llm-api-style-options" autocomplete="off"></label>
+                <datalist id="llm-api-style-options"></datalist>
+                <label>Speed / service tier:<input id="llm-speed" list="llm-speed-options" autocomplete="off"></label>
+                <datalist id="llm-speed-options"></datalist>
+              </div>
+              <div class="grid-2">
+                <label>Context window:<input id="llm-context-window" type="number" min="0" max="10000000" step="1024" value="0" placeholder="0 = model default"></label>
+                <label>Max output tokens:<input id="llm-max-output-tokens" type="number" min="0" max="2000000" step="256" value="0" placeholder="0 = provider default"></label>
+              </div>
+              <div class="grid-2">
+                <label>Verbosity:<input id="llm-verbosity" list="llm-verbosity-options" value="default" autocomplete="off"></label>
+                <datalist id="llm-verbosity-options"><option value="default"></option><option value="low"></option><option value="medium"></option><option value="high"></option></datalist>
+                <label>Timeout seconds:<input id="llm-timeout-seconds" type="number" min="1" max="3600" step="1" value="30"></label>
+              </div>
+              <div class="grid-2">
+                <label>Temperature:<input id="llm-temperature" type="number" min="0" max="2" step="0.05" placeholder="Provider default"></label>
+                <label>Top P:<input id="llm-top-p" type="number" min="0" max="1" step="0.05" placeholder="Provider default"></label>
+              </div>
+              <label>Advanced request JSON:<textarea id="llm-request-options" placeholder='{"seed":42,"response_format":{"type":"json_object"}}'>{}</textarea></label>
               <div class="actions">
                 <button class="action primary" id="apply-llm-btn" type="button">Apply LLM Settings</button>
                 <button class="action" id="refresh-llm-catalog-btn" type="button">Refresh Provider Catalog</button>
+                <button class="action" id="refresh-llm-models-btn" type="button">Discover Live Models</button>
                 <button class="action" id="check-local-model-btn" type="button">Check / Download Local Model</button>
                 <button class="action" id="remove-local-model-btn" type="button">Remove Local Model</button>
               </div>
@@ -952,8 +974,18 @@
       "llm-api-token",
       "llm-use-for",
       "llm-reasoning",
+      "llm-api-style",
+      "llm-speed",
+      "llm-context-window",
+      "llm-max-output-tokens",
+      "llm-verbosity",
+      "llm-timeout-seconds",
+      "llm-temperature",
+      "llm-top-p",
+      "llm-request-options",
       "apply-llm-btn",
       "refresh-llm-catalog-btn",
+      "refresh-llm-models-btn",
       "check-local-model-btn",
       "remove-local-model-btn",
       "llm-prompt-input",
@@ -1128,6 +1160,9 @@
         defaultModel: String(item.default_model || item.defaultModel || ""),
         apiKeyEnv: String(item.api_key_env || item.apiKeyEnv || ""),
         defaultReasoningEffort: String(item.default_reasoning_effort || item.defaultReasoningEffort || "default"),
+        defaultSpeed: String(item.default_speed || item.defaultSpeed || "default"),
+        modelDiscoveryPath: String(item.model_discovery_path || item.modelDiscoveryPath || "models"),
+        supportsModelDiscovery: item.supports_model_discovery ?? item.supportsModelDiscovery ?? true,
         catalogRevision: String(item.catalog_revision || item.catalogRevision || ""),
         customModelsEnv: String(item.custom_models_env || item.customModelsEnv || ""),
         customModelsPathEnv: String(item.custom_models_path_env || item.customModelsPathEnv || ""),
@@ -1135,6 +1170,8 @@
         catalogNote: String(item.catalog_note || item.catalogNote || ""),
         modelSuggestions: Array.isArray(item.model_suggestions) ? item.model_suggestions.map(String) : [],
         reasoningEfforts: Array.isArray(item.reasoning_efforts) ? item.reasoning_efforts.map(String) : ["default"],
+        apiStyles: Array.isArray(item.api_styles) ? item.api_styles.map(String) : [String(item.protocol || "")],
+        speedOptions: Array.isArray(item.speed_options) ? item.speed_options.map(String) : ["default"],
         notes: Array.isArray(item.notes) ? item.notes.map(String) : []
       })).filter((item) => item.key && item.label)
     );
@@ -1142,6 +1179,8 @@
       ...item,
       modelSuggestions: [...item.modelSuggestions],
       reasoningEfforts: [...item.reasoningEfforts],
+      apiStyles: [...item.apiStyles],
+      speedOptions: [...item.speedOptions],
       notes: [...item.notes]
     }]));
     const llmProviderSpec = (key) => liveLlmProviders.get(String(key || "").trim())
@@ -1163,6 +1202,9 @@
         defaultModel: "",
         apiKeyEnv: "",
         defaultReasoningEffort: "default",
+        defaultSpeed: "default",
+        modelDiscoveryPath: "models",
+        supportsModelDiscovery: true,
         catalogRevision: "",
         customModelsEnv: "",
         customModelsPathEnv: "",
@@ -1170,6 +1212,8 @@
         catalogNote: "",
         modelSuggestions: [],
         reasoningEfforts: ["default"],
+        apiStyles: [],
+        speedOptions: ["default"],
         notes: []
       };
       const merged = {
@@ -1181,6 +1225,9 @@
         defaultModel: String(payload.default_model ?? current.defaultModel).trim(),
         apiKeyEnv: String(payload.api_key_env ?? current.apiKeyEnv).trim(),
         defaultReasoningEffort: String(payload.default_reasoning_effort ?? current.defaultReasoningEffort).trim() || "default",
+        defaultSpeed: String(payload.default_speed ?? current.defaultSpeed).trim() || "default",
+        modelDiscoveryPath: String(payload.model_discovery_path ?? current.modelDiscoveryPath).trim() || "models",
+        supportsModelDiscovery: Boolean(payload.supports_model_discovery ?? current.supportsModelDiscovery),
         catalogRevision: String(payload.catalog_revision ?? current.catalogRevision).trim(),
         customModelsEnv: String(payload.custom_models_env ?? current.customModelsEnv).trim(),
         customModelsPathEnv: String(payload.custom_models_path_env ?? current.customModelsPathEnv).trim(),
@@ -1188,6 +1235,8 @@
         catalogNote: String(payload.catalog_note ?? current.catalogNote).trim(),
         modelSuggestions: uniqueLlmStrings(payload.model_suggestions, current.modelSuggestions),
         reasoningEfforts: uniqueLlmStrings(payload.reasoning_efforts, current.reasoningEfforts),
+        apiStyles: uniqueLlmStrings(payload.api_styles, current.apiStyles),
+        speedOptions: uniqueLlmStrings(payload.speed_options, current.speedOptions),
         notes: uniqueLlmStrings(payload.notes, current.notes)
       };
       liveLlmProviders.set(key, merged);
@@ -1208,6 +1257,12 @@
     );
     const pythonLlmReasoningEffortOptions = optionArray(
       pythonParityContract.llmReasoningEffortOptions || []
+    );
+    const pythonLlmApiStyleOptions = optionArray(
+      pythonParityContract.llmApiStyleOptions || []
+    );
+    const pythonLlmSpeedOptions = optionArray(
+      pythonParityContract.llmSpeedOptions || []
     );
     const pythonPositionPctUnitsOptions = optionArray(
       pythonParityContract.positionPctUnitsOptions || []
@@ -1473,6 +1528,11 @@
     const model = document.getElementById("llm-model");
     const modelOptions = document.getElementById("llm-model-options");
     const reasoning = document.getElementById("llm-reasoning");
+    const reasoningOptions = document.getElementById("llm-reasoning-options");
+    const apiStyle = document.getElementById("llm-api-style");
+    const apiStyleOptions = document.getElementById("llm-api-style-options");
+    const speed = document.getElementById("llm-speed");
+    const speedOptions = document.getElementById("llm-speed-options");
     const connectorSelectOptions = connectorOptions.map((item) => ({ key: item.key, label: item.label }));
     const connectorMarketFamilies = Object.freeze(
       Array.isArray(pythonParityContract.nativeRuntimeOwnership?.direct_connector_market_families)
@@ -1894,16 +1954,44 @@
       const suggestions = spec?.reasoningEfforts?.length
         ? spec.reasoningEfforts
         : pythonLlmReasoningEffortOptions.map((item) => item.key);
-      reasoning.replaceChildren(...suggestions.map((name) => {
+      reasoningOptions.replaceChildren(...suggestions.map((name) => {
         const option = document.createElement("option");
         option.value = name;
-        option.textContent = name;
         return option;
       }));
-      const preferred = preserveCurrent && suggestions.includes(previous)
+      const preferred = preserveCurrent && previous
         ? previous
         : (suggestions.includes(spec?.defaultReasoningEffort) ? spec.defaultReasoningEffort : suggestions[0]);
       if (preferred) reasoning.value = preferred;
+    };
+    const syncApiStyleOptions = ({ preserveCurrent = false } = {}) => {
+      const spec = llmProviderSpec(provider.value);
+      const previous = apiStyle.value;
+      const suggestions = [...new Set([
+        "provider-default",
+        ...(spec?.apiStyles || []),
+        ...pythonLlmApiStyleOptions.map((item) => item.key)
+      ].filter(Boolean))];
+      apiStyleOptions.replaceChildren(...suggestions.map((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        return option;
+      }));
+      apiStyle.value = preserveCurrent && previous ? previous : "provider-default";
+    };
+    const syncSpeedOptions = ({ preserveCurrent = false } = {}) => {
+      const spec = llmProviderSpec(provider.value);
+      const previous = speed.value;
+      const suggestions = [...new Set([
+        ...(spec?.speedOptions || []),
+        ...pythonLlmSpeedOptions.map((item) => item.key)
+      ].filter(Boolean))];
+      speedOptions.replaceChildren(...suggestions.map((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        return option;
+      }));
+      speed.value = preserveCurrent && previous ? previous : (spec?.defaultSpeed || "default");
     };
     const syncProviderDefaults = ({ preserveModel = false } = {}) => {
       const option = provider.selectedOptions[0];
@@ -1913,6 +2001,8 @@
       document.getElementById("llm-api-env").value = spec?.apiKeyEnv || option.dataset.env || "";
       syncModelOptions({ preserveCurrent: preserveModel });
       syncReasoningOptions({ preserveCurrent: preserveModel });
+      syncApiStyleOptions({ preserveCurrent: preserveModel });
+      syncSpeedOptions({ preserveCurrent: preserveModel });
     };
     const syncProviderAccess = () => {
       for (const option of provider.options) {
@@ -3333,6 +3423,8 @@
         if (updated) {
           syncModelOptions({ preserveCurrent: true });
           syncReasoningOptions({ preserveCurrent: true });
+          syncApiStyleOptions({ preserveCurrent: true });
+          syncSpeedOptions({ preserveCurrent: true });
           syncProviderAccess();
           llmCatalogRefreshedAt = Date.now();
         }
@@ -3344,6 +3436,39 @@
       } finally {
         llmCatalogRefreshPromise = null;
       }
+    };
+    const refreshLlmModels = async () => {
+      const result = await serviceRequest("llm_models", "GET");
+      if (!result.ok) {
+        appendLog(`[llm] Live model discovery failed - ${result.error || `HTTP ${result.status}`}`);
+        return result;
+      }
+      const payload = result.payload && typeof result.payload === "object" ? result.payload : {};
+      const records = Array.isArray(payload.models) ? payload.models : [];
+      const ids = uniqueLlmStrings(records.map((item) => item?.id));
+      const spec = llmProviderSpec(payload.provider || provider.value);
+      if (spec) {
+        spec.modelSuggestions = uniqueLlmStrings([
+          ...ids,
+          ...spec.modelSuggestions,
+          model.value
+        ]);
+        liveLlmProviders.set(spec.key, spec);
+      }
+      syncModelOptions({ preserveCurrent: true });
+      const selected = records.find((item) => String(item?.id || "") === String(model.value || ""));
+      if (selected && numberFrom("llm-context-window", 0) === 0 && Number(selected.context_window) > 0) {
+        setValue("llm-context-window", Math.trunc(Number(selected.context_window)));
+      }
+      if (selected && numberFrom("llm-max-output-tokens", 0) === 0 && Number(selected.max_output_tokens) > 0) {
+        setValue("llm-max-output-tokens", Math.trunc(Number(selected.max_output_tokens)));
+      }
+      appendLog(
+        payload.ok
+          ? `[llm] Discovered ${Number(payload.dynamic_count || 0)} live models; ${ids.length} total IDs returned.`
+          : `[llm] Live discovery unavailable; ${ids.length} catalog/custom IDs remain selectable. ${payload.error || ""}`
+      );
+      return result;
     };
     const evaluateNativeRuntimePreview = async ({
       config,
@@ -3855,21 +3980,37 @@
         mode: llm.mode,
         protocol: llm.protocol,
         default_reasoning_effort: llm.default_reasoning_effort,
+        default_speed: llm.default_speed,
         catalog_revision: llm.catalog_revision,
         custom_models_env: llm.custom_models_env,
         custom_models_path_env: llm.custom_models_path_env,
         catalog_path: llm.catalog_path,
         model_suggestions: llm.model_suggestions,
         reasoning_efforts: llm.reasoning_efforts,
+        api_styles: llm.api_styles,
+        speed_options: llm.speed_options,
+        supports_model_discovery: llm.supports_model_discovery,
+        model_discovery_path: llm.model_discovery_path,
         notes: llm.notes
       });
       syncModelOptions({ preserveCurrent: true });
       syncReasoningOptions();
+      syncApiStyleOptions();
+      syncSpeedOptions();
       setValue("llm-model", llm.model);
       setValue("llm-base-url", llm.base_url);
       setValue("llm-api-env", llm.api_key_env);
       setSelect("llm-use-for", llm.use_for);
-      setSelect("llm-reasoning", llm.reasoning_effort, true);
+      setValue("llm-reasoning", llm.reasoning_effort || "default");
+      setValue("llm-api-style", llm.api_style || "provider-default");
+      setValue("llm-speed", llm.speed || "default");
+      setValue("llm-context-window", llm.context_window ?? 0);
+      setValue("llm-max-output-tokens", llm.max_output_tokens ?? 0);
+      setValue("llm-verbosity", llm.verbosity || "default");
+      setValue("llm-timeout-seconds", llm.timeout_seconds || 30);
+      setValue("llm-temperature", llm.temperature ?? "");
+      setValue("llm-top-p", llm.top_p ?? "");
+      setValue("llm-request-options", JSON.stringify(llm.request_options || {}, null, 2));
       syncProviderAccess();
       syncEnabledState();
     };
@@ -4011,7 +4152,16 @@
         base_url: config.llm_base_url,
         api_key_env: config.llm_api_key_env,
         use_for: config.llm_use_for,
-        reasoning_effort: config.llm_reasoning_effort
+        api_style: config.llm_api_style,
+        reasoning_effort: config.llm_reasoning_effort,
+        speed: config.llm_speed,
+        context_window: config.llm_context_window,
+        max_output_tokens: config.llm_max_output_tokens,
+        verbosity: config.llm_verbosity,
+        temperature: config.llm_temperature,
+        top_p: config.llm_top_p,
+        timeout_seconds: config.llm_timeout_seconds,
+        request_options: config.llm_request_options
       });
       hydrateChartControls(config);
     };
@@ -4534,6 +4684,21 @@
         if (!result?.ok) clearNativeRuntimeMarketPolling();
       }, nativeRuntimeMarketPollIntervalMs(config));
     };
+    const optionalLlmNumber = (id) => {
+      const raw = String($(id)?.value || "").trim();
+      if (!raw) return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const parseLlmRequestOptions = () => {
+      const raw = String($("llm-request-options")?.value || "").trim();
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Advanced LLM request options must be a JSON object.");
+      }
+      return parsed;
+    };
     const buildLlmConfigPatch = () => ({
       llm_enabled: Boolean(llmEnabled.checked),
       llm_provider: provider.value,
@@ -4543,7 +4708,16 @@
       llm_api_key: $("llm-api-token")?.value || "",
       llm_use_for: $("llm-use-for")?.value || llmUseForOptions[0]?.key || "advisory",
       llm_allow_public_network: Boolean(llmPublic.checked),
-      llm_reasoning_effort: reasoning.value || "default"
+      llm_api_style: apiStyle.value || "provider-default",
+      llm_reasoning_effort: reasoning.value || "default",
+      llm_speed: speed.value || "default",
+      llm_context_window: Math.max(0, Math.trunc(numberFrom("llm-context-window", 0))),
+      llm_max_output_tokens: Math.max(0, Math.trunc(numberFrom("llm-max-output-tokens", 0))),
+      llm_verbosity: $("llm-verbosity")?.value || "default",
+      llm_temperature: optionalLlmNumber("llm-temperature"),
+      llm_top_p: optionalLlmNumber("llm-top-p"),
+      llm_timeout_seconds: Math.max(1, Math.trunc(numberFrom("llm-timeout-seconds", 30))),
+      llm_request_options: parseLlmRequestOptions()
     });
     const buildNativePersistedConfig = () => ({
       ...buildRuntimeConfigPatch(),
@@ -5086,12 +5260,24 @@
     });
     $("apply-llm-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
-      const result = await requestAndReport("Apply LLM settings", "llm_config", "PATCH", { config: buildLlmConfigPatch() });
+      let patch;
+      try {
+        patch = buildLlmConfigPatch();
+      } catch (error) {
+        appendLog(`[llm] Invalid advanced request options - ${error}`);
+        window.alert(String(error));
+        return;
+      }
+      const result = await requestAndReport("Apply LLM settings", "llm_config", "PATCH", { config: patch });
       if (result.ok) await refreshConfigPersistence();
     });
     $("refresh-llm-catalog-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
       await refreshLlmProviderCatalog({ force: true });
+    });
+    $("refresh-llm-models-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await refreshLlmModels();
     });
     $("run-llm-dry-run-btn")?.addEventListener("click", async () => {
       await runLlmPrompt(true);

@@ -270,6 +270,18 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             json.loads(rendered),
         )
 
+    def test_readiness_cli_output_boundary_has_targeted_codeql_suppression(self):
+        source = (REPO_ROOT / "tools" / "audit_rust_native_runtime_readiness.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "# codeql[py/clear-text-logging-sensitive-data]\n"
+            "    print(json.dumps(payload, indent=2, sort_keys=True))",
+            source,
+        )
+        self.assertNotIn("# lgtm [py/clear-text-logging-sensitive-data]", source)
+
     def test_evidence_workflow_checker_covers_ci_gate(self):
         result = evidence_workflows.check_workflows(REPO_ROOT)
         self.assertTrue(result["ok"], result["issues"])

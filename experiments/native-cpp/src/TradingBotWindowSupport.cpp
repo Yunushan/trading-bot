@@ -1038,6 +1038,8 @@ QVariantMap mergePythonLlmProviderSpec(
     copyString(QStringLiteral("catalog_path"), QStringLiteral("catalog_path"));
     copyString(QStringLiteral("catalog_note"), QStringLiteral("catalog_note"));
     copyString(QStringLiteral("default_reasoning_effort"), QStringLiteral("default_reasoning"));
+    copyString(QStringLiteral("default_speed"), QStringLiteral("default_speed"));
+    copyString(QStringLiteral("model_discovery_path"), QStringLiteral("model_discovery_path"));
 
     const auto copyUniqueStrings = [&merged, &pythonProviderPayload](
                                        const QString &pythonKey,
@@ -1058,6 +1060,14 @@ QVariantMap mergePythonLlmProviderSpec(
     };
     copyUniqueStrings(QStringLiteral("model_suggestions"), QStringLiteral("models"));
     copyUniqueStrings(QStringLiteral("reasoning_efforts"), QStringLiteral("reasoning_efforts"));
+    copyUniqueStrings(QStringLiteral("api_styles"), QStringLiteral("api_styles"));
+    copyUniqueStrings(QStringLiteral("speed_options"), QStringLiteral("speed_options"));
+
+    if (pythonProviderPayload.contains(QStringLiteral("supports_model_discovery"))) {
+        merged.insert(
+            QStringLiteral("supports_model_discovery"),
+            pythonProviderPayload.value(QStringLiteral("supports_model_discovery")).toBool(false));
+    }
 
     if (pythonProviderPayload.contains(QStringLiteral("notes"))) {
         copyUniqueStrings(QStringLiteral("notes"), QStringLiteral("notes"));
@@ -1087,6 +1097,11 @@ QVector<LlmProviderRuntimeConfig> pythonSourceLlmProviderConfigs() {
                 provider.modelSuggestions),
             parityCsvStringList(provider.reasoningEfforts),
             parityString(provider.defaultReasoningEffort),
+            parityCsvStringList(provider.apiStyles),
+            parityCsvStringList(provider.speedOptions),
+            parityString(provider.defaultSpeed),
+            provider.supportsModelDiscovery,
+            parityString(provider.modelDiscoveryPath),
             parityString(provider.catalogRevision),
             parityString(provider.customModelsEnv),
             parityString(provider.customModelsPathEnv),
@@ -1260,6 +1275,22 @@ QStringList pythonSourceLlmReasoningEffortOptionKeys() {
 
 QStringList pythonSourceLlmReasoningEffortOptionLabels() {
     return parityUiOptionLabels(PythonParityContract::kPythonLlmReasoningEffortOptions);
+}
+
+QStringList pythonSourceLlmApiStyleOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonLlmApiStyleOptions);
+}
+
+QStringList pythonSourceLlmApiStyleOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonLlmApiStyleOptions);
+}
+
+QStringList pythonSourceLlmSpeedOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonLlmSpeedOptions);
+}
+
+QStringList pythonSourceLlmSpeedOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonLlmSpeedOptions);
 }
 
 QStringList pythonSourceDashboardStrategyTemplateKeys() {

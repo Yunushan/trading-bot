@@ -33,6 +33,7 @@ export const SERVICE_API_ROUTE_SUFFIXES = Object.freeze({
   terminal_run: "/terminal/run",
   llm_providers: "/llm/providers",
   llm_config: "/llm/config",
+  llm_models: "/llm/models",
   llm_prompt: "/llm/prompt",
   llm_local_model_status: "/llm/local-model/status",
   llm_local_model_start: "/llm/local-model/start",

@@ -16,7 +16,7 @@ use crate::order_audit::{redact_text, redact_value};
 pub const LLM_EXECUTION_BOUNDARY: &str = "Execution boundary: this LLM is advisory only. It must not place orders, claim that an order was executed, or override deterministic strategy, risk, take-profit, or stop-loss logic.";
 pub const OLLAMA_MODEL_STORAGE_HINT: &str = "Ollama stores downloaded models outside this project in its own model cache (commonly ~/.ollama/models on Linux/macOS and %USERPROFILE%\\.ollama\\models on Windows).";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LlmConfigInput {
     pub llm_enabled: bool,
     pub llm_provider: String,
@@ -26,7 +26,16 @@ pub struct LlmConfigInput {
     pub llm_api_key_env: String,
     pub llm_use_for: String,
     pub llm_allow_public_network: bool,
+    pub llm_api_style: String,
     pub llm_reasoning_effort: String,
+    pub llm_speed: String,
+    pub llm_context_window: u64,
+    pub llm_max_output_tokens: u64,
+    pub llm_verbosity: String,
+    pub llm_temperature: Option<f64>,
+    pub llm_top_p: Option<f64>,
+    pub llm_timeout_seconds: u64,
+    pub llm_request_options: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +62,9 @@ pub struct LlmConfigPayload {
     pub provider_label: String,
     pub mode: String,
     pub protocol: String,
+    pub provider_protocol: String,
+    pub api_style: String,
+    pub api_styles: Vec<String>,
     pub catalog_revision: String,
     pub catalog_path: String,
     pub custom_models_env: String,
@@ -66,6 +78,18 @@ pub struct LlmConfigPayload {
     pub reasoning_effort: String,
     pub default_reasoning_effort: String,
     pub reasoning_efforts: Vec<String>,
+    pub speed: String,
+    pub default_speed: String,
+    pub speed_options: Vec<String>,
+    pub context_window: u64,
+    pub max_output_tokens: u64,
+    pub verbosity: String,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub timeout_seconds: u64,
+    pub request_options: Value,
+    pub supports_model_discovery: bool,
+    pub model_discovery_path: String,
     pub model_suggestions: Vec<String>,
     pub notes: Vec<String>,
     pub execution_policy: LlmExecutionPolicy,
@@ -79,6 +103,7 @@ pub struct LlmHttpRequest {
     pub url: String,
     pub headers: BTreeMap<String, String>,
     pub json: Value,
+    pub timeout_seconds: u64,
     pub execution_policy: LlmExecutionPolicy,
 }
 
@@ -313,12 +338,26 @@ pub fn build_llm_config_payload(input: &LlmConfigInput) -> LlmConfigPayload {
         .or_else(|| provider_by_key("openai"))
         .expect("generated Python LLM provider catalog should include openai");
     let api_key_env = non_empty_or(&input.llm_api_key_env, provider.api_key_env);
+    let (api_style, protocol) = normalize_api_style(provider, &input.llm_api_style);
+    let request_options = input
+        .llm_request_options
+        .as_object()
+        .cloned()
+        .map(Value::Object)
+        .unwrap_or_else(|| json!({}));
     LlmConfigPayload {
         enabled: input.llm_enabled,
         provider: provider.key.to_owned(),
         provider_label: provider.label.to_owned(),
         mode: provider.mode.to_owned(),
-        protocol: provider.protocol.to_owned(),
+        protocol,
+        provider_protocol: provider.protocol.to_owned(),
+        api_style,
+        api_styles: provider
+            .api_styles
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
         catalog_revision: provider.catalog_revision.to_owned(),
         catalog_path: model_catalog_path_label(),
         custom_models_env: provider.custom_models_env.to_owned(),
@@ -339,6 +378,32 @@ pub fn build_llm_config_payload(input: &LlmConfigInput) -> LlmConfigPayload {
             .iter()
             .map(|value| (*value).to_owned())
             .collect(),
+        speed: normalize_option_token(&input.llm_speed, provider.default_speed),
+        default_speed: provider.default_speed.to_owned(),
+        speed_options: provider
+            .speed_options
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+        context_window: input.llm_context_window.min(10_000_000),
+        max_output_tokens: input.llm_max_output_tokens.min(2_000_000),
+        verbosity: normalize_option_token(&input.llm_verbosity, "default"),
+        temperature: input
+            .llm_temperature
+            .filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, 2.0)),
+        top_p: input
+            .llm_top_p
+            .filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, 1.0)),
+        timeout_seconds: if input.llm_timeout_seconds == 0 {
+            30
+        } else {
+            input.llm_timeout_seconds.clamp(1, 3_600)
+        },
+        request_options,
+        supports_model_discovery: provider.supports_model_discovery,
+        model_discovery_path: provider.model_discovery_path.to_owned(),
         model_suggestions: model_suggestions_for_provider(provider),
         notes: provider
             .notes
@@ -383,9 +448,18 @@ pub fn build_llm_chat_request(
         &payload.mode,
         payload.allow_public_network || base_url_is_public,
     );
+    let context_text = context_for_request.as_ref().map(|context| {
+        bounded_context_json_text(
+            context,
+            payload.context_window,
+            payload.max_output_tokens,
+            user_prompt,
+            system_prompt.as_ref(),
+        )
+    });
     let mut headers = BTreeMap::from([("Content-Type".to_owned(), "application/json".to_owned())]);
     let url;
-    let body;
+    let mut body;
 
     match payload.protocol.as_str() {
         "openai-compatible" | "openai-chat-completions" => {
@@ -398,10 +472,10 @@ pub fn build_llm_chat_request(
             if !system_prompt.is_empty() {
                 messages.push(json!({"role": "system", "content": system_prompt}));
             }
-            if let Some(context) = context_for_request {
+            if let Some(context) = context_text.as_ref() {
                 messages.push(json!({
                     "role": "system",
-                    "content": format!("Trading context JSON: {}", context_json_text(&context)),
+                    "content": format!("Trading context JSON: {context}"),
                 }));
             }
             messages.push(json!({"role": "user", "content": user_prompt}));
@@ -418,6 +492,32 @@ pub fn build_llm_chat_request(
             }
             body = Value::Object(object);
         }
+        "openai-responses" => {
+            if !api_key.is_empty() {
+                headers.insert("Authorization".to_owned(), format!("Bearer {api_key}"));
+            }
+            url = join_url(&payload.base_url, "responses");
+            let mut instruction_parts = vec![LLM_EXECUTION_BOUNDARY.to_owned()];
+            let system_prompt = system_prompt.as_ref().trim();
+            if !system_prompt.is_empty() {
+                instruction_parts.push(system_prompt.to_owned());
+            }
+            if let Some(context) = context_text.as_ref() {
+                instruction_parts.push(format!("Trading context JSON: {context}"));
+            }
+            let mut object = Map::from_iter([
+                ("model".to_owned(), Value::String(payload.model.clone())),
+                (
+                    "instructions".to_owned(),
+                    Value::String(instruction_parts.join("\n\n")),
+                ),
+                ("input".to_owned(), Value::String(user_prompt.to_owned())),
+            ]);
+            for (key, value) in openai_responses_reasoning_body(&payload.reasoning_effort) {
+                object.insert(key, value);
+            }
+            body = Value::Object(object);
+        }
         "anthropic-messages" => {
             if api_key.is_empty() {
                 return Err("Anthropic Claude requires an API key.".to_owned());
@@ -426,12 +526,12 @@ pub fn build_llm_chat_request(
             headers.insert("anthropic-version".to_owned(), "2023-06-01".to_owned());
             url = join_url(&payload.base_url, "v1/messages");
             let mut messages = vec![json!({"role": "user", "content": user_prompt})];
-            if let Some(context) = context_for_request {
+            if let Some(context) = context_text.as_ref() {
                 messages.insert(
                     0,
                     json!({
                         "role": "user",
-                        "content": format!("Trading context JSON: {}", context_json_text(&context)),
+                        "content": format!("Trading context JSON: {context}"),
                     }),
                 );
             }
@@ -449,7 +549,9 @@ pub fn build_llm_chat_request(
                     Value::String(system_parts.join("\n\n")),
                 ),
             ]);
-            for (key, value) in anthropic_thinking_body(&payload.reasoning_effort) {
+            for (key, value) in
+                anthropic_thinking_body(&payload.reasoning_effort, payload.max_output_tokens)
+            {
                 object.insert(key, value);
             }
             body = Value::Object(object);
@@ -474,9 +576,9 @@ pub fn build_llm_chat_request(
             if !system_prompt.is_empty() {
                 parts.push(json!({"text": system_prompt}));
             }
-            if let Some(context) = context_for_request {
+            if let Some(context) = context_text.as_ref() {
                 parts.push(json!({
-                    "text": format!("Trading context JSON: {}", context_json_text(&context)),
+                    "text": format!("Trading context JSON: {context}"),
                 }));
             }
             parts.push(json!({"text": user_prompt}));
@@ -496,6 +598,8 @@ pub fn build_llm_chat_request(
         }
     }
 
+    apply_configured_request_options(&mut body, &payload);
+
     Ok(LlmHttpRequest {
         provider: payload.provider,
         mode: payload.mode,
@@ -503,6 +607,7 @@ pub fn build_llm_chat_request(
         url,
         headers,
         json: body,
+        timeout_seconds: payload.timeout_seconds,
         execution_policy: payload.execution_policy,
     })
 }
@@ -734,6 +839,59 @@ fn context_json_text(context: &Value) -> String {
     serde_json::to_string(context).unwrap_or_else(|_| context.to_string())
 }
 
+fn bounded_context_json_text(
+    context: &Value,
+    context_window: u64,
+    max_output_tokens: u64,
+    prompt: &str,
+    system_prompt: &str,
+) -> String {
+    let serialized = context_json_text(context);
+    if context_window == 0 {
+        return serialized;
+    }
+    let fixed_characters = prompt.len() + system_prompt.len() + LLM_EXECUTION_BOUNDARY.len();
+    let fixed_tokens = ((fixed_characters + 3) / 4).max(256) as u64;
+    let output_reserve = if max_output_tokens > 0 {
+        max_output_tokens
+    } else {
+        (context_window / 8).clamp(256, 4096)
+    };
+    let character_budget = context_window
+        .saturating_sub(fixed_tokens.saturating_add(output_reserve))
+        .saturating_mul(4) as usize;
+    if serialized.chars().count() <= character_budget {
+        return serialized;
+    }
+    if character_budget < 160 {
+        return json!({
+            "context_truncated": true,
+            "original_characters": serialized.chars().count(),
+            "excerpt": "",
+        })
+        .to_string();
+    }
+    let excerpt_budget = character_budget.saturating_sub(120).max(32);
+    let prefix_length = (excerpt_budget * 2 / 3).max(16);
+    let suffix_length = excerpt_budget.saturating_sub(prefix_length).max(16);
+    let prefix = serialized.chars().take(prefix_length).collect::<String>();
+    let suffix = serialized
+        .chars()
+        .rev()
+        .take(suffix_length)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    json!({
+        "context_truncated": true,
+        "original_characters": serialized.chars().count(),
+        "prefix": prefix,
+        "suffix": suffix,
+    })
+    .to_string()
+}
+
 fn cloud_safe_context(context: &Value) -> Value {
     let object = context.as_object();
     json!({
@@ -804,7 +962,9 @@ fn normalize_reasoning_effort(provider: &PythonLlmProvider, value: &str) -> Stri
         provider.default_reasoning_effort
     };
     let normalized = match raw.as_str() {
-        "" | "auto" => default,
+        "" => default,
+        "auto" if efforts.contains(&"auto") => "auto",
+        "auto" => default,
         "off" | "no" | "false" => {
             if efforts.contains(&"none") {
                 "none"
@@ -815,11 +975,54 @@ fn normalize_reasoning_effort(provider: &PythonLlmProvider, value: &str) -> Stri
         "extra-high" | "extra_high" => "xhigh",
         other => other,
     };
-    if efforts.contains(&normalized) {
+    if efforts.contains(&normalized) || safe_option_token(normalized) {
         normalized.to_owned()
     } else {
         default.to_owned()
     }
+}
+
+fn safe_option_token(value: &str) -> bool {
+    let text = value.trim();
+    !text.is_empty()
+        && text.len() <= 64
+        && text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_./:".contains(character))
+}
+
+fn normalize_option_token(value: &str, fallback: &str) -> String {
+    let normalized = value.trim().to_lowercase().replace('_', "-");
+    if safe_option_token(&normalized) {
+        normalized
+    } else {
+        fallback.to_owned()
+    }
+}
+
+fn normalize_api_style(provider: &PythonLlmProvider, value: &str) -> (String, String) {
+    let normalized = value.trim().to_lowercase().replace('_', "-");
+    let requested = match normalized.as_str() {
+        "" | "auto" | "default" | "provider" | "provider-default" => "provider-default",
+        "chat" | "chat-completions" | "openai-compatible" => "openai-chat-completions",
+        "response" | "responses" => "openai-responses",
+        "messages" | "anthropic" => "anthropic-messages",
+        "generate-content" | "gemini" => "gemini-generate-content",
+        other => other,
+    };
+    if requested == "provider-default" {
+        return (requested.to_owned(), provider.protocol.to_owned());
+    }
+    if matches!(
+        requested,
+        "openai-chat-completions"
+            | "openai-responses"
+            | "anthropic-messages"
+            | "gemini-generate-content"
+    ) {
+        return (requested.to_owned(), requested.to_owned());
+    }
+    ("provider-default".to_owned(), provider.protocol.to_owned())
 }
 
 fn openai_compatible_reasoning_body(
@@ -879,19 +1082,44 @@ fn openai_compatible_reasoning_body(
     BTreeMap::from([("reasoning_effort".to_owned(), json!(effort))])
 }
 
-fn anthropic_thinking_body(effort: &str) -> BTreeMap<String, Value> {
+fn openai_responses_reasoning_body(effort: &str) -> BTreeMap<String, Value> {
+    if matches!(effort, "" | "default" | "auto") {
+        return BTreeMap::new();
+    }
+    let normalized = if matches!(effort, "disabled" | "off") {
+        "none"
+    } else {
+        effort
+    };
+    BTreeMap::from([("reasoning".to_owned(), json!({"effort": normalized}))])
+}
+
+fn anthropic_thinking_body(effort: &str, max_output_tokens: u64) -> BTreeMap<String, Value> {
     if matches!(effort, "" | "default") {
         return BTreeMap::new();
     }
     if matches!(effort, "none" | "disabled" | "off") {
         return BTreeMap::from([("thinking".to_owned(), json!({"type": "disabled"}))]);
     }
-    let budget = match effort {
+    let mut budget = match effort {
         "enabled" | "low" => 2048,
         "medium" => 4096,
         "high" => 8192,
         _ => return BTreeMap::new(),
     };
+    if max_output_tokens > 0 {
+        budget = budget.min(max_output_tokens.saturating_sub(1));
+        if budget == 0 {
+            return BTreeMap::from([("max_tokens".to_owned(), json!(max_output_tokens))]);
+        }
+        return BTreeMap::from([
+            ("max_tokens".to_owned(), json!(max_output_tokens)),
+            (
+                "thinking".to_owned(),
+                json!({"type": "enabled", "budget_tokens": budget}),
+            ),
+        ]);
+    }
     BTreeMap::from([
         ("max_tokens".to_owned(), json!(budget + 1024)),
         (
@@ -899,6 +1127,139 @@ fn anthropic_thinking_body(effort: &str) -> BTreeMap<String, Value> {
             json!({"type": "enabled", "budget_tokens": budget}),
         ),
     ])
+}
+
+fn service_tier_for_speed(speed: &str) -> &str {
+    match speed {
+        "balanced" | "quality" => "default",
+        "economy" => "flex",
+        "fast" => "priority",
+        other => other,
+    }
+}
+
+fn uses_modern_openai_output_limit(provider: &str, model: &str) -> bool {
+    provider == "openai"
+        && ["gpt-5", "o1", "o3", "o4"]
+            .iter()
+            .any(|prefix| model.trim().to_lowercase().starts_with(prefix))
+}
+
+fn request_option_is_reserved(key: &str) -> bool {
+    matches!(
+        key.trim().to_lowercase().as_str(),
+        "contents"
+            | "functions"
+            | "input"
+            | "instructions"
+            | "messages"
+            | "model"
+            | "stream"
+            | "system"
+            | "tool_choice"
+            | "tools"
+    )
+}
+
+fn merge_json_object(target: &mut Map<String, Value>, values: &Map<String, Value>) {
+    for (key, value) in values {
+        match (target.get_mut(key), value) {
+            (Some(Value::Object(existing)), Value::Object(incoming)) => {
+                merge_json_object(existing, incoming);
+            }
+            _ => {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+fn apply_configured_request_options(body: &mut Value, payload: &LlmConfigPayload) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    if payload.protocol == "gemini-generate-content" {
+        let generation_config = object
+            .entry("generationConfig".to_owned())
+            .or_insert_with(|| json!({}));
+        if !generation_config.is_object() {
+            *generation_config = json!({});
+        }
+        let generation = generation_config
+            .as_object_mut()
+            .expect("generationConfig was normalized to an object");
+        if payload.max_output_tokens > 0 {
+            generation.insert(
+                "maxOutputTokens".to_owned(),
+                json!(payload.max_output_tokens),
+            );
+        }
+        if let Some(value) = payload.temperature {
+            generation.insert("temperature".to_owned(), json!(value));
+        }
+        if let Some(value) = payload.top_p {
+            generation.insert("topP".to_owned(), json!(value));
+        }
+        if generation.is_empty() {
+            object.remove("generationConfig");
+        }
+    } else {
+        if payload.max_output_tokens > 0 {
+            let key = if payload.protocol == "openai-responses" {
+                "max_output_tokens"
+            } else if payload.protocol == "anthropic-messages"
+                || !uses_modern_openai_output_limit(&payload.provider, &payload.model)
+            {
+                "max_tokens"
+            } else {
+                "max_completion_tokens"
+            };
+            object.insert(key.to_owned(), json!(payload.max_output_tokens));
+        }
+        if let Some(value) = payload.temperature {
+            object.insert("temperature".to_owned(), json!(value));
+        }
+        if let Some(value) = payload.top_p {
+            object.insert("top_p".to_owned(), json!(value));
+        }
+    }
+
+    if matches!(
+        payload.protocol.as_str(),
+        "openai-chat-completions" | "openai-compatible" | "openai-responses"
+    ) && !matches!(payload.speed.as_str(), "" | "default")
+    {
+        object.insert(
+            "service_tier".to_owned(),
+            json!(service_tier_for_speed(&payload.speed)),
+        );
+    }
+    if payload.protocol == "openai-responses"
+        && !matches!(payload.verbosity.as_str(), "" | "default" | "auto")
+    {
+        let text = object.entry("text".to_owned()).or_insert_with(|| json!({}));
+        if !text.is_object() {
+            *text = json!({});
+        }
+        text.as_object_mut()
+            .expect("text was normalized to an object")
+            .insert("verbosity".to_owned(), json!(payload.verbosity));
+    } else if matches!(
+        payload.protocol.as_str(),
+        "openai-chat-completions" | "openai-compatible"
+    ) && !matches!(payload.verbosity.as_str(), "" | "default" | "auto")
+    {
+        object.insert("verbosity".to_owned(), json!(payload.verbosity));
+    }
+
+    if let Some(options) = payload.request_options.as_object() {
+        let safe = options
+            .iter()
+            .filter(|(key, _)| !request_option_is_reserved(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Map<String, Value>>();
+        merge_json_object(object, &safe);
+    }
 }
 
 fn gemini_generation_config(effort: &str, model: &str) -> Option<Value> {
@@ -1148,6 +1509,32 @@ mod tests {
                 provider.key
             );
             assert_eq!(
+                payload.api_styles,
+                provider
+                    .api_styles
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .collect::<Vec<_>>(),
+                "API styles should match Python: {}",
+                provider.key
+            );
+            assert_eq!(
+                payload.speed_options,
+                provider
+                    .speed_options
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .collect::<Vec<_>>(),
+                "speed options should match Python: {}",
+                provider.key
+            );
+            assert_eq!(payload.default_speed, provider.default_speed);
+            assert_eq!(
+                payload.supports_model_discovery,
+                provider.supports_model_discovery
+            );
+            assert_eq!(payload.model_discovery_path, provider.model_discovery_path);
+            assert_eq!(
                 payload.catalog_revision, provider.catalog_revision,
                 "catalog revision should match Python: {}",
                 provider.key
@@ -1265,48 +1652,109 @@ mod tests {
     #[test]
     fn every_generated_python_provider_builds_its_declared_protocol_request() {
         for provider in PYTHON_LLM_PROVIDERS {
-            let request = build_llm_chat_request(
-                &LlmConfigInput {
-                    llm_provider: provider.key.to_owned(),
-                    llm_model: provider.default_model.to_owned(),
-                    llm_base_url: provider.default_base_url.to_owned(),
-                    llm_api_key: if provider.mode == "cloud" {
-                        "parity-test-key".to_owned()
-                    } else {
-                        String::new()
+            for api_style in provider.api_styles {
+                let request = build_llm_chat_request(
+                    &LlmConfigInput {
+                        llm_provider: provider.key.to_owned(),
+                        llm_model: provider.default_model.to_owned(),
+                        llm_base_url: provider.default_base_url.to_owned(),
+                        llm_api_key: if provider.mode == "cloud" {
+                            "parity-test-key".to_owned()
+                        } else {
+                            String::new()
+                        },
+                        llm_api_style: (*api_style).to_owned(),
+                        ..Default::default()
                     },
-                    ..Default::default()
-                },
-                "Explain risk",
-                "Be concise",
-                None,
-            )
-            .unwrap_or_else(|error| {
-                panic!(
-                    "every Python provider should build its declared protocol request ({}): {}",
-                    provider.key, error
+                    "Explain risk",
+                    "Be concise",
+                    None,
                 )
-            });
-            assert_eq!(request.provider, provider.key);
-            assert_eq!(request.protocol, provider.protocol);
-            assert!(request.json.to_string().contains(LLM_EXECUTION_BOUNDARY));
-            match provider.protocol {
-                "openai-chat-completions" => {
-                    assert!(request.url.ends_with("/chat/completions"));
-                    assert!(request.json["messages"].is_array());
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "every Python provider/API style should build ({} / {}): {}",
+                        provider.key, api_style, error
+                    )
+                });
+                assert_eq!(request.provider, provider.key);
+                assert_eq!(request.protocol, *api_style);
+                assert!(request.json.to_string().contains(LLM_EXECUTION_BOUNDARY));
+                match *api_style {
+                    "openai-chat-completions" => {
+                        assert!(request.url.ends_with("/chat/completions"));
+                        assert!(request.json["messages"].is_array());
+                    }
+                    "openai-responses" => {
+                        assert!(request.url.ends_with("/responses"));
+                        assert!(request.json["instructions"].is_string());
+                    }
+                    "anthropic-messages" => {
+                        assert!(request.url.ends_with("/v1/messages"));
+                        assert_eq!(request.headers["x-api-key"], "parity-test-key");
+                        assert!(request.json["messages"].is_array());
+                    }
+                    "gemini-generate-content" => {
+                        assert!(request.url.contains(":generateContent?key="));
+                        assert!(request.json["contents"].is_array());
+                    }
+                    protocol => panic!("unhandled Python LLM protocol in Rust: {protocol}"),
                 }
-                "anthropic-messages" => {
-                    assert!(request.url.ends_with("/v1/messages"));
-                    assert_eq!(request.headers["x-api-key"], "parity-test-key");
-                    assert!(request.json["messages"].is_array());
-                }
-                "gemini-generate-content" => {
-                    assert!(request.url.contains(":generateContent?key="));
-                    assert!(request.json["contents"].is_array());
-                }
-                protocol => panic!("unhandled Python LLM protocol in Rust: {protocol}"),
             }
         }
+    }
+
+    #[test]
+    fn kilo_responses_supports_future_options_and_protects_advisory_fields() {
+        let request = build_llm_chat_request(
+            &LlmConfigInput {
+                llm_provider: "kilo".to_owned(),
+                llm_model: "vendor/future-model-v9".to_owned(),
+                llm_api_key: "kilo-test-key".to_owned(),
+                llm_api_style: "responses".to_owned(),
+                llm_reasoning_effort: "turbo".to_owned(),
+                llm_speed: "fast".to_owned(),
+                llm_context_window: 1_024,
+                llm_max_output_tokens: 256,
+                llm_verbosity: "high".to_owned(),
+                llm_temperature: Some(0.2),
+                llm_top_p: Some(0.8),
+                llm_timeout_seconds: 45,
+                llm_request_options: json!({
+                    "seed": 7,
+                    "text": {"format": {"type": "text"}},
+                    "model": "unsafe-model-override",
+                    "input": "unsafe prompt override",
+                    "tools": [{"type": "computer"}],
+                    "stream": true,
+                }),
+                ..Default::default()
+            },
+            "Explain risk.",
+            "Be concise.",
+            Some(&json!({"config": {"llm": {"large_context": "x".repeat(10_000)}}})),
+        )
+        .expect("Kilo Responses request should build");
+
+        assert_eq!(request.protocol, "openai-responses");
+        assert_eq!(request.url, "https://api.kilo.ai/api/gateway/responses");
+        assert_eq!(request.timeout_seconds, 45);
+        assert_eq!(request.json["model"], "vendor/future-model-v9");
+        assert_eq!(request.json["input"], "Explain risk.");
+        assert!(
+            request.json["instructions"]
+                .as_str()
+                .is_some_and(|text| text.contains("context_truncated"))
+        );
+        assert_eq!(request.json["reasoning"], json!({"effort": "turbo"}));
+        assert_eq!(request.json["service_tier"], "priority");
+        assert_eq!(request.json["max_output_tokens"], 256);
+        assert_eq!(request.json["temperature"], 0.2);
+        assert_eq!(request.json["top_p"], 0.8);
+        assert_eq!(request.json["text"]["verbosity"], "high");
+        assert_eq!(request.json["text"]["format"], json!({"type": "text"}));
+        assert_eq!(request.json["seed"], 7);
+        assert!(request.json.get("tools").is_none());
+        assert!(request.json.get("stream").is_none());
     }
 
     #[test]
@@ -1435,6 +1883,7 @@ mod tests {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 llm_reasoning_effort: string_field("llm_reasoning_effort"),
+                ..Default::default()
             };
             let context = case.get("context").filter(|value| !value.is_null());
             let request = build_llm_chat_request(

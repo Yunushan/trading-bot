@@ -2185,6 +2185,11 @@ def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
         "    pub model_suggestions: &'static [&'static str],",
         "    pub reasoning_efforts: &'static [&'static str],",
         "    pub default_reasoning_effort: &'static str,",
+        "    pub api_styles: &'static [&'static str],",
+        "    pub speed_options: &'static [&'static str],",
+        "    pub default_speed: &'static str,",
+        "    pub supports_model_discovery: bool,",
+        "    pub model_discovery_path: &'static str,",
         "    pub catalog_revision: &'static str,",
         "    pub custom_models_env: &'static str,",
         "    pub custom_models_path_env: &'static str,",
@@ -2196,6 +2201,8 @@ def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
     for provider in providers:
         models = ", ".join(_rust_string(model) for model in provider["model_suggestions"])
         efforts = ", ".join(_rust_string(effort) for effort in provider["reasoning_efforts"])
+        api_styles = ", ".join(_rust_string(style) for style in provider["api_styles"])
+        speed_options = ", ".join(_rust_string(speed) for speed in provider["speed_options"])
         notes = ", ".join(_rust_string(note) for note in provider.get("notes", []))
         lines.extend(
             [
@@ -2210,6 +2217,11 @@ def _rust_llm_providers(providers: list[dict[str, object]]) -> str:
                 f"        model_suggestions: &[{models}],",
                 f"        reasoning_efforts: &[{efforts}],",
                 f"        default_reasoning_effort: {_rust_string(provider['default_reasoning_effort'])},",
+                f"        api_styles: &[{api_styles}],",
+                f"        speed_options: &[{speed_options}],",
+                f"        default_speed: {_rust_string(provider['default_speed'])},",
+                f"        supports_model_discovery: {_rust_bool(bool(provider['supports_model_discovery']))},",
+                f"        model_discovery_path: {_rust_string(provider['model_discovery_path'])},",
                 f"        catalog_revision: {_rust_string(provider['catalog_revision'])},",
                 f"        custom_models_env: {_rust_string(provider['custom_models_env'])},",
                 f"        custom_models_path_env: {_rust_string(provider['custom_models_path_env'])},",
@@ -2324,6 +2336,18 @@ def _ui_option_catalog_specs(summary: dict[str, object]) -> list[tuple[str, str,
             "PYTHON_LLM_REASONING_EFFORT_OPTIONS",
             "kPythonLlmReasoningEffortOptions",
             list(summary["llm_reasoning_effort_options"]),
+        ),
+        (
+            "LLM API style",
+            "PYTHON_LLM_API_STYLE_OPTIONS",
+            "kPythonLlmApiStyleOptions",
+            list(summary["llm_api_style_options"]),
+        ),
+        (
+            "LLM speed",
+            "PYTHON_LLM_SPEED_OPTIONS",
+            "kPythonLlmSpeedOptions",
+            list(summary["llm_speed_options"]),
         ),
         (
             "position percentage units",
@@ -2837,6 +2861,11 @@ def _cpp_llm_providers(providers: list[dict[str, object]]) -> str:
         "    std::string_view modelSuggestions;",
         "    std::string_view reasoningEfforts;",
         "    std::string_view defaultReasoningEffort;",
+        "    std::string_view apiStyles;",
+        "    std::string_view speedOptions;",
+        "    std::string_view defaultSpeed;",
+        "    bool supportsModelDiscovery;",
+        "    std::string_view modelDiscoveryPath;",
         "    std::string_view catalogRevision;",
         "    std::string_view customModelsEnv;",
         "    std::string_view customModelsPathEnv;",
@@ -2848,6 +2877,8 @@ def _cpp_llm_providers(providers: list[dict[str, object]]) -> str:
     for provider in providers:
         models = ",".join(str(model) for model in provider["model_suggestions"])
         efforts = ",".join(str(effort) for effort in provider["reasoning_efforts"])
+        api_styles = ",".join(str(style) for style in provider["api_styles"])
+        speed_options = ",".join(str(speed) for speed in provider["speed_options"])
         notes = "\n".join(str(note) for note in provider.get("notes", []))
         lines.append(
             "    PythonLlmProvider{"
@@ -2861,6 +2892,11 @@ def _cpp_llm_providers(providers: list[dict[str, object]]) -> str:
             f"{_cpp_string(models)}, "
             f"{_cpp_string(efforts)}, "
             f"{_cpp_string(provider['default_reasoning_effort'])}, "
+            f"{_cpp_string(api_styles)}, "
+            f"{_cpp_string(speed_options)}, "
+            f"{_cpp_string(provider['default_speed'])}, "
+            f"{'true' if bool(provider['supports_model_discovery']) else 'false'}, "
+            f"{_cpp_string(provider['model_discovery_path'])}, "
             f"{_cpp_string(provider['catalog_revision'])}, "
             f"{_cpp_string(provider['custom_models_env'])}, "
             f"{_cpp_string(provider['custom_models_path_env'])}, "
@@ -3826,6 +3862,8 @@ def render_tauri_browser_contract() -> str:
         "leadTraderOptions": list(summary["lead_trader_options"]),
         "llmUseForOptions": list(summary["llm_use_for_options"]),
         "llmReasoningEffortOptions": list(summary["llm_reasoning_effort_options"]),
+        "llmApiStyleOptions": list(summary["llm_api_style_options"]),
+        "llmSpeedOptions": list(summary["llm_speed_options"]),
         "positionPctUnitsOptions": list(summary["position_pct_units_options"]),
         "dashboardStrategyTemplates": list(summary["dashboard_strategy_templates"]),
         "backtestTemplates": list(summary["backtest_templates"]),

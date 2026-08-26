@@ -516,6 +516,10 @@ class DependencyReproducibilityTests(unittest.TestCase):
             actual,
         )
         self.assertEqual(6, config.count("interval: weekly"))
+        self.assertNotIn("open-pull-requests-limit: 0", config)
+        limits = [int(value) for value in re.findall(r"open-pull-requests-limit: (\d+)", config)]
+        self.assertEqual(6, len(limits))
+        self.assertTrue(all(limit >= 5 for limit in limits))
         self.assertIn("    groups:\n      binance-sdk:\n        patterns:", config)
         for package in (
             "binance-sdk-derivatives-trading-usds-futures",
@@ -528,7 +532,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         workflow = (REPO_ROOT / ".github" / "workflows" / "supply-chain-security.yml").read_text(
             encoding="utf-8"
         )
+        pull_request_trigger = workflow.split("  pull_request:", 1)[1].split("  push:", 1)[0]
 
+        self.assertNotIn("paths:", pull_request_trigger)
         self.assertIn("python -m venv .ci-python-audit", workflow)
         self.assertIn(
             ".ci-python-audit/bin/python -m pip install --upgrade pip==26.2.1 setuptools==83.0.0 wheel",
@@ -569,6 +575,8 @@ class DependencyReproducibilityTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("npm audit --omit=dev --audit-level=high", workflow)
+        self.assertIn("check_mobile_image_size_exposure.cjs", workflow)
+        self.assertIn('--mitigation-report "$mitigation_file"', workflow)
         self.assertIn("apps/web-dashboard", workflow)
         self.assertIn("apps/mobile-client", workflow)
         self.assertIn("cargo install cargo-audit --version 0.22.2 --locked", workflow)
@@ -580,6 +588,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("trap 'rm -rf \"$audit_db\"' EXIT", workflow)
         self.assertIn('cargo audit --db "$audit_db" --file Cargo.lock', workflow)
         self.assertIn('--format json > "$audit_report"', workflow)
+        self.assertIn("check_rust_audit_policy.py", workflow)
+        self.assertIn("--policy ../../tools/rust-audit-policy.json", workflow)
+        self.assertIn('if [[ "$audit_status" -gt 1 ]]', workflow)
         self.assertIn("rust-dependency-audit-report", workflow)
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
         self.assertIn("container-vulnerability-audit", workflow)
@@ -598,6 +609,52 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("severity: HIGH,CRITICAL", workflow)
         self.assertIn('exit-code: "1"', workflow)
         self.assertIn("if: always() && steps.trivy.outcome != 'skipped'", workflow)
+
+    def test_rust_audit_policy_is_exact_time_bounded_and_excludes_fixed_rand_advisory(self):
+        policy = json.loads((REPO_ROOT / "tools" / "rust-audit-policy.json").read_text(encoding="utf-8"))
+        exceptions = policy["exceptions"]
+
+        self.assertEqual(1, policy["version"])
+        self.assertEqual(7, policy["max_database_age_days"])
+        self.assertEqual(45, policy["max_exception_days"])
+        self.assertEqual(17, len(exceptions))
+        identities = {
+            (item["kind"], item["id"], item["package"], item["version"])
+            for item in exceptions
+        }
+        self.assertEqual(len(exceptions), len(identities))
+        self.assertNotIn(("unsound", "RUSTSEC-2026-0097", "rand", "0.9.2"), identities)
+        for exception in exceptions:
+            with self.subTest(advisory=exception["id"], package=exception["package"]):
+                self.assertEqual("2026-08-26", exception["reviewed"])
+                self.assertEqual("2026-10-10", exception["expires"])
+                self.assertTrue(exception["scope"])
+                self.assertTrue(exception["reason"])
+
+        cargo_lock = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.lock").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
+        self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
+
+    def test_mobile_node_audit_exception_requires_current_executable_mitigation_evidence(self):
+        policy = json.loads((REPO_ROOT / "tools" / "node-audit-policy.json").read_text(encoding="utf-8"))
+        exception = policy["projects"]["apps/mobile-client"]["exceptions"][0]
+        mobile_package = json.loads(
+            (REPO_ROOT / "apps" / "mobile-client" / "package.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual("image-size", exception["package"])
+        self.assertEqual("breaking-graph-only", exception["fix_availability"])
+        self.assertEqual("react-native", exception["verified_fix_target"])
+        self.assertEqual("0.86.3", exception["verified_fix_version"])
+        self.assertEqual("2026-08-26", exception["reviewed"])
+        self.assertEqual("2026-09-30", exception["expires"])
+        self.assertEqual("mobile-image-size-build-only-v1", exception["mitigation_control"])
+        self.assertEqual("1.2.1", exception["verified_package_version"])
+        self.assertEqual(["metro@0.87.0"], exception["verified_consumers"])
+        self.assertNotIn("require_major_fix", exception)
+        self.assertIn("check_mobile_image_size_exposure.cjs", mobile_package["scripts"]["test"])
 
     def test_mobile_production_lockfile_overrides_brace_expansion_security_fix(self):
         mobile_root = REPO_ROOT / "apps" / "mobile-client"
@@ -627,7 +684,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
     def test_codeql_workflow_scans_python_javascript_and_native_languages_with_pinned_actions(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
+        pull_request_trigger = workflow.split("  pull_request:", 1)[1].split("  schedule:", 1)[0]
 
+        self.assertNotIn("paths:", pull_request_trigger)
         self.assertIn("security-events: write", workflow)
         self.assertIn("- language: python", workflow)
         self.assertIn("- language: javascript-typescript", workflow)

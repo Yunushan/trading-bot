@@ -985,6 +985,10 @@ def create_service_api_app(
     def get_llm_config():
         return _service().get_llm_config_payload()
 
+    @api_router.get("/llm/models")
+    def get_llm_models():
+        return _service().discover_llm_models()
+
     @api_router.patch("/llm/config", dependencies=[Depends(_require_write_api_auth)])
     def update_llm_config(payload: LLMConfigPatchRequest):
         _require_remote_config_fields_allowed(payload.config)

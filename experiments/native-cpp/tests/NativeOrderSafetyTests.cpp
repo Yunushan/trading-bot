@@ -143,9 +143,9 @@ int main(int argc, char **argv) {
     for (const auto &catalog : PythonParityContract::kPythonUiOptionCatalogs) {
         pythonUiOptionEntryCount += catalog.size;
     }
-    check(PythonParityContract::kPythonOptionCatalogCount == 46,
+    check(PythonParityContract::kPythonOptionCatalogCount == 48,
           QStringLiteral("generated native contract must contain every Python option catalog"));
-    check(PythonParityContract::kPythonOptionCatalogEntryCount == 267,
+    check(PythonParityContract::kPythonOptionCatalogEntryCount == 279,
           QStringLiteral("generated native contract must contain every Python option entry"));
     check(PythonParityContract::kPythonUiOptionCatalogCount
               == PythonParityContract::kPythonUiOptionCatalogs.size(),
@@ -3286,26 +3286,85 @@ int main(int argc, char **argv) {
         };
         const QStringList reasoningEfforts = QString::fromUtf8(
             provider.reasoningEfforts.data(), static_cast<int>(provider.reasoningEfforts.size())).split(',');
-        for (const QString &reasoningEffort : reasoningEfforts) {
-            providerConfig.insert(QStringLiteral("llm_reasoning_effort"), reasoningEffort);
-            QString error;
-            const QJsonObject actual = NativeLlmAdvisory::buildChatRequest(
-                providerConfig,
-                QStringLiteral("Explain risk"),
-                QStringLiteral("Be concise"),
-                {},
-                &error);
-            check(!actual.isEmpty(),
-                  QStringLiteral("C++ should build every Python provider/reasoning option (%1/%2): %3")
-                      .arg(parityText(provider.key), reasoningEffort, error));
-            check(actual.value(QStringLiteral("provider")).toString() == parityText(provider.key),
-                  QStringLiteral("C++ provider request should preserve Python provider key: %1")
-                      .arg(parityText(provider.key)));
-            check(actual.value(QStringLiteral("protocol")).toString() == parityText(provider.protocol),
-                  QStringLiteral("C++ provider request should preserve Python protocol: %1")
-                      .arg(parityText(provider.key)));
+        const QStringList apiStyles = QString::fromUtf8(
+            provider.apiStyles.data(), static_cast<int>(provider.apiStyles.size())).split(',');
+        for (const QString &apiStyle : apiStyles) {
+            providerConfig.insert(QStringLiteral("llm_api_style"), apiStyle);
+            for (const QString &reasoningEffort : reasoningEfforts) {
+                providerConfig.insert(QStringLiteral("llm_reasoning_effort"), reasoningEffort);
+                QString error;
+                const QJsonObject actual = NativeLlmAdvisory::buildChatRequest(
+                    providerConfig,
+                    QStringLiteral("Explain risk"),
+                    QStringLiteral("Be concise"),
+                    {},
+                    &error);
+                check(!actual.isEmpty(),
+                      QStringLiteral("C++ should build every Python provider/API/reasoning option (%1/%2/%3): %4")
+                          .arg(parityText(provider.key), apiStyle, reasoningEffort, error));
+                check(actual.value(QStringLiteral("provider")).toString() == parityText(provider.key),
+                      QStringLiteral("C++ provider request should preserve Python provider key: %1")
+                          .arg(parityText(provider.key)));
+                check(actual.value(QStringLiteral("protocol")).toString() == apiStyle,
+                      QStringLiteral("C++ provider request should preserve Python API style: %1/%2")
+                          .arg(parityText(provider.key), apiStyle));
+            }
         }
     }
+    QString kiloError;
+    const QJsonObject kiloRequest = NativeLlmAdvisory::buildChatRequest(
+        QJsonObject{
+            {QStringLiteral("llm_provider"), QStringLiteral("kilo")},
+            {QStringLiteral("llm_model"), QStringLiteral("vendor/future-model-v9")},
+            {QStringLiteral("llm_api_key"), QStringLiteral("kilo-test-key")},
+            {QStringLiteral("llm_api_style"), QStringLiteral("responses")},
+            {QStringLiteral("llm_reasoning_effort"), QStringLiteral("turbo")},
+            {QStringLiteral("llm_speed"), QStringLiteral("fast")},
+            {QStringLiteral("llm_context_window"), 1024},
+            {QStringLiteral("llm_max_output_tokens"), 256},
+            {QStringLiteral("llm_verbosity"), QStringLiteral("high")},
+            {QStringLiteral("llm_temperature"), 0.2},
+            {QStringLiteral("llm_top_p"), 0.8},
+            {QStringLiteral("llm_timeout_seconds"), 45},
+            {QStringLiteral("llm_request_options"), QJsonObject{
+                 {QStringLiteral("seed"), 7},
+                 {QStringLiteral("text"), QJsonObject{{QStringLiteral("format"), QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}}}}},
+                 {QStringLiteral("model"), QStringLiteral("unsafe-model-override")},
+                 {QStringLiteral("input"), QStringLiteral("unsafe prompt override")},
+                 {QStringLiteral("tools"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("computer")}}}},
+                 {QStringLiteral("stream"), true},
+             }},
+        },
+        QStringLiteral("Explain risk."),
+        QStringLiteral("Be concise."),
+        QJsonObject{{QStringLiteral("config"), QJsonObject{{QStringLiteral("llm"), QJsonObject{{QStringLiteral("large_context"), QString(10'000, QChar('x'))}}}}}},
+        &kiloError);
+    check(!kiloRequest.isEmpty(),
+          QStringLiteral("C++ Kilo Responses request should build: %1").arg(kiloError));
+    const QJsonObject kiloBody = kiloRequest.value(QStringLiteral("json")).toObject();
+    check(kiloRequest.value(QStringLiteral("protocol")).toString() == QStringLiteral("openai-responses"),
+          QStringLiteral("C++ Kilo request should select Responses protocol"));
+    check(kiloRequest.value(QStringLiteral("url")).toString() == QStringLiteral("https://api.kilo.ai/api/gateway/responses"),
+          QStringLiteral("C++ Kilo request should target the gateway Responses endpoint"));
+    check(kiloRequest.value(QStringLiteral("timeout_seconds")).toInt() == 45,
+          QStringLiteral("C++ Kilo request should preserve configured timeout"));
+    check(kiloBody.value(QStringLiteral("model")).toString() == QStringLiteral("vendor/future-model-v9")
+              && kiloBody.value(QStringLiteral("input")).toString() == QStringLiteral("Explain risk."),
+          QStringLiteral("C++ advanced options must not override model or advisory prompt"));
+    check(kiloBody.value(QStringLiteral("instructions")).toString().contains(QStringLiteral("context_truncated")),
+          QStringLiteral("C++ Kilo request should bound context to the configured window"));
+    check(kiloBody.value(QStringLiteral("reasoning")).toObject().value(QStringLiteral("effort")).toString() == QStringLiteral("turbo"),
+          QStringLiteral("C++ Kilo request should preserve future reasoning tokens"));
+    check(kiloBody.value(QStringLiteral("service_tier")).toString() == QStringLiteral("priority")
+              && kiloBody.value(QStringLiteral("max_output_tokens")).toInt() == 256,
+          QStringLiteral("C++ Kilo request should map speed and output controls"));
+    check(kiloBody.value(QStringLiteral("text")).toObject().value(QStringLiteral("verbosity")).toString() == QStringLiteral("high")
+              && kiloBody.value(QStringLiteral("text")).toObject().value(QStringLiteral("format")).toObject().value(QStringLiteral("type")).toString() == QStringLiteral("text"),
+          QStringLiteral("C++ Kilo request should merge verbosity with safe advanced text options"));
+    check(kiloBody.value(QStringLiteral("seed")).toInt() == 7
+              && !kiloBody.contains(QStringLiteral("tools"))
+              && !kiloBody.contains(QStringLiteral("stream")),
+          QStringLiteral("C++ Kilo request should retain safe options and reject execution-like reserved fields"));
     check(llmViolations == QStringList{
               QStringLiteral("order_execution_claim"),
               QStringLiteral("direct_order_action"),

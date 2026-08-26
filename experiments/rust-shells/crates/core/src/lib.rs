@@ -201,6 +201,14 @@ pub fn python_source_llm_reasoning_effort_options() -> &'static [NativePythonUiO
     generated_python_parity::PYTHON_LLM_REASONING_EFFORT_OPTIONS
 }
 
+pub fn python_source_llm_api_style_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_LLM_API_STYLE_OPTIONS
+}
+
+pub fn python_source_llm_speed_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_LLM_SPEED_OPTIONS
+}
+
 pub fn python_source_dashboard_strategy_templates() -> &'static [NativePythonUiOption] {
     generated_python_parity::PYTHON_DASHBOARD_STRATEGY_TEMPLATES
 }
@@ -1170,11 +1178,16 @@ mod tests {
             llm_provider_options().as_ptr(),
             python_source_llm_providers().as_ptr()
         ));
-        assert_eq!(llm_provider_options().len(), 15);
+        assert_eq!(llm_provider_options().len(), 16);
         assert!(
             llm_provider_options()
                 .iter()
                 .any(|provider| provider.key == "ollama")
+        );
+        assert!(
+            llm_provider_options()
+                .iter()
+                .any(|provider| provider.key == "kilo")
         );
     }
 
@@ -1216,12 +1229,12 @@ mod tests {
             .sum::<usize>();
         assert_eq!(
             generated_python_parity::PYTHON_OPTION_CATALOG_COUNT,
-            46,
+            48,
             "the generated native contract must contain every Python option catalog"
         );
         assert_eq!(
             generated_python_parity::PYTHON_OPTION_CATALOG_ENTRY_COUNT,
-            267,
+            279,
             "the generated native contract must contain every Python option entry"
         );
         assert_eq!(
@@ -1340,6 +1353,8 @@ mod tests {
                 "lead trader" => "lead_trader_options",
                 "LLM use-for" => "llm_use_for_options",
                 "LLM reasoning effort" => "llm_reasoning_effort_options",
+                "LLM API style" => "llm_api_style_options",
+                "LLM speed" => "llm_speed_options",
                 "position percentage units" => "position_pct_units_options",
                 "dashboard strategy templates" => "dashboard_strategy_templates",
                 "backtest templates" => "backtest_templates",

@@ -13,6 +13,7 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -32,6 +33,8 @@
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWidget>
+
+#include <algorithm>
 
 namespace {
 QString normalizeExchangeKey(QString value) {
@@ -781,6 +784,21 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
             provider.defaultReasoningEffort.isEmpty()
                 ? QStringLiteral("default")
                 : provider.defaultReasoningEffort);
+        spec.insert(
+            QStringLiteral("api_styles"),
+            provider.apiStyles.isEmpty()
+                ? QStringList{provider.protocol}
+                : provider.apiStyles);
+        spec.insert(
+            QStringLiteral("speed_options"),
+            provider.speedOptions.isEmpty()
+                ? QStringList{QStringLiteral("default")}
+                : provider.speedOptions);
+        spec.insert(
+            QStringLiteral("default_speed"),
+            provider.defaultSpeed.isEmpty() ? QStringLiteral("default") : provider.defaultSpeed);
+        spec.insert(QStringLiteral("supports_model_discovery"), provider.supportsModelDiscovery);
+        spec.insert(QStringLiteral("model_discovery_path"), provider.modelDiscoveryPath);
         providerCombo->addItem(provider.label, spec);
     }
     dashboardLlmProviderCombo_ = providerCombo;
@@ -832,25 +850,102 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     llmGrid->addWidget(useForCombo, 4, 1);
 
     auto *reasoningCombo = new QComboBox(llmBox);
-    reasoningCombo->setEditable(false);
+    reasoningCombo->setEditable(true);
+    reasoningCombo->setInsertPolicy(QComboBox::NoInsert);
+    reasoningCombo->setToolTip("Choose a known effort or enter a provider-specific effort token.");
     dashboardLlmReasoningCombo_ = reasoningCombo;
     registerDashboardRuntimeLockWidget(reasoningCombo);
     llmGrid->addWidget(new QLabel("Reasoning / Thinking:", llmBox), 4, 2);
     llmGrid->addWidget(reasoningCombo, 4, 3);
 
+    auto *apiStyleCombo = new QComboBox(llmBox);
+    apiStyleCombo->setEditable(true);
+    apiStyleCombo->setInsertPolicy(QComboBox::NoInsert);
+    apiStyleCombo->setToolTip("Use the provider default or select Chat Completions, Responses, Anthropic Messages, or Gemini generateContent.");
+    dashboardLlmApiStyleCombo_ = apiStyleCombo;
+    registerDashboardRuntimeLockWidget(apiStyleCombo);
+    llmGrid->addWidget(new QLabel("API style:", llmBox), 5, 0);
+    llmGrid->addWidget(apiStyleCombo, 5, 1);
+
+    auto *speedCombo = new QComboBox(llmBox);
+    speedCombo->setEditable(true);
+    speedCombo->setInsertPolicy(QComboBox::NoInsert);
+    speedCombo->setToolTip("Choose a known speed/service tier or enter a provider-specific token.");
+    dashboardLlmSpeedCombo_ = speedCombo;
+    registerDashboardRuntimeLockWidget(speedCombo);
+    llmGrid->addWidget(new QLabel("Speed / service tier:", llmBox), 5, 2);
+    llmGrid->addWidget(speedCombo, 5, 3);
+
+    auto *contextWindowSpin = new QSpinBox(llmBox);
+    contextWindowSpin->setRange(0, 10'000'000);
+    contextWindowSpin->setSpecialValueText("Auto");
+    contextWindowSpin->setToolTip("Maximum input context tokens. Auto leaves the endpoint default and does not truncate by a declared limit.");
+    dashboardLlmContextWindowSpin_ = contextWindowSpin;
+    registerDashboardRuntimeLockWidget(contextWindowSpin);
+    llmGrid->addWidget(new QLabel("Context window:", llmBox), 6, 0);
+    llmGrid->addWidget(contextWindowSpin, 6, 1);
+
+    auto *maxOutputSpin = new QSpinBox(llmBox);
+    maxOutputSpin->setRange(0, 2'000'000);
+    maxOutputSpin->setSpecialValueText("Provider default");
+    dashboardLlmMaxOutputTokensSpin_ = maxOutputSpin;
+    registerDashboardRuntimeLockWidget(maxOutputSpin);
+    llmGrid->addWidget(new QLabel("Max output tokens:", llmBox), 6, 2);
+    llmGrid->addWidget(maxOutputSpin, 6, 3);
+
+    auto *verbosityCombo = new QComboBox(llmBox);
+    verbosityCombo->setEditable(true);
+    verbosityCombo->setInsertPolicy(QComboBox::NoInsert);
+    verbosityCombo->addItems({QStringLiteral("default"), QStringLiteral("auto"), QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")});
+    dashboardLlmVerbosityCombo_ = verbosityCombo;
+    registerDashboardRuntimeLockWidget(verbosityCombo);
+    llmGrid->addWidget(new QLabel("Verbosity:", llmBox), 7, 0);
+    llmGrid->addWidget(verbosityCombo, 7, 1);
+
+    auto *timeoutSpin = new QSpinBox(llmBox);
+    timeoutSpin->setRange(1, 3'600);
+    timeoutSpin->setValue(30);
+    timeoutSpin->setSuffix(" s");
+    dashboardLlmTimeoutSecondsSpin_ = timeoutSpin;
+    registerDashboardRuntimeLockWidget(timeoutSpin);
+    llmGrid->addWidget(new QLabel("Request timeout:", llmBox), 7, 2);
+    llmGrid->addWidget(timeoutSpin, 7, 3);
+
+    auto *temperatureEdit = new QLineEdit(llmBox);
+    temperatureEdit->setPlaceholderText("default (0.0-2.0)");
+    dashboardLlmTemperatureEdit_ = temperatureEdit;
+    registerDashboardRuntimeLockWidget(temperatureEdit);
+    llmGrid->addWidget(new QLabel("Temperature:", llmBox), 8, 0);
+    llmGrid->addWidget(temperatureEdit, 8, 1);
+
+    auto *topPEdit = new QLineEdit(llmBox);
+    topPEdit->setPlaceholderText("default (0.0-1.0)");
+    dashboardLlmTopPEdit_ = topPEdit;
+    registerDashboardRuntimeLockWidget(topPEdit);
+    llmGrid->addWidget(new QLabel("Top P:", llmBox), 8, 2);
+    llmGrid->addWidget(topPEdit, 8, 3);
+
+    auto *requestOptionsEdit = new QTextEdit(llmBox);
+    requestOptionsEdit->setPlaceholderText("Advanced request JSON, for example {\"seed\": 7}. Protected prompt, model, tool, and stream fields cannot be overridden.");
+    requestOptionsEdit->setFixedHeight(68);
+    dashboardLlmRequestOptionsEdit_ = requestOptionsEdit;
+    registerDashboardRuntimeLockWidget(requestOptionsEdit);
+    llmGrid->addWidget(new QLabel("Advanced options:", llmBox), 9, 0);
+    llmGrid->addWidget(requestOptionsEdit, 9, 1, 1, 3);
+
     auto *promptEdit = new QTextEdit(llmBox);
     promptEdit->setPlaceholderText("Ask for advisory-only market analysis. The LLM cannot place orders.");
     promptEdit->setFixedHeight(72);
     registerDashboardRuntimeLockWidget(promptEdit);
-    llmGrid->addWidget(new QLabel("Advisory prompt:", llmBox), 5, 0);
-    llmGrid->addWidget(promptEdit, 5, 1, 1, 3);
+    llmGrid->addWidget(new QLabel("Advisory prompt:", llmBox), 10, 0);
+    llmGrid->addWidget(promptEdit, 10, 1, 1, 3);
 
     auto *systemPromptEdit = new QTextEdit(llmBox);
     systemPromptEdit->setPlaceholderText("Optional system prompt; default advisory safety prompt is used when empty.");
     systemPromptEdit->setFixedHeight(58);
     registerDashboardRuntimeLockWidget(systemPromptEdit);
-    llmGrid->addWidget(new QLabel("System prompt:", llmBox), 6, 0);
-    llmGrid->addWidget(systemPromptEdit, 6, 1, 1, 3);
+    llmGrid->addWidget(new QLabel("System prompt:", llmBox), 11, 0);
+    llmGrid->addWidget(systemPromptEdit, 11, 1, 1, 3);
 
     auto *applyLlmBtn = new QPushButton("Apply LLM Settings", llmBox);
     auto *prepareLlmBtn = new QPushButton("Prepare Advisory", llmBox);
@@ -866,22 +961,25 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     registerDashboardRuntimeLockWidget(startLocalModelBtn);
     registerDashboardRuntimeLockWidget(downloadLocalModelBtn);
     registerDashboardRuntimeLockWidget(deleteLocalModelBtn);
-    llmGrid->addWidget(applyLlmBtn, 7, 0);
-    llmGrid->addWidget(prepareLlmBtn, 7, 1);
-    llmGrid->addWidget(sendLlmBtn, 7, 2);
-    llmGrid->addWidget(checkLocalModelBtn, 8, 0);
-    llmGrid->addWidget(startLocalModelBtn, 8, 1);
-    llmGrid->addWidget(downloadLocalModelBtn, 8, 2);
-    llmGrid->addWidget(deleteLocalModelBtn, 8, 3);
+    llmGrid->addWidget(applyLlmBtn, 12, 0);
+    llmGrid->addWidget(prepareLlmBtn, 12, 1);
+    llmGrid->addWidget(sendLlmBtn, 12, 2);
+    llmGrid->addWidget(checkLocalModelBtn, 13, 0);
+    llmGrid->addWidget(startLocalModelBtn, 13, 1);
+    llmGrid->addWidget(downloadLocalModelBtn, 13, 2);
+    llmGrid->addWidget(deleteLocalModelBtn, 13, 3);
 
     auto *refreshLlmCatalogBtn = new QPushButton("Refresh provider catalog", llmBox);
+    auto *refreshLlmModelsBtn = new QPushButton("Discover live models", llmBox);
     registerDashboardRuntimeLockWidget(refreshLlmCatalogBtn);
-    llmGrid->addWidget(refreshLlmCatalogBtn, 9, 0, 1, 2);
+    registerDashboardRuntimeLockWidget(refreshLlmModelsBtn);
+    llmGrid->addWidget(refreshLlmCatalogBtn, 14, 0, 1, 2);
+    llmGrid->addWidget(refreshLlmModelsBtn, 14, 2, 1, 2);
 
     auto *statusLabel = new QLabel("LLM settings are saved with dashboard config.", llmBox);
     statusLabel->setStyleSheet("color: #94a3b8; font-weight: 600;");
     dashboardLlmStatusLabel_ = statusLabel;
-    llmGrid->addWidget(statusLabel, 10, 0, 1, 4);
+    llmGrid->addWidget(statusLabel, 15, 0, 1, 4);
 
     auto applyProviderDefaults = [this](bool forceText) {
         if (!dashboardLlmProviderCombo_) {
@@ -918,6 +1016,41 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
                         ? defaultReasoning
                         : (reasoningEfforts.isEmpty() ? QStringLiteral("default") : reasoningEfforts.first())));
         }
+        QStringList apiStyles{QStringLiteral("provider-default")};
+        for (const QString &value : spec.value(QStringLiteral("api_styles")).toStringList()) {
+            if (!value.trimmed().isEmpty() && !apiStyles.contains(value.trimmed())) {
+                apiStyles.append(value.trimmed());
+            }
+        }
+        const QString currentApiStyle = dashboardLlmApiStyleCombo_
+            ? dashboardLlmApiStyleCombo_->currentText().trimmed()
+            : QString();
+        if (dashboardLlmApiStyleCombo_) {
+            QSignalBlocker blocker(dashboardLlmApiStyleCombo_);
+            dashboardLlmApiStyleCombo_->clear();
+            dashboardLlmApiStyleCombo_->addItems(apiStyles);
+            dashboardLlmApiStyleCombo_->setCurrentText(
+                !forceText && !currentApiStyle.isEmpty()
+                    ? currentApiStyle
+                    : QStringLiteral("provider-default"));
+        }
+        QStringList speedOptions = spec.value(QStringLiteral("speed_options")).toStringList();
+        if (!speedOptions.contains(QStringLiteral("default"))) {
+            speedOptions.prepend(QStringLiteral("default"));
+        }
+        const QString defaultSpeed = spec.value(QStringLiteral("default_speed")).toString().trimmed();
+        const QString currentSpeed = dashboardLlmSpeedCombo_
+            ? dashboardLlmSpeedCombo_->currentText().trimmed()
+            : QString();
+        if (dashboardLlmSpeedCombo_) {
+            QSignalBlocker blocker(dashboardLlmSpeedCombo_);
+            dashboardLlmSpeedCombo_->clear();
+            dashboardLlmSpeedCombo_->addItems(speedOptions);
+            dashboardLlmSpeedCombo_->setCurrentText(
+                !forceText && !currentSpeed.isEmpty()
+                    ? currentSpeed
+                    : (defaultSpeed.isEmpty() ? QStringLiteral("default") : defaultSpeed));
+        }
         if (dashboardLlmBaseUrlEdit_ && (forceText || dashboardLlmBaseUrlEdit_->text().trimmed().isEmpty())) {
             dashboardLlmBaseUrlEdit_->setText(spec.value(QStringLiteral("base_url")).toString());
         }
@@ -926,10 +1059,12 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         }
         if (dashboardLlmStatusLabel_) {
             dashboardLlmStatusLabel_->setText(
-                QStringLiteral("%1 selected (%2, reasoning: %3).")
+                QStringLiteral("%1 selected (%2, API: %3, reasoning: %4, speed: %5).")
                     .arg(dashboardLlmProviderCombo_->currentText().trimmed())
                     .arg(spec.value(QStringLiteral("mode")).toString())
-                    .arg(dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default")));
+                    .arg(dashboardLlmApiStyleCombo_ ? dashboardLlmApiStyleCombo_->currentText().trimmed() : QStringLiteral("provider-default"))
+                    .arg(dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default"))
+                    .arg(dashboardLlmSpeedCombo_ ? dashboardLlmSpeedCombo_->currentText().trimmed() : QStringLiteral("default")));
         }
     };
     auto buildLlmConfigPatch = [this]() {
@@ -960,6 +1095,51 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         config.insert(
             QStringLiteral("llm_reasoning_effort"),
             dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default"));
+        config.insert(
+            QStringLiteral("llm_api_style"),
+            dashboardLlmApiStyleCombo_ ? dashboardLlmApiStyleCombo_->currentText().trimmed() : QStringLiteral("provider-default"));
+        config.insert(
+            QStringLiteral("llm_speed"),
+            dashboardLlmSpeedCombo_ ? dashboardLlmSpeedCombo_->currentText().trimmed() : QStringLiteral("default"));
+        config.insert(
+            QStringLiteral("llm_context_window"),
+            dashboardLlmContextWindowSpin_ ? dashboardLlmContextWindowSpin_->value() : 0);
+        config.insert(
+            QStringLiteral("llm_max_output_tokens"),
+            dashboardLlmMaxOutputTokensSpin_ ? dashboardLlmMaxOutputTokensSpin_->value() : 0);
+        config.insert(
+            QStringLiteral("llm_verbosity"),
+            dashboardLlmVerbosityCombo_ ? dashboardLlmVerbosityCombo_->currentText().trimmed() : QStringLiteral("default"));
+        config.insert(
+            QStringLiteral("llm_timeout_seconds"),
+            dashboardLlmTimeoutSecondsSpin_ ? dashboardLlmTimeoutSecondsSpin_->value() : 30);
+        const auto insertOptionalNumber = [&config](const QString &key, const QLineEdit *edit) {
+            const QString value = edit ? edit->text().trimmed() : QString();
+            if (value.isEmpty() || value.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0
+                || value.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0) {
+                config.insert(key, QJsonValue(QJsonValue::Null));
+                return;
+            }
+            bool ok = false;
+            const double number = value.toDouble(&ok);
+            config.insert(key, ok ? QJsonValue(number) : QJsonValue(value));
+        };
+        insertOptionalNumber(QStringLiteral("llm_temperature"), dashboardLlmTemperatureEdit_);
+        insertOptionalNumber(QStringLiteral("llm_top_p"), dashboardLlmTopPEdit_);
+        const QString requestOptionsText = dashboardLlmRequestOptionsEdit_
+            ? dashboardLlmRequestOptionsEdit_->toPlainText().trimmed()
+            : QString();
+        if (requestOptionsText.isEmpty()) {
+            config.insert(QStringLiteral("llm_request_options"), QJsonObject{});
+        } else {
+            QJsonParseError parseError{};
+            const QJsonDocument document = QJsonDocument::fromJson(requestOptionsText.toUtf8(), &parseError);
+            config.insert(
+                QStringLiteral("llm_request_options"),
+                parseError.error == QJsonParseError::NoError && document.isObject()
+                    ? QJsonValue(document.object())
+                    : QJsonValue(requestOptionsText));
+        }
         QJsonObject wrapper;
         wrapper.insert(QStringLiteral("config"), config);
         return wrapper;
@@ -973,6 +1153,7 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
                                   prepareLlmBtn,
                                   promptEdit,
                                   refreshLlmCatalogBtn,
+                                  refreshLlmModelsBtn,
                                   sendLlmBtn,
                                   startLocalModelBtn,
                                   systemPromptEdit]() {
@@ -991,11 +1172,21 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
             dashboardLlmProviderCombo_,
             dashboardLlmModelCombo_,
             dashboardLlmReasoningCombo_,
+            dashboardLlmApiStyleCombo_,
+            dashboardLlmSpeedCombo_,
+            dashboardLlmVerbosityCombo_,
+            dashboardLlmContextWindowSpin_,
+            dashboardLlmMaxOutputTokensSpin_,
+            dashboardLlmTimeoutSecondsSpin_,
+            dashboardLlmTemperatureEdit_,
+            dashboardLlmTopPEdit_,
+            dashboardLlmRequestOptionsEdit_,
             dashboardLlmBaseUrlEdit_,
             dashboardLlmApiKeyEnvEdit_,
             dashboardLlmApiKeyEdit_,
             dashboardLlmUseForCombo_,
             refreshLlmCatalogBtn,
+            refreshLlmModelsBtn,
             applyLlmBtn,
             checkLocalModelBtn,
             deleteLocalModelBtn,
@@ -1034,10 +1225,12 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         if (dashboardLlmProviderCombo_) {
             const QVariantMap spec = dashboardLlmProviderCombo_->currentData().toMap();
             dashboardLlmStatusLabel_->setText(
-                QStringLiteral("%1 selected (%2, reasoning: %3).")
+                QStringLiteral("%1 selected (%2, API: %3, reasoning: %4, speed: %5).")
                     .arg(dashboardLlmProviderCombo_->currentText().trimmed())
                     .arg(spec.value(QStringLiteral("mode")).toString())
-                    .arg(dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default")));
+                    .arg(dashboardLlmApiStyleCombo_ ? dashboardLlmApiStyleCombo_->currentText().trimmed() : QStringLiteral("provider-default"))
+                    .arg(dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default"))
+                    .arg(dashboardLlmSpeedCombo_ ? dashboardLlmSpeedCombo_->currentText().trimmed() : QStringLiteral("default")));
         }
     };
     connect(enabledCheck, &QCheckBox::toggled, this, [updateLlmEnabledState](bool) {
@@ -1051,6 +1244,12 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         updateLlmEnabledState();
     });
     connect(reasoningCombo, &QComboBox::currentIndexChanged, this, [updateLlmEnabledState](int) {
+        updateLlmEnabledState();
+    });
+    connect(apiStyleCombo, &QComboBox::currentIndexChanged, this, [updateLlmEnabledState](int) {
+        updateLlmEnabledState();
+    });
+    connect(speedCombo, &QComboBox::currentIndexChanged, this, [updateLlmEnabledState](int) {
         updateLlmEnabledState();
     });
     auto applyLlmSettings = [this, buildLlmConfigPatch](bool quiet) {
@@ -1083,6 +1282,78 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     };
     connect(applyLlmBtn, &QPushButton::clicked, this, [applyLlmSettings]() {
         applyLlmSettings(false);
+    });
+    connect(refreshLlmModelsBtn, &QPushButton::clicked, this, [this, applyLlmSettings]() {
+        if (!applyLlmSettings(true)) {
+            return;
+        }
+        if (dashboardLlmStatusLabel_) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("Discovering live models through Python Service API..."));
+        }
+        const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("GET"),
+            QStringLiteral("llm_models"),
+            {},
+            dashboardLlmTimeoutSecondsSpin_
+                ? std::max(30'000, dashboardLlmTimeoutSecondsSpin_->value() * 1'000)
+                : 30'000);
+        if (!result.ok || !result.document.isObject()) {
+            if (dashboardLlmStatusLabel_) {
+                dashboardLlmStatusLabel_->setText(
+                    QStringLiteral("Live model discovery failed; catalog models retained: %1")
+                        .arg(result.error.isEmpty() ? QStringLiteral("invalid response") : result.error));
+            }
+            return;
+        }
+        const QJsonObject payload = result.document.object();
+        const QJsonArray models = payload.value(QStringLiteral("models")).toArray();
+        const QString selected = dashboardLlmModelCombo_
+            ? dashboardLlmModelCombo_->currentText().trimmed()
+            : QString();
+        QStringList modelIds;
+        QJsonObject selectedMetadata;
+        for (const QJsonValue &value : models) {
+            const QJsonObject model = value.toObject();
+            const QString id = model.value(QStringLiteral("id")).toString().trimmed();
+            if (id.isEmpty() || modelIds.contains(id)) {
+                continue;
+            }
+            modelIds.append(id);
+            if (id.compare(selected, Qt::CaseInsensitive) == 0) {
+                selectedMetadata = model;
+            }
+        }
+        if (dashboardLlmModelCombo_ && !modelIds.isEmpty()) {
+            QSignalBlocker blocker(dashboardLlmModelCombo_);
+            dashboardLlmModelCombo_->clear();
+            dashboardLlmModelCombo_->addItems(modelIds);
+            dashboardLlmModelCombo_->setCurrentText(
+                selected.isEmpty() ? modelIds.first() : selected);
+        }
+        if (dashboardLlmContextWindowSpin_
+            && dashboardLlmContextWindowSpin_->value() == 0
+            && selectedMetadata.value(QStringLiteral("context_window")).toInt() > 0) {
+            dashboardLlmContextWindowSpin_->setValue(
+                selectedMetadata.value(QStringLiteral("context_window")).toInt());
+        }
+        if (dashboardLlmMaxOutputTokensSpin_
+            && dashboardLlmMaxOutputTokensSpin_->value() == 0
+            && selectedMetadata.value(QStringLiteral("max_output_tokens")).toInt() > 0) {
+            dashboardLlmMaxOutputTokensSpin_->setValue(
+                selectedMetadata.value(QStringLiteral("max_output_tokens")).toInt());
+        }
+        if (dashboardLlmStatusLabel_) {
+            const int dynamicCount = payload.value(QStringLiteral("dynamic_count")).toInt();
+            const QString error = payload.value(QStringLiteral("error")).toString().trimmed();
+            dashboardLlmStatusLabel_->setText(
+                payload.value(QStringLiteral("ok")).toBool(false)
+                    ? QStringLiteral("Live model discovery merged %1 provider model(s) with %2 selectable IDs.")
+                          .arg(dynamicCount)
+                          .arg(modelIds.size())
+                    : QStringLiteral("Live discovery unavailable; %1 catalog IDs retained%2.")
+                          .arg(modelIds.size())
+                          .arg(error.isEmpty() ? QString() : QStringLiteral(": ") + error));
+        }
     });
     auto runLlmPrompt = [this, applyLlmSettings, promptEdit, systemPromptEdit](bool dryRun) {
         const QString prompt = promptEdit ? promptEdit->toPlainText().trimmed() : QString();
@@ -1898,6 +2169,15 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardLlmProviderCombo_ = nullptr;
     dashboardLlmModelCombo_ = nullptr;
     dashboardLlmReasoningCombo_ = nullptr;
+    dashboardLlmApiStyleCombo_ = nullptr;
+    dashboardLlmSpeedCombo_ = nullptr;
+    dashboardLlmVerbosityCombo_ = nullptr;
+    dashboardLlmContextWindowSpin_ = nullptr;
+    dashboardLlmMaxOutputTokensSpin_ = nullptr;
+    dashboardLlmTimeoutSecondsSpin_ = nullptr;
+    dashboardLlmTemperatureEdit_ = nullptr;
+    dashboardLlmTopPEdit_ = nullptr;
+    dashboardLlmRequestOptionsEdit_ = nullptr;
     dashboardLlmBaseUrlEdit_ = nullptr;
     dashboardLlmApiKeyEnvEdit_ = nullptr;
     dashboardLlmApiKeyEdit_ = nullptr;

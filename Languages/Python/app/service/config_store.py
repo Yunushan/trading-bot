@@ -88,6 +88,7 @@ _SECRET_KEY_TOKENS = (
     "signature",
     "token",
 )
+_NON_SECRET_TOKEN_FIELDS = frozenset({"llm_max_output_tokens"})
 
 
 def _now_iso() -> str:
@@ -157,7 +158,7 @@ def ensure_service_config_path_allowed(
 
 def _is_secret_key(key: object) -> bool:
     text = str(key or "").strip().lower().replace("-", "_")
-    if text.endswith("_env") or text.endswith("_env_var"):
+    if text in _NON_SECRET_TOKEN_FIELDS or text.endswith("_env") or text.endswith("_env_var"):
         return False
     return any(token.replace("-", "_") in text for token in _SECRET_KEY_TOKENS)
 

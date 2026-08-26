@@ -112,6 +112,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             "terminal_run",
             "llm_providers",
             "llm_config",
+            "llm_models",
             "llm_prompt",
             "llm_local_model_status",
             "llm_local_model_start",

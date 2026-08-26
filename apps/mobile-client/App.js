@@ -93,6 +93,7 @@ export default function App() {
   const [terminalHistory, setTerminalHistory] = useState([]);
   const [llmProviders, setLlmProviders] = useState([]);
   const [llmConfig, setLlmConfig] = useState(null);
+  const [llmModels, setLlmModels] = useState([]);
   const [llmPatch, setLlmPatch] = useState(hydrateLlmPatch(null));
   const [llmPrompt, setLlmPrompt] = useState("Summarize the current trading bot risk.");
   const [llmResult, setLlmResult] = useState(null);
@@ -281,7 +282,32 @@ export default function App() {
     if (provider.mode === "cloud" && !llmPatch.llm_allow_public_network) {
       return;
     }
+    setLlmModels([]);
     updateLlmPatch(llmProviderDefaultsPatch(provider));
+  };
+
+  const refreshLlmModels = async () => {
+    setLoading(true);
+    try {
+      const result = await requestJson(serviceApiRoute("llm_models"));
+      const models = Array.isArray(result?.models) ? result.models : [];
+      setLlmModels(models);
+      if (result?.ok) {
+        setMessage(
+          `Discovered ${Number(result.dynamic_count || 0)} live models; ${models.length} total IDs are selectable.`,
+        );
+      } else {
+        setMessage(
+          result?.error
+            ? `Static and custom model IDs loaded; live discovery failed: ${result.error}`
+            : `Loaded ${models.length} static and custom model IDs.`,
+        );
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const saveLlmSettings = async () => {
@@ -405,9 +431,16 @@ export default function App() {
         ? { label: "Failed", tone: "error" }
         : { label: backtest.state || "Idle", tone: "muted" };
   const selectedLlmProvider = providerByKey(llmProviders, llmPatch.llm_provider);
-  const selectedModelSuggestions = Array.isArray(selectedLlmProvider?.model_suggestions)
+  const providerModelSuggestions = Array.isArray(selectedLlmProvider?.model_suggestions)
     ? selectedLlmProvider.model_suggestions.map((model) => String(model))
     : [];
+  const discoveredModelSuggestions = llmModels
+    .map((model) => String(model?.id || "").trim())
+    .filter(Boolean);
+  const selectedModelSuggestions = [...new Set([
+    ...providerModelSuggestions,
+    ...discoveredModelSuggestions,
+  ])];
   const selectedReasoningEfforts = Array.isArray(selectedLlmProvider?.reasoning_efforts)
     ? selectedLlmProvider.reasoning_efforts.map((effort) => String(effort))
     : ["default"];
@@ -595,7 +628,22 @@ export default function App() {
             </View>
 
             <Text style={styles.fieldLabel}>Model</Text>
-            <StatRow label="Selected Model" value={llmPatch.llm_model || "-"} />
+            <TextInput
+              value={llmPatch.llm_model}
+              onChangeText={(value) => updateLlmPatch({ llm_model: value })}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={llmSettingsEnabled}
+              style={styles.input}
+              placeholder="provider/model or any supported model ID"
+              placeholderTextColor="#7d93aa"
+            />
+            <Pressable
+              style={[styles.button, styles.secondaryButton]}
+              onPress={() => refreshLlmModels()}
+            >
+              <Text style={styles.buttonText}>Discover Live Models</Text>
+            </Pressable>
             {selectedModelSuggestions.length ? (
               <View style={styles.optionGrid}>
                 {selectedModelSuggestions.map((model) => (

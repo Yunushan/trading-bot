@@ -44,6 +44,7 @@ if __package__ in (None, ""):
     from app.service.terminal import ServiceTerminalCommandResult, run_service_terminal_command
     from app.integrations.llm import (
         build_llm_config_payload,
+        discover_llm_models,
         list_llm_provider_specs,
         update_llm_config,
     )
@@ -71,6 +72,7 @@ else:
     from .terminal import ServiceTerminalCommandResult, run_service_terminal_command
     from ..integrations.llm import (
         build_llm_config_payload,
+        discover_llm_models,
         list_llm_provider_specs,
         update_llm_config,
     )
@@ -280,6 +282,9 @@ class TradingBotService:
 
     def get_llm_config_payload(self) -> dict[str, object]:
         return build_llm_config_payload(self.config)
+
+    def discover_llm_models(self) -> dict[str, object]:
+        return discover_llm_models(self.config)
 
     def update_llm_config(self, config_patch: dict | None) -> dict[str, object]:
         updated_config = update_llm_config(self.config, config_patch)

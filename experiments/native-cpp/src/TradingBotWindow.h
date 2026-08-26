@@ -268,6 +268,15 @@ private:
     QComboBox *dashboardLlmProviderCombo_ = nullptr;
     QComboBox *dashboardLlmModelCombo_ = nullptr;
     QComboBox *dashboardLlmReasoningCombo_ = nullptr;
+    QComboBox *dashboardLlmApiStyleCombo_ = nullptr;
+    QComboBox *dashboardLlmSpeedCombo_ = nullptr;
+    QComboBox *dashboardLlmVerbosityCombo_ = nullptr;
+    QSpinBox *dashboardLlmContextWindowSpin_ = nullptr;
+    QSpinBox *dashboardLlmMaxOutputTokensSpin_ = nullptr;
+    QSpinBox *dashboardLlmTimeoutSecondsSpin_ = nullptr;
+    QLineEdit *dashboardLlmTemperatureEdit_ = nullptr;
+    QLineEdit *dashboardLlmTopPEdit_ = nullptr;
+    QTextEdit *dashboardLlmRequestOptionsEdit_ = nullptr;
     QLineEdit *dashboardLlmBaseUrlEdit_ = nullptr;
     QLineEdit *dashboardLlmApiKeyEnvEdit_ = nullptr;
     QLineEdit *dashboardLlmApiKeyEdit_ = nullptr;

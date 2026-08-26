@@ -21,6 +21,7 @@
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextEdit>
 #include <QVariant>
 #include <QVariantMap>
 
@@ -831,6 +832,39 @@ QJsonObject TradingBotWindow::buildDashboardServiceConfigPatch() const {
     config.insert(QStringLiteral("llm_use_for"), comboDataOrText(dashboardLlmUseForCombo_, QStringLiteral("advisory")));
     config.insert(QStringLiteral("llm_allow_public_network"), dashboardLlmAllowPublicNetworkCheck_ && dashboardLlmAllowPublicNetworkCheck_->isChecked());
     config.insert(QStringLiteral("llm_reasoning_effort"), comboText(dashboardLlmReasoningCombo_, QStringLiteral("default")));
+    config.insert(QStringLiteral("llm_api_style"), comboText(dashboardLlmApiStyleCombo_, QStringLiteral("provider-default")));
+    config.insert(QStringLiteral("llm_speed"), comboText(dashboardLlmSpeedCombo_, QStringLiteral("default")));
+    config.insert(QStringLiteral("llm_context_window"), dashboardLlmContextWindowSpin_ ? dashboardLlmContextWindowSpin_->value() : 0);
+    config.insert(QStringLiteral("llm_max_output_tokens"), dashboardLlmMaxOutputTokensSpin_ ? dashboardLlmMaxOutputTokensSpin_->value() : 0);
+    config.insert(QStringLiteral("llm_verbosity"), comboText(dashboardLlmVerbosityCombo_, QStringLiteral("default")));
+    config.insert(QStringLiteral("llm_timeout_seconds"), dashboardLlmTimeoutSecondsSpin_ ? dashboardLlmTimeoutSecondsSpin_->value() : 30);
+    const auto insertOptionalLlmNumber = [&config](const QString &key, const QLineEdit *edit) {
+        const QString text = edit ? edit->text().trimmed() : QString();
+        if (text.isEmpty() || text.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0
+            || text.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0) {
+            config.insert(key, QJsonValue(QJsonValue::Null));
+            return;
+        }
+        bool ok = false;
+        const double number = text.toDouble(&ok);
+        config.insert(key, ok ? QJsonValue(number) : QJsonValue(text));
+    };
+    insertOptionalLlmNumber(QStringLiteral("llm_temperature"), dashboardLlmTemperatureEdit_);
+    insertOptionalLlmNumber(QStringLiteral("llm_top_p"), dashboardLlmTopPEdit_);
+    const QString requestOptionsText = dashboardLlmRequestOptionsEdit_
+        ? dashboardLlmRequestOptionsEdit_->toPlainText().trimmed()
+        : QString();
+    if (requestOptionsText.isEmpty()) {
+        config.insert(QStringLiteral("llm_request_options"), QJsonObject{});
+    } else {
+        QJsonParseError parseError{};
+        const QJsonDocument document = QJsonDocument::fromJson(requestOptionsText.toUtf8(), &parseError);
+        config.insert(
+            QStringLiteral("llm_request_options"),
+            parseError.error == QJsonParseError::NoError && document.isObject()
+                ? QJsonValue(document.object())
+                : QJsonValue(requestOptionsText));
+    }
 
     // These selections are owned by the Python code-language surface rather than
     // a C++ dashboard widget, but they are still part of the shared config contract.
@@ -1145,6 +1179,37 @@ bool TradingBotWindow::hydrateDashboardServiceConfig(const QJsonObject &config) 
     }
     if (dashboardLlmReasoningCombo_) {
         setComboTextAllowingCustom(dashboardLlmReasoningCombo_, config.value(QStringLiteral("llm_reasoning_effort")).toString(QStringLiteral("default")));
+    }
+    if (dashboardLlmApiStyleCombo_) {
+        setComboTextAllowingCustom(dashboardLlmApiStyleCombo_, config.value(QStringLiteral("llm_api_style")).toString(QStringLiteral("provider-default")));
+    }
+    if (dashboardLlmSpeedCombo_) {
+        setComboTextAllowingCustom(dashboardLlmSpeedCombo_, config.value(QStringLiteral("llm_speed")).toString(QStringLiteral("default")));
+    }
+    if (dashboardLlmContextWindowSpin_ && config.contains(QStringLiteral("llm_context_window"))) {
+        dashboardLlmContextWindowSpin_->setValue(config.value(QStringLiteral("llm_context_window")).toInt(0));
+    }
+    if (dashboardLlmMaxOutputTokensSpin_ && config.contains(QStringLiteral("llm_max_output_tokens"))) {
+        dashboardLlmMaxOutputTokensSpin_->setValue(config.value(QStringLiteral("llm_max_output_tokens")).toInt(0));
+    }
+    if (dashboardLlmVerbosityCombo_) {
+        setComboTextAllowingCustom(dashboardLlmVerbosityCombo_, config.value(QStringLiteral("llm_verbosity")).toString(QStringLiteral("default")));
+    }
+    if (dashboardLlmTimeoutSecondsSpin_ && config.contains(QStringLiteral("llm_timeout_seconds"))) {
+        dashboardLlmTimeoutSecondsSpin_->setValue(config.value(QStringLiteral("llm_timeout_seconds")).toInt(30));
+    }
+    if (dashboardLlmTemperatureEdit_) {
+        dashboardLlmTemperatureEdit_->setText(jsonValueText(config.value(QStringLiteral("llm_temperature"))));
+    }
+    if (dashboardLlmTopPEdit_) {
+        dashboardLlmTopPEdit_->setText(jsonValueText(config.value(QStringLiteral("llm_top_p"))));
+    }
+    if (dashboardLlmRequestOptionsEdit_) {
+        const QJsonObject options = config.value(QStringLiteral("llm_request_options")).toObject();
+        dashboardLlmRequestOptionsEdit_->setPlainText(
+            options.isEmpty()
+                ? QString()
+                : QString::fromUtf8(QJsonDocument(options).toJson(QJsonDocument::Indented)).trimmed());
     }
     if (dashboardLlmStatusLabel_) {
         dashboardLlmStatusLabel_->setText(QStringLiteral("LLM settings loaded from Python Service API config."));
