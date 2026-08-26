@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -43,15 +45,19 @@ class ServiceCapacityProbeTests(unittest.TestCase):
         self.assertEqual("http", scheme)
 
     def test_remote_probe_requires_a_token_without_disclosing_it(self) -> None:
-        report = probe.run_capacity_probe(
-            base_url="https://service.example.test",
-            api_token_env="MISSING_CAPACITY_PROBE_TOKEN",
-            request_count=1,
-        )
+        credential_name = "MISSING_CAPACITY_PROBE_TOKEN"
+        with mock.patch.dict(os.environ, {}, clear=True):
+            report = probe.run_capacity_probe(
+                base_url="https://service.example.test",
+                api_token_env=credential_name,
+                request_count=1,
+            )
 
         self.assertFalse(report["ok"])
-        self.assertIn("MISSING_CAPACITY_PROBE_TOKEN", report["issues"][0])
-        self.assertNotIn("Authorization", str(report))
+        rendered = str(report)
+        self.assertIn("configured API token environment variable", report["issues"][0])
+        self.assertNotIn(credential_name, rendered)
+        self.assertNotIn("Authorization", rendered)
 
     def test_non_finite_thresholds_fail_before_starting_a_target(self) -> None:
         for field, value in (

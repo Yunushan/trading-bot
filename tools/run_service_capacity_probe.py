@@ -328,7 +328,10 @@ def run_capacity_probe(
                 "ok": False,
                 "status": "fail",
                 "promotion_eligible": False,
-                "issues": [f"{api_token_env} is required for a remote capacity probe"],
+                "issues": [
+                    "The configured API token environment variable is required "
+                    "for a remote capacity probe"
+                ],
             }
         environment = "external-https" if scheme == "https" else "loopback-http"
         process_boundary = "external-service"

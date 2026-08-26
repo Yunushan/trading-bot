@@ -104,9 +104,8 @@ def audit_policy(
         windows_policy.get("method") == "authenticode"
         and windows_policy.get("digest_algorithm") == "sha256"
         and windows_policy.get("timestamp_protocol") == "rfc3161"
-        and str(windows_policy.get("timestamp_url") or "").startswith(
-            "http://timestamp.digicert.com"
-        ),
+        and windows_policy.get("timestamp_url")
+        == "http://timestamp.digicert.com",
         "Windows policy must require SHA-256 Authenticode with RFC 3161 timestamping",
     )
     check(
