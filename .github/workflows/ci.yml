@@ -301,7 +301,15 @@ jobs:
           set -euo pipefail
           image="trading-bot-service:ci"
           container="trading-bot-service-ci"
-          docker build --pull --file docker/backend.Dockerfile --tag "$image" .
+          docker build --pull \
+            --build-arg BUILD_COMMIT="$GITHUB_SHA" \
+            --file docker/backend.Dockerfile \
+            --tag "$image" .
+          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+          if [[ "$image_revision" != "$GITHUB_SHA" ]]; then
+            echo "Container image source revision label does not match GITHUB_SHA." >&2
+            exit 1
+          fi
           docker run --detach --rm --name "$container" \
             --publish 127.0.0.1:18000:8000 \
             --read-only \

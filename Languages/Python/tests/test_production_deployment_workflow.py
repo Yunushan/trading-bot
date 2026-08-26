@@ -45,3 +45,15 @@ class ProductionDeploymentWorkflowTests(unittest.TestCase):
     def test_container_records_source_revision_label(self):
         self.assertIn("ARG BUILD_COMMIT=unknown", self.dockerfile)
         self.assertIn('LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"', self.dockerfile)
+
+    def test_ci_container_builds_bind_revision_label_to_checked_out_commit(self):
+        ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        supply_chain_workflow = (
+            REPO_ROOT / ".github" / "workflows" / "supply-chain-security.yml"
+        ).read_text(encoding="utf-8")
+        for workflow in (ci_workflow, supply_chain_workflow):
+            self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', workflow)
+            self.assertIn("org.opencontainers.image.revision", workflow)
+            self.assertIn('!= "$GITHUB_SHA"', workflow)
