@@ -656,26 +656,31 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("05dff0ee696f9bcd8617cd48c4b812d046d440cb", patch_notes)
         self.assertIn("233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5", patch_notes)
 
-    def test_mobile_node_audit_exception_requires_current_executable_mitigation_evidence(self):
+    def test_mobile_production_lockfile_uses_patched_image_size_fork(self):
         policy = json.loads((REPO_ROOT / "tools" / "node-audit-policy.json").read_text(encoding="utf-8"))
-        exception = policy["projects"]["apps/mobile-client"]["exceptions"][0]
-        mobile_package = json.loads(
-            (REPO_ROOT / "apps" / "mobile-client" / "package.json").read_text(encoding="utf-8")
-        )
+        mobile_root = REPO_ROOT / "apps" / "mobile-client"
+        mobile_package = json.loads((mobile_root / "package.json").read_text(encoding="utf-8"))
+        lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
 
-        self.assertEqual("image-size", exception["package"])
+        self.assertEqual([], policy["projects"]["apps/mobile-client"]["exceptions"])
+        self.assertEqual("npm:image-size-next@1.2.2", mobile_package["overrides"]["image-size"])
+        resolved = [
+            (package_path, metadata)
+            for package_path, metadata in lockfile["packages"].items()
+            if package_path.endswith("/node_modules/image-size")
+        ]
+        self.assertEqual(1, len(resolved))
+        package_path, metadata = resolved[0]
         self.assertEqual(
-            "none-published-or-reviewed-breaking-graph",
-            exception["fix_availability"],
+            "node_modules/@react-native/community-cli-plugin/node_modules/image-size",
+            package_path,
         )
-        self.assertEqual("react-native", exception["verified_fix_target"])
-        self.assertEqual("0.86.3", exception["verified_fix_version"])
-        self.assertEqual("2026-08-26", exception["reviewed"])
-        self.assertEqual("2026-09-30", exception["expires"])
-        self.assertEqual("mobile-image-size-build-only-v1", exception["mitigation_control"])
-        self.assertEqual("1.2.1", exception["verified_package_version"])
-        self.assertEqual(["metro@0.87.0"], exception["verified_consumers"])
-        self.assertNotIn("require_major_fix", exception)
+        self.assertEqual("image-size-next", metadata["name"])
+        self.assertEqual("1.2.2", metadata["version"])
+        self.assertEqual(
+            "sha512-Pd3CJ2+Ifk2H2jWikkoz2BSZgnuF3Qsea4gQmj2gtiOtYpGWBl7elj8EXnFMiY5PaYNruTTLD0hQ0UWK7pz9xA==",
+            metadata["integrity"],
+        )
         self.assertIn("check_mobile_image_size_exposure.cjs", mobile_package["scripts"]["test"])
 
     def test_mobile_production_lockfile_overrides_brace_expansion_security_fix(self):
