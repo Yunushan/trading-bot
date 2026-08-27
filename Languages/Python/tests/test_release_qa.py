@@ -693,6 +693,12 @@ class ReleaseQaTests(unittest.TestCase):
 
         self.assertIn("RUST_NATIVE_RUNTIME_EVIDENCE_INPUT: ${{ inputs.evidence_dir }}", workflow)
         self.assertIn("^artifacts/rust-native-runtime-evidence(/[A-Za-z0-9._-]+)*$", workflow)
+        self.assertIn("Verify external evidence run provenance", workflow)
+        self.assertIn('gh run view "${run_id}"', workflow)
+        self.assertIn("--json databaseId,status,conclusion,headSha,workflowName", workflow)
+        self.assertIn("Rust Native Live Smoke Evidence", workflow)
+        self.assertIn("Rust Native Release Evidence", workflow)
+        self.assertIn("run headSha must match the current promotion commit", workflow)
         job = workflow.split("  promotion-audit:\n", 1)[1]
         self.assertIn("    environment: production\n", job)
         job_env = job.split("    env:\n", 1)[1].split("    steps:\n", 1)[0]
@@ -702,6 +708,16 @@ class ReleaseQaTests(unittest.TestCase):
             "        env:\n          GH_TOKEN: ${{ github.token }}\n          GITHUB_TOKEN: ${{ github.token }}",
             workflow,
         )
+
+    def test_rust_release_evidence_binds_platform_run_to_current_commit(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "rust-native-release-evidence.yml").read_text(encoding="utf-8")
+
+        self.assertIn("Verify platform evidence run provenance", workflow)
+        self.assertIn('gh run view "${PLATFORM_EVIDENCE_RUN_ID}"', workflow)
+        self.assertIn("--json databaseId,status,conclusion,headSha,workflowName", workflow)
+        self.assertIn("Release Platform Real Tests", workflow)
+        self.assertIn("platform evidence run headSha must match the current release-evidence commit", workflow)
+        self.assertIn("if: ${{ env.PLATFORM_EVIDENCE_RUN_ID != '' }}", workflow)
 
     def test_loc_snapshot_workflow_cannot_mutate_main(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "update-loc-snapshot.yml").read_text(encoding="utf-8")
