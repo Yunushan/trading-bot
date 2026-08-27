@@ -33,6 +33,9 @@ _AUTH_HEADER_RE = re.compile(
 _SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(['\"]?\b(?:{_SENSITIVE_WORD})\b['\"]?\s*[:=]\s*)(['\"]?)([^'\"\s,;&}}]+)(\2)"
 )
+_URL_QUERY_SECRET_RE = re.compile(
+    r'''(?i)([?&](?:key|api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|token|secret|signature|password|passphrase)=)([^&#\s,;}'"]*)'''
+)
 _BARE_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 
 
@@ -57,6 +60,10 @@ def redact_text(value: object) -> str:
         text,
     )
     text = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}{REDACTED_TEXT}{match.group(4)}", text)
+    text = _URL_QUERY_SECRET_RE.sub(
+        lambda match: match.group(0) if not match.group(2) else f"{match.group(1)}{REDACTED_TEXT}",
+        text,
+    )
     text = _BARE_BEARER_RE.sub(f"Bearer {REDACTED_TEXT}", text)
     return text
 

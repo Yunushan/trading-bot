@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import requests
+
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
@@ -262,6 +264,32 @@ class LLMClientPrivacyTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("Keep deterministic risk controls.", result["text"])
         self.assertEqual(30, post.call_args.kwargs["timeout"])
+
+    def test_llm_transport_failure_is_structured_and_redacted(self):
+        with mock.patch("app.integrations.llm.clients.requests.post") as post:
+            post.side_effect = requests.ConnectionError(
+                "HTTPSConnectionPool(host='generativelanguage.googleapis.com', "
+                "url='/v1beta/models/test:generateContent?key=gemini-key')"
+            )
+            result = call_llm(
+                {
+                    "llm_provider": "gemini",
+                    "llm_model": "gemini-2.5-flash",
+                    "llm_api_key": "gemini-key",
+                },
+                prompt="Explain risk.",
+                dry_run=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("gemini", result["provider"])
+        self.assertIn("LLM provider request failed", result["error"])
+        self.assertNotIn("gemini-key", result["error"])
+        self.assertIn("key=<redacted>", result["error"])
+        self.assertEqual(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=gemini-key",
+            post.call_args.args[0],
+        )
 
     def test_llm_output_policy_detects_execution_boundary_violations(self):
         self.assertIn(

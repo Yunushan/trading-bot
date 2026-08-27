@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 import requests
 
-from app.security.redaction import redact_value
+from app.security.redaction import redact_text, redact_value
 
 from .providers import (
     ANTHROPIC_MESSAGES_PROTOCOL,
@@ -717,9 +717,12 @@ def call_llm(
             "text": "",
         }
     headers = dict(request_payload["headers"])
-    if request_payload.get("mode") == "cloud" and not (
-        headers.get("Authorization") or headers.get("x-api-key")
-    ):
+    has_header_credentials = bool(headers.get("Authorization") or headers.get("x-api-key"))
+    has_gemini_query_credentials = (
+        request_payload.get("protocol") == GEMINI_GENERATE_CONTENT_PROTOCOL
+        and "?key=" in str(request_payload.get("url") or "")
+    )
+    if request_payload.get("mode") == "cloud" and not (has_header_credentials or has_gemini_query_credentials):
         return {
             "ok": False,
             "dry_run": False,
@@ -728,12 +731,21 @@ def call_llm(
             "execution_policy": request_payload.get("execution_policy"),
         }
 
-    response = requests.post(
-        str(request_payload["url"]),
-        headers=headers,
-        json=request_payload["json"],
-        timeout=max(1.0, float(timeout or request_payload.get("timeout_seconds") or 30.0)),
-    )
+    try:
+        response = requests.post(
+            str(request_payload["url"]),
+            headers=headers,
+            json=request_payload["json"],
+            timeout=max(1.0, float(timeout or request_payload.get("timeout_seconds") or 30.0)),
+        )
+    except requests.RequestException as exc:
+        return {
+            "ok": False,
+            "dry_run": False,
+            "provider": request_payload.get("provider"),
+            "execution_policy": request_payload.get("execution_policy"),
+            "error": redact_text(f"LLM provider request failed: {exc}"),
+        }
     try:
         payload = response.json()
     except Exception:
