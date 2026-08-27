@@ -13,6 +13,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.integrations.llm.clients import (  # noqa: E402
+    _sanitize_request_for_display,
     build_llm_chat_request,
     call_llm,
     llm_output_policy_violations,
@@ -353,6 +354,19 @@ class LLMClientPrivacyTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["output_policy"]["blocked"])
+
+    def test_dry_run_sanitizes_query_credentials_without_truncating_url(self):
+        result = _sanitize_request_for_display(
+            {
+                "url": "https://example.test/generate?KEY=gemini-key&trace=abc",
+                "headers": {"x-api-key": "header-key"},
+                "json": {},
+            }
+        )
+
+        self.assertEqual("https://example.test/generate?KEY=********&trace=abc", result["url"])
+        self.assertEqual("********", result["headers"]["x-api-key"])
+        self.assertNotIn("gemini-key", str(result))
 
 
 if __name__ == "__main__":

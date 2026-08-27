@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 import requests
 
-from app.security.redaction import redact_text, redact_value
+from app.security.redaction import REDACTED_TEXT, redact_text, redact_value
 
 from .providers import (
     ANTHROPIC_MESSAGES_PROTOCOL,
@@ -502,8 +502,7 @@ def _sanitize_request_for_display(request_payload: dict[str, object]) -> dict[st
             headers[key] = "********"
     sanitized["headers"] = headers
     url = str(sanitized.get("url") or "")
-    if "key=" in url:
-        sanitized["url"] = url.split("key=", 1)[0] + "key=********"
+    sanitized["url"] = redact_text(url).replace(REDACTED_TEXT, "********")
     return sanitized
 
 
