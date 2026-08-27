@@ -33,6 +33,13 @@ tauri-build = { version = "2" }
 # reviewed commit but has not published it to crates.io yet.
 [patch.crates-io]
 plist = { git = "https://github.com/ebarnard/rust-plist", rev = "2881e175b61f159a8a958765168733c0d5abe641" }
+# Tauri's GTK3/WebKitGTK dependency path still requires glib 0.18.5. The
+# published crate contains an unsound immutable pointer passed to a C
+# out-parameter, while the upstream fix is not released on the 0.18 line.
+# Keep the published package version and provenance, but use the exact
+# upstream fix in the tracked backport under vendor/ until the dependency
+# graph moves to glib >=0.20 or Tauri adopts its GTK4 path.
+glib = { path = "../../vendor/glib-0.18.5" }
 
 [dependencies]
 serde_json = { workspace = true }

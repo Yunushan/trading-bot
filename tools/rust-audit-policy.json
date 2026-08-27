@@ -162,16 +162,6 @@
       "expires": "2026-10-10",
       "scope": "tauri-utils-urlpattern-transitive",
       "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
-    },
-    {
-      "kind": "unsound",
-      "id": "RUSTSEC-2024-0429",
-      "package": "glib",
-      "version": "0.18.5",
-      "reviewed": "2026-08-26",
-      "expires": "2026-10-10",
-      "scope": "linux-tauri-webkitgtk-transitive",
-      "reason": "Owned code does not call the affected VariantStrIter APIs; Tauri's GTK3 path pins glib 0.18, so remove this on the glib 0.20-or-newer migration."
     }
   ]
 }

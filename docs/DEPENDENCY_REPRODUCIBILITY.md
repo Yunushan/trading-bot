@@ -72,15 +72,23 @@ and expired exceptions. The exact warning identities and expiry dates are in
 `tools/rust-audit-policy.json`; do not use Cargo's broad advisory ignore flags.
 
 `cargo audit` can exit successfully while reporting informational warnings. The
-current Tauri Linux dependency path may therefore still show upstream GTK/glib
-unmaintained or unsound warnings even when no known vulnerable dependency is
-reported. A second time-bounded path is the unmaintained Unicode family pulled
-through `tauri-utils` and `urlpattern` 0.3. These warnings are not hidden with an
-advisory ignore list: each is matched on category, advisory ID, package, and
-version. They must be reviewed after every Tauri or GTK dependency update, and
-they remain a release risk until upstream has compatible remediations. CI starts
-rejecting all current exceptions after 2026-10-10 unless a fresh documented
-review deliberately renews or removes them.
+current Tauri Linux dependency path still carries upstream GTK3 and Unicode
+unmaintained warnings, but the `glib 0.18.5` unsoundness is locally backported:
+the tracked vendor copy applies the exact upstream `VariantStrIter` fix from
+gtk-rs-core commit `05dff0ee696f9bcd8617cd48c4b812d046d440cb` while retaining
+the crates.io package version and SHA-256 provenance
+`233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5`. The
+backport is verified by the dependency reproducibility tests and workspace
+compile checks. It is not represented as an upstream release: remove the
+vendor patch when the resolved Tauri/GTK path uses `glib >=0.20` or a released
+GTK4-compatible stack.
+
+The remaining GTK3 and Unicode warnings are not hidden with an advisory ignore
+list: each is matched on category, advisory ID, package, and version. They must
+be reviewed after every Tauri or GTK dependency update, and they remain a
+release risk until upstream has compatible remediations. CI starts rejecting
+all current exceptions after 2026-10-10 unless a fresh documented review
+deliberately renews or removes them.
 Treat a clean audit report as necessary, not sufficient, for production
 promotion.
 

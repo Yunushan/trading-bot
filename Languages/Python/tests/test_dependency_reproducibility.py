@@ -608,20 +608,21 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn('exit-code: "1"', workflow)
         self.assertIn("if: always() && steps.trivy.outcome != 'skipped'", workflow)
 
-    def test_rust_audit_policy_is_exact_time_bounded_and_excludes_fixed_rand_advisory(self):
+    def test_rust_audit_policy_is_exact_time_bounded_and_excludes_fixed_advisories(self):
         policy = json.loads((REPO_ROOT / "tools" / "rust-audit-policy.json").read_text(encoding="utf-8"))
         exceptions = policy["exceptions"]
 
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(17, len(exceptions))
+        self.assertEqual(16, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
         }
         self.assertEqual(len(exceptions), len(identities))
         self.assertNotIn(("unsound", "RUSTSEC-2026-0097", "rand", "0.9.2"), identities)
+        self.assertNotIn(("unsound", "RUSTSEC-2024-0429", "glib", "0.18.5"), identities)
         for exception in exceptions:
             with self.subTest(advisory=exception["id"], package=exception["package"]):
                 self.assertEqual("2026-08-26", exception["reviewed"])
@@ -634,6 +635,26 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
         self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
         self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
+
+        rust_manifest = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('glib = { path = "../../vendor/glib-0.18.5" }', rust_manifest)
+        glib_lock_entry = cargo_lock.split('name = "glib"\n', 1)[1].split("\n\n", 1)[0]
+        self.assertNotIn("source =", glib_lock_entry)
+        self.assertNotIn("checksum =", glib_lock_entry)
+
+        glib_source = (
+            REPO_ROOT / "vendor" / "glib-0.18.5" / "src" / "variant_iter.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("let mut p: *mut libc::c_char", glib_source)
+        self.assertIn("&mut p", glib_source)
+        self.assertNotIn("let p: *mut libc::c_char", glib_source)
+        patch_notes = (REPO_ROOT / "vendor" / "glib-0.18.5" / "PATCH.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("05dff0ee696f9bcd8617cd48c4b812d046d440cb", patch_notes)
+        self.assertIn("233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5", patch_notes)
 
     def test_mobile_node_audit_exception_requires_current_executable_mitigation_evidence(self):
         policy = json.loads((REPO_ROOT / "tools" / "node-audit-policy.json").read_text(encoding="utf-8"))
