@@ -715,6 +715,8 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("- language: c-cpp", workflow)
         self.assertIn("- language: rust", workflow)
         self.assertIn("build-mode: ${{ matrix.build-mode }}", workflow)
+        self.assertIn("paths-ignore:", workflow)
+        self.assertIn("vendor/glib-0.18.5/**", workflow)
         self.assertEqual(4, workflow.count("build-mode: none"))
         for action_name in ("init", "analyze"):
             self.assertRegex(
