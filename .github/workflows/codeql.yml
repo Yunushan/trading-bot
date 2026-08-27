@@ -48,11 +48,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          # glib is an unmodified third-party crate except for the documented
-          # two-line backport; Cargo audit, provenance tests, and compilation
-          # cover it while CodeQL remains scoped to repository-owned code.
-          paths-ignore: |
-            vendor/glib-0.18.5/**
+          config-file: ./.github/codeql-config.yml
 
       - name: Analyze
         uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4

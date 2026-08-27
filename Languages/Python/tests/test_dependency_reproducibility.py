@@ -715,9 +715,11 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("- language: c-cpp", workflow)
         self.assertIn("- language: rust", workflow)
         self.assertIn("build-mode: ${{ matrix.build-mode }}", workflow)
-        self.assertIn("paths-ignore:", workflow)
-        self.assertIn("vendor/glib-0.18.5/**", workflow)
+        self.assertIn("config-file: ./.github/codeql-config.yml", workflow)
         self.assertEqual(4, workflow.count("build-mode: none"))
+        codeql_config = (REPO_ROOT / ".github" / "codeql-config.yml").read_text(encoding="utf-8")
+        self.assertIn("paths-ignore:", codeql_config)
+        self.assertIn("vendor/glib-0.18.5/**", codeql_config)
         for action_name in ("init", "analyze"):
             self.assertRegex(
                 workflow,
