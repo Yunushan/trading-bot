@@ -632,6 +632,7 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("github.event.workflow_run.conclusion == 'success'", workflow)
         self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", workflow)
         self.assertIn("github.event.workflow_run.head_sha", workflow)
+        self.assertIn("github.event.pull_request.head.sha", workflow)
         self.assertIn(
             "TARGET_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.target_id || 'all' }}",
             workflow,

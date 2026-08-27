@@ -276,6 +276,7 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             "INCLUDE_SELF_HOSTED: ${{ github.event_name == 'workflow_dispatch' && inputs.include_self_hosted || false }}",
             "github.event.workflow_run.head_repository.full_name == github.repository",
             "github.event.workflow_run.head_sha",
+            "github.event.pull_request.head.sha",
             "args+=(--exclude-self-hosted)",
             "--emit-github-matrix",
             "strategy:",
