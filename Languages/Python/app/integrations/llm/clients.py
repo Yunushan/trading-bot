@@ -754,7 +754,7 @@ def call_llm(
             "ok": False,
             "dry_run": False,
             "status_code": response.status_code,
-            "error": payload,
+            "error": redact_value(payload),
         }
     protocol = str(request_payload.get("protocol") or "")
     text = _extract_response_text(protocol, payload)
@@ -771,5 +771,5 @@ def call_llm(
             "blocked": bool(violations),
         },
         "text": text,
-        "raw": payload,
+        "raw": redact_value(payload),
     }

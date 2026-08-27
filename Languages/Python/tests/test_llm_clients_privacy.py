@@ -292,6 +292,32 @@ class LLMClientPrivacyTests(unittest.TestCase):
             post.call_args.args[0],
         )
 
+    def test_llm_provider_error_payload_is_redacted(self):
+        with mock.patch("app.integrations.llm.clients.requests.post") as post:
+            response = _Response(
+                {
+                    "api_key": "gemini-key",
+                    "detail": "request failed at https://example.test?key=gemini-key&trace=abc",
+                }
+            )
+            response.status_code = 502
+            post.return_value = response
+            result = call_llm(
+                {
+                    "llm_provider": "gemini",
+                    "llm_model": "gemini-2.5-flash",
+                    "llm_api_key": "gemini-key",
+                },
+                prompt="Explain risk.",
+                dry_run=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(502, result["status_code"])
+        self.assertEqual("<redacted>", result["error"]["api_key"])
+        self.assertIn("key=<redacted>&trace=abc", result["error"]["detail"])
+        self.assertNotIn("gemini-key", str(result["error"]))
+
     def test_llm_output_policy_detects_execution_boundary_violations(self):
         self.assertIn(
             "direct_order_action",
