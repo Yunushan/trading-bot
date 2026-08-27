@@ -8,6 +8,8 @@ const PROJECT_ID = "apps/mobile-client";
 const FINDING_PACKAGE = "image-size";
 const PATCHED_PACKAGE_NAME = "image-size-next";
 const PATCHED_PACKAGE_VERSION = "1.2.2";
+const PATCHED_PACKAGE_RESOLVED = "https://registry.npmjs.org/image-size-next/-/image-size-next-1.2.2.tgz";
+const PATCHED_PACKAGE_INTEGRITY = "sha512-Pd3CJ2+Ifk2H2jWikkoz2BSZgnuF3Qsea4gQmj2gtiOtYpGWBl7elj8EXnFMiY5PaYNruTTLD0hQ0UWK7pz9xA==";
 const VULNERABLE_FORMATS = ["avif", "heic", "heif", "icns", "jxl"];
 const METRO_IMAGE_FORMATS = ["bmp", "gif", "jpeg", "jpg", "ktx", "png", "psd", "svg", "tiff", "webp"];
 const SOURCE_IMPORT_PATTERN = /(?:require\s*\(\s*["']image-size["']|from\s*["']image-size["']|import\s*["']image-size["'])/;
@@ -100,8 +102,30 @@ function inspectMetroConsumer(projectRoot, consumer, packages, issues) {
       + `found ${resolvedPackageName}@${resolvedPackageVersion || "<missing>"}`,
     );
   }
+  if (resolvedDependency.metadata?.resolved !== PATCHED_PACKAGE_RESOLVED) {
+    issues.push(`${FINDING_PACKAGE} has an unexpected patched-fork tarball resolution`);
+  }
+  if (resolvedDependency.metadata?.integrity !== PATCHED_PACKAGE_INTEGRITY) {
+    issues.push(`${FINDING_PACKAGE} has an unexpected patched-fork integrity`);
+  }
 
   const metroRoot = lockPathToFilesystem(projectRoot, consumer.lock_path);
+  const installedPackagePath = path.join(
+    lockPathToFilesystem(projectRoot, resolvedDependency.lock_path),
+    "package.json",
+  );
+  if (!fs.existsSync(installedPackagePath)) {
+    issues.push(`patched ${FINDING_PACKAGE} package metadata is missing: ${resolvedDependency.lock_path}`);
+  } else {
+    try {
+      const installedPackage = readJson(installedPackagePath);
+      if (installedPackage.name !== PATCHED_PACKAGE_NAME || installedPackage.version !== PATCHED_PACKAGE_VERSION) {
+        issues.push(`installed patched ${FINDING_PACKAGE} metadata does not match the reviewed fork`);
+      }
+    } catch (error) {
+      issues.push(`patched ${FINDING_PACKAGE} package metadata could not be loaded: ${error.message}`);
+    }
+  }
   const sourceRoot = path.join(metroRoot, "src");
   const assetsPath = path.join(sourceRoot, "Assets.js");
   if (!fs.existsSync(assetsPath)) {
@@ -150,6 +174,7 @@ function inspectMetroConsumer(projectRoot, consumer, packages, issues) {
     resolved_package_name: resolvedPackageName,
     resolved_package_version: resolvedPackageVersion,
     resolved_package_path: resolvedDependency.lock_path,
+    resolved_package_integrity: resolvedDependency.metadata?.integrity || "",
   };
 }
 
