@@ -1110,6 +1110,36 @@ class DependencyReproducibilityTests(unittest.TestCase):
             self.assertFalse(legacy_plan_path.exists())
             self.assertTrue((root / "artifacts").exists())
 
+    def test_workspace_cleanup_removes_nested_release_platform_download_artifacts(self):
+        module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            download_dir = (
+                root
+                / "release-platform-evidence"
+                / "release-platform-evidence-browser-chrome-ubuntu_24_04_x64"
+            )
+            download_dir.mkdir(parents=True)
+            downloaded_json = download_dir / "browser-chrome-ubuntu_24_04_x64.json"
+            downloaded_json.write_text('{"status": "passed"}\n', encoding="utf-8")
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(module, "_ignored_paths", return_value=[]),
+            ):
+                dry_run = module.clean_workspace_artifacts(apply=False)
+                payload = module.clean_workspace_artifacts(apply=True)
+
+            expected_path = (
+                "release-platform-evidence/"
+                "release-platform-evidence-browser-chrome-ubuntu_24_04_x64"
+            )
+            self.assertEqual([expected_path], dry_run["planned"])
+            self.assertEqual([expected_path], payload["removed"])
+            self.assertFalse(download_dir.exists())
+            self.assertFalse(downloaded_json.exists())
+            self.assertTrue((root / "release-platform-evidence").exists())
+
     def test_workspace_cleanup_tool_can_opt_in_to_stale_rust_runtime_evidence(self):
         module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
         with tempfile.TemporaryDirectory() as temp_dir:

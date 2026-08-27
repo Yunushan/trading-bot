@@ -45,4 +45,8 @@ artifacts/operational-readiness/*.json
 artifacts/deployment/*.json
 artifacts/capacity/*.json
 release-platform-evidence/*.json
+# `gh run download --pattern release-platform-evidence-*` creates one
+# directory per downloaded artifact; the canonical evidence files belong at
+# the root of this generated directory instead.
+/release-platform-evidence/release-platform-evidence-*/
 connector-support-evidence/*.json
