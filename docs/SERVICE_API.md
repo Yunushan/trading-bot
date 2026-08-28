@@ -290,6 +290,9 @@ Request safety limits:
   `interval_ms` is `250..60000`. `max_events`, when supplied, is `1..10000`;
   omitting it keeps the dashboard stream continuous. The active defaults and
   bounds are reported in `service_api.limits.query_bounds`.
+- Dashboard streams are capped at 32 concurrent connections per service
+  process. A full stream table returns `429` with `Retry-After: 1`; completed
+  or disconnected streams release their slot.
 - Health, readiness, liveness, and `/api/...` responses include `Cache-Control:
   no-store`, `Pragma: no-cache`, `Referrer-Policy: no-referrer`, and
   `X-Content-Type-Options: nosniff`. This keeps account, strategy, and runtime
@@ -416,7 +419,8 @@ query parameters for refresh cadence and payload sizing. `log_limit` must be
 between 1 and 250, `incident_limit` between 1 and 200, and `interval_ms`
 between 250 and 60000 milliseconds. It also accepts `max_events` for bounded diagnostics and contract tests; values must be between 1 and 10000. Omit
 `max_events` for normal continuous dashboard streams. Invalid values return
-`422`.
+`422`. Each service process admits at most 32 concurrent dashboard streams;
+when that capacity is full, the endpoint returns `429` with `Retry-After: 1`.
 
 Write/control routes:
 

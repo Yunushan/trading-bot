@@ -20,6 +20,7 @@ from app.service.api import (  # noqa: E402
     SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT,
     SERVICE_API_MAX_INCIDENT_LIMIT,
     SERVICE_API_MAX_RECENT_LOG_LIMIT,
+    SERVICE_API_MAX_STREAM_CONNECTIONS,
     SERVICE_API_MAX_STREAM_EVENTS,
     SERVICE_API_MAX_STREAM_INTERVAL_MS,
     SERVICE_API_MIN_STREAM_INTERVAL_MS,
@@ -1298,6 +1299,27 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             lines = response.iter_lines()
             self.assertEqual("event: dashboard", next(lines))
 
+        self.assertEqual(0, app.state.service_api_streams_active)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_rejects_dashboard_stream_when_connection_capacity_is_full(self):
+        app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+        client = _create_test_client(app)
+        with app.state.service_api_streams_lock:
+            app.state.service_api_streams_active = SERVICE_API_MAX_STREAM_CONNECTIONS
+
+        response = client.get(
+            SERVICE_API_STREAM_DASHBOARD_PATH,
+            params={"max_events": 1},
+            headers={"Authorization": "Bearer token-123"},
+        )
+
+        self.assertEqual(429, response.status_code)
+        self.assertEqual("1", response.headers.get("retry-after"))
+        self.assertIn("connection capacity", response.json()["detail"])
+        with app.state.service_api_streams_lock:
+            app.state.service_api_streams_active = 0
+
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_rejects_out_of_bounds_read_and_stream_query_values(self):
         app = create_service_api_app(service=TradingBotService(), api_token="token-123")
@@ -1320,6 +1342,10 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 "maximum": SERVICE_API_MAX_INCIDENT_LIMIT,
             },
             query_bounds["dashboard_incident_limit"],
+        )
+        self.assertEqual(
+            SERVICE_API_MAX_STREAM_CONNECTIONS,
+            client.get("/health").json()["service_api"]["limits"]["stream_max_connections"],
         )
 
         invalid_queries = (

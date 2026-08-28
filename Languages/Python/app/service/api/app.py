@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -130,6 +131,7 @@ SERVICE_API_MAX_STREAM_INTERVAL_MS = 60_000
 SERVICE_API_MAX_RECENT_LOG_LIMIT = 250
 SERVICE_API_MAX_INCIDENT_LIMIT = 200
 SERVICE_API_MAX_STREAM_EVENTS = 10_000
+SERVICE_API_MAX_STREAM_CONNECTIONS = 32
 
 
 def _service_api_read_only_mode() -> bool:
@@ -321,6 +323,8 @@ def create_service_api_app(
     app.state.service_api_legacy_base_path = SERVICE_API_LEGACY_BASE_PATH
     app.state.service_api_stream_path = SERVICE_API_STREAM_DASHBOARD_PATH
     app.state.service_api_rate_limit_windows = {}
+    app.state.service_api_streams_active = 0
+    app.state.service_api_streams_lock = threading.Lock()
     app.state.service_api_metrics = ServiceApiMetricsRegistry()
 
     def _service() -> TradingBotService:
@@ -455,6 +459,7 @@ def create_service_api_app(
             "max_request_bytes": _max_request_bytes(),
             "write_rate_limit_per_minute": _write_rate_limit_per_minute(),
             "write_rate_limit_max_clients": _write_rate_limit_max_clients(),
+            "stream_max_connections": SERVICE_API_MAX_STREAM_CONNECTIONS,
             "query_bounds": {
                 "dashboard_log_limit": {
                     "default": SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT,
@@ -495,6 +500,22 @@ def create_service_api_app(
             },
             "cors_allowed_origins": [],
         }
+
+    def _acquire_dashboard_stream_slot() -> None:
+        with app.state.service_api_streams_lock:
+            active = int(app.state.service_api_streams_active or 0)
+            if active >= SERVICE_API_MAX_STREAM_CONNECTIONS:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Dashboard stream connection capacity has been reached.",
+                    headers={"Retry-After": "1"},
+                )
+            app.state.service_api_streams_active = active + 1
+
+    def _release_dashboard_stream_slot() -> None:
+        with app.state.service_api_streams_lock:
+            active = int(app.state.service_api_streams_active or 0)
+            app.state.service_api_streams_active = max(0, active - 1)
 
     def _write_method(method: str) -> bool:
         return str(method or "").upper() in {"POST", "PUT", "PATCH", "DELETE"}
@@ -1175,20 +1196,24 @@ def create_service_api_app(
         ),
     ):
         _require_stream_auth(authorization)
+        _acquire_dashboard_stream_slot()
         stream_interval = interval_ms / 1000.0
         event_limit = max_events
 
         async def event_stream():
-            events_sent = 0
-            while True:
-                if await request.is_disconnected():
-                    break
-                payload = _build_dashboard_payload(log_limit=log_limit, incident_limit=incident_limit)
-                yield f"event: dashboard\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
-                events_sent += 1
-                if event_limit is not None and events_sent >= event_limit:
-                    break
-                await asyncio.sleep(stream_interval)
+            try:
+                events_sent = 0
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    payload = _build_dashboard_payload(log_limit=log_limit, incident_limit=incident_limit)
+                    yield f"event: dashboard\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                    events_sent += 1
+                    if event_limit is not None and events_sent >= event_limit:
+                        break
+                    await asyncio.sleep(stream_interval)
+            finally:
+                _release_dashboard_stream_slot()
 
         return StreamingResponse(
             event_stream(),
