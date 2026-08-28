@@ -419,4 +419,3 @@ The dedicated release guide is the primary home going forward.
 This project is released under the 0BSD License. See [LICENSE](LICENSE) for the full terms. Use the software at your own risk and comply with all exchange and broker terms of service.
 
 Happy trading and safe experimenting! If you discover issues or have feature ideas, open a GitHub issue or start a discussion so we can continue improving the workspace together.
-

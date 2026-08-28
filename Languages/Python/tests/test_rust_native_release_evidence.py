@@ -270,17 +270,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             json.loads(rendered),
         )
 
-    def test_readiness_cli_output_boundary_has_targeted_codeql_suppression(self):
+    def test_readiness_cli_output_boundary_needs_no_codeql_suppression(self):
         source = (REPO_ROOT / "tools" / "audit_rust_native_runtime_readiness.py").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn(
-            "# codeql[py/clear-text-logging-sensitive-data]\n"
-            "    print(json.dumps(payload, indent=2, sort_keys=True))",
-            source,
-        )
-        self.assertNotIn("# lgtm [py/clear-text-logging-sensitive-data]", source)
+        self.assertIn("print(json.dumps(payload, indent=2, sort_keys=True))", source)
+        self.assertNotIn("# codeql[py/clear-text-logging-sensitive-data]", source)
+        self.assertNotIn("lgtm[py/clear-text-logging-sensitive-data]", source)
 
     def test_evidence_workflow_checker_covers_ci_gate(self):
         result = evidence_workflows.check_workflows(REPO_ROOT)
@@ -1137,7 +1134,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(guard, result["market_source_control_write_guard"])
         self.assertEqual(guard, result["account_source_control_write_guard"])
         self.assertEqual(["generated evidence write guard"], result["market_missing_prerequisites"])
-        self.assertEqual(["generated evidence write guard"], result["account_missing_prerequisites"])
+        self.assertEqual(
+            ["BINANCE_API_KEY", "BINANCE_API_SECRET", "generated evidence write guard"],
+            result["account_missing_prerequisites"],
+        )
         self.assertEqual(
             {"binance_testnet": "true", "symbol": "BTCUSDT", "interval": "1m"},
             result["github_workflow_inputs"],
@@ -1190,7 +1190,12 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             )
 
         self.assertTrue(result["can_run_market_smoke"])
-        self.assertTrue(result["can_run_live_smoke"])
+        self.assertFalse(result["can_run_live_smoke"])
+        self.assertTrue(result["credential_validation_deferred_to_execution_preflight"])
+        self.assertEqual(
+            ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
+            result["account_missing_prerequisites"],
+        )
         self.assertEqual("false", result["binance_testnet"])
         self.assertEqual("ETHUSDT", result["live_smoke_symbol"])
         self.assertEqual("5m", result["live_smoke_interval"])
@@ -1203,6 +1208,44 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("-f binance_testnet=false", result["github_workflow"])
         self.assertIn("-f symbol=ETHUSDT", result["github_workflow"])
         self.assertIn("-f interval=5m", result["github_workflow"])
+
+    def test_readiness_live_smoke_report_does_not_disclose_credential_presence(self):
+        guard = {
+            "ok": True,
+            "generated_evidence_write_targets": [],
+            "tracked_generated_evidence_write_targets": [],
+            "issues": [],
+        }
+        non_secret_environment = {
+            "TRADING_BOT_RUST_MARKET_SMOKE": "1",
+            "TRADING_BOT_RUST_LIVE_SMOKE": "1",
+            "BINANCE_TESTNET": "true",
+        }
+
+        with patch.object(runtime_readiness, "generated_evidence_write_guard", return_value=guard):
+            with patch.dict(runtime_readiness.os.environ, non_secret_environment, clear=True):
+                without_credentials = runtime_readiness._live_smoke_prerequisites(
+                    REPO_ROOT / "artifacts" / "rust-native-runtime-evidence"
+                )
+            with patch.dict(
+                runtime_readiness.os.environ,
+                {
+                    **non_secret_environment,
+                    "BINANCE_API_KEY": "configured",
+                    "BINANCE_API_SECRET": "configured",
+                },
+                clear=True,
+            ):
+                with_credentials = runtime_readiness._live_smoke_prerequisites(
+                    REPO_ROOT / "artifacts" / "rust-native-runtime-evidence"
+                )
+
+        self.assertEqual(without_credentials, with_credentials)
+        self.assertEqual(
+            ["BINANCE_API_KEY", "BINANCE_API_SECRET"],
+            with_credentials["account_missing_prerequisites"],
+        )
+        self.assertTrue(with_credentials["credential_validation_deferred_to_execution_preflight"])
 
     def test_readiness_live_smoke_prerequisites_require_clean_source(self):
         guard = {
@@ -1234,7 +1277,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(result["can_run_market_smoke"])
         self.assertFalse(result["can_run_live_smoke"])
         self.assertEqual(["clean source tree"], result["market_missing_prerequisites"])
-        self.assertEqual(["clean source tree"], result["account_missing_prerequisites"])
+        self.assertEqual(
+            ["clean source tree", "BINANCE_API_KEY", "BINANCE_API_SECRET"],
+            result["account_missing_prerequisites"],
+        )
 
     def test_release_asset_fetch_uses_windows_cert_store_fallback_for_ssl_errors(self):
         fallback_payload = {
