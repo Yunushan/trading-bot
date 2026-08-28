@@ -383,7 +383,11 @@ clients. `GET /api/v1/metrics/prometheus` is the authenticated Prometheus 0.0.4
 exposition endpoint for production monitoring. It exports bounded route-template
 labels, status codes, request counters, request-duration histograms, process
 uptime, runtime/engine state, connector circuit state, unresolved order intents,
-preflight state, and per-component operational snapshot age/staleness.
+preflight state, and per-component operational snapshot age/staleness. HTTP
+metric state is capped at 256 route series and 4096 combined request/duration
+series; excess updates use an `OTHER`/`unmatched` overflow series and increment
+`trading_bot_service_http_metrics_overflow_total`, which is covered by the
+`TradingBotServiceMetricsCardinalityOverflow` warning alert.
 
 The Prometheus endpoint follows the same bearer-token rules as other read API
 routes. Configure a scraper with an authorization credential file or an

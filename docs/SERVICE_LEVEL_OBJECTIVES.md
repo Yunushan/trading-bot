@@ -17,8 +17,9 @@ The service exports the raw counters, duration histogram, runtime state, and
 snapshot-age gauges needed to calculate these objectives at authenticated
 `/api/v1/metrics/prometheus`. The checked-in alert rules at
 `docker/monitoring/prometheus-alerts.json` apply the 0.1% error-rate, 500 ms p95,
-and 120-second freshness thresholds. Alerts are an operational response surface;
-they do not replace the required rolling 30-day evidence artifact.
+120-second freshness, and bounded-metric-cardinality thresholds. Alerts are an
+operational response surface; they do not replace the required rolling 30-day
+evidence artifact.
 
 ## Error Budget
 

@@ -58,8 +58,9 @@ Scrape authenticated production metrics from
 secret store or credential file. Load
 `docker/monitoring/prometheus-alerts.json` as a Prometheus rule file and route
 critical alerts to an actively monitored channel. Confirm that unavailable,
-read-error-rate, stale-snapshot, open-circuit, and unresolved-order-intent alerts
-reach the operator before declaring a deployment ready. Use `X-Request-ID` from
+read-error-rate, stale-snapshot, metric-cardinality-overflow, open-circuit, and
+unresolved-order-intent alerts reach the operator before declaring a deployment
+ready. Use `X-Request-ID` from
 service responses to correlate proxy and application incidents without placing
 credentials or query values in logs or labels.
 
