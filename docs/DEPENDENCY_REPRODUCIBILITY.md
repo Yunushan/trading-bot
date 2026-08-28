@@ -84,6 +84,13 @@ review deliberately renews or removes them.
 Treat a clean audit report as necessary, not sufficient, for production
 promotion.
 
+`cargo-audit` represents yanked packages without advisory metadata
+(`advisory: null`). The checker normalizes that exact shape to the synthetic
+`YANKED` identity while still requiring an exact, time-bounded policy exception.
+The current `chacha20 0.10.1` entry is transitive through `tungstenite 0.30.0`
+and `rand 0.10.2`; remove its exception when the upstream graph no longer pins
+the yanked release.
+
 The Tauri macOS dependency path temporarily patches `plist` to a reviewed,
 immutable upstream commit. This is required because the published `plist` 1.8.0
 release pins a vulnerable `quick-xml` range; remove the patch when a released
