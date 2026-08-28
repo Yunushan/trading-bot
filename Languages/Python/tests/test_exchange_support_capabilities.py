@@ -1480,6 +1480,37 @@ class ExchangeSupportCapabilitiesTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "at least 16"):
             MetaTrader4BridgeServer(token="short")
+        with self.assertRaisesRegex(ValueError, "bridge token must not contain control characters"):
+            MetaTrader4BridgeServer(token="mt4-bridge-token\n-invalid")
+        with self.assertRaisesRegex(ValueError, "bridge token must contain at most 512 UTF-8 bytes"):
+            MetaTrader4BridgeServer(token="x" * 513)
+        with self.assertRaisesRegex(ValueError, "request_timeout must be at most 300"):
+            MetaTrader4BridgeConnector(
+                provider="FXTF",
+                terminal_id="terminal-1",
+                request_timeout=301,
+            )
+        with self.assertRaisesRegex(ValueError, "operation_timeout must be at most 1800"):
+            MetaTrader4BridgeConnector(
+                provider="FXTF",
+                terminal_id="terminal-1",
+                operation_timeout=1801,
+            )
+        with self.assertRaisesRegex(ValueError, "poll_interval must be at most 60"):
+            MetaTrader4BridgeConnector(
+                provider="FXTF",
+                terminal_id="terminal-1",
+                poll_interval=61,
+            )
+        with self.assertRaisesRegex(ValueError, "command payload must contain at most 128 fields"):
+            MetaTrader4BridgeState().enqueue(
+                terminal_id="terminal-1",
+                provider="FXTF",
+                operation="account_snapshot",
+                payload={f"field{index}": index for index in range(129)},
+            )
+        with self.assertRaisesRegex(ValueError, "max_commands must be at most 10000"):
+            MetaTrader4BridgeState(max_commands=10_001)
 
         state = MetaTrader4BridgeState(command_lease_seconds=0.01)
         command = state.enqueue(

@@ -54,7 +54,7 @@ Use the resulting `https://` URL in both the connector and MT4 WebRequest allow-
 ## Safety properties
 
 - Every endpoint requires `X-MT4-Bridge-Token`; tokens are never returned in snapshots or logs.
-- The server limits command bodies and queue growth, validates terminal ownership, and leases one command at a time.
+- The server bounds tokens, command bodies, form fields, queue growth, error messages, and connector timing values; it validates terminal ownership and leases one command at a time.
 - The EA rejects unsafe bridge URLs before sending its token: loopback HTTP is allowed for local use, while remote URLs must use HTTPS; URL credentials, query strings, fragments, and invalid ports are rejected.
 - The EA bounds the bridge token, terminal identifier, polling interval, and request timeout before it creates its receipt file or starts polling.
 - The Python connector does not enqueue an order, cancellation, or close unless `allow_live=True`.
