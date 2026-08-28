@@ -143,7 +143,7 @@ jobs:
               raise SystemExit("platform evidence run headSha must match the current release-evidence commit")
           if workflow_name != "Release Platform Real Tests":
               raise SystemExit(
-                  "platform evidence run workflow must be 'Release Platform Real Tests'; "
+                  "platform evidence run workflow must be Release Platform Real Tests; "
                   f"observed {workflow_name!r}"
               )
           print(
