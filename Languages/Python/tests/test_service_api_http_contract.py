@@ -1296,6 +1296,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             headers={"Authorization": "Bearer token-123"},
         ) as response:
             self.assertEqual(200, response.status_code)
+            self.assertEqual("no-store", response.headers.get("cache-control"))
             lines = response.iter_lines()
             self.assertEqual("event: dashboard", next(lines))
 
