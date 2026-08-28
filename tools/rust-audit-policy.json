@@ -162,6 +162,16 @@
       "expires": "2026-10-10",
       "scope": "tauri-utils-urlpattern-transitive",
       "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
+    },
+    {
+      "kind": "yanked",
+      "id": "YANKED",
+      "package": "chacha20",
+      "version": "0.10.1",
+      "reviewed": "2026-08-28",
+      "expires": "2026-10-10",
+      "scope": "tungstenite-rand-transitive",
+      "reason": "tungstenite 0.30.0 resolves rand 0.10.2, which currently pins the yanked chacha20 0.10.1; remove when upstream publishes a non-yanked dependency graph."
     }
   ]
 }

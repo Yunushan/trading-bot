@@ -83,6 +83,13 @@ compile checks. It is not represented as an upstream release: remove the
 vendor patch when the resolved Tauri/GTK path uses `glib >=0.20` or a released
 GTK4-compatible stack.
 
+`cargo-audit` represents yanked packages without advisory metadata
+(`advisory: null`). The checker normalizes that exact shape to the synthetic
+`YANKED` identity while still requiring an exact, time-bounded policy exception.
+The current `chacha20 0.10.1` entry is transitive through `tungstenite 0.30.0`
+and `rand 0.10.2`; remove its exception when the upstream graph no longer pins
+the yanked release.
+
 The remaining GTK3 and Unicode warnings are not hidden with an advisory ignore
 list: each is matched on category, advisory ID, package, and version. They must
 be reviewed after every Tauri or GTK dependency update, and they remain a

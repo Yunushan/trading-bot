@@ -7,6 +7,7 @@ import re
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -21,6 +22,7 @@ CLEAN_WORKSPACE_SCRIPT = REPO_ROOT / "tools" / "clean_workspace_artifacts.py"
 RISKY_PATTERN_SCRIPT = REPO_ROOT / "tools" / "audit_risky_patterns.py"
 CLIENT_LOCK_SCRIPT = REPO_ROOT / "tools" / "check_client_dependency_locks.py"
 COMPILE_CHECK_SCRIPT = REPO_ROOT / "tools" / "check_python_sources_compile.py"
+RUST_AUDIT_POLICY_SCRIPT = REPO_ROOT / "tools" / "check_rust_audit_policy.py"
 
 
 def _load_script_module(name: str, path: Path):
@@ -615,7 +617,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(16, len(exceptions))
+        self.assertEqual(17, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
@@ -623,9 +625,11 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(len(exceptions), len(identities))
         self.assertNotIn(("unsound", "RUSTSEC-2026-0097", "rand", "0.9.2"), identities)
         self.assertNotIn(("unsound", "RUSTSEC-2024-0429", "glib", "0.18.5"), identities)
+        self.assertIn(("yanked", "YANKED", "chacha20", "0.10.1"), identities)
         for exception in exceptions:
             with self.subTest(advisory=exception["id"], package=exception["package"]):
-                self.assertEqual("2026-08-26", exception["reviewed"])
+                expected_reviewed = "2026-08-28" if exception["id"] == "YANKED" else "2026-08-26"
+                self.assertEqual(expected_reviewed, exception["reviewed"])
                 self.assertEqual("2026-10-10", exception["expires"])
                 self.assertTrue(exception["scope"])
                 self.assertTrue(exception["reason"])
@@ -655,6 +659,47 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
         self.assertIn("05dff0ee696f9bcd8617cd48c4b812d046d440cb", patch_notes)
         self.assertIn("233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5", patch_notes)
+
+    def test_rust_audit_policy_accepts_only_documented_yanked_warning_shape(self):
+        checker = _load_script_module("check_rust_audit_policy", RUST_AUDIT_POLICY_SCRIPT)
+        report = {
+            "database": {"last-updated": "2026-08-28T00:00:00Z"},
+            "vulnerabilities": {"count": 0, "list": []},
+            "warnings": {
+                "yanked": [
+                    {
+                        "package": {"name": "chacha20", "version": "0.10.1"},
+                        "advisory": None,
+                    }
+                ]
+            },
+        }
+        policy = {
+            "max_database_age_days": 7,
+            "max_exception_days": 45,
+            "exceptions": [
+                {
+                    "kind": "yanked",
+                    "id": "YANKED",
+                    "package": "chacha20",
+                    "version": "0.10.1",
+                    "reviewed": "2026-08-28",
+                    "expires": "2026-10-10",
+                    "scope": "test-transitive",
+                    "reason": "tracked test exception",
+                }
+            ],
+        }
+
+        result = checker.evaluate(report, policy, as_of=date(2026, 8, 28))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("YANKED", result["allowed"][0]["id"])
+
+        malformed = json.loads(json.dumps(report))
+        malformed["warnings"]["yanked"][0]["advisory"] = {}
+        result = checker.evaluate(malformed, policy, as_of=date(2026, 8, 28))
+        self.assertFalse(result["ok"])
+        self.assertIn("cargo audit warning in yanked is malformed", result["errors"])
 
     def test_mobile_production_lockfile_uses_patched_image_size_fork(self):
         policy = json.loads((REPO_ROOT / "tools" / "node-audit-policy.json").read_text(encoding="utf-8"))
