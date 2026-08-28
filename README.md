@@ -222,9 +222,9 @@ Contributor-facing structure and maintenance docs now live here:
 ### Current LOC snapshot
 
 <!-- LOC-SNAPSHOT:START -->
-- Snapshot date: `28.08.2026 GMT+3 Time 23:17:10`
-- Total tracked code/config/script lines: `255,317`
-- Non-empty tracked code/config/script lines (SLOC-style): `232,717`
+- Snapshot date: `29.08.2026 GMT+3 Time 01:31:43`
+- Total tracked code/config/script lines: `255,357`
+- Non-empty tracked code/config/script lines (SLOC-style): `232,754`
 - Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
 <!-- LOC-SNAPSHOT:END -->
 
@@ -419,3 +419,4 @@ The dedicated release guide is the primary home going forward.
 This project is released under the 0BSD License. See [LICENSE](LICENSE) for the full terms. Use the software at your own risk and comply with all exchange and broker terms of service.
 
 Happy trading and safe experimenting! If you discover issues or have feature ideas, open a GitHub issue or start a discussion so we can continue improving the workspace together.
+
