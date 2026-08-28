@@ -16,6 +16,13 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from app.service.api import (  # noqa: E402
     FASTAPI_AVAILABLE,
+    SERVICE_API_DEFAULT_DASHBOARD_INCIDENT_LIMIT,
+    SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT,
+    SERVICE_API_MAX_INCIDENT_LIMIT,
+    SERVICE_API_MAX_RECENT_LOG_LIMIT,
+    SERVICE_API_MAX_STREAM_EVENTS,
+    SERVICE_API_MAX_STREAM_INTERVAL_MS,
+    SERVICE_API_MIN_STREAM_INTERVAL_MS,
     ServiceApiBackgroundHost,
     create_service_api_app,
     run_service_api_server,
@@ -1290,6 +1297,57 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             lines = response.iter_lines()
             self.assertEqual("event: dashboard", next(lines))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_rejects_out_of_bounds_read_and_stream_query_values(self):
+        app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+        client = _create_test_client(app)
+        headers = {"Authorization": "Bearer token-123"}
+
+        query_bounds = client.get("/health").json()["service_api"]["limits"]["query_bounds"]
+        self.assertEqual(
+            {
+                "default": SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT,
+                "minimum": 1,
+                "maximum": SERVICE_API_MAX_RECENT_LOG_LIMIT,
+            },
+            query_bounds["dashboard_log_limit"],
+        )
+        self.assertEqual(
+            {
+                "default": SERVICE_API_DEFAULT_DASHBOARD_INCIDENT_LIMIT,
+                "minimum": 1,
+                "maximum": SERVICE_API_MAX_INCIDENT_LIMIT,
+            },
+            query_bounds["dashboard_incident_limit"],
+        )
+
+        invalid_queries = (
+            (SERVICE_API_ROUTE_PATHS["dashboard"], {"log_limit": SERVICE_API_MAX_RECENT_LOG_LIMIT + 1}),
+            (SERVICE_API_ROUTE_PATHS["dashboard"], {"incident_limit": SERVICE_API_MAX_INCIDENT_LIMIT + 1}),
+            (SERVICE_API_ROUTE_PATHS["logs"], {"limit": SERVICE_API_MAX_RECENT_LOG_LIMIT + 1}),
+            (
+                SERVICE_API_ROUTE_PATHS["connector_order_circuit_incidents"],
+                {"limit": SERVICE_API_MAX_INCIDENT_LIMIT + 1},
+            ),
+            (
+                SERVICE_API_STREAM_DASHBOARD_PATH,
+                {"interval_ms": SERVICE_API_MIN_STREAM_INTERVAL_MS - 1},
+            ),
+            (
+                SERVICE_API_STREAM_DASHBOARD_PATH,
+                {"interval_ms": SERVICE_API_MAX_STREAM_INTERVAL_MS + 1},
+            ),
+            (
+                SERVICE_API_STREAM_DASHBOARD_PATH,
+                {"max_events": SERVICE_API_MAX_STREAM_EVENTS + 1},
+            ),
+            (SERVICE_API_STREAM_DASHBOARD_PATH, {"max_events": 0}),
+        )
+        for path, params in invalid_queries:
+            with self.subTest(path=path, params=params):
+                response = client.get(path, params=params, headers=headers)
+                self.assertEqual(422, response.status_code)
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_runtime_and_dashboard_routes_expose_contract_control_plane(self):

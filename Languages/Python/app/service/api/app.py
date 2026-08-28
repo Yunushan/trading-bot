@@ -98,7 +98,7 @@ else:
     from ...settings import ConfigValidationError
 
 try:
-    from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
+    from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
     from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
@@ -120,6 +120,16 @@ SERVICE_API_READ_ONLY_ENV = "BOT_SERVICE_API_READ_ONLY"
 SERVICE_BUILD_COMMIT_ENV = "TRADING_BOT_BUILD_COMMIT"
 DEFAULT_SERVICE_API_MAX_REQUEST_BYTES = 1_048_576
 DEFAULT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS = 10_000
+SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT = 30
+SERVICE_API_DEFAULT_DASHBOARD_INCIDENT_LIMIT = 20
+SERVICE_API_DEFAULT_LOG_LIMIT = 100
+SERVICE_API_DEFAULT_INCIDENT_LIMIT = 20
+SERVICE_API_DEFAULT_STREAM_INTERVAL_MS = 1_000
+SERVICE_API_MIN_STREAM_INTERVAL_MS = 250
+SERVICE_API_MAX_STREAM_INTERVAL_MS = 60_000
+SERVICE_API_MAX_RECENT_LOG_LIMIT = 250
+SERVICE_API_MAX_INCIDENT_LIMIT = 200
+SERVICE_API_MAX_STREAM_EVENTS = 10_000
 
 
 def _service_api_read_only_mode() -> bool:
@@ -445,6 +455,37 @@ def create_service_api_app(
             "max_request_bytes": _max_request_bytes(),
             "write_rate_limit_per_minute": _write_rate_limit_per_minute(),
             "write_rate_limit_max_clients": _write_rate_limit_max_clients(),
+            "query_bounds": {
+                "dashboard_log_limit": {
+                    "default": SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT,
+                    "minimum": 1,
+                    "maximum": SERVICE_API_MAX_RECENT_LOG_LIMIT,
+                },
+                "dashboard_incident_limit": {
+                    "default": SERVICE_API_DEFAULT_DASHBOARD_INCIDENT_LIMIT,
+                    "minimum": 1,
+                    "maximum": SERVICE_API_MAX_INCIDENT_LIMIT,
+                },
+                "log_limit": {
+                    "default": SERVICE_API_DEFAULT_LOG_LIMIT,
+                    "minimum": 1,
+                    "maximum": SERVICE_API_MAX_RECENT_LOG_LIMIT,
+                },
+                "incident_limit": {
+                    "default": SERVICE_API_DEFAULT_INCIDENT_LIMIT,
+                    "minimum": 1,
+                    "maximum": SERVICE_API_MAX_INCIDENT_LIMIT,
+                },
+                "stream_interval_ms": {
+                    "default": SERVICE_API_DEFAULT_STREAM_INTERVAL_MS,
+                    "minimum": SERVICE_API_MIN_STREAM_INTERVAL_MS,
+                    "maximum": SERVICE_API_MAX_STREAM_INTERVAL_MS,
+                },
+                "stream_max_events": {
+                    "minimum": 1,
+                    "maximum": SERVICE_API_MAX_STREAM_EVENTS,
+                },
+            },
             "non_loopback_binding": bool(app.state.service_api_non_loopback_bind),
             "env_vars": {
                 "max_request_bytes": SERVICE_API_MAX_REQUEST_BYTES_ENV,
@@ -728,7 +769,18 @@ def create_service_api_app(
         return _service().describe_runtime().to_dict()
 
     @api_router.get("/dashboard")
-    def get_dashboard(log_limit: int = 30, incident_limit: int = 20):
+    def get_dashboard(
+        log_limit: int = Query(
+            default=SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT,
+            ge=1,
+            le=SERVICE_API_MAX_RECENT_LOG_LIMIT,
+        ),
+        incident_limit: int = Query(
+            default=SERVICE_API_DEFAULT_DASHBOARD_INCIDENT_LIMIT,
+            ge=1,
+            le=SERVICE_API_MAX_INCIDENT_LIMIT,
+        ),
+    ):
         return _build_dashboard_payload(log_limit=log_limit, incident_limit=incident_limit)
 
     @api_router.get("/status")
@@ -964,15 +1016,34 @@ def create_service_api_app(
         )
 
     @api_router.get("/runtime/connector-order-circuit-breaker/incidents")
-    def get_connector_order_circuit_incidents(limit: int = 20):
+    def get_connector_order_circuit_incidents(
+        limit: int = Query(
+            default=SERVICE_API_DEFAULT_INCIDENT_LIMIT,
+            ge=1,
+            le=SERVICE_API_MAX_INCIDENT_LIMIT,
+        )
+    ):
         return _service().get_connector_order_circuit_incidents(limit=limit)
 
     @api_router.get("/logs")
-    def get_recent_logs(limit: int = 100):
+    def get_recent_logs(
+        limit: int = Query(
+            default=SERVICE_API_DEFAULT_LOG_LIMIT,
+            ge=1,
+            le=SERVICE_API_MAX_RECENT_LOG_LIMIT,
+        )
+    ):
         return [item.to_dict() for item in _service().get_recent_logs(limit=limit)]
 
     @api_router.post("/logs", dependencies=[Depends(_require_write_api_auth)])
-    def record_log_event(payload: LogEventRequest, limit: int = 100):
+    def record_log_event(
+        payload: LogEventRequest,
+        limit: int = Query(
+            default=SERVICE_API_DEFAULT_LOG_LIMIT,
+            ge=1,
+            le=SERVICE_API_MAX_RECENT_LOG_LIMIT,
+        ),
+    ):
         _ = limit
         event = _service().record_log_event(
             payload.message,
@@ -1082,14 +1153,30 @@ def create_service_api_app(
     async def stream_dashboard(
         request: Request,
         authorization: str | None = Header(default=None),
-        log_limit: int = 30,
-        incident_limit: int = 20,
-        interval_ms: int = 1000,
-        max_events: int | None = None,
+        log_limit: int = Query(
+            default=SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT,
+            ge=1,
+            le=SERVICE_API_MAX_RECENT_LOG_LIMIT,
+        ),
+        incident_limit: int = Query(
+            default=SERVICE_API_DEFAULT_DASHBOARD_INCIDENT_LIMIT,
+            ge=1,
+            le=SERVICE_API_MAX_INCIDENT_LIMIT,
+        ),
+        interval_ms: int = Query(
+            default=SERVICE_API_DEFAULT_STREAM_INTERVAL_MS,
+            ge=SERVICE_API_MIN_STREAM_INTERVAL_MS,
+            le=SERVICE_API_MAX_STREAM_INTERVAL_MS,
+        ),
+        max_events: int | None = Query(
+            default=None,
+            ge=1,
+            le=SERVICE_API_MAX_STREAM_EVENTS,
+        ),
     ):
         _require_stream_auth(authorization)
-        stream_interval = max(250, int(interval_ms)) / 1000.0
-        event_limit = None if max_events is None else max(1, int(max_events))
+        stream_interval = interval_ms / 1000.0
+        event_limit = max_events
 
         async def event_stream():
             events_sent = 0
