@@ -55,6 +55,8 @@ Use the resulting `https://` URL in both the connector and MT4 WebRequest allow-
 
 - Every endpoint requires `X-MT4-Bridge-Token`; tokens are never returned in snapshots or logs.
 - The server limits command bodies and queue growth, validates terminal ownership, and leases one command at a time.
+- The EA rejects unsafe bridge URLs before sending its token: loopback HTTP is allowed for local use, while remote URLs must use HTTPS; URL credentials, query strings, fragments, and invalid ports are rejected.
+- The EA bounds the bridge token, terminal identifier, polling interval, and request timeout before it creates its receipt file or starts polling.
 - The Python connector does not enqueue an order, cancellation, or close unless `allow_live=True`.
 - The EA refuses every mutation unless `EnableLiveOrders=true`.
 - Before a mutation, the EA persists an ambiguity receipt in the MT4 common files directory. It replaces that receipt with the final result after execution. Redelivery replays the receipt rather than the order, preventing duplicate execution after a lost HTTP acknowledgement.
