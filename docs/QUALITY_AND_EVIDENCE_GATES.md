@@ -485,6 +485,10 @@ committed.
   `npm --prefix apps/web-dashboard run test:browser -- --browser=firefox`.
   Firefox is executed with the pinned Playwright runtime; first run
   `npx --prefix apps/web-dashboard playwright install firefox` after `npm ci`.
+  When a host requires a managed or system Firefox binary, pass its absolute
+  path with `--executable=<path>` or `TB_BROWSER_EXECUTABLE`; the contract
+  forwards that override to Playwright while retaining the pinned runtime and
+  the same evidence checks.
   On Windows, a failed headless Firefox launch retries once in a real headed
   browser session and records `launchMode: headed-fallback` in the probe output.
   Set `TB_FIREFOX_ALLOW_HEADED_FALLBACK=0` when headless-only coverage is

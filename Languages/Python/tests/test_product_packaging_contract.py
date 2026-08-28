@@ -1373,6 +1373,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertIn("python tools/run_service_tests.py --check-list", workflow)
         self.assertIn("python tools/run_service_tests.py --check-docs", workflow)
+
         self.assertIn("python tools/run_service_tests.py", workflow)
         self.assertIn("apps/desktop-pyqt/main.py", workflow)
         self.assertIn("apps/service-api/main.py", workflow)
@@ -1404,6 +1405,17 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("working-directory: apps/web-dashboard", workflow)
         self.assertIn("node --check modules/render.js", workflow)
         self.assertIn("npm test", workflow)
+
+    def test_firefox_browser_contract_honors_explicit_executable_override(self):
+        browser_contract = (REPO_ROOT / "apps" / "web-dashboard" / "tests" / "browser-contract.test.mjs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('async function runFirefoxBrowserContract(targetUrl, executable = "")', browser_contract)
+        self.assertIn('...(executable ? { executablePath: executable } : {})', browser_contract)
+        self.assertIn('} else if (args.browser === "firefox") {', browser_contract)
+        self.assertIn('runFirefoxBrowserContract(targetUrl, executable)', browser_contract)
+        self.assertIn('executable: executable || "playwright-firefox"', browser_contract)
 
     def test_native_cpp_product_smoke_is_bounded_offline_and_drains_qt_deletes(self):
         cpp_root = REPO_ROOT / "experiments" / "native-cpp" / "src"
