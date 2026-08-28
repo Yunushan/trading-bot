@@ -1651,6 +1651,18 @@ class ExchangeSupportCapabilitiesTests(unittest.TestCase):
             )
         self.assertEqual([], rejected_client.sent_requests)
 
+    def test_metatrader5_bounds_native_inputs_before_terminal_calls(self):
+        with self.assertRaisesRegex(ValueError, "timeout_ms must be at most 300000"):
+            MetaTrader5BrokerConnector(provider="AvaTrade", timeout_ms=300001, client=_FakeMt5Client())
+        with self.assertRaisesRegex(ValueError, "server must not contain control characters"):
+            MetaTrader5BrokerConnector(provider="AvaTrade", server="Ava\nDemo", client=_FakeMt5Client())
+
+        connector = MetaTrader5BrokerConnector(provider="AvaTrade", client=_FakeMt5Client())
+        with self.assertRaisesRegex(ValueError, "symbol must contain at most 64 UTF-8 bytes"):
+            connector.fetch_market_snapshot("x" * 65)
+        with self.assertRaisesRegex(ValueError, "comment must not contain control characters"):
+            connector.submit_market_order(symbol="EURUSD", side="buy", volume=0.1, comment="safe\ncomment")
+
 
 if __name__ == "__main__":
     unittest.main()
