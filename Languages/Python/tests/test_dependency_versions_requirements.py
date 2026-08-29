@@ -36,7 +36,7 @@ class DependencyVersionRequirementTests(unittest.TestCase):
     def test_normal_package_requirements_still_extract_names(self):
         cases = {
             "requests==2.33.1": "requests",
-            "PyQt6[desktop]==6.11.0": "PyQt6",
+            "PyQt6[desktop]>=6.11.0,<6.13.0": "PyQt6",
             "python-binance>=1.0": "python-binance",
             "package_name @ https://example.invalid/package-name.whl": "package_name",
         }
@@ -62,6 +62,96 @@ class DependencyVersionRequirementTests(unittest.TestCase):
                 {"latest": "1.2.3"},
             ),
         )
+
+    def test_pyqt6_update_accepts_patch_skew_within_one_release_line(self):
+        targets = [
+            {"label": "PyQt6", "package": "PyQt6", "_latest_version": "6.12.0"},
+            {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6", "_latest_version": "6.12.1"},
+            {
+                "label": "PyQt6-WebEngine",
+                "package": "PyQt6-WebEngine",
+                "_latest_version": "6.12.0",
+            },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.12.1",
+            },
+        ]
+
+        self.assertEqual(
+            "",
+            dependency_versions_ui._pyqt6_update_block_reason(
+                targets,
+                all_targets=targets,
+                selected_only=False,
+            ),
+        )
+
+    def test_pyqt6_update_rejects_mixed_release_lines_before_pip(self):
+        targets = [
+            {"label": "PyQt6", "package": "PyQt6", "_latest_version": "6.12.0"},
+            {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6", "_latest_version": "6.11.2"},
+            {
+                "label": "PyQt6-WebEngine",
+                "package": "PyQt6-WebEngine",
+                "_latest_version": "6.12.0",
+            },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.12.0",
+            },
+        ]
+
+        reason = dependency_versions_ui._pyqt6_update_block_reason(
+            targets,
+            all_targets=targets,
+            selected_only=False,
+        )
+
+        self.assertIn("mixed release lines", reason)
+
+    def test_selected_pyqt6_update_requires_the_complete_family(self):
+        selected = [{"label": "PyQt6", "package": "PyQt6", "_latest_version": "6.12.0"}]
+        all_targets = [
+            *selected,
+            {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6"},
+            {"label": "PyQt6-WebEngine", "package": "PyQt6-WebEngine"},
+            {"label": "PyQt6-WebEngine-Qt6", "package": "PyQt6-WebEngine-Qt6"},
+        ]
+
+        reason = dependency_versions_ui._pyqt6_update_block_reason(
+            selected,
+            all_targets=all_targets,
+            selected_only=True,
+        )
+
+        self.assertIn("must be updated together", reason)
+
+    def test_pyqt6_update_rejects_release_above_reviewed_range(self):
+        targets = [
+            {"label": "PyQt6", "package": "PyQt6", "_latest_version": "6.13.0"},
+            {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6", "_latest_version": "6.13.0"},
+            {
+                "label": "PyQt6-WebEngine",
+                "package": "PyQt6-WebEngine",
+                "_latest_version": "6.13.0",
+            },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.13.0",
+            },
+        ]
+
+        reason = dependency_versions_ui._pyqt6_update_block_reason(
+            targets,
+            all_targets=targets,
+            selected_only=False,
+        )
+
+        self.assertIn("outside the reviewed project range", reason)
 
     def test_local_only_requirements_fall_back_to_default_python_targets(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 import requests
 
-from app.security.redaction import redact_value
+from app.security.redaction import REDACTED_TEXT, redact_text, redact_value
 
 from .providers import (
     ANTHROPIC_MESSAGES_PROTOCOL,
@@ -502,8 +502,7 @@ def _sanitize_request_for_display(request_payload: dict[str, object]) -> dict[st
             headers[key] = "********"
     sanitized["headers"] = headers
     url = str(sanitized.get("url") or "")
-    if "key=" in url:
-        sanitized["url"] = url.split("key=", 1)[0] + "key=********"
+    sanitized["url"] = redact_text(url).replace(REDACTED_TEXT, "********")
     return sanitized
 
 
@@ -717,9 +716,12 @@ def call_llm(
             "text": "",
         }
     headers = dict(request_payload["headers"])
-    if request_payload.get("mode") == "cloud" and not (
-        headers.get("Authorization") or headers.get("x-api-key")
-    ):
+    has_header_credentials = bool(headers.get("Authorization") or headers.get("x-api-key"))
+    has_gemini_query_credentials = (
+        request_payload.get("protocol") == GEMINI_GENERATE_CONTENT_PROTOCOL
+        and "?key=" in str(request_payload.get("url") or "")
+    )
+    if request_payload.get("mode") == "cloud" and not (has_header_credentials or has_gemini_query_credentials):
         return {
             "ok": False,
             "dry_run": False,
@@ -728,12 +730,21 @@ def call_llm(
             "execution_policy": request_payload.get("execution_policy"),
         }
 
-    response = requests.post(
-        str(request_payload["url"]),
-        headers=headers,
-        json=request_payload["json"],
-        timeout=max(1.0, float(timeout or request_payload.get("timeout_seconds") or 30.0)),
-    )
+    try:
+        response = requests.post(
+            str(request_payload["url"]),
+            headers=headers,
+            json=request_payload["json"],
+            timeout=max(1.0, float(timeout or request_payload.get("timeout_seconds") or 30.0)),
+        )
+    except requests.RequestException as exc:
+        return {
+            "ok": False,
+            "dry_run": False,
+            "provider": request_payload.get("provider"),
+            "execution_policy": request_payload.get("execution_policy"),
+            "error": redact_text(f"LLM provider request failed: {exc}"),
+        }
     try:
         payload = response.json()
     except Exception:
@@ -743,7 +754,7 @@ def call_llm(
             "ok": False,
             "dry_run": False,
             "status_code": response.status_code,
-            "error": payload,
+            "error": redact_value(payload),
         }
     protocol = str(request_payload.get("protocol") or "")
     text = _extract_response_text(protocol, payload)
@@ -760,5 +771,5 @@ def call_llm(
             "blocked": bool(violations),
         },
         "text": text,
-        "raw": payload,
+        "raw": redact_value(payload),
     }

@@ -6,11 +6,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import requests
+
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.integrations.llm.clients import (  # noqa: E402
+    _sanitize_request_for_display,
     build_llm_chat_request,
     call_llm,
     llm_output_policy_violations,
@@ -263,6 +266,58 @@ class LLMClientPrivacyTests(unittest.TestCase):
         self.assertEqual("Keep deterministic risk controls.", result["text"])
         self.assertEqual(30, post.call_args.kwargs["timeout"])
 
+    def test_llm_transport_failure_is_structured_and_redacted(self):
+        with mock.patch("app.integrations.llm.clients.requests.post") as post:
+            post.side_effect = requests.ConnectionError(
+                "HTTPSConnectionPool(host='generativelanguage.googleapis.com', "
+                "url='/v1beta/models/test:generateContent?key=gemini-key')"
+            )
+            result = call_llm(
+                {
+                    "llm_provider": "gemini",
+                    "llm_model": "gemini-2.5-flash",
+                    "llm_api_key": "gemini-key",
+                },
+                prompt="Explain risk.",
+                dry_run=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("gemini", result["provider"])
+        self.assertIn("LLM provider request failed", result["error"])
+        self.assertNotIn("gemini-key", result["error"])
+        self.assertIn("key=<redacted>", result["error"])
+        self.assertEqual(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=gemini-key",
+            post.call_args.args[0],
+        )
+
+    def test_llm_provider_error_payload_is_redacted(self):
+        with mock.patch("app.integrations.llm.clients.requests.post") as post:
+            response = _Response(
+                {
+                    "api_key": "gemini-key",
+                    "detail": "request failed at https://example.test?key=gemini-key&trace=abc",
+                }
+            )
+            response.status_code = 502
+            post.return_value = response
+            result = call_llm(
+                {
+                    "llm_provider": "gemini",
+                    "llm_model": "gemini-2.5-flash",
+                    "llm_api_key": "gemini-key",
+                },
+                prompt="Explain risk.",
+                dry_run=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(502, result["status_code"])
+        self.assertEqual("<redacted>", result["error"]["api_key"])
+        self.assertIn("key=<redacted>&trace=abc", result["error"]["detail"])
+        self.assertNotIn("gemini-key", str(result["error"]))
+
     def test_llm_output_policy_detects_execution_boundary_violations(self):
         self.assertIn(
             "direct_order_action",
@@ -325,6 +380,19 @@ class LLMClientPrivacyTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["output_policy"]["blocked"])
+
+    def test_dry_run_sanitizes_query_credentials_without_truncating_url(self):
+        result = _sanitize_request_for_display(
+            {
+                "url": "https://example.test/generate?KEY=gemini-key&trace=abc",
+                "headers": {"x-api-key": "header-key"},
+                "json": {},
+            }
+        )
+
+        self.assertEqual("https://example.test/generate?KEY=********&trace=abc", result["url"])
+        self.assertEqual("********", result["headers"]["x-api-key"])
+        self.assertNotIn("gemini-key", str(result))
 
 
 if __name__ == "__main__":

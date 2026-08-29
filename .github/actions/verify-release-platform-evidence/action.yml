@@ -13,17 +13,34 @@ inputs:
     required: false
     default: ${{ runner.temp }}/release-platform-evidence
 
+outputs:
+  source_revision:
+    description: Validated product source revision bound to the release QA note.
+    value: ${{ steps.release_qa.outputs.source_revision }}
+  evidence_run_id:
+    description: Validated GitHub Actions run containing release-platform evidence.
+    value: ${{ steps.release_qa.outputs.evidence_run_id }}
+  evidence_scope:
+    description: Validated release-platform evidence scope (full or hosted-only).
+    value: ${{ steps.release_qa.outputs.evidence_scope }}
+  production_run_evidence_required:
+    description: Whether exact-source CI, CodeQL, and supply-chain runs are mandatory.
+    value: ${{ steps.release_qa.outputs.production_run_evidence_required }}
+
 runs:
   using: composite
   steps:
     - id: release_qa
       name: Resolve release QA evidence binding
       shell: bash
+      env:
+        RELEASE_TAG: ${{ inputs.tag }}
+        RELEASE_QA_NOTE: ${{ inputs.note }}
       run: |
         set -euo pipefail
         common_args=(
-          --tag "${{ inputs.tag }}"
-          --note "${{ inputs.note }}"
+          --tag "${RELEASE_TAG}"
+          --note "${RELEASE_QA_NOTE}"
           --require-current-revision
           --allow-release-qa-commit
           --require-platform-evidence-run
@@ -31,9 +48,92 @@ runs:
         source_revision="$(python tools/check_release_qa.py "${common_args[@]}" --print-source-revision)"
         evidence_run_id="$(python tools/check_release_qa.py "${common_args[@]}" --print-platform-evidence-run-id)"
         evidence_scope="$(python tools/check_release_qa.py "${common_args[@]}" --print-platform-evidence-scope)"
+        production_run_evidence_required="$(python tools/check_release_qa.py "${common_args[@]}" --print-production-run-evidence-required)"
         echo "source_revision=${source_revision}" >> "${GITHUB_OUTPUT}"
         echo "evidence_run_id=${evidence_run_id}" >> "${GITHUB_OUTPUT}"
         echo "evidence_scope=${evidence_scope}" >> "${GITHUB_OUTPUT}"
+        echo "production_run_evidence_required=${production_run_evidence_required}" >> "${GITHUB_OUTPUT}"
+        if [[ "${production_run_evidence_required}" == "true" ]]; then
+          candidate_ci_run_id="$(python tools/check_release_qa.py "${common_args[@]}" --print-candidate-ci-run-id)"
+          codeql_run_id="$(python tools/check_release_qa.py "${common_args[@]}" --print-codeql-run-id)"
+          supply_chain_run_id="$(python tools/check_release_qa.py "${common_args[@]}" --print-supply-chain-run-id)"
+          echo "candidate_ci_run_id=${candidate_ci_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "codeql_run_id=${codeql_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "supply_chain_run_id=${supply_chain_run_id}" >> "${GITHUB_OUTPUT}"
+        fi
+
+    - name: Verify exact-source CI and security workflow runs
+      if: steps.release_qa.outputs.production_run_evidence_required == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_SOURCE_REVISION: ${{ steps.release_qa.outputs.source_revision }}
+        CANDIDATE_CI_RUN_ID: ${{ steps.release_qa.outputs.candidate_ci_run_id }}
+        CODEQL_RUN_ID: ${{ steps.release_qa.outputs.codeql_run_id }}
+        SUPPLY_CHAIN_RUN_ID: ${{ steps.release_qa.outputs.supply_chain_run_id }}
+      run: |
+        set -euo pipefail
+        verify_workflow_run() {
+          local label="$1" run_id="$2" workflow_path="$3"
+          echo "Verifying ${label} workflow run ${run_id}"
+          gh api \
+            --method GET \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" | \
+          python tools/check_release_workflow_run.py - \
+            --expected-run-id "${run_id}" \
+            --expected-repository "${GITHUB_REPOSITORY}" \
+            --expected-head-sha "${RELEASE_SOURCE_REVISION}" \
+            --expected-workflow-path "${workflow_path}"
+        }
+        verify_workflow_run \
+          candidate-ci \
+          "${CANDIDATE_CI_RUN_ID}" \
+          .github/workflows/ci.yml
+        verify_workflow_run \
+          codeql \
+          "${CODEQL_RUN_ID}" \
+          .github/workflows/codeql.yml
+        verify_workflow_run \
+          supply-chain \
+          "${SUPPLY_CHAIN_RUN_ID}" \
+          .github/workflows/supply-chain-security.yml
+
+    - name: Require stable release source on the default branch
+      if: steps.release_qa.outputs.evidence_scope == 'full'
+      shell: bash
+      env:
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        RELEASE_SOURCE_REVISION: ${{ steps.release_qa.outputs.source_revision }}
+      run: |
+        set -euo pipefail
+        if [[ ! "${DEFAULT_BRANCH}" =~ ^[A-Za-z0-9._/-]+$ ]] || \
+           [[ "${DEFAULT_BRANCH}" == /* ]] || \
+           [[ "${DEFAULT_BRANCH}" == *..* ]]; then
+          echo "Repository default branch is empty or unsafe: ${DEFAULT_BRANCH}" >&2
+          exit 1
+        fi
+        git fetch --no-tags origin \
+          "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+        if ! git merge-base --is-ancestor \
+          "${RELEASE_SOURCE_REVISION}" \
+          "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+          echo "Stable release source is not contained in the default branch." >&2
+          exit 1
+        fi
+
+    - name: Require protected release tag for stable publication
+      if: steps.release_qa.outputs.evidence_scope == 'full'
+      shell: bash
+      env:
+        RELEASE_REF_PROTECTED: ${{ github.ref_protected }}
+      run: |
+        set -euo pipefail
+        if [[ "${RELEASE_REF_PROTECTED}" != "true" ]]; then
+          echo "Stable release tag is not protected by branch protection or a ruleset." >&2
+          exit 1
+        fi
 
     - name: Download release platform evidence
       uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -47,16 +147,20 @@ runs:
 
     - name: Validate release platform evidence
       shell: bash
+      env:
+        RELEASE_SOURCE_REVISION: ${{ steps.release_qa.outputs.source_revision }}
+        RELEASE_EVIDENCE_SCOPE: ${{ steps.release_qa.outputs.evidence_scope }}
+        RELEASE_EVIDENCE_DIR: ${{ inputs.evidence_dir }}
       run: |
         set -euo pipefail
-        git checkout --detach "${{ steps.release_qa.outputs.source_revision }}"
+        git checkout --detach "${RELEASE_SOURCE_REVISION}"
         args=(
           --require-evidence \
           --require-current-commit \
           --require-clean-source \
-          --evidence-dir "${{ inputs.evidence_dir }}"
+          --evidence-dir "${RELEASE_EVIDENCE_DIR}"
         )
-        if [[ "${{ steps.release_qa.outputs.evidence_scope }}" == "hosted-only" ]]; then
+        if [[ "${RELEASE_EVIDENCE_SCOPE}" == "hosted-only" ]]; then
           args+=(--exclude-self-hosted)
         fi
         python tools/check_release_platform_matrix.py "${args[@]}"

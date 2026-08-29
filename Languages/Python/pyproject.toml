@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
     "python-binance==1.0.36",
     "binance-connector==3.12.0",
-    "ccxt==4.5.73",
+    "ccxt==4.5.75",
     "numpy==2.2.6; python_version < '3.11'",
     "numpy==2.4.4; python_version >= '3.11' and python_version < '3.15'",
     "numpy==2.5.2; python_version >= '3.15'",
@@ -41,9 +41,13 @@ dependencies = [
 
 [project.optional-dependencies]
 desktop = [
-    "PyQt6==6.11.0",
-    "PyQt6-Qt6==6.11.0",
-    "PyQt6-WebEngine==6.11.0",
+    # Keep the binding, Qt runtime, WebEngine binding, and WebEngine runtime on one reviewed minor line.
+    # The upper bound admits the planned PyQt6 6.12 release without allowing
+    # an unreviewed Qt 6.13 API change into a production install.
+    "PyQt6>=6.11.0,<6.13.0",
+    "PyQt6-Qt6>=6.11.0,<6.13.0",
+    "PyQt6-WebEngine>=6.11.0,<6.13.0",
+    "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0",
 ]
 service = [
     "cryptography==50.0.0",
@@ -65,9 +69,10 @@ moomoo = [
     "moomoo-api==10.9.6908",
 ]
 windows-arm64 = [
-    "PyQt6==6.11.0",
-    "PyQt6-Qt6==6.11.0",
-    "PyQt6-WebEngine==6.11.0",
+    "PyQt6>=6.11.0,<6.13.0",
+    "PyQt6-Qt6>=6.11.0,<6.13.0",
+    "PyQt6-WebEngine>=6.11.0,<6.13.0",
+    "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0",
     "aiohttp>=3.14.3,<4",
 ]
 dev = [
@@ -90,6 +95,13 @@ trading-bot-service = "app.service.product_main:main"
 [project.urls]
 Repository = "https://github.com/Yunushan/trading-bot"
 Documentation = "https://github.com/Yunushan/trading-bot/tree/main/docs"
+
+[tool.trading-bot.pyqt6]
+# PyQt6 6.12 is the next supported release line. Keep this contract in one
+# place so dependency validation and the runtime compatibility probe agree.
+minimum_version = "6.11.0"
+maximum_version_exclusive = "6.13.0"
+future_target_version = "6.12.0"
 
 [tool.setuptools]
 include-package-data = true

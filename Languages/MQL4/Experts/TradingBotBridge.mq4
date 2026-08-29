@@ -10,6 +10,8 @@ input int RequestTimeoutMs = 5000;
 input bool EnableLiveOrders = false;
 
 string g_base_url = "";
+string g_bridge_token = "";
+string g_terminal_id = "";
 bool g_busy = false;
 string g_receipt_file = "";
 
@@ -130,6 +132,153 @@ string UrlDecode(string value)
    return CharArrayToString(output_bytes, 0, output_size, CP_UTF8);
 }
 
+bool IsSafeTerminalId(string value)
+{
+   string normalized = Trim(value);
+   int length = StringLen(normalized);
+   if(length < 1 || length > 64)
+      return false;
+   for(int index = 0; index < length; index++)
+   {
+      ushort code = StringGetCharacter(normalized, index);
+      bool is_upper = code >= 'A' && code <= 'Z';
+      bool is_lower = code >= 'a' && code <= 'z';
+      bool is_digit = code >= '0' && code <= '9';
+      if(!is_upper && !is_lower && !is_digit && code != '.' && code != '_' && code != '-')
+         return false;
+   }
+   return true;
+}
+
+bool IsSafeBridgeToken(string value)
+{
+   string normalized = Trim(value);
+   int length = StringLen(normalized);
+   if(length < 16 || length > 512)
+      return false;
+   for(int index = 0; index < length; index++)
+   {
+      ushort code = StringGetCharacter(normalized, index);
+      if(code < 32 || code == 127)
+         return false;
+   }
+   return true;
+}
+
+bool IsDecimal(string value)
+{
+   int length = StringLen(value);
+   if(length < 1)
+      return false;
+   for(int index = 0; index < length; index++)
+   {
+      ushort code = StringGetCharacter(value, index);
+      if(code < '0' || code > '9')
+         return false;
+   }
+   return true;
+}
+
+bool ParseBridgeAuthority(string authority, string &host)
+{
+   host = "";
+   if(StringLen(authority) == 0
+      || StringFind(authority, "@") >= 0
+      || StringFind(authority, "?") >= 0
+      || StringFind(authority, "#") >= 0
+      || StringFind(authority, "\\") >= 0)
+      return false;
+
+   string port = "";
+   bool port_specified = false;
+   if(StringSubstr(authority, 0, 1) == "[")
+   {
+      int close_bracket = StringFind(authority, "]");
+      if(close_bracket <= 1)
+         return false;
+      host = StringSubstr(authority, 0, close_bracket + 1);
+      string suffix = StringSubstr(authority, close_bracket + 1);
+      if(StringLen(suffix) > 0)
+      {
+         if(StringSubstr(suffix, 0, 1) != ":")
+            return false;
+         port_specified = true;
+         port = StringSubstr(suffix, 1);
+      }
+   }
+   else
+   {
+      if(StringFind(authority, "[") >= 0 || StringFind(authority, "]") >= 0)
+         return false;
+      int colon = StringFind(authority, ":");
+      if(colon >= 0)
+      {
+         if(StringFind(authority, ":", colon + 1) >= 0)
+            return false;
+         port_specified = true;
+         host = StringSubstr(authority, 0, colon);
+         port = StringSubstr(authority, colon + 1);
+      }
+      else
+         host = authority;
+   }
+
+   if(StringLen(host) == 0 || (port_specified && StringLen(port) == 0))
+      return false;
+   if(StringLen(port) > 0)
+   {
+      if(!IsDecimal(port))
+         return false;
+      int numeric_port = (int)StringToInteger(port);
+      if(numeric_port < 1 || numeric_port > 65535)
+         return false;
+   }
+   return true;
+}
+
+bool IsSafeBridgeBaseUrl(string value)
+{
+   string normalized = Lower(Trim(value));
+   int length = StringLen(normalized);
+   if(length == 0)
+      return false;
+   for(int index = 0; index < length; index++)
+   {
+      ushort code = StringGetCharacter(normalized, index);
+      if(code < 33 || code == 127)
+         return false;
+   }
+   if(StringFind(normalized, "@") >= 0
+      || StringFind(normalized, "?") >= 0
+      || StringFind(normalized, "#") >= 0
+      || StringFind(normalized, "\\") >= 0)
+      return false;
+
+   bool secure = false;
+   int scheme_length = 0;
+   if(StringFind(normalized, "http://") == 0)
+      scheme_length = 7;
+   else if(StringFind(normalized, "https://") == 0)
+   {
+      scheme_length = 8;
+      secure = true;
+   }
+   else
+      return false;
+
+   string authority_and_path = StringSubstr(normalized, scheme_length);
+   int path_start = StringFind(authority_and_path, "/");
+   string authority = path_start >= 0
+      ? StringSubstr(authority_and_path, 0, path_start)
+      : authority_and_path;
+   string host = "";
+   if(!ParseBridgeAuthority(authority, host))
+      return false;
+   if(secure)
+      return true;
+   return host == "localhost" || host == "127.0.0.1" || host == "[::1]";
+}
+
 string FormValue(string body, string requested_key)
 {
    string pairs[];
@@ -169,7 +318,7 @@ bool HttpRequest(
 
    char response_data[];
    string response_headers = "";
-   string headers = "X-MT4-Bridge-Token: " + BridgeToken + "\r\n"
+   string headers = "X-MT4-Bridge-Token: " + g_bridge_token + "\r\n"
       + "Accept: application/json, application/x-www-form-urlencoded\r\n"
       + "Content-Type: application/x-www-form-urlencoded\r\n";
    ResetLastError();
@@ -581,7 +730,7 @@ bool PostResult(
    int status_code = 0;
    int transport_error = 0;
    string response = "";
-   string url = g_base_url + "/v1/agents/" + UrlEncode(TerminalId) + "/results";
+   string url = g_base_url + "/v1/agents/" + UrlEncode(g_terminal_id) + "/results";
    if(!HttpRequest("POST", url, body, status_code, response, transport_error))
    {
       Print("TradingBotBridge result transport failed: ", transport_error);
@@ -600,7 +749,7 @@ void PollBridge()
    int status_code = 0;
    int transport_error = 0;
    string response = "";
-   string url = g_base_url + "/v1/agents/" + UrlEncode(TerminalId) + "/next";
+   string url = g_base_url + "/v1/agents/" + UrlEncode(g_terminal_id) + "/next";
    if(!HttpRequest("GET", url, "", status_code, response, transport_error))
    {
       Print("TradingBotBridge poll transport failed: ", transport_error);
@@ -660,19 +809,24 @@ int OnInit()
    g_base_url = Trim(BridgeBaseUrl);
    while(StringLen(g_base_url) > 0 && StringSubstr(g_base_url, StringLen(g_base_url) - 1) == "/")
       g_base_url = StringSubstr(g_base_url, 0, StringLen(g_base_url) - 1);
-   if(StringLen(g_base_url) == 0 || StringLen(BridgeToken) < 16 || StringLen(Trim(TerminalId)) == 0)
+   g_bridge_token = Trim(BridgeToken);
+   g_terminal_id = Trim(TerminalId);
+   if(!IsSafeBridgeBaseUrl(g_base_url)
+      || !IsSafeBridgeToken(g_bridge_token)
+      || !IsSafeTerminalId(g_terminal_id))
    {
-      Print("TradingBotBridge requires BridgeBaseUrl, a 16+ character BridgeToken, and TerminalId");
+      Print("TradingBotBridge requires loopback HTTP or HTTPS BridgeBaseUrl, a 16-512 character BridgeToken, and a safe TerminalId");
       return INIT_PARAMETERS_INCORRECT;
    }
-   if(PollIntervalSeconds < 1 || RequestTimeoutMs < 100)
+   if(PollIntervalSeconds < 1 || PollIntervalSeconds > 3600
+      || RequestTimeoutMs < 100 || RequestTimeoutMs > 120000)
    {
-      Print("TradingBotBridge timing inputs are invalid");
+      Print("TradingBotBridge timing inputs must be within the supported bounds");
       return INIT_PARAMETERS_INCORRECT;
    }
-   g_receipt_file = "TradingBotBridge_" + TerminalId + ".receipt.tsv";
+   g_receipt_file = "TradingBotBridge_" + g_terminal_id + ".receipt.tsv";
    EventSetTimer(PollIntervalSeconds);
-   Print("TradingBotBridge initialized for terminal ", TerminalId,
+   Print("TradingBotBridge initialized for terminal ", g_terminal_id,
       ". Add the bridge URL to Tools > Options > Expert Advisors > Allow WebRequest.");
    return INIT_SUCCEEDED;
 }

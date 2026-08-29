@@ -40,6 +40,19 @@
             "summary": "Service API read p95 latency exceeds 500 ms",
             "description": "Read latency has remained above the production SLO for ten minutes."
           }
+        },
+        {
+          "alert": "TradingBotServiceMetricsCardinalityOverflow",
+          "expr": "increase(trading_bot_service_http_metrics_overflow_total[5m]) > 0",
+          "for": "5m",
+          "labels": {
+            "severity": "warning",
+            "slo": "service-api-observability"
+          },
+          "annotations": {
+            "summary": "Service API metric cardinality is being folded",
+            "description": "The service has exceeded its bounded HTTP metric series budget; investigate unexpected routes, methods, or status codes before telemetry quality degrades further."
+          }
         }
       ]
     },

@@ -14,6 +14,18 @@ From the repository root with the Python environment already activated:
 python apps/desktop-pyqt/main.py
 ```
 
+For packaging and future-PyQt validation, the launcher also supports bounded
+headless checks:
+
+```bash
+python apps/desktop-pyqt/main.py --smoke
+python apps/desktop-pyqt/main.py --smoke-window
+python apps/desktop-pyqt/main.py --smoke-webengine
+```
+
+The WebEngine check loads local static HTML only; it does not contact an
+exchange or external service.
+
 Deprecated compatibility launchers still work:
 
 ```bash

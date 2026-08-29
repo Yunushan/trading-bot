@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any
 
 
+YANKED_WARNING_ID = "YANKED"
+
+
 def _read_json(path: str | Path) -> dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -46,21 +49,34 @@ def _warning_rows(report: dict[str, Any], errors: list[str]) -> list[dict[str, s
             errors.append(f"cargo audit warning category {kind} is malformed")
             continue
         for finding in findings:
-            advisory = finding.get("advisory") if isinstance(finding, dict) else None
-            package = finding.get("package") if isinstance(finding, dict) else None
-            if not isinstance(advisory, dict) or not isinstance(package, dict):
+            if not isinstance(finding, dict):
                 errors.append(f"cargo audit warning in {kind} is malformed")
                 continue
+            advisory = finding.get("advisory")
+            package = finding.get("package")
+            if kind == "yanked":
+                # cargo-audit represents yanked packages without advisory metadata.
+                # Keep this category fail-closed: only the documented null-advisory
+                # shape is accepted, and policy still requires an exact exception.
+                if "advisory" not in finding or advisory is not None or not isinstance(package, dict):
+                    errors.append(f"cargo audit warning in {kind} is malformed")
+                    continue
+                advisory_id = YANKED_WARNING_ID
+            else:
+                if not isinstance(advisory, dict) or not isinstance(package, dict):
+                    errors.append(f"cargo audit warning in {kind} is malformed")
+                    continue
+                advisory_id = str(advisory.get("id") or "")
             row = {
                 "kind": str(kind),
-                "id": str(advisory.get("id") or ""),
+                "id": advisory_id,
                 "package": str(package.get("name") or ""),
                 "version": str(package.get("version") or ""),
             }
             if not all(row.values()):
                 errors.append(f"cargo audit warning in {kind} lacks exact identity fields")
                 continue
-            if advisory.get("withdrawn") is not None:
+            if isinstance(advisory, dict) and advisory.get("withdrawn") is not None:
                 errors.append(f"cargo audit still reports withdrawn advisory {row['id']}")
                 continue
             rows.append(row)

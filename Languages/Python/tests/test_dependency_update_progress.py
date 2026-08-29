@@ -188,6 +188,124 @@ class DependencyUpdateProgressTests(unittest.TestCase):
         self.assertTrue(any(event.get("state") == "running" and event.get("current") == "ok-package" for event in progress_events))
         self.assertTrue(any(event.get("state") == "failed" and event.get("current") == "broken-package" for event in progress_events))
 
+    def test_python_update_blocks_mixed_pyqt6_family_before_pip(self):
+        window = _FakeWindow()
+        targets = [
+            {"label": "PyQt6", "package": "PyQt6", "_latest_version": "6.12.0"},
+            {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6", "_latest_version": "6.11.2"},
+            {
+                "label": "PyQt6-WebEngine",
+                "package": "PyQt6-WebEngine",
+                "_latest_version": "6.12.0",
+            },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.12.0",
+            },
+        ]
+        window._dep_version_targets = list(targets)
+
+        with mock.patch.object(
+            dependency_versions_ui,
+            "_run_python_package_install",
+        ) as install:
+            result = dependency_versions_ui._run_dependency_update_worker(
+                window,
+                targets=targets,
+                selected_only=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["title"], "PyQt6 dependency update blocked")
+        self.assertIn("mixed release lines", result["message"])
+        install.assert_not_called()
+
+    def test_python_update_installs_complete_pyqt6_family_in_one_pip_command(self):
+        window = _FakeWindow()
+        progress_events = []
+        targets = [
+            {
+                "label": "PyQt6",
+                "package": "PyQt6",
+                "_latest_version": "6.12.0",
+                "_installed_version": "6.11.0",
+            },
+            {
+                "label": "PyQt6-Qt6",
+                "package": "PyQt6-Qt6",
+                "_latest_version": "6.12.1",
+                "_installed_version": "6.11.0",
+            },
+            {
+                "label": "PyQt6-WebEngine",
+                "package": "PyQt6-WebEngine",
+                "_latest_version": "6.12.0",
+                "_installed_version": "6.11.0",
+            },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.12.0",
+                "_installed_version": "6.11.1",
+            },
+        ]
+        window._dep_version_targets = list(targets)
+
+        def fake_install(command, *, cwd, timeout, on_output=None):
+            window.commands.append(list(command))
+            window.timeouts.append(timeout)
+            return True, "Successfully installed the PyQt6 family"
+
+        def fake_installed_version(target):
+            return target["_latest_version"]
+
+        with (
+            mock.patch.object(dependency_versions_ui, "_resolve_python_command_prefix", return_value=["python"]),
+            mock.patch.object(
+                dependency_versions_ui,
+                "_emit_dependency_update_progress",
+                side_effect=lambda _window, progress: progress_events.append(dict(progress)),
+            ),
+            mock.patch.object(
+                dependency_versions_ui,
+                "_run_python_package_install",
+                side_effect=fake_install,
+            ) as install,
+            mock.patch.object(
+                dependency_versions_ui,
+                "_windows_loaded_package_update_block_reason",
+                return_value="",
+            ),
+            mock.patch.object(
+                dependency_versions_runtime,
+                "_installed_version_for_dependency_target",
+                side_effect=fake_installed_version,
+            ),
+        ):
+            result = dependency_versions_ui._run_dependency_update_worker(
+                window,
+                targets=targets,
+                selected_only=False,
+            )
+
+        self.assertTrue(result["ok"])
+        install.assert_called_once()
+        self.assertEqual(1, len(window.commands))
+        command = window.commands[0]
+        self.assertEqual(
+            {
+                "PyQt6==6.12.0",
+                "PyQt6-Qt6==6.12.1",
+                "PyQt6-WebEngine==6.12.0",
+                "PyQt6-WebEngine-Qt6==6.12.0",
+            },
+            set(command[-4:]),
+        )
+        self.assertEqual(progress_events[-1]["state"], "finished")
+        self.assertEqual(progress_events[-1]["installed"], 4)
+        self.assertEqual(progress_events[-1]["failed"], 0)
+
     def test_python_update_blocks_loaded_windows_binary_package_before_pip(self):
         window = _FakeWindow()
         progress_events = []
