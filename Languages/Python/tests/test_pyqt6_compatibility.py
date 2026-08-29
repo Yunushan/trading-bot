@@ -388,6 +388,39 @@ class PyQt6CompatibilityTests(unittest.TestCase):
                     future_release_checker.runner_wheel_architectures(platform_name, machine),
                 )
 
+    def test_future_release_checker_accepts_all_declared_runner_targets_and_python_versions(self):
+        cases = (
+            ("ubuntu-24.04", "x86_64", "manylinux_2_39_x86_64"),
+            ("ubuntu-24.04-arm", "aarch64", "manylinux_2_39_aarch64"),
+            ("windows-2025", "AMD64", "win_amd64"),
+            ("windows-11-arm", "ARM64", "win_arm64"),
+            ("macos-14", "arm64", "macosx_11_0_arm64"),
+            ("macos-15-intel", "x86_64", "macosx_10_14_x86_64"),
+            ("macos-15", "arm64", "macosx_11_0_arm64"),
+            ("macos-26", "arm64", "macosx_11_0_arm64"),
+        )
+
+        for platform_name, machine, wheel_platform in cases:
+            wheel = {
+                "filename": f"PyQt6-6.12.0-cp310-abi3-{wheel_platform}.whl",
+                "packagetype": "bdist_wheel",
+            }
+            payloads = {
+                package_name: {"releases": {"6.12.0": [wheel]}}
+                for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+            }
+            for minor in range(10, 16):
+                with self.subTest(platform=platform_name, python=f"3.{minor}"):
+                    status, _published, target_series = future_release_checker.check_family_details(
+                        "6.12.0",
+                        platform_name,
+                        metadata_loader=lambda package_name: payloads[package_name],
+                        architecture=machine,
+                        python_version=(3, minor),
+                    )
+                    self.assertEqual((6, 12), target_series)
+                    self.assertTrue(all(status.values()))
+
     def test_future_release_checker_rejects_runner_label_architecture_mismatch(self):
         with mock.patch.object(future_release_checker.platform, "machine", return_value="x86_64"):
             with self.assertRaisesRegex(ValueError, "ubuntu-24.04-arm.*expected arm64"):
