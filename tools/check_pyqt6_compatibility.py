@@ -189,7 +189,7 @@ def _installed_package_versions(
             versions[package_name] = version_provider(package_name)
         except importlib_metadata.PackageNotFoundError:
             versions[package_name] = None
-        except Exception:
+        except (OSError, TypeError, ValueError):
             versions[package_name] = None
     return versions
 
@@ -223,28 +223,28 @@ def _probe_runtime() -> tuple[dict[str, str | None], dict[str, bool], list[str]]
         api_checks["PyQt6.QtWidgets"] = all(
             hasattr(QtWidgets, name) for name in ("QApplication", "QWidget")
         )
-    except Exception as exc:
+    except (ImportError, OSError, RuntimeError) as exc:
         errors.append(f"PyQt6 core runtime import failed: {exc}")
 
     try:
         import PyQt6.sip as pyqt6_sip
 
         api_checks["PyQt6.sip"] = pyqt6_sip is not None
-    except Exception as exc:
+    except (ImportError, OSError, RuntimeError) as exc:
         errors.append(f"PyQt6 SIP runtime import failed: {exc}")
 
     try:
         from PyQt6.QtWebEngineCore import QWebEnginePage
 
         api_checks["PyQt6.QtWebEngineCore.QWebEnginePage"] = QWebEnginePage is not None
-    except Exception as exc:
+    except (ImportError, OSError, RuntimeError) as exc:
         errors.append(f"PyQt6 WebEngineCore import failed: {exc}")
 
     try:
         from PyQt6.QtWebEngineWidgets import QWebEngineView
 
         api_checks["PyQt6.QtWebEngineWidgets.QWebEngineView"] = QWebEngineView is not None
-    except Exception as exc:
+    except (ImportError, OSError, RuntimeError) as exc:
         errors.append(f"PyQt6 WebEngineWidgets import failed: {exc}")
 
     for api_name, available in api_checks.items():

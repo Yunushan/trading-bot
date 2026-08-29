@@ -4,6 +4,7 @@ Canonical importable desktop product entrypoint.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
 import subprocess
 import sys
@@ -25,6 +26,14 @@ def _boot_log(message: str) -> None:
         print(f"[desktop-product] {message}", flush=True)
     except Exception:
         pass
+
+
+def _run_smoke_cleanup(action: Callable[[], object], label: str) -> None:
+    """Run a Qt smoke cleanup action without masking the original smoke result."""
+    try:
+        action()
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        _boot_log(f"{label} cleanup failed: {exc!r}")
 
 
 def _maybe_launch_via_shell_shortcut() -> None:
@@ -181,26 +190,17 @@ def _run_window_smoke() -> int:
         return 0
     finally:
         if window is not None:
-            try:
-                window.hide()
-            except Exception:
-                pass
-            try:
-                window._force_close = True
-            except Exception:
-                pass
-            try:
-                window.deleteLater()
-            except Exception:
-                pass
-        try:
-            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100)
-        except Exception:
-            pass
-        try:
-            app.quit()
-        except Exception:
-            pass
+            _run_smoke_cleanup(window.hide, "window.hide")
+            _run_smoke_cleanup(
+                lambda: setattr(window, "_force_close", True),
+                "window._force_close",
+            )
+            _run_smoke_cleanup(window.deleteLater, "window.deleteLater")
+        _run_smoke_cleanup(
+            lambda: app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100),
+            "QApplication.processEvents",
+        )
+        _run_smoke_cleanup(app.quit, "QApplication.quit")
 
 
 def _configure_webengine_smoke_environment() -> None:
@@ -294,27 +294,15 @@ def _run_webengine_smoke() -> int:
         finish_timer.stop()
         timeout_timer.stop()
         if view is not None:
-            try:
-                view.close()
-            except Exception:
-                pass
-            try:
-                view.deleteLater()
-            except Exception:
-                pass
+            _run_smoke_cleanup(view.close, "QWebEngineView.close")
+            _run_smoke_cleanup(view.deleteLater, "QWebEngineView.deleteLater")
         if page is not None:
-            try:
-                page.deleteLater()
-            except Exception:
-                pass
-        try:
-            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100)
-        except Exception:
-            pass
-        try:
-            app.quit()
-        except Exception:
-            pass
+            _run_smoke_cleanup(page.deleteLater, "QWebEnginePage.deleteLater")
+        _run_smoke_cleanup(
+            lambda: app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100),
+            "QApplication.processEvents",
+        )
+        _run_smoke_cleanup(app.quit, "QApplication.quit")
 
 
 def _headless_service_requested(args: list[str]) -> bool:

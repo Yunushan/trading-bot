@@ -1106,7 +1106,7 @@ def _run_dependency_update_worker(
                             runtime._normalize_installed_version_text(resolved_version)
                             or str(resolved_version or "")
                         )
-                    except Exception:
+                    except (AttributeError, ImportError, KeyError, OSError, RuntimeError, TypeError, ValueError):
                         family_installed_versions[family_key] = ""
                     expected_version = str(
                         family_target.get("_latest_version") or family_target.get("latest") or ""

@@ -71,7 +71,7 @@ def load_contract(pyproject_path: Path | None = None) -> dict[str, str]:
         return _fallback_contract(text)
     try:
         document = tomllib.loads(text)
-    except Exception:
+    except (tomllib.TOMLDecodeError, TypeError):
         return _fallback_contract(text)
     tool = document.get("tool") if isinstance(document.get("tool"), dict) else {}
     trading_bot = tool.get("trading-bot") if isinstance(tool.get("trading-bot"), dict) else {}

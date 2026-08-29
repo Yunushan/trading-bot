@@ -206,7 +206,7 @@ try:
 
     _QT_LINE = f"PyQt6={_PYQT_VER} (Qt={_QT_VER})"
 except ImportError:
-    pass
+    _QT_LINE = "PyQt6=unknown"
 
 
 def _resolve_webengine_version():
@@ -214,7 +214,7 @@ def _resolve_webengine_version():
         try:
             return _md.version(dist)
         except _md.PackageNotFoundError:
-            pass
+            continue
     # Avoid importing QtWebEngine modules during startup on Windows.
     # Importing them can spawn helper processes that briefly flash windows
     # before the main UI appears. Rely on package metadata instead.
@@ -226,7 +226,7 @@ def _resolve_webengine_qt6_version():
         try:
             return _md.version(dist)
         except _md.PackageNotFoundError:
-            pass
+            continue
     return "installed"
 
 
