@@ -82,6 +82,8 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn('"PyQt6-Qt6>=${target_series_start},<6.13.0"', future_workflow)
         self.assertIn('"PyQt6-WebEngine-Qt6>=${target_series_start},<6.13.0"', future_workflow)
         self.assertNotIn("pip install --pre --only-binary=:all:", future_workflow)
+        self.assertIn('file_info.get("packagetype") == "bdist_wheel"', future_workflow)
+        self.assertIn('.lower().endswith(".whl")', future_workflow)
         self.assertIn("--require-version", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke-window", future_workflow)

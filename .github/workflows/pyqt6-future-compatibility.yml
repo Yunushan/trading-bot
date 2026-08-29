@@ -62,6 +62,14 @@ jobs:
               match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(version or ""))
               return (int(match.group(1)), int(match.group(2))) if match else None
 
+          def has_installable_wheel(files):
+              return any(
+                  file_info.get("packagetype") == "bdist_wheel"
+                  and str(file_info.get("filename") or "").lower().endswith(".whl")
+                  and not file_info.get("yanked", False)
+                  for file_info in files
+              )
+
           def available_releases(package_name):
               request = Request(
                   f"https://pypi.org/pypi/{package_name}/json",
@@ -72,10 +80,10 @@ jobs:
               releases = payload.get("releases", {})
               if package_name == "PyQt6":
                   files = releases.get(target, [])
-                  return any(not file_info.get("yanked", False) for file_info in files)
+                  return has_installable_wheel(files)
               return any(
                   stable_series(version) == target_series
-                  and any(not file_info.get("yanked", False) for file_info in files)
+                  and has_installable_wheel(files)
                   for version, files in releases.items()
               )
 
