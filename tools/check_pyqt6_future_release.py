@@ -176,6 +176,21 @@ def package_has_installable_release(
     )
 
 
+def package_has_published_release(
+    package_name: str,
+    releases: object,
+    target: str,
+    target_series: tuple[int, int],
+) -> bool:
+    """Return whether PyPI exposes the requested release metadata at all."""
+
+    if not isinstance(releases, dict):
+        return False
+    if package_name == "PyQt6":
+        return target in releases
+    return any(stable_series(version) == target_series for version in releases)
+
+
 def _fetch_package_json(package_name: str) -> dict[str, Any]:
     request = Request(
         f"https://pypi.org/pypi/{package_name}/json",
@@ -207,14 +222,16 @@ def _pypi_ssl_context() -> ssl.SSLContext:
         return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
-def check_family(
+def check_family_details(
     target: str,
     platform_name: str,
     metadata_loader: Callable[[str], dict[str, Any]] = _fetch_package_json,
     *,
     architecture: str | None = None,
     python_version: tuple[int, int] | None = None,
-) -> tuple[dict[str, bool], tuple[int, int]]:
+) -> tuple[dict[str, bool], dict[str, bool], tuple[int, int]]:
+    """Return wheel availability, publication metadata, and the target series."""
+
     target_release = stable_version(target)
     if target_release is None:
         raise ValueError(f"Invalid PyQt6 target version {target!r}; use MAJOR.MINOR.PATCH")
@@ -225,23 +242,61 @@ def check_family(
     target_series = target_release[:2]
     wheel_architectures = runner_wheel_architectures(platform_name, architecture)
     package_status: dict[str, bool] = {}
+    package_published: dict[str, bool] = {}
     for package_name in PYQT6_PACKAGE_NAMES:
         payload = metadata_loader(package_name)
+        releases = payload.get("releases") if isinstance(payload, dict) else None
+        package_published[package_name] = package_has_published_release(
+            package_name,
+            releases,
+            target,
+            target_series,
+        )
         package_status[package_name] = package_has_installable_release(
             package_name,
-            payload.get("releases"),
+            releases,
             target,
             target_series,
             wheel_markers,
             wheel_architectures,
             python_version,
         )
+    return package_status, package_published, target_series
+
+
+def check_family(
+    target: str,
+    platform_name: str,
+    metadata_loader: Callable[[str], dict[str, Any]] = _fetch_package_json,
+    *,
+    architecture: str | None = None,
+    python_version: tuple[int, int] | None = None,
+) -> tuple[dict[str, bool], tuple[int, int]]:
+    """Return whether every PyQt6 family member has a compatible wheel."""
+
+    package_status, _package_published, target_series = check_family_details(
+        target,
+        platform_name,
+        metadata_loader,
+        architecture=architecture,
+        python_version=python_version,
+    )
     return package_status, target_series
 
 
-def _write_github_output(path: str, available: bool) -> None:
+def _write_github_output(
+    path: str,
+    available: bool,
+    *,
+    published: bool | None = None,
+    complete: bool | None = None,
+) -> None:
     with open(path, "a", encoding="utf-8") as output:
         output.write(f"available={'true' if available else 'false'}\n")
+        if published is not None:
+            output.write(f"published={'true' if published else 'false'}\n")
+        if complete is not None:
+            output.write(f"complete={'true' if complete else 'false'}\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -256,7 +311,15 @@ def main(argv: list[str] | None = None) -> int:
         "--python-version",
         help="Python version used for wheel-tag compatibility (defaults to the current interpreter; e.g. 3.14)",
     )
-    parser.add_argument("--github-output", help="GITHUB_OUTPUT path to receive available=true|false")
+    parser.add_argument(
+        "--fail-on-partial-publication",
+        action="store_true",
+        help="fail when release metadata exists but the complete requested wheel family is unavailable",
+    )
+    parser.add_argument(
+        "--github-output",
+        help="GITHUB_OUTPUT path to receive available/published/complete booleans",
+    )
     args = parser.parse_args(argv)
 
     target = args.target.strip()
@@ -269,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     f"Invalid Python version {args.python_version!r}; use MAJOR.MINOR"
                 )
-        package_status, target_series = check_family(
+        package_status, package_published, target_series = check_family_details(
             target,
             platform_name,
             architecture=args.architecture,
@@ -280,13 +343,40 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     available = all(package_status.values())
+    published = any(package_published.values())
+    complete = all(package_published.values())
     if args.github_output:
-        _write_github_output(args.github_output, available)
+        _write_github_output(
+            args.github_output,
+            available,
+            published=published,
+            complete=complete,
+        )
     status_text = ", ".join(
-        f"{package_name}={'published' if is_available else 'not yet published'}"
+        f"{package_name}={'compatible' if is_available else 'missing compatible wheel'}"
         for package_name, is_available in package_status.items()
     )
-    print(f"PyQt6 {target_series[0]}.{target_series[1]} family status for {platform_name}: {status_text}.")
+    publication_text = ", ".join(
+        f"{package_name}={'published' if is_available else 'not yet published'}"
+        for package_name, is_available in package_published.items()
+    )
+    print(
+        f"PyQt6 {target_series[0]}.{target_series[1]} family wheel status for "
+        f"{platform_name}: {status_text}. Publication metadata: {publication_text}."
+    )
+    if args.fail_on_partial_publication and published and (not complete or not available):
+        missing = ", ".join(
+            package_name
+            for package_name, is_available in package_status.items()
+            if not is_available
+        )
+        print(
+            f"[FAIL] PyQt6 {target} is published but incomplete for {platform_name}"
+            f" and Python {args.python_version or f'{sys.version_info.major}.{sys.version_info.minor}'}"
+            f"; missing compatible wheels: {missing or 'none'}.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

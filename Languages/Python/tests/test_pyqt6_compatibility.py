@@ -109,6 +109,9 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn("pyqt6-future-wheel-audit:", future_workflow)
         self.assertIn("Audit requested PyQt6 wheel tags for the declared runner", future_workflow)
         self.assertIn('--architecture "${{ matrix.architecture }}"', future_workflow)
+        self.assertIn('--python-version "${python_version}"', future_workflow)
+        self.assertIn("--fail-on-partial-publication", future_workflow)
+        self.assertIn("for python_version in 3.10 3.11 3.12 3.13 3.14 3.15", future_workflow)
         for platform_name, architecture in (
             ("ubuntu-24.04", "x86_64"),
             ("ubuntu-24.04-arm", "aarch64"),
@@ -447,6 +450,77 @@ class PyQt6CompatibilityTests(unittest.TestCase):
 
         self.assertTrue(all(compatible.values()))
         self.assertFalse(any(incompatible.values()))
+
+    def test_future_release_checker_distinguishes_unpublished_and_incomplete_families(self):
+        empty_payloads = {
+            package_name: {"releases": {}}
+            for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+        }
+        status, published, _target_series = future_release_checker.check_family_details(
+            "6.12.0",
+            "ubuntu-24.04",
+            metadata_loader=lambda package_name: empty_payloads[package_name],
+            architecture="x86_64",
+            python_version=(3, 14),
+        )
+        self.assertFalse(any(status.values()))
+        self.assertFalse(any(published.values()))
+
+        partial_payloads = dict(empty_payloads)
+        partial_payloads["PyQt6"] = {"releases": {"6.12.0": []}}
+        _status, published, _target_series = future_release_checker.check_family_details(
+            "6.12.0",
+            "ubuntu-24.04",
+            metadata_loader=lambda package_name: partial_payloads[package_name],
+            architecture="x86_64",
+            python_version=(3, 14),
+        )
+        self.assertTrue(published["PyQt6"])
+        self.assertFalse(all(published.values()))
+
+        published_payloads = {
+            package_name: {"releases": {"6.12.0": []}}
+            for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+        }
+        status, published, _target_series = future_release_checker.check_family_details(
+            "6.12.0",
+            "ubuntu-24.04",
+            metadata_loader=lambda package_name: published_payloads[package_name],
+            architecture="x86_64",
+            python_version=(3, 14),
+        )
+        self.assertFalse(any(status.values()))
+        self.assertTrue(all(published.values()))
+
+    def test_future_release_checker_cli_can_fail_on_an_incomplete_published_family(self):
+        package_status = {
+            package_name: package_name == "PyQt6"
+            for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+        }
+        package_published = {
+            package_name: package_name == "PyQt6"
+            for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+        }
+        with mock.patch.object(
+            future_release_checker,
+            "check_family_details",
+            return_value=(package_status, package_published, (6, 12)),
+        ):
+            with mock.patch("builtins.print"):
+                result = future_release_checker.main(
+                    [
+                        "--target",
+                        "6.12.0",
+                        "--platform",
+                        "ubuntu-24.04",
+                        "--architecture",
+                        "x86_64",
+                        "--python-version",
+                        "3.14",
+                        "--fail-on-partial-publication",
+                    ]
+                )
+        self.assertEqual(1, result)
 
     def test_future_release_checker_keeps_https_certificate_verification_enabled(self):
         context = future_release_checker._pypi_ssl_context()

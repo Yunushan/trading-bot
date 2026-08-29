@@ -222,9 +222,9 @@ Contributor-facing structure and maintenance docs now live here:
 ### Current LOC snapshot
 
 <!-- LOC-SNAPSHOT:START -->
-- Snapshot date: `29.08.2026 GMT+3 Time 18:15:21`
-- Total tracked code/config/script lines: `266,677`
-- Non-empty tracked code/config/script lines (SLOC-style): `243,057`
+- Snapshot date: `29.08.2026 GMT+3 Time 18:21:16`
+- Total tracked code/config/script lines: `266,846`
+- Non-empty tracked code/config/script lines (SLOC-style): `243,215`
 - Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
 <!-- LOC-SNAPSHOT:END -->
 
@@ -322,8 +322,10 @@ latest-version metadata. The scheduled
 `.github/workflows/pyqt6-future-compatibility.yml` workflow probes PyPI weekly
 and runs the full 6.12 runtime smoke test across Python 3.10-3.15 on Ubuntu,
 Windows, and macOS as soon as the target is published. Its companion wheel
-audit also checks every declared ARM64 and macOS Intel runner tag from a neutral
-Ubuntu host before a release can be treated as complete.
+audit also checks every declared runner architecture across Python 3.10-3.15
+from a neutral Ubuntu host. It remains a no-op while the target is entirely
+unpublished, but fails on partial publication or a missing compatible wheel so
+an incomplete release cannot be treated as complete.
 The canonical window smoke can also be run locally with
 `python apps/desktop-pyqt/main.py --smoke-window`.
 The bounded WebEngine lifecycle smoke can be run locally with

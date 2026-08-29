@@ -141,6 +141,10 @@ explicitly, for example `--platform macos-15 --architecture arm64`.
 Use `--python-version MAJOR.MINOR` to evaluate wheel tags for a Python version
 that is not the interpreter running the checker, for example
 `--platform ubuntu-24.04-arm --architecture aarch64 --python-version 3.10`.
+Pass `--fail-on-partial-publication` in automation to fail once any requested
+release metadata is published but the complete compatible wheel family is not
+available for the selected runner and Python version; a fully unpublished
+target remains a successful no-op for scheduled polling.
 The scheduled future-compatibility workflow runs this explicit-architecture
 wheel audit for every declared Ubuntu, Windows, and macOS runner label; the
 runtime and frozen-package smokes still run on the tier-1 hosted runners.
