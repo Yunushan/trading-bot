@@ -55,10 +55,10 @@ def stable_series(value: object) -> tuple[int, int] | None:
     return parsed[:2] if parsed is not None else None
 
 
-def runner_wheel_architectures(platform_name: str) -> tuple[str, ...]:
+def runner_wheel_architectures(platform_name: str, machine_name: str | None = None) -> tuple[str, ...]:
     """Return normalized architectures after binding the runner label to its host."""
 
-    machine = platform.machine().lower()
+    machine = str(machine_name or platform.machine()).strip().lower()
     expected_family = PLATFORM_MACHINE_FAMILIES.get(platform_name)
     if expected_family is None:
         raise ValueError(f"Unsupported PyQt6 compatibility runner {platform_name!r}")
@@ -200,6 +200,8 @@ def check_family(
     target: str,
     platform_name: str,
     metadata_loader: Callable[[str], dict[str, Any]] = _fetch_package_json,
+    *,
+    architecture: str | None = None,
 ) -> tuple[dict[str, bool], tuple[int, int]]:
     target_release = stable_version(target)
     if target_release is None:
@@ -209,7 +211,7 @@ def check_family(
         raise ValueError(f"Unsupported PyQt6 compatibility runner {platform_name!r}")
 
     target_series = target_release[:2]
-    wheel_architectures = runner_wheel_architectures(platform_name)
+    wheel_architectures = runner_wheel_architectures(platform_name, architecture)
     package_status: dict[str, bool] = {}
     for package_name in PYQT6_PACKAGE_NAMES:
         payload = metadata_loader(package_name)
@@ -233,13 +235,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True, help="stable PyQt6 release to check")
     parser.add_argument("--platform", required=True, help="GitHub Actions runner identifier")
+    parser.add_argument(
+        "--architecture",
+        help="target runner architecture (defaults to the current host; e.g. x86_64 or arm64)",
+    )
     parser.add_argument("--github-output", help="GITHUB_OUTPUT path to receive available=true|false")
     args = parser.parse_args(argv)
 
     target = args.target.strip()
     platform_name = args.platform.strip()
     try:
-        package_status, target_series = check_family(target, platform_name)
+        package_status, target_series = check_family(target, platform_name, architecture=args.architecture)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1

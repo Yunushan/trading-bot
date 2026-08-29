@@ -135,6 +135,10 @@ After the 6.12 family is published, require the exact base binding with:
 python ../../tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version 6.12.0 --json
 ```
 
+The future-release checker uses the host architecture by default. When auditing
+PyPI metadata for a different runner from another host, pass its architecture
+explicitly, for example `--platform macos-15 --architecture arm64`.
+
 Service API contract check:
 
 ```bash

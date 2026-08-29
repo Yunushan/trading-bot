@@ -347,6 +347,10 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         with mock.patch.object(future_release_checker.platform, "machine", return_value="x86_64"):
             with self.assertRaisesRegex(ValueError, "ubuntu-24.04-arm.*expected arm64"):
                 future_release_checker.runner_wheel_architectures("ubuntu-24.04-arm")
+        self.assertEqual(
+            ("arm64", "aarch64", "universal2"),
+            future_release_checker.runner_wheel_architectures("macos-15", "arm64"),
+        )
 
     def test_future_release_checker_requires_a_complete_family_for_the_runner(self):
         wheel = {
