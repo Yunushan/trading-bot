@@ -59,6 +59,8 @@ class PyQt6CompatibilityTests(unittest.TestCase):
 
         self.assertIn("python tools/check_pyqt6_compatibility.py --json", ci)
         self.assertIn('default: "6.12.0"', future_workflow)
+        self.assertIn('"PyQt6-WebEngine>=${PYQT6_TARGET},<6.13.0"', future_workflow)
+        self.assertIn('"PyQt6-Qt6>=${PYQT6_TARGET},<6.13.0"', future_workflow)
         self.assertIn("--require-version", future_workflow)
 
     def test_release_version_parser_accepts_release_and_prerelease_suffixes(self):
