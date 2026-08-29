@@ -172,6 +172,13 @@ jobs:
           set -euo pipefail
           python apps/desktop-pyqt/main.py --smoke-window
 
+      - name: Smoke-test the QtWebEngine page lifecycle
+        if: steps.pyqt6_release.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/desktop-pyqt/main.py --smoke-webengine
+
       - name: Run focused PyQt6 compatibility tests
         if: steps.pyqt6_release.outputs.available == 'true'
         shell: bash

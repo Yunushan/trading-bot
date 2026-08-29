@@ -222,9 +222,9 @@ Contributor-facing structure and maintenance docs now live here:
 ### Current LOC snapshot
 
 <!-- LOC-SNAPSHOT:START -->
-- Snapshot date: `29.08.2026 GMT+3 Time 15:19:56`
-- Total tracked code/config/script lines: `265,448`
-- Non-empty tracked code/config/script lines (SLOC-style): `241,962`
+- Snapshot date: `29.08.2026 GMT+3 Time 15:32:08`
+- Total tracked code/config/script lines: `265,590`
+- Non-empty tracked code/config/script lines (SLOC-style): `242,085`
 - Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
 <!-- LOC-SNAPSHOT:END -->
 
@@ -323,6 +323,9 @@ and runs the full 6.12 runtime smoke test on Ubuntu, Windows, and macOS as soon
 as the target is published.
 The canonical window smoke can also be run locally with
 `python apps/desktop-pyqt/main.py --smoke-window`.
+The bounded WebEngine lifecycle smoke can be run locally with
+`python apps/desktop-pyqt/main.py --smoke-webengine`; it loads only local static
+HTML and does not contact an exchange or external service.
 
 ### Windows
 

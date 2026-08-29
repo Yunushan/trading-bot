@@ -119,6 +119,8 @@ one compatibility family. It will not install an unknown, mixed, or
 out-of-range release line. The scheduled repository workflow checks PyPI
 weekly and runs the 6.12 runtime smoke test when all required distributions
 are available.
+For a local, network-free WebEngine lifecycle check, run
+`python ../../apps/desktop-pyqt/main.py --smoke-webengine`.
 
 ### Windows
 

@@ -203,6 +203,120 @@ def _run_window_smoke() -> int:
             pass
 
 
+def _configure_webengine_smoke_environment() -> None:
+    """Keep the WebEngine lifecycle smoke headless and isolated from external services."""
+    defaults = {
+        "BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH": "1",
+        "BOT_DISABLE_PYTHONW_RELAUNCH": "1",
+        "BOT_DISABLE_STARTUP_WINDOW_HOOKS": "1",
+        "BOT_DISABLE_TASKBAR": "1",
+        "BOT_DISABLE_SPLASH": "1",
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_OPENGL": "software",
+        "QSG_RHI_BACKEND": "software",
+        "QT_QUICK_BACKEND": "software",
+    }
+    for name, value in defaults.items():
+        os.environ.setdefault(name, value)
+
+    flags = [part for part in os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").split() if part]
+    # This command only loads a local static document. Disabling Chromium's
+    # sandbox keeps the offscreen helper lifecycle reliable on CI hosts where
+    # the packaged sandbox cannot initialize (notably Windows runners).
+    for flag in ("--no-sandbox", "--no-zygote", "--disable-gpu", "--disable-dev-shm-usage"):
+        if flag not in flags:
+            flags.append(flag)
+    os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+    os.environ.setdefault("QTWEBENGINE_USE_SANDBOX", "0")
+
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flags)
+
+
+def _run_webengine_smoke() -> int:
+    """Create a local WebEngine page, load static HTML, and cleanly exit its event loop."""
+    _configure_webengine_smoke_environment()
+
+    from PyQt6 import QtCore, QtWidgets
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([sys.argv[0] if sys.argv else "trading-bot-webengine-smoke"])
+    app.setQuitOnLastWindowClosed(False)
+
+    page: QWebEnginePage | None = None
+    view: QWebEngineView | None = None
+    loaded: list[bool] = []
+    finish_timer = QtCore.QTimer()
+    finish_timer.setSingleShot(True)
+    finish_timer.timeout.connect(app.quit)
+    timeout_timer = QtCore.QTimer()
+    timeout_timer.setSingleShot(True)
+    timeout_timer.timeout.connect(app.quit)
+
+    try:
+        page = QWebEnginePage()
+        view = QWebEngineView()
+        view.setPage(page)
+        view.hide()
+
+        def finish(ok: bool) -> None:
+            loaded.append(bool(ok))
+            if view is not None:
+                view.close()
+                view.deleteLater()
+            if page is not None:
+                page.deleteLater()
+            finish_timer.start(500)
+
+        page.loadFinished.connect(finish)
+        page.setHtml(
+            "<!doctype html><html><body>Trading Bot WebEngine smoke</body></html>",
+            QtCore.QUrl("about:blank"),
+        )
+        timeout_timer.start(3000)
+        app.exec()
+        app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100)
+
+        if not loaded or not loaded[-1]:
+            raise RuntimeError("QtWebEngine page did not finish loading the local smoke document.")
+
+        stdout = getattr(sys, "stdout", None)
+        if stdout is not None:
+            stdout.write(
+                "Trading Bot Python WebEngine smoke passed "
+                f"(PyQt {QtCore.PYQT_VERSION_STR}, Qt {QtCore.QT_VERSION_STR}).\n"
+            )
+            stdout.flush()
+        return 0
+    finally:
+        finish_timer.stop()
+        timeout_timer.stop()
+        if view is not None:
+            try:
+                view.close()
+            except Exception:
+                pass
+            try:
+                view.deleteLater()
+            except Exception:
+                pass
+        if page is not None:
+            try:
+                page.deleteLater()
+            except Exception:
+                pass
+        try:
+            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100)
+        except Exception:
+            pass
+        try:
+            app.quit()
+        except Exception:
+            pass
+
+
 def _headless_service_requested(args: list[str]) -> bool:
     return any(
         str(arg or "").strip().lower() in {"--headless-service", "--desktop-service"}
@@ -225,9 +339,12 @@ def _run_headless_service() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if "--smoke-window" in {str(arg).strip().lower() for arg in args}:
+    normalized_args = {str(arg).strip().lower() for arg in args}
+    if "--smoke-webengine" in normalized_args:
+        return _run_webengine_smoke()
+    if "--smoke-window" in normalized_args:
         return _run_window_smoke()
-    if "--smoke" in {str(arg).strip().lower() for arg in args}:
+    if "--smoke" in normalized_args:
         return _run_packaged_smoke()
     if _headless_service_requested(args):
         return _run_headless_service()
