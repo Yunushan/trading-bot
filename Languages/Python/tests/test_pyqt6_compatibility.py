@@ -85,6 +85,12 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn("python apps/desktop-pyqt/main.py --smoke-window", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke-webengine", future_workflow)
 
+        release_smoke_job = ci.split("  python-315-release-smoke:", 1)[1].split(
+            "  web-dashboard-quality:", 1
+        )[0]
+        self.assertIn("Install Linux Qt runtime dependencies for Python 3.15 release smoke", release_smoke_job)
+        self.assertIn("libegl1", release_smoke_job)
+
     def test_release_version_parser_accepts_release_and_prerelease_suffixes(self):
         self.assertEqual((6, 12, 0), checker.parse_release_version("6.12.0"))
         self.assertEqual((6, 12, 0), checker.parse_release_version("6.12.0rc1"))
