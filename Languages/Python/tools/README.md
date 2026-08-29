@@ -129,6 +129,10 @@ PyQt6 compatibility check (from the repository root or this directory):
 python ../../tools/check_pyqt6_compatibility.py --json
 ```
 
+The runtime probe also requires the separately versioned `PyQt6-sip` binding
+to stay within its reviewed `>=13.8,<14` range, matching the future-release
+wheel audit.
+
 After the 6.12 family is published, require the exact base binding with:
 
 ```bash

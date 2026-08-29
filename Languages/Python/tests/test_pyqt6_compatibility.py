@@ -628,6 +628,30 @@ class PyQt6CompatibilityTests(unittest.TestCase):
 
         self.assertTrue(any("PyQt6-WebEngine-Qt6 is not installed" in error for error in errors))
 
+    def test_runtime_validation_requires_a_supported_pyqt6_sip_binding(self):
+        self.assertEqual(
+            [],
+            checker._validate_sip_package_version(
+                {checker.PYQT6_SIP_PACKAGE_NAME: "13.11.1"}
+            ),
+        )
+        self.assertTrue(
+            any(
+                "PyQt6-sip is not installed" in error
+                for error in checker._validate_sip_package_version(
+                    {checker.PYQT6_SIP_PACKAGE_NAME: None}
+                )
+            )
+        )
+        self.assertTrue(
+            any(
+                "outside the reviewed PyQt6-sip range" in error
+                for error in checker._validate_sip_package_version(
+                    {checker.PYQT6_SIP_PACKAGE_NAME: "14.0.0"}
+                )
+            )
+        )
+
     def test_chart_webengine_guard_accepts_patch_skew_within_one_release_series(self):
         from app.gui.chart import chart_embed_state_runtime
 
@@ -690,6 +714,7 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertTrue(report["ok"], report)
         self.assertTrue(all(report["api_checks"].values()))
         self.assertIn("PyQt6", report["runtime_versions"])
+        self.assertIn(checker.PYQT6_SIP_PACKAGE_NAME, report["package_versions"])
 
 
 if __name__ == "__main__":

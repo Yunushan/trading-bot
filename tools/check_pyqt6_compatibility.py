@@ -26,6 +26,9 @@ PYQT6_PACKAGE_NAMES = (
     "PyQt6-WebEngine",
     "PyQt6-WebEngine-Qt6",
 )
+PYQT6_SIP_PACKAGE_NAME = "PyQt6-sip"
+PYQT6_SIP_MINIMUM_VERSION = (13, 8, 0)
+PYQT6_SIP_MAXIMUM_VERSION = (14, 0, 0)
 VersionTuple = tuple[int, int, int]
 
 _VERSION_RE = re.compile(
@@ -158,11 +161,30 @@ def _validate_package_versions(
     return errors, package_series, future_target_available
 
 
+def _validate_sip_package_version(package_versions: dict[str, str | None]) -> list[str]:
+    """Validate the separately versioned SIP binding required by PyQt6."""
+
+    raw_version = package_versions.get(PYQT6_SIP_PACKAGE_NAME)
+    parsed = parse_release_version(raw_version)
+    if parsed is None:
+        return [
+            f"{PYQT6_SIP_PACKAGE_NAME} is not installed or has an invalid version: {raw_version!r}"
+        ]
+    if not PYQT6_SIP_MINIMUM_VERSION <= parsed < PYQT6_SIP_MAXIMUM_VERSION:
+        minimum = ".".join(str(part) for part in PYQT6_SIP_MINIMUM_VERSION)
+        maximum = ".".join(str(part) for part in PYQT6_SIP_MAXIMUM_VERSION)
+        return [
+            f"{PYQT6_SIP_PACKAGE_NAME} {raw_version} is outside the reviewed PyQt6-sip range "
+            f"{minimum} <= version < {maximum}"
+        ]
+    return []
+
+
 def _installed_package_versions(
     version_provider: Callable[[str], str] = importlib_metadata.version,
 ) -> dict[str, str | None]:
     versions: dict[str, str | None] = {}
-    for package_name in PYQT6_PACKAGE_NAMES:
+    for package_name in (*PYQT6_PACKAGE_NAMES, PYQT6_SIP_PACKAGE_NAME):
         try:
             versions[package_name] = version_provider(package_name)
         except importlib_metadata.PackageNotFoundError:
@@ -276,6 +298,7 @@ def run_checks(
         exact_pyqt6_version,
     )
     errors.extend(package_errors)
+    errors.extend(_validate_sip_package_version(package_versions))
 
     if probe_runtime:
         runtime_versions, api_checks, runtime_errors = _probe_runtime()
