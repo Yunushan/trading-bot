@@ -4,6 +4,7 @@ import importlib.util
 import importlib.metadata as importlib_metadata
 import json
 import os
+import ssl
 import subprocess
 import sys
 import unittest
@@ -21,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import check_pyqt6_compatibility as checker  # noqa: E402
+from tools import check_pyqt6_future_release as future_release_checker  # noqa: E402
 
 
 CONTRACT = {
@@ -72,9 +74,10 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn("matrix.os == 'ubuntu-24.04'", future_workflow)
         self.assertIn('cron: "17 6 * * 1"', future_workflow)
         self.assertIn("Check whether the requested PyQt6 release is published", future_workflow)
-        self.assertIn('"PyQt6-Qt6"', future_workflow)
-        self.assertIn('"PyQt6-WebEngine"', future_workflow)
-        self.assertIn('"PyQt6-WebEngine-Qt6"', future_workflow)
+        self.assertIn("python tools/check_pyqt6_future_release.py", future_workflow)
+        self.assertIn('--target "${PYQT6_TARGET}"', future_workflow)
+        self.assertIn('--platform "${PYQT6_PLATFORM}"', future_workflow)
+        self.assertIn('--github-output "${GITHUB_OUTPUT}"', future_workflow)
         self.assertIn("github.event_name == 'schedule'", future_workflow)
         self.assertIn("github.event_name == 'workflow_dispatch'", future_workflow)
         self.assertIn("Fail manual dispatch when the requested family is unavailable", future_workflow)
@@ -83,13 +86,6 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn('"PyQt6-Qt6>=${target_series_start},<6.13.0"', future_workflow)
         self.assertIn('"PyQt6-WebEngine-Qt6>=${target_series_start},<6.13.0"', future_workflow)
         self.assertNotIn("pip install --pre --only-binary=:all:", future_workflow)
-        self.assertIn('file_info.get("packagetype") != "bdist_wheel"', future_workflow)
-        self.assertIn('filename.endswith(".whl")', future_workflow)
-        self.assertIn('"ubuntu-24.04": ("manylinux_", "linux_")', future_workflow)
-        self.assertIn('"windows-2025": ("win_amd64",)', future_workflow)
-        self.assertIn('"macos-15": ("macosx_",)', future_workflow)
-        self.assertIn('platform_part = filename[:-4].rsplit("-", 1)[-1]', future_workflow)
-        self.assertIn("platform_tag.startswith(marker)", future_workflow)
         self.assertIn("--require-exact-pyqt6-version", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke-window", future_workflow)
@@ -207,6 +203,78 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         )
 
         self.assertTrue(any("requested exact PyQt6 version is invalid" in error for error in errors))
+
+    def test_future_release_checker_filters_wheels_by_platform_and_artifact_type(self):
+        ubuntu_markers = future_release_checker.PLATFORM_WHEEL_MARKERS["ubuntu-24.04"]
+
+        self.assertTrue(
+            future_release_checker.has_installable_wheel(
+                [{"filename": "PyQt6-6.12.0-cp314-abi3-manylinux_2_39_x86_64.whl", "packagetype": "bdist_wheel"}],
+                ubuntu_markers,
+            )
+        )
+        self.assertTrue(
+            future_release_checker.has_installable_wheel(
+                [{"filename": "PyQt6-6.12.0-cp314-abi3-linux_x86_64.whl", "packagetype": "bdist_wheel"}],
+                ubuntu_markers,
+            )
+        )
+        self.assertFalse(
+            future_release_checker.has_installable_wheel(
+                [{"filename": "PyQt6-6.12.0-cp314-abi3-musllinux_1_2_x86_64.whl", "packagetype": "bdist_wheel"}],
+                ubuntu_markers,
+            )
+        )
+        self.assertFalse(
+            future_release_checker.has_installable_wheel(
+                [{"filename": "PyQt6-6.12.0.tar.gz", "packagetype": "sdist"}],
+                ubuntu_markers,
+            )
+        )
+        self.assertFalse(
+            future_release_checker.has_installable_wheel(
+                [
+                    {
+                        "filename": "PyQt6-6.12.0-cp314-abi3-manylinux_2_39_x86_64.whl",
+                        "packagetype": "bdist_wheel",
+                        "yanked": True,
+                    }
+                ],
+                ubuntu_markers,
+            )
+        )
+
+    def test_future_release_checker_requires_a_complete_family_for_the_runner(self):
+        wheel = {
+            "filename": "PyQt6-6.12.0-cp314-abi3-manylinux_2_39_x86_64.whl",
+            "packagetype": "bdist_wheel",
+        }
+        payloads = {
+            package_name: {"releases": {"6.12.0": [wheel]}}
+            for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+        }
+
+        status, target_series = future_release_checker.check_family(
+            "6.12.0",
+            "ubuntu-24.04",
+            metadata_loader=lambda package_name: payloads[package_name],
+        )
+
+        self.assertEqual((6, 12), target_series)
+        self.assertTrue(all(status.values()))
+        payloads["PyQt6-WebEngine-Qt6"] = {"releases": {"6.12.0": []}}
+        status, _target_series = future_release_checker.check_family(
+            "6.12.0",
+            "ubuntu-24.04",
+            metadata_loader=lambda package_name: payloads[package_name],
+        )
+        self.assertFalse(status["PyQt6-WebEngine-Qt6"])
+
+    def test_future_release_checker_keeps_https_certificate_verification_enabled(self):
+        context = future_release_checker._pypi_ssl_context()
+
+        self.assertEqual(ssl.CERT_REQUIRED, context.verify_mode)
+        self.assertTrue(context.check_hostname)
 
     def test_package_validation_rejects_versions_above_reviewed_upper_bound(self):
         errors, _package_series, _future_target_available = checker._validate_package_versions(

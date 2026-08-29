@@ -47,85 +47,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          import re
-          from urllib.request import Request, urlopen
-
-          target = os.environ["PYQT6_TARGET"].strip()
-          target_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", target)
-          if target_match is None:
-              raise SystemExit(f"Invalid PyQt6 target version {target!r}; use MAJOR.MINOR.PATCH")
-          target_series = (int(target_match.group(1)), int(target_match.group(2)))
-          platform_name = os.environ["PYQT6_PLATFORM"].strip()
-          platform_wheel_markers = {
-              "ubuntu-24.04": ("manylinux_", "linux_"),
-              "windows-2025": ("win_amd64",),
-              "macos-15": ("macosx_",),
-          }
-          wheel_markers = platform_wheel_markers.get(platform_name)
-          if wheel_markers is None:
-              raise SystemExit(f"Unsupported PyQt6 compatibility runner {platform_name!r}")
-
-          def stable_series(version):
-              match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(version or ""))
-              return (int(match.group(1)), int(match.group(2))) if match else None
-
-          def has_installable_wheel(files):
-              for file_info in files:
-                  filename = str(file_info.get("filename") or "").lower()
-                  if file_info.get("packagetype") != "bdist_wheel":
-                      continue
-                  if not filename.endswith(".whl") or file_info.get("yanked", False):
-                      continue
-                  platform_part = filename[:-4].rsplit("-", 1)[-1]
-                  if any(
-                      platform_tag.startswith(marker)
-                      for platform_tag in platform_part.split(".")
-                      for marker in wheel_markers
-                  ):
-                      return True
-              return False
-
-          def available_releases(package_name):
-              request = Request(
-                  f"https://pypi.org/pypi/{package_name}/json",
-                  headers={"User-Agent": "trading-bot-pyqt6-future-compatibility"},
-              )
-              with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed HTTPS PyPI endpoint
-                  payload = json.load(response)
-              releases = payload.get("releases", {})
-              if package_name == "PyQt6":
-                  files = releases.get(target, [])
-                  return has_installable_wheel(files)
-              return any(
-                  stable_series(version) == target_series
-                  and has_installable_wheel(files)
-                  for version, files in releases.items()
-              )
-
-          package_status = {
-              package_name: available_releases(package_name)
-              for package_name in (
-                  "PyQt6",
-                  "PyQt6-Qt6",
-                  "PyQt6-WebEngine",
-                  "PyQt6-WebEngine-Qt6",
-              )
-          }
-          available = all(package_status.values())
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"available={'true' if available else 'false'}\n")
-          print(
-              f"PyQt6 {target_series[0]}.{target_series[1]} family status for {platform_name}: "
-              + ", ".join(
-                  f"{package_name}={'published' if is_available else 'not yet published'}"
-                  for package_name, is_available in package_status.items()
-              )
-              + "."
-          )
-          PY
+          python tools/check_pyqt6_future_release.py \
+            --target "${PYQT6_TARGET}" \
+            --platform "${PYQT6_PLATFORM}" \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Report that the scheduled target is not published yet
         if: steps.pyqt6_release.outputs.available != 'true' && github.event_name == 'schedule'

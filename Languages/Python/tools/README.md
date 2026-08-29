@@ -18,6 +18,7 @@ Run all commands from `Languages/Python/` unless a script says otherwise.
 | --- | --- |
 | `tools/check_dependency_metadata.py` | Verifies Python version metadata, dependency pin policy, requirement shim files, and CI install surface |
 | `../../tools/check_pyqt6_compatibility.py` | Verifies the reviewed PyQt6 package range, Qt/PyQt runtime versions, and required WebEngine APIs |
+| `../../tools/check_pyqt6_future_release.py` | Verifies that a complete, non-yanked PyQt6 future family has installable wheels for a target runner |
 | `tools/check_service_api_contracts.py` | Checks `apps/service-api/contracts/*` and can refresh the generated route contract with `--write` |
 | `tools/run_python_tests.py` | Runs the full Python test suite after checking desktop/service/dev dependencies |
 | `tools/run_service_tests.py` | Runs the focused service API/unit/integration test modules as one stable command |
@@ -126,6 +127,12 @@ PyQt6 compatibility check (from the repository root or this directory):
 
 ```bash
 python ../../tools/check_pyqt6_compatibility.py --json
+```
+
+After the 6.12 family is published, require the exact base binding with:
+
+```bash
+python ../../tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version 6.12.0 --json
 ```
 
 Service API contract check:
