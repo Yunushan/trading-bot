@@ -66,11 +66,19 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn('description: "Exact stable PyQt6 release to validate"', future_workflow)
         self.assertIn("PYQT6_TARGET: ${{ inputs.pyqt_version || '6.12.0' }}", future_workflow)
         self.assertIn("PYQT6_PLATFORM: ${{ matrix.os }}", future_workflow)
-        self.assertIn("name: PyQt6 ${{ inputs.pyqt_version || '6.12.0' }} compatibility", future_workflow)
+        self.assertIn(
+            "name: PyQt6 ${{ inputs.pyqt_version || '6.12.0' }} compatibility (${{ matrix.os }}, Python ${{ matrix.python-version }})",
+            future_workflow,
+        )
         self.assertIn("matrix:", future_workflow)
         self.assertIn("ubuntu-24.04", future_workflow)
         self.assertIn("windows-2025", future_workflow)
         self.assertIn("macos-15", future_workflow)
+        self.assertIn("python-version:", future_workflow)
+        for python_version in ("3.10", "3.11", "3.12", "3.13", "3.14", "3.15"):
+            self.assertIn(f'          - "{python_version}"', future_workflow)
+        self.assertIn("python-version: ${{ matrix.python-version }}", future_workflow)
+        self.assertIn("allow-prereleases: true", future_workflow)
         self.assertIn("matrix.os == 'ubuntu-24.04'", future_workflow)
         self.assertIn('cron: "17 6 * * 1"', future_workflow)
         self.assertIn("Check whether the requested PyQt6 release is published", future_workflow)

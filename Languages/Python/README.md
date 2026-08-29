@@ -118,8 +118,8 @@ python ../../tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version 6.
 The in-app Python dependency updater treats the four PyQt6 distributions as
 one compatibility family. It will not install an unknown, mixed, or
 out-of-range release line. The scheduled repository workflow checks PyPI
-weekly and runs the 6.12 runtime smoke test when all required distributions
-are available.
+weekly and runs the 6.12 runtime smoke test across Python 3.10-3.15 on all
+supported desktop runners when all required distributions are available.
 For a local, network-free WebEngine lifecycle check, run
 `python ../../apps/desktop-pyqt/main.py --smoke-webengine`.
 
