@@ -176,3 +176,48 @@ jobs:
             -q \
             -p no:cacheprovider \
             --no-cov
+
+  pyqt6-future-wheel-audit:
+    name: PyQt6 ${{ inputs.pyqt_version || '6.12.0' }} wheel coverage (${{ matrix.platform }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-24.04
+            architecture: x86_64
+          - platform: ubuntu-24.04-arm
+            architecture: aarch64
+          - platform: windows-2025
+            architecture: AMD64
+          - platform: windows-11-arm
+            architecture: ARM64
+          - platform: macos-14
+            architecture: arm64
+          - platform: macos-15-intel
+            architecture: x86_64
+          - platform: macos-15
+            architecture: arm64
+          - platform: macos-26
+            architecture: arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+
+      - name: Audit requested PyQt6 wheel tags for the declared runner
+        shell: bash
+        env:
+          PYQT6_TARGET: ${{ inputs.pyqt_version || '6.12.0' }}
+        run: |
+          set -euo pipefail
+          python tools/check_pyqt6_future_release.py \
+            --target "${PYQT6_TARGET}" \
+            --platform "${{ matrix.platform }}" \
+            --architecture "${{ matrix.architecture }}"

@@ -106,6 +106,21 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn("Build and smoke-test frozen Unix executable", future_workflow)
         self.assertIn("matrix.os != 'windows-2025'", future_workflow)
         self.assertIn("build_binary.sh", future_workflow)
+        self.assertIn("pyqt6-future-wheel-audit:", future_workflow)
+        self.assertIn("Audit requested PyQt6 wheel tags for the declared runner", future_workflow)
+        self.assertIn('--architecture "${{ matrix.architecture }}"', future_workflow)
+        for platform_name, architecture in (
+            ("ubuntu-24.04", "x86_64"),
+            ("ubuntu-24.04-arm", "aarch64"),
+            ("windows-2025", "AMD64"),
+            ("windows-11-arm", "ARM64"),
+            ("macos-14", "arm64"),
+            ("macos-15-intel", "x86_64"),
+            ("macos-15", "arm64"),
+            ("macos-26", "arm64"),
+        ):
+            self.assertIn(f"          - platform: {platform_name}", future_workflow)
+            self.assertIn(f"            architecture: {architecture}", future_workflow)
 
         release_smoke_job = ci.split("  python-315-release-smoke:", 1)[1].split(
             "  web-dashboard-quality:", 1
