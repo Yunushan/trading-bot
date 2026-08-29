@@ -204,6 +204,29 @@ class PyQt6CompatibilityTests(unittest.TestCase):
 
         self.assertTrue(any("requested exact PyQt6 version is invalid" in error for error in errors))
 
+    def test_runtime_validation_requires_exact_pyqt6_binding_version(self):
+        package_versions = {
+            "PyQt6": "6.12.0",
+            "PyQt6-Qt6": "6.12.1",
+            "PyQt6-WebEngine": "6.12.0",
+            "PyQt6-WebEngine-Qt6": "6.12.1",
+        }
+
+        self.assertEqual(
+            [],
+            checker._validate_runtime_versions(
+                package_versions,
+                {"PyQt6": "6.12.0", "Qt6": "6.12.1"},
+                exact_pyqt6_version="6.12.0",
+            ),
+        )
+        errors = checker._validate_runtime_versions(
+            package_versions,
+            {"PyQt6": "6.12.1", "Qt6": "6.12.1"},
+            exact_pyqt6_version="6.12.0",
+        )
+        self.assertTrue(any("requested exact PyQt6 runtime version" in error for error in errors))
+
     def test_future_release_checker_filters_wheels_by_platform_and_artifact_type(self):
         ubuntu_markers = future_release_checker.PLATFORM_WHEEL_MARKERS["ubuntu-24.04"]
 

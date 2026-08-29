@@ -224,7 +224,9 @@ def _probe_runtime() -> tuple[dict[str, str | None], dict[str, bool], list[str]]
 
 
 def _validate_runtime_versions(
-    package_versions: dict[str, str | None], runtime_versions: dict[str, str | None]
+    package_versions: dict[str, str | None],
+    runtime_versions: dict[str, str | None],
+    exact_pyqt6_version: str | None = None,
 ) -> list[str]:
     errors: list[str] = []
     pyqt_series = version_series(package_versions.get("PyQt6"))
@@ -238,6 +240,14 @@ def _validate_runtime_versions(
             f"PyQt6 runtime series {runtime_pyqt_series[0]}.{runtime_pyqt_series[1]} does not match "
             f"the PyQt6 package series {pyqt_series[0]}.{pyqt_series[1]}"
         )
+    if exact_pyqt6_version:
+        requested_text = str(exact_pyqt6_version).strip()
+        runtime_text = str(runtime_versions.get("PyQt6") or "").strip()
+        if runtime_text != requested_text:
+            errors.append(
+                f"requested exact PyQt6 runtime version {exact_pyqt6_version} is not loaded; "
+                f"found {runtime_versions.get('PyQt6')!r}"
+            )
     if runtime_qt_series is None:
         errors.append("Qt6 runtime did not report a valid QT_VERSION_STR")
     elif qt_series is not None and runtime_qt_series != qt_series:
@@ -270,7 +280,13 @@ def run_checks(
     if probe_runtime:
         runtime_versions, api_checks, runtime_errors = _probe_runtime()
         errors.extend(runtime_errors)
-        errors.extend(_validate_runtime_versions(package_versions, runtime_versions))
+        errors.extend(
+            _validate_runtime_versions(
+                package_versions,
+                runtime_versions,
+                exact_pyqt6_version,
+            )
+        )
     else:
         runtime_versions = {}
         api_checks = {}
