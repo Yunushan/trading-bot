@@ -29,6 +29,7 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       PYQT6_TARGET: ${{ inputs.pyqt_version || '6.12.0' }}
+      PYQT6_PLATFORM: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -57,6 +58,15 @@ jobs:
           if target_match is None:
               raise SystemExit(f"Invalid PyQt6 target version {target!r}; use MAJOR.MINOR.PATCH")
           target_series = (int(target_match.group(1)), int(target_match.group(2)))
+          platform_name = os.environ["PYQT6_PLATFORM"].strip()
+          platform_wheel_markers = {
+              "ubuntu-24.04": ("manylinux_", "linux_"),
+              "windows-2025": ("win_amd64",),
+              "macos-15": ("macosx_",),
+          }
+          wheel_markers = platform_wheel_markers.get(platform_name)
+          if wheel_markers is None:
+              raise SystemExit(f"Unsupported PyQt6 compatibility runner {platform_name!r}")
 
           def stable_series(version):
               match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(version or ""))
@@ -66,6 +76,10 @@ jobs:
               return any(
                   file_info.get("packagetype") == "bdist_wheel"
                   and str(file_info.get("filename") or "").lower().endswith(".whl")
+                  and any(
+                      marker in str(file_info.get("filename") or "").lower()
+                      for marker in wheel_markers
+                  )
                   and not file_info.get("yanked", False)
                   for file_info in files
               )
@@ -100,7 +114,7 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"available={'true' if available else 'false'}\n")
           print(
-              f"PyQt6 {target_series[0]}.{target_series[1]} family status: "
+              f"PyQt6 {target_series[0]}.{target_series[1]} family status for {platform_name}: "
               + ", ".join(
                   f"{package_name}={'published' if is_available else 'not yet published'}"
                   for package_name, is_available in package_status.items()
