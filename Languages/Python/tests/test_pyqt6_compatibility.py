@@ -95,6 +95,9 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn("requirements.packaging.txt", future_workflow)
         self.assertIn("build_exe.ps1", future_workflow)
         self.assertIn("-SkipDependencyInstall", future_workflow)
+        self.assertIn("Build and smoke-test frozen Unix executable", future_workflow)
+        self.assertIn("matrix.os != 'windows-2025'", future_workflow)
+        self.assertIn("build_binary.sh", future_workflow)
 
         release_smoke_job = ci.split("  python-315-release-smoke:", 1)[1].split(
             "  web-dashboard-quality:", 1

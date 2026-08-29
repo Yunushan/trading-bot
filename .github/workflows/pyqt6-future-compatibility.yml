@@ -146,6 +146,16 @@ jobs:
             -DistPath $distPath `
             -WorkPath $workPath
 
+      - name: Build and smoke-test frozen Unix executable
+        if: steps.pyqt6_release.outputs.available == 'true' && matrix.os != 'windows-2025'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Languages/Python/tools/build_binary.sh \
+            --python python \
+            --name "Trading-Bot-PyQt6-${PYQT6_TARGET}" \
+            --skip-dependency-install
+
       - name: Run focused PyQt6 compatibility tests
         if: steps.pyqt6_release.outputs.available == 'true'
         shell: bash
