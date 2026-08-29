@@ -138,7 +138,10 @@ This tab lists the supported code languages and keeps the scaffolding paths orga
 ## Troubleshooting & FAQ
 
 **The GUI won’t start / missing Qt platform plugin**  
-Ensure the virtual environment is activated and reinstall Qt packages: `pip install PyQt6 PyQt6-Qt6 PyQt6-Charts`.
+Ensure the virtual environment is activated and reinstall the reviewed PyQt6
+family: `pip install "PyQt6>=6.11.0,<6.13.0" "PyQt6-Qt6>=6.11.0,<6.13.0" "PyQt6-WebEngine>=6.11.0,<6.13.0"`.
+Then run `python tools/check_pyqt6_compatibility.py --json` from the repository
+root to verify the runtime and WebEngine APIs.
 
 **Orders are sized smaller than expected**  
 Verify `Position % of Balance` describes the margin share. If you see unusually small sizes, confirm you restarted the app after updating and that leverage is correct on your venue.
