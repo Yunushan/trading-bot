@@ -157,6 +157,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("timed out after", script)
         self.assertIn('-ArgumentList $Argument', script)
         self.assertIn('-Argument "--smoke"', script)
+        self.assertIn('-Argument "--smoke-window"', script)
         self.assertIn("$Label failed with exit code", script)
         self.assertIn('-Argument "--smoke-webengine"', script)
 
@@ -742,9 +743,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertIn('PACKAGED_SMOKE_TIMEOUT_SECONDS="${PACKAGED_SMOKE_TIMEOUT_SECONDS:-300}"', script)
         self.assertIn("run_packaged_smoke --smoke", script)
+        self.assertIn("run_packaged_smoke --smoke-window", script)
         self.assertIn("run_packaged_smoke --smoke-webengine", script)
         self.assertIn("subprocess.TimeoutExpired", script)
         self.assertIn("Packaged executable smoke passed.", script)
+        self.assertIn("Packaged window smoke passed.", script)
         self.assertIn("Packaged WebEngine smoke passed.", script)
 
     def test_pyqt6_packaging_runtime_hook_guards_windows_icu_collisions(self):

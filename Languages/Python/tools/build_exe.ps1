@@ -278,10 +278,15 @@ else:
     -Label "Packaged executable smoke"
   Invoke-PackagedSmoke `
     -BinaryPath $binaryPath `
+    -Argument "--smoke-window" `
+    -Label "Packaged window smoke"
+  Invoke-PackagedSmoke `
+    -BinaryPath $binaryPath `
     -Argument "--smoke-webengine" `
     -Label "Packaged WebEngine smoke"
 
   Write-Host "Packaged executable smoke passed."
+  Write-Host "Packaged window smoke passed."
   Write-Host "Packaged WebEngine smoke passed."
   Write-Host "Done. EXE at: $binaryPath"
 }

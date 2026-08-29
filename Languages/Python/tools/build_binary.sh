@@ -294,7 +294,9 @@ PY
 }
 
 run_packaged_smoke --smoke
+run_packaged_smoke --smoke-window
 run_packaged_smoke --smoke-webengine
 echo "Packaged executable smoke passed."
+echo "Packaged window smoke passed."
 echo "Packaged WebEngine smoke passed."
 echo "Done. Binary at: ${binary_path}"
