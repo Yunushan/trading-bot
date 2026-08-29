@@ -1,12 +1,15 @@
+import importlib.util
 import json
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from html.parser import HTMLParser
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 try:
     import tomllib
@@ -43,6 +46,55 @@ def _html_ids(markup: str) -> set[str]:
     parser = _ElementIdParser()
     parser.feed(markup)
     return parser.ids
+
+
+def _synthetic_pe_export_image(export_names: tuple[bytes, ...]) -> bytes:
+    """Build the smallest PE image needed to exercise the ICU export parser."""
+    payload = bytearray(0x800)
+    pe_offset = 0x80
+    coff_offset = pe_offset + 4
+    optional_offset = coff_offset + 20
+    section_offset = optional_offset + 0xF0
+    export_rva = 0x2000
+    export_offset = 0x400
+    names_rva = 0x2040
+    names_offset = 0x440
+    strings_rva = 0x2060
+    strings_offset = 0x460
+
+    payload[:2] = b"MZ"
+    payload[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    payload[pe_offset : pe_offset + 4] = b"PE\x00\x00"
+    payload[coff_offset + 2 : coff_offset + 4] = (1).to_bytes(2, "little")
+    payload[coff_offset + 16 : coff_offset + 18] = (0xF0).to_bytes(2, "little")
+    payload[optional_offset : optional_offset + 2] = (0x20B).to_bytes(2, "little")
+    payload[optional_offset + 112 : optional_offset + 116] = export_rva.to_bytes(4, "little")
+    payload[section_offset + 8 : section_offset + 12] = (0x200).to_bytes(4, "little")
+    payload[section_offset + 12 : section_offset + 16] = export_rva.to_bytes(4, "little")
+    payload[section_offset + 16 : section_offset + 20] = (0x200).to_bytes(4, "little")
+    payload[section_offset + 20 : section_offset + 24] = export_offset.to_bytes(4, "little")
+    payload[export_offset + 24 : export_offset + 28] = len(export_names).to_bytes(4, "little")
+    payload[export_offset + 32 : export_offset + 36] = names_rva.to_bytes(4, "little")
+
+    for index, export_name in enumerate(export_names):
+        name_rva = strings_rva + index * 0x30
+        name_offset = strings_offset + index * 0x30
+        names_entry = names_offset + index * 4
+        payload[names_entry : names_entry + 4] = name_rva.to_bytes(4, "little")
+        payload[name_offset : name_offset + len(export_name)] = export_name
+        payload[name_offset + len(export_name)] = 0
+
+    return bytes(payload)
+
+
+def _load_pyqt6_runtime_hook():
+    hook_path = REPO_ROOT / "Languages" / "Python" / "tools" / "pyinstaller_pyqt6_runtime_hook.py"
+    spec = importlib.util.spec_from_file_location("trading_bot_pyqt6_runtime_hook_test", hook_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load PyQt6 runtime hook from {hook_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run_service_api_contract_checker(checker_path: Path) -> subprocess.CompletedProcess[str]:
@@ -98,8 +150,16 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('Join-Path $workRoot "release-info.json"', script)
         self.assertIn('Join-Path $distRoot "$Name.exe"', script)
         self.assertIn("& $pythonCommand @pyInstallerArgs", script)
-        self.assertIn('-ArgumentList "--smoke"', script)
-        self.assertIn("Packaged executable smoke failed with exit code", script)
+        self.assertIn('$pyInstallerArgs += @("--runtime-hook", $pyqt6RuntimeHook)', script)
+        self.assertIn("pyinstaller_pyqt6_runtime_hook.py", script)
+        self.assertIn("function Invoke-PackagedSmoke", script)
+        self.assertIn("WaitForExit($TimeoutMilliseconds)", script)
+        self.assertIn("timed out after", script)
+        self.assertIn('-ArgumentList $Argument', script)
+        self.assertIn('-Argument "--smoke"', script)
+        self.assertIn('-Argument "--smoke-window"', script)
+        self.assertIn("$Label failed with exit code", script)
+        self.assertIn('-Argument "--smoke-webengine"', script)
 
     def test_windows_cpp_dependency_installer_passes_bootstrap_args_separately(self):
         script = (REPO_ROOT / "experiments" / "native-cpp" / "tools" / "install_cpp_dependencies.ps1").read_text(
@@ -675,12 +735,63 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('DESKTOP_ENTRY_SCRIPT="${REPO_ROOT}/apps/desktop-pyqt/main.py"', script)
         self.assertIn('--paths "${REPO_ROOT}"', script)
         self.assertIn('--paths "${PYTHON_ROOT}"', script)
+        self.assertIn('--runtime-hook "${PYQT6_RUNTIME_HOOK}"', script)
+        self.assertIn("pyinstaller_pyqt6_runtime_hook.py", script)
         self.assertIn(
             'BOT_DISABLE_PYTHONW_RELAUNCH=1 BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH=1 "${PYTHON_BIN}" "${pyinstaller_args[@]}"',
             script,
         )
-        self.assertIn('QT_QPA_PLATFORM=offscreen "${binary_path}" --smoke', script)
+        self.assertIn('PACKAGED_SMOKE_TIMEOUT_SECONDS="${PACKAGED_SMOKE_TIMEOUT_SECONDS:-300}"', script)
+        self.assertIn("run_packaged_smoke --smoke", script)
+        self.assertIn("run_packaged_smoke --smoke-window", script)
+        self.assertIn("run_packaged_smoke --smoke-webengine", script)
+        self.assertIn("subprocess.TimeoutExpired", script)
         self.assertIn("Packaged executable smoke passed.", script)
+        self.assertIn("Packaged window smoke passed.", script)
+        self.assertIn("Packaged WebEngine smoke passed.", script)
+
+    def test_pyqt6_packaging_runtime_hook_guards_windows_icu_collisions(self):
+        hook = (
+            REPO_ROOT
+            / "Languages"
+            / "Python"
+            / "tools"
+            / "pyinstaller_pyqt6_runtime_hook.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('sys.platform != "win32"', hook)
+        self.assertIn('getattr(sys, "_MEIPASS", "")', hook)
+        self.assertIn('"icuuc.dll"', hook)
+        self.assertIn('b"ucnv_open" in exports', hook)
+        self.assertIn('b"ucnv_close" in exports', hook)
+        self.assertIn("icuuc.dll.trading-bot-disabled", hook)
+
+    def test_pyqt6_packaging_runtime_hook_hides_only_versioned_icu_exports(self):
+        hook = _load_pyqt6_runtime_hook()
+        cases = (
+            ("versioned", (b"ucnv_open_78", b"ucnv_close_78"), True),
+            ("unsuffixed", (b"ucnv_open", b"ucnv_close"), False),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for directory_name, export_names, should_hide in cases:
+                with self.subTest(directory_name=directory_name):
+                    bundle_root = Path(temp_dir) / directory_name
+                    bundle_root.mkdir()
+                    bundled_icu = bundle_root / "icuuc.dll"
+                    bundled_payload = _synthetic_pe_export_image(export_names)
+                    bundled_icu.write_bytes(bundled_payload)
+
+                    with (
+                        mock.patch.object(hook.sys, "platform", "win32"),
+                        mock.patch.object(hook.sys, "_MEIPASS", str(bundle_root), create=True),
+                    ):
+                        hook._hide_incompatible_bundled_icu()
+
+                    disabled_icu = bundle_root / "icuuc.dll.trading-bot-disabled"
+                    self.assertEqual(should_hide, disabled_icu.exists())
+                    self.assertEqual(not should_hide, bundled_icu.exists())
+                    if should_hide:
+                        self.assertEqual(bundled_payload, disabled_icu.read_bytes())
 
     def test_docker_backend_uses_canonical_service_wrapper_and_dashboard_assets(self):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
@@ -713,14 +824,15 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("USER 65532", dockerfile)
         self.assertIn("apk add --no-cache build-base linux-headers", dockerfile)
         self.assertIn("Build and health-check Python 3.14 service container", ci_workflow)
-        self.assertIn("docker build --pull --file docker/backend.Dockerfile", ci_workflow)
+        self.assertIn("docker build --pull \\", ci_workflow)
+        self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', ci_workflow)
+        self.assertIn("image_revision", ci_workflow)
         supply_chain_workflow = (REPO_ROOT / ".github" / "workflows" / "supply-chain-security.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn(
-            "docker build --pull --provenance=false --sbom=false --file docker/backend.Dockerfile",
-            supply_chain_workflow,
-        )
+        self.assertIn("docker build --pull \\", supply_chain_workflow)
+        self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', supply_chain_workflow)
+        self.assertIn("Verify image source revision label", supply_chain_workflow)
         self.assertIn("Verify runtime Python package versions", supply_chain_workflow)
         self.assertIn('expected = {"setuptools": "84.0.0", "msgpack": "1.2.1"}', supply_chain_workflow)
         self.assertIn("runtime-python-packages.json", supply_chain_workflow)
@@ -1372,6 +1484,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertIn("python tools/run_service_tests.py --check-list", workflow)
         self.assertIn("python tools/run_service_tests.py --check-docs", workflow)
+
         self.assertIn("python tools/run_service_tests.py", workflow)
         self.assertIn("apps/desktop-pyqt/main.py", workflow)
         self.assertIn("apps/service-api/main.py", workflow)
@@ -1403,6 +1516,17 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("working-directory: apps/web-dashboard", workflow)
         self.assertIn("node --check modules/render.js", workflow)
         self.assertIn("npm test", workflow)
+
+    def test_firefox_browser_contract_honors_explicit_executable_override(self):
+        browser_contract = (REPO_ROOT / "apps" / "web-dashboard" / "tests" / "browser-contract.test.mjs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('async function runFirefoxBrowserContract(targetUrl, executable = "")', browser_contract)
+        self.assertIn('...(executable ? { executablePath: executable } : {})', browser_contract)
+        self.assertIn('} else if (args.browser === "firefox") {', browser_contract)
+        self.assertIn('runFirefoxBrowserContract(targetUrl, executable)', browser_contract)
+        self.assertIn('executable: executable || "playwright-firefox"', browser_contract)
 
     def test_native_cpp_product_smoke_is_bounded_offline_and_drains_qt_deletes(self):
         cpp_root = REPO_ROOT / "experiments" / "native-cpp" / "src"

@@ -206,7 +206,7 @@ try:
 
     _QT_LINE = f"PyQt6={_PYQT_VER} (Qt={_QT_VER})"
 except ImportError:
-    pass
+    _QT_LINE = "PyQt6=unknown"
 
 
 def _resolve_webengine_version():
@@ -214,15 +214,30 @@ def _resolve_webengine_version():
         try:
             return _md.version(dist)
         except _md.PackageNotFoundError:
-            pass
+            continue
     # Avoid importing QtWebEngine modules during startup on Windows.
     # Importing them can spawn helper processes that briefly flash windows
     # before the main UI appears. Rely on package metadata instead.
     return "installed"
 
 
+def _resolve_webengine_qt6_version():
+    for dist in ("PyQt6-WebEngine-Qt6", "pyqt6-webengine-qt6", "PyQt6_WebEngine_Qt6"):
+        try:
+            return _md.version(dist)
+        except _md.PackageNotFoundError:
+            continue
+    return "installed"
+
+
 _WEBENGINE_VER = _resolve_webengine_version()
 _WEBENGINE = f"PyQt6-WebEngine={_WEBENGINE_VER}" if _WEBENGINE_VER else "PyQt6-WebEngine=not-installed"
+_WEBENGINE_QT6_VER = _resolve_webengine_qt6_version()
+_WEBENGINE_QT6 = (
+    f"PyQt6-WebEngine-Qt6={_WEBENGINE_QT6_VER}"
+    if _WEBENGINE_QT6_VER
+    else "PyQt6-WebEngine-Qt6=not-installed"
+)
 
 _PYBINANCE_VER = _resolve_module_version("python-binance", "python_binance", "binance")
 _BINANCE_CONNECTOR_VER = _resolve_module_version("binance-connector", "binance_connector")
@@ -240,7 +255,7 @@ _NUMPY_VER = _resolve_module_version("numpy")
 _REQUESTS_VER = _resolve_module_version("requests")
 
 print(
-    f"pandas={_PANDAS_VER}, {_QT_LINE}, {_WEBENGINE}, "
+    f"pandas={_PANDAS_VER}, {_QT_LINE}, {_WEBENGINE}, {_WEBENGINE_QT6}, "
     f"python-binance={_PYBINANCE_VER}, binance-connector={_BINANCE_CONNECTOR_VER}, ccxt={_CCXT_VER}, "
     f"binance-sdk-derivatives-trading-usds-futures={_SDK_USDS_VER}, "
     f"binance-sdk-derivatives-trading-coin-futures={_SDK_COIN_VER}, "

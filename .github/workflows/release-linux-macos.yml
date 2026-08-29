@@ -32,7 +32,7 @@ jobs:
       id-token: write
       attestations: write
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     if: >
       github.event_name != 'workflow_dispatch' ||
       github.event.inputs.build_linux == 'true' ||
@@ -101,11 +101,14 @@ jobs:
       - name: Validate tagged release QA sign-off
         if: github.ref_type == 'tag'
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_QA_NOTE: docs/release-qa/${{ github.ref_name }}.md
         run: |
           set -euo pipefail
           python tools/check_release_qa.py \
-            --tag "${{ github.ref_name }}" \
-            --note "docs/release-qa/${{ github.ref_name }}.md" \
+            --tag "${RELEASE_TAG}" \
+            --note "${RELEASE_QA_NOTE}" \
             --require-current-revision \
             --allow-release-qa-commit \
             --require-platform-evidence-run
@@ -113,7 +116,9 @@ jobs:
       - name: Validate tagged release metadata versions
         if: github.ref_type == 'tag'
         shell: bash
-        run: python tools/check_release_version.py --tag "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/check_release_version.py --tag "${RELEASE_TAG}"
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -282,6 +287,31 @@ jobs:
             exit 1
           fi
 
+      - name: Developer ID-sign required macOS release binaries
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          MACOS_CODESIGN_P12_B64: ${{ secrets.MACOS_CODESIGN_P12_B64 }}
+          MACOS_CODESIGN_P12_PASSWORD: ${{ secrets.MACOS_CODESIGN_P12_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          bash tools/sign_macos_release.sh "${{ matrix.id }}"
+
+      - name: Notarize and staple the macOS C++ app bundle
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          APPLE_NOTARY_KEY_B64: ${{ secrets.APPLE_NOTARY_KEY_B64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          bash tools/notarize_macos_release.sh \
+            staple-app \
+            "${{ matrix.id }}" \
+            "${{ github.sha }}"
+
       - name: Smoke packaged native binaries
         shell: bash
         run: |
@@ -322,6 +352,20 @@ jobs:
         run: |
           set -euo pipefail
           bash .github/scripts/package_linux_macos_release.sh
+
+      - name: Notarize final macOS release archives
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          APPLE_NOTARY_KEY_B64: ${{ secrets.APPLE_NOTARY_KEY_B64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          bash tools/notarize_macos_release.sh \
+            archives \
+            "${{ matrix.id }}" \
+            "${{ github.sha }}"
 
       - name: Write and verify artifact digest manifest
         shell: bash
@@ -379,6 +423,7 @@ jobs:
     concurrency:
       group: release-publish-${{ github.ref_name }}
       cancel-in-progress: false
+      queue: max
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -399,6 +444,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
 
       - name: Verify required release platform evidence
+        id: release_platform_evidence
         uses: ./.github/actions/verify-release-platform-evidence
         with:
           tag: ${{ github.ref_name }}
@@ -429,12 +475,17 @@ jobs:
           }
           manifest_count="$(count_regular_files release/release-manifest-*.json)"
           sbom_count="$(count_regular_files release/release-sbom-*.spdx.json)"
+          signing_count="$(count_regular_files release/release-signing-macos-*.json)"
           if [[ "$manifest_count" -ne 6 ]]; then
             echo "Expected six Linux/macOS release manifests, found $manifest_count." >&2
             exit 1
           fi
           if [[ "$sbom_count" -ne 6 ]]; then
             echo "Expected six Linux/macOS release SBOMs, found $sbom_count." >&2
+            exit 1
+          fi
+          if [[ "$signing_count" -ne 4 ]]; then
+            echo "Expected four macOS native-signing evidence files, found $signing_count." >&2
             exit 1
           fi
           for manifest in release/release-manifest-*.json; do
@@ -444,9 +495,30 @@ jobs:
               --repo-root "${GITHUB_WORKSPACE}" \
               --require-current-revision
           done
+          python tools/check_release_signing_evidence.py \
+            release/release-signing-macos-*.json \
+            --asset-dir release \
+            --require-complete-platform-set macos \
+            --require-current-revision
           ls -lah release
+
+      - name: Require mutable prerelease candidate state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_OWNER: ${{ github.repository_owner }}
+          RELEASE_REPO: ${{ github.event.repository.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_publication_state.py \
+            --tag "${RELEASE_TAG}" \
+            --owner "${RELEASE_OWNER}" \
+            --repo "${RELEASE_REPO}"
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
+          prerelease: true
+          make_latest: false
           files: release/*

@@ -222,9 +222,9 @@ Contributor-facing structure and maintenance docs now live here:
 ### Current LOC snapshot
 
 <!-- LOC-SNAPSHOT:START -->
-- Snapshot date: `29.08.2026 GMT+3 Time 01:31:43`
-- Total tracked code/config/script lines: `255,357`
-- Non-empty tracked code/config/script lines (SLOC-style): `232,754`
+- Snapshot date: `29.08.2026 GMT+3 Time 18:54:55`
+- Total tracked code/config/script lines: `267,005`
+- Non-empty tracked code/config/script lines (SLOC-style): `243,358`
 - Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
 <!-- LOC-SNAPSHOT:END -->
 
@@ -300,6 +300,39 @@ The `dev` extra includes the bounded `httpx2` FastAPI `TestClient` transport
 dependency used by service API contract tests. The `requirements*.txt`
 files below are lightweight runtime shims for launching specific app surfaces.
 
+### PyQt6 compatibility
+
+The desktop dependency surface supports the reviewed PyQt6 range
+`>=6.11.0,<6.13.0`, which admits the future 6.12 release line while keeping
+the binding, Qt runtime, WebEngine binding, and WebEngine runtime packages within one reviewed
+major/minor series.
+After installing the desktop extra, verify the installed runtime and required
+WebEngine APIs with:
+
+```bash
+python tools/check_pyqt6_compatibility.py --json
+```
+
+When PyQt6 6.12 is published, validate the exact base binding and its
+same-series companions explicitly with
+`python tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version 6.12.0 --json`.
+The in-app Python dependency updater keeps `PyQt6`, `PyQt6-Qt6`,
+`PyQt6-WebEngine`, and `PyQt6-WebEngine-Qt6` on one release line and refuses stale, mixed, or unreviewed
+latest-version metadata. The scheduled
+`.github/workflows/pyqt6-future-compatibility.yml` workflow probes PyPI weekly
+and runs the full 6.12 runtime smoke test across Python 3.10-3.15 on Ubuntu,
+Windows, and macOS as soon as the target is published. Its companion wheel
+audit also checks every declared runner architecture across Python 3.10-3.15
+from a neutral Ubuntu host, including the separately versioned `PyQt6-sip`
+runtime dependency. It remains a no-op while the target is entirely
+unpublished, but fails on partial publication or a missing compatible wheel so
+an incomplete release cannot be treated as complete.
+The canonical window smoke can also be run locally with
+`python apps/desktop-pyqt/main.py --smoke-window`.
+The bounded WebEngine lifecycle smoke can be run locally with
+`python apps/desktop-pyqt/main.py --smoke-webengine`; it loads only local static
+HTML and does not contact an exchange or external service.
+
 ### Windows
 
 **One-click (recommended if Python ≥ 3.10 is already installed):**
@@ -329,7 +362,7 @@ pip install -r requirements.txt
 python3 ../../apps/desktop-pyqt/main.py
 ```
 
-> **PyQt note:** If the GUI fails to launch after dependency installation, run `pip install PyQt6 PyQt6-Qt6` to pull the Qt runtime explicitly.
+> **PyQt note:** If the GUI fails to launch after dependency installation, reinstall the reviewed desktop range with `pip install "PyQt6>=6.11.0,<6.13.0" "PyQt6-Qt6>=6.11.0,<6.13.0" "PyQt6-WebEngine>=6.11.0,<6.13.0" "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0"`, then run `python tools/check_pyqt6_compatibility.py --json` from the repository root.
 
 ### Linux (Ubuntu / Debian / Fedora / Arch)
 

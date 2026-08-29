@@ -163,7 +163,7 @@ async function closePlaywrightBrowser(browser, browserName, timeoutMs = 10_000) 
   }
 }
 
-async function runFirefoxBrowserContract(targetUrl) {
+async function runFirefoxBrowserContract(targetUrl, executable = "") {
   let firefox;
   try {
     ({ firefox } = await import("playwright"));
@@ -173,10 +173,15 @@ async function runFirefoxBrowserContract(targetUrl) {
     );
   }
 
+  const launchOptions = {
+    headless: true,
+    timeout: 30_000,
+    ...(executable ? { executablePath: executable } : {}),
+  };
   let browser;
   let launchMode = "headless";
   try {
-    browser = await firefox.launch({ headless: true, timeout: 30_000 });
+    browser = await firefox.launch(launchOptions);
   } catch (headlessError) {
     if (!firefoxHeadedFallbackAllowed()) {
       throw new Error(
@@ -184,7 +189,7 @@ async function runFirefoxBrowserContract(targetUrl) {
       );
     }
     try {
-      browser = await firefox.launch({ headless: false, timeout: 30_000 });
+      browser = await firefox.launch({ ...launchOptions, headless: false });
       launchMode = "headed-fallback";
     } catch (headedError) {
       throw new Error(
@@ -199,7 +204,7 @@ async function runFirefoxBrowserContract(targetUrl) {
     const payload = await readPlaywrightBrowserResult(page, "Firefox");
     return {
       browser: "firefox",
-      executable: "playwright-firefox",
+      executable: executable || "playwright-firefox",
       launchMode,
       payload,
     };
@@ -430,14 +435,19 @@ async function main() {
   if (!["chrome", "edge", "firefox"].includes(args.browser)) {
     throw new Error(`Unsupported browser ${args.browser}; supported browser contract targets are chrome, edge, and firefox.`);
   }
-  const executable = args.browser === "chrome" ? await resolveBrowserExecutable(args.browser, args.executable) : "";
+  let executable = "";
+  if (args.browser === "chrome") {
+    executable = await resolveBrowserExecutable(args.browser, args.executable);
+  } else if (args.browser === "firefox") {
+    executable = args.executable;
+  }
   const profileDir = args.browser === "chrome" ? await mkdtemp(path.join(os.tmpdir(), "trading-bot-web-dashboard-browser-")) : null;
   const { server, port } = await serveDashboard();
   const targetUrl = `http://127.0.0.1:${port}/__browser_contract_harness__.html`;
   try {
     let browserResult;
     if (args.browser === "firefox") {
-      browserResult = await runFirefoxBrowserContract(targetUrl);
+      browserResult = await runFirefoxBrowserContract(targetUrl, executable);
     } else if (args.browser === "edge") {
       browserResult = await runEdgeBrowserContract(targetUrl);
     } else {

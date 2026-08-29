@@ -1,3 +1,11 @@
+# GitHub Actions supports concurrency.queue, but actionlint v1.7.12 does not
+# parse that key yet. Keep the compatibility exception scoped to release
+# workflows and retain structural contract tests until actionlint catches up.
 self-hosted-runner:
   labels:
     - freebsd
+
+paths:
+  .github/workflows/*release*.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
