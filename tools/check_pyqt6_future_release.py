@@ -22,8 +22,13 @@ PYQT6_PACKAGE_NAMES = (
 )
 PLATFORM_WHEEL_MARKERS = {
     "ubuntu-24.04": ("manylinux", "linux_", "any"),
+    "ubuntu-24.04-arm": ("manylinux", "linux_", "any"),
     "windows-2025": ("win_amd64",),
+    "windows-11-arm": ("win_arm64",),
+    "macos-14": ("macosx_", "any"),
     "macos-15": ("macosx_", "any"),
+    "macos-15-intel": ("macosx_", "any"),
+    "macos-26": ("macosx_", "any"),
 }
 _STABLE_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 

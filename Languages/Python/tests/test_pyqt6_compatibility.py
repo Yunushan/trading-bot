@@ -307,6 +307,42 @@ class PyQt6CompatibilityTests(unittest.TestCase):
             )
         )
 
+    def test_future_release_checker_matches_declared_arm_and_macos_intel_targets(self):
+        cases = (
+            (
+                "ubuntu-24.04-arm",
+                "aarch64",
+                "PyQt6-6.12.0-cp310-abi3-manylinux_2_39_aarch64.whl",
+            ),
+            (
+                "windows-11-arm",
+                "arm64",
+                "PyQt6-6.12.0-cp310-abi3-win_arm64.whl",
+            ),
+            (
+                "macos-15-intel",
+                "x86_64",
+                "PyQt6-6.12.0-cp310-abi3-macosx_10_14_x86_64.whl",
+            ),
+            (
+                "macos-15",
+                "arm64",
+                "PyQt6-6.12.0-cp310-abi3-macosx_11_0_arm64.whl",
+            ),
+        )
+        for platform_name, machine, filename in cases:
+            with self.subTest(platform=platform_name):
+                with mock.patch.object(future_release_checker.platform, "machine", return_value=machine):
+                    architectures = future_release_checker.runner_wheel_architectures(platform_name)
+                self.assertTrue(
+                    future_release_checker.has_installable_wheel(
+                        [{"filename": filename, "packagetype": "bdist_wheel"}],
+                        future_release_checker.PLATFORM_WHEEL_MARKERS[platform_name],
+                        architectures,
+                        (3, 14),
+                    )
+                )
+
     def test_future_release_checker_requires_a_complete_family_for_the_runner(self):
         wheel = {
             "filename": "PyQt6-6.12.0-cp314-abi3-manylinux_2_39_x86_64.whl",
