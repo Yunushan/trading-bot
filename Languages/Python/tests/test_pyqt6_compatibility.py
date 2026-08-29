@@ -343,6 +343,11 @@ class PyQt6CompatibilityTests(unittest.TestCase):
                     )
                 )
 
+    def test_future_release_checker_rejects_runner_label_architecture_mismatch(self):
+        with mock.patch.object(future_release_checker.platform, "machine", return_value="x86_64"):
+            with self.assertRaisesRegex(ValueError, "ubuntu-24.04-arm.*expected arm64"):
+                future_release_checker.runner_wheel_architectures("ubuntu-24.04-arm")
+
     def test_future_release_checker_requires_a_complete_family_for_the_runner(self):
         wheel = {
             "filename": "PyQt6-6.12.0-cp314-abi3-manylinux_2_39_x86_64.whl",

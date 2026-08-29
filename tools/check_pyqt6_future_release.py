@@ -30,6 +30,16 @@ PLATFORM_WHEEL_MARKERS = {
     "macos-15-intel": ("macosx_", "any"),
     "macos-26": ("macosx_", "any"),
 }
+PLATFORM_MACHINE_FAMILIES = {
+    "ubuntu-24.04": "x64",
+    "ubuntu-24.04-arm": "arm64",
+    "windows-2025": "x64",
+    "windows-11-arm": "arm64",
+    "macos-14": "arm64",
+    "macos-15": "arm64",
+    "macos-15-intel": "x64",
+    "macos-26": "arm64",
+}
 _STABLE_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -46,14 +56,27 @@ def stable_series(value: object) -> tuple[int, int] | None:
 
 
 def runner_wheel_architectures(platform_name: str) -> tuple[str, ...]:
-    """Return normalized architectures accepted by the current runner."""
+    """Return normalized architectures after binding the runner label to its host."""
 
     machine = platform.machine().lower()
-    if machine in {"amd64", "x86_64", "x64"}:
-        return ("x86_64", "amd64", "universal2")
-    if machine in {"arm64", "aarch64", "arm64e"}:
-        return ("arm64", "aarch64", "universal2")
-    raise ValueError(f"Unsupported architecture {machine!r} for {platform_name!r}")
+    expected_family = PLATFORM_MACHINE_FAMILIES.get(platform_name)
+    if expected_family is None:
+        raise ValueError(f"Unsupported PyQt6 compatibility runner {platform_name!r}")
+    machine_family = (
+        "x64"
+        if machine in {"amd64", "x86_64", "x64"}
+        else "arm64"
+        if machine in {"arm64", "aarch64", "arm64e"}
+        else None
+    )
+    if machine_family != expected_family:
+        raise ValueError(
+            f"Runner {platform_name!r} reports architecture {machine!r}; "
+            f"expected {expected_family}"
+        )
+    if expected_family == "x64":
+        return ("x86_64", "amd64", "universal2") if platform_name.startswith("macos-") else ("x86_64", "amd64")
+    return ("arm64", "aarch64", "universal2") if platform_name.startswith("macos-") else ("arm64", "aarch64")
 
 
 def _wheel_python_compatible(
