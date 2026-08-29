@@ -50,7 +50,7 @@ desktop = [
     "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0",
 ]
 service = [
-    "cryptography==50.0.0",
+    "cryptography==50.0.1",
     "fastapi==0.141.1",
     "starlette==1.6.0",
     "uvicorn==0.52.1",
