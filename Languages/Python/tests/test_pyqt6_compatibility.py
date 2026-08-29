@@ -59,16 +59,20 @@ class PyQt6CompatibilityTests(unittest.TestCase):
 
         self.assertIn("python tools/check_pyqt6_compatibility.py --json", ci)
         self.assertIn('default: "6.12.0"', future_workflow)
+        self.assertIn('description: "Exact stable PyQt6 release to validate"', future_workflow)
         self.assertIn("PYQT6_TARGET: ${{ inputs.pyqt_version || '6.12.0' }}", future_workflow)
         self.assertIn("name: PyQt6 ${{ inputs.pyqt_version || '6.12.0' }} compatibility", future_workflow)
         self.assertIn('cron: "17 6 * * 1"', future_workflow)
         self.assertIn("Check whether the requested PyQt6 release is published", future_workflow)
         self.assertIn('"PyQt6-Qt6", "PyQt6-WebEngine"', future_workflow)
         self.assertIn("github.event_name == 'schedule'", future_workflow)
+        self.assertIn("github.event_name == 'workflow_dispatch'", future_workflow)
+        self.assertIn("Fail manual dispatch when the requested family is unavailable", future_workflow)
         self.assertIn('"PyQt6-WebEngine>=${PYQT6_TARGET},<6.13.0"', future_workflow)
         self.assertIn('"PyQt6-Qt6>=${PYQT6_TARGET},<6.13.0"', future_workflow)
         self.assertIn("--require-version", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke", future_workflow)
+        self.assertIn("python apps/desktop-pyqt/main.py --smoke-window", future_workflow)
 
     def test_release_version_parser_accepts_release_and_prerelease_suffixes(self):
         self.assertEqual((6, 12, 0), checker.parse_release_version("6.12.0"))

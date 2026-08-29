@@ -29,6 +29,23 @@ class DesktopProductMainTests(unittest.TestCase):
 
         smoke.assert_called_once_with()
 
+    def test_window_smoke_mode_bypasses_shortcut_and_gui_entrypoint(self):
+        with (
+            patch.object(product_main, "_run_window_smoke", return_value=0) as smoke,
+            patch.object(product_main, "_maybe_launch_via_shell_shortcut") as shortcut,
+            patch.dict(sys.modules, {"app.desktop.bootstrap": None}),
+        ):
+            self.assertEqual(product_main.main(["--smoke-window"]), 0)
+
+        smoke.assert_called_once_with()
+        shortcut.assert_not_called()
+
+    def test_window_smoke_flag_is_case_insensitive_and_whitespace_tolerant(self):
+        with patch.object(product_main, "_run_window_smoke", return_value=0) as smoke:
+            self.assertEqual(product_main.main(["  --SMOKE-WINDOW  "]), 0)
+
+        smoke.assert_called_once_with()
+
     def test_default_mode_dispatches_to_desktop_bootstrap(self):
         bootstrap = ModuleType("app.desktop.bootstrap")
         run_entrypoint = Mock(return_value=7)

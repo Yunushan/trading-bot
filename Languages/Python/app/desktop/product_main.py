@@ -124,6 +124,85 @@ def _run_packaged_smoke() -> int:
     return 0
 
 
+def _configure_window_smoke_environment() -> None:
+    """Keep the window smoke deterministic and isolated from external services."""
+    defaults = {
+        "BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH": "1",
+        "BOT_DISABLE_PYTHONW_RELAUNCH": "1",
+        "BOT_DISABLE_STARTUP_WINDOW_HOOKS": "1",
+        "BOT_DISABLE_TASKBAR": "1",
+        "BOT_DISABLE_SPLASH": "1",
+        "BOT_PREWARM_WEBENGINE": "0",
+        "BOT_DISABLE_WEBENGINE_CHARTS": "1",
+        "BOT_DISABLE_CHARTS": "1",
+        "BOT_DISABLE_TRADINGVIEW": "1",
+        "BOT_ENABLE_DESKTOP_SERVICE_API": "0",
+        "BOT_OPEN_CODE_TAB": "0",
+    }
+    for name, value in defaults.items():
+        os.environ.setdefault(name, value)
+
+
+def _run_window_smoke() -> int:
+    """Construct the real Qt window surface and process a short event-loop turn."""
+    _configure_window_smoke_environment()
+
+    from PyQt6 import QtCore, QtWidgets
+
+    from app.gui.window_shell import MainWindow
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([sys.argv[0] if sys.argv else "trading-bot-desktop-smoke"])
+    app.setQuitOnLastWindowClosed(False)
+
+    window = None
+    try:
+        window = MainWindow()
+        if not isinstance(window, QtWidgets.QWidget):
+            raise RuntimeError("Window smoke created a non-Qt MainWindow.")
+        tabs = getattr(window, "tabs", None)
+        tab_count = int(tabs.count()) if tabs is not None else 0
+        if tab_count <= 0:
+            raise RuntimeError("Window smoke created a MainWindow without any tabs.")
+
+        window.hide()
+        QtCore.QTimer.singleShot(300, app.quit)
+        app.exec()
+        app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100)
+
+        stdout = getattr(sys, "stdout", None)
+        if stdout is not None:
+            stdout.write(
+                "Trading Bot Python window smoke passed "
+                f"(PyQt {QtCore.PYQT_VERSION_STR}, Qt {QtCore.QT_VERSION_STR}, tabs={tab_count}).\n"
+            )
+            stdout.flush()
+        return 0
+    finally:
+        if window is not None:
+            try:
+                window.hide()
+            except Exception:
+                pass
+            try:
+                window._force_close = True
+            except Exception:
+                pass
+            try:
+                window.deleteLater()
+            except Exception:
+                pass
+        try:
+            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 100)
+        except Exception:
+            pass
+        try:
+            app.quit()
+        except Exception:
+            pass
+
+
 def _headless_service_requested(args: list[str]) -> bool:
     return any(
         str(arg or "").strip().lower() in {"--headless-service", "--desktop-service"}
@@ -146,6 +225,8 @@ def _run_headless_service() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if "--smoke-window" in {str(arg).strip().lower() for arg in args}:
+        return _run_window_smoke()
     if "--smoke" in {str(arg).strip().lower() for arg in args}:
         return _run_packaged_smoke()
     if _headless_service_requested(args):
