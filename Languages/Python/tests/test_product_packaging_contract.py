@@ -1542,7 +1542,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertNotIn("aiohttp==0.13.1", windows_arm64_dependencies)
         self.assertIn("aiohttp>=3.14.3,<4", windows_arm64_dependencies)
 
-        self.assertIn("cryptography==50.0.0", optional_dependencies["service"])
+        self.assertIn("cryptography==50.0.1", optional_dependencies["service"])
 
         self.assertEqual(
             ["pip-audit==2.10.1", "truststore==0.10.4"],
