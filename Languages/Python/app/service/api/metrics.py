@@ -18,6 +18,8 @@ _ROUTE_PATTERN = re.compile(r"/[A-Za-z0-9_./{}:-]{0,199}")
 _METHOD_PATTERN = re.compile(r"[A-Z]{1,16}")
 _DURATION_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, math.inf)
 _FRESHNESS_COMPONENTS = ("exchange_connector", "execution", "account", "portfolio")
+MAX_METRIC_ROUTE_SERIES = 256
+MAX_METRIC_SERIES = 4096
 
 
 def resolve_request_id(candidate: str | None) -> str:
@@ -126,6 +128,8 @@ class ServiceApiMetricsRegistry:
         self._in_progress = 0
         self._requests: dict[tuple[str, str, int], int] = {}
         self._durations: dict[tuple[str, str], _DurationSeries] = {}
+        self._known_routes: set[str] = set()
+        self._metric_overflow_count = 0
 
     def request_started(self) -> None:
         with self._lock:
@@ -148,9 +152,29 @@ class ServiceApiMetricsRegistry:
 
         with self._lock:
             self._in_progress = max(0, self._in_progress - 1)
+            normalized_route, route_overflowed = self._bound_route_locked(normalized_route)
+            overflowed = route_overflowed
+            if route_overflowed:
+                normalized_method = "OTHER"
+                normalized_status = 500
             request_key = (normalized_method, normalized_route, normalized_status)
-            self._requests[request_key] = self._requests.get(request_key, 0) + 1
             duration_key = (normalized_method, normalized_route)
+            if (
+                request_key not in self._requests
+                and len(self._requests) >= MAX_METRIC_SERIES - 1
+            ) or (
+                duration_key not in self._durations
+                and len(self._durations) >= MAX_METRIC_SERIES - 1
+            ):
+                normalized_method = "OTHER"
+                normalized_route = "unmatched"
+                normalized_status = 500
+                request_key = (normalized_method, normalized_route, normalized_status)
+                duration_key = (normalized_method, normalized_route)
+                overflowed = True
+            if overflowed:
+                self._metric_overflow_count += 1
+            self._requests[request_key] = self._requests.get(request_key, 0) + 1
             series = self._durations.get(duration_key)
             if series is None:
                 series = _DurationSeries(bucket_counts=[0] * len(_DURATION_BUCKETS))
@@ -160,6 +184,14 @@ class ServiceApiMetricsRegistry:
             for index, upper_bound in enumerate(_DURATION_BUCKETS):
                 if normalized_duration <= upper_bound:
                     series.bucket_counts[index] += 1
+
+    def _bound_route_locked(self, route: str) -> tuple[str, bool]:
+        if route == "unmatched" or route in self._known_routes:
+            return route, False
+        if len(self._known_routes) >= MAX_METRIC_ROUTE_SERIES - 1:
+            return "unmatched", True
+        self._known_routes.add(route)
+        return route, False
 
     def render_prometheus(
         self,
@@ -172,6 +204,7 @@ class ServiceApiMetricsRegistry:
         with self._lock:
             in_progress = self._in_progress
             started_at = self._started_at
+            metric_overflow_count = self._metric_overflow_count
             requests = dict(self._requests)
             durations = {
                 key: (list(value.bucket_counts), value.count, value.total_seconds)
@@ -198,6 +231,13 @@ class ServiceApiMetricsRegistry:
             "# HELP trading_bot_service_http_requests_total Completed HTTP requests.",
             "# TYPE trading_bot_service_http_requests_total counter",
         ]
+        lines.extend(
+            [
+                "# HELP trading_bot_service_http_metrics_overflow_total HTTP metric updates folded into the bounded overflow series.",
+                "# TYPE trading_bot_service_http_metrics_overflow_total counter",
+                f"trading_bot_service_http_metrics_overflow_total {metric_overflow_count}",
+            ]
+        )
         for (method, route, status_code), count in sorted(requests.items()):
             lines.append(
                 "trading_bot_service_http_requests_total"

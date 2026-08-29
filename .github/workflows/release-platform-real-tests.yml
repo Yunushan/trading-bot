@@ -33,6 +33,18 @@ on:
         required: false
         default: ""
         type: string
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   actions: read
@@ -41,6 +53,7 @@ permissions:
 jobs:
   prepare-targets:
     name: Resolve Release Target Matrix
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -50,6 +63,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -67,10 +81,10 @@ jobs:
         id: matrix
         shell: bash
         env:
-          TARGET_ID: ${{ inputs.target_id }}
-          INCLUDE_SELF_HOSTED: ${{ inputs.include_self_hosted }}
-          REQUIRE_ALL_EVIDENCE: ${{ inputs.require_all_evidence }}
-          RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
+          TARGET_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.target_id || 'all' }}
+          INCLUDE_SELF_HOSTED: ${{ github.event_name == 'workflow_dispatch' && inputs.include_self_hosted || false }}
+          REQUIRE_ALL_EVIDENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.require_all_evidence || github.event_name == 'workflow_run' }}
+          RUNNER_LABELS_JSON: ${{ github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '' }}
         run: |
           set -euo pipefail
           args=(--emit-github-matrix)
@@ -87,7 +101,7 @@ jobs:
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
 
       - name: Verify selected self-hosted runners are available
-        if: ${{ inputs.include_self_hosted == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_self_hosted == true }}
         shell: bash
         env:
           TARGETS_JSON: ${{ steps.matrix.outputs.targets }}
@@ -111,6 +125,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -285,8 +300,8 @@ jobs:
       - name: Run real target probe
         shell: bash
         env:
-          TB_RELEASE_DESKTOP_SMOKE_COMMAND: ${{ inputs.desktop_smoke_command }}
-          TB_BROWSER_TEST_COMMAND: ${{ inputs.browser_test_command }}
+          TB_RELEASE_DESKTOP_SMOKE_COMMAND: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop_smoke_command || '' }}
+          TB_BROWSER_TEST_COMMAND: ${{ github.event_name == 'workflow_dispatch' && inputs.browser_test_command || '' }}
         run: |
           set -euo pipefail
           mkdir -p release-platform-evidence
@@ -318,7 +333,7 @@ jobs:
   full-evidence-gate:
     name: Evidence Gate (selected scope)
     needs: [prepare-targets, run-target]
-    if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.require_all_evidence || inputs.target_id == 'all' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -326,6 +341,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -349,7 +365,7 @@ jobs:
       - name: Require passed evidence for every target
         shell: bash
         env:
-          INCLUDE_SELF_HOSTED: ${{ inputs.include_self_hosted }}
+          INCLUDE_SELF_HOSTED: ${{ github.event_name == 'workflow_dispatch' && inputs.include_self_hosted || false }}
         run: |
           set -euo pipefail
           args=(

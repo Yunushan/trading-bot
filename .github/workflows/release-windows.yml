@@ -109,10 +109,13 @@ jobs:
       - name: Validate tagged release QA sign-off
         if: github.ref_type == 'tag'
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_QA_NOTE: docs/release-qa/${{ github.ref_name }}.md
         run: |
           python tools/check_release_qa.py `
-            --tag "${{ github.ref_name }}" `
-            --note "docs/release-qa/${{ github.ref_name }}.md" `
+            --tag "$env:RELEASE_TAG" `
+            --note "$env:RELEASE_QA_NOTE" `
             --require-current-revision `
             --allow-release-qa-commit `
             --require-platform-evidence-run
@@ -120,7 +123,9 @@ jobs:
       - name: Validate tagged release metadata versions
         if: github.ref_type == 'tag'
         shell: pwsh
-        run: python tools/check_release_version.py --tag "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/check_release_version.py --tag "$env:RELEASE_TAG"
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -653,6 +658,17 @@ jobs:
           $cppZipAsset = "release/Trading-Bot-C++-$assetTag-$releaseVersion.zip"
           Compress-Archive -Path "$cppBundleDir/*" -DestinationPath $cppZipAsset -Force
 
+      - name: Authenticode-sign required Windows release binaries
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_B64: ${{ secrets.WINDOWS_CODESIGN_PFX_B64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: |
+          & ./tools/Sign-WindowsReleaseBinaries.ps1 `
+            -TargetId "${{ matrix.id }}" `
+            -SourceRevision "${{ github.sha }}"
+
       - name: Smoke packaged native binaries
         shell: pwsh
         run: |
@@ -753,6 +769,7 @@ jobs:
             release/Trading-Bot-C++*.zip
             release/native-cpp-windows-smoke-*.json
             release/rust-package-smoke-*.json
+            release/release-signing-windows-*.json
             release/release-manifest-*.json
             release/release-sbom-*.spdx.json
           if-no-files-found: error
@@ -766,6 +783,7 @@ jobs:
     concurrency:
       group: release-publish-${{ github.ref_name }}
       cancel-in-progress: false
+      queue: max
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -786,6 +804,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
 
       - name: Verify required release platform evidence
+        id: release_platform_evidence
         uses: ./.github/actions/verify-release-platform-evidence
         with:
           tag: ${{ github.ref_name }}
@@ -816,12 +835,17 @@ jobs:
           }
           manifest_count="$(count_regular_files release/release-manifest-*.json)"
           sbom_count="$(count_regular_files release/release-sbom-*.spdx.json)"
+          signing_count="$(count_regular_files release/release-signing-windows-*.json)"
           if [[ "$manifest_count" -ne 2 ]]; then
             echo "Expected two Windows release manifests, found $manifest_count." >&2
             exit 1
           fi
           if [[ "$sbom_count" -ne 2 ]]; then
             echo "Expected two Windows release SBOMs, found $sbom_count." >&2
+            exit 1
+          fi
+          if [[ "$signing_count" -ne 2 ]]; then
+            echo "Expected two Windows native-signing evidence files, found $signing_count." >&2
             exit 1
           fi
           for manifest in release/release-manifest-*.json; do
@@ -831,10 +855,31 @@ jobs:
               --repo-root "${GITHUB_WORKSPACE}" \
               --require-current-revision
           done
+          python tools/check_release_signing_evidence.py \
+            release/release-signing-windows-*.json \
+            --asset-dir release \
+            --require-complete-platform-set windows \
+            --require-current-revision
           ls -lah release
+
+      - name: Require mutable prerelease candidate state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_OWNER: ${{ github.repository_owner }}
+          RELEASE_REPO: ${{ github.event.repository.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_publication_state.py \
+            --tag "${RELEASE_TAG}" \
+            --owner "${RELEASE_OWNER}" \
+            --repo "${RELEASE_REPO}"
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           generate_release_notes: true
+          prerelease: true
+          make_latest: false
           files: release/*

@@ -70,6 +70,7 @@ Focused service test map:
 | --- | --- |
 | `tests.test_service_api_http_contract` | HTTP route contracts, auth behavior, SSE auth, and runtime/dashboard responses |
 | `tests.test_service_api_metrics` | Prometheus export, bounded request labels, correlation IDs, and alert-rule contracts |
+| `tests.test_service_capacity_probe` | bounded concurrent read-only load, child-process isolation, and remote transport safeguards |
 | `tests.test_service_schema_contracts` | service response schema builders, payload normalization, and secret redaction contracts |
 | `tests.test_service_config_runtime` | service config validation and durable config persistence |
 | `tests.test_service_operational_runtime` | operational health snapshots, connector incidents, JSONL rotation, and redaction |
@@ -122,6 +123,28 @@ started.
 
 Use the desktop-hosted API mode below for desktop-owned live/demo trading state
 until a dedicated headless trading executor is implemented.
+
+### Fail-closed read-only mode
+
+Set `BOT_SERVICE_API_READ_ONLY=1` for an observer-only Service API. In this
+mode, every `POST`, `PUT`, `PATCH`, and `DELETE` request returns `403` before
+route execution, including requests with a valid bearer token and requests made
+while the local unauthenticated-write development escape hatch is enabled. The
+standalone local lifecycle executor is not attached, even if the caller asks to
+enable it. GET/HEAD health and observation routes remain available.
+
+The active state is exposed as `service_api.read_only`,
+`service_api.mutation_routes_enabled`, and `read_only` in `/readyz`. This mode
+protects the remote API boundary; it does not stop an already-running runtime
+object supplied by an embedding host. Do not use it to claim high availability
+for live trading execution.
+
+The provider-neutral Kubernetes baseline in
+`deploy/kubernetes/production-readonly/` uses this mode for three stateless API
+replicas with immutable image/commit rendering, disruption protection,
+autoscaling bounds, restricted pod security, and deny-all egress. Its README
+lists the required external TLS ingress, secret manager, metrics, capacity, and
+deployed-evidence steps.
 
 ### Runtime control-plane descriptor
 
@@ -193,6 +216,12 @@ The token resolution order is explicit CLI token, `BOT_SERVICE_API_TOKEN`, then
 `BOT_SERVICE_API_TOKEN_FILE`. The file is limited to 4 KiB and must not be
 checked into source control.
 
+POSIX token files reject all group and other-user permissions by default. For a
+Kubernetes Secret volume owned by an effective process group, set
+`BOT_SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ=1`; only group-read (`0440`), no
+group write/execute or other-user permission, and a group id present in the
+process credentials are accepted.
+
 PowerShell:
 
 ```powershell
@@ -256,6 +285,14 @@ Request safety limits:
   table returns `429` instead of allowing unbounded memory growth.
 - Both limits are reported in `service_api.limits` metadata so browser/mobile
   clients can display the active policy.
+- Read pagination and dashboard stream controls are validated at the HTTP
+  boundary. `log_limit` is `1..250`, `incident_limit` is `1..200`, and
+  `interval_ms` is `250..60000`. `max_events`, when supplied, is `1..10000`;
+  omitting it keeps the dashboard stream continuous. The active defaults and
+  bounds are reported in `service_api.limits.query_bounds`.
+- Dashboard streams are capped at 32 concurrent connections per service
+  process. A full stream table returns `429` with `Retry-After: 1`; completed
+  or disconnected streams release their slot.
 - Health, readiness, liveness, and `/api/...` responses include `Cache-Control:
   no-store`, `Pragma: no-cache`, `Referrer-Policy: no-referrer`, and
   `X-Content-Type-Options: nosniff`. This keeps account, strategy, and runtime
@@ -354,7 +391,11 @@ clients. `GET /api/v1/metrics/prometheus` is the authenticated Prometheus 0.0.4
 exposition endpoint for production monitoring. It exports bounded route-template
 labels, status codes, request counters, request-duration histograms, process
 uptime, runtime/engine state, connector circuit state, unresolved order intents,
-preflight state, and per-component operational snapshot age/staleness.
+preflight state, and per-component operational snapshot age/staleness. HTTP
+metric state is capped at 256 route series and 4096 combined request/duration
+series; excess updates use an `OTHER`/`unmatched` overflow series and increment
+`trading_bot_service_http_metrics_overflow_total`, which is covered by the
+`TradingBotServiceMetricsCardinalityOverflow` warning alert.
 
 The Prometheus endpoint follows the same bearer-token rules as other read API
 routes. Configure a scraper with an authorization credential file or an
@@ -374,9 +415,12 @@ Streaming:
 - `GET /api/v1/stream/dashboard`
 
 The dashboard stream accepts `interval_ms`, `log_limit`, and `incident_limit`
-query parameters for refresh cadence and payload sizing. It also accepts
-`max_events` for bounded diagnostics and contract tests; omit `max_events` for
-normal continuous dashboard streams.
+query parameters for refresh cadence and payload sizing. `log_limit` must be
+between 1 and 250, `incident_limit` between 1 and 200, and `interval_ms`
+between 250 and 60000 milliseconds. It also accepts `max_events` for bounded diagnostics and contract tests; values must be between 1 and 10000. Omit
+`max_events` for normal continuous dashboard streams. Invalid values return
+`422`. Each service process admits at most 32 concurrent dashboard streams;
+when that capacity is full, the endpoint returns `429` with `Retry-After: 1`.
 
 Write/control routes:
 

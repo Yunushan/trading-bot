@@ -15,6 +15,11 @@ from ...settings.exchange_support import (
 MetaTrader5ClientFactory = Callable[[], object]
 
 MT5_BROKER_PROVIDERS: tuple[str, ...] = METATRADER5_BROKERS
+MT5_MAX_TIMEOUT_MS = 300_000
+MT5_MAX_SYMBOL_UTF8_BYTES = 64
+MT5_MAX_COMMENT_UTF8_BYTES = 31
+MT5_MAX_SERVER_UTF8_BYTES = 256
+MT5_MAX_TERMINAL_PATH_UTF8_BYTES = 4_096
 
 
 def _provider_key(value: object) -> str:
@@ -65,6 +70,23 @@ def _optional_positive_float(value: object | None, *, field: str) -> float | Non
     return _positive_float(value, field=field)
 
 
+def _bounded_text(
+    value: object,
+    *,
+    field: str,
+    max_utf8_bytes: int,
+    required: bool = False,
+) -> str:
+    text = str(value or "").strip()
+    if required and not text:
+        raise ValueError(f"{field} is required")
+    if any(ord(character) < 32 or ord(character) == 127 for character in text):
+        raise ValueError(f"{field} must not contain control characters")
+    if len(text.encode("utf-8")) > max_utf8_bytes:
+        raise ValueError(f"{field} must contain at most {max_utf8_bytes} UTF-8 bytes")
+    return text
+
+
 def _plain_payload(value: object) -> object:
     if isinstance(value, Mapping):
         return {str(key): _plain_payload(item) for key, item in value.items()}
@@ -112,8 +134,16 @@ class MetaTrader5BrokerConnector:
         self.provider = _canonical_provider(provider)
         self.login = self._parse_login(login)
         self.password = str(password or "")
-        self.server = str(server or "").strip()
-        self.terminal_path = str(terminal_path or "").strip()
+        self.server = _bounded_text(
+            server,
+            field="server",
+            max_utf8_bytes=MT5_MAX_SERVER_UTF8_BYTES,
+        )
+        self.terminal_path = _bounded_text(
+            terminal_path,
+            field="terminal_path",
+            max_utf8_bytes=MT5_MAX_TERMINAL_PATH_UTF8_BYTES,
+        )
         self.timeout_ms = _positive_timeout(timeout_ms)
         self.portable = bool(portable)
         self._client = client
@@ -277,9 +307,12 @@ class MetaTrader5BrokerConnector:
         return symbol_info
 
     def fetch_market_snapshot(self, symbol: str) -> dict[str, object]:
-        clean_symbol = str(symbol or "").strip()
-        if not clean_symbol:
-            raise ValueError("symbol is required")
+        clean_symbol = _bounded_text(
+            symbol,
+            field="symbol",
+            max_utf8_bytes=MT5_MAX_SYMBOL_UTF8_BYTES,
+            required=True,
+        )
         client = self._ensure_initialized()
         symbol_info = self._ensure_symbol(client, clean_symbol)
         tick = self._require_method(client, "symbol_info_tick")(clean_symbol)
@@ -297,7 +330,11 @@ class MetaTrader5BrokerConnector:
         )
 
     def fetch_open_positions_snapshot(self, symbol: str = "") -> dict[str, object]:
-        clean_symbol = str(symbol or "").strip()
+        clean_symbol = _bounded_text(
+            symbol,
+            field="symbol",
+            max_utf8_bytes=MT5_MAX_SYMBOL_UTF8_BYTES,
+        )
         client = self._ensure_initialized()
         positions_get = self._require_method(client, "positions_get")
         positions = positions_get(symbol=clean_symbol) if clean_symbol else positions_get()
@@ -312,7 +349,11 @@ class MetaTrader5BrokerConnector:
         )
 
     def fetch_open_orders_snapshot(self, symbol: str = "") -> dict[str, object]:
-        clean_symbol = str(symbol or "").strip()
+        clean_symbol = _bounded_text(
+            symbol,
+            field="symbol",
+            max_utf8_bytes=MT5_MAX_SYMBOL_UTF8_BYTES,
+        )
         client = self._ensure_initialized()
         orders_get = self._require_method(client, "orders_get")
         orders = orders_get(symbol=clean_symbol) if clean_symbol else orders_get()
@@ -396,9 +437,12 @@ class MetaTrader5BrokerConnector:
         dry_run: bool = True,
         allow_live: bool = False,
     ) -> dict[str, object]:
-        clean_symbol = str(symbol or "").strip()
-        if not clean_symbol:
-            raise ValueError("symbol is required")
+        clean_symbol = _bounded_text(
+            symbol,
+            field="symbol",
+            max_utf8_bytes=MT5_MAX_SYMBOL_UTF8_BYTES,
+            required=True,
+        )
         clean_side = str(side or "").strip().lower()
         if clean_side not in {"buy", "sell"}:
             raise ValueError("order side must be 'buy' or 'sell'")
@@ -407,9 +451,11 @@ class MetaTrader5BrokerConnector:
         clean_take_profit = _optional_positive_float(take_profit, field="take_profit")
         clean_deviation = _nonnegative_int(deviation, field="deviation")
         clean_magic = _nonnegative_int(magic, field="magic")
-        clean_comment = str(comment or "").strip()
-        if len(clean_comment) > 31:
-            raise ValueError("comment must contain at most 31 characters")
+        clean_comment = _bounded_text(
+            comment,
+            field="comment",
+            max_utf8_bytes=MT5_MAX_COMMENT_UTF8_BYTES,
+        )
         clean_position_ticket = None
         if position_ticket is not None:
             clean_position_ticket = _positive_ticket(position_ticket)
@@ -501,6 +547,8 @@ def _positive_timeout(value: object) -> int:
     timeout = _nonnegative_int(value, field="timeout_ms")
     if timeout == 0:
         raise ValueError("timeout_ms must be a positive integer")
+    if timeout > MT5_MAX_TIMEOUT_MS:
+        raise ValueError(f"timeout_ms must be at most {MT5_MAX_TIMEOUT_MS}")
     return timeout
 
 
