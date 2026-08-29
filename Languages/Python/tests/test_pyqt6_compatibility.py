@@ -343,6 +343,27 @@ class PyQt6CompatibilityTests(unittest.TestCase):
                     )
                 )
 
+    def test_future_release_checker_keeps_every_declared_runner_label_architecture_bound(self):
+        expected = {
+            "ubuntu-24.04": ("x86_64", ("x86_64", "amd64")),
+            "ubuntu-24.04-arm": ("aarch64", ("arm64", "aarch64")),
+            "windows-2025": ("AMD64", ("x86_64", "amd64")),
+            "windows-11-arm": ("ARM64", ("arm64", "aarch64")),
+            "macos-14": ("arm64", ("arm64", "aarch64", "universal2")),
+            "macos-15-intel": ("x86_64", ("x86_64", "amd64", "universal2")),
+            "macos-15": ("arm64", ("arm64", "aarch64", "universal2")),
+            "macos-26": ("arm64", ("arm64", "aarch64", "universal2")),
+        }
+
+        self.assertEqual(set(expected), set(future_release_checker.PLATFORM_WHEEL_MARKERS))
+        self.assertEqual(set(expected), set(future_release_checker.PLATFORM_MACHINE_FAMILIES))
+        for platform_name, (machine, architectures) in expected.items():
+            with self.subTest(platform=platform_name):
+                self.assertEqual(
+                    architectures,
+                    future_release_checker.runner_wheel_architectures(platform_name, machine),
+                )
+
     def test_future_release_checker_rejects_runner_label_architecture_mismatch(self):
         with mock.patch.object(future_release_checker.platform, "machine", return_value="x86_64"):
             with self.assertRaisesRegex(ValueError, "ubuntu-24.04-arm.*expected arm64"):
