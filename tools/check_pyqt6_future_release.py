@@ -20,6 +20,10 @@ PYQT6_PACKAGE_NAMES = (
     "PyQt6-WebEngine",
     "PyQt6-WebEngine-Qt6",
 )
+PYQT6_SIP_PACKAGE_NAME = "PyQt6-sip"
+PYQT6_WHEEL_PACKAGE_NAMES = (*PYQT6_PACKAGE_NAMES, PYQT6_SIP_PACKAGE_NAME)
+PYQT6_SIP_MINIMUM_VERSION = (13, 8, 0)
+PYQT6_SIP_MAXIMUM_VERSION = (14, 0, 0)
 PLATFORM_WHEEL_MARKERS = {
     "ubuntu-24.04": ("manylinux", "linux_", "any"),
     "ubuntu-24.04-arm": ("manylinux", "linux_", "any"),
@@ -54,6 +58,11 @@ def stable_version(value: object) -> tuple[int, int, int] | None:
 def stable_series(value: object) -> tuple[int, int] | None:
     parsed = stable_version(value)
     return parsed[:2] if parsed is not None else None
+
+
+def sip_version_compatible(value: object) -> bool:
+    parsed = stable_version(value)
+    return parsed is not None and PYQT6_SIP_MINIMUM_VERSION <= parsed < PYQT6_SIP_MAXIMUM_VERSION
 
 
 def parse_python_version(value: object) -> tuple[int, int] | None:
@@ -165,6 +174,12 @@ def package_has_installable_release(
 ) -> bool:
     if not isinstance(releases, dict):
         return False
+    if package_name == PYQT6_SIP_PACKAGE_NAME:
+        return any(
+            sip_version_compatible(version)
+            and has_installable_wheel(files, wheel_markers, wheel_architectures, python_version)
+            for version, files in releases.items()
+        )
     if package_name == "PyQt6":
         return has_installable_wheel(
             releases.get(target, []), wheel_markers, wheel_architectures, python_version
@@ -186,6 +201,8 @@ def package_has_published_release(
 
     if not isinstance(releases, dict):
         return False
+    if package_name == PYQT6_SIP_PACKAGE_NAME:
+        return any(sip_version_compatible(version) for version in releases)
     if package_name == "PyQt6":
         return target in releases
     return any(stable_series(version) == target_series for version in releases)
@@ -243,7 +260,7 @@ def check_family_details(
     wheel_architectures = runner_wheel_architectures(platform_name, architecture)
     package_status: dict[str, bool] = {}
     package_published: dict[str, bool] = {}
-    for package_name in PYQT6_PACKAGE_NAMES:
+    for package_name in PYQT6_WHEEL_PACKAGE_NAMES:
         payload = metadata_loader(package_name)
         releases = payload.get("releases") if isinstance(payload, dict) else None
         package_published[package_name] = package_has_published_release(
@@ -343,8 +360,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     available = all(package_status.values())
-    published = any(package_published.values())
-    complete = all(package_published.values())
+    published = any(package_published.get(package_name, False) for package_name in PYQT6_PACKAGE_NAMES)
+    complete = all(package_published.get(package_name, False) for package_name in PYQT6_PACKAGE_NAMES)
     if args.github_output:
         _write_github_output(
             args.github_output,

@@ -145,8 +145,10 @@ Pass `--fail-on-partial-publication` in automation to fail once any requested
 release metadata is published but the complete compatible wheel family is not
 available for the selected runner and Python version; a fully unpublished
 target remains a successful no-op for scheduled polling.
-The scheduled future-compatibility workflow runs this explicit-architecture
-wheel audit for every declared Ubuntu, Windows, and macOS runner label; the
+The scheduled future-compatibility workflow also validates the separately
+versioned `PyQt6-sip` native runtime dependency. It runs this
+explicit-architecture wheel audit for every declared Ubuntu, Windows, and macOS
+runner label; the
 runtime and frozen-package smokes still run on the tier-1 hosted runners.
 
 Service API contract check:

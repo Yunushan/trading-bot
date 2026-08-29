@@ -90,6 +90,7 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", future_workflow)
         self.assertIn("Fail manual dispatch when the requested family is unavailable", future_workflow)
         self.assertIn('target_series_start="${PYQT6_TARGET%.*}.0"', future_workflow)
+        self.assertIn('"PyQt6-sip>=13.8,<14"', future_workflow)
         self.assertIn('"PyQt6-WebEngine>=${target_series_start},<6.13.0"', future_workflow)
         self.assertIn('"PyQt6-Qt6>=${target_series_start},<6.13.0"', future_workflow)
         self.assertIn('"PyQt6-WebEngine-Qt6>=${target_series_start},<6.13.0"', future_workflow)
@@ -144,6 +145,12 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertEqual((3, 15), future_release_checker.parse_python_version(" 3.15 "))
         self.assertIsNone(future_release_checker.parse_python_version("3"))
         self.assertIsNone(future_release_checker.parse_python_version("3.14.1"))
+
+    def test_future_release_checker_accepts_only_reviewed_sip_versions(self):
+        self.assertTrue(future_release_checker.sip_version_compatible("13.8.0"))
+        self.assertTrue(future_release_checker.sip_version_compatible("13.12.0"))
+        self.assertFalse(future_release_checker.sip_version_compatible("13.7.1"))
+        self.assertFalse(future_release_checker.sip_version_compatible("14.0.0"))
 
     def test_package_validation_accepts_patch_skew_within_one_release_series(self):
         errors, package_series, future_target_available = checker._validate_package_versions(
@@ -409,6 +416,9 @@ class PyQt6CompatibilityTests(unittest.TestCase):
                 package_name: {"releases": {"6.12.0": [wheel]}}
                 for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
             }
+            payloads[future_release_checker.PYQT6_SIP_PACKAGE_NAME] = {
+                "releases": {"13.12.0": [wheel]}
+            }
             for minor in range(10, 16):
                 with self.subTest(platform=platform_name, python=f"3.{minor}"):
                     status, _published, target_series = future_release_checker.check_family_details(
@@ -439,6 +449,9 @@ class PyQt6CompatibilityTests(unittest.TestCase):
             package_name: {"releases": {"6.12.0": [wheel]}}
             for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
         }
+        payloads[future_release_checker.PYQT6_SIP_PACKAGE_NAME] = {
+            "releases": {"13.12.0": [wheel]}
+        }
 
         status, target_series = future_release_checker.check_family(
             "6.12.0",
@@ -465,6 +478,9 @@ class PyQt6CompatibilityTests(unittest.TestCase):
             package_name: {"releases": {"6.12.0": [wheel]}}
             for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
         }
+        payloads[future_release_checker.PYQT6_SIP_PACKAGE_NAME] = {
+            "releases": {"13.12.0": [wheel]}
+        }
 
         compatible, _target_series = future_release_checker.check_family(
             "6.12.0",
@@ -487,7 +503,7 @@ class PyQt6CompatibilityTests(unittest.TestCase):
     def test_future_release_checker_distinguishes_unpublished_and_incomplete_families(self):
         empty_payloads = {
             package_name: {"releases": {}}
-            for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+            for package_name in future_release_checker.PYQT6_WHEEL_PACKAGE_NAMES
         }
         status, published, _target_series = future_release_checker.check_family_details(
             "6.12.0",
@@ -514,6 +530,9 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         published_payloads = {
             package_name: {"releases": {"6.12.0": []}}
             for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+        }
+        published_payloads[future_release_checker.PYQT6_SIP_PACKAGE_NAME] = {
+            "releases": {"13.12.0": []}
         }
         status, published, _target_series = future_release_checker.check_family_details(
             "6.12.0",
