@@ -643,6 +643,24 @@ class PyQt6CompatibilityTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_runtime_probe_wires_sip_validation_into_the_report(self):
+        package_versions = {
+            "PyQt6": "6.11.0",
+            "PyQt6-Qt6": "6.11.2",
+            "PyQt6-WebEngine": "6.11.1",
+            "PyQt6-WebEngine-Qt6": "6.11.1",
+            checker.PYQT6_SIP_PACKAGE_NAME: "14.0.0",
+        }
+        report = checker.run_checks(
+            version_provider=lambda package_name: package_versions[package_name],
+            probe_runtime=False,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(
+            any("outside the reviewed PyQt6-sip range" in error for error in report["errors"])
+        )
         self.assertTrue(
             any(
                 "outside the reviewed PyQt6-sip range" in error
