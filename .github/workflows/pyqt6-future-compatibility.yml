@@ -16,8 +16,15 @@ permissions:
 
 jobs:
   pyqt6-future-compatibility:
-    name: PyQt6 ${{ inputs.pyqt_version || '6.12.0' }} compatibility
-    runs-on: ubuntu-24.04
+    name: PyQt6 ${{ inputs.pyqt_version || '6.12.0' }} compatibility (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
       QT_QPA_PLATFORM: offscreen
@@ -100,7 +107,7 @@ jobs:
           exit 1
 
       - name: Install Linux Qt runtime dependencies
-        if: steps.pyqt6_release.outputs.available == 'true'
+        if: matrix.os == 'ubuntu-24.04' && steps.pyqt6_release.outputs.available == 'true'
         shell: bash
         run: |
           set -euo pipefail

@@ -319,7 +319,8 @@ The in-app Python dependency updater keeps `PyQt6`, `PyQt6-Qt6`, and
 `PyQt6-WebEngine` on one release line and refuses stale, mixed, or unreviewed
 latest-version metadata. The scheduled
 `.github/workflows/pyqt6-future-compatibility.yml` workflow probes PyPI weekly
-and runs the full 6.12 runtime smoke test as soon as the target is published.
+and runs the full 6.12 runtime smoke test on Ubuntu, Windows, and macOS as soon
+as the target is published.
 The canonical window smoke can also be run locally with
 `python apps/desktop-pyqt/main.py --smoke-window`.
 
