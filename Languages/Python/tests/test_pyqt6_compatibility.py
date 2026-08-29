@@ -544,6 +544,29 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertFalse(any(status.values()))
         self.assertTrue(all(published.values()))
 
+        wheel = {
+            "filename": "PyQt6-6.12.0-cp314-abi3-manylinux_2_39_x86_64.whl",
+            "packagetype": "bdist_wheel",
+        }
+        core_only_payloads = {
+            package_name: {"releases": {"6.12.0": [wheel]}}
+            for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+        }
+        core_only_payloads[future_release_checker.PYQT6_SIP_PACKAGE_NAME] = {
+            "releases": {}
+        }
+        status, published, _target_series = future_release_checker.check_family_details(
+            "6.12.0",
+            "ubuntu-24.04",
+            metadata_loader=lambda package_name: core_only_payloads[package_name],
+            architecture="x86_64",
+            python_version=(3, 14),
+        )
+        self.assertTrue(all(published[name] for name in future_release_checker.PYQT6_PACKAGE_NAMES))
+        self.assertFalse(published[future_release_checker.PYQT6_SIP_PACKAGE_NAME])
+        self.assertFalse(status[future_release_checker.PYQT6_SIP_PACKAGE_NAME])
+        self.assertFalse(all(status.values()))
+
     def test_future_release_checker_cli_can_fail_on_an_incomplete_published_family(self):
         package_status = {
             package_name: package_name == "PyQt6"

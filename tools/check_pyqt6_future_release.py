@@ -22,6 +22,9 @@ PYQT6_PACKAGE_NAMES = (
 )
 PYQT6_SIP_PACKAGE_NAME = "PyQt6-sip"
 PYQT6_WHEEL_PACKAGE_NAMES = (*PYQT6_PACKAGE_NAMES, PYQT6_SIP_PACKAGE_NAME)
+# PyQt6 and PyQt6-WebEngine currently require PyQt6-sip >=13.8,<14. The SIP
+# binding has its own release numbering, so it is validated separately from
+# the Qt 6.12 family series.
 PYQT6_SIP_MINIMUM_VERSION = (13, 8, 0)
 PYQT6_SIP_MAXIMUM_VERSION = (14, 0, 0)
 PLATFORM_WHEEL_MARKERS = {
