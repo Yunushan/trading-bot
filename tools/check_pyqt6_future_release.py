@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import re
 import ssl
 import sys
@@ -20,9 +21,9 @@ PYQT6_PACKAGE_NAMES = (
     "PyQt6-WebEngine-Qt6",
 )
 PLATFORM_WHEEL_MARKERS = {
-    "ubuntu-24.04": ("manylinux_", "linux_"),
+    "ubuntu-24.04": ("manylinux", "linux_", "any"),
     "windows-2025": ("win_amd64",),
-    "macos-15": ("macosx_",),
+    "macos-15": ("macosx_", "any"),
 }
 _STABLE_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
@@ -39,7 +40,58 @@ def stable_series(value: object) -> tuple[int, int] | None:
     return parsed[:2] if parsed is not None else None
 
 
-def has_installable_wheel(files: object, wheel_markers: tuple[str, ...]) -> bool:
+def runner_wheel_architectures(platform_name: str) -> tuple[str, ...]:
+    """Return normalized architectures accepted by the current runner."""
+
+    machine = platform.machine().lower()
+    if machine in {"amd64", "x86_64", "x64"}:
+        return ("x86_64", "amd64", "universal2")
+    if machine in {"arm64", "aarch64", "arm64e"}:
+        return ("arm64", "aarch64", "universal2")
+    raise ValueError(f"Unsupported architecture {machine!r} for {platform_name!r}")
+
+
+def _wheel_python_compatible(
+    python_tag: str,
+    abi_tag: str,
+    python_version: tuple[int, int] | None = None,
+) -> bool:
+    major, minor = python_version or sys.version_info[:2]
+    current_code = major * 100 + minor
+    for tag in python_tag.split("."):
+        if tag in {f"py{major}", f"py{major}{minor}"}:
+            return True
+        match = re.fullmatch(r"cp(\d+)", tag)
+        if match is None:
+            continue
+        tag_code = int(match.group(1))
+        if tag_code == current_code and abi_tag in {f"cp{current_code}", "abi3"}:
+            return True
+        if tag_code <= current_code and abi_tag == "abi3":
+            return True
+    return False
+
+
+def _wheel_platform_compatible(
+    platform_tag: str,
+    wheel_markers: tuple[str, ...],
+    wheel_architectures: tuple[str, ...] | None,
+) -> bool:
+    if platform_tag == "any":
+        return "any" in wheel_markers
+    if not any(platform_tag.startswith(marker) for marker in wheel_markers):
+        return False
+    if wheel_architectures is None:
+        return True
+    return any(platform_tag.endswith(f"_{architecture}") for architecture in wheel_architectures)
+
+
+def has_installable_wheel(
+    files: object,
+    wheel_markers: tuple[str, ...],
+    wheel_architectures: tuple[str, ...] | None = None,
+    python_version: tuple[int, int] | None = None,
+) -> bool:
     """Return whether PyPI metadata has a non-yanked wheel for this runner."""
 
     if not isinstance(files, list):
@@ -52,11 +104,15 @@ def has_installable_wheel(files: object, wheel_markers: tuple[str, ...]) -> bool
             continue
         if not filename.endswith(".whl") or file_info.get("yanked", False):
             continue
-        platform_part = filename[:-4].rsplit("-", 1)[-1]
+        wheel_parts = filename[:-4].split("-")
+        if len(wheel_parts) < 5:
+            continue
+        python_tag, abi_tag, platform_part = wheel_parts[-3:]
+        if not _wheel_python_compatible(python_tag, abi_tag, python_version):
+            continue
         if any(
-            platform_tag.startswith(marker)
+            _wheel_platform_compatible(platform_tag, wheel_markers, wheel_architectures)
             for platform_tag in platform_part.split(".")
-            for marker in wheel_markers
         ):
             return True
     return False
@@ -68,14 +124,15 @@ def package_has_installable_release(
     target: str,
     target_series: tuple[int, int],
     wheel_markers: tuple[str, ...],
+    wheel_architectures: tuple[str, ...] | None = None,
 ) -> bool:
     if not isinstance(releases, dict):
         return False
     if package_name == "PyQt6":
-        return has_installable_wheel(releases.get(target, []), wheel_markers)
+        return has_installable_wheel(releases.get(target, []), wheel_markers, wheel_architectures)
     return any(
         stable_series(version) == target_series
-        and has_installable_wheel(files, wheel_markers)
+        and has_installable_wheel(files, wheel_markers, wheel_architectures)
         for version, files in releases.items()
     )
 
@@ -124,6 +181,7 @@ def check_family(
         raise ValueError(f"Unsupported PyQt6 compatibility runner {platform_name!r}")
 
     target_series = target_release[:2]
+    wheel_architectures = runner_wheel_architectures(platform_name)
     package_status: dict[str, bool] = {}
     for package_name in PYQT6_PACKAGE_NAMES:
         payload = metadata_loader(package_name)
@@ -133,6 +191,7 @@ def check_family(
             target,
             target_series,
             wheel_markers,
+            wheel_architectures,
         )
     return package_status, target_series
 

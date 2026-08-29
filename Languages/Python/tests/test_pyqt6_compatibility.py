@@ -244,6 +244,35 @@ class PyQt6CompatibilityTests(unittest.TestCase):
             )
         )
 
+    def test_future_release_checker_rejects_incompatible_architecture_and_python_tags(self):
+        ubuntu_markers = future_release_checker.PLATFORM_WHEEL_MARKERS["ubuntu-24.04"]
+        x64 = ("x86_64", "amd64", "universal2")
+
+        self.assertFalse(
+            future_release_checker.has_installable_wheel(
+                [{"filename": "PyQt6-6.12.0-cp314-abi3-manylinux_2_39_aarch64.whl", "packagetype": "bdist_wheel"}],
+                ubuntu_markers,
+                x64,
+                (3, 14),
+            )
+        )
+        self.assertFalse(
+            future_release_checker.has_installable_wheel(
+                [{"filename": "PyQt6-6.12.0-cp312-cp312-manylinux_2_39_x86_64.whl", "packagetype": "bdist_wheel"}],
+                ubuntu_markers,
+                x64,
+                (3, 14),
+            )
+        )
+        self.assertTrue(
+            future_release_checker.has_installable_wheel(
+                [{"filename": "PyQt6-Qt6-6.12.0-py3-none-any.whl", "packagetype": "bdist_wheel"}],
+                ubuntu_markers,
+                x64,
+                (3, 14),
+            )
+        )
+
     def test_future_release_checker_requires_a_complete_family_for_the_runner(self):
         wheel = {
             "filename": "PyQt6-6.12.0-cp314-abi3-manylinux_2_39_x86_64.whl",
