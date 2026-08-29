@@ -172,6 +172,16 @@
       "expires": "2026-10-10",
       "scope": "linux-tauri-webkitgtk-transitive",
       "reason": "Owned code does not call the affected VariantStrIter APIs; Tauri's GTK3 path pins glib 0.18, so remove this on the glib 0.20-or-newer migration."
+    },
+    {
+      "kind": "yanked",
+      "id": "YANKED",
+      "package": "chacha20",
+      "version": "0.10.1",
+      "reviewed": "2026-08-29",
+      "expires": "2026-10-10",
+      "scope": "tungstenite-rand-transitive",
+      "reason": "tungstenite 0.30.0 resolves rand 0.10.2, which currently pins the yanked chacha20 0.10.1; remove when upstream publishes a non-yanked dependency graph."
     }
   ]
 }
