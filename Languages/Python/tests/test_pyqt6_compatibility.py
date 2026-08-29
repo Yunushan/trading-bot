@@ -136,6 +136,12 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIsNone(checker.parse_release_version("6"))
         self.assertIsNone(checker.parse_release_version("not-a-version"))
 
+    def test_future_release_checker_parses_explicit_python_versions(self):
+        self.assertEqual((3, 10), future_release_checker.parse_python_version("3.10"))
+        self.assertEqual((3, 15), future_release_checker.parse_python_version(" 3.15 "))
+        self.assertIsNone(future_release_checker.parse_python_version("3"))
+        self.assertIsNone(future_release_checker.parse_python_version("3.14.1"))
+
     def test_package_validation_accepts_patch_skew_within_one_release_series(self):
         errors, package_series, future_target_available = checker._validate_package_versions(
             {
@@ -413,6 +419,34 @@ class PyQt6CompatibilityTests(unittest.TestCase):
             metadata_loader=lambda package_name: payloads[package_name],
         )
         self.assertFalse(status["PyQt6-WebEngine-Qt6"])
+
+    def test_future_release_checker_can_audit_wheels_for_a_non_host_python(self):
+        wheel = {
+            "filename": "PyQt6-6.12.0-cp310-cp310-manylinux_2_39_x86_64.whl",
+            "packagetype": "bdist_wheel",
+        }
+        payloads = {
+            package_name: {"releases": {"6.12.0": [wheel]}}
+            for package_name in future_release_checker.PYQT6_PACKAGE_NAMES
+        }
+
+        compatible, _target_series = future_release_checker.check_family(
+            "6.12.0",
+            "ubuntu-24.04",
+            metadata_loader=lambda package_name: payloads[package_name],
+            architecture="x86_64",
+            python_version=(3, 10),
+        )
+        incompatible, _target_series = future_release_checker.check_family(
+            "6.12.0",
+            "ubuntu-24.04",
+            metadata_loader=lambda package_name: payloads[package_name],
+            architecture="x86_64",
+            python_version=(3, 14),
+        )
+
+        self.assertTrue(all(compatible.values()))
+        self.assertFalse(any(incompatible.values()))
 
     def test_future_release_checker_keeps_https_certificate_verification_enabled(self):
         context = future_release_checker._pypi_ssl_context()

@@ -41,6 +41,7 @@ PLATFORM_MACHINE_FAMILIES = {
     "macos-26": "arm64",
 }
 _STABLE_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_PYTHON_VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
 
 
 def stable_version(value: object) -> tuple[int, int, int] | None:
@@ -53,6 +54,13 @@ def stable_version(value: object) -> tuple[int, int, int] | None:
 def stable_series(value: object) -> tuple[int, int] | None:
     parsed = stable_version(value)
     return parsed[:2] if parsed is not None else None
+
+
+def parse_python_version(value: object) -> tuple[int, int] | None:
+    match = _PYTHON_VERSION_RE.fullmatch(str(value or "").strip())
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def runner_wheel_architectures(platform_name: str, machine_name: str | None = None) -> tuple[str, ...]:
@@ -153,14 +161,17 @@ def package_has_installable_release(
     target_series: tuple[int, int],
     wheel_markers: tuple[str, ...],
     wheel_architectures: tuple[str, ...] | None = None,
+    python_version: tuple[int, int] | None = None,
 ) -> bool:
     if not isinstance(releases, dict):
         return False
     if package_name == "PyQt6":
-        return has_installable_wheel(releases.get(target, []), wheel_markers, wheel_architectures)
+        return has_installable_wheel(
+            releases.get(target, []), wheel_markers, wheel_architectures, python_version
+        )
     return any(
         stable_series(version) == target_series
-        and has_installable_wheel(files, wheel_markers, wheel_architectures)
+        and has_installable_wheel(files, wheel_markers, wheel_architectures, python_version)
         for version, files in releases.items()
     )
 
@@ -202,6 +213,7 @@ def check_family(
     metadata_loader: Callable[[str], dict[str, Any]] = _fetch_package_json,
     *,
     architecture: str | None = None,
+    python_version: tuple[int, int] | None = None,
 ) -> tuple[dict[str, bool], tuple[int, int]]:
     target_release = stable_version(target)
     if target_release is None:
@@ -222,6 +234,7 @@ def check_family(
             target_series,
             wheel_markers,
             wheel_architectures,
+            python_version,
         )
     return package_status, target_series
 
@@ -239,13 +252,29 @@ def main(argv: list[str] | None = None) -> int:
         "--architecture",
         help="target runner architecture (defaults to the current host; e.g. x86_64 or arm64)",
     )
+    parser.add_argument(
+        "--python-version",
+        help="Python version used for wheel-tag compatibility (defaults to the current interpreter; e.g. 3.14)",
+    )
     parser.add_argument("--github-output", help="GITHUB_OUTPUT path to receive available=true|false")
     args = parser.parse_args(argv)
 
     target = args.target.strip()
     platform_name = args.platform.strip()
     try:
-        package_status, target_series = check_family(target, platform_name, architecture=args.architecture)
+        python_version = None
+        if args.python_version:
+            python_version = parse_python_version(args.python_version)
+            if python_version is None:
+                raise ValueError(
+                    f"Invalid Python version {args.python_version!r}; use MAJOR.MINOR"
+                )
+        package_status, target_series = check_family(
+            target,
+            platform_name,
+            architecture=args.architecture,
+            python_version=python_version,
+        )
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1

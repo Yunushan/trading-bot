@@ -138,6 +138,9 @@ python ../../tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version 6.
 The future-release checker uses the host architecture by default. When auditing
 PyPI metadata for a different runner from another host, pass its architecture
 explicitly, for example `--platform macos-15 --architecture arm64`.
+Use `--python-version MAJOR.MINOR` to evaluate wheel tags for a Python version
+that is not the interpreter running the checker, for example
+`--platform ubuntu-24.04-arm --architecture aarch64 --python-version 3.10`.
 The scheduled future-compatibility workflow runs this explicit-architecture
 wheel audit for every declared Ubuntu, Windows, and macOS runner label; the
 runtime and frozen-package smokes still run on the tier-1 hosted runners.
