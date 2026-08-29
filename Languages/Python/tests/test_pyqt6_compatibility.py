@@ -731,6 +731,7 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr or result.stdout)
         self.assertTrue(report["ok"], report)
         self.assertTrue(all(report["api_checks"].values()))
+        self.assertTrue(report["api_checks"]["PyQt6.sip"])
         self.assertIn("PyQt6", report["runtime_versions"])
         self.assertIn(checker.PYQT6_SIP_PACKAGE_NAME, report["package_versions"])
 

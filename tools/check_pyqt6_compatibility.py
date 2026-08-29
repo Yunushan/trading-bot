@@ -205,6 +205,7 @@ def _probe_runtime() -> tuple[dict[str, str | None], dict[str, bool], list[str]]
     api_checks = {
         "PyQt6.QtCore": False,
         "PyQt6.QtGui": False,
+        "PyQt6.sip": False,
         "PyQt6.QtWidgets": False,
         "PyQt6.QtWebEngineCore.QWebEnginePage": False,
         "PyQt6.QtWebEngineWidgets.QWebEngineView": False,
@@ -224,6 +225,13 @@ def _probe_runtime() -> tuple[dict[str, str | None], dict[str, bool], list[str]]
         )
     except Exception as exc:
         errors.append(f"PyQt6 core runtime import failed: {exc}")
+
+    try:
+        import PyQt6.sip as pyqt6_sip
+
+        api_checks["PyQt6.sip"] = pyqt6_sip is not None
+    except Exception as exc:
+        errors.append(f"PyQt6 SIP runtime import failed: {exc}")
 
     try:
         from PyQt6.QtWebEngineCore import QWebEnginePage
