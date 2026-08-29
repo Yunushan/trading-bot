@@ -29,8 +29,16 @@ from check_operational_readiness import (  # noqa: E402
 
 EXPLICIT_GENERATED_ARTIFACT_GLOBS = (
     "artifacts/native-source-sync/*.json",
+    # `gh run download` stores Rust runtime bundles below this generated root;
+    # the importer expects canonical evidence files directly in the parent.
+    "artifacts/rust-native-runtime-evidence/downloads",
     "artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md",
     "artifacts/rust-native-runtime-evidence-plan.md",
+    # `gh run download --pattern release-platform-evidence-*` nests each
+    # artifact below this generated root.  The canonical evidence importer
+    # expects flattened JSON files, so the downloader directories are always
+    # disposable generated workspace state.
+    "release-platform-evidence/release-platform-evidence-*",
 )
 STALE_RUNTIME_EVIDENCE_GLOBS = (
     "artifacts/rust-native-runtime-evidence/*.json",

@@ -67,6 +67,7 @@ _DEPENDENCY_MODULE_ALIASES = {
     "pyqt6": ("PyQt6",),
     "pyqt6-qt6": ("PyQt6",),
     "pyqt6-webengine": ("PyQt6.QtWebEngineWidgets", "PyQt6.QtWebEngineCore"),
+    "pyqt6-webengine-qt6": ("PyQt6.QtWebEngineWidgets", "PyQt6.QtWebEngineCore"),
     "numpy": ("numpy",),
     "pandas": ("pandas",),
     "requests": ("requests",),

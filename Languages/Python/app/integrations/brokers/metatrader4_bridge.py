@@ -51,6 +51,14 @@ MT4_BRIDGE_ALLOWED_OPERATIONS = frozenset(
 
 _TERMINAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _MAX_BODY_BYTES = 1_048_576
+MT4_BRIDGE_MAX_TOKEN_UTF8_BYTES = 512
+MT4_BRIDGE_MAX_REQUEST_TIMEOUT_SECONDS = 300.0
+MT4_BRIDGE_MAX_OPERATION_TIMEOUT_SECONDS = 1_800.0
+MT4_BRIDGE_MAX_POLL_INTERVAL_SECONDS = 60.0
+MT4_BRIDGE_MAX_COMMAND_PAYLOAD_FIELDS = 128
+MT4_BRIDGE_MAX_FORM_FIELDS = 16
+MT4_BRIDGE_MAX_ERROR_MESSAGE_UTF8_BYTES = 4_096
+MT4_BRIDGE_MAX_COMMANDS = 10_000
 
 
 def _provider_key(value: object) -> str:
@@ -85,7 +93,14 @@ def _is_loopback_host(hostname: str | None) -> bool:
 
 
 def _clean_bridge_url(value: object, *, allow_insecure_remote: bool) -> str:
-    text = str(value or MT4_BRIDGE_DEFAULT_URL).strip().rstrip("/")
+    text = _clean_protocol_text(
+        value or MT4_BRIDGE_DEFAULT_URL,
+        field_name="bridge_url",
+        max_utf8_bytes=2_048,
+        required=True,
+    ).rstrip("/")
+    if "\\" in text:
+        raise ValueError("bridge_url must not contain backslashes")
     parsed = urlsplit(text)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("bridge_url must be an absolute HTTP(S) URL")
@@ -107,6 +122,13 @@ def _positive_float(value: object, *, field_name: str) -> float:
         raise ValueError(f"{field_name} must be a positive number") from exc
     if not math.isfinite(parsed) or parsed <= 0:
         raise ValueError(f"{field_name} must be a positive number")
+    return parsed
+
+
+def _bounded_positive_float(value: object, *, field_name: str, maximum: float) -> float:
+    parsed = _positive_float(value, field_name=field_name)
+    if parsed > maximum:
+        raise ValueError(f"{field_name} must be at most {maximum:g}")
     return parsed
 
 
@@ -152,9 +174,25 @@ def _clean_protocol_text(
     return text
 
 
+def _clean_bridge_token(value: object, *, required: bool = False) -> str:
+    token = _clean_protocol_text(
+        value,
+        field_name="bridge token",
+        max_utf8_bytes=MT4_BRIDGE_MAX_TOKEN_UTF8_BYTES,
+        required=required,
+    )
+    if token and len(token) < 16:
+        raise ValueError("bridge token must contain at least 16 characters")
+    return token
+
+
 def _primitive_payload(payload: object) -> dict[str, str | int | float | bool | None]:
     if not isinstance(payload, dict):
         raise ValueError("command payload must be a JSON object")
+    if len(payload) > MT4_BRIDGE_MAX_COMMAND_PAYLOAD_FIELDS:
+        raise ValueError(
+            f"command payload must contain at most {MT4_BRIDGE_MAX_COMMAND_PAYLOAD_FIELDS} fields"
+        )
     clean: dict[str, str | int | float | bool | None] = {}
     for raw_key, value in payload.items():
         key = str(raw_key or "").strip()
@@ -235,6 +273,8 @@ class MetaTrader4BridgeState:
         self.max_commands = _nonnegative_int(max_commands, field_name="max_commands")
         if self.max_commands == 0:
             raise ValueError("max_commands must be a positive integer")
+        if self.max_commands > MT4_BRIDGE_MAX_COMMANDS:
+            raise ValueError(f"max_commands must be at most {MT4_BRIDGE_MAX_COMMANDS}")
         self._commands: dict[str, _BridgeCommand] = {}
         self._lock = threading.RLock()
 
@@ -315,7 +355,11 @@ class MetaTrader4BridgeState:
         if clean_status not in {"completed", "failed"}:
             raise ValueError("result status must be 'completed' or 'failed'")
         clean_error_code = _nonnegative_int(error_code, field_name="error_code")
-        clean_error_message = str(error_message or "").strip()
+        clean_error_message = _clean_protocol_text(
+            error_message,
+            field_name="error_message",
+            max_utf8_bytes=MT4_BRIDGE_MAX_ERROR_MESSAGE_UTF8_BYTES,
+        )
         with self._lock:
             command = self._commands.get(clean_command_id)
             if command is None:
@@ -424,7 +468,12 @@ def _bridge_handler(
                 if not isinstance(payload, dict):
                     raise ValueError("agent result must be a JSON object")
                 return payload
-            values = parse_qs(body.decode("utf-8"), keep_blank_values=True, strict_parsing=True)
+            values = parse_qs(
+                body.decode("utf-8"),
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=MT4_BRIDGE_MAX_FORM_FIELDS,
+            )
             payload_json = values.get("payload_json", ["null"])[0]
             try:
                 result = json.loads(payload_json)
@@ -542,20 +591,36 @@ class MetaTrader4BridgeServer:
         advertised_host: str = "",
         state: MetaTrader4BridgeState | None = None,
     ) -> None:
-        self.token = str(token or "").strip()
-        if len(self.token) < 16:
-            raise ValueError("bridge token must contain at least 16 characters")
-        self.host = str(host or "127.0.0.1").strip() or "127.0.0.1"
+        self.token = _clean_bridge_token(token, required=True)
+        self.host = _clean_protocol_text(
+            host or "127.0.0.1",
+            field_name="host",
+            max_utf8_bytes=255,
+            required=True,
+        )
         self.port = _nonnegative_int(port, field_name="port")
         if self.port > 65_535:
             raise ValueError("port must be at most 65535")
-        self.certfile = str(certfile or "").strip()
-        self.keyfile = str(keyfile or "").strip()
+        self.certfile = _clean_protocol_text(
+            certfile,
+            field_name="certfile",
+            max_utf8_bytes=4_096,
+        )
+        self.keyfile = _clean_protocol_text(
+            keyfile,
+            field_name="keyfile",
+            max_utf8_bytes=4_096,
+        )
         if bool(self.certfile) != bool(self.keyfile):
             raise ValueError("certfile and keyfile must be provided together")
         if not _is_loopback_host(self.host) and not self.certfile:
             raise ValueError("non-loopback MT4 bridge hosts require certfile and keyfile")
-        self.advertised_host = str(advertised_host or self.host).strip() or self.host
+        self.advertised_host = _clean_protocol_text(
+            advertised_host or self.host,
+            field_name="advertised_host",
+            max_utf8_bytes=255,
+            required=True,
+        )
         self.state = state or MetaTrader4BridgeState()
         self._server: _BridgeHttpServer | None = None
         self._thread: threading.Thread | None = None
@@ -634,14 +699,26 @@ class MetaTrader4BridgeConnector:
     ) -> None:
         self.provider = _canonical_provider(provider)
         self.terminal_id = _clean_terminal_id(terminal_id)
-        self.token = str(token or "").strip()
+        self.token = _clean_bridge_token(token)
         self.bridge_url = _clean_bridge_url(
             bridge_url,
             allow_insecure_remote=bool(allow_insecure_remote),
         )
-        self.request_timeout = _positive_float(request_timeout, field_name="request_timeout")
-        self.operation_timeout = _positive_float(operation_timeout, field_name="operation_timeout")
-        self.poll_interval = _positive_float(poll_interval, field_name="poll_interval")
+        self.request_timeout = _bounded_positive_float(
+            request_timeout,
+            field_name="request_timeout",
+            maximum=MT4_BRIDGE_MAX_REQUEST_TIMEOUT_SECONDS,
+        )
+        self.operation_timeout = _bounded_positive_float(
+            operation_timeout,
+            field_name="operation_timeout",
+            maximum=MT4_BRIDGE_MAX_OPERATION_TIMEOUT_SECONDS,
+        )
+        self.poll_interval = _bounded_positive_float(
+            poll_interval,
+            field_name="poll_interval",
+            maximum=MT4_BRIDGE_MAX_POLL_INTERVAL_SECONDS,
+        )
         self.verify_tls = verify_tls
         self.session = session or requests.Session()
 
@@ -978,6 +1055,14 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "MT4_BRIDGE_ALLOWED_OPERATIONS",
     "MT4_BRIDGE_DEFAULT_URL",
+    "MT4_BRIDGE_MAX_COMMAND_PAYLOAD_FIELDS",
+    "MT4_BRIDGE_MAX_COMMANDS",
+    "MT4_BRIDGE_MAX_ERROR_MESSAGE_UTF8_BYTES",
+    "MT4_BRIDGE_MAX_FORM_FIELDS",
+    "MT4_BRIDGE_MAX_OPERATION_TIMEOUT_SECONDS",
+    "MT4_BRIDGE_MAX_POLL_INTERVAL_SECONDS",
+    "MT4_BRIDGE_MAX_REQUEST_TIMEOUT_SECONDS",
+    "MT4_BRIDGE_MAX_TOKEN_UTF8_BYTES",
     "MT4_BRIDGE_METAQUOTES_SOURCES",
     "MT4_BRIDGE_PROTOCOL_VERSION",
     "MT4_BRIDGE_PROVIDERS",

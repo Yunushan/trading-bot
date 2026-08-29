@@ -13,6 +13,7 @@ import sys
 
 from PyQt6 import QtCore, QtWidgets
 
+from . import pyqt6_contract_runtime
 from .code_language_catalog import BASE_PROJECT_PATH, CPP_CODE_LANGUAGE_KEY, RUST_CODE_LANGUAGE_KEY, RUST_PROJECT_PATH
 
 
@@ -24,6 +25,7 @@ _WINDOWS_RESTART_REQUIRED_PACKAGE_IMPORTS = {
     "pyqt6": ("PyQt6",),
     "pyqt6-qt6": ("PyQt6",),
     "pyqt6-webengine": ("PyQt6",),
+    "pyqt6-webengine-qt6": ("PyQt6",),
 }
 _WINDOWS_ACCESS_DENIED_INSTALL_MARKERS = (
     "access is denied",
@@ -351,6 +353,103 @@ def _version_text_is_installable(version_text: str | None) -> bool:
     return bool(re.match(r"^\d+(?:[A-Za-z0-9.+_!-]*\d)?$", value))
 
 
+def _pyqt6_target_key(target: dict[str, str] | None) -> str | None:
+    if not isinstance(target, dict):
+        return None
+    for field in ("pypi", "package", "label"):
+        key = pyqt6_contract_runtime.package_key(target.get(field))
+        if key:
+            return key
+    return None
+
+
+def _pyqt6_update_block_reason(
+    targets: list[dict[str, str]],
+    *,
+    all_targets: list[dict[str, str]] | None,
+    selected_only: bool,
+) -> str:
+    selected_by_key = {
+        key: target
+        for target in targets
+        if (key := _pyqt6_target_key(target))
+    }
+    if not selected_by_key:
+        return ""
+
+    required_keys = set(pyqt6_contract_runtime.PYQT6_PACKAGE_KEYS)
+    source_targets = all_targets if isinstance(all_targets, list) else targets
+    source_keys = {
+        key
+        for target in source_targets
+        if (key := _pyqt6_target_key(target))
+    }
+    if not required_keys.issubset(source_keys):
+        return (
+            "The PyQt6 dependency family is incomplete in the configured target list. "
+            "PyQt6, PyQt6-Qt6, PyQt6-WebEngine, and PyQt6-WebEngine-Qt6 must all be available before "
+            "updating the GUI stack."
+        )
+    if selected_only and set(selected_by_key) != required_keys:
+        return (
+            "PyQt6, PyQt6-Qt6, PyQt6-WebEngine, and PyQt6-WebEngine-Qt6 must be updated together so the "
+            "GUI cannot start with a mixed release line. Select all four PyQt6 entries and refresh their "
+            "latest versions first."
+        )
+
+    family_by_key = selected_by_key if selected_only else {
+        key: target
+        for target in targets
+        if (key := _pyqt6_target_key(target))
+    }
+    missing = sorted(required_keys - set(family_by_key))
+    if missing:
+        return "The PyQt6 dependency family is incomplete for this update. Refresh the dependency list first."
+
+    parsed_versions: dict[str, tuple[int, int, int]] = {}
+    unavailable: list[str] = []
+    for key in pyqt6_contract_runtime.PYQT6_PACKAGE_KEYS:
+        target = family_by_key[key]
+        latest = str(target.get("_latest_version") or target.get("latest") or "").strip()
+        parsed = pyqt6_contract_runtime.parse_release_version(latest)
+        if not _version_text_is_installable(latest) or parsed is None:
+            unavailable.append(key)
+            continue
+        parsed_versions[key] = parsed
+    if unavailable:
+        return (
+            "The latest PyQt6 family versions could not be resolved for "
+            + ", ".join(unavailable)
+            + ". Refresh versions before updating so pip never falls back to an unpinned GUI install."
+        )
+
+    series = {version[:2] for version in parsed_versions.values()}
+    if len(series) != 1:
+        formatted = ", ".join(
+            f"{key}={version[0]}.{version[1]}" for key, version in parsed_versions.items()
+        )
+        return f"PyQt6 family latest versions are on mixed release lines ({formatted}); update was not started."
+
+    bounds = pyqt6_contract_runtime.reviewed_version_bounds()
+    if bounds is None:
+        return "The reviewed PyQt6 compatibility contract could not be loaded; update was not started."
+    minimum, maximum = bounds
+    outside = [
+        key
+        for key, version in parsed_versions.items()
+        if not minimum <= version < maximum
+    ]
+    if outside:
+        return (
+            "The latest PyQt6 family release is outside the reviewed project range "
+            f"({minimum[0]}.{minimum[1]}.{minimum[2]} <= version < "
+            f"{maximum[0]}.{maximum[1]}.{maximum[2]}): "
+            + ", ".join(outside)
+            + "."
+        )
+    return ""
+
+
 def _canonical_python_package_name(package_name: str) -> str:
     return re.sub(r"[-_.]+", "-", str(package_name or "").strip().lower())
 
@@ -430,6 +529,30 @@ def _python_install_spec_for_target(package_name: str, target: dict[str, str]) -
     if _version_text_is_installable(latest_version):
         return f"{clean_package_name}=={latest_version}"
     return clean_package_name
+
+
+def _pyqt6_family_target_items(
+    package_targets: list[tuple[str, str, dict[str, str]]],
+) -> list[tuple[str, str, dict[str, str]]]:
+    by_key: dict[str, tuple[str, str, dict[str, str]]] = {}
+    for item in package_targets:
+        key = _pyqt6_target_key(item[2])
+        if key and key not in by_key:
+            by_key[key] = item
+    if set(by_key) != set(pyqt6_contract_runtime.PYQT6_PACKAGE_KEYS):
+        return []
+    return [by_key[key] for key in pyqt6_contract_runtime.PYQT6_PACKAGE_KEYS]
+
+
+def _pyqt6_family_requires_update(
+    family_targets: list[tuple[str, str, dict[str, str]]],
+) -> bool:
+    for _label, _package_name, target in family_targets:
+        latest_version = str(target.get("_latest_version") or target.get("latest") or "").strip()
+        installed_version = str(target.get("_installed_version") or "").strip()
+        if not _version_text_is_installable(latest_version) or installed_version != latest_version:
+            return True
+    return False
 
 
 def _run_python_package_install(
@@ -848,6 +971,20 @@ def _run_dependency_update_worker(
             "refresh_versions": True,
         }
 
+    pyqt6_block_reason = _pyqt6_update_block_reason(
+        targets,
+        all_targets=all_targets if isinstance(all_targets, list) else None,
+        selected_only=selected_only,
+    )
+    if pyqt6_block_reason:
+        return {
+            "ok": False,
+            "title": "PyQt6 dependency update blocked",
+            "message": pyqt6_block_reason,
+            "refresh_versions": True,
+            "log_message": "PyQt6 dependency update blocked: " + pyqt6_block_reason,
+        }
+
     command_prefix = _resolve_python_command_prefix(self)
     if not command_prefix:
         return {
@@ -867,6 +1004,33 @@ def _run_dependency_update_worker(
     detail_lines: list[str] = []
     timeout_seconds = _dependency_update_timeout_seconds()
 
+    pyqt6_family_targets = _pyqt6_family_target_items(package_targets)
+    pyqt6_family_needs_update = _pyqt6_family_requires_update(pyqt6_family_targets)
+    if pyqt6_family_needs_update:
+        restart_required_family: list[tuple[str, str]] = []
+        for _label, package_name, _target in pyqt6_family_targets:
+            restart_reason = _windows_loaded_package_update_block_reason(package_name)
+            if restart_reason:
+                restart_required_family.append((package_name, restart_reason))
+        if restart_required_family:
+            details = "\n\n".join(
+                f"{package_name}:\n{reason}" for package_name, reason in restart_required_family
+            )
+            return {
+                "ok": False,
+                "title": "PyQt6 dependency update needs restart",
+                "message": (
+                    "The PyQt6 family is already loaded by this Windows session. Close all Trading Bot "
+                    "windows and background services, reopen the app, then update PyQt6, PyQt6-Qt6, "
+                    "PyQt6-WebEngine, and PyQt6-WebEngine-Qt6 together.\n\n"
+                    + details
+                ),
+                "refresh_versions": True,
+                "log_message": "PyQt6 dependency update needs app restart",
+            }
+
+    pyqt6_family_processed = False
+
     _emit_dependency_update_progress(
         self,
         {
@@ -882,6 +1046,123 @@ def _run_dependency_update_worker(
     )
 
     for label, package_name, target in package_targets:
+        package_key = _pyqt6_target_key(target)
+        if pyqt6_family_needs_update and package_key:
+            if pyqt6_family_processed:
+                continue
+            pyqt6_family_processed = True
+            family_specs = [
+                _python_install_spec_for_target(family_package_name, family_target)
+                for _family_label, family_package_name, family_target in pyqt6_family_targets
+            ]
+            family_command = [
+                *command_prefix,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-input",
+                "--progress-bar",
+                "off",
+                "--timeout",
+                "30",
+                "--retries",
+                "2",
+                "--upgrade",
+                *family_specs,
+            ]
+
+            def _on_family_output(line: str) -> None:
+                _emit_dependency_update_progress(
+                    self,
+                    {
+                        "state": "running",
+                        "phase": "Installing",
+                        "current": "PyQt6 family",
+                        "label": "PyQt6 / Qt6 / WebEngine / WebEngine-Qt6",
+                        "total": total_packages,
+                        "completed": completed_packages,
+                        "installed": installed_packages,
+                        "failed": failed_packages,
+                        "restart_required": restart_required_packages,
+                        "detail": line,
+                    },
+                )
+
+            family_ok, family_output = _run_python_package_install(
+                family_command,
+                cwd=BASE_PROJECT_PATH,
+                timeout=timeout_seconds,
+                on_output=_on_family_output,
+            )
+            family_installed_versions: dict[str, str] = {}
+            family_verification_errors: list[str] = []
+            if family_ok:
+                for family_label, family_package_name, family_target in pyqt6_family_targets:
+                    family_key = _pyqt6_target_key(family_target) or family_package_name.lower()
+                    try:
+                        resolved_version = runtime._installed_version_for_dependency_target(family_target)
+                        family_installed_versions[family_key] = (
+                            runtime._normalize_installed_version_text(resolved_version)
+                            or str(resolved_version or "")
+                        )
+                    except (AttributeError, ImportError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+                        family_installed_versions[family_key] = ""
+                    expected_version = str(
+                        family_target.get("_latest_version") or family_target.get("latest") or ""
+                    ).strip()
+                    if (
+                        _version_text_is_installable(expected_version)
+                        and family_installed_versions[family_key] != expected_version
+                    ):
+                        family_verification_errors.append(
+                            f"{family_label}: expected {expected_version}, found "
+                            f"{family_installed_versions[family_key] or 'not installed'}."
+                        )
+                if family_verification_errors:
+                    family_ok = False
+                    family_output = "\n".join(
+                        line
+                        for line in (
+                            family_output,
+                            "PyQt6 family verification failed:",
+                            "\n".join(f"- {error}" for error in family_verification_errors),
+                        )
+                        if line
+                    )
+
+            completed_packages += len(pyqt6_family_targets)
+            if family_ok:
+                installed_packages += len(pyqt6_family_targets)
+            else:
+                failed_packages += len(pyqt6_family_targets)
+                failed_names.extend(package_name for _label, package_name, _target in pyqt6_family_targets)
+                detail = _trim_update_output(runtime, family_output)
+                access_hint = _windows_access_denied_install_hint("PyQt6 family", family_output)
+                if access_hint:
+                    detail = "\n".join(line for line in (detail, access_hint) if line)
+                if detail:
+                    detail_lines.append("PyQt6 family:\n" + detail)
+
+            for family_label, family_package_name, family_target in pyqt6_family_targets:
+                family_key = _pyqt6_target_key(family_target) or family_package_name.lower()
+                _emit_dependency_update_progress(
+                    self,
+                    {
+                        "state": "success" if family_ok else "failed",
+                        "phase": "Installed" if family_ok else "Failed",
+                        "current": family_package_name,
+                        "label": family_label,
+                        "installed_version": family_installed_versions.get(family_key, ""),
+                        "total": total_packages,
+                        "completed": completed_packages,
+                        "installed": installed_packages,
+                        "failed": failed_packages,
+                        "restart_required": restart_required_packages,
+                    },
+                )
+            continue
+
         latest_version = str(target.get("_latest_version") or target.get("latest") or "").strip()
         installed_before = str(target.get("_installed_version") or "").strip()
         if _version_text_is_installable(latest_version) and installed_before == latest_version:

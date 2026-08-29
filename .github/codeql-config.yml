@@ -1,0 +1,7 @@
+name: Trading Bot owned-code CodeQL configuration
+
+# The glib backport is tracked third-party source. Its dependency risk is
+# covered by the Cargo lockfile, fresh cargo-audit policy, source provenance
+# notes, and workspace compilation; CodeQL should report only owned code.
+paths-ignore:
+  - vendor/glib-0.18.5/**
