@@ -98,8 +98,15 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('Join-Path $workRoot "release-info.json"', script)
         self.assertIn('Join-Path $distRoot "$Name.exe"', script)
         self.assertIn("& $pythonCommand @pyInstallerArgs", script)
-        self.assertIn('-ArgumentList "--smoke"', script)
-        self.assertIn("Packaged executable smoke failed with exit code", script)
+        self.assertIn('$pyInstallerArgs += @("--runtime-hook", $pyqt6RuntimeHook)', script)
+        self.assertIn("pyinstaller_pyqt6_runtime_hook.py", script)
+        self.assertIn("function Invoke-PackagedSmoke", script)
+        self.assertIn("WaitForExit($TimeoutMilliseconds)", script)
+        self.assertIn("timed out after", script)
+        self.assertIn('-ArgumentList $Argument', script)
+        self.assertIn('-Argument "--smoke"', script)
+        self.assertIn("$Label failed with exit code", script)
+        self.assertIn('-Argument "--smoke-webengine"', script)
 
     def test_windows_cpp_dependency_installer_passes_bootstrap_args_separately(self):
         script = (REPO_ROOT / "experiments" / "native-cpp" / "tools" / "install_cpp_dependencies.ps1").read_text(
@@ -675,12 +682,33 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('DESKTOP_ENTRY_SCRIPT="${REPO_ROOT}/apps/desktop-pyqt/main.py"', script)
         self.assertIn('--paths "${REPO_ROOT}"', script)
         self.assertIn('--paths "${PYTHON_ROOT}"', script)
+        self.assertIn('--runtime-hook "${PYQT6_RUNTIME_HOOK}"', script)
+        self.assertIn("pyinstaller_pyqt6_runtime_hook.py", script)
         self.assertIn(
             'BOT_DISABLE_PYTHONW_RELAUNCH=1 BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH=1 "${PYTHON_BIN}" "${pyinstaller_args[@]}"',
             script,
         )
-        self.assertIn('QT_QPA_PLATFORM=offscreen "${binary_path}" --smoke', script)
+        self.assertIn('PACKAGED_SMOKE_TIMEOUT_SECONDS="${PACKAGED_SMOKE_TIMEOUT_SECONDS:-300}"', script)
+        self.assertIn("run_packaged_smoke --smoke", script)
+        self.assertIn("run_packaged_smoke --smoke-webengine", script)
+        self.assertIn("subprocess.TimeoutExpired", script)
         self.assertIn("Packaged executable smoke passed.", script)
+        self.assertIn("Packaged WebEngine smoke passed.", script)
+
+    def test_pyqt6_packaging_runtime_hook_guards_windows_icu_collisions(self):
+        hook = (
+            REPO_ROOT
+            / "Languages"
+            / "Python"
+            / "tools"
+            / "pyinstaller_pyqt6_runtime_hook.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('sys.platform != "win32"', hook)
+        self.assertIn('getattr(sys, "_MEIPASS", "")', hook)
+        self.assertIn('"icuuc.dll"', hook)
+        self.assertIn('b"ucnv_open" in exports', hook)
+        self.assertIn('b"ucnv_close" in exports', hook)
+        self.assertIn("icuuc.dll.trading-bot-disabled", hook)
 
     def test_docker_backend_uses_canonical_service_wrapper_and_dashboard_assets(self):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
