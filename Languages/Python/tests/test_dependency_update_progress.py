@@ -188,6 +188,34 @@ class DependencyUpdateProgressTests(unittest.TestCase):
         self.assertTrue(any(event.get("state") == "running" and event.get("current") == "ok-package" for event in progress_events))
         self.assertTrue(any(event.get("state") == "failed" and event.get("current") == "broken-package" for event in progress_events))
 
+    def test_python_update_blocks_mixed_pyqt6_family_before_pip(self):
+        window = _FakeWindow()
+        targets = [
+            {"label": "PyQt6", "package": "PyQt6", "_latest_version": "6.12.0"},
+            {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6", "_latest_version": "6.11.2"},
+            {
+                "label": "PyQt6-WebEngine",
+                "package": "PyQt6-WebEngine",
+                "_latest_version": "6.12.0",
+            },
+        ]
+        window._dep_version_targets = list(targets)
+
+        with mock.patch.object(
+            dependency_versions_ui,
+            "_run_python_package_install",
+        ) as install:
+            result = dependency_versions_ui._run_dependency_update_worker(
+                window,
+                targets=targets,
+                selected_only=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["title"], "PyQt6 dependency update blocked")
+        self.assertIn("mixed release lines", result["message"])
+        install.assert_not_called()
+
     def test_python_update_blocks_loaded_windows_binary_package_before_pip(self):
         window = _FakeWindow()
         progress_events = []

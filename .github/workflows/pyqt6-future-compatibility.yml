@@ -8,6 +8,8 @@ name: PyQt6 Future Compatibility
         required: true
         default: "6.12.0"
         type: string
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -32,7 +34,68 @@ jobs:
           cache-dependency-path: |
             Languages/Python/pyproject.toml
 
+      - name: Check whether the requested PyQt6 release is published
+        id: pyqt6_release
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from urllib.request import Request, urlopen
+
+          target = os.environ["PYQT6_TARGET"]
+          target_match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?.*", target)
+          if target_match is None:
+              raise SystemExit(f"Invalid PyQt6 target version: {target!r}")
+          target_series = (int(target_match.group(1)), int(target_match.group(2)))
+
+          def stable_series(version):
+              match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(version or ""))
+              return (int(match.group(1)), int(match.group(2))) if match else None
+
+          def available_releases(package_name):
+              request = Request(
+                  f"https://pypi.org/pypi/{package_name}/json",
+                  headers={"User-Agent": "trading-bot-pyqt6-future-compatibility"},
+              )
+              with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed HTTPS PyPI endpoint
+                  payload = json.load(response)
+              releases = payload.get("releases", {})
+              if package_name == "PyQt6" and target in releases:
+                  files = releases[target]
+                  if any(not file_info.get("yanked", False) for file_info in files):
+                      return True
+              return any(
+                  stable_series(version) == target_series
+                  and any(not file_info.get("yanked", False) for file_info in files)
+                  for version, files in releases.items()
+              )
+
+          package_status = {
+              package_name: available_releases(package_name)
+              for package_name in ("PyQt6", "PyQt6-Qt6", "PyQt6-WebEngine")
+          }
+          available = all(package_status.values())
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"available={'true' if available else 'false'}\n")
+          print(
+              f"PyQt6 {target_series[0]}.{target_series[1]} family status: "
+              + ", ".join(
+                  f"{package_name}={'published' if is_available else 'not yet published'}"
+                  for package_name, is_available in package_status.items()
+              )
+              + "."
+          )
+          PY
+
+      - name: Report that the scheduled target is not published yet
+        if: steps.pyqt6_release.outputs.available != 'true' && github.event_name == 'schedule'
+        run: echo "::notice::PyQt6 ${PYQT6_TARGET} is not published yet; future compatibility validation will run when the release appears."
+
       - name: Install Linux Qt runtime dependencies
+        if: steps.pyqt6_release.outputs.available == 'true' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -59,6 +122,7 @@ jobs:
             libxcb-xkb1
 
       - name: Install the project and requested PyQt6 release
+        if: steps.pyqt6_release.outputs.available == 'true' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -70,18 +134,21 @@ jobs:
             "PyQt6-Qt6>=${PYQT6_TARGET},<6.13.0"
 
       - name: Validate the requested PyQt6 runtime contract
+        if: steps.pyqt6_release.outputs.available == 'true' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
           python tools/check_pyqt6_compatibility.py --require-version "${PYQT6_TARGET}" --json
 
       - name: Smoke-test the canonical desktop entrypoint
+        if: steps.pyqt6_release.outputs.available == 'true' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
           python apps/desktop-pyqt/main.py --smoke
 
       - name: Run focused PyQt6 compatibility tests
+        if: steps.pyqt6_release.outputs.available == 'true' || github.event_name == 'workflow_dispatch'
         shell: bash
         working-directory: Languages/Python
         run: |

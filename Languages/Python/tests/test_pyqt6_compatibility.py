@@ -51,7 +51,7 @@ class PyQt6CompatibilityTests(unittest.TestCase):
                 pyproject["project"]["optional-dependencies"][group_name][:3],
             )
 
-    def test_ci_contains_the_runtime_gate_and_manual_future_workflow_targets_612(self):
+    def test_ci_contains_the_runtime_gate_and_future_workflow_targets_612(self):
         ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         future_workflow = (
             REPO_ROOT / ".github" / "workflows" / "pyqt6-future-compatibility.yml"
@@ -59,6 +59,10 @@ class PyQt6CompatibilityTests(unittest.TestCase):
 
         self.assertIn("python tools/check_pyqt6_compatibility.py --json", ci)
         self.assertIn('default: "6.12.0"', future_workflow)
+        self.assertIn('cron: "17 6 * * 1"', future_workflow)
+        self.assertIn("Check whether the requested PyQt6 release is published", future_workflow)
+        self.assertIn('"PyQt6-Qt6", "PyQt6-WebEngine"', future_workflow)
+        self.assertIn("github.event_name == 'schedule'", future_workflow)
         self.assertIn('"PyQt6-WebEngine>=${PYQT6_TARGET},<6.13.0"', future_workflow)
         self.assertIn('"PyQt6-Qt6>=${PYQT6_TARGET},<6.13.0"', future_workflow)
         self.assertIn("--require-version", future_workflow)

@@ -315,6 +315,11 @@ python tools/check_pyqt6_compatibility.py --json
 
 When PyQt6 6.12 is published, validate it explicitly with
 `python tools/check_pyqt6_compatibility.py --require-version 6.12.0 --json`.
+The in-app Python dependency updater keeps `PyQt6`, `PyQt6-Qt6`, and
+`PyQt6-WebEngine` on one release line and refuses stale, mixed, or unreviewed
+latest-version metadata. The scheduled
+`.github/workflows/pyqt6-future-compatibility.yml` workflow probes PyPI weekly
+and runs the full 6.12 runtime smoke test as soon as the target is published.
 
 ### Windows
 

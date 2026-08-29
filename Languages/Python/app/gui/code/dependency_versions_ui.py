@@ -13,6 +13,7 @@ import sys
 
 from PyQt6 import QtCore, QtWidgets
 
+from . import pyqt6_contract_runtime
 from .code_language_catalog import BASE_PROJECT_PATH, CPP_CODE_LANGUAGE_KEY, RUST_CODE_LANGUAGE_KEY, RUST_PROJECT_PATH
 
 
@@ -349,6 +350,101 @@ def _version_text_is_installable(version_text: str | None) -> bool:
     if value.lower() in {"unknown", "not checked", "checking...", "not installed", "installed"}:
         return False
     return bool(re.match(r"^\d+(?:[A-Za-z0-9.+_!-]*\d)?$", value))
+
+
+def _pyqt6_target_key(target: dict[str, str] | None) -> str | None:
+    if not isinstance(target, dict):
+        return None
+    for field in ("pypi", "package", "label"):
+        key = pyqt6_contract_runtime.package_key(target.get(field))
+        if key:
+            return key
+    return None
+
+
+def _pyqt6_update_block_reason(
+    targets: list[dict[str, str]],
+    *,
+    all_targets: list[dict[str, str]] | None,
+    selected_only: bool,
+) -> str:
+    selected_by_key = {
+        key: target
+        for target in targets
+        if (key := _pyqt6_target_key(target))
+    }
+    if not selected_by_key:
+        return ""
+
+    required_keys = set(pyqt6_contract_runtime.PYQT6_PACKAGE_KEYS)
+    source_targets = all_targets if isinstance(all_targets, list) else targets
+    source_keys = {
+        key
+        for target in source_targets
+        if (key := _pyqt6_target_key(target))
+    }
+    if not required_keys.issubset(source_keys):
+        return (
+            "The PyQt6 dependency family is incomplete in the configured target list. "
+            "PyQt6, PyQt6-Qt6, and PyQt6-WebEngine must all be available before updating the GUI stack."
+        )
+    if selected_only and set(selected_by_key) != required_keys:
+        return (
+            "PyQt6, PyQt6-Qt6, and PyQt6-WebEngine must be updated together so the GUI cannot start with "
+            "a mixed release line. Select all three PyQt6 entries and refresh their latest versions first."
+        )
+
+    family_by_key = selected_by_key if selected_only else {
+        key: target
+        for target in targets
+        if (key := _pyqt6_target_key(target))
+    }
+    missing = sorted(required_keys - set(family_by_key))
+    if missing:
+        return "The PyQt6 dependency family is incomplete for this update. Refresh the dependency list first."
+
+    parsed_versions: dict[str, tuple[int, int, int]] = {}
+    unavailable: list[str] = []
+    for key in pyqt6_contract_runtime.PYQT6_PACKAGE_KEYS:
+        target = family_by_key[key]
+        latest = str(target.get("_latest_version") or target.get("latest") or "").strip()
+        parsed = pyqt6_contract_runtime.parse_release_version(latest)
+        if not _version_text_is_installable(latest) or parsed is None:
+            unavailable.append(key)
+            continue
+        parsed_versions[key] = parsed
+    if unavailable:
+        return (
+            "The latest PyQt6 family versions could not be resolved for "
+            + ", ".join(unavailable)
+            + ". Refresh versions before updating so pip never falls back to an unpinned GUI install."
+        )
+
+    series = {version[:2] for version in parsed_versions.values()}
+    if len(series) != 1:
+        formatted = ", ".join(
+            f"{key}={version[0]}.{version[1]}" for key, version in parsed_versions.items()
+        )
+        return f"PyQt6 family latest versions are on mixed release lines ({formatted}); update was not started."
+
+    bounds = pyqt6_contract_runtime.reviewed_version_bounds()
+    if bounds is None:
+        return "The reviewed PyQt6 compatibility contract could not be loaded; update was not started."
+    minimum, maximum = bounds
+    outside = [
+        key
+        for key, version in parsed_versions.items()
+        if not minimum <= version < maximum
+    ]
+    if outside:
+        return (
+            "The latest PyQt6 family release is outside the reviewed project range "
+            f"({minimum[0]}.{minimum[1]}.{minimum[2]} <= version < "
+            f"{maximum[0]}.{maximum[1]}.{maximum[2]}): "
+            + ", ".join(outside)
+            + "."
+        )
+    return ""
 
 
 def _canonical_python_package_name(package_name: str) -> str:
@@ -846,6 +942,20 @@ def _run_dependency_update_worker(
             "title": "Python dependency update failed",
             "message": "No Python packages were available to update.",
             "refresh_versions": True,
+        }
+
+    pyqt6_block_reason = _pyqt6_update_block_reason(
+        targets,
+        all_targets=all_targets if isinstance(all_targets, list) else None,
+        selected_only=selected_only,
+    )
+    if pyqt6_block_reason:
+        return {
+            "ok": False,
+            "title": "PyQt6 dependency update blocked",
+            "message": pyqt6_block_reason,
+            "refresh_versions": True,
+            "log_message": "PyQt6 dependency update blocked: " + pyqt6_block_reason,
         }
 
     command_prefix = _resolve_python_command_prefix(self)
