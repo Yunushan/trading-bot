@@ -5,6 +5,12 @@
 - Completed on: YYYY-MM-DD
 - Operator: Full name or accountable team
 - Outcome: approved
+- Candidate CI run ID: Positive GitHub Actions run ID for the exact source revision
+- Candidate CI run URL: Full GitHub Actions URL for the same run ID
+- CodeQL run ID: Positive GitHub Actions run ID for the exact source revision
+- CodeQL run URL: Full GitHub Actions URL for the same run ID
+- Supply chain security run ID: Positive GitHub Actions run ID for the exact source revision
+- Supply chain security run URL: Full GitHub Actions URL for the same run ID
 - Release platform evidence run ID: Positive GitHub Actions run ID for the selected release-platform scope
 - Release platform evidence run URL: Full GitHub Actions URL for the same run ID
 - Release platform evidence scope: full
@@ -15,6 +21,7 @@
 - [ ] Service API flow: Record `/readyz`, authenticated request, invalid-token, and unavailable-service result.
 - [ ] LLM/local-model flow: Record disabled, cloud-token-missing, and local-model-unavailable behavior without exposing any secret.
 - [ ] Release package: Record clean-machine install/start, provenance/SBOM verification, and uninstall result for every published asset family.
+- [ ] Native signing and notarization: For v1.0.41 and later, confirm protected signing credentials are available and the tagged workflows' fail-closed Authenticode, Developer ID, notarization, stapling, and evidence gates are enabled.
 
 ## Evidence
 

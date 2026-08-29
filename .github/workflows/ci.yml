@@ -215,6 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           python Languages/Python/tools/check_dependency_metadata.py
+          python tools/check_pyqt6_compatibility.py --json
           python tools/check_python_version_support.py --current
 
       - name: Check service API contract artifacts
@@ -222,6 +223,21 @@ jobs:
         run: |
           set -euo pipefail
           python Languages/Python/tools/check_service_api_contracts.py
+
+      - name: Check production read-only deployment contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_production_deployment.py --json
+          python tools/render_production_deployment.py \
+            --image "registry.example.com/trading-bot/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+            --build-commit "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+            --output "${RUNNER_TEMP}/trading-bot-production-readonly.json" \
+            --json
+          python tools/check_production_deployment.py \
+            --manifest "${RUNNER_TEMP}/trading-bot-production-readonly.json" \
+            --require-rendered \
+            --json
 
       - name: Run focused service API tests
         shell: bash
@@ -243,6 +259,17 @@ jobs:
         run: |
           set -euo pipefail
           python tools/run_service_sustained_probe.py --profile quick
+
+      - name: Run bounded service capacity regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/run_service_capacity_probe.py \
+            --requests 600 \
+            --concurrency 16 \
+            --max-p95-ms 500 \
+            --minimum-throughput-rps 10 \
+            --json
 
       - name: Run operational recovery drill
         shell: bash
@@ -275,7 +302,15 @@ jobs:
           set -euo pipefail
           image="trading-bot-service:ci"
           container="trading-bot-service-ci"
-          docker build --pull --file docker/backend.Dockerfile --tag "$image" .
+          docker build --pull \
+            --build-arg BUILD_COMMIT="$GITHUB_SHA" \
+            --file docker/backend.Dockerfile \
+            --tag "$image" .
+          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+          if [[ "$image_revision" != "$GITHUB_SHA" ]]; then
+            echo "Container image source revision label does not match GITHUB_SHA." >&2
+            exit 1
+          fi
           docker run --detach --rm --name "$container" \
             --publish 127.0.0.1:18000:8000 \
             --read-only \
@@ -284,16 +319,29 @@ jobs:
             --cap-drop ALL \
             --env BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789 \
             --env BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1 \
+            --env BOT_SERVICE_API_READ_ONLY=1 \
             "$image"
           trap 'docker logs "$container" || true; docker stop "$container" || true' EXIT
+          ready=0
           for _ in {1..30}; do
             if curl --fail --silent --show-error http://127.0.0.1:18000/readyz >/dev/null; then
-              exit 0
+              ready=1
+              break
             fi
             sleep 1
           done
-          echo "Service container did not become healthy in 30 seconds." >&2
-          exit 1
+          if [ "$ready" -ne 1 ]; then
+            echo "Service container did not become healthy in 30 seconds." >&2
+            exit 1
+          fi
+          BOT_SERVICE_API_TOKEN=ci-service-token-for-nonloopback-smoke-0123456789 \
+            python tools/run_service_capacity_probe.py \
+              --base-url http://127.0.0.1:18000 \
+              --requests 600 \
+              --concurrency 16 \
+              --max-p95-ms 1000 \
+              --minimum-throughput-rps 10 \
+              --json
 
       - name: Dry-run release smoke plan
         shell: bash
@@ -392,6 +440,9 @@ jobs:
           set -euo pipefail
           python tools/check_python_version_support.py --current
           python Languages/Python/tools/check_dependency_metadata.py
+          if [[ "${{ matrix.python-version }}" == "3.15" ]]; then
+            python tools/check_pyqt6_compatibility.py --json
+          fi
 
       - name: Compile service/core compatibility surface
         shell: bash
@@ -457,6 +508,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           python tools/check_python_version_support.py --current
           python Languages/Python/tools/check_dependency_metadata.py
+          python tools/check_pyqt6_compatibility.py --json
 
       - name: Build and smoke-test Python 3.15 executable
         shell: pwsh
@@ -551,12 +603,45 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e "./Languages/Python[desktop,service,dev]"
 
+      - name: Install Linux Qt runtime dependencies for Python 3.15 release smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2t64 \
+            libdbus-1-3 \
+            libegl1 \
+            libfontconfig1 \
+            libgbm1 \
+            libglib2.0-0 \
+            libgtk-3-0 \
+            libopengl0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxkbcommon-x11-0 \
+            libxrandr2 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1
+
       - name: Validate Python 3.15 release-smoke target
         shell: bash
         run: |
           set -euo pipefail
           python tools/check_python_version_support.py --current
           python Languages/Python/tools/check_dependency_metadata.py
+          python tools/check_pyqt6_compatibility.py --json
+
+      - name: Smoke-test PyQt6 WebEngine on Python 3.15
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/desktop-pyqt/main.py --smoke-webengine
 
       - name: Run Python 3.15 release smoke
         shell: bash
@@ -735,6 +820,10 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e "./Languages/Python"
+
+      - name: Validate native release signing policy
+        shell: bash
+        run: python tools/check_release_signing_policy.py --json
 
       - name: Validate release platform/browser matrix
         shell: bash

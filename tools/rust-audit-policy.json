@@ -164,21 +164,11 @@
       "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
     },
     {
-      "kind": "unsound",
-      "id": "RUSTSEC-2024-0429",
-      "package": "glib",
-      "version": "0.18.5",
-      "reviewed": "2026-08-26",
-      "expires": "2026-10-10",
-      "scope": "linux-tauri-webkitgtk-transitive",
-      "reason": "Owned code does not call the affected VariantStrIter APIs; Tauri's GTK3 path pins glib 0.18, so remove this on the glib 0.20-or-newer migration."
-    },
-    {
       "kind": "yanked",
       "id": "YANKED",
       "package": "chacha20",
       "version": "0.10.1",
-      "reviewed": "2026-08-29",
+      "reviewed": "2026-08-28",
       "expires": "2026-10-10",
       "scope": "tungstenite-rand-transitive",
       "reason": "tungstenite 0.30.0 resolves rand 0.10.2, which currently pins the yanked chacha20 0.10.1; remove when upstream publishes a non-yanked dependency graph."

@@ -66,6 +66,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PYTHON_ROOT}/../.." && pwd)"
 DESKTOP_ENTRY_SCRIPT="${REPO_ROOT}/apps/desktop-pyqt/main.py"
+PYQT6_RUNTIME_HOOK="${PYTHON_ROOT}/tools/pyinstaller_pyqt6_runtime_hook.py"
 
 release_info_path=""
 
@@ -81,6 +82,10 @@ pushd "${PYTHON_ROOT}" >/dev/null
 
 if [[ ! -f "${DESKTOP_ENTRY_SCRIPT}" ]]; then
   echo "Desktop entry script not found at ${DESKTOP_ENTRY_SCRIPT}" >&2
+  exit 1
+fi
+if [[ ! -f "${PYQT6_RUNTIME_HOOK}" ]]; then
+  echo "PyQt6 PyInstaller runtime hook not found at ${PYQT6_RUNTIME_HOOK}" >&2
   exit 1
 fi
 
@@ -163,6 +168,7 @@ pyinstaller_args=(
   --specpath build
   --paths "${REPO_ROOT}"
   --paths "${PYTHON_ROOT}"
+  --runtime-hook "${PYQT6_RUNTIME_HOOK}"
   --hidden-import binance.client
   --hidden-import binance.spot
 )
@@ -263,6 +269,34 @@ if [[ ! -x "${binary_path}" ]]; then
   exit 1
 fi
 
-QT_QPA_PLATFORM=offscreen "${binary_path}" --smoke
+PACKAGED_SMOKE_TIMEOUT_SECONDS="${PACKAGED_SMOKE_TIMEOUT_SECONDS:-300}"
+
+run_packaged_smoke() {
+  local smoke_argument="$1"
+  QT_QPA_PLATFORM=offscreen "${PYTHON_BIN}" - "${binary_path}" "${smoke_argument}" "${PACKAGED_SMOKE_TIMEOUT_SECONDS}" <<'PY'
+import subprocess
+import sys
+
+command = sys.argv[1:-1]
+timeout_seconds = float(sys.argv[-1])
+try:
+    result = subprocess.run(command, check=False, timeout=timeout_seconds)
+except subprocess.TimeoutExpired:
+    print(
+        f"Packaged smoke {command[-1]} timed out after {timeout_seconds:g} seconds.",
+        file=sys.stderr,
+    )
+    raise SystemExit(124)
+if result.returncode != 0:
+    print(f"Packaged smoke {command[-1]} failed with exit code {result.returncode}.", file=sys.stderr)
+raise SystemExit(result.returncode)
+PY
+}
+
+run_packaged_smoke --smoke
+run_packaged_smoke --smoke-window
+run_packaged_smoke --smoke-webengine
 echo "Packaged executable smoke passed."
+echo "Packaged window smoke passed."
+echo "Packaged WebEngine smoke passed."
 echo "Done. Binary at: ${binary_path}"

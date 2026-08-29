@@ -23,6 +23,10 @@ SERVICE_TESTS = (
         "Prometheus export, bounded request labels, correlation IDs, and alert-rule contracts",
     ),
     ServiceTestEntry(
+        "tests.test_service_capacity_probe",
+        "bounded concurrent read-only load, child-process isolation, and remote transport safeguards",
+    ),
+    ServiceTestEntry(
         "tests.test_service_schema_contracts",
         "service response schema builders, payload normalization, and secret redaction contracts",
     ),
@@ -62,9 +66,7 @@ SERVICE_TESTS = (
 
 SERVICE_TEST_MODULES = tuple(entry.module for entry in SERVICE_TESTS)
 
-INTENTIONALLY_EXCLUDED_SERVICE_TEST_MODULES = (
-    "tests.test_service_test_runner",
-)
+INTENTIONALLY_EXCLUDED_SERVICE_TEST_MODULES = ("tests.test_service_test_runner",)
 
 SERVICE_TEST_DOC_PATHS = (
     "docs/SERVICE_API.md",
@@ -91,7 +93,9 @@ def discover_service_test_modules(python_root: Path) -> tuple[str, ...]:
 
 
 def module_list_errors(python_root: Path, discovered_modules: Iterable[str] | None = None) -> list[str]:
-    discovered = set(discovered_modules if discovered_modules is not None else discover_service_test_modules(python_root))
+    discovered = set(
+        discovered_modules if discovered_modules is not None else discover_service_test_modules(python_root)
+    )
     listed = set(SERVICE_TEST_MODULES)
     excluded = set(INTENTIONALLY_EXCLUDED_SERVICE_TEST_MODULES)
 

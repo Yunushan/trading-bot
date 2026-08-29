@@ -21,8 +21,23 @@ Node runtimes, workspace hygiene, client dependency locks, risky-pattern
 regressions, unsupported support/parity claims, Rust native runtime evidence
 declarations, Python-owned C++/Rust source synchronization, Rust native runtime
 promotion readiness, Python lint/type/contracts/tests, web and mobile client
-tests, Rust workspace checks, Tauri UI behavior, native C++ build/tests, and
-diff whitespace.
+tests, the production read-only Kubernetes deployment contract, Rust workspace
+checks, Tauri UI behavior, native C++ build/tests, and diff whitespace.
+
+`python tools/check_production_deployment.py --json` verifies the checked-in
+provider-neutral Kubernetes template. CI additionally renders an immutable
+digest plus exact commit into a temporary manifest and re-validates it with
+`--require-rendered`. Passing this source contract does not prove a real
+cluster, TLS origin, capacity window, or trading-execution high availability;
+those remain deployment evidence.
+
+`python tools/check_release_signing_policy.py --json` validates the fail-closed
+native trust contract introduced for v1.0.41: tagged Windows Authenticode,
+tagged macOS Developer ID signing plus notarization/stapling, step-scoped
+credentials, signing-before-attestation ordering, and publication-time
+verification of hash-bound evidence. This source gate proves workflow policy;
+only successful tagged runs with real credentials prove that signatures and
+notarization were issued.
 
 The second cleanup is intentional: the full Python suite writes the ignored
 `.coverage` and `Languages/Python/coverage.xml` reports needed by the critical
@@ -470,6 +485,10 @@ committed.
   `npm --prefix apps/web-dashboard run test:browser -- --browser=firefox`.
   Firefox is executed with the pinned Playwright runtime; first run
   `npx --prefix apps/web-dashboard playwright install firefox` after `npm ci`.
+  When a host requires a managed or system Firefox binary, pass its absolute
+  path with `--executable=<path>` or `TB_BROWSER_EXECUTABLE`; the contract
+  forwards that override to Playwright while retaining the pinned runtime and
+  the same evidence checks.
   On Windows, a failed headless Firefox launch retries once in a real headed
   browser session and records `launchMode: headed-fallback` in the probe output.
   Set `TB_FIREFOX_ALLOW_HEADED_FALLBACK=0` when headless-only coverage is

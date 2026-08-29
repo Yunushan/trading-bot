@@ -228,6 +228,18 @@ HARDENING_ARTICLES: tuple[Article, ...] = (
         (
             Evidence("tools/release_smoke.py", ("dry-run", "manual-smoke-mode")),
             Evidence("tools/check_release_assets.py", ("ExpectedAsset", "Trading-Bot-Python")),
+            Evidence(
+                "tools/check_release_publication_state.py",
+                ("must not demote", "missing candidate"),
+            ),
+            Evidence(
+                "tools/check_release_candidate_manifests.py",
+                ("expected_source_revision", "source-bound by a manifest"),
+            ),
+            Evidence(
+                ".github/workflows/finalize-release.yml",
+                ("Finalize Stable Release", "make_latest: true"),
+            ),
             Evidence("docs/RELEASES.md", ("release", "asset")),
         ),
     ),

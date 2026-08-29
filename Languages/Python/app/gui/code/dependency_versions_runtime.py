@@ -191,7 +191,7 @@ def _module_version_from_runtime(module_name: str, dependency_key: str) -> str |
                     _normalize_installed_version_text(getattr(_QtCore, "PYQT_VERSION_STR", None))
                     or _normalize_installed_version_text(getattr(_QtCore, "QT_VERSION_STR", None))
                 )
-            if dependency_key in {"pyqt6-qt6", "pyqt6-webengine"}:
+            if dependency_key in {"pyqt6-qt6", "pyqt6-webengine", "pyqt6-webengine-qt6"}:
                 return _normalize_installed_version_text(getattr(_QtCore, "QT_VERSION_STR", None))
         except Exception:
             pass
