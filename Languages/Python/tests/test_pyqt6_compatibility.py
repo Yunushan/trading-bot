@@ -90,10 +90,15 @@ class PyQt6CompatibilityTests(unittest.TestCase):
         self.assertIn('"macos-15": ("macosx_",)', future_workflow)
         self.assertIn('platform_part = filename[:-4].rsplit("-", 1)[-1]', future_workflow)
         self.assertIn("platform_tag.startswith(marker)", future_workflow)
-        self.assertIn("--require-version", future_workflow)
+        self.assertIn("--require-exact-pyqt6-version", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke-window", future_workflow)
         self.assertIn("python apps/desktop-pyqt/main.py --smoke-webengine", future_workflow)
+        self.assertIn("Build and smoke-test frozen Windows executable", future_workflow)
+        self.assertIn("matrix.os == 'windows-2025'", future_workflow)
+        self.assertIn("requirements.packaging.txt", future_workflow)
+        self.assertIn("build_exe.ps1", future_workflow)
+        self.assertIn("-SkipDependencyInstall", future_workflow)
 
         release_smoke_job = ci.split("  python-315-release-smoke:", 1)[1].split(
             "  web-dashboard-quality:", 1
@@ -159,6 +164,49 @@ class PyQt6CompatibilityTests(unittest.TestCase):
 
         self.assertEqual([], errors)
         self.assertTrue(future_target_available)
+
+    def test_package_validation_can_require_exact_base_pyqt6_with_companion_patch_skew(self):
+        errors, _package_series, future_target_available = checker._validate_package_versions(
+            {
+                "PyQt6": "6.12.0",
+                "PyQt6-Qt6": "6.12.1",
+                "PyQt6-WebEngine": "6.12.0",
+                "PyQt6-WebEngine-Qt6": "6.12.1",
+            },
+            CONTRACT,
+            exact_pyqt6_version="6.12.0",
+        )
+
+        self.assertEqual([], errors)
+        self.assertTrue(future_target_available)
+
+    def test_package_validation_rejects_exact_base_pyqt6_patch_drift(self):
+        errors, _package_series, _future_target_available = checker._validate_package_versions(
+            {
+                "PyQt6": "6.12.1",
+                "PyQt6-Qt6": "6.12.1",
+                "PyQt6-WebEngine": "6.12.0",
+                "PyQt6-WebEngine-Qt6": "6.12.1",
+            },
+            CONTRACT,
+            exact_pyqt6_version="6.12.0",
+        )
+
+        self.assertTrue(any("requested exact PyQt6 version" in error for error in errors))
+
+    def test_package_validation_rejects_noncanonical_exact_target(self):
+        errors, _package_series, _future_target_available = checker._validate_package_versions(
+            {
+                "PyQt6": "6.12.0",
+                "PyQt6-Qt6": "6.12.1",
+                "PyQt6-WebEngine": "6.12.0",
+                "PyQt6-WebEngine-Qt6": "6.12.1",
+            },
+            CONTRACT,
+            exact_pyqt6_version="6.12",
+        )
+
+        self.assertTrue(any("requested exact PyQt6 version is invalid" in error for error in errors))
 
     def test_package_validation_rejects_versions_above_reviewed_upper_bound(self):
         errors, _package_series, _future_target_available = checker._validate_package_versions(

@@ -91,6 +91,7 @@ def _validate_package_versions(
     package_versions: dict[str, str | None],
     contract: dict[str, str],
     required_version: str | None = None,
+    exact_pyqt6_version: str | None = None,
 ) -> tuple[list[str], dict[str, tuple[int, int]], bool]:
     minimum, maximum, future_target = _contract_versions(contract)
     errors: list[str] = []
@@ -129,6 +130,23 @@ def _validate_package_versions(
             errors.append(
                 f"requested PyQt6 release series {required_series[0]}.{required_series[1]} is not installed for "
                 + ", ".join(mismatched)
+            )
+
+    exact_pyqt6_text = str(exact_pyqt6_version or "").strip()
+    exact_pyqt6_release = (
+        parse_release_version(exact_pyqt6_text)
+        if re.fullmatch(r"\d+\.\d+\.\d+", exact_pyqt6_text)
+        else None
+    )
+    if exact_pyqt6_version and exact_pyqt6_release is None:
+        errors.append(f"requested exact PyQt6 version is invalid: {exact_pyqt6_version!r}")
+    elif exact_pyqt6_version:
+        installed_pyqt6 = parsed_versions.get("PyQt6")
+        installed_pyqt6_text = str(package_versions.get("PyQt6") or "").strip()
+        if installed_pyqt6 != exact_pyqt6_release or installed_pyqt6_text != exact_pyqt6_text:
+            errors.append(
+                f"requested exact PyQt6 version {exact_pyqt6_version} is not installed; "
+                f"found {package_versions.get('PyQt6')!r}"
             )
 
     future_series = future_target[:2] if future_target is not None else None
@@ -234,6 +252,7 @@ def run_checks(
     *,
     root: Path = REPO_ROOT,
     required_version: str | None = None,
+    exact_pyqt6_version: str | None = None,
     version_provider: Callable[[str], str] = importlib_metadata.version,
     probe_runtime: bool = True,
 ) -> dict[str, Any]:
@@ -244,6 +263,7 @@ def run_checks(
         package_versions,
         contract,
         required_version,
+        exact_pyqt6_version,
     )
     errors.extend(package_errors)
 
@@ -269,6 +289,8 @@ def run_checks(
     }
     if required_version:
         report["required_version"] = required_version
+    if exact_pyqt6_version:
+        report["exact_pyqt6_version"] = exact_pyqt6_version
     return report
 
 
@@ -278,10 +300,17 @@ def main(argv: list[str] | None = None) -> int:
         "--require-version",
         help="require all PyQt6 distributions and runtimes to use this major.minor release series",
     )
+    parser.add_argument(
+        "--require-exact-pyqt6-version",
+        help="require the base PyQt6 distribution to use this exact release while companions stay on its series",
+    )
     parser.add_argument("--json", action="store_true", help="print a machine-readable JSON report")
     args = parser.parse_args(argv)
 
-    report = run_checks(required_version=args.require_version)
+    report = run_checks(
+        required_version=args.require_version or args.require_exact_pyqt6_version,
+        exact_pyqt6_version=args.require_exact_pyqt6_version,
+    )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     elif report["ok"]:

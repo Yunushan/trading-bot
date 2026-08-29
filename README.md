@@ -222,9 +222,9 @@ Contributor-facing structure and maintenance docs now live here:
 ### Current LOC snapshot
 
 <!-- LOC-SNAPSHOT:START -->
-- Snapshot date: `29.08.2026 GMT+3 Time 17:13:35`
-- Total tracked code/config/script lines: `265,993`
-- Non-empty tracked code/config/script lines (SLOC-style): `242,443`
+- Snapshot date: `29.08.2026 GMT+3 Time 17:21:21`
+- Total tracked code/config/script lines: `266,085`
+- Non-empty tracked code/config/script lines (SLOC-style): `242,527`
 - Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
 <!-- LOC-SNAPSHOT:END -->
 
@@ -313,8 +313,9 @@ WebEngine APIs with:
 python tools/check_pyqt6_compatibility.py --json
 ```
 
-When PyQt6 6.12 is published, validate it explicitly with
-`python tools/check_pyqt6_compatibility.py --require-version 6.12.0 --json`.
+When PyQt6 6.12 is published, validate the exact base binding and its
+same-series companions explicitly with
+`python tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version 6.12.0 --json`.
 The in-app Python dependency updater keeps `PyQt6`, `PyQt6-Qt6`,
 `PyQt6-WebEngine`, and `PyQt6-WebEngine-Qt6` on one release line and refuses stale, mixed, or unreviewed
 latest-version metadata. The scheduled

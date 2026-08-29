@@ -108,10 +108,11 @@ from this directory:
 python ../../tools/check_pyqt6_compatibility.py --json
 ```
 
-Once 6.12 is published, require that release series explicitly:
+Once 6.12 is published, require the exact base binding and its companion
+release series explicitly:
 
 ```bash
-python ../../tools/check_pyqt6_compatibility.py --require-version 6.12.0 --json
+python ../../tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version 6.12.0 --json
 ```
 
 The in-app Python dependency updater treats the four PyQt6 distributions as

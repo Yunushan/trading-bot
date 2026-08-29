@@ -25,7 +25,7 @@ jobs:
           - windows-2025
           - macos-15
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 50
     env:
       QT_QPA_PLATFORM: offscreen
       PYQT6_TARGET: ${{ inputs.pyqt_version || '6.12.0' }}
@@ -171,6 +171,7 @@ jobs:
           set -euo pipefail
           target_series_start="${PYQT6_TARGET%.*}.0"
           python -m pip install --upgrade pip
+          python -m pip install -r "Languages/Python/requirements.packaging.txt"
           python -m pip install -e "./Languages/Python[desktop,service,dev]"
           python -m pip install --only-binary=:all: \
             "PyQt6==${PYQT6_TARGET}" \
@@ -183,7 +184,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python tools/check_pyqt6_compatibility.py --require-version "${PYQT6_TARGET}" --json
+          python tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version "${PYQT6_TARGET}" --json
 
       - name: Smoke-test the canonical desktop entrypoint
         if: steps.pyqt6_release.outputs.available == 'true'
@@ -205,6 +206,20 @@ jobs:
         run: |
           set -euo pipefail
           python apps/desktop-pyqt/main.py --smoke-webengine
+
+      - name: Build and smoke-test frozen Windows executable
+        if: steps.pyqt6_release.outputs.available == 'true' && matrix.os == 'windows-2025'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $distPath = Join-Path $env:RUNNER_TEMP "trading-bot-pyqt6-future-dist"
+          $workPath = Join-Path $env:RUNNER_TEMP "trading-bot-pyqt6-future-build"
+          ./Languages/Python/tools/build_exe.ps1 `
+            -Python python `
+            -Name "Trading-Bot-PyQt6-$env:PYQT6_TARGET" `
+            -SkipDependencyInstall `
+            -DistPath $distPath `
+            -WorkPath $workPath
 
       - name: Run focused PyQt6 compatibility tests
         if: steps.pyqt6_release.outputs.available == 'true'
