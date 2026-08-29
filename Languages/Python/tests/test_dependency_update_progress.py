@@ -198,6 +198,11 @@ class DependencyUpdateProgressTests(unittest.TestCase):
                 "package": "PyQt6-WebEngine",
                 "_latest_version": "6.12.0",
             },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.12.0",
+            },
         ]
         window._dep_version_targets = list(targets)
 
@@ -237,6 +242,12 @@ class DependencyUpdateProgressTests(unittest.TestCase):
                 "package": "PyQt6-WebEngine",
                 "_latest_version": "6.12.0",
                 "_installed_version": "6.11.0",
+            },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.12.0",
+                "_installed_version": "6.11.1",
             },
         ]
         window._dep_version_targets = list(targets)
@@ -287,11 +298,12 @@ class DependencyUpdateProgressTests(unittest.TestCase):
                 "PyQt6==6.12.0",
                 "PyQt6-Qt6==6.12.1",
                 "PyQt6-WebEngine==6.12.0",
+                "PyQt6-WebEngine-Qt6==6.12.0",
             },
-            set(command[-3:]),
+            set(command[-4:]),
         )
         self.assertEqual(progress_events[-1]["state"], "finished")
-        self.assertEqual(progress_events[-1]["installed"], 3)
+        self.assertEqual(progress_events[-1]["installed"], 4)
         self.assertEqual(progress_events[-1]["failed"], 0)
 
     def test_python_update_blocks_loaded_windows_binary_package_before_pip(self):

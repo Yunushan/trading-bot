@@ -81,7 +81,12 @@ jobs:
 
           package_status = {
               package_name: available_releases(package_name)
-              for package_name in ("PyQt6", "PyQt6-Qt6", "PyQt6-WebEngine")
+              for package_name in (
+                  "PyQt6",
+                  "PyQt6-Qt6",
+                  "PyQt6-WebEngine",
+                  "PyQt6-WebEngine-Qt6",
+              )
           }
           available = all(package_status.values())
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
@@ -143,7 +148,8 @@ jobs:
           python -m pip install --pre --only-binary=:all: \
             "PyQt6==${PYQT6_TARGET}" \
             "PyQt6-WebEngine>=${PYQT6_TARGET},<6.13.0" \
-            "PyQt6-Qt6>=${PYQT6_TARGET},<6.13.0"
+            "PyQt6-Qt6>=${PYQT6_TARGET},<6.13.0" \
+            "PyQt6-WebEngine-Qt6>=${PYQT6_TARGET},<6.13.0"
 
       - name: Validate the requested PyQt6 runtime contract
         if: steps.pyqt6_release.outputs.available == 'true'

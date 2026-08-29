@@ -20,7 +20,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH = REPO_ROOT / "Languages" / "Python" / "pyproject.toml"
-PYQT6_PACKAGE_NAMES = ("PyQt6", "PyQt6-Qt6", "PyQt6-WebEngine")
+PYQT6_PACKAGE_NAMES = (
+    "PyQt6",
+    "PyQt6-Qt6",
+    "PyQt6-WebEngine",
+    "PyQt6-WebEngine-Qt6",
+)
 VersionTuple = tuple[int, int, int]
 
 _VERSION_RE = re.compile(

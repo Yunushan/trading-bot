@@ -41,12 +41,13 @@ dependencies = [
 
 [project.optional-dependencies]
 desktop = [
-    # Keep the binding, Qt runtime, and WebEngine on one reviewed minor line.
+    # Keep the binding, Qt runtime, WebEngine binding, and WebEngine runtime on one reviewed minor line.
     # The upper bound admits the planned PyQt6 6.12 release without allowing
     # an unreviewed Qt 6.13 API change into a production install.
     "PyQt6>=6.11.0,<6.13.0",
     "PyQt6-Qt6>=6.11.0,<6.13.0",
     "PyQt6-WebEngine>=6.11.0,<6.13.0",
+    "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0",
 ]
 service = [
     "cryptography==50.0.0",
@@ -71,6 +72,7 @@ windows-arm64 = [
     "PyQt6>=6.11.0,<6.13.0",
     "PyQt6-Qt6>=6.11.0,<6.13.0",
     "PyQt6-WebEngine>=6.11.0,<6.13.0",
+    "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0",
     "aiohttp>=3.14.3,<4",
 ]
 dev = [

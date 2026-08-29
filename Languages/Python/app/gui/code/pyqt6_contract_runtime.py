@@ -12,7 +12,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10 witho
         tomllib = None  # type: ignore[assignment]
 
 
-PYQT6_PACKAGE_KEYS = ("pyqt6", "pyqt6-qt6", "pyqt6-webengine")
+PYQT6_PACKAGE_KEYS = (
+    "pyqt6",
+    "pyqt6-qt6",
+    "pyqt6-webengine",
+    "pyqt6-webengine-qt6",
+)
 VersionTuple = tuple[int, int, int]
 
 _VERSION_RE = re.compile(

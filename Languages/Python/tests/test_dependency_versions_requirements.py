@@ -72,6 +72,11 @@ class DependencyVersionRequirementTests(unittest.TestCase):
                 "package": "PyQt6-WebEngine",
                 "_latest_version": "6.12.0",
             },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.12.1",
+            },
         ]
 
         self.assertEqual(
@@ -92,6 +97,11 @@ class DependencyVersionRequirementTests(unittest.TestCase):
                 "package": "PyQt6-WebEngine",
                 "_latest_version": "6.12.0",
             },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
+                "_latest_version": "6.12.0",
+            },
         ]
 
         reason = dependency_versions_ui._pyqt6_update_block_reason(
@@ -108,6 +118,7 @@ class DependencyVersionRequirementTests(unittest.TestCase):
             *selected,
             {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6"},
             {"label": "PyQt6-WebEngine", "package": "PyQt6-WebEngine"},
+            {"label": "PyQt6-WebEngine-Qt6", "package": "PyQt6-WebEngine-Qt6"},
         ]
 
         reason = dependency_versions_ui._pyqt6_update_block_reason(
@@ -125,6 +136,11 @@ class DependencyVersionRequirementTests(unittest.TestCase):
             {
                 "label": "PyQt6-WebEngine",
                 "package": "PyQt6-WebEngine",
+                "_latest_version": "6.13.0",
+            },
+            {
+                "label": "PyQt6-WebEngine-Qt6",
+                "package": "PyQt6-WebEngine-Qt6",
                 "_latest_version": "6.13.0",
             },
         ]

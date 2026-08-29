@@ -99,7 +99,7 @@ surface.
 ### PyQt6 compatibility
 
 The desktop extra uses the reviewed range `PyQt6>=6.11.0,<6.13.0`, together
-with matching `PyQt6-Qt6` and `PyQt6-WebEngine` ranges. This keeps current
+with matching `PyQt6-Qt6`, `PyQt6-WebEngine`, and `PyQt6-WebEngine-Qt6` ranges. This keeps current
 6.11 installs within the supported contract while admitting PyQt6 6.12 when
 that release line is available. Verify the package and runtime API contract
 from this directory:
@@ -114,7 +114,7 @@ Once 6.12 is published, require that release series explicitly:
 python ../../tools/check_pyqt6_compatibility.py --require-version 6.12.0 --json
 ```
 
-The in-app Python dependency updater treats the three PyQt6 distributions as
+The in-app Python dependency updater treats the four PyQt6 distributions as
 one compatibility family. It will not install an unknown, mixed, or
 out-of-range release line. The scheduled repository workflow checks PyPI
 weekly and runs the 6.12 runtime smoke test when all required distributions
@@ -165,7 +165,7 @@ python3 ../../apps/desktop-pyqt/main.py
 If PyQt fails to launch cleanly on macOS, install the Qt runtime explicitly:
 
 ```bash
-pip install "PyQt6>=6.11.0,<6.13.0" "PyQt6-Qt6>=6.11.0,<6.13.0" "PyQt6-WebEngine>=6.11.0,<6.13.0"
+pip install "PyQt6>=6.11.0,<6.13.0" "PyQt6-Qt6>=6.11.0,<6.13.0" "PyQt6-WebEngine>=6.11.0,<6.13.0" "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0"
 ```
 
 ### FreeBSD

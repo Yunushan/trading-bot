@@ -14,7 +14,12 @@ PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parents[1]
 PYPROJECT_PATH = PYTHON_ROOT / "pyproject.toml"
 PYINSTALLER_REQUIREMENT = "pyinstaller==6.22.0"
-PYQT6_PACKAGE_NAMES = ("PyQt6", "PyQt6-Qt6", "PyQt6-WebEngine")
+PYQT6_PACKAGE_NAMES = (
+    "PyQt6",
+    "PyQt6-Qt6",
+    "PyQt6-WebEngine",
+    "PyQt6-WebEngine-Qt6",
+)
 
 EXPECTED_REQUIREMENT_SHIMS = {
     "requirements.backend.txt": ".",
@@ -247,14 +252,17 @@ def _check_windows_arm64_group(
     requirements: list[str], pyqt6_specs: dict[str, str]
 ) -> list[str]:
     errors: list[str] = []
+    by_name = {_dependency_name(requirement): requirement for requirement in requirements}
+    for name, expected in pyqt6_specs.items():
+        actual = by_name.get(name)
+        if actual != expected:
+            errors.append(
+                f"windows-arm64 dependency {name!r} must use the reviewed PyQt6 range "
+                f"{expected!r}; found {actual!r}"
+            )
     for requirement in requirements:
         name = _dependency_name(requirement)
         if name in pyqt6_specs:
-            if requirement != pyqt6_specs[name]:
-                errors.append(
-                    f"windows-arm64 dependency {name!r} must use the reviewed PyQt6 range "
-                    f"{pyqt6_specs[name]!r}; found {requirement!r}"
-                )
             continue
         allowed = WINDOWS_ARM64_ALLOWLIST.get(name)
         if allowed is not None:

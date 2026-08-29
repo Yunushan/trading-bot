@@ -25,6 +25,7 @@ _WINDOWS_RESTART_REQUIRED_PACKAGE_IMPORTS = {
     "pyqt6": ("PyQt6",),
     "pyqt6-qt6": ("PyQt6",),
     "pyqt6-webengine": ("PyQt6",),
+    "pyqt6-webengine-qt6": ("PyQt6",),
 }
 _WINDOWS_ACCESS_DENIED_INSTALL_MARKERS = (
     "access is denied",
@@ -386,12 +387,14 @@ def _pyqt6_update_block_reason(
     if not required_keys.issubset(source_keys):
         return (
             "The PyQt6 dependency family is incomplete in the configured target list. "
-            "PyQt6, PyQt6-Qt6, and PyQt6-WebEngine must all be available before updating the GUI stack."
+            "PyQt6, PyQt6-Qt6, PyQt6-WebEngine, and PyQt6-WebEngine-Qt6 must all be available before "
+            "updating the GUI stack."
         )
     if selected_only and set(selected_by_key) != required_keys:
         return (
-            "PyQt6, PyQt6-Qt6, and PyQt6-WebEngine must be updated together so the GUI cannot start with "
-            "a mixed release line. Select all three PyQt6 entries and refresh their latest versions first."
+            "PyQt6, PyQt6-Qt6, PyQt6-WebEngine, and PyQt6-WebEngine-Qt6 must be updated together so the "
+            "GUI cannot start with a mixed release line. Select all four PyQt6 entries and refresh their "
+            "latest versions first."
         )
 
     family_by_key = selected_by_key if selected_only else {
@@ -1018,8 +1021,8 @@ def _run_dependency_update_worker(
                 "title": "PyQt6 dependency update needs restart",
                 "message": (
                     "The PyQt6 family is already loaded by this Windows session. Close all Trading Bot "
-                    "windows and background services, reopen the app, then update PyQt6, PyQt6-Qt6, and "
-                    "PyQt6-WebEngine together.\n\n"
+                    "windows and background services, reopen the app, then update PyQt6, PyQt6-Qt6, "
+                    "PyQt6-WebEngine, and PyQt6-WebEngine-Qt6 together.\n\n"
                     + details
                 ),
                 "refresh_versions": True,
@@ -1076,7 +1079,7 @@ def _run_dependency_update_worker(
                         "state": "running",
                         "phase": "Installing",
                         "current": "PyQt6 family",
-                        "label": "PyQt6 / Qt6 / WebEngine",
+                        "label": "PyQt6 / Qt6 / WebEngine / WebEngine-Qt6",
                         "total": total_packages,
                         "completed": completed_packages,
                         "installed": installed_packages,

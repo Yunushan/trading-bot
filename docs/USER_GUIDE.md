@@ -139,7 +139,7 @@ This tab lists the supported code languages and keeps the scaffolding paths orga
 
 **The GUI won’t start / missing Qt platform plugin**  
 Ensure the virtual environment is activated and reinstall the reviewed PyQt6
-family: `pip install "PyQt6>=6.11.0,<6.13.0" "PyQt6-Qt6>=6.11.0,<6.13.0" "PyQt6-WebEngine>=6.11.0,<6.13.0"`.
+family: `pip install "PyQt6>=6.11.0,<6.13.0" "PyQt6-Qt6>=6.11.0,<6.13.0" "PyQt6-WebEngine>=6.11.0,<6.13.0" "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0"`.
 Then run `python tools/check_pyqt6_compatibility.py --json` from the repository
 root to verify the runtime and WebEngine APIs.
 
