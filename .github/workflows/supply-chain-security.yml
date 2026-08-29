@@ -171,7 +171,12 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
-            if docker build --pull --provenance=false --sbom=false --file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .; then
+            if docker build --pull \
+              --provenance=false \
+              --sbom=false \
+              --build-arg BUILD_COMMIT="$GITHUB_SHA" \
+              --file docker/backend.Dockerfile \
+              --tag trading-bot-service:supply-chain .; then
               exit 0
             fi
 
@@ -181,6 +186,17 @@ jobs:
 
             sleep "$((attempt * 10))"
           done
+
+      - name: Verify image source revision label
+        if: steps.image-build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' trading-bot-service:supply-chain)"
+          if [[ "$image_revision" != "$GITHUB_SHA" ]]; then
+            echo "Container image source revision label does not match GITHUB_SHA." >&2
+            exit 1
+          fi
 
       - name: Verify runtime Python package versions
         if: steps.image-build.outcome == 'success'

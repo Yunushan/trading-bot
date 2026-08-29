@@ -1,0 +1,223 @@
+name: Deploy Production Read-only Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Immutable service image reference ending in @sha256:<64-hex-digest>."
+        required: true
+        type: string
+      build_commit:
+        description: "Full Git commit embedded in the image and rendered deployment."
+        required: true
+        type: string
+      confirmation:
+        description: "Type DEPLOY_READONLY_PRODUCTION to authorize the rollout."
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: production-readonly-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy immutable read-only service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: production
+    env:
+      DEPLOY_IMAGE: ${{ inputs.image }}
+      DEPLOY_COMMIT: ${{ inputs.build_commit }}
+      DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_REF_TYPE: ${{ github.ref_type }}
+      RELEASE_REF_PROTECTED: ${{ github.ref_protected }}
+      EXPECTED_SERVICE_BASE_URL: ${{ vars.PRODUCTION_SERVICE_API_ORIGIN }}
+    steps:
+      - name: Checkout protected release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: Languages/Python/pyproject.toml
+
+      - name: Install service dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python[service]"
+
+      - name: Validate release, source, and explicit authorization
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${DEPLOY_CONFIRMATION}" != "DEPLOY_READONLY_PRODUCTION" ]]; then
+            echo "The exact deployment confirmation phrase is required." >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_REF_TYPE}" != "tag" || ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Production deployment must be dispatched from a semantic version tag." >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_REF_PROTECTED}" != "true" ]]; then
+            echo "The release tag must be protected before production deployment." >&2
+            exit 1
+          fi
+          if [[ ! "${DEPLOY_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "build_commit must be a full lowercase 40-character SHA." >&2
+            exit 1
+          fi
+          if [[ "${DEPLOY_COMMIT}" != "${GITHUB_SHA}" || "$(git rev-parse HEAD)" != "${GITHUB_SHA}" ]]; then
+            echo "build_commit, github.sha, and the checked-out tag must identify the same commit." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "The deployment checkout must be clean." >&2
+            exit 1
+          fi
+          release_state="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')"
+          IFS=$'\t' read -r release_draft release_prerelease release_name <<< "${release_state}"
+          if [[ "${release_draft}" != "false" || "${release_prerelease}" != "false" || "${release_name}" != "${RELEASE_TAG}" ]]; then
+            echo "Only a published stable release may be deployed." >&2
+            exit 1
+          fi
+
+      - name: Render and validate immutable deployment
+        id: render
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/trading-bot-production-readonly.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/render_production_deployment.py \
+            --image "${DEPLOY_IMAGE}" \
+            --build-commit "${DEPLOY_COMMIT}" \
+            --output "${MANIFEST_PATH}" \
+            --json
+          python tools/check_production_deployment.py \
+            --manifest "${MANIFEST_PATH}" \
+            --require-rendered \
+            --json
+          echo "manifest_path=${MANIFEST_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify image digest and embedded source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_ref="$(printf '%s' "${DEPLOY_IMAGE}" | tr '[:upper:]' '[:lower:]')"
+          docker pull "${DEPLOY_IMAGE}"
+          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${DEPLOY_IMAGE}")"
+          if [[ "${image_revision}" != "${DEPLOY_COMMIT}" ]]; then
+            echo "The image label org.opencontainers.image.revision does not match the deployment commit." >&2
+            exit 1
+          fi
+          if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${DEPLOY_IMAGE}" | grep -F -- "${image_ref}" >/dev/null; then
+            echo "The pulled image did not resolve to the requested immutable digest." >&2
+            exit 1
+          fi
+
+      - name: Configure Kubernetes credentials
+        id: kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.PRODUCTION_KUBECONFIG_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${KUBECONFIG_B64}" ]]; then
+            echo "PRODUCTION_KUBECONFIG_B64 is required in the protected production environment." >&2
+            exit 1
+          fi
+          deploy_dir="$(mktemp -d "${RUNNER_TEMP}/trading-bot-deploy.XXXXXX")"
+          kubeconfig_path="${deploy_dir}/kubeconfig"
+          umask 077
+          echo "deploy_dir=${deploy_dir}" >> "${GITHUB_OUTPUT}"
+          echo "kubeconfig_path=${kubeconfig_path}" >> "${GITHUB_OUTPUT}"
+          printf '%s' "${KUBECONFIG_B64}" | base64 --decode > "${kubeconfig_path}"
+          chmod 600 "${kubeconfig_path}"
+
+      - name: Validate Kubernetes manifest server-side
+        env:
+          KUBECONFIG: ${{ steps.kubeconfig.outputs.kubeconfig_path }}
+          MANIFEST_PATH: ${{ steps.render.outputs.manifest_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl version --client
+          kubectl apply \
+            --server-side \
+            --dry-run=server \
+            --field-manager=trading-bot-production-deployer \
+            --filename "${MANIFEST_PATH}"
+
+      - name: Apply and wait for rollout
+        env:
+          KUBECONFIG: ${{ steps.kubeconfig.outputs.kubeconfig_path }}
+          MANIFEST_PATH: ${{ steps.render.outputs.manifest_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl apply \
+            --server-side \
+            --field-manager=trading-bot-production-deployer \
+            --filename "${MANIFEST_PATH}"
+          kubectl -n trading-bot-readonly rollout status \
+            deployment/trading-bot-readonly-api \
+            --timeout=10m
+          kubectl -n trading-bot-readonly get deployment/trading-bot-readonly-api \
+            -o jsonpath='{.status.updatedReplicas}/{.status.readyReplicas}/{.status.availableReplicas}'
+          echo
+
+      - name: Verify deployed HTTPS service identity
+        env:
+          BOT_SERVICE_API_TOKEN: ${{ secrets.BOT_SERVICE_API_TOKEN }}
+          SERVICE_BASE_URL: ${{ vars.PRODUCTION_SERVICE_API_ORIGIN }}
+          PROBE_OUTPUT: ${{ runner.temp }}/production-readonly-quick-probe.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPECTED_SERVICE_BASE_URL}" || "${SERVICE_BASE_URL}" != "${EXPECTED_SERVICE_BASE_URL}" ]]; then
+            echo "PRODUCTION_SERVICE_API_ORIGIN must be configured and stable." >&2
+            exit 1
+          fi
+          if [[ ! "${SERVICE_BASE_URL}" =~ ^https://[^/?#]+$ || -z "${BOT_SERVICE_API_TOKEN}" ]]; then
+            echo "A protected HTTPS origin and service token are required for post-deploy verification." >&2
+            exit 1
+          fi
+          python tools/run_service_sustained_probe.py \
+            --profile quick \
+            --base-url "${SERVICE_BASE_URL}" \
+            --api-token-env BOT_SERVICE_API_TOKEN \
+            --output "${PROBE_OUTPUT}" \
+            --json
+
+      - name: Upload deployment evidence
+        if: ${{ always() && steps.render.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: production-readonly-deployment-${{ github.run_id }}
+          path: |
+            ${{ steps.render.outputs.manifest_path }}
+            ${{ runner.temp }}/production-readonly-quick-probe.json
+          if-no-files-found: error
+
+      - name: Remove temporary Kubernetes credentials
+        if: ${{ always() && steps.kubeconfig.outputs.deploy_dir != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f -- "${{ steps.kubeconfig.outputs.kubeconfig_path }}"
+          rmdir -- "${{ steps.kubeconfig.outputs.deploy_dir }}" 2>/dev/null || true

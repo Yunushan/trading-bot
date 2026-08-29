@@ -58,8 +58,9 @@ Scrape authenticated production metrics from
 secret store or credential file. Load
 `docker/monitoring/prometheus-alerts.json` as a Prometheus rule file and route
 critical alerts to an actively monitored channel. Confirm that unavailable,
-read-error-rate, stale-snapshot, open-circuit, and unresolved-order-intent alerts
-reach the operator before declaring a deployment ready. Use `X-Request-ID` from
+read-error-rate, stale-snapshot, metric-cardinality-overflow, open-circuit, and
+unresolved-order-intent alerts reach the operator before declaring a deployment
+ready. Use `X-Request-ID` from
 service responses to correlate proxy and application incidents without placing
 credentials or query values in logs or labels.
 
@@ -135,6 +136,10 @@ before publishing a release:
 
 - require at least one independent reviewer;
 - restrict deployment branches/tags to version tags such as `v*`;
+- configure an active repository tag ruleset for version tags such as `v*`, so
+  `github.ref_protected` is true for stable publication;
+- require platform publishers to finish their prerelease candidate uploads,
+  then dispatch `Finalize Stable Release` from that same protected tag;
 - keep release credentials and signing material in environment secrets, never
   in workflow inputs or committed files; and
 - review the platform evidence and release manifest before approving the job.

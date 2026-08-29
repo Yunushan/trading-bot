@@ -596,11 +596,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("rust-dependency-audit-report", workflow)
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
         self.assertIn("container-vulnerability-audit", workflow)
-        self.assertIn(
-            "docker build --pull --provenance=false --sbom=false "
-            "--file docker/backend.Dockerfile --tag trading-bot-service:supply-chain .",
-            workflow,
-        )
+        self.assertIn("docker build --pull \\", workflow)
+        self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', workflow)
+        self.assertIn("Verify image source revision label", workflow)
         self.assertIn("id: image-build", workflow)
         self.assertIn("if: steps.image-build.outcome == 'success'", workflow)
         self.assertIn(
@@ -612,24 +610,25 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn('exit-code: "1"', workflow)
         self.assertIn("if: always() && steps.trivy.outcome != 'skipped'", workflow)
 
-    def test_rust_audit_policy_is_exact_time_bounded_and_excludes_fixed_rand_advisory(self):
+    def test_rust_audit_policy_is_exact_time_bounded_and_excludes_fixed_advisories(self):
         policy = json.loads((REPO_ROOT / "tools" / "rust-audit-policy.json").read_text(encoding="utf-8"))
         exceptions = policy["exceptions"]
 
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(18, len(exceptions))
+        self.assertEqual(17, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
         }
         self.assertEqual(len(exceptions), len(identities))
         self.assertNotIn(("unsound", "RUSTSEC-2026-0097", "rand", "0.9.2"), identities)
+        self.assertNotIn(("unsound", "RUSTSEC-2024-0429", "glib", "0.18.5"), identities)
         self.assertIn(("yanked", "YANKED", "chacha20", "0.10.1"), identities)
         for exception in exceptions:
             with self.subTest(advisory=exception["id"], package=exception["package"]):
-                expected_reviewed = "2026-08-29" if exception["id"] == "YANKED" else "2026-08-26"
+                expected_reviewed = "2026-08-28" if exception["id"] == "YANKED" else "2026-08-26"
                 self.assertEqual(expected_reviewed, exception["reviewed"])
                 self.assertEqual("2026-10-10", exception["expires"])
                 self.assertTrue(exception["scope"])
@@ -640,6 +639,26 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
         self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
         self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
+
+        rust_manifest = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('glib = { path = "../../vendor/glib-0.18.5" }', rust_manifest)
+        glib_lock_entry = cargo_lock.split('name = "glib"\n', 1)[1].split("\n\n", 1)[0]
+        self.assertNotIn("source =", glib_lock_entry)
+        self.assertNotIn("checksum =", glib_lock_entry)
+
+        glib_source = (
+            REPO_ROOT / "vendor" / "glib-0.18.5" / "src" / "variant_iter.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("let mut p: *mut libc::c_char", glib_source)
+        self.assertIn("&mut p", glib_source)
+        self.assertNotIn("let p: *mut libc::c_char", glib_source)
+        patch_notes = (REPO_ROOT / "vendor" / "glib-0.18.5" / "PATCH.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("05dff0ee696f9bcd8617cd48c4b812d046d440cb", patch_notes)
+        self.assertIn("233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5", patch_notes)
 
     def test_rust_audit_policy_accepts_only_documented_yanked_warning_shape(self):
         checker = _load_script_module("check_rust_audit_policy", RUST_AUDIT_POLICY_SCRIPT)
@@ -682,23 +701,31 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("cargo audit warning in yanked is malformed", result["errors"])
 
-    def test_mobile_node_audit_exception_requires_current_executable_mitigation_evidence(self):
+    def test_mobile_production_lockfile_uses_patched_image_size_fork(self):
         policy = json.loads((REPO_ROOT / "tools" / "node-audit-policy.json").read_text(encoding="utf-8"))
-        exception = policy["projects"]["apps/mobile-client"]["exceptions"][0]
-        mobile_package = json.loads(
-            (REPO_ROOT / "apps" / "mobile-client" / "package.json").read_text(encoding="utf-8")
-        )
+        mobile_root = REPO_ROOT / "apps" / "mobile-client"
+        mobile_package = json.loads((mobile_root / "package.json").read_text(encoding="utf-8"))
+        lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
 
-        self.assertEqual("image-size", exception["package"])
-        self.assertEqual("breaking-graph-only", exception["fix_availability"])
-        self.assertEqual("react-native", exception["verified_fix_target"])
-        self.assertEqual("0.86.3", exception["verified_fix_version"])
-        self.assertEqual("2026-08-26", exception["reviewed"])
-        self.assertEqual("2026-09-30", exception["expires"])
-        self.assertEqual("mobile-image-size-build-only-v1", exception["mitigation_control"])
-        self.assertEqual("1.2.1", exception["verified_package_version"])
-        self.assertEqual(["metro@0.87.0"], exception["verified_consumers"])
-        self.assertNotIn("require_major_fix", exception)
+        self.assertEqual([], policy["projects"]["apps/mobile-client"]["exceptions"])
+        self.assertEqual("npm:image-size-next@1.2.2", mobile_package["overrides"]["image-size"])
+        resolved = [
+            (package_path, metadata)
+            for package_path, metadata in lockfile["packages"].items()
+            if package_path.endswith("/node_modules/image-size")
+        ]
+        self.assertEqual(1, len(resolved))
+        package_path, metadata = resolved[0]
+        self.assertEqual(
+            "node_modules/@react-native/community-cli-plugin/node_modules/image-size",
+            package_path,
+        )
+        self.assertEqual("image-size-next", metadata["name"])
+        self.assertEqual("1.2.2", metadata["version"])
+        self.assertEqual(
+            "sha512-Pd3CJ2+Ifk2H2jWikkoz2BSZgnuF3Qsea4gQmj2gtiOtYpGWBl7elj8EXnFMiY5PaYNruTTLD0hQ0UWK7pz9xA==",
+            metadata["integrity"],
+        )
         self.assertIn("check_mobile_image_size_exposure.cjs", mobile_package["scripts"]["test"])
 
     def test_mobile_production_lockfile_overrides_brace_expansion_security_fix(self):
@@ -738,7 +765,11 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("- language: c-cpp", workflow)
         self.assertIn("- language: rust", workflow)
         self.assertIn("build-mode: ${{ matrix.build-mode }}", workflow)
+        self.assertIn("config-file: ./.github/codeql-config.yml", workflow)
         self.assertEqual(4, workflow.count("build-mode: none"))
+        codeql_config = (REPO_ROOT / ".github" / "codeql-config.yml").read_text(encoding="utf-8")
+        self.assertIn("paths-ignore:", codeql_config)
+        self.assertIn("vendor/glib-0.18.5/**", codeql_config)
         for action_name in ("init", "analyze"):
             self.assertRegex(
                 workflow,
@@ -1123,6 +1154,65 @@ class DependencyReproducibilityTests(unittest.TestCase):
             self.assertFalse(nested_plan_path.exists())
             self.assertFalse(legacy_plan_path.exists())
             self.assertTrue((root / "artifacts").exists())
+
+    def test_workspace_cleanup_removes_nested_release_platform_download_artifacts(self):
+        module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            download_dir = (
+                root
+                / "release-platform-evidence"
+                / "release-platform-evidence-browser-chrome-ubuntu_24_04_x64"
+            )
+            download_dir.mkdir(parents=True)
+            downloaded_json = download_dir / "browser-chrome-ubuntu_24_04_x64.json"
+            downloaded_json.write_text('{"status": "passed"}\n', encoding="utf-8")
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(module, "_ignored_paths", return_value=[]),
+            ):
+                dry_run = module.clean_workspace_artifacts(apply=False)
+                payload = module.clean_workspace_artifacts(apply=True)
+
+            expected_path = (
+                "release-platform-evidence/"
+                "release-platform-evidence-browser-chrome-ubuntu_24_04_x64"
+            )
+            self.assertEqual([expected_path], dry_run["planned"])
+            self.assertEqual([expected_path], payload["removed"])
+            self.assertFalse(download_dir.exists())
+            self.assertFalse(downloaded_json.exists())
+            self.assertTrue((root / "release-platform-evidence").exists())
+
+    def test_workspace_cleanup_removes_nested_rust_runtime_download_artifacts(self):
+        module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            download_dir = (
+                root
+                / "artifacts"
+                / "rust-native-runtime-evidence"
+                / "downloads"
+                / "run-123"
+            )
+            download_dir.mkdir(parents=True)
+            downloaded_json = download_dir / "rust-native-live-market-data-smoke.json"
+            downloaded_json.write_text('{"status": "passed"}\n', encoding="utf-8")
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(module, "_ignored_paths", return_value=[]),
+            ):
+                dry_run = module.clean_workspace_artifacts(apply=False)
+                payload = module.clean_workspace_artifacts(apply=True)
+
+            expected_path = "artifacts/rust-native-runtime-evidence/downloads"
+            self.assertEqual([expected_path], dry_run["planned"])
+            self.assertEqual([expected_path], payload["removed"])
+            self.assertFalse(download_dir.exists())
+            self.assertFalse(downloaded_json.exists())
+            self.assertTrue((root / "artifacts" / "rust-native-runtime-evidence").exists())
 
     def test_workspace_cleanup_tool_can_opt_in_to_stale_rust_runtime_evidence(self):
         module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
 import os
+import re
 import sys
 import urllib.parse
 from pathlib import Path
@@ -142,16 +143,44 @@ def _resolve_dist_version(*names: str) -> str | None:
     return None
 
 
+def _version_series_text(value: str | None) -> str | None:
+    match = re.match(r"^\s*(\d+)\.(\d+)", str(value or ""))
+    if not match:
+        return None
+    return f"{match.group(1)}.{match.group(2)}"
+
+
 def _tradingview_embed_health() -> tuple[bool, str]:
     if sys.platform != "win32":
         return True, ""
-    pyqt_ver = _resolve_dist_version("PyQt6", "pyqt6")
-    web_ver = _resolve_dist_version("PyQt6-WebEngine", "pyqt6-webengine", "PyQt6_WebEngine")
-    if pyqt_ver and web_ver:
-        pyqt_norm = pyqt_ver.split("+", 1)[0]
-        web_norm = web_ver.split("+", 1)[0]
-        if pyqt_norm != web_norm:
-            return False, f"TradingView embed disabled: PyQt6 {pyqt_ver} and PyQt6-WebEngine {web_ver} must match."
+    package_versions = {
+        "PyQt6": _resolve_dist_version("PyQt6", "pyqt6"),
+        "PyQt6-Qt6": _resolve_dist_version("PyQt6-Qt6", "pyqt6-qt6", "PyQt6_Qt6"),
+        "PyQt6-WebEngine": _resolve_dist_version(
+            "PyQt6-WebEngine", "pyqt6-webengine", "PyQt6_WebEngine"
+        ),
+        "PyQt6-WebEngine-Qt6": _resolve_dist_version(
+            "PyQt6-WebEngine-Qt6",
+            "pyqt6-webengine-qt6",
+            "PyQt6_WebEngine_Qt6",
+        ),
+    }
+    available_versions = {name: version for name, version in package_versions.items() if version}
+    if len(available_versions) >= 2:
+        package_series = {
+            name: _version_series_text(version)
+            for name, version in available_versions.items()
+        }
+        if any(series is None for series in package_series.values()) or len(set(package_series.values())) > 1:
+            formatted = ", ".join(
+                f"{name}={version}"
+                for name, version in available_versions.items()
+            )
+            return (
+                False,
+                f"TradingView embed disabled: PyQt6 family packages ({formatted}) must share the same "
+                "major.minor release series.",
+            )
     exec_dir = ""
     try:
         exec_dir = QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.LibraryPath.LibraryExecutablesPath)

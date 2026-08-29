@@ -33,6 +33,10 @@ RUN --mount=type=secret,id=pip_ca,required=false,target=/run/secrets/pip_ca \
 
 FROM cgr.dev/chainguard/python:latest@sha256:ee37f5e4fb445732409626797dccb6f2a6337872def2bab48729ee61b335fa77
 
+ARG BUILD_COMMIT=unknown
+
+LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     VIRTUAL_ENV=/opt/venv \

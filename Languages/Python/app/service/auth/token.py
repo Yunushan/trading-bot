@@ -14,11 +14,23 @@ from pathlib import Path
 MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH = 32
 SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV = "BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES"
 SERVICE_API_TOKEN_FILE_ENV = "BOT_SERVICE_API_TOKEN_FILE"  # noqa: S105 - environment variable name.
+SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ_ENV = "BOT_SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ"
 SERVICE_API_TLS_CERTFILE_ENV = "BOT_SERVICE_API_TLS_CERTFILE"
 SERVICE_API_TLS_KEYFILE_ENV = "BOT_SERVICE_API_TLS_KEYFILE"
 SERVICE_API_TRUST_PROXY_TLS_ENV = "BOT_SERVICE_API_TRUST_PROXY_TLS"
 SERVICE_API_TRUST_LOOPBACK_PROXY_ENV = "BOT_SERVICE_API_TRUST_LOOPBACK_PROXY"
 MAX_SERVICE_API_TOKEN_FILE_BYTES = 4096
+
+
+def _strict_env_flag(name: str) -> bool:
+    raw = str(os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be an explicit boolean value.")
 
 
 def _service_api_token_from_file() -> str:
@@ -35,10 +47,22 @@ def _service_api_token_from_file() -> str:
                 raise RuntimeError(
                     f"{SERVICE_API_TOKEN_FILE_ENV} exceeds the {MAX_SERVICE_API_TOKEN_FILE_BYTES}-byte safety limit."
                 )
-            if os.name != "nt" and file_stat.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-                raise RuntimeError(
-                    f"{SERVICE_API_TOKEN_FILE_ENV} must not grant group or other permissions on POSIX hosts."
-                )
+            if os.name != "nt":
+                if file_stat.st_mode & stat.S_IRWXO:
+                    raise RuntimeError(
+                        f"{SERVICE_API_TOKEN_FILE_ENV} must not grant other-user permissions on POSIX hosts."
+                    )
+                group_permissions = file_stat.st_mode & stat.S_IRWXG
+                if group_permissions:
+                    if group_permissions != stat.S_IRGRP or not _strict_env_flag(
+                        SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ_ENV
+                    ):
+                        raise RuntimeError(
+                            f"{SERVICE_API_TOKEN_FILE_ENV} must not grant group or other permissions on POSIX hosts."
+                        )
+                    effective_groups = {os.getegid(), *os.getgroups()}
+                    if file_stat.st_gid not in effective_groups:
+                        raise RuntimeError(f"{SERVICE_API_TOKEN_FILE_ENV} group must match an effective process group.")
             return handle.read().strip()
     except FileNotFoundError as exc:
         raise RuntimeError(f"{SERVICE_API_TOKEN_FILE_ENV} does not point to a readable file.") from exc
@@ -104,8 +128,7 @@ def _validate_service_api_tls_files() -> tuple[str, str, bool, bool]:
         return certfile, keyfile, trusted_proxy_tls, trusted_loopback_proxy
     if not certfile or not keyfile:
         raise RuntimeError(
-            f"Configure both {SERVICE_API_TLS_CERTFILE_ENV} and {SERVICE_API_TLS_KEYFILE_ENV}, "
-            "or remove both settings."
+            f"Configure both {SERVICE_API_TLS_CERTFILE_ENV} and {SERVICE_API_TLS_KEYFILE_ENV}, or remove both settings."
         )
     if not Path(certfile).is_file():
         raise RuntimeError("The configured non-loopback service API TLS certificate or key file does not exist.")
@@ -113,7 +136,9 @@ def _validate_service_api_tls_files() -> tuple[str, str, bool, bool]:
         with Path(keyfile).open("rb") as handle:
             file_stat = os.fstat(handle.fileno())
     except FileNotFoundError as exc:
-        raise RuntimeError("The configured non-loopback service API TLS certificate or key file does not exist.") from exc
+        raise RuntimeError(
+            "The configured non-loopback service API TLS certificate or key file does not exist."
+        ) from exc
     except OSError as exc:
         raise RuntimeError("Unable to read the configured service API TLS private-key file.") from exc
     if not stat.S_ISREG(file_stat.st_mode):
@@ -130,8 +155,7 @@ def validate_service_api_exposure(host: str | None, token: str | None = None) ->
     resolved_token = resolve_service_api_token(token)
     if not resolved_token:
         raise RuntimeError(
-            "BOT_SERVICE_API_TOKEN or --api-token is required when the service API "
-            "binds to a non-loopback host."
+            "BOT_SERVICE_API_TOKEN or --api-token is required when the service API binds to a non-loopback host."
         )
     if len(resolved_token) < MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH:
         raise RuntimeError(
