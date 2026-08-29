@@ -637,6 +637,12 @@ jobs:
           python Languages/Python/tools/check_dependency_metadata.py
           python tools/check_pyqt6_compatibility.py --json
 
+      - name: Smoke-test PyQt6 WebEngine on Python 3.15
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/desktop-pyqt/main.py --smoke-webengine
+
       - name: Run Python 3.15 release smoke
         shell: bash
         run: |
