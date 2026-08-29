@@ -75,6 +75,12 @@ jobs:
           set -euo pipefail
           python tools/check_pyqt6_compatibility.py --require-version "${PYQT6_TARGET}" --json
 
+      - name: Smoke-test the canonical desktop entrypoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/desktop-pyqt/main.py --smoke
+
       - name: Run focused PyQt6 compatibility tests
         shell: bash
         working-directory: Languages/Python
