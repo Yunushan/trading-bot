@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
 import os
+import re
 import sys
 import urllib.parse
 from pathlib import Path
@@ -142,16 +143,27 @@ def _resolve_dist_version(*names: str) -> str | None:
     return None
 
 
+def _version_series_text(value: str | None) -> str | None:
+    match = re.match(r"^\s*(\d+)\.(\d+)", str(value or ""))
+    if not match:
+        return None
+    return f"{match.group(1)}.{match.group(2)}"
+
+
 def _tradingview_embed_health() -> tuple[bool, str]:
     if sys.platform != "win32":
         return True, ""
     pyqt_ver = _resolve_dist_version("PyQt6", "pyqt6")
     web_ver = _resolve_dist_version("PyQt6-WebEngine", "pyqt6-webengine", "PyQt6_WebEngine")
     if pyqt_ver and web_ver:
-        pyqt_norm = pyqt_ver.split("+", 1)[0]
-        web_norm = web_ver.split("+", 1)[0]
-        if pyqt_norm != web_norm:
-            return False, f"TradingView embed disabled: PyQt6 {pyqt_ver} and PyQt6-WebEngine {web_ver} must match."
+        pyqt_series = _version_series_text(pyqt_ver)
+        web_series = _version_series_text(web_ver)
+        if pyqt_series is None or web_series is None or pyqt_series != web_series:
+            return (
+                False,
+                f"TradingView embed disabled: PyQt6 {pyqt_ver} and PyQt6-WebEngine {web_ver} "
+                "must share the same major.minor release series.",
+            )
     exec_dir = ""
     try:
         exec_dir = QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.LibraryPath.LibraryExecutablesPath)

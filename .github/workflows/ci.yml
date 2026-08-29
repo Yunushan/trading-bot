@@ -215,6 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           python Languages/Python/tools/check_dependency_metadata.py
+          python tools/check_pyqt6_compatibility.py --json
           python tools/check_python_version_support.py --current
 
       - name: Check service API contract artifacts
@@ -439,6 +440,9 @@ jobs:
           set -euo pipefail
           python tools/check_python_version_support.py --current
           python Languages/Python/tools/check_dependency_metadata.py
+          if [[ "${{ matrix.python-version }}" == "3.15" ]]; then
+            python tools/check_pyqt6_compatibility.py --json
+          fi
 
       - name: Compile service/core compatibility surface
         shell: bash
@@ -504,6 +508,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           python tools/check_python_version_support.py --current
           python Languages/Python/tools/check_dependency_metadata.py
+          python tools/check_pyqt6_compatibility.py --json
 
       - name: Build and smoke-test Python 3.15 executable
         shell: pwsh
@@ -604,6 +609,7 @@ jobs:
           set -euo pipefail
           python tools/check_python_version_support.py --current
           python Languages/Python/tools/check_dependency_metadata.py
+          python tools/check_pyqt6_compatibility.py --json
 
       - name: Run Python 3.15 release smoke
         shell: bash

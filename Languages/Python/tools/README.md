@@ -17,6 +17,7 @@ Run all commands from `Languages/Python/` unless a script says otherwise.
 | File | Purpose |
 | --- | --- |
 | `tools/check_dependency_metadata.py` | Verifies Python version metadata, dependency pin policy, requirement shim files, and CI install surface |
+| `../../tools/check_pyqt6_compatibility.py` | Verifies the reviewed PyQt6 package range, Qt/PyQt runtime versions, and required WebEngine APIs |
 | `tools/check_service_api_contracts.py` | Checks `apps/service-api/contracts/*` and can refresh the generated route contract with `--write` |
 | `tools/run_python_tests.py` | Runs the full Python test suite after checking desktop/service/dev dependencies |
 | `tools/run_service_tests.py` | Runs the focused service API/unit/integration test modules as one stable command |
@@ -119,6 +120,12 @@ Dependency metadata check:
 
 ```bash
 python tools/check_dependency_metadata.py
+```
+
+PyQt6 compatibility check (from the repository root or this directory):
+
+```bash
+python ../../tools/check_pyqt6_compatibility.py --json
 ```
 
 Service API contract check:

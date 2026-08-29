@@ -36,7 +36,7 @@ class DependencyVersionRequirementTests(unittest.TestCase):
     def test_normal_package_requirements_still_extract_names(self):
         cases = {
             "requests==2.33.1": "requests",
-            "PyQt6[desktop]==6.11.0": "PyQt6",
+            "PyQt6[desktop]>=6.11.0,<6.13.0": "PyQt6",
             "python-binance>=1.0": "python-binance",
             "package_name @ https://example.invalid/package-name.whl": "package_name",
         }

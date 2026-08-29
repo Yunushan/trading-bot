@@ -300,6 +300,22 @@ The `dev` extra includes the bounded `httpx2` FastAPI `TestClient` transport
 dependency used by service API contract tests. The `requirements*.txt`
 files below are lightweight runtime shims for launching specific app surfaces.
 
+### PyQt6 compatibility
+
+The desktop dependency surface supports the reviewed PyQt6 range
+`>=6.11.0,<6.13.0`, which admits the future 6.12 release line while keeping
+the binding, Qt runtime, and WebEngine packages within one reviewed
+major/minor series.
+After installing the desktop extra, verify the installed runtime and required
+WebEngine APIs with:
+
+```bash
+python tools/check_pyqt6_compatibility.py --json
+```
+
+When PyQt6 6.12 is published, validate it explicitly with
+`python tools/check_pyqt6_compatibility.py --require-version 6.12.0 --json`.
+
 ### Windows
 
 **One-click (recommended if Python ≥ 3.10 is already installed):**
@@ -329,7 +345,7 @@ pip install -r requirements.txt
 python3 ../../apps/desktop-pyqt/main.py
 ```
 
-> **PyQt note:** If the GUI fails to launch after dependency installation, run `pip install PyQt6 PyQt6-Qt6` to pull the Qt runtime explicitly.
+> **PyQt note:** If the GUI fails to launch after dependency installation, reinstall the reviewed desktop range with `pip install "PyQt6>=6.11.0,<6.13.0" "PyQt6-Qt6>=6.11.0,<6.13.0" "PyQt6-WebEngine>=6.11.0,<6.13.0"`, then run `python tools/check_pyqt6_compatibility.py --json` from the repository root.
 
 ### Linux (Ubuntu / Debian / Fedora / Arch)
 

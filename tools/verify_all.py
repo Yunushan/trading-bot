@@ -261,6 +261,15 @@ def _checks(
             remediation="Keep pyproject Python metadata and the CI compatibility matrix aligned for Python 3.10-3.15.",
         ),
         Check(
+            "PyQt6 compatibility",
+            (python, "tools/check_pyqt6_compatibility.py", "--json"),
+            root,
+            remediation=(
+                "Install the canonical desktop dependency surface and rerun "
+                "python tools/check_pyqt6_compatibility.py --json."
+            ),
+        ),
+        Check(
             "release platform matrix",
             (python, "tools/check_release_platform_matrix.py", "--schema-only"),
             root,

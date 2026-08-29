@@ -14,6 +14,7 @@ PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parents[1]
 PYPROJECT_PATH = PYTHON_ROOT / "pyproject.toml"
 PYINSTALLER_REQUIREMENT = "pyinstaller==6.22.0"
+PYQT6_PACKAGE_NAMES = ("PyQt6", "PyQt6-Qt6", "PyQt6-WebEngine")
 
 EXPECTED_REQUIREMENT_SHIMS = {
     "requirements.backend.txt": ".",
@@ -83,6 +84,53 @@ def _load_pyproject() -> dict[str, Any]:
     return tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
 
 
+def _pyqt6_contract(pyproject: dict[str, Any]) -> tuple[str, str, str]:
+    tool = pyproject.get("tool") if isinstance(pyproject.get("tool"), dict) else {}
+    trading_bot = tool.get("trading-bot") if isinstance(tool.get("trading-bot"), dict) else {}
+    contract = trading_bot.get("pyqt6") if isinstance(trading_bot.get("pyqt6"), dict) else {}
+    return (
+        str(contract.get("minimum_version") or "").strip(),
+        str(contract.get("maximum_version_exclusive") or "").strip(),
+        str(contract.get("future_target_version") or "").strip(),
+    )
+
+
+def _release_version_tuple(value: str) -> tuple[int, int, int] | None:
+    match = re.fullmatch(r"\s*(\d+)\.(\d+)(?:\.(\d+))?(?:[-+].*)?\s*", str(value or ""))
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3) or 0)
+
+
+def _pyqt6_dependency_specs(pyproject: dict[str, Any]) -> dict[str, str]:
+    minimum, maximum, _future = _pyqt6_contract(pyproject)
+    if _release_version_tuple(minimum) is None or _release_version_tuple(maximum) is None:
+        return {}
+    return {
+        name.lower().replace("_", "-"): f"{name}>={minimum},<{maximum}"
+        for name in PYQT6_PACKAGE_NAMES
+    }
+
+
+def _check_pyqt6_contract(pyproject: dict[str, Any]) -> list[str]:
+    minimum, maximum, future = _pyqt6_contract(pyproject)
+    minimum_tuple = _release_version_tuple(minimum)
+    maximum_tuple = _release_version_tuple(maximum)
+    future_tuple = _release_version_tuple(future)
+    errors: list[str] = []
+    if minimum_tuple is None:
+        errors.append("PyQt6 contract minimum_version must be a semantic version")
+    if maximum_tuple is None:
+        errors.append("PyQt6 contract maximum_version_exclusive must be a semantic version")
+    if future_tuple is None:
+        errors.append("PyQt6 contract future_target_version must be a semantic version")
+    if minimum_tuple and maximum_tuple and minimum_tuple >= maximum_tuple:
+        errors.append("PyQt6 contract minimum_version must be lower than maximum_version_exclusive")
+    if minimum_tuple and maximum_tuple and future_tuple and not (minimum_tuple <= future_tuple < maximum_tuple):
+        errors.append("PyQt6 contract future_target_version must be inside the supported version range")
+    return errors
+
+
 def _strip_marker(requirement: str) -> str:
     return str(requirement or "").split(";", 1)[0].strip()
 
@@ -148,6 +196,23 @@ def _check_exact_group(group_name: str, requirements: list[str]) -> list[str]:
     return errors
 
 
+def _check_pyqt6_group(
+    group_name: str,
+    requirements: list[str],
+    expected_specs: dict[str, str],
+) -> list[str]:
+    errors: list[str] = []
+    by_name = {_dependency_name(requirement): requirement for requirement in requirements}
+    for name, expected in expected_specs.items():
+        actual = by_name.get(name)
+        if actual != expected:
+            errors.append(
+                f"{group_name} dependency {name!r} must use the reviewed PyQt6 range "
+                f"{expected!r}; found {actual!r}"
+            )
+    return errors
+
+
 def _check_runtime_python_version_pins(requirements: list[str]) -> list[str]:
     errors: list[str] = []
     by_name: dict[str, set[str]] = {}
@@ -178,10 +243,19 @@ def _check_python_315_fallback_dependencies(requirements: list[str]) -> list[str
     return errors
 
 
-def _check_windows_arm64_group(requirements: list[str]) -> list[str]:
+def _check_windows_arm64_group(
+    requirements: list[str], pyqt6_specs: dict[str, str]
+) -> list[str]:
     errors: list[str] = []
     for requirement in requirements:
         name = _dependency_name(requirement)
+        if name in pyqt6_specs:
+            if requirement != pyqt6_specs[name]:
+                errors.append(
+                    f"windows-arm64 dependency {name!r} must use the reviewed PyQt6 range "
+                    f"{pyqt6_specs[name]!r}; found {requirement!r}"
+                )
+            continue
         allowed = WINDOWS_ARM64_ALLOWLIST.get(name)
         if allowed is not None:
             if requirement != allowed:
@@ -215,9 +289,18 @@ def _check_dependency_groups(pyproject: dict[str, Any]) -> list[str]:
     errors.extend(_check_exact_group("runtime", runtime_dependencies))
     errors.extend(_check_runtime_python_version_pins(runtime_dependencies))
     errors.extend(_check_python_315_fallback_dependencies(runtime_dependencies))
-    errors.extend(_check_exact_group("desktop", list(optional.get("desktop") or [])))
+    errors.extend(_check_pyqt6_contract(pyproject))
+    pyqt6_specs = _pyqt6_dependency_specs(pyproject)
+    desktop_dependencies = list(optional.get("desktop") or [])
+    errors.extend(_check_pyqt6_group("desktop", desktop_dependencies, pyqt6_specs))
+    errors.extend(
+        _check_exact_group(
+            "desktop",
+            [requirement for requirement in desktop_dependencies if _dependency_name(requirement) not in pyqt6_specs],
+        )
+    )
     errors.extend(_check_exact_group("service", list(optional.get("service") or [])))
-    errors.extend(_check_windows_arm64_group(list(optional.get("windows-arm64") or [])))
+    errors.extend(_check_windows_arm64_group(list(optional.get("windows-arm64") or []), pyqt6_specs))
     errors.extend(_check_dev_group(list(optional.get("dev") or [])))
     security_dependencies = list(optional.get("security") or [])
     actual_security = {_dependency_name(requirement): requirement for requirement in security_dependencies}
@@ -231,10 +314,14 @@ def _check_dependency_groups(pyproject: dict[str, Any]) -> list[str]:
 
 def _check_ci_install_surface() -> list[str]:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    expected = 'python -m pip install -e "./Languages/Python[desktop,service,dev]"'
-    if expected not in workflow:
-        return [f"ci.yml must install the canonical editable dev surface: {expected}"]
-    return []
+    errors: list[str] = []
+    expected_install = 'python -m pip install -e "./Languages/Python[desktop,service,dev]"'
+    if expected_install not in workflow:
+        errors.append(f"ci.yml must install the canonical editable dev surface: {expected_install}")
+    expected_pyqt_check = "python tools/check_pyqt6_compatibility.py --json"
+    if expected_pyqt_check not in workflow:
+        errors.append(f"ci.yml must run the PyQt6 compatibility gate: {expected_pyqt_check}")
+    return errors
 
 
 def _check_packaging_toolchain() -> list[str]:
@@ -287,7 +374,7 @@ def main() -> int:
     print("[PASS] Python version support metadata is consistent")
     for filename, expected in EXPECTED_REQUIREMENT_SHIMS.items():
         print(f"[PASS] {filename} -> {expected}")
-    print("[PASS] runtime, desktop, service, and Windows ARM64 dependencies are release-pinned")
+    print("[PASS] runtime, desktop, service, and Windows ARM64 dependencies use reviewed release pins/ranges")
     print("[PASS] dev dependencies use reviewed bounded ranges")
     print(f"[PASS] packaging toolchain uses {PYINSTALLER_REQUIREMENT}")
     print("[PASS] CI installs the canonical editable dependency surface")

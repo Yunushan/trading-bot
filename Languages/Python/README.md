@@ -96,6 +96,24 @@ dependency used by service API contract tests. Use the
 `requirements*.txt` shims below when you only need a runtime install for one app
 surface.
 
+### PyQt6 compatibility
+
+The desktop extra uses the reviewed range `PyQt6>=6.11.0,<6.13.0`, together
+with matching `PyQt6-Qt6` and `PyQt6-WebEngine` ranges. This keeps current
+6.11 installs within the supported contract while admitting PyQt6 6.12 when
+that release line is available. Verify the package and runtime API contract
+from this directory:
+
+```bash
+python ../../tools/check_pyqt6_compatibility.py --json
+```
+
+Once 6.12 is published, require that release series explicitly:
+
+```bash
+python ../../tools/check_pyqt6_compatibility.py --require-version 6.12.0 --json
+```
+
 ### Windows
 
 One-click launch:
@@ -141,7 +159,7 @@ python3 ../../apps/desktop-pyqt/main.py
 If PyQt fails to launch cleanly on macOS, install the Qt runtime explicitly:
 
 ```bash
-pip install PyQt6 PyQt6-Qt6
+pip install "PyQt6>=6.11.0,<6.13.0" "PyQt6-Qt6>=6.11.0,<6.13.0" "PyQt6-WebEngine>=6.11.0,<6.13.0"
 ```
 
 ### FreeBSD
