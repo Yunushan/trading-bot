@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import io
+import importlib.util
+import json
+import os
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+PROBE_PATH = REPO_ROOT / "tools" / "run_service_capacity_probe.py"
+PROBE_SPEC = importlib.util.spec_from_file_location("run_service_capacity_probe", PROBE_PATH)
+assert PROBE_SPEC and PROBE_SPEC.loader
+probe = importlib.util.module_from_spec(PROBE_SPEC)
+sys.modules["run_service_capacity_probe"] = probe
+PROBE_SPEC.loader.exec_module(probe)
+
+
+class ServiceCapacityProbeTests(unittest.TestCase):
+    def test_local_capacity_probe_uses_a_real_read_only_child_process(self) -> None:
+        report = probe.run_capacity_probe(
+            request_count=60,
+            concurrency=6,
+            max_error_rate=0.0,
+            max_p95_ms=2000.0,
+            minimum_throughput_rps=1.0,
+        )
+
+        self.assertTrue(report["ok"], report["issues"])
+        self.assertEqual("child-process", report["process_boundary"])
+        self.assertEqual("local-canonical-service-process", report["environment"])
+        self.assertEqual(60, report["request_count"])
+        self.assertEqual(["GET"], report["methods"])
+        self.assertTrue(report["read_only"])
+        self.assertFalse(report["order_submission_attempted"])
+        self.assertFalse(report["promotion_eligible"])
+        self.assertTrue(all(item["status"] == "pass" for item in report["suite_results"]))
+
+    def test_remote_plain_http_is_restricted_to_loopback(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only on loopback"):
+            probe._normalize_base_url("http://service.example.test")
+        normalized, scheme = probe._normalize_base_url("http://127.0.0.1:8000/")
+        self.assertEqual("http://127.0.0.1:8000", normalized)
+        self.assertEqual("http", scheme)
+
+    def test_remote_probe_requires_a_token_without_disclosing_it(self) -> None:
+        credential_name = "MISSING_CAPACITY_PROBE_TOKEN"
+        with mock.patch.dict(os.environ, {}, clear=True):
+            report = probe.run_capacity_probe(
+                base_url="https://service.example.test",
+                api_token_env=credential_name,
+                request_count=1,
+            )
+
+        self.assertFalse(report["ok"])
+        rendered = str(report)
+        self.assertIn("configured API token environment variable", report["issues"][0])
+        self.assertNotIn(credential_name, rendered)
+        self.assertNotIn("Authorization", rendered)
+
+    def test_cli_report_is_an_explicit_non_secret_projection(self) -> None:
+        rendered = json.dumps(
+            probe._cli_report(
+                {
+                    "ok": False,
+                    "status": "fail",
+                    "issues": ["probe failed: password=operator-secret"],
+                    "token": "service-token",
+                    "api_secret": "exchange-secret",
+                    "deployed_commit": "not-a-commit",
+                }
+            )
+        )
+
+        self.assertNotIn("operator-secret", rendered)
+        self.assertNotIn("service-token", rendered)
+        self.assertNotIn("exchange-secret", rendered)
+        self.assertNotIn("password", rendered)
+        self.assertEqual(["probe_failed"], probe._cli_report({"issues": ["arbitrary"]})["issue_codes"])
+        self.assertTrue(probe._cli_report({})["secrets_redacted"])
+
+    def test_local_start_failure_suppresses_child_service_output(self) -> None:
+        child = mock.Mock(returncode=1)
+        output = io.StringIO("password=child-secret")
+        with (
+            mock.patch.object(probe, "_free_loopback_port", return_value=18001),
+            mock.patch.object(probe.tempfile, "TemporaryFile", return_value=output),
+            mock.patch.object(probe.subprocess, "Popen", return_value=child),
+            mock.patch.object(
+                probe,
+                "_wait_until_ready",
+                side_effect=RuntimeError("service did not become ready"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "diagnostics are suppressed") as raised:
+                probe._start_local_service()
+
+        self.assertNotIn("child-secret", str(raised.exception))
+
+    def test_artifact_report_redacts_issue_text(self) -> None:
+        rendered = json.dumps(
+            probe._artifact_report(
+                {
+                    "issues": ["probe failed: password=operator-secret"],
+                    "deployed_commit": "not-a-commit",
+                }
+            )
+        )
+
+        self.assertNotIn("operator-secret", rendered)
+        self.assertNotIn("password", rendered)
+        self.assertEqual(["probe_failed"], probe._artifact_report({"issues": ["arbitrary"]})["issues"])
+
+    def test_non_finite_thresholds_fail_before_starting_a_target(self) -> None:
+        for field, value in (
+            ("request_timeout_seconds", float("nan")),
+            ("max_error_rate", float("inf")),
+            ("max_p95_ms", float("-inf")),
+            ("minimum_throughput_rps", float("nan")),
+        ):
+            with self.subTest(field=field):
+                report = probe.run_capacity_probe(**{field: value})
+                self.assertFalse(report["ok"])
+                self.assertIn("must be a finite number", report["issues"][0])
+
+    def test_authoritative_verifiers_run_the_capacity_probe(self) -> None:
+        verify_all = (REPO_ROOT / "tools" / "verify_all.py").read_text(encoding="utf-8")
+        ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        for verifier in (verify_all, ci_workflow):
+            self.assertIn("tools/run_service_capacity_probe.py", verifier)
+        self.assertIn("--base-url http://127.0.0.1:18000", ci_workflow)
+        self.assertIn("--env BOT_SERVICE_API_READ_ONLY=1", ci_workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -11,6 +11,8 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from app.service.api import FASTAPI_AVAILABLE, create_service_api_app  # noqa: E402
 from app.service.api.metrics import (  # noqa: E402
+    MAX_METRIC_ROUTE_SERIES,
+    MAX_METRIC_SERIES,
     PROMETHEUS_CONTENT_TYPE,
     REQUEST_ID_HEADER,
     ServiceApiMetricsRegistry,
@@ -82,6 +84,26 @@ class ServiceApiMetricsRegistryTests(unittest.TestCase):
         )
         self.assertIn('version="1.0\\"test"', text)
         self.assertTrue(text.endswith("\n"))
+
+    def test_registry_caps_route_and_series_cardinality_and_reports_overflow(self):
+        registry = ServiceApiMetricsRegistry()
+        for index in range(MAX_METRIC_ROUTE_SERIES + 32):
+            registry.request_finished(
+                method="GET",
+                route=f"/synthetic/{index}",
+                status_code=200,
+                duration_seconds=0.01,
+            )
+
+        text = registry.render_prometheus()
+
+        self.assertLessEqual(len(registry._known_routes), MAX_METRIC_ROUTE_SERIES - 1)
+        self.assertLessEqual(len(registry._requests), MAX_METRIC_SERIES)
+        self.assertLessEqual(len(registry._durations), MAX_METRIC_SERIES)
+        self.assertIn('route="/synthetic/0"', text)
+        self.assertNotIn('route="/synthetic/287"', text)
+        self.assertIn('method="OTHER",route="unmatched",status_code="500"', text)
+        self.assertIn("trading_bot_service_http_metrics_overflow_total 33", text)
 
     def test_request_ids_and_route_labels_reject_unbounded_or_sensitive_values(self):
         self.assertEqual("caller-123:worker.4", resolve_request_id("caller-123:worker.4"))
@@ -172,6 +194,7 @@ class PrometheusAlertContractTests(unittest.TestCase):
                 "TradingBotServiceUnavailable",
                 "TradingBotServiceReadErrorRateHigh",
                 "TradingBotServiceReadLatencyHigh",
+                "TradingBotServiceMetricsCardinalityOverflow",
                 "TradingBotOperationalSnapshotStale",
                 "TradingBotConnectorOrderCircuitOpen",
                 "TradingBotUnresolvedOrderIntent",
@@ -181,6 +204,10 @@ class PrometheusAlertContractTests(unittest.TestCase):
         )
         self.assertRegex(by_name["TradingBotServiceReadErrorRateHigh"]["expr"], re.escape("> 0.001"))
         self.assertRegex(by_name["TradingBotServiceReadLatencyHigh"]["expr"], re.escape("> 0.5"))
+        self.assertIn(
+            "trading_bot_service_http_metrics_overflow_total",
+            by_name["TradingBotServiceMetricsCardinalityOverflow"]["expr"],
+        )
         self.assertRegex(by_name["TradingBotOperationalSnapshotStale"]["expr"], re.escape("> 120"))
         error_expr = by_name["TradingBotServiceReadErrorRateHigh"]["expr"]
         self.assertIn('status_code!~"401|403"', error_expr)

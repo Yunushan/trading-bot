@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "enforcement_since": "v1.0.41",
+  "policy": {
+    "tagged_windows_assets_require_authenticode": true,
+    "tagged_macos_assets_require_developer_id": true,
+    "tagged_macos_assets_require_notarization": true,
+    "macos_app_ticket_must_be_stapled": true,
+    "signatures_precede_digest_manifest_sbom_and_attestation": true,
+    "publication_requires_hash_bound_signing_evidence": true,
+    "workflow_dispatch_builds_are_non_publishable": true,
+    "missing_credentials_fail_closed": true,
+    "secrets_are_step_scoped": true
+  },
+  "windows": {
+    "targets": [
+      "windows-x64",
+      "windows-arm64"
+    ],
+    "method": "authenticode",
+    "digest_algorithm": "sha256",
+    "timestamp_protocol": "rfc3161",
+    "timestamp_url": "http://timestamp.digicert.com",
+    "required_secret_names": [
+      "WINDOWS_CODESIGN_PFX_B64",
+      "WINDOWS_CODESIGN_PFX_PASSWORD"
+    ],
+    "evidence_glob": "release/release-signing-windows-*.json"
+  },
+  "macos": {
+    "targets": [
+      "macos-14-arm64",
+      "macos-15-intel",
+      "macos-15-arm64",
+      "macos-26-arm64"
+    ],
+    "method": "developer-id-application",
+    "hardened_runtime": true,
+    "secure_timestamp": true,
+    "notarization_tool": "notarytool",
+    "required_secret_names": [
+      "MACOS_CODESIGN_P12_B64",
+      "MACOS_CODESIGN_P12_PASSWORD",
+      "MACOS_CODESIGN_IDENTITY",
+      "APPLE_NOTARY_KEY_B64",
+      "APPLE_NOTARY_KEY_ID",
+      "APPLE_NOTARY_ISSUER_ID"
+    ],
+    "evidence_glob": "release/release-signing-macos-*.json"
+  },
+  "linux_and_freebsd": {
+    "native_code_signing_required": false,
+    "github_oidc_provenance_required": true,
+    "spdx_sbom_attestation_required": true,
+    "sha256_manifest_required": true
+  }
+}

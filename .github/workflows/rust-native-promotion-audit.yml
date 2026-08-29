@@ -90,6 +90,81 @@ jobs:
             exit 1
           fi
 
+      - name: Verify external evidence run provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_sha="${GITHUB_SHA:-}"
+          if [[ ! "${current_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "current GitHub commit is not a full SHA." >&2
+            exit 1
+          fi
+
+          verify_run() {
+            local run_id="$1"
+            local expected_workflow="$2"
+            local evidence_label="$3"
+            local run_metadata
+            run_metadata="$(
+              gh run view "${run_id}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --json databaseId,status,conclusion,headSha,workflowName
+            )"
+            printf '%s' "${run_metadata}" | \
+              EXPECTED_RUN_ID="${run_id}" \
+              EXPECTED_WORKFLOW="${expected_workflow}" \
+              EVIDENCE_LABEL="${evidence_label}" \
+              EXPECTED_SHA="${current_sha}" \
+              python -c '
+          import json
+          import os
+          import re
+          import sys
+
+          metadata = json.load(sys.stdin)
+          expected_id = os.environ["EXPECTED_RUN_ID"]
+          expected_workflow = os.environ["EXPECTED_WORKFLOW"]
+          evidence_label = os.environ["EVIDENCE_LABEL"]
+          expected_sha = os.environ["EXPECTED_SHA"].strip().lower()
+          database_id = str(metadata.get("databaseId") or "")
+          status = str(metadata.get("status") or "")
+          conclusion = str(metadata.get("conclusion") or "")
+          head_sha = str(metadata.get("headSha") or "").strip().lower()
+          workflow_name = str(metadata.get("workflowName") or "").strip()
+
+          if database_id != expected_id:
+              raise SystemExit(f"{evidence_label} run metadata returned a different run id")
+          if status != "completed" or conclusion != "success":
+              raise SystemExit(
+                  f"{evidence_label} run must be completed successfully "
+                  f"(status={status!r}, conclusion={conclusion!r})"
+              )
+          if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+              raise SystemExit("current GitHub commit is not a full SHA")
+          if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+              raise SystemExit(f"{evidence_label} run headSha is not a full SHA")
+          if head_sha != expected_sha:
+              raise SystemExit(
+                  f"{evidence_label} run headSha must match the current promotion commit"
+              )
+          if workflow_name != expected_workflow:
+              raise SystemExit(
+                  f"{evidence_label} run workflow must be {expected_workflow!r}; "
+                  f"observed {workflow_name!r}"
+              )
+          print(
+              f"Verified {evidence_label} run {database_id}: "
+              f"workflow={workflow_name!r}, headSha={head_sha}"
+          )
+          '
+          }
+
+          verify_run "${LIVE_SMOKE_RUN_ID}" "Rust Native Live Smoke Evidence" "live smoke evidence"
+          verify_run "${RELEASE_EVIDENCE_RUN_ID}" "Rust Native Release Evidence" "release evidence"
+
       - name: Audit native source sync
         shell: bash
         run: |

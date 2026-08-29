@@ -1,0 +1,229 @@
+name: PyQt6 Future Compatibility
+
+"on":
+  workflow_dispatch:
+    inputs:
+      pyqt_version:
+        description: "Exact stable PyQt6 release to validate"
+        required: true
+        default: "6.12.0"
+        type: string
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  pyqt6-future-compatibility:
+    name: PyQt6 ${{ inputs.pyqt_version || '6.12.0' }} compatibility (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+          - "3.15"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYQT6_TARGET: ${{ inputs.pyqt_version || '6.12.0' }}
+      PYQT6_PLATFORM: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: |
+            Languages/Python/pyproject.toml
+
+      - name: Check whether the requested PyQt6 release is published
+        id: pyqt6_release
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_pyqt6_future_release.py \
+            --target "${PYQT6_TARGET}" \
+            --platform "${PYQT6_PLATFORM}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Report that the scheduled target is not published yet
+        if: steps.pyqt6_release.outputs.available != 'true' && github.event_name == 'schedule'
+        run: echo "::notice::PyQt6 ${PYQT6_TARGET} is not published yet; future compatibility validation will run when the release appears."
+
+      - name: Fail manual dispatch when the requested family is unavailable
+        if: steps.pyqt6_release.outputs.available != 'true' && github.event_name == 'workflow_dispatch'
+        run: |
+          echo "::error::PyQt6 ${PYQT6_TARGET} is not available as a complete published family yet."
+          exit 1
+
+      - name: Install Linux Qt runtime dependencies
+        if: matrix.os == 'ubuntu-24.04' && steps.pyqt6_release.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2t64 \
+            libdbus-1-3 \
+            libegl1 \
+            libfontconfig1 \
+            libgbm1 \
+            libglib2.0-0 \
+            libgtk-3-0 \
+            libopengl0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxkbcommon-x11-0 \
+            libxrandr2 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1
+
+      - name: Install the project and requested PyQt6 release
+        if: steps.pyqt6_release.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_series_start="${PYQT6_TARGET%.*}.0"
+          python -m pip install --upgrade pip
+          python -m pip install -r "Languages/Python/requirements.packaging.txt"
+          python -m pip install -e "./Languages/Python[desktop,service,dev]"
+          python -m pip install --only-binary=:all: \
+            "PyQt6==${PYQT6_TARGET}" \
+            "PyQt6-sip>=13.8,<14" \
+            "PyQt6-WebEngine>=${target_series_start},<6.13.0" \
+            "PyQt6-Qt6>=${target_series_start},<6.13.0" \
+            "PyQt6-WebEngine-Qt6>=${target_series_start},<6.13.0"
+
+      - name: Validate the requested PyQt6 runtime contract
+        if: steps.pyqt6_release.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version "${PYQT6_TARGET}" --json
+
+      - name: Smoke-test the canonical desktop entrypoint
+        if: steps.pyqt6_release.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/desktop-pyqt/main.py --smoke
+
+      - name: Smoke-test the canonical desktop window surface
+        if: steps.pyqt6_release.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/desktop-pyqt/main.py --smoke-window
+
+      - name: Smoke-test the QtWebEngine page lifecycle
+        if: steps.pyqt6_release.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/desktop-pyqt/main.py --smoke-webengine
+
+      - name: Build and smoke-test frozen Windows executable
+        if: steps.pyqt6_release.outputs.available == 'true' && matrix.os == 'windows-2025'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $distPath = Join-Path $env:RUNNER_TEMP "trading-bot-pyqt6-future-dist"
+          $workPath = Join-Path $env:RUNNER_TEMP "trading-bot-pyqt6-future-build"
+          ./Languages/Python/tools/build_exe.ps1 `
+            -Python python `
+            -Name "Trading-Bot-PyQt6-$env:PYQT6_TARGET" `
+            -SkipDependencyInstall `
+            -DistPath $distPath `
+            -WorkPath $workPath
+
+      - name: Build and smoke-test frozen Unix executable
+        if: steps.pyqt6_release.outputs.available == 'true' && matrix.os != 'windows-2025'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Languages/Python/tools/build_binary.sh \
+            --python python \
+            --name "Trading-Bot-PyQt6-${PYQT6_TARGET}" \
+            --skip-dependency-install
+
+      - name: Run focused PyQt6 compatibility tests
+        if: steps.pyqt6_release.outputs.available == 'true'
+        shell: bash
+        working-directory: Languages/Python
+        run: |
+          set -euo pipefail
+          python -m pytest \
+            tests/test_pyqt6_compatibility.py \
+            tests/test_dependency_versions_requirements.py \
+            -q \
+            -p no:cacheprovider \
+            --no-cov
+
+  pyqt6-future-wheel-audit:
+    name: PyQt6 ${{ inputs.pyqt_version || '6.12.0' }} wheel coverage (${{ matrix.platform }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-24.04
+            architecture: x86_64
+          - platform: ubuntu-24.04-arm
+            architecture: aarch64
+          - platform: windows-2025
+            architecture: AMD64
+          - platform: windows-11-arm
+            architecture: ARM64
+          - platform: macos-14
+            architecture: arm64
+          - platform: macos-15-intel
+            architecture: x86_64
+          - platform: macos-15
+            architecture: arm64
+          - platform: macos-26
+            architecture: arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+
+      - name: Audit requested PyQt6 wheel tags for the declared runner
+        shell: bash
+        env:
+          PYQT6_TARGET: ${{ inputs.pyqt_version || '6.12.0' }}
+        run: |
+          set -euo pipefail
+          for python_version in 3.10 3.11 3.12 3.13 3.14 3.15; do
+            echo "Auditing PyQt6 ${PYQT6_TARGET} for ${{ matrix.platform }}/${{ matrix.architecture }} and Python ${python_version}"
+            python tools/check_pyqt6_future_release.py \
+              --target "${PYQT6_TARGET}" \
+              --platform "${{ matrix.platform }}" \
+              --architecture "${{ matrix.architecture }}" \
+              --python-version "${python_version}" \
+              --fail-on-partial-publication
+          done

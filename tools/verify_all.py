@@ -204,6 +204,24 @@ def _checks(
             remediation=_python_install_remediation("service"),
         ),
         Check(
+            "production read-only deployment contract",
+            (python, "tools/check_production_deployment.py", "--json"),
+            root,
+            remediation=(
+                "Keep the immutable read-only Kubernetes template, HA safeguards, "
+                "network policy, and deployment scope documentation aligned."
+            ),
+        ),
+        Check(
+            "native release signing policy",
+            (python, "tools/check_release_signing_policy.py", "--json"),
+            root,
+            remediation=(
+                "Keep the v1.0.41+ Authenticode, Developer ID, notarization, "
+                "stapling, evidence, QA, and publication contracts aligned."
+            ),
+        ),
+        Check(
             "operational readiness policy",
             (python, "tools/check_operational_readiness.py", "--schema-only"),
             root,
@@ -212,6 +230,12 @@ def _checks(
         Check(
             "service API quick readiness probe",
             (python, "tools/run_service_sustained_probe.py", "--profile", "quick"),
+            root,
+            remediation=_python_install_remediation("service,dev"),
+        ),
+        Check(
+            "service API bounded capacity regression",
+            (python, "tools/run_service_capacity_probe.py", "--json"),
             root,
             remediation=_python_install_remediation("service,dev"),
         ),
@@ -235,6 +259,15 @@ def _checks(
             (python, "tools/check_python_version_support.py", "--current"),
             root,
             remediation="Keep pyproject Python metadata and the CI compatibility matrix aligned for Python 3.10-3.15.",
+        ),
+        Check(
+            "PyQt6 compatibility",
+            (python, "tools/check_pyqt6_compatibility.py", "--json"),
+            root,
+            remediation=(
+                "Install the canonical desktop dependency surface and rerun "
+                "python tools/check_pyqt6_compatibility.py --json."
+            ),
         ),
         Check(
             "release platform matrix",

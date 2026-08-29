@@ -304,13 +304,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--require-native-source-sync", release_platform_workflow_text)
         self.assertIn("Evidence Gate (selected scope)", release_platform_workflow_text)
         self.assertIn("args+=(--exclude-self-hosted)", release_platform_workflow_text)
-        self.assertIn("REQUIRE_ALL_EVIDENCE: ${{ inputs.require_all_evidence }}", release_platform_workflow_text)
+        self.assertIn(
+            "REQUIRE_ALL_EVIDENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.require_all_evidence || github.event_name == 'workflow_run' }}",
+            release_platform_workflow_text,
+        )
         self.assertNotIn(
             "Strict all-target evidence requires include_self_hosted=true",
             release_platform_workflow_text,
         )
         self.assertIn(
-            "if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}",
+            "if: ${{ github.event_name != 'workflow_dispatch' || inputs.require_all_evidence || inputs.target_id == 'all' }}",
             release_platform_workflow_text,
         )
         for workflow_name in (
@@ -1412,6 +1415,17 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         missing = release_assets._missing_required_assets(assets, remaining_names)
 
         self.assertEqual([missing_manifest], missing)
+
+    def test_native_signing_evidence_is_required_from_v1_0_41_without_retroactive_failure(self):
+        _, legacy_assets = release_assets._build_expected_assets("v1.0.40")
+        _, current_assets = release_assets._build_expected_assets("v1.0.41")
+        legacy_signing = [asset for asset in legacy_assets if asset.name.startswith("release-signing-")]
+        current_signing = [asset for asset in current_assets if asset.name.startswith("release-signing-")]
+
+        self.assertEqual(6, len(legacy_signing))
+        self.assertFalse(any(asset.required for asset in legacy_signing))
+        self.assertEqual(6, len(current_signing))
+        self.assertTrue(all(asset.required for asset in current_signing))
 
     def test_build_release_evidence_requires_rust_assets_and_platform_results(self):
         tag = "v1.2.3"

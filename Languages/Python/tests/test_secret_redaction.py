@@ -53,6 +53,14 @@ class SecretRedactionTests(unittest.TestCase):
         for secret in ("header-token", "exchange-key", "exchange-secret", "signature-value", "plain-token"):
             self.assertNotIn(secret, redacted)
 
+    def test_redact_text_masks_secret_url_query_values(self):
+        text = "https://generativelanguage.googleapis.com/v1beta/models/test:generateContent?key=gemini-key&trace=abc"
+
+        redacted = redact_text(text)
+
+        self.assertIn("?key=<redacted>&trace=abc", redacted)
+        self.assertNotIn("gemini-key", redacted)
+
     def test_sensitive_key_detection_avoids_non_secret_api_metadata(self):
         self.assertTrue(is_sensitive_key("api_secret"))
         self.assertTrue(is_sensitive_key("X-MBX-APIKEY"))
