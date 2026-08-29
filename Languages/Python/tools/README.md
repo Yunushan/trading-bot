@@ -17,6 +17,8 @@ Run all commands from `Languages/Python/` unless a script says otherwise.
 | File | Purpose |
 | --- | --- |
 | `tools/check_dependency_metadata.py` | Verifies Python version metadata, dependency pin policy, requirement shim files, and CI install surface |
+| `../../tools/check_pyqt6_compatibility.py` | Verifies the reviewed PyQt6 package range, Qt/PyQt runtime versions, and required WebEngine APIs |
+| `../../tools/check_pyqt6_future_release.py` | Verifies that a complete, non-yanked PyQt6 future family has installable wheels for a target runner |
 | `tools/check_service_api_contracts.py` | Checks `apps/service-api/contracts/*` and can refresh the generated route contract with `--write` |
 | `tools/run_python_tests.py` | Runs the full Python test suite after checking desktop/service/dev dependencies |
 | `tools/run_service_tests.py` | Runs the focused service API/unit/integration test modules as one stable command |
@@ -68,6 +70,7 @@ Focused service test map:
 | --- | --- |
 | `tests.test_service_api_http_contract` | HTTP route contracts, auth behavior, SSE auth, and runtime/dashboard responses |
 | `tests.test_service_api_metrics` | Prometheus export, bounded request labels, correlation IDs, and alert-rule contracts |
+| `tests.test_service_capacity_probe` | bounded concurrent read-only load, child-process isolation, and remote transport safeguards |
 | `tests.test_service_schema_contracts` | service response schema builders, payload normalization, and secret redaction contracts |
 | `tests.test_service_config_runtime` | service config validation and durable config persistence |
 | `tests.test_service_operational_runtime` | operational health snapshots, connector incidents, JSONL rotation, and redaction |
@@ -119,6 +122,38 @@ Dependency metadata check:
 ```bash
 python tools/check_dependency_metadata.py
 ```
+
+PyQt6 compatibility check (from the repository root or this directory):
+
+```bash
+python ../../tools/check_pyqt6_compatibility.py --json
+```
+
+The runtime probe also requires the separately versioned `PyQt6-sip` binding
+to stay within its reviewed `>=13.8,<14` range, matching the future-release
+wheel audit.
+
+After the 6.12 family is published, require the exact base binding with:
+
+```bash
+python ../../tools/check_pyqt6_compatibility.py --require-exact-pyqt6-version 6.12.0 --json
+```
+
+The future-release checker uses the host architecture by default. When auditing
+PyPI metadata for a different runner from another host, pass its architecture
+explicitly, for example `--platform macos-15 --architecture arm64`.
+Use `--python-version MAJOR.MINOR` to evaluate wheel tags for a Python version
+that is not the interpreter running the checker, for example
+`--platform ubuntu-24.04-arm --architecture aarch64 --python-version 3.10`.
+Pass `--fail-on-partial-publication` in automation to fail once any requested
+release metadata is published but the complete compatible wheel family is not
+available for the selected runner and Python version; a fully unpublished
+target remains a successful no-op for scheduled polling.
+The scheduled future-compatibility workflow also validates the separately
+versioned `PyQt6-sip` native runtime dependency. It runs this
+explicit-architecture wheel audit for every declared Ubuntu, Windows, and macOS
+runner label; the
+runtime and frozen-package smokes still run on the tier-1 hosted runners.
 
 Service API contract check:
 

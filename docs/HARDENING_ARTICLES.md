@@ -34,7 +34,7 @@ Article 15 - Observability and diagnostics: runtime diagnostics, operational pre
 
 Article 16 - GUI responsiveness and async workers: scanner/backtest work is service/thread backed, and client contracts keep long work outside direct UI blocking paths.
 
-Article 17 - Packaging and installer evidence: release smoke, release asset checks, and release documentation define required artifacts and platform validation before publishing.
+Article 17 - Packaging and installer evidence: release smoke, prerelease candidate guards, exact-tag packaging runs, source-bound manifests, and the aggregate stable finalizer define required artifacts and validation before promotion.
 
 Article 18 - Operator runbook: operator and operational preflight runbooks document setup, safety gates, execution ownership, failure recovery, and supported operating procedures.
 

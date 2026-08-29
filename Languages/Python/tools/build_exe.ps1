@@ -36,6 +36,54 @@ if (Test-Path -LiteralPath $Python -PathType Leaf) {
 Push-Location $pythonRoot
 
 try {
+  function Stop-PackagedSmokeProcess {
+    param(
+      [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process
+    )
+    try {
+      if (-not $Process.HasExited) {
+        try {
+          $Process.Kill($true)
+        }
+        catch {
+          $Process.Kill()
+        }
+        $Process.WaitForExit(5000) | Out-Null
+      }
+    }
+    catch {
+      # Preserve the original smoke failure or timeout.
+    }
+  }
+
+  function Invoke-PackagedSmoke {
+    param(
+      [Parameter(Mandatory = $true)][string]$BinaryPath,
+      [Parameter(Mandatory = $true)][string]$Argument,
+      [Parameter(Mandatory = $true)][string]$Label,
+      [int]$TimeoutMilliseconds = 300000
+    )
+    $smokeProcess = Start-Process `
+      -FilePath $BinaryPath `
+      -ArgumentList $Argument `
+      -WorkingDirectory $pythonRoot `
+      -WindowStyle Hidden `
+      -PassThru
+    try {
+      if (-not $smokeProcess.WaitForExit($TimeoutMilliseconds)) {
+        Stop-PackagedSmokeProcess -Process $smokeProcess
+        throw "$Label timed out after $([int]($TimeoutMilliseconds / 1000)) seconds."
+      }
+      if ($smokeProcess.ExitCode -ne 0) {
+        throw "$Label failed with exit code $($smokeProcess.ExitCode)."
+      }
+    }
+    finally {
+      Stop-PackagedSmokeProcess -Process $smokeProcess
+      $smokeProcess.Dispose()
+    }
+  }
+
   if (!(Test-Path $desktopEntryScript)) {
     throw "Desktop entry script not found at $desktopEntryScript"
   }
@@ -137,6 +185,12 @@ else:
     "--hidden-import", "binance.spot"
   )
 
+  $pyqt6RuntimeHook = Join-Path $pythonRoot "tools\pyinstaller_pyqt6_runtime_hook.py"
+  if (!(Test-Path -LiteralPath $pyqt6RuntimeHook -PathType Leaf)) {
+    throw "PyQt6 PyInstaller runtime hook not found at $pyqt6RuntimeHook"
+  }
+  $pyInstallerArgs += @("--runtime-hook", $pyqt6RuntimeHook)
+
   foreach ($moduleName in $optionalSubmodulePackages) {
     if (Test-PythonModuleAvailable -PythonExe $pythonCommand -ModuleName $moduleName) {
       $pyInstallerArgs += @("--collect-submodules", $moduleName)
@@ -218,18 +272,22 @@ else:
   if (!(Test-Path $binaryPath)) {
     throw "Built executable not found at $binaryPath"
   }
-  $smokeProcess = Start-Process `
-    -FilePath $binaryPath `
-    -ArgumentList "--smoke" `
-    -WorkingDirectory $pythonRoot `
-    -WindowStyle Hidden `
-    -Wait `
-    -PassThru
-  if ($smokeProcess.ExitCode -ne 0) {
-    throw "Packaged executable smoke failed with exit code $($smokeProcess.ExitCode)."
-  }
+  Invoke-PackagedSmoke `
+    -BinaryPath $binaryPath `
+    -Argument "--smoke" `
+    -Label "Packaged executable smoke"
+  Invoke-PackagedSmoke `
+    -BinaryPath $binaryPath `
+    -Argument "--smoke-window" `
+    -Label "Packaged window smoke"
+  Invoke-PackagedSmoke `
+    -BinaryPath $binaryPath `
+    -Argument "--smoke-webengine" `
+    -Label "Packaged WebEngine smoke"
 
   Write-Host "Packaged executable smoke passed."
+  Write-Host "Packaged window smoke passed."
+  Write-Host "Packaged WebEngine smoke passed."
   Write-Host "Done. EXE at: $binaryPath"
 }
 finally {

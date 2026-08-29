@@ -37,6 +37,15 @@ class MetaTrader4BridgeContractTests(unittest.TestCase):
         self.assertIn("LoadReceipt(command_id", self.source)
         self.assertIn("FILE_COMMON", self.source)
 
+    def test_companion_validates_bridge_destination_and_receipt_identity(self):
+        self.assertIn("bool IsSafeBridgeBaseUrl(string value)", self.source)
+        self.assertIn("bool IsSafeBridgeToken(string value)", self.source)
+        self.assertIn("bool IsSafeTerminalId(string value)", self.source)
+        self.assertIn("if(!IsSafeBridgeBaseUrl(g_base_url)", self.source)
+        self.assertIn("g_receipt_file = \"TradingBotBridge_\" + g_terminal_id", self.source)
+        self.assertIn("if(PollIntervalSeconds < 1 || PollIntervalSeconds > 3600", self.source)
+        self.assertIn("RequestTimeoutMs < 100 || RequestTimeoutMs > 120000", self.source)
+
     def test_companion_decodes_form_values_as_utf8_bytes(self):
         self.assertIn("uchar output_bytes[]", self.source)
         self.assertIn(
