@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import importlib.util
 import json
 import os
@@ -80,6 +81,38 @@ class ServiceCapacityProbeTests(unittest.TestCase):
         self.assertNotIn("password", rendered)
         self.assertEqual(["probe_failed"], probe._cli_report({"issues": ["arbitrary"]})["issue_codes"])
         self.assertTrue(probe._cli_report({})["secrets_redacted"])
+
+    def test_local_start_failure_suppresses_child_service_output(self) -> None:
+        child = mock.Mock(returncode=1)
+        output = io.StringIO("password=child-secret")
+        with (
+            mock.patch.object(probe, "_free_loopback_port", return_value=18001),
+            mock.patch.object(probe.tempfile, "TemporaryFile", return_value=output),
+            mock.patch.object(probe.subprocess, "Popen", return_value=child),
+            mock.patch.object(
+                probe,
+                "_wait_until_ready",
+                side_effect=RuntimeError("service did not become ready"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "diagnostics are suppressed") as raised:
+                probe._start_local_service()
+
+        self.assertNotIn("child-secret", str(raised.exception))
+
+    def test_artifact_report_redacts_issue_text(self) -> None:
+        rendered = json.dumps(
+            probe._artifact_report(
+                {
+                    "issues": ["probe failed: password=operator-secret"],
+                    "deployed_commit": "not-a-commit",
+                }
+            )
+        )
+
+        self.assertNotIn("operator-secret", rendered)
+        self.assertNotIn("password", rendered)
+        self.assertEqual(["probe_failed"], probe._artifact_report({"issues": ["arbitrary"]})["issues"])
 
     def test_non_finite_thresholds_fail_before_starting_a_target(self) -> None:
         for field, value in (

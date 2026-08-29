@@ -263,12 +263,10 @@ def _start_local_service() -> tuple[subprocess.Popen[str], Any, str]:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
-        output.seek(0)
-        logs = output.read(4000).strip()
         output.close()
-        suffix = f" Service output: {logs}" if logs else ""
         raise RuntimeError(
-            f"Unable to start local capacity target: {exc}.{suffix}"
+            f"Unable to start local capacity target: {exc}. "
+            "Child-service diagnostics are suppressed."
         ) from exc
     return process, output, base_url
 
@@ -329,6 +327,13 @@ def _cli_report(report: dict[str, Any]) -> dict[str, Any]:
         safe[key] = _safe_deployed_commit(value) if key == "deployed_commit" else value
     safe["issue_codes"] = _safe_issue_codes(report.get("issues"))
     safe["secrets_redacted"] = True
+    return safe
+
+
+def _artifact_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Return the secret-free report written to an evidence artifact."""
+    safe = _cli_report(report)
+    safe["issues"] = _safe_issue_codes(report.get("issues"))
     return safe
 
 
@@ -614,7 +619,7 @@ def main(argv: list[str] | None = None) -> int:
         minimum_throughput_rps=args.minimum_throughput_rps,
     )
     if args.output:
-        _write_json(args.output, report)
+        _write_json(args.output, _artifact_report(report))
     cli_report = _cli_report(report)
     if args.json:
         print(json.dumps(cli_report, indent=2, sort_keys=True, allow_nan=False))
