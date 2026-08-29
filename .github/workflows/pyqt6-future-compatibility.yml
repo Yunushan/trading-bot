@@ -143,13 +143,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          target_series_start="${PYQT6_TARGET%.*}.0"
           python -m pip install --upgrade pip
           python -m pip install -e "./Languages/Python[desktop,service,dev]"
-          python -m pip install --pre --only-binary=:all: \
+          python -m pip install --only-binary=:all: \
             "PyQt6==${PYQT6_TARGET}" \
-            "PyQt6-WebEngine>=${PYQT6_TARGET},<6.13.0" \
-            "PyQt6-Qt6>=${PYQT6_TARGET},<6.13.0" \
-            "PyQt6-WebEngine-Qt6>=${PYQT6_TARGET},<6.13.0"
+            "PyQt6-WebEngine>=${target_series_start},<6.13.0" \
+            "PyQt6-Qt6>=${target_series_start},<6.13.0" \
+            "PyQt6-WebEngine-Qt6>=${target_series_start},<6.13.0"
 
       - name: Validate the requested PyQt6 runtime contract
         if: steps.pyqt6_release.outputs.available == 'true'
