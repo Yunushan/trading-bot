@@ -227,6 +227,7 @@ def _build_market_close_params(
         "symbol": symbol,
         "side": side,
         "type": "MARKET",
+        "newOrderRespType": "RESULT",
         "quantity": f"{qty_float:.8f}",
     }
     if dual and target_ps in ("LONG", "SHORT"):
@@ -492,11 +493,9 @@ def _gather_positions(binance, *, include_zero_qty_residuals: bool = False) -> t
 
 
 def _is_testnet_wrapper(binance) -> bool:
-    try:
-        text = str(getattr(binance, "mode", "") or "").lower()
-    except Exception:
-        text = ""
-    return any(tag in text for tag in ("demo", "test", "sandbox"))
+    from app.settings.execution_mode import is_live_trading_mode
+
+    return not is_live_trading_mode(getattr(binance, "mode", None))
 
 
 def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int | None = None) -> List[Dict[str, Any]]:

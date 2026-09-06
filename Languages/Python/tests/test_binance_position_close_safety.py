@@ -119,7 +119,11 @@ class _ExactCloseWrapper:
             raise RuntimeError("order rejected")
         if self.clear_raw_after_order and hasattr(self, "client"):
             self.client.rows = []
-        return {"orderId": len(self.orders), "avgPrice": "0"}, "primary"
+        return {
+            "orderId": len(self.orders), "avgPrice": "0", "status": "FILLED",
+            "origQty": params["quantity"], "executedQty": params["quantity"],
+            "clientOrderId": params.get("newClientOrderId"), "symbol": params["symbol"], "side": params["side"],
+        }, "primary"
 
     def _summarize_futures_order_fills(self, _symbol, _order_id):
         return {"avg_price": 100.0, "executed_qty": 0.125}

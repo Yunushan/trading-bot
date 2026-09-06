@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import concurrent.futures
 from http.client import HTTPException
 import ipaddress
@@ -39,6 +40,16 @@ DEFAULT_API_TOKEN_ENV = "BOT_SERVICE_API_TOKEN"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 ENV_NAME_PATTERN = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+REQUEST_PHASES = ("opener", "headers", "body", "decode")
+FAILURE_CODES = (
+    "timeout",
+    "connection_error",
+    "transport_error",
+    "protocol_error",
+    "http_error",
+    "invalid_response",
+    "response_too_large",
+)
 CLI_SAFE_KEYS = (
     "ok",
     "status",
@@ -56,6 +67,7 @@ CLI_SAFE_KEYS = (
     "order_submission_attempted",
     "methods",
     "concurrency",
+    "request_timeout_seconds",
     "request_count",
     "error_count",
     "error_rate",
@@ -147,6 +159,21 @@ def _free_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _request_failure_code(exc: Exception) -> str:
+    if isinstance(exc, HTTPError):
+        return "http_error"
+    cause = exc.reason if isinstance(exc, URLError) else exc
+    if isinstance(cause, TimeoutError):
+        return "timeout"
+    if isinstance(cause, ConnectionError):
+        return "connection_error"
+    if isinstance(cause, HTTPException):
+        return "protocol_error"
+    if isinstance(cause, ValueError):
+        return "invalid_response"
+    return "transport_error"
+
+
 def _request(
     base_url: str,
     endpoint: str,
@@ -158,6 +185,7 @@ def _request(
     started = time.perf_counter()
     status_code = 0
     error = ""
+    failure_code = ""
     payload: object = None
     request = Request(
         f"{base_url}{endpoint}",
@@ -168,27 +196,49 @@ def _request(
         },
         method="GET",
     )
+    phase = "opener"
+    phase_started = time.perf_counter()
+    phase_latency_ms: dict[str, float] = {}
     try:
-        with _thread_opener().open(request, timeout=timeout_seconds) as response:  # noqa: S310
+        opener = _thread_opener()
+        phase_finished = time.perf_counter()
+        phase_latency_ms[phase] = (phase_finished - phase_started) * 1000
+        phase, phase_started = "headers", phase_finished
+        with opener.open(request, timeout=timeout_seconds) as response:  # noqa: S310
             status_code = int(response.status)
+            phase_finished = time.perf_counter()
+            phase_latency_ms[phase] = (phase_finished - phase_started) * 1000
+            phase, phase_started = "body", phase_finished
             body = response.read(MAX_RESPONSE_BYTES + 1)
             if len(body) > MAX_RESPONSE_BYTES:
                 error = "response exceeded the bounded probe limit"
+                failure_code = "response_too_large"
             elif parse_json and status_code == 200:
+                phase_finished = time.perf_counter()
+                phase_latency_ms[phase] = (phase_finished - phase_started) * 1000
+                phase, phase_started = "decode", phase_finished
                 payload = json.loads(body.decode("utf-8"))
     except HTTPError as exc:
         status_code = int(exc.code)
         error = f"HTTP {status_code}"
+        failure_code = "http_error"
     except (HTTPException, OSError, URLError, ValueError) as exc:
         error = f"{type(exc).__name__}: request failed"
+        failure_code = _request_failure_code(exc)
+    finally:
+        phase_latency_ms[phase] = (time.perf_counter() - phase_started) * 1000
     if status_code != 200 and not error:
         error = f"HTTP {status_code}"
+        failure_code = "http_error"
     return {
         "endpoint": endpoint,
         "method": "GET",
         "status_code": status_code,
         "latency_ms": (time.perf_counter() - started) * 1000,
         "error": error,
+        "failure_code": failure_code,
+        "failure_phase": phase if error else "",
+        "phase_latency_ms": phase_latency_ms,
         "payload": payload,
     }
 
@@ -317,6 +367,39 @@ def _safe_issue_codes(value: object) -> list[str]:
     return codes
 
 
+def _safe_counts(value: object, allowed: tuple[str, ...]) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: count
+        for key, count in value.items()
+        if key in allowed and type(count) is int and 0 < count <= 100_000
+    }
+
+
+def _safe_phase_latencies(value: object) -> dict[str, dict[str, int | float]]:
+    if not isinstance(value, dict):
+        return {}
+    safe = {}
+    for phase in REQUEST_PHASES:
+        item = value.get(phase)
+        if not isinstance(item, dict):
+            continue
+        count = item.get("count")
+        if type(count) is not int or not 0 < count <= 100_000:
+            continue
+        p95, maximum = item.get("p95"), item.get("max")
+        if not all(
+            type(number) in (int, float) and math.isfinite(number) and number >= 0
+            for number in (p95, maximum)
+        ):
+            continue
+        if p95 > maximum:
+            continue
+        safe[phase] = {"count": count, "p95": p95, "max": maximum}
+    return safe
+
+
 def _cli_report(report: dict[str, Any]) -> dict[str, Any]:
     """Return an explicit, non-secret projection for stdout and CI logs."""
     safe: dict[str, Any] = {}
@@ -325,6 +408,18 @@ def _cli_report(report: dict[str, Any]) -> dict[str, Any]:
             continue
         value = report[key]
         safe[key] = _safe_deployed_commit(value) if key == "deployed_commit" else value
+    # Diagnostic keys and values are bounded; never copy raw exception text.
+    safe["failure_counts"] = _safe_counts(report.get("failure_counts"), FAILURE_CODES)
+    safe["failure_stage_counts"] = _safe_counts(
+        report.get("failure_stage_counts"), REQUEST_PHASES
+    )
+    safe["status_code_counts"] = _safe_counts(
+        report.get("status_code_counts"),
+        ("0", *(str(code) for code in range(100, 600))),
+    )
+    safe["request_phase_latency_ms"] = _safe_phase_latencies(
+        report.get("request_phase_latency_ms")
+    )
     safe["issue_codes"] = _safe_issue_codes(report.get("issues"))
     safe["secrets_redacted"] = True
     return safe
@@ -502,6 +597,24 @@ def run_capacity_probe(
 
     latencies = [float(item["latency_ms"]) for item in results]
     error_count = sum(1 for item in results if item["error"])
+    failure_counts = Counter(item["failure_code"] for item in results if item["error"])
+    failure_stage_counts = Counter(
+        item["failure_phase"] for item in results if item["error"]
+    )
+    status_code_counts = Counter(str(item["status_code"]) for item in results)
+    phase_summary = {}
+    for phase in REQUEST_PHASES:
+        values = [
+            item["phase_latency_ms"][phase]
+            for item in results
+            if phase in item["phase_latency_ms"]
+        ]
+        if values:
+            phase_summary[phase] = {
+                "count": len(values),
+                "p95": round(_percentile(values, 0.95), 3),
+                "max": round(max(values), 3),
+            }
     error_rate = error_count / len(results) if results else 1.0
     throughput = len(results) / duration_seconds
     latency = {
@@ -555,8 +668,13 @@ def run_capacity_probe(
         "order_submission_attempted": False,
         "methods": ["GET"],
         "concurrency": bounded_concurrency,
+        "request_timeout_seconds": timeout_seconds,
         "request_count": len(results),
         "error_count": error_count,
+        "failure_counts": dict(failure_counts),
+        "failure_stage_counts": dict(failure_stage_counts),
+        "status_code_counts": dict(status_code_counts),
+        "request_phase_latency_ms": phase_summary,
         "error_rate": error_rate,
         "duration_seconds": round(duration_seconds, 6),
         "throughput_requests_per_second": round(throughput, 3),

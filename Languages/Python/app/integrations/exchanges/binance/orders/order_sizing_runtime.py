@@ -6,7 +6,9 @@ from collections.abc import Mapping
 from .order_audit_runtime import audit_order_method
 from .order_fallback_runtime import _ensure_binance_client_order_id
 from ..transport.helpers import _is_binance_error_payload
+from ..metadata.filter_validation import validated_symbol_filters
 from app.security.redaction import redact_text
+from app.settings.live_safety import LiveTradingSafetyError
 
 
 def _finite_float(value: object) -> float | None:
@@ -191,7 +193,9 @@ def place_spot_market_order(
             },
         }
     except Exception as exc:
-        if intent_started and callable(mark_unknown):
+        # The ledger already preserves ambiguity or a newer observation on safety
+        # failures. Do not overwrite a concurrent reconciliation from this handler.
+        if intent_started and callable(mark_unknown) and not isinstance(exc, LiveTradingSafetyError):
             mark_unknown(params, error=exc)
         return {
             "ok": False,
@@ -259,15 +263,10 @@ def adjust_qty_to_filters_spot(self, symbol: str, qty: float, est_price: float):
     except Exception as exc:
         return 0.0, f"filters_error:{redact_text(exc)}"
 
-    if not isinstance(filters, Mapping):
-        return 0.0, "filters_error: invalid response"
-    filter_values: dict[str, float] = {}
-    for filter_key in ("stepSize", "minQty", "minNotional"):
-        raw_value = filters.get(filter_key, 0.0)
-        parsed_value = 0.0 if raw_value in (None, "") else _finite_float(raw_value)
-        if parsed_value is None or parsed_value < 0.0:
-            return 0.0, f"filters_error: {filter_key} must be a finite non-negative number"
-        filter_values[filter_key] = parsed_value
+    try:
+        filter_values = {name: float(value) for name, value in validated_symbol_filters(filters).items()}
+    except ValueError as exc:
+        return 0.0, f"filters_error: {exc}"
     step = filter_values["stepSize"]
     min_qty = filter_values["minQty"]
     min_notional = filter_values["minNotional"]
@@ -311,21 +310,16 @@ def adjust_qty_to_filters_futures(self, symbol: str, qty: float, price: float | 
         filters = self.get_futures_symbol_filters(symbol)
     except Exception as exc:
         return 0.0, f"filters_error:{redact_text(exc)}"
-    if not isinstance(filters, Mapping):
-        return 0.0, "filters_error: invalid response"
     normalized_qty = _finite_float(qty)
     normalized_price = 0.0 if price is None else _finite_float(price)
     if normalized_qty is None:
         return 0.0, "qty must be a finite number"
     if normalized_price is None:
         return 0.0, "price must be a finite number"
-    filter_values: dict[str, float] = {}
-    for filter_key in ("stepSize", "minQty", "minNotional"):
-        raw_value = filters.get(filter_key, 0.0)
-        parsed_value = 0.0 if raw_value in (None, "") else _finite_float(raw_value)
-        if parsed_value is None or parsed_value < 0.0:
-            return 0.0, f"filters_error: {filter_key} must be a finite non-negative number"
-        filter_values[filter_key] = parsed_value
+    try:
+        filter_values = {name: float(value) for name, value in validated_symbol_filters(filters).items()}
+    except ValueError as exc:
+        return 0.0, f"filters_error: {exc}"
     step = filter_values["stepSize"]
     min_qty = filter_values["minQty"]
     min_notional = filter_values["minNotional"]

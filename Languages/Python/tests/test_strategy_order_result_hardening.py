@@ -64,6 +64,10 @@ def _successful_order_result() -> dict[str, object]:
     return {
         "ok": True,
         "info": {
+            "status": "FILLED",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "clientOrderId": "offline-entry",
             "origQty": "1",
             "executedQty": "1",
             "avgPrice": "100",
@@ -146,11 +150,11 @@ class StrategyOrderResultHardeningTests(unittest.TestCase):
 
         order_ok, _qty_display = engine._handle_futures_signal_order_result(**kwargs)
 
-        self.assertTrue(order_ok)
+        self.assertFalse(order_ok)
         self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
-        self.assertIn("no positive executed quantity", "\n".join(logs))
+        self.assertIn("execution confirmation", "\n".join(logs))
 
-    def test_malformed_result_is_failed_and_releases_pending_guard(self):
+    def test_malformed_result_is_failed_but_retains_submission_barrier(self):
         logs: list[str] = []
         engine = _build_engine(logs=logs)
 
@@ -159,10 +163,77 @@ class StrategyOrderResultHardeningTests(unittest.TestCase):
         )
 
         self.assertFalse(order_ok)
-        self.assertEqual(1.0, qty_display)
+        self.assertEqual(0.0, qty_display)
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
         state = StrategyEngine._SYMBOL_ORDER_STATE[GUARD_KEY]
         self.assertNotIn(SIGNATURE, state["pending_map"])
+        self.assertIn(SIGNATURE, state["signatures"])
         self.assertIn("expected an object", "\n".join(logs))
+
+    def test_pending_and_partial_entries_use_only_explicit_execution(self):
+        for status, executed, expected_qty, paused in (
+            ("NEW", "0", 0.0, True),
+            ("PARTIALLY_FILLED", "0.25", 0.25, True),
+            ("CANCELED", "0.25", 0.25, False),
+            ("EXPIRED", "0", 0.0, False),
+            ("REJECTED", "0", 0.0, False),
+            ("FILLED", "1", 1.0, False),
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                events = []
+                engine = _build_engine(trade_callback=events.append)
+                result = _successful_order_result()
+                result["info"].update(status=status, executedQty=executed)
+                accepted, displayed = engine._handle_futures_signal_order_result(**_result_kwargs(result))
+                entries = engine._leg_ledger.get(GUARD_KEY, {}).get("entries", [])
+                self.assertEqual(expected_qty, sum(entry["qty"] for entry in entries))
+                self.assertEqual(expected_qty, displayed)
+                self.assertEqual(expected_qty > 0, accepted)
+                self.assertEqual(paused, StrategyEngine._GLOBAL_PAUSE.is_set())
+                self.assertEqual(expected_qty, events[0]["executed_qty"])
+                self.assertEqual(paused, events[0]["reconciliation_required"])
+                self.assertEqual(status == "FILLED", events[0]["order_complete"])
+                engine._emit_signal_order_info(
+                    cw={"symbol": "BTCUSDT", "interval": "1m"}, side="BUY", order_res=result,
+                    price=100.0, qty_display=99.0, trigger_labels=["rsi"], trigger_desc_for_order="rsi",
+                    trigger_signature=SIGNATURE, context_key="rsi", order_event_uid="event-1",
+                    trigger_actions_for_order=None, origin_timestamp=None,
+                )
+                self.assertEqual(expected_qty, events[-1]["executed_qty"])
+                self.assertEqual(events[0]["status"], events[-1]["status"])
+
+    def test_invalid_execution_never_falls_back_to_requested_or_fill_summary_quantity(self):
+        changes = (
+            {"executedQty": None}, {"executedQty": True}, {"executedQty": "NaN"},
+            {"executedQty": "Infinity"}, {"executedQty": "-1"}, {"executedQty": "2"},
+            {"executedQty": "0"}, {"status": "NEW"}, {"status": None},
+            {"origQty": "2"}, {"success": False}, {"error": "rejected"},
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                self.setUp()
+                events = []
+                engine = _build_engine(trade_callback=events.append)
+                result = _successful_order_result()
+                result["info"].update(change)
+                accepted, displayed = engine._handle_futures_signal_order_result(**_result_kwargs(result))
+                self.assertFalse(accepted)
+                self.assertEqual(0.0, displayed)
+                self.assertFalse(engine._leg_ledger.get(GUARD_KEY, {}).get("entries"))
+                self.assertEqual(0.0, events[0]["executed_qty"])
+                self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+
+    def test_exact_wire_quantity_is_used_instead_of_rounded_sizing_float(self):
+        engine = _build_engine()
+        result = _successful_order_result()
+        result["submitted_qty"] = "0.3"
+        result["computed"]["qty"] = 0.1 + 0.2
+        result["info"].update(origQty="0.3", executedQty="0.3")
+        accepted, displayed = engine._handle_futures_signal_order_result(**_result_kwargs(result))
+        self.assertTrue(accepted)
+        self.assertEqual(0.3, displayed)
+        self.assertEqual(0.3, engine._leg_ledger[GUARD_KEY]["entries"][0]["qty"])
 
 
 if __name__ == "__main__":

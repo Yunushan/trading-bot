@@ -797,11 +797,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest-dev@sha256:d7a9ff52942e89e188372fce9049640087f48473ceeb8cee2495f8136620fc3c AS builder",
+            "FROM cgr.dev/chainguard/python:latest-dev@sha256:b626eb5bcedda38d96dc1415d2967c007d1ea95b2d72a682c3e5ccecd222641d AS builder",
             dockerfile,
         )
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest@sha256:ee37f5e4fb445732409626797dccb6f2a6337872def2bab48729ee61b335fa77",
+            "FROM cgr.dev/chainguard/python:latest@sha256:1f37785e5cdb70151f36aaa15e1e3cef4571424dbefbf4b0d8a9222535cb13ff",
             dockerfile,
         )
         self.assertIn("COPY --chown=65532:65532 apps/service-api /app/apps/service-api", dockerfile)
@@ -815,6 +815,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("PIP_CERT=/run/secrets/pip_ca", dockerfile)
         self.assertIn('python -m pip install --upgrade "pip==26.2.1"', dockerfile)
         self.assertIn('pip install --upgrade "setuptools==84.0.0" "msgpack==1.2.1"', dockerfile)
+        self.assertIn("python -m pip check", dockerfile)
+        self.assertIn("python -m pip uninstall --yes pip", dockerfile)
+        self.assertLess(dockerfile.index("python -m pip check"), dockerfile.index("python -m pip uninstall --yes pip"))
         self.assertIn("install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("COPY --from=builder --chown=65532:65532 /home/nonroot/.trading-bot", dockerfile)
         self.assertIn("HOME=/home/nonroot", dockerfile)
@@ -834,8 +837,16 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', supply_chain_workflow)
         self.assertIn("Verify image source revision label", supply_chain_workflow)
         self.assertIn("Verify runtime Python package versions", supply_chain_workflow)
+        self.assertIn('util.find_spec("pip") is None', supply_chain_workflow)
         self.assertIn('expected = {"setuptools": "84.0.0", "msgpack": "1.2.1"}', supply_chain_workflow)
         self.assertIn("runtime-python-packages.json", supply_chain_workflow)
+        self.assertIn('"image_id": os.environ["AUDIT_IMAGE_ID"]', supply_chain_workflow)
+        self.assertIn('--entrypoint /opt/venv/bin/python "$AUDIT_IMAGE_ID"', supply_chain_workflow)
+        self.assertIn("--network none --read-only --cap-drop ALL", supply_chain_workflow)
+        self.assertLess(
+            supply_chain_workflow.index("assert actual =="),
+            supply_chain_workflow.index('print(json.dumps({"ok": True'),
+        )
         self.assertIn("check_container_vulnerability_policy.py", supply_chain_workflow)
         self.assertIn("http://127.0.0.1:18000/readyz", ci_workflow)
         self.assertIn("BOT_SERVICE_API_TRUST_LOOPBACK_PROXY=1", ci_workflow)

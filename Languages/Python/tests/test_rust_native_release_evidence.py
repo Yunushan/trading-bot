@@ -352,6 +352,28 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             evidence_importer.REQUIRED_CONSUMER_SURFACE_NAMES,
         )
 
+    def test_live_smoke_preflight_imports_checkout_before_conflicting_installed_package(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_app = Path(temp_dir) / "app"
+            fake_app.mkdir()
+            (fake_app / "__init__.py").write_text("", encoding="utf-8")
+            (fake_app / "native_parity.py").write_text(
+                "raise RuntimeError('verifier imported a conflicting installed package')\n",
+                encoding="utf-8",
+            )
+            env = dict(os.environ, PYTHONPATH=os.pathsep.join((temp_dir, str(REPO_ROOT))))
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import inspect, runpy, sys; m = runpy.run_path(sys.argv[1]); "
+                 "print(inspect.getfile(m['native_python_source_contract_hash']))",
+                 str(REPO_ROOT / "tools/check_rust_native_live_smoke_preflight.py")],
+                cwd=temp_dir, env=env, capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(
+                REPO_ROOT / "Languages/Python/app/native_parity.py", Path(result.stdout.strip()),
+            )
+
     def test_live_smoke_preflight_payload_requires_current_python_source_contract_hash(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             evidence_dir = Path(temp_dir)

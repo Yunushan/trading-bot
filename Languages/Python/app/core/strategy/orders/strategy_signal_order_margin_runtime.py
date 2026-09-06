@@ -2,6 +2,29 @@ from __future__ import annotations
 
 import math
 
+try:
+    from .strategy_order_error_logging import pause_for_order_uncertainty, safe_strategy_log
+except ImportError:  # pragma: no cover - standalone execution fallback
+    from strategy_order_error_logging import pause_for_order_uncertainty, safe_strategy_log
+
+
+def _futures_sizing_balances(snapshot: object) -> tuple[float, float]:
+    if not isinstance(snapshot, dict):
+        raise ValueError("futures balance snapshot is unavailable or invalid")
+    values = []
+    for field in ("available", "wallet"):
+        raw = snapshot.get(field)
+        if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+            raise ValueError(f"futures {field} balance is unavailable or invalid")
+        try:
+            number = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"futures {field} balance is unavailable or invalid") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"futures {field} balance is unavailable or nonfinite")
+        values.append(number)
+    return values[0], values[1]
+
 
 def _prepare_signal_order_margin_state(
     self,
@@ -26,38 +49,17 @@ def _prepare_signal_order_margin_state(
         return {"aborted": True}
 
     try:
-        if isinstance(futures_balance_snap, dict) and futures_balance_snap:
-            available_total = float(futures_balance_snap.get("available") or 0.0)
-        else:
-            available_total = float(self.binance.get_futures_balance_usdt())
-    except Exception:
-        available_total = 0.0
-    try:
-        if isinstance(futures_balance_snap, dict) and futures_balance_snap:
-            wallet_total = float(futures_balance_snap.get("wallet") or 0.0)
-        else:
-            wallet_total = float(self.binance.get_total_wallet_balance())
-    except Exception:
-        wallet_total = 0.0
-    available_total = max(0.0, available_total)
-    wallet_total = max(0.0, wallet_total)
-    if wallet_total <= 0.0:
-        wallet_total = max(available_total, free_usdt)
-    ledger_margin_total = 0.0
-    try:
-        for leg_state in self._leg_ledger.values():
-            if not isinstance(leg_state, dict):
-                continue
-            margin_val = float(leg_state.get("margin_usdt") or 0.0)
-            if margin_val > 0.0:
-                ledger_margin_total += margin_val
-    except Exception:
-        ledger_margin_total = 0.0
-    equity_estimate = max(wallet_total, available_total + ledger_margin_total)
-    equity_estimate = max(equity_estimate, free_usdt + ledger_margin_total)
-    if equity_estimate <= 0.0:
-        equity_estimate = max(wallet_total, available_total, free_usdt, ledger_margin_total)
-    wallet_total = max(0.0, equity_estimate)
+        available_total, wallet_total = _futures_sizing_balances(futures_balance_snap)
+    except ValueError as exc:
+        pause_for_order_uncertainty(
+            self, f"Futures sizing balance snapshot failed: {exc}", reconciliation_required=False,
+        )
+        return _abort()
+    if available_total <= 0.0 or wallet_total <= 0.0:
+        safe_strategy_log(self, f"{cw['symbol']} sizing blocked: no positive futures wallet/available balance.")
+        return _abort()
+    # Wallet balance already includes collateral in use. Neither spot funds nor
+    # local ledger margin may increase the exchange-reported allocation budget.
 
     margin_tolerance = float(self.config.get("margin_over_target_tolerance", 0.05))
     if margin_tolerance > 1.0:
@@ -122,12 +124,7 @@ def _prepare_signal_order_margin_state(
         )
         return _abort()
 
-    if available_total <= 0.0:
-        available_total = free_usdt
-    if available_total <= 0.0:
-        self.log(f"{cw['symbol']}@{cw.get('interval')} capital guard: no available USDT to allocate.")
-        return _abort()
-    if available_total < target_margin * 0.95:
+    if target_margin > available_total + 1e-9:
         self.log(
             f"{cw['symbol']}@{cw.get('interval')} capital guard: requested {target_margin:.4f} USDT "
             f"({pct*100:.2f}% margin target) but only {available_total:.4f} USDT available."
@@ -171,6 +168,9 @@ def _prepare_signal_order_margin_state(
         return _abort()
 
     margin_est = (adj_qty * price) / float(lev)
+    if not math.isfinite(margin_est) or margin_est > available_total + 1e-9:
+        safe_strategy_log(self, f"{cw['symbol']} sizing blocked: adjusted margin exceeds available futures funds.")
+        return _abort()
     indicator_soft_cap = max_indicator_margin * (1.0 + margin_filter_slippage)
     if filter_min_margin > max_indicator_margin:
         indicator_soft_cap = max(indicator_soft_cap, filter_min_margin * (1.0 + margin_filter_slippage))

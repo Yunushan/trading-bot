@@ -137,6 +137,7 @@ def _prepare_indicator_signal_request_context(
     qty_tol_indicator: float,
     now_ts: float,
     now_indicator_ts: float,
+    signal_bar_ts: float | None = None,
 ) -> dict[str, object] | None:
     return strategy_indicator_order_context_runtime._prepare_indicator_signal_request_context(
         self,
@@ -148,6 +149,7 @@ def _prepare_indicator_signal_request_context(
         qty_tol_indicator=qty_tol_indicator,
         now_ts=now_ts,
         now_indicator_ts=now_indicator_ts,
+        signal_bar_ts=signal_bar_ts,
     )
 
 
@@ -158,6 +160,7 @@ def _prepare_fallback_indicator_request_context(
     indicator_label: str,
     indicator_action,
     now_indicator_ts: float,
+    signal_bar_ts: float | None = None,
 ) -> dict[str, object] | None:
     return strategy_indicator_order_context_runtime._prepare_fallback_indicator_request_context(
         self,
@@ -165,6 +168,7 @@ def _prepare_fallback_indicator_request_context(
         indicator_label=indicator_label,
         indicator_action=indicator_action,
         now_indicator_ts=now_indicator_ts,
+        signal_bar_ts=signal_bar_ts,
     )
 
 
@@ -178,6 +182,7 @@ def _collect_indicator_order_requests(
     allow_opposite_enabled: bool,
     hedge_overlap_allowed: bool,
     now_ts: float,
+    current_bar_marker: int | None = None,
 ) -> tuple[list[dict[str, object]], float]:
     indicator_order_requests: list[dict[str, object]] = []
     qty_tol_indicator = 1e-9
@@ -212,6 +217,10 @@ def _collect_indicator_order_requests(
         desired_ps_long = "LONG" if dual_side else None
         desired_ps_short = "SHORT" if dual_side else None
         now_indicator_ts = time.time()
+        try:
+            signal_bar_ts = float(current_bar_marker) / 1_000_000_000
+        except (TypeError, ValueError, OverflowError):
+            signal_bar_ts = None
         for indicator_name, indicator_action in trigger_actions.items():
             indicator_label = str(indicator_name or "").strip()
             if not indicator_label:
@@ -226,6 +235,7 @@ def _collect_indicator_order_requests(
                 qty_tol_indicator=qty_tol_indicator,
                 now_ts=now_ts,
                 now_indicator_ts=now_indicator_ts,
+                signal_bar_ts=signal_bar_ts,
             )
             if not request_ctx:
                 continue
@@ -282,6 +292,7 @@ def _collect_indicator_order_requests(
                     indicator_label=indicator_label,
                     indicator_action=indicator_action,
                     now_indicator_ts=now_indicator_ts,
+                    signal_bar_ts=signal_bar_ts,
                 )
                 if not fallback_ctx:
                     continue

@@ -56,6 +56,13 @@ def _compute_signal_order_guard_window(self, interval_value, signature_guard_key
 
 
 def _reset_stale_signal_order_guard(self, *, symbol: str, interval_key: str, side: str, guard_window: float) -> None:
+    with type(self)._SYMBOL_GUARD_LOCK:
+        _reset_stale_signal_order_guard_locked(
+            self, symbol=symbol, interval_key=interval_key, side=side, guard_window=guard_window,
+        )
+
+
+def _reset_stale_signal_order_guard_locked(self, *, symbol: str, interval_key: str, side: str, guard_window: float) -> None:
     try:
         qty_tol_guard = 1e-9
         live_qty_sym = 0.0
@@ -98,6 +105,7 @@ def _reset_stale_signal_order_guard(self, *, symbol: str, interval_key: str, sid
             age = (now - max(age_candidates)) if age_candidates else float("inf")
             if not live_qty_unknown and not state_age_unknown and live_qty_sym <= qty_tol_guard and age > guard_window * 2.0:
                 state["pending_map"] = {}
+                state["pending_owners"] = {}
                 state["signatures"] = {}
                 state["last"] = 0.0
                 type(self)._SYMBOL_ORDER_STATE[guard_key_symbol] = state
@@ -192,11 +200,11 @@ def _prepare_signal_order_guard(
                 global_tracker = {"bar": current_bar_marker, "signatures": set()}
                 type(self)._BAR_GLOBAL_SIGNATURES[bar_sig_key] = global_tracker
             global_sig_set = global_tracker.setdefault("signatures", set())
-            if sig_sorted in global_sig_set and not flip_active:
+            if sig_sorted in global_tracker.get("reservations", {}) or (sig_sorted in global_sig_set and not flip_active):
                 _safe_log(
                     self,
                     f"{cw['symbol']}@{interval_key} global duplicate {side} suppressed "
-                    f"(order already placed this bar).",
+                    f"(order pending or submitted this bar).",
                     level=logging.INFO,
                 )
                 return {
@@ -232,13 +240,11 @@ def _prepare_signal_order_guard(
                 "guard_window": guard_window,
                 "guard_claimed": False,
             }
-        # Keep current behavior: mark early so later duplicates on the same bar are suppressed.
-        global_sig_set.add(sig_sorted)
-        sig_set.add(sig_sorted)
-
     guard_key_symbol = (cw["symbol"], interval_key, side)
     now_guard = time.time()
     guard_claimed = False
+    reservation_token = object()
+    bar_reservation = None
 
     with type(self)._SYMBOL_GUARD_LOCK:
         entry_guard = type(self)._SYMBOL_ORDER_STATE.get(guard_key_symbol)
@@ -337,11 +343,41 @@ def _prepare_signal_order_guard(
                     "guard_claimed": False,
                 }
             guard_override_used = True
+        # Claim the bar only after all symbol checks, rechecking under the bar
+        # lock so concurrent engines cannot both reserve the same signal.
+        if current_bar_marker is not None:
+            with type(self)._BAR_GUARD_LOCK:
+                global_tracker = type(self)._BAR_GLOBAL_SIGNATURES.get(bar_sig_key)
+                if not global_tracker or global_tracker.get("bar") != current_bar_marker:
+                    global_tracker = {"bar": current_bar_marker, "signatures": set()}
+                    type(self)._BAR_GLOBAL_SIGNATURES[bar_sig_key] = global_tracker
+                global_sig_set = global_tracker.setdefault("signatures", set())
+                reservations = global_tracker.setdefault("reservations", {})
+                if sig_sorted in reservations or (sig_sorted in global_sig_set and not flip_active):
+                    return {"aborted": True, "guard_claimed": False}
+                tracker = self._bar_order_tracker.get(bar_sig_key)
+                if not tracker or tracker.get("bar") != current_bar_marker:
+                    tracker = {"bar": current_bar_marker, "signatures": set()}
+                    self._bar_order_tracker[bar_sig_key] = tracker
+                sig_set = tracker.setdefault("signatures", set())
+                if sig_sorted in sig_set and not flip_active:
+                    return {"aborted": True, "guard_claimed": False}
+                bar_reservation = {
+                    "key": bar_sig_key, "global": global_tracker, "local": tracker,
+                    "signature": sig_sorted, "owner": reservation_token, "submitted": False,
+                    "global_existed": sig_sorted in global_sig_set,
+                    "local_existed": sig_sorted in sig_set,
+                }
+                reservations[sig_sorted] = reservation_token
+                global_sig_set.add(sig_sorted)
+                sig_set.add(sig_sorted)
+
         entry_guard["window"] = guard_window
         entry_guard["last"] = last_ts
         entry_guard["signatures"] = signatures_state
         pending_map[signature_guard_key] = now_guard
         entry_guard["pending_map"] = pending_map
+        entry_guard.setdefault("pending_owners", {})[signature_guard_key] = reservation_token
         type(self)._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
         guard_claimed = True
 
@@ -360,7 +396,40 @@ def _prepare_signal_order_guard(
         "guard_key_symbol": guard_key_symbol,
         "guard_window": guard_window,
         "guard_claimed": guard_claimed,
+        "reservation_token": reservation_token,
+        "bar_reservation": bar_reservation,
     }
+
+
+def _finish_bar_reservation(self, reservation, *, submitted: bool) -> None:
+    if reservation is None:
+        return
+    with type(self)._BAR_GUARD_LOCK:
+        if reservation["submitted"]:
+            return
+        tracker = reservation["global"]
+        signature = reservation["signature"]
+        owners = tracker.get("reservations", {})
+        owns = owners.get(signature) is reservation["owner"]
+        if submitted:
+            if not owns or type(self)._BAR_GLOBAL_SIGNATURES.get(reservation["key"]) is not tracker:
+                raise RuntimeError("Signal bar reservation no longer owns the current bar; submission blocked")
+            reservation["submitted"] = True
+        if owns:
+            owners.pop(signature, None)
+            if not submitted:
+                if not reservation["global_existed"]:
+                    tracker["signatures"].discard(signature)
+                if not reservation["local_existed"]:
+                    reservation["local"]["signatures"].discard(signature)
+
+
+def _mark_signal_order_submission(self, guard_key_symbol, signature_guard_key, reservation_token, bar_reservation) -> None:
+    with type(self)._SYMBOL_GUARD_LOCK:
+        state = type(self)._SYMBOL_ORDER_STATE.get(guard_key_symbol, {})
+        if state.get("pending_owners", {}).get(signature_guard_key) is not reservation_token:
+            raise RuntimeError("Signal order reservation ownership was lost; submission blocked")
+        _finish_bar_reservation(self, bar_reservation, submitted=True)
 
 
 def bind_strategy_signal_order_guard_runtime(strategy_cls) -> None:

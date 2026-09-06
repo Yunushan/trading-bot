@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -18,15 +19,10 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised by package imports
     from tools.rust_command import run_cargo_with_secure_wsl_fallback
 
-try:
-    from app.native_parity import native_python_source_contract_hash
-except ModuleNotFoundError:  # pragma: no cover - exercised when run from repo root
-    import sys
-
-    PYTHON_ROOT = Path(__file__).resolve().parents[1] / "Languages" / "Python"
-    if str(PYTHON_ROOT) not in sys.path:
-        sys.path.insert(0, str(PYTHON_ROOT))
-    from app.native_parity import native_python_source_contract_hash  # noqa: E402
+# This checks the checkout, never a previously installed product wheel.
+PYTHON_ROOT = Path(__file__).resolve().parents[1] / "Languages" / "Python"
+sys.path.insert(0, str(PYTHON_ROOT))
+from app.native_parity import native_python_source_contract_hash  # noqa: E402
 
 
 SIGNED_EXPECTED_ARTIFACTS = {

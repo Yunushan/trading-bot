@@ -155,6 +155,9 @@ class CcxtDiagnosticsConnector:
         return options
 
     def _build_exchange(self) -> object:
+        from app.settings.execution_mode import is_testnet_trading_mode
+
+        is_testnet = is_testnet_trading_mode(self.mode)
         if not self.exchange_id:
             raise ValueError(
                 f"Exchange '{self.selected_exchange}' is not available through the ccxt connector adapter."
@@ -168,10 +171,11 @@ class CcxtDiagnosticsConnector:
             if exchange_class is None:
                 raise RuntimeError(f"ccxt exchange '{self.exchange_id}' is not installed in this ccxt build.")
             exchange = exchange_class(options)
-        if "test" in self.mode.lower() or "demo" in self.mode.lower():
+        if is_testnet:
             set_sandbox_mode = getattr(exchange, "set_sandbox_mode", None)
-            if callable(set_sandbox_mode):
-                set_sandbox_mode(True)
+            if not callable(set_sandbox_mode):
+                raise RuntimeError("Connector cannot enable testnet; refusing production fallback")
+            set_sandbox_mode(True)
         return exchange
 
     def build_capability_snapshot(self) -> dict[str, object]:

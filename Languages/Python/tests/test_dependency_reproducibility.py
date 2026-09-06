@@ -605,7 +605,12 @@ class DependencyReproducibilityTests(unittest.TestCase):
             "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25",
             workflow,
         )
-        self.assertIn("image-ref: trading-bot-service:supply-chain", workflow)
+        self.assertIn("image-ref: ${{ steps.image-build.outputs.image_id }}", workflow)
+        self.assertIn("--iidfile container-image-id.txt", workflow)
+        self.assertIn('echo "image_id=$(cat container-image-id.txt)" >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn("--image-id-file container-image-id.txt", workflow)
+        self.assertIn('list-all-pkgs: "true"', workflow)
+        self.assertNotIn("continue-on-error: true", workflow)
         self.assertIn("severity: HIGH,CRITICAL", workflow)
         self.assertIn('exit-code: "1"', workflow)
         self.assertIn("if: always() && steps.trivy.outcome != 'skipped'", workflow)

@@ -126,7 +126,8 @@ class BinanceFuturesAccountSafetyTests(unittest.TestCase):
 
         self.assertEqual(4.5, futures_account.get_futures_wallet_balance(harness))
         harness.get_total_usdt_value = lambda: 12.0
-        self.assertEqual(12.0, futures_account.get_total_wallet_balance(harness))
+        with self.assertRaisesRegex(RuntimeError, "futures wallet balance is unavailable or invalid"):
+            futures_account.get_total_wallet_balance(harness)
 
     def test_unrealized_pnl_uses_account_total_when_position_rows_are_malformed(self):
         harness = _FuturesAccountHarness(accounts={False: {"totalUnrealizedProfit": "1.75"}})

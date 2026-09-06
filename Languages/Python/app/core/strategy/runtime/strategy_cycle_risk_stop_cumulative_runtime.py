@@ -114,13 +114,13 @@ def apply_cumulative_futures_stop_management(
         position_side = side_key if dual_side else None
         start_ts = time.time()
         try:
-            res = self.binance.close_futures_leg_exact(
-                cw["symbol"], data["qty"], side=close_side, position_side=position_side
+            ok_close, res = self._execute_close_with_fallback(
+                cw["symbol"], close_side, data["qty"], position_side
             )
         except Exception as exc:
             _safe_log(self, f"Cumulative stop-loss close error for {cw['symbol']} ({side_key}): {exc}")
             continue
-        if isinstance(res, dict) and res.get("ok"):
+        if ok_close and not getattr(self, "_ledger_reconciliation_required", False):
             closed_qty = _reconciled_close_qty(res, data["qty"])
             if closed_qty + max(1e-9, data["qty"] * 1e-6) < data["qty"]:
                 _safe_log(

@@ -90,8 +90,8 @@ def get_connector_health_snapshot(self) -> dict[str, object]:
         try:
             status = order_intent_getter()
             order_intent_status = status if isinstance(status, dict) else None
-        except Exception:
-            order_intent_status = None
+        except Exception as exc:
+            order_intent_status = {"storage_ready": False, "error": redact_text(exc) or "Order intent storage unavailable."}
     try:
         seconds_until_unban = max(0.0, float(self._seconds_until_unban()))
     except Exception:
@@ -144,6 +144,9 @@ def get_connector_health_snapshot(self) -> dict[str, object]:
     if isinstance(order_intent_status, dict) and int(order_intent_status.get("unresolved_count") or 0) > 0:
         health = "error"
         state = "order_intent_reconciliation_required"
+    if isinstance(order_intent_status, dict) and order_intent_status.get("storage_ready") is False:
+        health = "error"
+        state = "order_intent_storage_unavailable"
 
     payload = {
         "health": health,

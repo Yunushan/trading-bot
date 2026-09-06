@@ -64,7 +64,7 @@ NativeExchangeConnectors::ExchangeSupportInput exchangeSupportInputFromJson(cons
 QVector<QPair<QString, QString>> orderParamsFromJson(const QJsonObject &params) {
     QVector<QPair<QString, QString>> result;
     for (const QString &key : params.keys()) {
-        result.append({key, params.value(key).toString()});
+        result.append({key, params.value(key).toVariant().toString()});
     }
     return result;
 }
@@ -101,6 +101,12 @@ NativeOrderSafety::OrderSymbolFilters orderFiltersFromJson(const QJsonObject &fi
         filters.value(QStringLiteral("tickSize")).toDouble(),
         filters.value(QStringLiteral("minQty")).toDouble(),
         filters.value(QStringLiteral("minNotional")).toDouble(),
+        filters.value(QStringLiteral("maxQty")).toDouble(),
+        filters.contains(QStringLiteral("marketMinQty")) || filters.contains(QStringLiteral("marketMaxQty"))
+            || filters.contains(QStringLiteral("marketStepSize")),
+        filters.value(QStringLiteral("marketMinQty")).toDouble(std::numeric_limits<double>::quiet_NaN()),
+        filters.value(QStringLiteral("marketMaxQty")).toDouble(std::numeric_limits<double>::quiet_NaN()),
+        filters.value(QStringLiteral("marketStepSize")).toDouble(std::numeric_limits<double>::quiet_NaN()),
     };
 }
 
@@ -1270,7 +1276,7 @@ int main(int argc, char **argv) {
 
     NativeOrderSafety::LiveOrderGuardInput paperValidOrder = paperInvalidOrder;
     paperValidOrder.hasFilters = true;
-    paperValidOrder.filters = {0.001, 0.1, 0.001, 5.0};
+    paperValidOrder.filters = {0.001, 0.1, 0.001, 5.0, 100.0};
     paperValidOrder.hasLastPrice = true;
     paperValidOrder.lastPrice = 100.0;
     paperValidOrder.connectorState = QStringLiteral("ready");
@@ -1334,7 +1340,7 @@ int main(int argc, char **argv) {
         {QStringLiteral("quantity"), QStringLiteral("0.10")},
     };
     environmentConfirmedOrder.hasFilters = true;
-    environmentConfirmedOrder.filters = {0.001, 0.1, 0.01, 5.0};
+    environmentConfirmedOrder.filters = {0.001, 0.1, 0.01, 5.0, 100.0};
     environmentConfirmedOrder.hasLastPrice = true;
     environmentConfirmedOrder.lastPrice = 100.0;
     environmentConfirmedOrder.connectorState = QStringLiteral("ready");
@@ -1345,6 +1351,72 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ order guard should honor Python live-safety environment overrides"));
     check(environmentConfirmedResult.nextSubmitAttemptCount == 1,
           QStringLiteral("C++ order guard should apply the Python environment session cap"));
+    const QJsonArray budgetCases = QJsonDocument::fromJson(pythonOrderGuardBehavior.toUtf8())
+        .object().value(QStringLiteral("session_budget_exit_cases")).toArray();
+    check(budgetCases.size() >= 29, QStringLiteral("Python session budget reference cases must be present"));
+    for (const auto &value : budgetCases) {
+        const auto testCase = value.toObject();
+        const QString name = testCase.value(QStringLiteral("name")).toString();
+        const bool exempt = testCase.value(QStringLiteral("exempt")).toBool();
+        auto input = environmentConfirmedOrder;
+        input.market = testCase.value(QStringLiteral("market")).toString();
+        input.params = orderParamsFromJson(testCase.value(QStringLiteral("params")).toObject());
+        input.liveSubmitAttemptCount = 1;
+        const auto result = NativeOrderSafety::guardLiveOrderSubmit(input);
+        check(result.allowed == exempt, name + QStringLiteral(": ") + result.errors.join(QStringLiteral("; ")));
+        check(result.nextSubmitAttemptCount == 1, name + QStringLiteral(": capped budget must not change"));
+        check(result.errors.join(QStringLiteral(" ")).contains(QStringLiteral("session order cap")) == !exempt,
+              name + QStringLiteral(": only confirmed closing requests are exempt"));
+        if (exempt) {
+            input.liveSubmitAttemptCount = 0;
+            const auto beforeEntry = NativeOrderSafety::guardLiveOrderSubmit(input);
+            check(beforeEntry.allowed && beforeEntry.nextSubmitAttemptCount == 0,
+                  name + QStringLiteral(": a close must not consume the first entry budget"));
+            input.liveSubmitAttemptCount = 1;
+            for (const QString &condition : {QStringLiteral("audit"), QStringLiteral("audit-write"),
+                     QStringLiteral("health"), QStringLiteral("quantity"), QStringLiteral("ack")}) {
+                auto blocked = input;
+                const QByteArray acknowledgementEnvironment = qgetenv("BOT_LIVE_TRADING_ACKNOWLEDGEMENT");
+                if (condition == QStringLiteral("audit")) {
+                    blocked.orderAuditEnabled = false;
+                } else if (condition == QStringLiteral("audit-write")) {
+                    blocked.orderAuditWritable = false;
+                } else if (condition == QStringLiteral("health")) {
+                    blocked.connectorState = QStringLiteral("offline");
+                } else if (condition == QStringLiteral("quantity")) {
+                    for (auto &param : blocked.params) {
+                        if (param.first == QStringLiteral("quantity")) {
+                            param.second = QStringLiteral("NaN");
+                        }
+                    }
+                } else {
+                    blocked.config.liveTradingAcknowledgement = QStringLiteral("missing");
+                    // Both configured and environment acknowledgements must be invalid for this negative case.
+                    qputenv("BOT_LIVE_TRADING_ACKNOWLEDGEMENT", QByteArray("missing"));
+                }
+                const auto denied = NativeOrderSafety::guardLiveOrderSubmit(blocked);
+                qputenv("BOT_LIVE_TRADING_ACKNOWLEDGEMENT", acknowledgementEnvironment);
+                check(!denied.allowed && denied.nextSubmitAttemptCount == 1,
+                      name + QStringLiteral(": must preserve ") + condition);
+                check(!denied.errors.join(QStringLiteral(" ")).contains(QStringLiteral("session order cap")),
+                      name + QStringLiteral(": other checks are independent of the budget"));
+            }
+        }
+    }
+    for (const QString &key : {QStringLiteral("reduceOnly"), QStringLiteral("side"),
+             QStringLiteral("type"), QStringLiteral("positionSide")}) {
+        for (const bool first : {true, false}) {
+            auto input = environmentConfirmedOrder;
+            input.params = orderParamsFromJson(budgetCases.first().toObject().value(QStringLiteral("params")).toObject());
+            input.params.append({QStringLiteral("positionSide"), QStringLiteral("BOTH")});
+            input.params.insert(first ? 0 : input.params.size(), {key, QStringLiteral("invalid")});
+            input.liveSubmitAttemptCount = 1;
+            const auto denied = NativeOrderSafety::guardLiveOrderSubmit(input);
+            check(!denied.allowed && denied.nextSubmitAttemptCount == 1
+                      && denied.errors.join(QStringLiteral(" ")).contains(QStringLiteral("session order cap")),
+                  key + QStringLiteral(": duplicate wire fields cannot bypass the budget"));
+        }
+    }
     qunsetenv("BOT_ENABLE_LIVE_TRADING");
     qunsetenv("BOT_LIVE_TRADING_ACKNOWLEDGEMENT");
     qunsetenv("BOT_LIVE_MAX_LEVERAGE");
@@ -1392,7 +1464,7 @@ int main(int argc, char **argv) {
     capitalGuard.price = 100.0;
     capitalGuard.leverage = 5;
     capitalGuard.hasFilters = true;
-    capitalGuard.filters = {0.001, 0.1, 0.001, 5.0};
+    capitalGuard.filters = {0.001, 0.1, 0.001, 5.0, 100.0};
     capitalGuard.requestedQuantity = 1.0;
     capitalGuard.normalizedQuantity = 1.0;
     capitalGuard.marginOverTargetTolerance = 0.05;

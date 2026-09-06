@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from trading_core.orders import confirmed_close_quantity
 
 from ..positions.close_execution import _pause_for_close_uncertainty
 
@@ -16,15 +17,10 @@ def _finite_positive(value: object) -> float:
 def _reconciled_close_qty(result: object, requested_qty: float) -> float:
     if not math.isfinite(requested_qty) or requested_qty <= 0.0:
         return 0.0
-    if isinstance(result, dict):
-        for field in ("sent_qty", "executed_qty", "executedQty", "origQty"):
-            try:
-                quantity = float(result.get(field) or 0.0)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(quantity) and quantity > 0.0:
-                return min(requested_qty, quantity)
-    return requested_qty
+    try:
+        return confirmed_close_quantity(result, requested_qty)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def build_futures_stop_state(self, *, cw, df):

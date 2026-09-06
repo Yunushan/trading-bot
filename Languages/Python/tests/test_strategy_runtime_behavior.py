@@ -822,6 +822,7 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         engine = _build_engine(logs=logs)
         submitted: list[tuple[object, ...]] = []
         engine._current_futures_position_qty = lambda *_args: float("nan")
+        engine._leg_entries = lambda _key: [{"qty": 1.0, "ledger_id": "ledger-1"}]
 
         def _submit(*args):
             submitted.append(args)
@@ -911,6 +912,8 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         logs: list[str] = []
         wrapper.close_futures_leg_exact = lambda *_args, **_kwargs: {
             "ok": True,
+            "execution_confirmed": True,
+            "executed_qty": 1.0,
             "reconciliation_required": True,
             "warnings": ["confirmed close cache invalidation failed"],
         }
@@ -1161,8 +1164,8 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         logs: list[str] = []
         wrapper = _FakeStrategyBinance()
         wrapper.close_futures_leg_exact = lambda *_args, **_kwargs: {
-            "ok": True,
-            "executedQty": "0.25",
+            "ok": False, "execution_confirmed": True, "executed_qty": 0.25,
+            "reconciliation_required": True, "error": "Close partially filled",
         }
         engine = _build_engine(wrapper=wrapper, logs=logs)
         engine._compute_position_margin_fields = lambda *_args, **_kwargs: (0.0, 0.0, 0.0, 0.0)
@@ -1187,13 +1190,14 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
 
         self.assertEqual([], removed)
         self.assertIn("partially filled", "\n".join(logs))
+        self.assertTrue(engine._ledger_reconciliation_required)
 
     def test_cumulative_stop_partial_fill_keeps_ledger_for_reconciliation(self):
         logs: list[str] = []
         wrapper = _FakeStrategyBinance()
         wrapper.close_futures_leg_exact = lambda *_args, **_kwargs: {
-            "ok": True,
-            "executedQty": "0.25",
+            "ok": False, "execution_confirmed": True, "executed_qty": 0.25,
+            "reconciliation_required": True, "error": "Close partially filled",
         }
         engine = _build_engine(wrapper=wrapper, logs=logs)
         leg_key = ("BTCUSDT", "1m", "BUY")
@@ -1229,6 +1233,7 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertTrue(triggered)
         self.assertEqual([], removed)
         self.assertIn("partially filled", "\n".join(logs))
+        self.assertTrue(engine._ledger_reconciliation_required)
 
     def test_cumulative_stop_rejects_non_finite_market_price(self):
         wrapper = _FakeStrategyBinance()

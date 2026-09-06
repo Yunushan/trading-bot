@@ -4,6 +4,7 @@ import logging
 import re
 
 from app.security.redaction import redact_text
+from app.settings.execution_mode import is_testnet_trading_mode
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,8 +36,7 @@ def _load_ccxt():
 
 
 def _is_testnet_mode(mode: str | None) -> bool:
-    text = str(mode or "").lower()
-    return any(tag in text for tag in ("demo", "test", "sandbox"))
+    return is_testnet_trading_mode(mode)
 
 
 def _normalize_connector_choice(value) -> str:
@@ -82,8 +82,7 @@ if _OfficialAPIBase is not None and _OfficialSpotClient is not None:
 
     class OfficialConnectorAdapter:
         def __init__(self, api_key, api_secret, *, mode="Live"):
-            mode_text = (mode or "Demo/Testnet").strip().lower()
-            is_testnet = any(tag in mode_text for tag in ("test", "demo"))
+            is_testnet = _is_testnet_mode(mode)
             spot_base = (
                 "https://testnet.binance.vision"
                 if is_testnet
@@ -278,6 +277,7 @@ class CcxtBinanceAdapter:
             raise RuntimeError("ccxt library is not available") from exc
         self.API_KEY = api_key or ""
         self.API_SECRET = api_secret or ""
+        is_testnet = _is_testnet_mode(mode)
         self.mode = mode
         self.account_type = str(account_type or "Spot").strip().upper()
         self._bw_throttled = True
@@ -294,7 +294,7 @@ class CcxtBinanceAdapter:
             self._exchange.options["defaultType"] = default_type
         except Exception as exc:
             raise RuntimeError("ccxt default market type configuration failed") from exc
-        if _is_testnet_mode(self.mode):
+        if is_testnet:
             try:
                 self._exchange.set_sandbox_mode(True)
             except Exception as exc:

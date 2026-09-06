@@ -516,7 +516,7 @@ SERVICE_API_ROUTE_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "account": {
         "query_fields": (),
-        "request_fields": ("total_balance", "available_balance", "source"),
+        "request_fields": ("total_balance", "available_balance", "observed_at", "source"),
         "response_fields": SERVICE_ACCOUNT_RESPONSE_FIELDS,
     },
     "portfolio": {
@@ -531,6 +531,7 @@ SERVICE_API_ROUTE_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
             "closed_margin",
             "total_balance",
             "available_balance",
+            "observed_at",
             "source",
         ),
         "response_fields": SERVICE_PORTFOLIO_RESPONSE_FIELDS,

@@ -91,6 +91,7 @@ trading-bot-cli = "app.service.product_main:main"
 trading-bot-desktop = "app.desktop.product_main:main"
 trading-bot-mt4-bridge = "app.integrations.brokers.metatrader4_bridge:main"
 trading-bot-service = "app.service.product_main:main"
+trading-bot-order-store = "app.integrations.exchanges.binance.orders.order_intent_admin:main"
 
 [project.urls]
 Repository = "https://github.com/Yunushan/trading-bot"
@@ -169,6 +170,11 @@ files = [
     "app/core/backtest/optimizer_limits_runtime.py",
     "app/core/backtest/optimizer_result_runtime.py",
     "app/core/backtest/engine_run_runtime.py",
+    "app/core/strategy/orders/operational_snapshot.py",
+    "app/integrations/exchanges/binance/orders/order_intent_runtime.py",
+    "app/integrations/exchanges/binance/orders/order_intent_store.py",
+    "app/integrations/exchanges/binance/orders/order_intent_provisioning.py",
+    "app/integrations/exchanges/binance/orders/order_intent_admin.py",
     "app/gui/backtest/backtest_optimizer_runtime.py",
     "trading_core/__init__.py",
     "trading_core/backtest.py",

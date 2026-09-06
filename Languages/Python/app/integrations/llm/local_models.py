@@ -10,6 +10,8 @@ from urllib.parse import urlsplit, urlunsplit
 from app.security.network_url import _is_loopback_host, validate_http_url
 from app.security.redaction import redact_text
 
+from .http_policy import reject_llm_redirect
+
 try:
     import requests as _requests
 except ImportError:  # pragma: no cover - exercised by lean CI smoke environments
@@ -320,7 +322,9 @@ def get_local_model_status(
         response = request_get(
             _join_url(validated_base_url, "models"),
             timeout=max(1.0, float(timeout or 3.0)),
+            allow_redirects=False,
         )
+        reject_llm_redirect(response)
         if hasattr(response, "raise_for_status"):
             response.raise_for_status()
         payload = response.json() if hasattr(response, "json") else {}
@@ -437,6 +441,7 @@ def pull_ollama_model(
         "json": {"model": clean_model, "stream": stream},
         "timeout": max(1.0, float(timeout or 1800.0)),
         "stream": stream,
+        "allow_redirects": False,
     }
     url = _join_url(_ollama_base_url(validated_base_url), "api/pull")
     try:
@@ -446,6 +451,7 @@ def pull_ollama_model(
             raise
         request_kwargs.pop("stream", None)
         response = request_post(url, **request_kwargs)
+    reject_llm_redirect(response)
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()
     if not stream:
@@ -490,6 +496,8 @@ def delete_ollama_model(
         _join_url(_ollama_base_url(validated_base_url), "api/delete"),
         json={"model": clean_model},
         timeout=max(1.0, float(timeout or 60.0)),
+        allow_redirects=False,
     )
+    reject_llm_redirect(response)
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()

@@ -44,8 +44,9 @@ use trading_bot_core::{
         NativeRuntimeGuardedExecutionCycleInput, NativeRuntimeGuardedExecutionCycleSnapshot,
         NativeRuntimeLoop, NativeRuntimeLoopConfig, NativeRuntimeOperationalPreflightInput,
         NativeRuntimeReadOnlyMarketCycleInput, NativeRuntimeRiskPositionInput,
-        native_runtime_position_signal, normalize_native_margin_mode,
-        plan_native_futures_modes_preparation, plan_native_futures_order_preparation,
+        native_observation_age_ms, native_runtime_position_signal, normalize_native_margin_mode,
+        operational_preflight_start_allowed, plan_native_futures_modes_preparation,
+        plan_native_futures_order_preparation,
     },
     order_audit::{ConnectorOrderCircuitBreakerConfig, OrderAuditConfig},
     order_guard::{LiveTradingSafetyConfig, OrderSymbolFilters},
@@ -663,7 +664,7 @@ impl NativeRuntimeState {
             let preflight = runtime.build_operational_preflight(
                 native_runtime_start_preflight_input(&pair_config, now_ms, false),
             );
-            if !preflight.start.allowed {
+            if !operational_preflight_start_allowed(&preflight, now_ms) {
                 let reasons = if preflight.start.reasons.is_empty() {
                     "the operational start gate is not satisfied".to_owned()
                 } else {
@@ -1355,6 +1356,7 @@ impl NativeRuntimeState {
         api_secret: String,
         now_ms: i64,
     ) -> NativeRuntimeExecutionResponse {
+        let market_observed_at_ms = now_ms;
         let effective_config = config.clone();
         let spec = match native_runtime_market_poll_spec_for_config(&effective_config) {
             Ok(spec) => spec,
@@ -1456,15 +1458,20 @@ impl NativeRuntimeState {
             .as_ref()
             .map(|candle| candle.is_closed)
             .unwrap_or(false);
-        let market_input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
-            now_ms,
-            candles.clone(),
-            &effective_config,
-            last_candle_is_closed,
-        ) {
-            Ok(input) => input,
-            Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+        let now_ms = match native_runtime_command_time_ms(now_ms) {
+            Ok(now_ms) => now_ms,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error),
         };
+        let mut market_input =
+            match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
+                now_ms,
+                candles.clone(),
+                &effective_config,
+                last_candle_is_closed,
+            ) {
+                Ok(input) => input,
+                Err(error) => return NativeRuntimeExecutionResponse::error(error.to_string()),
+            };
         let Some(mut account_bootstrap) = managed.pairs[pair_index].account_bootstrap.clone()
         else {
             return NativeRuntimeExecutionResponse::error(
@@ -1510,6 +1517,11 @@ impl NativeRuntimeState {
             }
         }
 
+        let now_ms = match native_runtime_command_time_ms(now_ms) {
+            Ok(now_ms) => now_ms,
+            Err(error) => return NativeRuntimeExecutionResponse::error(error),
+        };
+        market_input.now_ms = now_ms;
         let pair = &mut managed.pairs[pair_index];
         let (runtime, order_engine) = (&mut pair.runtime, &mut pair.order_engine);
         let (Some(runtime), Some(engine)) = (runtime.as_mut(), order_engine.as_mut()) else {
@@ -1566,15 +1578,18 @@ impl NativeRuntimeState {
             market: native_runtime_order_guard_market(spec.market).to_owned(),
             connector_state: "active".to_owned(),
             connector_health: "ok".to_owned(),
-            operational_preflight: runtime.build_operational_preflight(
-                native_runtime_operational_preflight_input(
+            operational_preflight: runtime.build_operational_preflight({
+                let mut preflight = native_runtime_operational_preflight_input(
                     &effective_config,
                     now_ms,
                     account_bootstrap.refreshed_at_ms,
                     Some(account_snapshot.account_preflight),
                     engine.circuit.is_open(),
-                ),
-            ),
+                );
+                // Account preparation must not refresh an older market observation.
+                preflight.exchange_connector.timestamp_ms = Some(market_observed_at_ms);
+                preflight
+            }),
             now_iso: native_runtime_now_iso(now_ms),
             now_epoch_seconds: now_ms.max(0) as f64 / 1_000.0,
             source: "tauri-native-runtime".to_owned(),
@@ -2549,6 +2564,12 @@ fn native_runtime_market_poll_spec_for_config(
     };
     let default_mode = python_execution_default_text("mode", "Demo/Testnet");
     let mode = first_config_string(config, "mode", &default_mode);
+    if !trading_bot_core::order_guard::is_supported_exchange_mode(&mode) {
+        return Err(
+            trading_bot_core::generated_python_parity::PYTHON_INVALID_EXECUTION_MODE_ERROR
+                .to_owned(),
+        );
+    }
     let default_interval = python_execution_default_first_text("intervals", "1m");
     let default_symbol = match market {
         BinanceMarket::CoinFutures => "BTCUSD_PERP".to_owned(),
@@ -2751,10 +2772,10 @@ fn merge_native_runtime_stream_candle(
 }
 
 fn python_mode_uses_testnet(mode: &str) -> bool {
-    let normalized = mode.to_ascii_lowercase();
+    let normalized = mode.trim().to_ascii_lowercase();
     PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS
         .iter()
-        .any(|marker| normalized.contains(marker))
+        .any(|marker| normalized == *marker)
 }
 
 fn native_runtime_market_label(market: BinanceMarket) -> &'static str {
@@ -2800,7 +2821,9 @@ fn native_runtime_account_bootstrap_is_fresh_with_max_age(
     now_ms: i64,
     max_age_ms: i64,
 ) -> bool {
-    now_ms.saturating_sub(bootstrap.refreshed_at_ms).max(0) <= max_age_ms.max(0)
+    max_age_ms > 0
+        && native_observation_age_ms(Some(bootstrap.refreshed_at_ms), now_ms)
+            .is_some_and(|age_ms| age_ms <= max_age_ms)
 }
 
 fn native_runtime_futures_open_position_amt(
@@ -3344,7 +3367,7 @@ fn native_runtime_operational_preflight_input(
                  source: &str,
                  max_age_key: &str,
                  default_max_age_seconds: f64| NativeRuntimeFreshnessInput {
-        timestamp_ms: Some(timestamp_ms.max(0)),
+        timestamp_ms: Some(timestamp_ms),
         timestamp_field: timestamp_field.to_owned(),
         max_age_ms: config_duration_ms(config, max_age_key, default_max_age_seconds),
         should_warn: true,
@@ -3355,7 +3378,7 @@ fn native_runtime_operational_preflight_input(
     NativeRuntimeOperationalPreflightInput {
         mode: first_config_string(config, "mode", &default_mode),
         health: "ok".to_owned(),
-        generated_at_ms: now_ms.max(0),
+        generated_at_ms: now_ms,
         start_gate_enabled: config_bool(
             config,
             "operational_live_start_gate_enabled",
@@ -5461,12 +5484,27 @@ fn evaluate_native_runtime_preview(
     }
 }
 
+fn native_runtime_command_time_ms(_client_now_ms: i64) -> Result<i64, String> {
+    // Keep the IPC argument for compatibility; only the host clock authorizes work.
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "Native runtime host clock is invalid.".to_owned())
+        .and_then(|duration| {
+            i64::try_from(duration.as_millis())
+                .map_err(|_| "Native runtime host clock is out of range.".to_owned())
+        })
+}
+
 #[tauri::command]
 fn start_native_runtime(
     state: State<'_, NativeRuntimeState>,
     config: Value,
     now_ms: i64,
 ) -> NativeRuntimeControlResponse {
+    let now_ms = match native_runtime_command_time_ms(now_ms) {
+        Ok(now_ms) => now_ms,
+        Err(error) => return NativeRuntimeControlResponse::error(error),
+    };
     state.start(&config, now_ms)
 }
 
@@ -5476,6 +5514,10 @@ fn poll_native_runtime_market(
     config: Value,
     now_ms: i64,
 ) -> NativeRuntimeMarketPollResponse {
+    let now_ms = match native_runtime_command_time_ms(now_ms) {
+        Ok(now_ms) => now_ms,
+        Err(error) => return NativeRuntimeMarketPollResponse::error(error),
+    };
     state.poll_market(&config, now_ms)
 }
 
@@ -5487,6 +5529,10 @@ fn poll_native_runtime_account(
     api_secret: String,
     now_ms: i64,
 ) -> NativeRuntimeAccountPollResponse {
+    let now_ms = match native_runtime_command_time_ms(now_ms) {
+        Ok(now_ms) => now_ms,
+        Err(error) => return NativeRuntimeAccountPollResponse::error(error),
+    };
     state.poll_account(&config, api_key, api_secret, now_ms)
 }
 
@@ -5498,6 +5544,10 @@ fn execute_native_runtime_cycle(
     api_secret: String,
     now_ms: i64,
 ) -> NativeRuntimeExecutionResponse {
+    let now_ms = match native_runtime_command_time_ms(now_ms) {
+        Ok(now_ms) => now_ms,
+        Err(error) => return NativeRuntimeExecutionResponse::error(error),
+    };
     state.execute_guarded_cycle(&config, api_key, api_secret, now_ms)
 }
 
@@ -6474,6 +6524,7 @@ mod tests {
             price_precision: 2,
             quote_asset_precision: 8,
             max_leverage: 125,
+            ..Default::default()
         };
 
         let defaults =
@@ -6541,6 +6592,7 @@ mod tests {
             price_precision: 2,
             quote_asset_precision: 8,
             max_leverage: 125,
+            ..Default::default()
         };
 
         let input =
@@ -6589,6 +6641,7 @@ mod tests {
             price_precision: 2,
             quote_asset_precision: 8,
             max_leverage: 125,
+            ..Default::default()
         };
 
         let input = native_runtime_exposure_input(
@@ -7338,6 +7391,59 @@ mod tests {
         let managed = state.inner.lock().expect("runtime state lock");
         assert!(managed.running);
         assert_eq!(managed.pairs.len(), 1);
+    }
+
+    #[test]
+    fn native_runtime_command_clock_ignores_client_supplied_time() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        for client_now in [i64::MIN, 0, i64::MAX] {
+            let now = native_runtime_command_time_ms(client_now).expect("host clock");
+            let after = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            assert!(now >= before && now <= after);
+        }
+    }
+
+    #[test]
+    fn native_runtime_account_bootstrap_rejects_invalid_or_future_observations() {
+        let now = 1_780_000_000_000;
+        for timestamp in [-1, now + 5_001, i64::MAX] {
+            let bootstrap = account_bootstrap(timestamp, true, "account ready");
+            assert!(!native_runtime_account_bootstrap_is_fresh_with_max_age(
+                &bootstrap, now, 300_000
+            ));
+        }
+        let bootstrap = account_bootstrap(now, true, "account ready");
+        for max_age in [0, -1, i64::MIN] {
+            assert!(!native_runtime_account_bootstrap_is_fresh_with_max_age(
+                &bootstrap, now, max_age
+            ));
+        }
+        assert!(!native_runtime_account_bootstrap_is_fresh_with_max_age(
+            &bootstrap, -1, 300_000
+        ));
+        let small_skew = account_bootstrap(now + 5_000, true, "account ready");
+        assert!(native_runtime_account_bootstrap_is_fresh_with_max_age(
+            &small_skew,
+            now,
+            300_000
+        ));
+        let input = native_runtime_operational_preflight_input(
+            &json!({"mode": "Live"}),
+            -1,
+            -1,
+            None,
+            false,
+        );
+        assert_eq!(input.generated_at_ms, -1);
+        assert_eq!(input.account.timestamp_ms, Some(-1));
+        let preflight = trading_bot_core::native_runtime::build_native_operational_preflight(input);
+        assert!(!preflight.orders.allowed);
     }
 
     #[test]

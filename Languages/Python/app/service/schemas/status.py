@@ -141,6 +141,10 @@ def build_exchange_connector_snapshot(
     if unresolved_order_intents:
         health = "error"
         state = "order_intent_reconciliation_required"
+    order_intent_storage_unavailable = order_intents_raw.get("storage_ready") is False
+    if order_intent_storage_unavailable:
+        health = "error"
+        state = "order_intent_storage_unavailable"
 
     attention = []
     if health in {"warning", "error"}:
@@ -157,6 +161,8 @@ def build_exchange_connector_snapshot(
         attention.append(
             f"{unresolved_order_intents} unresolved exchange order intent(s) require reconciliation."
         )
+    if order_intent_storage_unavailable:
+        attention.append(str(order_intents_raw.get("error") or "Order intent storage unavailable; submissions are blocked."))
     attention.extend(str(reason) for reason in support["unsupported_reasons"])
     attention.extend(str(reason) for reason in support.get("capability_gaps", []))
 

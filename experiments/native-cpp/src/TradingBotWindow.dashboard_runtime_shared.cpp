@@ -191,6 +191,8 @@ QVector<QPair<QString, QString>> futuresOrderAuditParams(
 QJsonObject futuresOrderResultAuditPayload(const BinanceRestClient::FuturesOrderResult &result) {
     return {
         {QStringLiteral("ok"), result.ok},
+        {QStringLiteral("reconciliationRequired"), result.reconciliationRequired},
+        {QStringLiteral("clientOrderId"), result.clientOrderId},
         {QStringLiteral("symbol"), result.symbol.trimmed().toUpper()},
         {QStringLiteral("side"), result.side.trimmed().toUpper()},
         {QStringLiteral("positionSide"), result.positionSide.trimmed().toUpper()},
@@ -1061,11 +1063,11 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     bool limitFallbackAttempted = false;
 
     auto consumeOrderFill = [&](const BinanceRestClient::FuturesOrderResult &order, double requestedQty) -> bool {
-        const double filledQty = (qIsFinite(order.executedQty) && order.executedQty > 0.0)
-            ? std::min(requestedQty, order.executedQty)
-            : requestedQty;
-        if (!qIsFinite(filledQty) || filledQty <= kQtyEpsilon) {
-            aggregated.error = QStringLiteral("Close order returned zero fill.");
+        aggregated.clientOrderId = order.clientOrderId;
+        const double filledQty = order.executedQty;
+        if (!qIsFinite(filledQty) || filledQty < 0.0 || filledQty > requestedQty) {
+            aggregated.reconciliationRequired = true;
+            aggregated.error = QStringLiteral("Invalid close execution quantity; reconciliation required.");
             return false;
         }
 
@@ -1080,6 +1082,12 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
 
         remainingQty = std::max(0.0, remainingQty - filledQty);
         chunkQty = remainingQty;
+        if (!order.hasConfirmedFill(requestedQty)) {
+            aggregated.reconciliationRequired = true;
+            aggregated.error = order.error.isEmpty()
+                ? QStringLiteral("Close is not fully confirmed; reconciliation required.") : order.error;
+            return false;
+        }
         return true;
     };
 
@@ -1156,7 +1164,9 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
             timeoutMs,
             baseUrlOverride);
         appendNativeFuturesOrderAudit(
-            order.ok ? QStringLiteral("order_accepted") : QStringLiteral("order_rejected"),
+            order.ok ? QStringLiteral("order_accepted")
+                     : order.reconciliationRequired ? QStringLiteral("order_reconciliation_required")
+                                                    : QStringLiteral("order_rejected"),
             QStringLiteral("cpp_futures_close_market"),
             auditParams,
             &order,
@@ -1165,7 +1175,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
                 {QStringLiteral("testnet"), testnet},
                 {QStringLiteral("remainingQty"), remainingQty},
             });
-        if (order.ok) {
+        if (order.ok || order.reconciliationRequired) {
             if (!consumeOrderFill(order, chunkQty)) {
                 break;
             }
@@ -1229,7 +1239,9 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
                         timeoutMs,
                         baseUrlOverride);
                     appendNativeFuturesOrderAudit(
-                        limitOrder.ok ? QStringLiteral("order_accepted") : QStringLiteral("order_rejected"),
+                        limitOrder.ok ? QStringLiteral("order_accepted")
+                                      : limitOrder.reconciliationRequired ? QStringLiteral("order_reconciliation_required")
+                                                                         : QStringLiteral("order_rejected"),
                         QStringLiteral("cpp_futures_close_ioc_limit"),
                         limitAuditParams,
                         &limitOrder,
@@ -1238,7 +1250,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
                             {QStringLiteral("testnet"), testnet},
                             {QStringLiteral("fallback"), QStringLiteral("percent_price_ioc_limit")},
                         });
-                    if (limitOrder.ok) {
+                    if (limitOrder.ok || limitOrder.reconciliationRequired) {
                         if (!consumeOrderFill(limitOrder, chunkQty)) {
                             break;
                         }
@@ -1280,7 +1292,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
         aggregated.avgPrice = weightedPriceSum / totalExecutedQty;
     }
     aggregated.orderId = orderIds.join(QStringLiteral(","));
-    if (remainingQty <= kQtyEpsilon && totalExecutedQty > 0.0) {
+    if (!aggregated.reconciliationRequired && remainingQty <= 0.0 && totalExecutedQty > 0.0) {
         aggregated.ok = true;
         aggregated.status = QStringLiteral("FILLED");
         if (aggregated.error.startsWith(QStringLiteral("Close fallback activated"))
@@ -1290,7 +1302,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
         return aggregated;
     }
     if (totalExecutedQty > 0.0) {
-        aggregated.ok = true;
+        aggregated.reconciliationRequired = true;
         aggregated.status = QStringLiteral("PARTIALLY_FILLED");
         const QString partialMessage = QStringLiteral(
             "Partial close: executed=%1 requested=%2 remaining=%3 attempts=%4")
@@ -1563,7 +1575,9 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
             timeoutMs,
             baseUrlOverride);
         appendNativeFuturesOrderAudit(
-            order.ok ? QStringLiteral("order_accepted") : QStringLiteral("order_rejected"),
+            order.ok ? QStringLiteral("order_accepted")
+                     : order.reconciliationRequired ? QStringLiteral("order_reconciliation_required")
+                                                    : QStringLiteral("order_rejected"),
             QStringLiteral("cpp_futures_open_market"),
             auditParams,
             &order,
@@ -1573,12 +1587,12 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
                 {QStringLiteral("remainingQty"), remainingQty},
                 {QStringLiteral("targetQty"), targetQty},
             });
-        if (order.ok) {
-            const double filledQty = (qIsFinite(order.executedQty) && order.executedQty > 0.0)
-                ? std::min(chunkQty, order.executedQty)
-                : chunkQty;
-            if (!qIsFinite(filledQty) || filledQty <= kQtyEpsilon) {
-                aggregated.error = QStringLiteral("Open order returned zero fill.");
+        if (order.ok || order.reconciliationRequired) {
+            aggregated.clientOrderId = order.clientOrderId;
+            const double filledQty = order.executedQty;
+            if (!qIsFinite(filledQty) || filledQty < 0.0 || filledQty > chunkQty) {
+                aggregated.reconciliationRequired = true;
+                aggregated.error = QStringLiteral("Invalid open execution quantity; reconciliation required.");
                 break;
             }
 
@@ -1592,6 +1606,12 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
             }
 
             remainingQty = std::max(0.0, remainingQty - filledQty);
+            if (!order.hasConfirmedFill(chunkQty)) {
+                aggregated.reconciliationRequired = true;
+                aggregated.error = order.error.isEmpty()
+                    ? QStringLiteral("Open is not fully confirmed; reconciliation required.") : order.error;
+                break;
+            }
             chunkQty = remainingQty;
             continue;
         }
@@ -1652,7 +1672,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
         aggregated.avgPrice = weightedPriceSum / totalExecutedQty;
     }
     aggregated.orderId = orderIds.join(QStringLiteral(","));
-    if (remainingQty <= kQtyEpsilon && totalExecutedQty > 0.0) {
+    if (!aggregated.reconciliationRequired && remainingQty <= 0.0 && totalExecutedQty > 0.0) {
         aggregated.ok = true;
         aggregated.status = QStringLiteral("FILLED");
         if (aggregated.error.startsWith(QStringLiteral("Open fallback activated"))) {
@@ -1661,7 +1681,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
         return aggregated;
     }
     if (totalExecutedQty > 0.0) {
-        aggregated.ok = true;
+        aggregated.reconciliationRequired = true;
         aggregated.status = QStringLiteral("PARTIALLY_FILLED");
         const QString partialMessage = QStringLiteral(
             "Partial open: executed=%1 requested=%2 remaining=%3 attempts=%4")
