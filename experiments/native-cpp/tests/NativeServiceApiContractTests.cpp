@@ -59,6 +59,18 @@ void writeJsonResponseAndClose(QTcpSocket *socket, const QByteArray &body) {
     socket->write(response);
 }
 
+QByteArray requestQueryValue(const QByteArray &requestLine, const QByteArray &name) {
+    const QByteArray marker = name + QByteArrayLiteral("=");
+    const int markerIndex = requestLine.indexOf(marker);
+    if (markerIndex < 0) {
+        return {};
+    }
+    const int valueStart = markerIndex + marker.size();
+    const int valueEnd = requestLine.indexOf('&', valueStart);
+    const QByteArray encoded = requestLine.mid(valueStart, valueEnd < 0 ? -1 : valueEnd - valueStart);
+    return QUrl::fromPercentEncoding(encoded);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1652,9 +1664,22 @@ int main(int argc, char **argv) {
                     R"({"symbols":[{"symbol":"ETHUSDT","status":"TRADING","baseAsset":"ETH","quoteAsset":"USDT","baseAssetPrecision":8,"quotePrecision":8,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001","maxQty":"100"},{"filterType":"MIN_NOTIONAL","minNotional":"5"},{"filterType":"PRICE_FILTER","tickSize":"0.01"}]}]})");
             } else if (requestLine.startsWith("POST /api/v3/order?")) {
                 observedSpotOrderRequest = requestLine;
+                const QJsonObject responseData = {
+                    {QStringLiteral("symbol"), QStringLiteral("ETHUSDT")},
+                    {QStringLiteral("side"), QStringLiteral("BUY")},
+                    {QStringLiteral("clientOrderId"),
+                     QString::fromUtf8(requestQueryValue(requestLine, QByteArrayLiteral("newClientOrderId")))},
+                    {QStringLiteral("order_id"), QStringLiteral("42")},
+                    {QStringLiteral("status"), QStringLiteral("FILLED")},
+                    {QStringLiteral("executedQty"), QStringLiteral("0.1")},
+                    {QStringLiteral("cummulativeQuoteQty"), QStringLiteral("200")},
+                };
                 writeJsonResponseAndClose(
                     socket,
-                    R"({"success":"true","data":{"symbol":"ETHUSDT","side":"BUY","order_id":"42","status":"NEW","executedQty":"0.1","cummulativeQuoteQty":"200"}})");
+                    QJsonDocument(QJsonObject{
+                        {QStringLiteral("success"), QStringLiteral("true")},
+                        {QStringLiteral("data"), responseData},
+                    }).toJson(QJsonDocument::Compact));
             }
         });
     });
@@ -1782,28 +1807,68 @@ int main(int argc, char **argv) {
                 return;
             }
             ++futuresOrderResponses;
-            QByteArray body;
+            const QByteArray requestLine = request.left(request.indexOf('\n')).trimmed();
+            const QString clientOrderId = QString::fromUtf8(
+                requestQueryValue(requestLine, QByteArrayLiteral("newClientOrderId")));
+            const auto writeAcknowledgement = [&socket, &clientOrderId](QJsonObject payload) {
+                payload.insert(QStringLiteral("symbol"), QStringLiteral("BTCUSDT"));
+                payload.insert(QStringLiteral("side"), QStringLiteral("BUY"));
+                payload.insert(QStringLiteral("clientOrderId"), clientOrderId);
+                writeJsonResponseAndClose(
+                    socket, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+            };
             switch (futuresOrderResponses) {
             case 1:
-                body = R"({"symbol":"BTCUSDT","side":"BUY","orderId":101,"status":"NEW","executedQty":"0","origQty":"0.1","price":"20000"})";
+                writeAcknowledgement(QJsonObject{
+                    {QStringLiteral("orderId"), 101},
+                    {QStringLiteral("status"), QStringLiteral("FILLED")},
+                    {QStringLiteral("executedQty"), QStringLiteral("0.1")},
+                    {QStringLiteral("origQty"), QStringLiteral("0.1")},
+                    {QStringLiteral("price"), QStringLiteral("20000")},
+                });
                 break;
             case 2:
-                body = R"({"symbol":"BTCUSDT","side":"BUY","status":"NEW"})";
+                writeAcknowledgement(QJsonObject{
+                    {QStringLiteral("status"), QStringLiteral("NEW")},
+                    {QStringLiteral("executedQty"), QStringLiteral("0")},
+                });
                 break;
             case 3:
-                body = R"({"symbol":"BTCUSDT","side":"BUY","orderId":103})";
+                writeAcknowledgement(QJsonObject{
+                    {QStringLiteral("orderId"), 103},
+                    {QStringLiteral("executedQty"), QStringLiteral("0")},
+                });
                 break;
-            case 4:
-                body = R"({"success":true,"data":{"symbol":"BTCUSDT","side":"BUY","clientOrderId":"client-104","status":"NEW","executedQty":"0.1","price":"20000"}})";
-                break;
-            case 5:
-                body = R"({"symbol":"BTCUSDT","side":"BUY","orderId":105,"status":"EXPIRED_IN_MATCH"})";
-                break;
-            default:
-                body = R"({"success":false,"message":"order rejected"})";
+            case 4: {
+                const QJsonObject responseData = {
+                    {QStringLiteral("symbol"), QStringLiteral("BTCUSDT")},
+                    {QStringLiteral("side"), QStringLiteral("BUY")},
+                    {QStringLiteral("clientOrderId"), clientOrderId},
+                    {QStringLiteral("order_id"), QStringLiteral("104")},
+                    {QStringLiteral("status"), QStringLiteral("FILLED")},
+                    {QStringLiteral("executedQty"), QStringLiteral("0.1")},
+                    {QStringLiteral("price"), QStringLiteral("20000")},
+                };
+                writeJsonResponseAndClose(
+                    socket,
+                    QJsonDocument(QJsonObject{
+                        {QStringLiteral("success"), QStringLiteral("true")},
+                        {QStringLiteral("data"), responseData},
+                    }).toJson(QJsonDocument::Compact));
                 break;
             }
-            writeJsonResponseAndClose(socket, body);
+            case 5:
+                writeAcknowledgement(QJsonObject{
+                    {QStringLiteral("orderId"), 105},
+                    {QStringLiteral("status"), QStringLiteral("EXPIRED_IN_MATCH")},
+                    {QStringLiteral("executedQty"), QStringLiteral("0")},
+                });
+                break;
+            default:
+                writeJsonResponseAndClose(
+                    socket, R"({"success":false,"message":"order rejected"})");
+                break;
+            }
         });
     });
     const QString futuresOrderBaseUrl =
@@ -1875,7 +1940,7 @@ int main(int argc, char **argv) {
         5000,
         futuresOrderBaseUrl);
     check(acceptedFuturesOrder.ok && acceptedFuturesOrder.orderId == QStringLiteral("101")
-              && acceptedFuturesOrder.status == QStringLiteral("NEW"),
+              && acceptedFuturesOrder.status == QStringLiteral("FILLED"),
           QStringLiteral("C++ Futures market order should accept a complete acknowledgement"));
     check(!missingFuturesOrderId.ok
               && missingFuturesOrderId.error.contains(QStringLiteral("missing orderId")),
@@ -1883,8 +1948,8 @@ int main(int argc, char **argv) {
     check(!missingFuturesOrderStatus.ok
               && missingFuturesOrderStatus.error.contains(QStringLiteral("missing explicit status")),
           QStringLiteral("C++ Futures market order should reject acknowledgements without status"));
-    check(wrappedFuturesOrder.ok && wrappedFuturesOrder.orderId == QStringLiteral("client-104")
-              && wrappedFuturesOrder.status == QStringLiteral("NEW")
+    check(wrappedFuturesOrder.ok && wrappedFuturesOrder.orderId == QStringLiteral("104")
+              && wrappedFuturesOrder.status == QStringLiteral("FILLED")
               && std::abs(wrappedFuturesOrder.executedQty - 0.1) < 1e-12,
           QStringLiteral("C++ Futures market order should normalize Python-compatible wrapped acknowledgements"));
     check(!expiredFuturesOrder.ok
@@ -1940,13 +2005,13 @@ int main(int argc, char **argv) {
         QStringLiteral("BOTH"),
         5000,
         futuresFallbackBaseUrl);
-    check(fallbackFuturesOrder.ok && fallbackFuturesOrder.orderId == QStringLiteral("707")
-              && fallbackFuturesOrder.status == QStringLiteral("NEW"),
-          QStringLiteral("C++ Futures testnet prefix fallback should accept the alternate response"));
-    check(futuresFallbackRequests == 2
+    check(!fallbackFuturesOrder.ok && fallbackFuturesOrder.reconciliationRequired
+              && fallbackFuturesOrder.error.contains(QStringLiteral("primary rejected")),
+          QStringLiteral("C++ Futures ambiguous testnet order should require reconciliation"));
+    check(futuresFallbackRequests == 1
               && primaryFallbackRequest.startsWith("POST /fapi/v1/order?")
-              && alternateFallbackRequest.startsWith("POST /dapi/v1/order?"),
-          QStringLiteral("C++ Futures fallback should retry the order through the alternate API prefix"));
+              && alternateFallbackRequest.isEmpty(),
+          QStringLiteral("C++ Futures ambiguous order should not retry through an alternate API prefix"));
     const auto extractClientOrderId = [](const QByteArray &requestLine) {
         const QByteArray marker = QByteArrayLiteral("newClientOrderId=");
         const int markerIndex = requestLine.indexOf(marker);
@@ -1960,9 +2025,9 @@ int main(int argc, char **argv) {
     const QByteArray primaryClientOrderId = extractClientOrderId(primaryFallbackRequest);
     const QByteArray alternateClientOrderId = extractClientOrderId(alternateFallbackRequest);
     check(primaryClientOrderId.startsWith("tb-")
-              && primaryClientOrderId == alternateClientOrderId
+              && alternateClientOrderId.isEmpty()
               && primaryClientOrderId.size() == 35,
-          QStringLiteral("C++ Futures fallback should preserve one stable client order ID"));
+          QStringLiteral("C++ Futures ambiguous order should preserve one client order ID"));
 
     const QStringList dashboardResponseFields =
         TradingBotWindowSupport::pythonSourceServiceRouteResponseFields(QStringLiteral("dashboard"));
