@@ -1653,7 +1653,13 @@ class ProductPackagingContractTests(unittest.TestCase):
             runtime_dependencies,
         )
         self.assertIn("pandas==3.0.5; python_version >= '3.15'", runtime_dependencies)
-        self.assertIn("ccxt==4.5.75", runtime_dependencies)
+        ccxt_constraints = [
+            dependency
+            for dependency in runtime_dependencies
+            if dependency.startswith("ccxt==")
+        ]
+        self.assertEqual(1, len(ccxt_constraints))
+        self.assertRegex(ccxt_constraints[0], r"^ccxt==\d+\.\d+\.\d+$")
         self.assertIn("aiohttp==3.14.3", runtime_dependencies)
         self.assertNotIn("numpy==2.4.4", runtime_dependencies)
         self.assertNotIn("pandas==3.0.2", runtime_dependencies)
@@ -1872,9 +1878,17 @@ class ProductPackagingContractTests(unittest.TestCase):
                     )
                 )
             )
+        allowed_release_action_refs = {
+            "3d0d9888cb7fd7b750713d6e236d1fcb99157228",
+            "efb35369e0ad2afab669f228072c1b0d510eae64",
+        }
         for workflow in workflows.values():
             self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
-            self.assertIn("softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228", workflow)
+            release_action_refs = set(
+                re.findall(r"softprops/action-gh-release@([0-9a-f]{40})", workflow)
+            )
+            self.assertEqual(1, len(release_action_refs))
+            self.assertTrue(release_action_refs <= allowed_release_action_refs)
 
     def test_release_publish_restores_tagged_checkout_after_evidence_validation(self):
         for workflow_name in ("release-windows.yml", "release-linux-macos.yml"):

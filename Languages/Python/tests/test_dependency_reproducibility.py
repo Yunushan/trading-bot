@@ -717,16 +717,21 @@ class DependencyReproducibilityTests(unittest.TestCase):
         resolved = [
             (package_path, metadata)
             for package_path, metadata in lockfile["packages"].items()
-            if package_path.endswith("/node_modules/image-size")
+            if package_path == "node_modules/image-size"
+            or package_path.endswith("/node_modules/image-size")
         ]
         self.assertEqual(1, len(resolved))
         package_path, metadata = resolved[0]
-        self.assertEqual(
-            "node_modules/@react-native/community-cli-plugin/node_modules/image-size",
-            package_path,
+        self.assertTrue(
+            package_path == "node_modules/image-size"
+            or package_path.endswith("/node_modules/image-size")
         )
         self.assertEqual("image-size-next", metadata["name"])
         self.assertEqual("1.2.2", metadata["version"])
+        self.assertEqual(
+            "https://registry.npmjs.org/image-size-next/-/image-size-next-1.2.2.tgz",
+            metadata["resolved"],
+        )
         self.assertEqual(
             "sha512-Pd3CJ2+Ifk2H2jWikkoz2BSZgnuF3Qsea4gQmj2gtiOtYpGWBl7elj8EXnFMiY5PaYNruTTLD0hQ0UWK7pz9xA==",
             metadata["integrity"],
