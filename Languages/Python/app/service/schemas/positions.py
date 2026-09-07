@@ -5,20 +5,49 @@ Portfolio and positions snapshot schemas for the service layer.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+import math
 
 
 def _safe_float_or_none(value) -> float | None:
     try:
-        if value is None or value == "":
+        if value is None or value == "" or isinstance(value, bool):
             return None
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     except Exception:
         return None
+
+
+def position_observation_is_valid(record: object) -> bool:
+    """Require position identity and quantity before granting freshness."""
+    if not isinstance(record, dict) or not isinstance(record.get("data"), dict):
+        return False
+    data = record["data"]
+    for key in ("symbol", "side_key"):
+        value = record.get(key) or data.get(key)
+        if not isinstance(value, str) or not value.strip() or any(char.isspace() for char in value.strip()):
+            return False
+        normalized = value.strip().upper()
+        if key == "symbol" and normalized in {"UNKNOWN", "NONE", "NULL", "-"}:
+            return False
+        if key == "side_key" and normalized not in {"L", "S", "SPOT"}:
+            return False
+        for other in (record.get(key), data.get(key)):
+            if other not in (None, "") and (not isinstance(other, str) or other.strip().upper() != normalized):
+                return False
+    quantity = _safe_float_or_none(data.get("qty"))
+    if quantity is None or quantity < 0.0:
+        return False
+    for key in ("mark", "size_usdt", "value", "margin_usdt", "pnl_value", "roi_percent", "liquidation_price", "leverage"):
+        for value in (data.get(key), record.get(key)):
+            if value not in (None, "") and _safe_float_or_none(value) is None:
+                return False
+    return True
+
+
+def portfolio_observation_is_valid(records: object) -> bool:
+    # Empty is confirmed flat only when it is an explicitly supplied mapping.
+    return isinstance(records, dict) and all(position_observation_is_valid(record) for record in records.values())
 
 
 def _safe_bool(value) -> bool:
@@ -208,6 +237,7 @@ def build_portfolio_snapshot(
     total_balance=None,
     available_balance=None,
     source: str = "service",
+    generated_at: str = "",
 ) -> ServicePortfolioSnapshot:
     cfg = config if isinstance(config, dict) else {}
     open_records = open_position_records if isinstance(open_position_records, dict) else {}
@@ -249,5 +279,5 @@ def build_portfolio_snapshot(
         available_balance=_safe_float_or_none(available_balance),
         positions=positions,
         source=str(source or "service"),
-        generated_at=_utc_now_iso(),
+        generated_at=generated_at if portfolio_observation_is_valid(open_position_records) else "",
     )

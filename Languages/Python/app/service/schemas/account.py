@@ -5,11 +5,6 @@ Account snapshot schemas for the service layer.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _safe_float_or_none(value) -> float | None:
@@ -43,6 +38,7 @@ def build_account_snapshot(
     total_balance=None,
     available_balance=None,
     source: str = "service",
+    generated_at: str = "",
 ) -> ServiceAccountSnapshot:
     cfg = config if isinstance(config, dict) else {}
     return ServiceAccountSnapshot(
@@ -54,5 +50,5 @@ def build_account_snapshot(
         total_balance=_safe_float_or_none(total_balance),
         available_balance=_safe_float_or_none(available_balance),
         source=str(source or "service"),
-        generated_at=_utc_now_iso(),
+        generated_at=generated_at,
     )

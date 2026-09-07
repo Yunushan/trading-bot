@@ -112,6 +112,7 @@ class _FakeExchangeWrapper:
             "computed": {"qty": qty, "px": fill_price, "lev": int(leverage)},
             "info": {
                 "orderId": len(self.orders),
+                "status": "FILLED",
                 "origQty": str(qty),
                 "executedQty": str(qty),
                 "avgPrice": str(fill_price),
@@ -167,6 +168,7 @@ class _FakeExchangeWrapper:
             "computed": {"qty": qty, "px": fill_price},
             "info": {
                 "orderId": len(self.orders),
+                "status": "FILLED",
                 "origQty": str(qty),
                 "executedQty": str(qty),
                 "avgPrice": str(fill_price),

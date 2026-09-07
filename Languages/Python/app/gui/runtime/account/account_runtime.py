@@ -5,6 +5,8 @@ from PyQt6 import QtCore
 from app.integrations.exchanges.binance import BinanceWrapper
 from app.security.redaction import redact_text
 
+from .balance_runtime import _invalidate_balance_observation
+
 _CONNECTOR_OPTIONS = ()
 _DEFAULT_CONNECTOR_BACKEND = ""
 _FUTURES_CONNECTOR_KEYS = frozenset()
@@ -233,6 +235,7 @@ def _create_binance_wrapper(
 
 
 def _invalidate_shared_binance(self, reason: str | None = None):
+    self._account_observation_generation = getattr(self, "_account_observation_generation", 0) + 1
     try:
         existing = getattr(self, "shared_binance", None)
     except Exception:
@@ -252,7 +255,7 @@ def _invalidate_shared_binance(self, reason: str | None = None):
     except Exception as exc:
         _record_account_runtime_exception(self, "invalidate_shared_binance_balance_label", exc)
     try:
-        self._update_positions_balance_labels(None, None)
+        _invalidate_balance_observation(self, clear_values=True)
     except Exception as exc:
         _record_account_runtime_exception(self, "invalidate_shared_binance_position_labels", exc)
 

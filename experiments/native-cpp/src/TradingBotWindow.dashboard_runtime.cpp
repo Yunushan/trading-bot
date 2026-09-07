@@ -1903,6 +1903,11 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     symbolFilters.tickSize,
                     symbolFilters.minQty,
                     symbolFilters.minNotional,
+                    symbolFilters.maxQty,
+                    symbolFilters.hasMarketLotSize,
+                    symbolFilters.marketMinQty,
+                    symbolFilters.marketMaxQty,
+                    symbolFilters.marketStepSize,
                 };
                 exposureInput.requestedQuantity = cappedRequestedQty;
                 exposureInput.normalizedQuantity = orderQty;
@@ -1957,6 +1962,11 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     symbolFilters.tickSize,
                     symbolFilters.minQty,
                     symbolFilters.minNotional,
+                    symbolFilters.maxQty,
+                    symbolFilters.hasMarketLotSize,
+                    symbolFilters.marketMinQty,
+                    symbolFilters.marketMaxQty,
+                    symbolFilters.marketStepSize,
                 };
                 spotExposureInput.requestedQuantity = cappedRequestedQty;
                 spotExposureInput.normalizedQuantity = orderQty;
@@ -2042,6 +2052,11 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     symbolFilters.tickSize,
                     symbolFilters.minQty,
                     symbolFilters.minNotional,
+                    symbolFilters.maxQty,
+                    symbolFilters.hasMarketLotSize,
+                    symbolFilters.marketMinQty,
+                    symbolFilters.marketMaxQty,
+                    symbolFilters.marketStepSize,
                 };
                 orderGuardInput.hasLastPrice = true;
                 orderGuardInput.lastPrice = orderSizingPrice;

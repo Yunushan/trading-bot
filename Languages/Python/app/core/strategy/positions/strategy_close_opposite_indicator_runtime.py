@@ -4,10 +4,11 @@ import math
 import time
 
 from .close_execution import _pause_for_close_uncertainty, _safe_log
-from .strategy_close_opposite_common_runtime import _goal_met, _reduce_goal, _refresh_positions_snapshot
+from .strategy_close_opposite_common_runtime import _close_quantity, _goal_met, _reduce_goal, _refresh_positions_snapshot
 
 
-def _indicator_scope_is_already_flat(self, state: dict[str, object]) -> bool:
+def _indicator_scope_is_already_flat(self, state: dict[str, object]) -> bool | None:
+    """Return None for unknown exposure, distinct from verified non-flat exposure."""
     indicator_tokens = state["indicator_tokens"]
     if not indicator_tokens:
         return False
@@ -18,42 +19,40 @@ def _indicator_scope_is_already_flat(self, state: dict[str, object]) -> bool:
     qty_goal = state.get("qty_goal")
     qty_tol = float(state["qty_tol"])
 
-    try:
-        live_opp_qty = self._indicator_open_qty(
-            symbol,
-            interval_norm,
-            indicator_tokens[0],
-            opp,
-            interval_aliases=interval_tokens,
-            strict_interval=True,
-        )
-    except Exception as exc:
-        _pause_for_close_uncertainty(
-            self,
-            f"{symbol}@{interval_norm or 'default'} indicator open-quantity lookup failed: {exc}",
-            reconciliation_required=False,
-        )
-        return False
-    if live_opp_qty <= qty_tol:
+    live_opp_qty = 0.0
+    for indicator in indicator_tokens:
         try:
-            live_opp_qty = self._indicator_trade_book_qty(symbol, interval_norm, indicator_tokens[0], opp)
+            indicator_qty = _close_quantity(self._indicator_open_qty(
+                symbol, interval_norm, indicator, opp,
+                interval_aliases=interval_tokens, strict_interval=True,
+            ))
+        except Exception as exc:
+            _pause_for_close_uncertainty(
+                self,
+                f"{symbol}@{interval_norm or 'default'} indicator open-quantity lookup failed: {exc}",
+                reconciliation_required=False,
+            )
+            return None
+        try:
+            book_qty = _close_quantity(self._indicator_trade_book_qty(symbol, interval_norm, indicator, opp))
         except Exception as exc:
             _pause_for_close_uncertainty(
                 self,
                 f"{symbol}@{interval_norm or 'default'} indicator trade-book quantity lookup failed: {exc}",
                 reconciliation_required=False,
             )
-            return False
+            return None
+        live_opp_qty = max(live_opp_qty, indicator_qty, book_qty)
     if live_opp_qty <= qty_tol:
         try:
-            live_opp_qty = max(0.0, float(self._current_futures_position_qty(symbol, opp, None) or 0.0))
+            live_opp_qty = _close_quantity(self._current_futures_position_qty(symbol, opp, None))
         except Exception as exc:
             _pause_for_close_uncertainty(
                 self,
                 f"{symbol}@{interval_norm or 'default'} exchange position quantity lookup failed: {exc}",
                 reconciliation_required=False,
             )
-            return False
+            return None
     try:
         qty_goal_flat = qty_goal is None or (
             math.isfinite(float(qty_goal)) and float(qty_goal) <= qty_tol
@@ -64,7 +63,7 @@ def _indicator_scope_is_already_flat(self, state: dict[str, object]) -> bool:
             f"{symbol}@{interval_norm or 'default'} close quantity goal is invalid",
             reconciliation_required=False,
         )
-        return False
+        return None
     return (qty_goal is None and live_opp_qty <= qty_tol) or (
         qty_goal is not None and qty_goal_flat and live_opp_qty <= qty_tol
     )
@@ -101,12 +100,20 @@ def _close_indicator_scope(
                     strict_interval=True,
                     allow_hedge_close=True,
                 )
+                closed_qty_total = _close_quantity(closed_qty_total)
+                if type(closed_count) is not int or closed_count < 0:
+                    raise ValueError("indicator close count is invalid")
+                if bool(closed_count) != bool(closed_qty_total):
+                    raise ValueError("indicator close count and quantity disagree")
             except Exception as exc:
                 _pause_for_close_uncertainty(
                     self,
                     f"{symbol}@{interval} indicator-close {indicator_hint} failed: {exc}",
-                    reconciliation_required=False,
+                    reconciliation_required=True,
                 )
+                return False
+            if self.stopped():
+                return False
             if closed_count:
                 state["closed_any"] = True
                 _reduce_goal(state, closed_qty_total)
@@ -123,7 +130,10 @@ def _close_indicator_scope(
                 if _goal_met(state):
                     return True
             try:
-                indicator_clear = not self._indicator_has_open(symbol, interval_norm, indicator_hint, opp)
+                has_open = self._indicator_has_open(symbol, interval_norm, indicator_hint, opp)
+                if not isinstance(has_open, bool):
+                    raise ValueError("indicator residual state is unknown")
+                indicator_clear = not has_open
             except Exception as exc:
                 indicator_clear = False
                 _pause_for_close_uncertainty(
@@ -131,6 +141,7 @@ def _close_indicator_scope(
                     f"{symbol}@{interval_norm or 'default'} indicator residual-state lookup failed: {exc}",
                     reconciliation_required=False,
                 )
+                return False
             state["indicator_target_cleared"] = bool(state["indicator_target_cleared"]) and indicator_clear
             if _goal_met(state):
                 return True
@@ -234,7 +245,7 @@ def _resolve_indicator_residuals(
     residual_qty = 0.0
     for indicator_hint in indicator_tokens:
         try:
-            qty_val = self._indicator_live_qty_total(
+            qty_val = _close_quantity(self._indicator_live_qty_total(
                 symbol,
                 interval_norm,
                 indicator_hint,
@@ -242,7 +253,7 @@ def _resolve_indicator_residuals(
                 interval_aliases=interval_tokens,
                 strict_interval=True,
                 use_exchange_fallback=True,
-            )
+            ))
         except Exception as exc:
             _pause_for_close_uncertainty(
                 self,

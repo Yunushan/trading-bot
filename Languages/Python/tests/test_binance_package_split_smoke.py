@@ -54,7 +54,12 @@ from app.integrations.exchanges.binance.orders.order_fallback_runtime import (
     bind_binance_order_fallback_runtime as new_bind_order_fallback,
 )
 from app.integrations.exchanges.binance.orders.order_intent_runtime import (
+    _intent_path,
     bind_binance_order_intent_runtime as new_bind_order_intent,
+)
+from app.integrations.exchanges.binance.orders.order_intent_provisioning import (
+    PROVISION_ACK,
+    provision_order_intent_store,
 )
 from app.integrations.exchanges.binance.orders.order_sizing_runtime import (
     adjust_qty_to_filters_futures as new_adjust_qty_to_filters_futures,
@@ -166,6 +171,7 @@ class _SpotSizingWrapper:
             or {
                 "stepSize": 0.001,
                 "minQty": 0.001,
+                "maxQty": 100.0,
                 "minNotional": 5.0,
             }
         )
@@ -177,9 +183,7 @@ class _SpotSizingWrapper:
         return dict(self._filters)
 
     def get_connector_health_snapshot(self):
-        credentials_present = bool(
-            getattr(self, "api_key", None) and getattr(self, "api_secret", None)
-        )
+        credentials_present = bool(getattr(self, "api_key", None) and getattr(self, "api_secret", None))
         return {
             "health": "ok" if credentials_present else "unknown",
             "state": "ready" if credentials_present else "missing_credentials",
@@ -221,7 +225,14 @@ class _FuturesAuditClient:
         self.orders.append(dict(kwargs))
         if self.fail:
             raise RuntimeError("exchange rejected")
-        return {"orderId": 99, "status": "FILLED", **kwargs}
+        return {
+            "orderId": 99,
+            "status": "FILLED",
+            **kwargs,
+            "clientOrderId": kwargs["newClientOrderId"],
+            "origQty": kwargs["quantity"],
+            "executedQty": kwargs["quantity"],
+        }
 
 
 class _SecretFailureFuturesAuditClient(_FuturesAuditClient):
@@ -231,14 +242,21 @@ class _SecretFailureFuturesAuditClient(_FuturesAuditClient):
 
 
 class _FuturesAuditWrapper:
-    def __init__(self, *, fail=False):
-        self.mode = "Live"
+    def __init__(self, *, fail=False, mode="Live"):
+        self.mode = mode
+        self.api_key = "unit-live-api-key"
         self.account_type = "FUTURES"
         self._connector_backend = "unit-test"
         self.client = _FuturesAuditClient(fail=fail)
         self.warned = []
         self._test_order_state_dir = tempfile.TemporaryDirectory()
-        self._configure_order_audit(path=Path(self._test_order_state_dir.name) / "futures-orders.jsonl")
+        self._initialize_test_order_store(path=Path(self._test_order_state_dir.name) / "futures-orders.jsonl")
+
+    def _initialize_test_order_store(self, *, path):
+        # Explicit fixture setup only; runtime audit configuration never provisions a ledger.
+        self._configure_order_audit(path=path)
+        if not _intent_path(self).exists():
+            provision_order_intent_store(self, acknowledgement=PROVISION_ACK)
 
     def close(self):
         directory = getattr(self, "_test_order_state_dir", None)
@@ -259,9 +277,7 @@ class _FuturesAuditWrapper:
         return None
 
     def get_connector_health_snapshot(self):
-        credentials_present = bool(
-            getattr(self, "api_key", None) and getattr(self, "api_secret", None)
-        )
+        credentials_present = bool(getattr(self, "api_key", None) and getattr(self, "api_secret", None))
         return {
             "health": "ok" if credentials_present else "unknown",
             "state": "ready" if credentials_present else "missing_credentials",
@@ -269,8 +285,8 @@ class _FuturesAuditWrapper:
 
 
 class _GuardedFuturesAuditWrapper(_FuturesAuditWrapper):
-    def __init__(self, *, fail=False, live_safety_config=None, price=100.0, filters=None):
-        super().__init__(fail=fail)
+    def __init__(self, *, fail=False, live_safety_config=None, price=100.0, filters=None, mode="Live"):
+        super().__init__(fail=fail, mode=mode)
         self.api_key = "unit-live-api-key"
         self.api_secret = "unit-live-api-secret"
         self._default_leverage = 1
@@ -283,6 +299,7 @@ class _GuardedFuturesAuditWrapper(_FuturesAuditWrapper):
             or {
                 "stepSize": 0.001,
                 "minQty": 0.001,
+                "maxQty": 100.0,
                 "tickSize": 0.01,
                 "minNotional": 5.0,
             }
@@ -377,7 +394,7 @@ class _FlexFuturesOrderWrapper:
         return None
 
     def get_futures_symbol_filters(self, _symbol):
-        return {"stepSize": 0.001, "minQty": 0.001, "minNotional": 5.0}
+        return {"stepSize": 0.001, "minQty": 0.001, "maxQty": 100.0, "minNotional": 5.0}
 
     def get_futures_dual_side(self):
         return False
@@ -390,7 +407,8 @@ class _FlexFuturesOrderWrapper:
 
     def _futures_create_order_with_fallback(self, params):
         self.submit_calls.append(dict(params))
-        return {"orderId": 123, **params}, "primary"
+        return {"orderId": 123, **params, "status": "FILLED",
+                "origQty": params["quantity"], "executedQty": params["quantity"]}, "primary"
 
     def _invalidate_futures_positions_cache(self):
         return None
@@ -412,7 +430,7 @@ class _BaseFuturesExposureWrapper:
         return 100.0
 
     def get_futures_symbol_filters(self, _symbol):
-        return {"stepSize": 0.001, "minQty": 0.001, "minNotional": 5.0}
+        return {"stepSize": 0.001, "minQty": 0.001, "maxQty": 100.0, "minNotional": 5.0}
 
     def get_futures_available_balance(self):
         return 100.0
@@ -431,7 +449,8 @@ class _BaseFuturesExposureWrapper:
 
     def _futures_create_order_with_fallback(self, params):
         self.submit_calls.append(dict(params))
-        return {"orderId": 456, **params}, "primary"
+        return {"orderId": 456, **params, "status": "FILLED",
+                "origQty": params["quantity"], "executedQty": params["quantity"]}, "primary"
 
     def _invalidate_futures_positions_cache(self):
         return None
@@ -654,7 +673,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
                 wrapper = BinanceWrapper.__new__(BinanceWrapper)
                 wrapper.api_key = "unit-api-key"
                 wrapper.api_secret = "unit-api-secret"
-                wrapper.mode = "Demo/Testnet"
+                wrapper._mode = "Demo/Testnet"
                 wrapper.account_type = "FUTURES"
                 wrapper._connector_backend = backend
                 with (
@@ -709,7 +728,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "futures.jsonl"
             wrapper = _FuturesAuditWrapper()
-            wrapper._configure_order_audit(path=audit_path)
+            wrapper._initialize_test_order_store(path=audit_path)
 
             order, via = wrapper._futures_create_order_with_fallback(
                 {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"}
@@ -728,7 +747,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "futures-error.jsonl"
             wrapper = _FuturesAuditWrapper(fail=True)
-            wrapper._configure_order_audit(path=audit_path)
+            wrapper._initialize_test_order_store(path=audit_path)
 
             with self.assertRaisesRegex(RuntimeError, "exchange rejected"):
                 wrapper._futures_create_order_with_fallback(
@@ -743,7 +762,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             wrapper = _FuturesAuditWrapper()
             wrapper.client = _SecretFailureFuturesAuditClient()
-            wrapper._configure_order_audit(path=Path(tmp) / "futures-secret-error.jsonl")
+            wrapper._initialize_test_order_store(path=Path(tmp) / "futures-secret-error.jsonl")
 
             with self.assertRaises(RuntimeError) as raised:
                 wrapper._futures_create_order_with_fallback(
@@ -768,7 +787,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             with self.subTest(response=response):
                 with tempfile.TemporaryDirectory() as tmp:
                     wrapper = _FuturesAuditWrapper()
-                    wrapper._configure_order_audit(path=Path(tmp) / "malformed-futures.jsonl")
+                    wrapper._initialize_test_order_store(path=Path(tmp) / "malformed-futures.jsonl")
                     wrapper.client.futures_create_order = lambda **_kwargs: response
 
                     with self.assertRaisesRegex(RuntimeError, message):
@@ -780,7 +799,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "futures.jsonl"
             wrapper = _FuturesAuditWrapper()
-            wrapper._configure_order_audit(path=audit_path)
+            wrapper._initialize_test_order_store(path=audit_path)
             params = {
                 "symbol": "ETHUSDT",
                 "side": "BUY",
@@ -800,7 +819,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "futures-ambiguous.jsonl"
             wrapper = _FuturesAuditWrapper(fail=True)
-            wrapper._configure_order_audit(path=audit_path)
+            wrapper._initialize_test_order_store(path=audit_path)
             with self.assertRaisesRegex(RuntimeError, "exchange rejected"):
                 wrapper._futures_create_order_with_fallback(
                     {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
@@ -820,6 +839,10 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
                 "orderId": 100,
                 "status": "FILLED",
                 "clientOrderId": client_order_id,
+                "symbol": "ETHUSDT",
+                "side": "BUY",
+                "origQty": "0.1",
+                "executedQty": "0.1",
             }
             reconciled = wrapper.reconcile_order_intent(client_order_id)
             self.assertTrue(reconciled["reconciled"])
@@ -833,7 +856,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
     def test_order_intent_reconciliation_requires_explicit_exchange_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             wrapper = _FuturesAuditWrapper(fail=True)
-            wrapper._configure_order_audit(path=Path(tmp) / "futures-ambiguous-status.jsonl")
+            wrapper._initialize_test_order_store(path=Path(tmp) / "futures-ambiguous-status.jsonl")
             with self.assertRaisesRegex(RuntimeError, "exchange rejected"):
                 wrapper._futures_create_order_with_fallback(
                     {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
@@ -909,7 +932,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "guarded-futures-ok.jsonl"
             wrapper = _GuardedFuturesAuditWrapper(live_safety_config=_live_ack_config())
-            wrapper._configure_order_audit(path=audit_path)
+            wrapper._initialize_test_order_store(path=audit_path)
 
             order, via = wrapper._futures_create_order_with_fallback(
                 {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
@@ -929,8 +952,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_connector_health_all_modes"])
         self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_audit_enabled_all_modes"])
         self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_audit_writable_all_modes"])
-        wrapper = _GuardedFuturesAuditWrapper(live_safety_config={})
-        wrapper.mode = "Demo/Testnet"
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config={}, mode="Demo/Testnet")
 
         with self.assertRaisesRegex(LiveTradingSafetyError, "order symbol is required"):
             wrapper._guard_live_order_submit(
@@ -952,7 +974,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             wrapper = _GuardedFuturesAuditWrapper(
                 live_safety_config=_live_ack_config(live_trading_max_session_orders=1)
             )
-            wrapper._configure_order_audit(path=audit_path)
+            wrapper._initialize_test_order_store(path=audit_path)
 
             first, via = wrapper._futures_create_order_with_fallback(
                 {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
@@ -985,7 +1007,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         wrapper = _GuardedFuturesAuditWrapper(
             live_safety_config=_live_ack_config(),
             price=100.0,
-            filters={"stepSize": 0.01, "minQty": 0.01, "tickSize": 0.01, "minNotional": 20.0},
+            filters={"stepSize": 0.01, "minQty": 0.01, "maxQty": 100.0, "tickSize": 0.01, "minNotional": 20.0},
         )
 
         with self.assertRaisesRegex(LiveTradingSafetyError, "minNotional"):
@@ -1025,7 +1047,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
     def test_live_futures_submit_guard_blocks_step_misaligned_order(self):
         wrapper = _GuardedFuturesAuditWrapper(
             live_safety_config=_live_ack_config(),
-            filters={"stepSize": 0.01, "minQty": 0.01, "tickSize": 0.01, "minNotional": 5.0},
+            filters={"stepSize": 0.01, "minQty": 0.01, "maxQty": 100.0, "tickSize": 0.01, "minNotional": 5.0},
         )
 
         with self.assertRaisesRegex(LiveTradingSafetyError, "stepSize"):
@@ -1038,7 +1060,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
     def test_live_futures_submit_guard_blocks_limit_price_tick_misalignment(self):
         wrapper = _GuardedFuturesAuditWrapper(
             live_safety_config=_live_ack_config(),
-            filters={"stepSize": 0.01, "minQty": 0.01, "tickSize": 0.01, "minNotional": 5.0},
+            filters={"stepSize": 0.01, "minQty": 0.01, "maxQty": 100.0, "tickSize": 0.01, "minNotional": 5.0},
         )
 
         with self.assertRaisesRegex(LiveTradingSafetyError, "tickSize"):
@@ -1116,7 +1138,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         wrapper = _GuardedFuturesAuditWrapper(
             live_safety_config=_live_ack_config(),
             price=100.0,
-            filters={"stepSize": 0.01, "minQty": 0.01, "tickSize": 0.01, "minNotional": 20.0},
+            filters={"stepSize": 0.01, "minQty": 0.01, "maxQty": 100.0, "tickSize": 0.01, "minNotional": 20.0},
         )
 
         order, via = wrapper._futures_create_order_with_fallback(
@@ -1307,6 +1329,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         wrapper.get_futures_symbol_filters = lambda _symbol: {
             "stepSize": 0.1,
             "minQty": 0.1,
+            "maxQty": 100.0,
             "minNotional": 0.1,
         }
 

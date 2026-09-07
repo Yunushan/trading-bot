@@ -6,6 +6,13 @@ from . import table_render_state_runtime
 
 
 def _resolve_display_records(self, open_records: dict, closed_records: list[dict], view_mode: str) -> list[dict]:
+    symbol_filter = getattr(self, "_pos_symbol_filter", None)
+    if symbol_filter:
+        selected = {str(symbol).strip().upper() for symbol in symbol_filter}
+        open_records = {
+            key: record for key, record in open_records.items()
+            if str(record.get("symbol") or "").strip().upper() in selected
+        }
     if view_mode == "per_trade":
         records = self._positions_records_per_trade(open_records, closed_records)
     else:

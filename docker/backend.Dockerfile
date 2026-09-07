@@ -2,7 +2,7 @@
 #
 # The Chainguard Python images are pinned by immutable multi-platform digests.
 # The builder contains pip and build tools; the final Wolfi runtime is distroless.
-FROM cgr.dev/chainguard/python:latest-dev@sha256:d7a9ff52942e89e188372fce9049640087f48473ceeb8cee2495f8136620fc3c AS builder
+FROM cgr.dev/chainguard/python:latest-dev@sha256:b626eb5bcedda38d96dc1415d2967c007d1ea95b2d72a682c3e5ccecd222641d AS builder
 
 USER root
 
@@ -27,11 +27,13 @@ RUN --mount=type=secret,id=pip_ca,required=false,target=/run/secrets/pip_ca \
     && python -m pip install --upgrade "pip==26.2.1" \
     && pip install /build/Languages/Python[service] \
     && pip install --upgrade "setuptools==84.0.0" "msgpack==1.2.1" \
+    && python -m pip check \
+    && python -m pip uninstall --yes pip \
     && install -d -m 0700 -o 65532 -g 65532 /home/nonroot/.trading-bot \
     && touch /home/nonroot/.trading-bot/.keep \
     && chown 65532:65532 /home/nonroot/.trading-bot/.keep
 
-FROM cgr.dev/chainguard/python:latest@sha256:ee37f5e4fb445732409626797dccb6f2a6337872def2bab48729ee61b335fa77
+FROM cgr.dev/chainguard/python:latest@sha256:1f37785e5cdb70151f36aaa15e1e3cef4571424dbefbf4b0d8a9222535cb13ff
 
 ARG BUILD_COMMIT=unknown
 

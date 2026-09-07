@@ -74,6 +74,7 @@ Focused service test map:
 | `tests.test_service_schema_contracts` | service response schema builders, payload normalization, and secret redaction contracts |
 | `tests.test_service_config_runtime` | service config validation and durable config persistence |
 | `tests.test_service_operational_runtime` | operational health snapshots, connector incidents, JSONL rotation, and redaction |
+| `tests.test_service_snapshot_observation_freshness` | observation timestamps, cached snapshot freshness, and live preflight across service transports |
 | `tests.test_service_lifecycle_runtime` | lifecycle control, control-plane descriptors, runtime samples, and live preflight gates |
 | `tests.test_service_runner_hardening` | runner shutdown, timestamp validation, and market-source fail-closed behavior |
 | `tests.test_service_client_integration` | desktop service client selection and service terminal/LLM commands |

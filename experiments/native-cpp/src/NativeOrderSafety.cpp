@@ -63,6 +63,40 @@ QString paramValue(const QVector<QPair<QString, QString>> &params, const QString
     return {};
 }
 
+bool isExchangeRiskReducingOrder(const QString &market, const QVector<QPair<QString, QString>> &params) {
+    if (market != QStringLiteral("futures")) {
+        return false;
+    }
+    // Use canonical wire keys and values, not the permissive UI alias parser.
+    QJsonObject fields;
+    const QSet<QString> relevant = {
+        QStringLiteral("type"), QStringLiteral("side"), QStringLiteral("positionSide"),
+        QStringLiteral("reduceOnly"), QStringLiteral("closePosition"),
+    };
+    for (const auto &item : params) {
+        if (relevant.contains(item.first)) {
+            if (fields.contains(item.first)) {
+                return false;
+            }
+            fields.insert(item.first, item.second);
+        }
+    }
+    const QString type = fields.value(QStringLiteral("type")).toString();
+    const QString side = fields.value(QStringLiteral("side")).toString();
+    if ((type != QStringLiteral("LIMIT") && type != QStringLiteral("MARKET"))
+        || (side != QStringLiteral("BUY") && side != QStringLiteral("SELL"))
+        || fields.contains(QStringLiteral("closePosition"))) {
+        return false;
+    }
+    const QString positionSide = fields.value(QStringLiteral("positionSide")).toString(QStringLiteral("BOTH"));
+    if (positionSide == QStringLiteral("BOTH")) {
+        return fields.value(QStringLiteral("reduceOnly")).toString() == QStringLiteral("true");
+    }
+    return !fields.contains(QStringLiteral("reduceOnly"))
+        && ((side == QStringLiteral("SELL") && positionSide == QStringLiteral("LONG"))
+            || (side == QStringLiteral("BUY") && positionSide == QStringLiteral("SHORT")));
+}
+
 bool intentBoolParam(const QString &value) {
     const QString text = value.trimmed().toLower();
     return text == QStringLiteral("1")
@@ -285,6 +319,48 @@ QString stateFromRaw(const QJsonObject &raw) {
 } // namespace
 
 namespace NativeOrderSafety {
+
+OrderExecution orderExecutionFromResponse(const QJsonValue &response, const QJsonValue &submittedQuantity) {
+    OrderExecution result;
+    result.error = QStringLiteral("Invalid order execution; reconciliation required.");
+    const auto quantity = [](const QJsonValue &value, double *out) {
+        bool valid = value.isDouble();
+        double number = value.toDouble();
+        if (value.isString()) {
+            number = value.toString().toDouble(&valid);
+        }
+        if (!valid || !qIsFinite(number) || number < 0.0) {
+            return false;
+        }
+        *out = number;
+        return true;
+    };
+    if (!response.isObject()) return result;
+    const QJsonObject object = response.toObject();
+    double submitted = 0.0;
+    double executed = 0.0;
+    double original = 0.0;
+    if (!quantity(submittedQuantity, &submitted) || submitted <= 0.0
+        || !quantity(object.value(QStringLiteral("executedQty")), &executed)
+        || executed > submitted) return result;
+    if (object.contains(QStringLiteral("origQty"))
+        && (!quantity(object.value(QStringLiteral("origQty")), &original) || original != submitted)) return result;
+    const QString status = object.value(QStringLiteral("status")).toString();
+    static const QSet<QString> statuses = {
+        QStringLiteral("NEW"), QStringLiteral("PARTIALLY_FILLED"), QStringLiteral("FILLED"),
+        QStringLiteral("CANCELED"), QStringLiteral("EXPIRED"), QStringLiteral("EXPIRED_IN_MATCH"),
+        QStringLiteral("REJECTED"),
+    };
+    if (!statuses.contains(status)
+        || ((status == QStringLiteral("NEW") || status == QStringLiteral("REJECTED")) && executed != 0.0)
+        || (status == QStringLiteral("FILLED") && executed != submitted)) return result;
+    result.valid = true;
+    result.complete = status == QStringLiteral("FILLED");
+    result.executedQty = executed;
+    result.status = status;
+    result.error = result.complete ? QString() : QStringLiteral("Order is not fully filled; reconciliation required.");
+    return result;
+}
 
 QStringList validateConnectorHealthErrors(const QString &state, const QString &health) {
     return connectorHealthErrors(state, health);
@@ -589,19 +665,49 @@ QStringList validateOrderFilterConstraintsInternal(
     bool hasLastPrice,
     double lastPrice,
     bool riskReducingExit) {
+    struct QuantityRule {
+        QString minName, maxName, stepName;
+        double minimum, maximum, step;
+    };
+    QVector<QuantityRule> rules = {{QStringLiteral("minQty"), QStringLiteral("maxQty"),
+        QStringLiteral("stepSize"), filters.minQty, filters.maxQty, filters.stepSize}};
+    if (filters.hasMarketLotSize) {
+        rules.append({QStringLiteral("marketMinQty"), QStringLiteral("marketMaxQty"),
+            QStringLiteral("marketStepSize"), filters.marketMinQty,
+            filters.marketMaxQty, filters.marketStepSize});
+    }
+    if (!qIsFinite(filters.tickSize) || filters.tickSize < 0.0
+        || !qIsFinite(filters.minNotional) || filters.minNotional < 0.0
+        || std::any_of(rules.cbegin(), rules.cend(), [](const QuantityRule &rule) {
+            return !qIsFinite(rule.minimum) || !qIsFinite(rule.maximum) || !qIsFinite(rule.step)
+                || rule.minimum < 0.0 || rule.maximum < rule.minimum || rule.step < 0.0;
+        })) {
+        return {QStringLiteral("%1 symbol filters invalid for %2").arg(intent.market, intent.symbol)};
+    }
     if (!intent.hasQuantity || !qIsFinite(intent.quantity)) {
         return {};
     }
     QStringList errors;
-    if (filters.minQty > 0.0 && intent.quantity < filters.minQty && !riskReducingExit) {
-        errors.append(
-            QStringLiteral("order quantity %1 is below %2 minQty %3")
-                .arg(normalizedDecimal(intent.quantity), intent.symbol, normalizedDecimal(filters.minQty)));
-    }
-    if (filters.stepSize > 0.0 && !alignedToStep(intent.quantity, filters.stepSize)) {
-        errors.append(
-            QStringLiteral("order quantity %1 is not aligned to %2 stepSize %3")
-                .arg(normalizedDecimal(intent.quantity), intent.symbol, normalizedDecimal(filters.stepSize)));
+    for (int index = 0; index < rules.size(); ++index) {
+        if (index > 0 && intent.orderType != QStringLiteral("MARKET")) {
+            continue;
+        }
+        const auto &rule = rules.at(index);
+        if (intent.quantity < rule.minimum && !riskReducingExit) {
+            errors.append(QStringLiteral("order quantity %1 is below %2 %3 %4")
+                .arg(normalizedDecimal(intent.quantity), intent.symbol,
+                     rule.minName, normalizedDecimal(rule.minimum)));
+        }
+        if (intent.quantity > rule.maximum) {
+            errors.append(QStringLiteral("order quantity %1 exceeds %2 %3 %4")
+                .arg(normalizedDecimal(intent.quantity), intent.symbol,
+                     rule.maxName, normalizedDecimal(rule.maximum)));
+        }
+        if (rule.step > 0.0 && !alignedToStep(intent.quantity, rule.step)) {
+            errors.append(QStringLiteral("order quantity %1 is not aligned to %2 %3 %4")
+                .arg(normalizedDecimal(intent.quantity), intent.symbol,
+                     rule.stepName, normalizedDecimal(rule.step)));
+        }
     }
     const double price = (intent.hasPrice && qIsFinite(intent.price))
         ? intent.price
@@ -665,23 +771,28 @@ QStringList validateOrderFilterConstraintsWithRawParams(
 
 bool isLiveTradingMode(const QString &mode) {
     const QString text = mode.trimmed().toLower();
-    if (text.isEmpty()) {
-        return false;
-    }
-    for (const QString &token : {
-             QStringLiteral("demo"),
-             QStringLiteral("test"),
-             QStringLiteral("sandbox"),
-             QStringLiteral("paper"),
-         }) {
-        if (text.contains(token)) {
+    for (const auto token : PythonParityContract::kPythonNativeRuntimeTestnetModeMarkers) {
+        if (text == QString::fromLatin1(token.data(), static_cast<int>(token.size()))) {
             return false;
         }
     }
     return true;
 }
 
+bool isSupportedExchangeMode(const QString &value) {
+    const QString mode = value.trimmed().toLower();
+    return !isLiveTradingMode(mode)
+        || std::any_of(PythonParityContract::kPythonNativeRuntimeLiveModeValues.begin(),
+                       PythonParityContract::kPythonNativeRuntimeLiveModeValues.end(),
+                       [&mode](const auto value) {
+                           return mode == QString::fromLatin1(value.data(), static_cast<int>(value.size()));
+                       });
+}
+
 QStringList validateLiveTradingSafety(const LiveOrderGuardInput &input) {
+    if (!isSupportedExchangeMode(input.mode)) {
+        return {QString::fromLatin1(PythonParityContract::kPythonInvalidExecutionModeError.data())};
+    }
     if (!isLiveTradingMode(input.mode)) {
         return {};
     }
@@ -768,7 +879,6 @@ LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
     if (liveMode || PythonParityContract::kPythonOrderGuardValidateExchangeFiltersAllModes) {
         errors.append(validateOrderNumericParams(intent, input.params));
         if (!intent.symbol.isEmpty()
-            && intent.hasQuantity
             && (intent.market == QStringLiteral("futures") || intent.market == QStringLiteral("spot"))) {
             if (input.hasFilters) {
                 errors.append(validateOrderFilterConstraintsWithRawParams(
@@ -782,7 +892,8 @@ LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
             }
         }
     }
-    if (liveMode) {
+    const bool usesSessionBudget = liveMode && !isExchangeRiskReducingOrder(intent.market, input.params);
+    if (usesSessionBudget) {
         const int maxSessionOrders = configuredEnvironmentInteger(
             input.config.liveTradingMaxSessionOrders,
             PythonParityContract::kPythonLiveTradingMaxSessionOrdersEnv,
@@ -792,7 +903,7 @@ LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
         }
     }
     const bool allowed = errors.isEmpty();
-    return {allowed, errors, allowed && liveMode ? currentCount + 1 : currentCount};
+    return {allowed, errors, allowed && usesSessionBudget ? currentCount + 1 : currentCount};
 }
 
 MinimumOrderAutoBumpGuardResult guardFuturesMinimumOrderAutoBump(

@@ -25,6 +25,8 @@ from app.integrations.llm.local_models import (
 
 
 class _Response:
+    status_code = 200
+
     def __init__(self, payload=None):
         self.payload = payload if payload is not None else {}
         self.closed = False
@@ -66,6 +68,7 @@ class LocalLLMModelTests(unittest.TestCase):
         self.assertIn("GB", status.estimated_size_label)
         self.assertEqual(5.0, status.recommended_free_disk_gb / 1.25)
         self.assertEqual(calls[0]["url"], "http://127.0.0.1:11434/v1/models")
+        self.assertFalse(calls[0]["allow_redirects"])
 
     def test_missing_non_ollama_model_cannot_auto_download(self):
         def fake_get(url, **kwargs):  # noqa: ARG001
@@ -243,6 +246,7 @@ class LocalLLMModelTests(unittest.TestCase):
 
         self.assertEqual(2, len(calls))
         self.assertNotIn("stream", calls[1])
+        self.assertFalse(calls[1]["allow_redirects"])
 
     def test_ollama_delete_uses_native_api_without_v1_suffix(self):
         calls = []

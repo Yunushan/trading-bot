@@ -8,8 +8,10 @@ from app.settings import is_live_trading_mode
 
 try:
     from . import strategy_order_error_logging
+    from .operational_snapshot import operational_snapshot_issues
 except ImportError:  # pragma: no cover - standalone execution fallback
     import strategy_order_error_logging  # type: ignore[no-redef]
+    from operational_snapshot import operational_snapshot_issues  # type: ignore[no-redef]
 
 
 def _connector_order_guard_detail(snapshot: dict[str, Any]) -> str:
@@ -94,9 +96,7 @@ def _get_operational_order_snapshot(self, wrapper) -> dict[str, Any]:  # noqa: A
 def _live_mode_for_order_guard(self, wrapper) -> bool:  # noqa: ANN001
     config = getattr(self, "config", {}) or {}
     mode = config.get("mode") if isinstance(config, dict) else None
-    if mode in (None, ""):
-        mode = getattr(wrapper, "mode", "")
-    return bool(is_live_trading_mode(mode))
+    return bool(is_live_trading_mode(mode) or is_live_trading_mode(getattr(wrapper, "mode", "")))
 
 
 def _evaluate_operational_order_guard(self, wrapper) -> tuple[bool, str, str, dict[str, Any]]:  # noqa: ANN001
@@ -127,27 +127,7 @@ def _evaluate_operational_order_guard(self, wrapper) -> tuple[bool, str, str, di
             "warning",
             {},
         )
-    if not snapshot:
-        return True, "", "info", {}
-
-    health = str(snapshot.get("health") or "unknown").strip().lower()
-    freshness = snapshot.get("freshness")
-    stale_labels: list[str] = []
-    if isinstance(freshness, dict):
-        for key, label in (
-            ("exchange_connector", "exchange connector"),
-            ("account", "account"),
-            ("portfolio", "portfolio"),
-        ):
-            item = freshness.get(key)
-            if isinstance(item, dict) and bool(item.get("stale")):
-                stale_labels.append(label)
-
-    issues: list[str] = []
-    if health == "error":
-        issues.append("operational health is error")
-    if stale_labels:
-        issues.append("critical snapshots are stale: " + ", ".join(stale_labels))
+    issues = operational_snapshot_issues(snapshot, config, now_epoch=time.time())
     if not issues:
         return True, "", "info", snapshot
 
@@ -360,6 +340,7 @@ def _submit_futures_signal_order(
     last_price,
     lev,
     abort_guard,
+    on_submit=None,
 ) -> tuple[object, bool, bool]:
     allow_hedge_open = self._strategy_coerce_bool(self.config.get("allow_opposite_positions"), True)
     guard_obj = getattr(self, "guard", None)
@@ -679,9 +660,7 @@ def _submit_futures_signal_order(
                 if self.stopped():
                     order_res = {"ok": False, "symbol": cw["symbol"], "error": "stop_requested"}
                 else:
-                    order_res = self.binance.place_futures_market_order(
-                        cw["symbol"],
-                        side,
+                    order_kwargs = dict(
                         percent_balance=None,
                         leverage=lev,
                         reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
@@ -695,6 +674,9 @@ def _submit_futures_signal_order(
                         max_auto_bump_percent=float(self.config.get("max_auto_bump_percent", 5.0)),
                         auto_bump_percent_multiplier=float(self.config.get("auto_bump_percent_multiplier", 10.0)),
                     )
+                    if on_submit is not None:
+                        on_submit()
+                    order_res = self.binance.place_futures_market_order(cw["symbol"], side, **order_kwargs)
             except Exception as exc_order:
                 last_order_exc = exc_order
                 order_res = {
@@ -702,15 +684,18 @@ def _submit_futures_signal_order(
                     "symbol": cw["symbol"],
                     "error": redact_text(exc_order),
                     "exception_type": type(exc_order).__name__,
+                    "reconciliation_required": True,
                 }
             finally:
                 type(self)._release_order_slot()
 
-            order_success = bool(order_res.get("ok", True))
+            if not isinstance(order_res, dict):
+                order_res = {"ok": False, "reconciliation_required": True, "error": "Malformed order result"}
+            order_success = order_res.get("ok") is True
             if self.stopped():
                 order_success = False
                 break
-            if order_success:
+            if order_success or order_res.get("reconciliation_required") is True:
                 break
             err_text = order_res.get("error") or order_res
             strategy_order_error_logging.safe_strategy_log(

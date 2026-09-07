@@ -3,6 +3,9 @@ from __future__ import annotations
 from PyQt6 import QtWidgets
 
 from app.security.redaction import redact_text
+from trading_core.orders import confirmed_close_quantity
+
+from .actions_state_runtime import _record_positions_action_exception
 
 
 def make_close_btn(
@@ -181,35 +184,22 @@ def close_position_single(
                 if dual:
                     pos_side = "LONG" if side_key == "L" else "SHORT"
                 primary_res = bw.close_futures_leg_exact(symbol, qty_val, side=order_side, position_side=pos_side)
-                if isinstance(primary_res, dict) and primary_res.get("ok"):
-                    return primary_res
-                try:
-                    fallback_res = bw.close_futures_position(symbol)
-                except Exception as exc:
-                    fallback_res = {"ok": False, "error": redact_text(exc)}
-                if isinstance(fallback_res, dict) and fallback_res.get("ok"):
-                    fallback_res.setdefault("fallback_from", "close_futures_leg_exact")
-                    if isinstance(primary_res, dict) and primary_res.get("error"):
-                        fallback_res.setdefault("primary_error", primary_res.get("error"))
-                    return fallback_res
-                if isinstance(primary_res, dict):
-                    primary_res["fallback"] = fallback_res
-                    return _annotate_no_live_leg(primary_res)
-                return _annotate_no_live_leg(
-                    {"ok": False, "error": f"close leg failed: {primary_res!r}", "fallback": fallback_res}
-                )
+                # A targeted close must never expand into a symbol-wide close.
+                return primary_res
             return _annotate_no_live_leg(bw.close_futures_position(symbol))
         return {"ok": False, "error": "Spot manual close via UI is not available yet"}
 
     def _done(res, err):
         succeeded = False
         cleared_stale_state = False
+        closed_qty = 0.0
         try:
             if err:
                 self.log(f"Close {symbol} error: {err}")
             else:
                 self.log(f"Close {symbol} result: {res}")
-                succeeded = bool(isinstance(res, dict) and res.get("ok"))
+                closed_qty = confirmed_close_quantity(res, qty_val) if qty_val > 0.0 else 0.0
+                succeeded = bool(isinstance(res, dict) and res.get("ok") and closed_qty > 0.0)
                 if (
                     not succeeded
                     and isinstance(res, dict)
@@ -230,7 +220,7 @@ def close_position_single(
                         cleared_stale_state = False
                     if cleared_stale_state:
                         succeeded = True
-            if succeeded and not cleared_stale_state and side_key in ("L", "S"):
+            if closed_qty > 0.0 and not cleared_stale_state and side_key in ("L", "S"):
                 try:
                     local_reconciled = False
                     if hasattr(self, "_reduce_local_position_allocation_state") and qty_val > 0.0:
@@ -239,16 +229,17 @@ def close_position_single(
                                 symbol,
                                 side_key,
                                 interval=interval,
-                                qty=qty_val,
+                                qty=closed_qty,
                                 target_identity=target_identity,
                             )
                         )
-                    if not local_reconciled and interval and hasattr(self, "_track_interval_close"):
-                        self._track_interval_close(symbol, side_key, interval)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    if not local_reconciled:
+                        self.log(f"Close {symbol}: confirmed fill could not be attributed to its allocation; "
+                                 "tracking retained pending reconciliation.")
+                except Exception as exc:
+                    _record_positions_action_exception(self, "manual_close_reconciliation", exc)
+        except Exception as exc:
+            _record_positions_action_exception(self, "manual_close_result", exc)
         try:
             self.refresh_positions(symbols=[symbol])
         except Exception:

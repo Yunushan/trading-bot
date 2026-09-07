@@ -19,7 +19,7 @@ fn new_binance_client_order_id() -> String {
     format!("tb-{timestamp:016x}{sequence:016x}")
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BinanceFuturesSymbolFilters {
     pub symbol: String,
     pub step_size: f64,
@@ -31,6 +31,9 @@ pub struct BinanceFuturesSymbolFilters {
     pub price_precision: i64,
     pub quote_asset_precision: i64,
     pub max_leverage: i64,
+    pub market_min_qty: Option<f64>,
+    pub market_max_qty: Option<f64>,
+    pub market_step_size: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -227,13 +230,8 @@ impl BinanceSignedRestClient {
             build_futures_market_order_params(symbol, side, quantity, reduce_only, position_side)?;
         let mut request_params = order_params.params.clone();
         request_params.push(("newClientOrderId", new_binance_client_order_id()));
-        execute_futures_order_with_fallback(self, credentials, &request_params, |payload| {
-            parse_futures_order_result(
-                payload,
-                &order_params.symbol,
-                &order_params.side,
-                &order_params.position_side,
-            )
+        submit_futures_order_once(self, credentials, &request_params, |payload| {
+            parse_submitted_order_result(payload, &order_params, &request_params)
         })
     }
 
@@ -255,7 +253,7 @@ impl BinanceSignedRestClient {
             current_timestamp_ms()?,
             SPOT_ORDER_RECV_WINDOW_MS,
         )?;
-        parse_spot_order_result(&payload, &order_params.symbol, &order_params.side)
+        parse_submitted_order_result(&payload, &order_params, &request_params)
     }
 
     // The public request mirrors Binance's independent order fields and the Python contract.
@@ -283,13 +281,8 @@ impl BinanceSignedRestClient {
         )?;
         let mut request_params = order_params.params.clone();
         request_params.push(("newClientOrderId", new_binance_client_order_id()));
-        execute_futures_order_with_fallback(self, credentials, &request_params, |payload| {
-            parse_futures_order_result(
-                payload,
-                &order_params.symbol,
-                &order_params.side,
-                &order_params.position_side,
-            )
+        submit_futures_order_once(self, credentials, &request_params, |payload| {
+            parse_submitted_order_result(payload, &order_params, &request_params)
         })
     }
 
@@ -494,7 +487,7 @@ impl BinanceSignedRestClient {
     }
 }
 
-fn execute_futures_order_with_fallback<T, F>(
+fn submit_futures_order_once<T, F>(
     client: &BinanceSignedRestClient,
     credentials: &BinanceApiCredentials,
     params: &[(&str, String)],
@@ -503,51 +496,95 @@ fn execute_futures_order_with_fallback<T, F>(
 where
     F: Fn(&Value) -> Result<T>,
 {
-    let submit = |candidate: &BinanceSignedRestClient| {
-        candidate.signed_post_json(
-            &candidate.futures_v1_path("/order"),
-            credentials,
-            params,
-            current_timestamp_ms()?,
-            FUTURES_ORDER_RECV_WINDOW_MS,
-        )
-    };
+    // Neither a transport error nor an invalid acknowledgement proves non-execution.
+    // Reconciliation must precede another POST, including on testnet/custom hosts.
+    let payload = client.signed_post_json(
+        &client.futures_v1_path("/order"),
+        credentials,
+        params,
+        current_timestamp_ms()?,
+        FUTURES_ORDER_RECV_WINDOW_MS,
+    )?;
+    parse(&payload)
+}
 
-    let primary_payload = match submit(client) {
-        Ok(payload) => payload,
-        Err(primary_error) if client.futures_fallback_allowed() => {
-            let fallback = client
-                .alternate_futures_prefix_client()
-                .map_err(|fallback_error| {
-                    anyhow!("{primary_error}; fallback setup failed: {fallback_error}")
-                })?;
-            let fallback_payload = submit(&fallback).map_err(|fallback_error| {
-                anyhow!("{primary_error}; fallback request failed: {fallback_error}")
-            })?;
-            return parse(&fallback_payload).map_err(|fallback_error| {
-                anyhow!("{primary_error}; fallback response rejected: {fallback_error}")
-            });
-        }
-        Err(error) => return Err(error),
-    };
-
-    match parse(&primary_payload) {
-        Ok(result) => Ok(result),
-        Err(primary_error) if client.futures_fallback_allowed() => {
-            let fallback = client
-                .alternate_futures_prefix_client()
-                .map_err(|fallback_error| {
-                    anyhow!("{primary_error}; fallback setup failed: {fallback_error}")
-                })?;
-            let fallback_payload = submit(&fallback).map_err(|fallback_error| {
-                anyhow!("{primary_error}; fallback request failed: {fallback_error}")
-            })?;
-            parse(&fallback_payload).map_err(|fallback_error| {
-                anyhow!("{primary_error}; fallback response rejected: {fallback_error}")
-            })
-        }
-        Err(error) => Err(error),
+fn parse_submitted_order_result(
+    payload: &Value,
+    order: &BinanceFuturesOrderParams,
+    params: &[(&str, String)],
+) -> Result<BinanceFuturesOrderResult> {
+    let obj = normalized_binance_order_object(payload)?;
+    let client_id = params
+        .iter()
+        .find(|(key, _)| *key == "newClientOrderId")
+        .map(|(_, value)| value.as_str());
+    if client_id.is_none() || obj.get("clientOrderId").and_then(Value::as_str) != client_id {
+        bail!("order acknowledgement identity mismatch; reconciliation required");
     }
+    let quantity = params
+        .iter()
+        .find(|(key, _)| *key == "quantity")
+        .map(|(_, value)| Value::String(value.clone()))
+        .ok_or_else(|| anyhow!("submitted order quantity is missing"))?;
+    order_execution_from_response(&Value::Object(obj.clone()), &quantity)?;
+    parse_futures_order_result(payload, &order.symbol, &order.side, &order.position_side)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderExecution {
+    pub executed_qty: f64,
+    pub status: String,
+    pub complete: bool,
+}
+
+fn execution_quantity(value: Option<&Value>) -> Result<f64> {
+    parse_json_f64(value)
+        .filter(|number| number.is_finite() && *number >= 0.0)
+        .ok_or_else(|| anyhow!("execution quantity must be an explicit finite nonnegative number"))
+}
+
+pub fn order_execution_from_response(
+    response: &Value,
+    submitted: &Value,
+) -> Result<OrderExecution> {
+    let obj = response
+        .as_object()
+        .ok_or_else(|| anyhow!("execution response must be an object"))?;
+    let submitted = execution_quantity(Some(submitted))?;
+    let executed = execution_quantity(obj.get("executedQty"))?;
+    let status = obj
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !matches!(
+        status,
+        "NEW"
+            | "PARTIALLY_FILLED"
+            | "FILLED"
+            | "CANCELED"
+            | "EXPIRED"
+            | "EXPIRED_IN_MATCH"
+            | "REJECTED"
+    ) {
+        bail!("order execution status is missing or unsupported");
+    }
+    if submitted <= 0.0 || executed > submitted {
+        bail!("executed quantity exceeds the submitted order");
+    }
+    if obj.contains_key("origQty") && execution_quantity(obj.get("origQty"))? != submitted {
+        bail!("order response quantity does not match the submitted order");
+    }
+    if matches!(status, "NEW" | "REJECTED") && executed != 0.0 {
+        bail!("unfilled status conflicts with executed quantity");
+    }
+    if status == "FILLED" && executed != submitted {
+        bail!("filled response does not confirm the submitted quantity");
+    }
+    Ok(OrderExecution {
+        executed_qty: executed,
+        status: status.to_owned(),
+        complete: status == "FILLED",
+    })
 }
 
 pub fn build_futures_market_order_params(
@@ -688,23 +725,26 @@ pub fn parse_futures_symbol_filters(
                 .or_else(|| parse_json_i64(row.get("max_leverage")))
                 .unwrap_or(0)
                 .max(0),
+            ..Default::default()
         };
         let mut lot_step_size = 0.0;
         let mut lot_min_qty = 0.0;
         let mut lot_max_qty = 0.0;
+        let mut has_lot = false;
+        let mut has_market = false;
         let mut market_step_size = 0.0;
         let mut market_min_qty = 0.0;
         let mut market_max_qty = 0.0;
         let mut price_tick_size = 0.0;
 
-        for filter in row
+        let filter_rows = row
             .get("filters")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+            .filter(|rows| !rows.is_empty())
+            .ok_or_else(|| anyhow!("symbol metadata missing filters"))?;
+        for filter in filter_rows {
             let Some(filter) = filter.as_object() else {
-                continue;
+                bail!("symbol metadata contains an invalid filter");
             };
             match filter
                 .get("filterType")
@@ -715,14 +755,19 @@ pub fn parse_futures_symbol_filters(
                 .as_str()
             {
                 "LOT_SIZE" => {
-                    lot_step_size = first_f64(filter, &["stepSize"]).unwrap_or(0.0);
-                    lot_min_qty = first_f64(filter, &["minQty"]).unwrap_or(0.0);
-                    lot_max_qty = first_f64(filter, &["maxQty"]).unwrap_or(0.0);
+                    if has_lot {
+                        bail!("symbol metadata contains duplicate LOT_SIZE filters");
+                    }
+                    has_lot = true;
+                    (lot_min_qty, lot_max_qty, lot_step_size) = parse_quantity_filter(filter)?;
                 }
                 "MARKET_LOT_SIZE" => {
-                    market_step_size = first_f64(filter, &["stepSize"]).unwrap_or(0.0);
-                    market_min_qty = first_f64(filter, &["minQty"]).unwrap_or(0.0);
-                    market_max_qty = first_f64(filter, &["maxQty"]).unwrap_or(0.0);
+                    if has_market {
+                        bail!("symbol metadata contains duplicate MARKET_LOT_SIZE filters");
+                    }
+                    has_market = true;
+                    (market_min_qty, market_max_qty, market_step_size) =
+                        parse_quantity_filter(filter)?;
                 }
                 "MIN_NOTIONAL" | "NOTIONAL" => {
                     result.min_notional =
@@ -741,27 +786,42 @@ pub fn parse_futures_symbol_filters(
             }
         }
 
-        result.step_size = positive_or_zero(if market_step_size > 0.0 {
-            market_step_size
-        } else {
-            lot_step_size
-        });
+        if !has_lot {
+            bail!("symbol metadata missing LOT_SIZE");
+        }
+        result.step_size = lot_step_size;
         result.tick_size = positive_or_zero(price_tick_size);
-        result.min_qty = positive_or_zero(if market_min_qty > 0.0 {
-            market_min_qty
-        } else {
-            lot_min_qty
-        });
-        result.max_qty = positive_or_zero(if market_max_qty > 0.0 {
-            market_max_qty
-        } else {
-            lot_max_qty
-        });
+        result.min_qty = lot_min_qty;
+        result.max_qty = lot_max_qty;
+        if has_market {
+            result.market_min_qty = Some(market_min_qty);
+            result.market_max_qty = Some(market_max_qty);
+            result.market_step_size = Some(market_step_size);
+        }
         result.min_notional = positive_or_zero(result.min_notional);
         return Ok(result);
     }
 
     bail!("Symbol {clean_symbol} not found in futures exchangeInfo")
+}
+
+fn parse_quantity_filter(filter: &Map<String, Value>) -> Result<(f64, f64, f64)> {
+    let read = |key: &str| -> Result<f64> {
+        let raw = filter
+            .get(key)
+            .ok_or_else(|| anyhow!("quantity filter missing {key}"))?;
+        if !raw.is_string() && !raw.is_number() {
+            bail!("invalid quantity filter {key}");
+        }
+        first_f64(filter, &[key])
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .ok_or_else(|| anyhow!("invalid quantity filter {key}"))
+    };
+    let (minimum, maximum, step) = (read("minQty")?, read("maxQty")?, read("stepSize")?);
+    if minimum > maximum {
+        bail!("quantity filter minQty exceeds maxQty");
+    }
+    Ok((minimum, maximum, step))
 }
 
 pub fn parse_spot_symbol_filters(
@@ -828,24 +888,27 @@ pub fn parse_futures_order_result(
     fallback_position_side: &str,
 ) -> Result<BinanceFuturesOrderResult> {
     let obj = normalized_binance_order_object(payload)?;
-    let order_id = [
-        "orderId",
-        "order_id",
-        "id",
-        "clientOrderId",
-        "client_order_id",
-        "clientOrderID",
-    ]
-    .iter()
-    .find_map(|key| json_value_to_string(obj.get(*key)))
+    let order_id = match obj.get("orderId") {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .filter(|id| *id > 0)
+            .map(|id| id.to_string()),
+        Some(Value::String(text)) if text.bytes().all(|c| c.is_ascii_digit()) => text
+            .parse::<u64>()
+            .ok()
+            .filter(|id| *id > 0)
+            .map(|_| text.clone()),
+        _ => None,
+    }
     .unwrap_or_default();
-    if order_id.trim().is_empty() {
+    if order_id.is_empty() {
         bail!("futures order response missing orderId/order identifier");
     }
-    let status = json_value_to_string(obj.get("status"))
+    let status = obj
+        .get("status")
+        .and_then(Value::as_str)
         .unwrap_or_default()
-        .trim()
-        .to_uppercase();
+        .to_owned();
     if status.is_empty() {
         bail!("futures order response missing explicit status");
     }
@@ -855,14 +918,37 @@ pub fn parse_futures_order_result(
     ) {
         bail!("futures order response has terminal failure status {status}");
     }
+    if !matches!(status.as_str(), "NEW" | "PARTIALLY_FILLED" | "FILLED") {
+        bail!("order response has an unsupported status");
+    }
+    for (field, expected) in [("symbol", fallback_symbol), ("side", fallback_side)] {
+        if obj.get(field).and_then(Value::as_str) != Some(expected) {
+            bail!("order response {field} does not identify the submitted order");
+        }
+    }
+    let expected_position_side = if fallback_position_side.is_empty() {
+        "BOTH"
+    } else {
+        fallback_position_side
+    };
+    if obj
+        .get("positionSide")
+        .is_some_and(|value| value.as_str() != Some(expected_position_side))
+        || (matches!(expected_position_side, "LONG" | "SHORT") && !obj.contains_key("positionSide"))
+    {
+        bail!("order response does not identify the submitted hedge leg");
+    }
     let avg_price = first_f64(obj, &["avgPrice"])
         .filter(|value| *value > 0.0)
         .or_else(|| first_f64(obj, &["price"]))
         .unwrap_or(0.0);
-    let executed_qty = first_f64(obj, &["executedQty"])
-        .filter(|value| *value > 0.0)
-        .or_else(|| first_f64(obj, &["origQty"]))
-        .unwrap_or(0.0);
+    let executed_qty = execution_quantity(obj.get("executedQty"))?;
+    if (status == "NEW" && executed_qty != 0.0) || (status == "FILLED" && executed_qty <= 0.0) {
+        bail!("order status conflicts with executed quantity");
+    }
+    if let Some(original) = obj.get("origQty") {
+        order_execution_from_response(&Value::Object(obj.clone()), original)?;
+    }
     Ok(BinanceFuturesOrderResult {
         symbol: obj
             .get("symbol")
@@ -1572,7 +1658,7 @@ fn validate_quantity_filters(filters: &BinanceFuturesSymbolFilters) -> Option<St
     ] {
         if !value.is_finite() || value < 0.0 {
             return Some(format!(
-                "filters_error: {name} must be a finite non-negative number"
+                "filters_error: {name} must be a finite number >= 0"
             ));
         }
     }
@@ -1747,11 +1833,15 @@ fn normalized_binance_order_object(payload: &Value) -> Result<&Map<String, Value
         .and_then(Value::as_object)
         .filter(|data| !data.is_empty())
         .unwrap_or(obj);
-    if is_binance_order_error_object(normalized) {
-        bail!(
-            "Binance order error: {}",
-            binance_order_error_message(normalized)
-        );
+    for candidate in [obj, normalized] {
+        if candidate.contains_key("code")
+            || candidate.get("error").is_some_and(|value| !value.is_null())
+            || candidate
+                .get("success")
+                .is_some_and(|value| value != &Value::Bool(true))
+        {
+            bail!("invalid order acknowledgement envelope; reconciliation required");
+        }
     }
     Ok(normalized)
 }
@@ -1770,7 +1860,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_futures_symbol_filters_like_cpp_preferring_market_lot_size() {
+    fn parses_quantity_filters_without_replacing_general_lot_size() {
         let payload = json!({
             "symbols": [
                 {
@@ -1789,14 +1879,66 @@ mod tests {
         });
         let filters = parse_futures_symbol_filters(&payload, "btcusdt").expect("filters");
         assert_eq!(filters.symbol, "BTCUSDT");
-        assert_eq!(filters.step_size, 0.01);
-        assert_eq!(filters.min_qty, 0.02);
-        assert_eq!(filters.max_qty, 50.0);
+        assert_eq!(filters.step_size, 0.001);
+        assert_eq!(filters.min_qty, 0.001);
+        assert_eq!(filters.max_qty, 100.0);
+        assert_eq!(filters.market_step_size, Some(0.01));
+        assert_eq!(filters.market_min_qty, Some(0.02));
+        assert_eq!(filters.market_max_qty, Some(50.0));
         assert_eq!(filters.tick_size, 0.10);
         assert_eq!(filters.min_notional, 5.0);
         assert_eq!(filters.max_leverage, 50);
         assert_eq!(filters.quantity_precision, 3);
         assert_eq!(filters.price_precision, 2);
+    }
+
+    #[test]
+    fn rejects_incomplete_invalid_and_duplicate_quantity_metadata() {
+        let lot =
+            json!({"filterType":"LOT_SIZE", "minQty":"0.001", "maxQty":"100", "stepSize":"0.001"});
+        let market =
+            json!({"filterType":"MARKET_LOT_SIZE", "minQty":"0.1", "maxQty":"1", "stepSize":"0.1"});
+        let parse = |rows| {
+            let payload = json!({"symbols":[{"symbol":"BTCUSDT", "filters":rows}]});
+            (
+                parse_spot_symbol_filters(&payload, "BTCUSDT"),
+                parse_futures_symbol_filters(&payload, "BTCUSDT"),
+            )
+        };
+        let (spot, futures) = parse(vec![lot.clone(), market.clone()]);
+        assert!(spot.is_ok() && futures.is_ok());
+        for row_index in 0..2 {
+            for field in ["minQty", "maxQty", "stepSize"] {
+                for bad in [
+                    Value::Null,
+                    json!(true),
+                    json!(-1),
+                    json!("NaN"),
+                    json!("inf"),
+                    json!({}),
+                    json!([]),
+                ] {
+                    let mut rows = vec![lot.clone(), market.clone()];
+                    rows[row_index][field] = bad;
+                    let (spot, futures) = parse(rows);
+                    assert!(spot.is_err() && futures.is_err(), "{row_index} {field}");
+                }
+                let mut rows = vec![lot.clone(), market.clone()];
+                rows[row_index].as_object_mut().unwrap().remove(field);
+                let (spot, futures) = parse(rows);
+                assert!(spot.is_err() && futures.is_err());
+            }
+        }
+        for rows in [
+            vec![],
+            vec![market.clone()],
+            vec![lot.clone(), lot.clone()],
+            vec![lot.clone(), market.clone(), market],
+            vec![json!({"filterType":"LOT_SIZE", "minQty":"2", "maxQty":"1", "stepSize":"0.1"})],
+        ] {
+            let (spot, futures) = parse(rows);
+            assert!(spot.is_err() && futures.is_err());
+        }
     }
 
     #[test]
@@ -1821,6 +1963,7 @@ mod tests {
                 price_precision: 2,
                 quote_asset_precision: 8,
                 max_leverage: 125,
+                ..Default::default()
             };
             let case_name = case["name"].as_str().expect("case name");
             if let Some(expected_percent) = case.get("expected_percent").and_then(Value::as_f64) {
@@ -1902,6 +2045,7 @@ mod tests {
             price_precision: 2,
             quote_asset_precision: 8,
             max_leverage: 125,
+            ..Default::default()
         };
         let invalid_qty = adjust_spot_quantity_to_filters(&filters, f64::NAN, 100.0);
         assert!(!invalid_qty.ok);
@@ -2011,20 +2155,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_order_result_with_cpp_fallback_fields() {
+    fn parses_only_explicit_execution_with_matching_order_identity() {
         let payload = json!({
             "symbol": "BTCUSDT",
             "side": "BUY",
             "positionSide": "LONG",
             "orderId": 12345,
             "status": "FILLED",
-            "executedQty": "0",
+            "executedQty": "0.2",
             "origQty": "0.2",
             "avgPrice": "0",
             "price": "21000.5"
         });
         let result =
-            parse_futures_order_result(&payload, "ETHUSDT", "SELL", "BOTH").expect("order result");
+            parse_futures_order_result(&payload, "BTCUSDT", "BUY", "LONG").expect("order result");
         assert_eq!(result.symbol, "BTCUSDT");
         assert_eq!(result.side, "BUY");
         assert_eq!(result.position_side, "LONG");
@@ -2032,6 +2176,105 @@ mod tests {
         assert_eq!(result.status, "FILLED");
         assert_eq!(result.executed_qty, 0.2);
         assert_eq!(result.avg_price, 21000.5);
+        assert!(parse_futures_order_result(&payload, "ETHUSDT", "BUY", "LONG").is_err());
+        assert!(parse_futures_order_result(&payload, "BTCUSDT", "SELL", "LONG").is_err());
+        assert!(parse_futures_order_result(&payload, "BTCUSDT", "BUY", "SHORT").is_err());
+        for executed in [
+            json!("0"),
+            json!(null),
+            json!(true),
+            json!("NaN"),
+            json!("0.3"),
+        ] {
+            let mut invalid = payload.clone();
+            invalid["executedQty"] = executed;
+            assert!(parse_futures_order_result(&invalid, "BTCUSDT", "BUY", "LONG").is_err());
+        }
+        let mut missing = payload;
+        missing.as_object_mut().unwrap().remove("executedQty");
+        assert!(parse_futures_order_result(&missing, "BTCUSDT", "BUY", "LONG").is_err());
+    }
+
+    #[test]
+    fn execution_accounting_matches_python_owned_reference_cases() {
+        let reference: Value = serde_json::from_str(
+            crate::generated_python_parity::PYTHON_ORDER_INTENT_REFERENCE_JSON,
+        )
+        .expect("Python order reference");
+        let cases = reference["execution_cases"]
+            .as_array()
+            .expect("execution cases");
+        assert!(cases.len() >= 31);
+        for case in cases {
+            let actual = order_execution_from_response(&case["response"], &case["submitted_qty"]);
+            let expected = &case["expected"];
+            assert_eq!(
+                actual.is_ok(),
+                expected["valid"].as_bool().unwrap(),
+                "{}: {actual:?}",
+                case["name"]
+            );
+            if let Ok(actual) = actual {
+                assert_eq!(
+                    actual.executed_qty,
+                    expected["executed_qty"].as_f64().unwrap(),
+                    "{}",
+                    case["name"]
+                );
+                assert_eq!(
+                    actual.status,
+                    expected["status"].as_str().unwrap(),
+                    "{}",
+                    case["name"]
+                );
+                assert_eq!(
+                    actual.complete,
+                    expected["complete"].as_bool().unwrap(),
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn submitted_order_acknowledgement_requires_exact_identity_and_quantity() {
+        let order =
+            build_futures_market_order_params("BTCUSDT", "BUY", 2.0, false, "LONG").unwrap();
+        let mut params = order.params.clone();
+        params.push(("newClientOrderId", "requested-client".to_owned()));
+        let payload = json!({"symbol": "BTCUSDT", "side": "BUY", "positionSide": "LONG",
+            "clientOrderId": "requested-client", "orderId": 42, "status": "FILLED",
+            "executedQty": "2", "origQty": "2"});
+        assert!(parse_submitted_order_result(&payload, &order, &params).is_ok());
+        for (field, value) in [
+            ("clientOrderId", json!("unrelated")),
+            ("clientOrderId", Value::Null),
+            ("orderId", json!(0)),
+            ("orderId", json!("client-only")),
+            ("status", json!("UNKNOWN")),
+            ("executedQty", json!("1")),
+            ("origQty", json!("3")),
+            ("success", json!("true")),
+            ("code", json!(0)),
+            ("error", json!("failure")),
+        ] {
+            let mut invalid = payload.clone();
+            invalid[field] = value;
+            assert!(
+                parse_submitted_order_result(&invalid, &order, &params).is_err(),
+                "{field}: {invalid}"
+            );
+        }
+        let mut pending = payload;
+        pending["status"] = json!("NEW");
+        pending["executedQty"] = json!("0");
+        assert_eq!(
+            parse_submitted_order_result(&pending, &order, &params)
+                .unwrap()
+                .executed_qty,
+            0.0
+        );
     }
 
     #[test]
@@ -2431,7 +2674,7 @@ mod tests {
     }
 
     #[test]
-    fn futures_order_testnet_fallback_reuses_client_order_id_across_prefixes() {
+    fn uncertain_futures_acknowledgement_does_not_post_to_another_prefix() {
         fn serve_order_request(mut stream: TcpStream, expected_prefix: &str, body: &str) -> String {
             let mut request = Vec::new();
             let mut buffer = [0_u8; 1024];
@@ -2473,17 +2716,12 @@ mod tests {
                 "POST /fapi/v1/order?symbol=BTCUSDT&side=BUY&type=MARKET&quantity=0.1&newClientOrderId=tb-",
                 "[]",
             );
-            let second = listener.accept().expect("accept fallback order request").0;
-            let second_line = serve_order_request(
-                second,
-                "POST /dapi/v1/order?symbol=BTCUSDT&side=BUY&type=MARKET&quantity=0.1&newClientOrderId=tb-",
-                r#"{"symbol":"BTCUSDT","side":"BUY","clientOrderId":"tb-fallback","status":"NEW","executedQty":"0.1","price":"20000"}"#,
-            );
-            (first_line, second_line)
+            (listener, first_line)
         });
 
         let http = reqwest::blocking::Client::builder()
             .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
             .build()
             .expect("proxy-free order fallback client");
         let client = BinanceSignedRestClient::with_http_client(
@@ -2492,21 +2730,22 @@ mod tests {
             http,
         )
         .expect("order fallback client");
-        let result = client
-            .place_futures_market_order(
-                &BinanceApiCredentials::new("key", "secret"),
-                "btcusdt",
-                "buy",
-                0.1,
-                false,
-                "",
-            )
-            .expect("fallback order should be accepted");
-        assert_eq!(result.order_id, "tb-fallback");
-        assert_eq!(result.status, "NEW");
-        assert_eq!(result.executed_qty, 0.1);
+        let result = client.place_futures_market_order(
+            &BinanceApiCredentials::new("key", "secret"),
+            "btcusdt",
+            "buy",
+            0.1,
+            false,
+            "",
+        );
+        assert!(result.is_err());
 
-        let (first_line, second_line) = server.join().expect("order fallback fixture server");
+        let (listener, first_line) = server.join().expect("order fallback fixture server");
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
         fn client_order_id(request_line: &str) -> &str {
             request_line
                 .split_once("newClientOrderId=")
@@ -2514,7 +2753,6 @@ mod tests {
                 .map(|(value, _)| value)
                 .expect("client order ID in request")
         }
-        assert_eq!(client_order_id(&first_line), client_order_id(&second_line));
         assert!(client_order_id(&first_line).starts_with("tb-"));
     }
 
@@ -2538,7 +2776,16 @@ mod tests {
             assert!(request_line.starts_with(
                 "POST /api/v3/order?symbol=ETHUSDT&side=BUY&type=MARKET&quantity=0.25&newClientOrderId=tb-"
             ));
-            let body = r#"{"symbol":"ETHUSDT","side":"BUY","orderId":808,"status":"NEW","executedQty":"0.25","price":"2000"}"#;
+            let client_id = request_line
+                .split_once("newClientOrderId=")
+                .unwrap()
+                .1
+                .split('&')
+                .next()
+                .unwrap();
+            let body = json!({"symbol":"ETHUSDT", "side":"BUY", "orderId":808,
+                "clientOrderId":client_id, "status":"FILLED", "executedQty":"0.25", "price":"2000"})
+            .to_string();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
@@ -2575,7 +2822,8 @@ mod tests {
             )
             .expect("spot order should be accepted");
         assert_eq!(result.order_id, "808");
-        assert_eq!(result.status, "NEW");
+        assert_eq!(result.status, "FILLED");
+        assert_eq!(result.executed_qty, 0.25);
         let request_line = server.join().expect("spot order fixture server");
         let client_order_id = request_line
             .split_once("newClientOrderId=")
@@ -2672,20 +2920,20 @@ mod tests {
         assert_eq!(result.order_id, "12345");
         assert_eq!(result.status, "FILLED");
         let wrapped = json!({
-            "success": "true",
+            "success": true,
             "data": {
                 "symbol": "BTCUSDT",
                 "side": "BUY",
-                "id": "client-spot-1",
-                "status": "NEW",
+                "orderId": 7,
+                "status": "FILLED",
                 "executedQty": "0.2",
                 "price": "21000"
             }
         });
         let wrapped_result =
             parse_spot_order_result(&wrapped, "BTCUSDT", "BUY").expect("wrapped spot result");
-        assert_eq!(wrapped_result.order_id, "client-spot-1");
-        assert_eq!(wrapped_result.status, "NEW");
+        assert_eq!(wrapped_result.order_id, "7");
+        assert_eq!(wrapped_result.status, "FILLED");
         assert_eq!(wrapped_result.executed_qty, 0.2);
         assert_eq!(wrapped_result.avg_price, 21000.0);
         assert!(
@@ -2731,7 +2979,7 @@ mod tests {
                 "baseAsset": "ETH",
                 "quoteAsset": "USDT",
                 "filters": [
-                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001", "maxQty": "100"},
                     {"filterType": "MIN_NOTIONAL", "minNotional": "5"}
                 ]
             }]

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import requests
 
+from .filter_validation import parse_symbol_filters
+
 from .....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
 from ..runtime_diagnostics import report_runtime_fallback
 
@@ -146,17 +148,13 @@ def get_symbol_quote_precision_spot(self, symbol: str) -> int:
 
 
 def get_spot_symbol_filters(self, symbol: str) -> dict:
-    info = self.get_symbol_info_spot(symbol)
-    step_size = None
-    min_qty = None
-    min_notional = None
-    for filt in info.get("filters", []):
-        if filt.get("filterType") == "LOT_SIZE":
-            step_size = float(filt.get("stepSize", "0"))
-            min_qty = float(filt.get("minQty", "0"))
-        elif filt.get("filterType") in ("MIN_NOTIONAL", "NOTIONAL"):
-            min_notional = float(filt.get("minNotional", filt.get("notional", "0")))
-    return {"stepSize": step_size or 0.0, "minQty": min_qty or 0.0, "minNotional": min_notional or 0.0}
+    try:
+        return parse_symbol_filters(self.get_symbol_info_spot(symbol), symbol, futures=False)
+    except (ValueError, TypeError, AttributeError):
+        cache = getattr(self, "_symbol_info_cache_spot", None)
+        if isinstance(cache, dict):
+            cache.pop(symbol.upper(), None)
+        raise
 
 
 def get_futures_exchange_info(self) -> dict:
@@ -174,30 +172,11 @@ def get_futures_symbol_info(self, symbol: str) -> dict:
 
 
 def get_futures_symbol_filters(self, symbol: str) -> dict:
-    symbol_info = self.get_futures_symbol_info(symbol)
-    step_size = None
-    min_qty = None
-    price_tick = None
-    min_notional = None
-    for filt in symbol_info.get("filters", []):
-        if filt.get("filterType") == "LOT_SIZE":
-            step_size = float(filt.get("stepSize", "0"))
-            min_qty = float(filt.get("minQty", "0"))
-        elif filt.get("filterType") == "PRICE_FILTER":
-            price_tick = float(filt.get("tickSize", "0"))
-        elif filt.get("filterType") in ("MIN_NOTIONAL", "NOTIONAL"):
-            mn = filt.get("notional") or filt.get("minNotional") or 0
-            try:
-                min_notional = float(mn)
-            except Exception as exc:
-                report_runtime_fallback(self, f"Malformed futures min-notional filter for {symbol}", exc)
-                min_notional = 0.0
-    return {
-        "stepSize": step_size or 0.0,
-        "minQty": min_qty or 0.0,
-        "tickSize": price_tick or 0.0,
-        "minNotional": min_notional or 0.0,
-    }
+    try:
+        return parse_symbol_filters(self.get_futures_symbol_info(symbol), symbol, futures=True)
+    except (ValueError, TypeError, AttributeError):
+        self._symbol_info_cache_futures = None
+        raise
 
 
 def get_futures_max_leverage(self, symbol: str) -> int:

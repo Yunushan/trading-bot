@@ -11,6 +11,7 @@ try:
 except ModuleNotFoundError:  # Optional until live discovery is requested.
     requests = None  # type: ignore[assignment]
 
+from .http_policy import reject_llm_redirect
 from .providers import (
     ANTHROPIC_MESSAGES_PROTOCOL,
     GEMINI_GENERATE_CONTENT_PROTOCOL,
@@ -266,7 +267,8 @@ def discover_llm_models(
             "error": "Live model discovery requires the optional requests dependency.",
         }
     try:
-        response = requests.get(url, headers=headers, timeout=request_timeout)
+        response = requests.get(url, headers=headers, timeout=request_timeout, allow_redirects=False)
+        reject_llm_redirect(response)
         response.raise_for_status()
         response_payload = response.json()
         discovered = [

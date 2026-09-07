@@ -31,7 +31,7 @@ class _FakeHttpResponse:
 
 class ServiceClientIntegrationTests(unittest.TestCase):
     def test_desktop_service_client_defaults_to_embedded_mode(self):
-        client = create_desktop_service_client(config={"mode": "Paper"})
+        client = create_desktop_service_client(config={"mode": "Demo/Testnet"})
         self.assertIsInstance(client, EmbeddedDesktopServiceClient)
         descriptor = client.describe()
         self.assertEqual(descriptor.get("client_mode"), "embedded")

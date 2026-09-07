@@ -189,6 +189,14 @@ def _build_signal_order_candidates(
             None,
             str(signal).upper(),
         )
+        if fallback_trigger_actions:
+            safe_strategy_log(
+                self,
+                f"{cw['symbol']}@{cw.get('interval')} generic signal skipped: "
+                "no actionable indicator request passed its guards.",
+                level="warning",
+            )
+            return []
         orders_to_execute.append(
             {
                 "side": str(signal).upper(),

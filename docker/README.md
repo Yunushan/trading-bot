@@ -79,6 +79,23 @@ on its first run. `/tmp` is an in-memory temporary filesystem. Do not add broad
 host-path mounts or remove these restrictions unless the deployment has a reviewed
 operational reason.
 
+The final virtual environment does not include pip. Dependencies are checked and
+pip is removed before the environment is copied from the builder, so its vendored
+build/install dependencies are not shipped with the service. Rebuild the image to
+change dependencies; do not install packages into a running container. Container
+audit findings are not waived because a newer top-level Python package exists:
+vendored copies can have different versions.
+
+The supply-chain workflow records the immutable ID emitted by
+`docker build --iidfile`, then runs runtime checks and Trivy against that ID, not a mutable
+tag. The policy requires schema-v2 image reports with OS and Python package
+inventories (`--list-all-pkgs`), successful runtime evidence, and matching build,
+runtime and scan image IDs. Empty reports, missing OS/Python inventories,
+runtime versions absent from the scan, duplicate JSON fields, unreviewed
+suppressed findings and scanner execution failures cannot pass the gate.
+These checks bind local CI evidence; they do not replace signed release
+provenance or establish that a deployed image is the same candidate.
+
 ## What is included
 
 - FastAPI service API

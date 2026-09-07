@@ -311,14 +311,24 @@ def _execute_signal_order(
         except Exception:
             guard_window = 0.0
         guard_claimed = bool(guard_state.get("guard_claimed"))
+        reservation_token = guard_state.get("reservation_token")
+        bar_reservation = guard_state.get("bar_reservation")
         if guard_state.get("aborted"):
             return
 
         def _guard_abort():
             nonlocal guard_claimed
             if guard_claimed:
-                self._abort_signal_order_guard(guard_key_symbol, signature_guard_key)
+                self._abort_signal_order_guard(
+                    guard_key_symbol, signature_guard_key,
+                    reservation_token=reservation_token, bar_reservation=bar_reservation,
+                )
                 guard_claimed = False
+
+        def _mark_submission():
+            strategy_signal_order_guard_runtime._mark_signal_order_submission(
+                self, guard_key_symbol, signature_guard_key, reservation_token, bar_reservation,
+            )
 
         account_type = None
         pct = None
@@ -328,6 +338,9 @@ def _execute_signal_order(
             slot_key_tuple = None
             lev = None
             account_state = self._resolve_signal_order_account_state(cw=cw, last_price=last_price)
+            if account_state.get("aborted"):
+                _guard_abort()
+                return
             account_type = str(account_state.get("account_type") or "").upper()
             futures_balance_snap = account_state.get("futures_balance_snap")
             try:
@@ -398,6 +411,7 @@ def _execute_signal_order(
                     last_price=last_price,
                     lev=lev,
                     abort_guard=_guard_abort,
+                    on_submit=_mark_submission,
                 )
                 if submit_aborted:
                     return
@@ -422,6 +436,7 @@ def _execute_signal_order(
                     price=price,
                     qty_est=qty_est,
                     lev=lev,
+                    reservation_token=reservation_token,
                 )
             else:
                 filters = self.binance.get_spot_symbol_filters(cw["symbol"])
@@ -432,6 +447,7 @@ def _execute_signal_order(
                     use_usdt = total_usdt * pct
                     if min_notional > 0 and use_usdt < min_notional and total_usdt >= min_notional:
                         use_usdt = min_notional
+                    _mark_submission()
                     order_res = self.binance.place_spot_market_order(
                         cw["symbol"], "BUY", quantity=0.0, price=price, use_quote=True, quote_amount=use_usdt
                     )
@@ -452,6 +468,7 @@ def _execute_signal_order(
                         )
                         return
                     qty_to_sell = base_free * pct
+                    _mark_submission()
                     order_res = self.binance.place_spot_market_order(
                         cw["symbol"], "SELL", quantity=qty_to_sell, price=price, use_quote=False
                     )
@@ -498,8 +515,8 @@ def _execute_signal_order(
                 },
                 include_traceback=True,
             )
-            if guard_claimed:
-                self._abort_signal_order_guard(guard_key_symbol, signature_guard_key)
+        finally:
+            _guard_abort()
     finally:
         if isinstance(positions_cache_holder, dict):
             positions_cache_holder["value"] = positions_cache

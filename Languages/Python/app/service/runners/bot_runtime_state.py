@@ -26,7 +26,8 @@ if __package__ in (None, ""):
         build_editable_config,
     )
     from app.service.schemas.logs import ServiceLogEvent, make_log_event
-    from app.service.schemas.positions import ServicePortfolioSnapshot, build_portfolio_snapshot
+    from app.service.schemas.positions import ServicePortfolioSnapshot, build_portfolio_snapshot, portfolio_observation_is_valid
+    from app.service.schemas.observation import observation_scope
     from app.service.schemas.status import (
         DEFAULT_CONNECTOR_ORDER_CIRCUIT_INCIDENT_DISPLAY_PATH,
         DEFAULT_ORDER_AUDIT_DISPLAY_PATH,
@@ -47,7 +48,8 @@ else:
         build_editable_config,
     )
     from ..schemas.logs import ServiceLogEvent, make_log_event
-    from ..schemas.positions import ServicePortfolioSnapshot, build_portfolio_snapshot
+    from ..schemas.positions import ServicePortfolioSnapshot, build_portfolio_snapshot, portfolio_observation_is_valid
+    from ..schemas.observation import observation_scope
     from ..schemas.status import (
         DEFAULT_CONNECTOR_ORDER_CIRCUIT_INCIDENT_DISPLAY_PATH,
         DEFAULT_ORDER_AUDIT_DISPLAY_PATH,
@@ -74,12 +76,22 @@ class BotRuntimeStateMixin:
             next_config = build_default_config()
             if isinstance(config, dict):
                 next_config = _deep_merge_mappings(next_config, copy.deepcopy(config))
-            self._config = validate_runtime_config(next_config)
+            next_config = validate_runtime_config(next_config)
+            scope_changed = observation_scope(self._config) != observation_scope(next_config)
+            self._config = next_config
+            if scope_changed:
+                self._account_total_balance = self._account_available_balance = None
+                self._open_position_records = {}
+                self._closed_position_records = []
+                self._closed_trade_registry = {}
+                self._active_pnl = self._active_margin = None
+                self._closed_pnl = self._closed_margin = None
             self._account_snapshot = build_account_snapshot(
                 config=self._config,
                 total_balance=self._account_total_balance,
                 available_balance=self._account_available_balance,
                 source="service-config",
+                generated_at="" if scope_changed else self._account_snapshot.generated_at,
             )
             self._portfolio_snapshot = build_portfolio_snapshot(
                 config=self._config,
@@ -93,6 +105,7 @@ class BotRuntimeStateMixin:
                 total_balance=self._account_total_balance,
                 available_balance=self._account_available_balance,
                 source="service-config",
+                generated_at="" if scope_changed else self._portfolio_snapshot.generated_at,
             )
             self._exchange_connector_snapshot = build_exchange_connector_snapshot(
                 config=self._config,
@@ -121,29 +134,45 @@ class BotRuntimeStateMixin:
                 self.replace_config(merged_config)
             return self.get_config_payload()
 
+    @staticmethod
+    def _observed_balance(value: object) -> float | None:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) else None
+
+    def _observation_timestamp(self, observed_at: object) -> str:
+        if observed_at is _MISSING:
+            return self._now_iso()
+        return str(observed_at) if self._timestamp_epoch(observed_at) is not None else ""
+
     def set_account_snapshot(
         self,
         *,
         total_balance=_MISSING,
         available_balance=_MISSING,
+        observed_at=_MISSING,
         source: str = "service",
     ) -> ServiceAccountSnapshot:
         with self._lock:
             if total_balance is not _MISSING:
-                try:
-                    self._account_total_balance = None if total_balance is None else float(total_balance)
-                except (TypeError, ValueError, OverflowError):
-                    self._account_total_balance = None
+                self._account_total_balance = self._observed_balance(total_balance)
             if available_balance is not _MISSING:
-                try:
-                    self._account_available_balance = None if available_balance is None else float(available_balance)
-                except (TypeError, ValueError, OverflowError):
-                    self._account_available_balance = None
+                self._account_available_balance = self._observed_balance(available_balance)
+            generated_at = self._account_snapshot.generated_at
+            if self._account_total_balance is None or self._account_available_balance is None:
+                generated_at = ""
+            elif total_balance is not _MISSING and available_balance is not _MISSING:
+                generated_at = self._observation_timestamp(observed_at)
             self._account_snapshot = build_account_snapshot(
                 config=self._config,
                 total_balance=self._account_total_balance,
                 available_balance=self._account_available_balance,
                 source=source,
+                generated_at=generated_at,
             )
             return self._account_snapshot
 
@@ -163,13 +192,16 @@ class BotRuntimeStateMixin:
         closed_margin=_MISSING,
         total_balance=_MISSING,
         available_balance=_MISSING,
+        observed_at=_MISSING,
         source: str = "service",
     ) -> ServicePortfolioSnapshot:
         with self._lock:
+            known_positions = False
             if open_position_records is not _MISSING:
-                self._open_position_records = (
-                    copy.deepcopy(open_position_records) if isinstance(open_position_records, dict) else {}
-                )
+                observed_records = copy.deepcopy(open_position_records)
+                known_positions = portfolio_observation_is_valid(observed_records)
+                if known_positions:
+                    self._open_position_records = observed_records
             if closed_position_records is not _MISSING:
                 self._closed_position_records = (
                     copy.deepcopy(list(closed_position_records))
@@ -210,6 +242,9 @@ class BotRuntimeStateMixin:
                     self._account_available_balance = None if available_balance is None else float(available_balance)
                 except (TypeError, ValueError, OverflowError):
                     self._account_available_balance = None
+            generated_at = self._portfolio_snapshot.generated_at
+            if open_position_records is not _MISSING:
+                generated_at = self._observation_timestamp(observed_at) if known_positions else ""
             self._portfolio_snapshot = build_portfolio_snapshot(
                 config=self._config,
                 open_position_records=self._open_position_records,
@@ -222,6 +257,7 @@ class BotRuntimeStateMixin:
                 total_balance=self._account_total_balance,
                 available_balance=self._account_available_balance,
                 source=source,
+                generated_at=generated_at,
             )
             return self._portfolio_snapshot
 

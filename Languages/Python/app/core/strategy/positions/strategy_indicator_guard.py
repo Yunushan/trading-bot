@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 
 from .close_execution import _pause_for_close_uncertainty, _safe_log
@@ -90,19 +91,36 @@ def _indicator_signal_confirmation_ready(
         return True
     key = (sym_norm, interval_norm, indicator_norm)
     tracker = self._indicator_signal_tracker.get(key)
-    now_ts = signal_ts or time.time()
-    reset_window = max(1.0, float(interval_seconds or 0.0)) * max(confirm_req + 1, 2)
-    if tracker:
-        try:
-            last_ts = float(tracker.get("ts") or 0.0)
-        except Exception:
-            last_ts = 0.0
-        if last_ts and now_ts - last_ts > reset_window:
-            tracker = None
-    if tracker and tracker.get("direction") == action_norm:
-        count = int(tracker.get("count", 0)) + 1
-    else:
+    try:
+        now_ts = float(signal_ts)
+        interval_seconds = float(interval_seconds)
+        if not math.isfinite(now_ts) or now_ts <= 0.0:
+            raise ValueError("signal bar timestamp must be finite and positive")
+        if not math.isfinite(interval_seconds) or interval_seconds <= 0.0:
+            raise ValueError("signal interval must be finite and positive")
+        bar = math.floor(now_ts / interval_seconds)
+        reset_window = interval_seconds * max(confirm_req + 1, 2)
         count = 1
+        if tracker:
+            last_ts = float(tracker.get("ts") or 0.0)
+            previous_count = int(tracker.get("count", 0))
+            if not math.isfinite(last_ts) or last_ts <= 0.0 or previous_count < 1:
+                raise ValueError("stored confirmation state is invalid")
+            last_bar = math.floor(last_ts / interval_seconds)
+            if bar < last_bar:
+                return False
+            if tracker.get("direction") == action_norm and now_ts - last_ts <= reset_window:
+                # Primary/fallback paths and repeated polls share one candle observation.
+                if bar == last_bar:
+                    return previous_count >= confirm_req
+                count = min(confirm_req, previous_count + 1)
+    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{sym_norm}@{interval_norm} signal confirmation is unavailable: {exc}",
+            reconciliation_required=bool(tracker),
+        )
+        return False
     tracker = {"direction": action_norm, "count": count, "ts": now_ts}
     self._indicator_signal_tracker[key] = tracker
     if count >= confirm_req:

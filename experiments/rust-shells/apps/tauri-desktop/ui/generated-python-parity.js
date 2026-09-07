@@ -811,7 +811,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "c2b58e4b6019d0ac1087c9746f3ff95700d8591bfc0416223908bd3f489e0735",
+  "contractHash": "79510857db8ed1a4c498e52e280c5b41eaf1cc8d968a381b77283dd924a6d12c",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -5105,9 +5105,19 @@
     }
   ],
   "nativeRuntimeModePolicy": {
+    "invalid_mode_error": "unsupported execution mode (choose Live or Demo/Testnet, Paper is not exchange execution)",
+    "live_values": [
+      "live",
+      "live trading",
+      "production"
+    ],
+    "match_policy": "exact-trimmed-case-insensitive",
     "testnet_markers": [
       "demo",
+      "demo/testnet",
+      "demo trading",
       "test",
+      "testnet",
       "sandbox"
     ]
   },
@@ -5115,7 +5125,7 @@
     {
       "expected_testnet": false,
       "input": "",
-      "name": "empty-live"
+      "name": "empty-invalid"
     },
     {
       "expected_testnet": false,
@@ -5139,6 +5149,21 @@
     },
     {
       "expected_testnet": true,
+      "input": "Demo Trading",
+      "name": "demo-trading"
+    },
+    {
+      "expected_testnet": false,
+      "input": "Live Trading",
+      "name": "live-trading"
+    },
+    {
+      "expected_testnet": true,
+      "input": "Test",
+      "name": "test"
+    },
+    {
+      "expected_testnet": true,
       "input": "Testnet",
       "name": "testnet"
     },
@@ -5148,12 +5173,12 @@
       "name": "sandbox"
     },
     {
-      "expected_testnet": true,
+      "expected_testnet": false,
       "input": "contest",
       "name": "embedded-test-marker"
     },
     {
-      "expected_testnet": true,
+      "expected_testnet": false,
       "input": "my-demo-mode",
       "name": "embedded-demo-marker"
     },
@@ -5893,6 +5918,433 @@
       "max_position_pct": "BOT_LIVE_MAX_POSITION_PCT",
       "max_session_orders": "BOT_LIVE_MAX_SESSION_ORDERS"
     },
+    "session_budget_exit_cases": [
+      {
+        "exempt": true,
+        "market": "futures",
+        "name": "one-way-long-close",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": true,
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": true,
+        "market": "futures",
+        "name": "one-way-short-close",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "BUY",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": true,
+        "market": "futures",
+        "name": "explicit-both-close",
+        "params": {
+          "positionSide": "BOTH",
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": true,
+        "market": "futures",
+        "name": "limit-close",
+        "params": {
+          "price": "100",
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "LIMIT"
+        }
+      },
+      {
+        "exempt": true,
+        "market": "futures",
+        "name": "hedge-long-close",
+        "params": {
+          "positionSide": "LONG",
+          "quantity": "0.1",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": true,
+        "market": "futures",
+        "name": "hedge-short-close",
+        "params": {
+          "positionSide": "SHORT",
+          "quantity": "0.1",
+          "side": "BUY",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "hedge-long-entry",
+        "params": {
+          "positionSide": "LONG",
+          "quantity": "0.1",
+          "side": "BUY",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "hedge-short-entry",
+        "params": {
+          "positionSide": "SHORT",
+          "quantity": "0.1",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "ordinary-sell",
+        "params": {
+          "quantity": "0.1",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "spot",
+        "name": "spot-sell",
+        "params": {
+          "quantity": "0.1",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "spot",
+        "name": "spot-reduce-flag",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "reduce-alias",
+        "params": {
+          "quantity": "0.1",
+          "reduce_only": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "position-alias",
+        "params": {
+          "position_side": "LONG",
+          "quantity": "0.1",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "reduce-key-case",
+        "params": {
+          "quantity": "0.1",
+          "reduceonly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "reduce-key-whitespace",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly ": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "position-value-case",
+        "params": {
+          "positionSide": "long",
+          "quantity": "0.1",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "side-value-case",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "sell",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "type-value-case",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "market"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "conflicting-alias",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "false",
+          "reduce_only": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "invalid-position-side",
+        "params": {
+          "positionSide": "wrong",
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "hedge-with-reduce-flag",
+        "params": {
+          "positionSide": "LONG",
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "invalid-side",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "HOLD",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "unsupported-order-type",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "STOP_MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "close-all-flag",
+        "params": {
+          "closePosition": "true",
+          "quantity": "0.1",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "conflicting-close-flags",
+        "params": {
+          "closePosition": "false",
+          "quantity": "0.1",
+          "reduceOnly": "true",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-0",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": false,
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-1",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "false",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-2",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": 1,
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-3",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "1",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-4",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "yes",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-5",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "on",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-6",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "y",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-7",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "True",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-8",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": " true ",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      },
+      {
+        "exempt": false,
+        "market": "futures",
+        "name": "noncanonical-reduce-flag-9",
+        "params": {
+          "quantity": "0.1",
+          "reduceOnly": "",
+          "side": "SELL",
+          "symbol": "ETHUSDT",
+          "type": "MARKET"
+        }
+      }
+    ],
+    "session_order_budget_scope": "exposure-increasing-submission-attempts",
     "validate_audit_enabled_all_modes": true,
     "validate_audit_writable_all_modes": true,
     "validate_connector_health_all_modes": true,
@@ -6322,6 +6774,7 @@
     "account": [
       "total_balance",
       "available_balance",
+      "observed_at",
       "source"
     ],
     "backtest": [],
@@ -6420,6 +6873,7 @@
       "closed_margin",
       "total_balance",
       "available_balance",
+      "observed_at",
       "source"
     ],
     "position_close": [
@@ -7483,6 +7937,7 @@
       "request_fields": [
         "total_balance",
         "available_balance",
+        "observed_at",
         "source"
       ],
       "response_fields": [
@@ -7510,6 +7965,7 @@
         "closed_margin",
         "total_balance",
         "available_balance",
+        "observed_at",
         "source"
       ],
       "response_fields": [

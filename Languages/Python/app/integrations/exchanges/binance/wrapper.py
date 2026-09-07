@@ -6,6 +6,7 @@ from decimal import getcontext
 from binance.client import Client
 from ....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
 from ....settings.live_safety import validate_live_trading_safety
+from app.settings.execution_mode import is_testnet_trading_mode
 from app.security.redaction import redact_text
 from .account import bind_binance_account_data
 from .clients import (
@@ -53,8 +54,7 @@ class NetworkConnectivityError(RuntimeError):
 MAX_FUTURES_LEVERAGE = BINANCE_MAX_FUTURES_LEVERAGE
 
 def _is_testnet_mode(mode: str | None) -> bool:
-    text = str(mode or "").lower()
-    return any(tag in text for tag in ("demo", "test", "sandbox"))
+    return is_testnet_trading_mode(mode)
 
 
 def _configure_python_binance_urls(mode: str | None) -> None:
@@ -90,6 +90,11 @@ def _configure_python_binance_urls(mode: str | None) -> None:
 DEFAULT_CONNECTOR_BACKEND = "binance-sdk-derivatives-trading-usds-futures"
 
 class BinanceWrapper:
+    @property
+    def mode(self):
+        """Routing is fixed for the lifetime of an exchange client."""
+        return self._mode
+
 
     _limiter_lock = threading.Lock()
     _limiter_pool = {}
@@ -203,7 +208,7 @@ class BinanceWrapper:
     ):
         self.api_key = (api_key or "").strip()
         self.api_secret = (api_secret or "").strip()
-        self.mode = (mode or "Demo/Testnet").strip()
+        self._mode = mode.strip() if isinstance(mode, str) else mode
         self._live_safety_config = dict(live_safety_config or {})
         initial_leverage = int(default_leverage) if (default_leverage is not None) else 1
         if initial_leverage < 1:

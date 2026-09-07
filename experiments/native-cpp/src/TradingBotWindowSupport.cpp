@@ -482,7 +482,7 @@ QString normalizeConnectorBackend(const QString &value) {
 bool isTestnetModeLabel(const QString &modeText) {
     const QString modeNorm = modeText.trimmed().toLower();
     for (const auto marker : PythonParityContract::kPythonNativeRuntimeTestnetModeMarkers) {
-        if (modeNorm.contains(parityString(marker))) {
+        if (modeNorm == parityString(marker)) {
             return true;
         }
     }
@@ -496,8 +496,7 @@ bool isPaperTradingModeLabel(const QString &modeText) {
     }
     return modeNorm == QStringLiteral("paper")
         || modeNorm == QStringLiteral("paper local")
-        || modeNorm.contains("paper local")
-        || modeNorm.contains("paper trading");
+        || modeNorm == QStringLiteral("paper trading");
 }
 
 bool nativeRuntimeStandaloneExecutionAllowed(const QString &modeText) {
