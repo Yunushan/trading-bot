@@ -1751,7 +1751,7 @@ int main(int argc, char **argv) {
         5000,
         spotBaseUrl);
     check(spotOrder.ok && spotOrder.orderId == QStringLiteral("42")
-              && spotOrder.status == QStringLiteral("NEW"),
+              && spotOrder.status == QStringLiteral("FILLED"),
           QStringLiteral("C++ Spot market order should require and parse a successful response"));
     check(observedSpotOrderRequest.startsWith("POST /api/v3/order?"),
           QStringLiteral("C++ Spot order should request the Spot order endpoint"));
