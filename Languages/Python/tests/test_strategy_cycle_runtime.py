@@ -49,6 +49,7 @@ class _Cycle:
     def __init__(self, *, context: dict[str, object] | None = None):
         self.context = context
         self.apply_stop = False
+        self.paused = False
         self.market_state: dict[str, object] | None = _market_state()
         self.indicator_orders: list[dict[str, object]] = []
         self.prepared_orders: list[dict[str, object]] = []
@@ -59,6 +60,9 @@ class _Cycle:
 
     def _build_cycle_context(self):
         return self.context
+
+    def stopped(self):
+        return self.paused
 
     def _apply_entire_account_stop_loss(self, *, ctx):
         self.calls.append(("account-stop", ctx))
@@ -116,6 +120,18 @@ class StrategyCycleRuntimeTests(unittest.TestCase):
 
         self.assertEqual(["account-stop", "market-state"], [name for name, _ in strategy.calls])
         risk_management.assert_not_called()
+
+    def test_pause_after_account_check_stops_the_same_cycle(self):
+        strategy = _Cycle(context=_cycle_context())
+
+        def pause_during_stop_check(*, ctx):
+            strategy.paused = True
+            return False
+
+        strategy._apply_entire_account_stop_loss = pause_during_stop_check
+        strategy_cycle_runtime.run_once(strategy)
+
+        self.assertEqual([], strategy.calls)
 
     def test_dual_side_futures_mode_propagates_position_side_guards(self):
         strategy = _Cycle(context=_cycle_context())

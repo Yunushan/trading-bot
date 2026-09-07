@@ -43,6 +43,16 @@ SAFE_TELEMETRY_SOURCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 RATIO_TOLERANCE = 1e-12
+RECOVERY_TIMELINE_EVENTS = (
+    "original_ready", "forced_exit_requested", "original_exit_observed",
+    "endpoint_down_observed", "config_corruption_observed", "config_restored",
+    "replacement_started", "replacement_ready",
+)
+RECOVERY_VERIFIED_FLAGS = (
+    "original_ready", "original_exit_observed", "endpoint_down_observed",
+    "config_corruption_observed", "restored_config_matches", "read_only_verified",
+    "auth_verified", "replacement_ready", "same_endpoint", "children_stopped",
+)
 
 
 def _reject_non_finite_json_constant(value: str) -> None:
@@ -642,6 +652,10 @@ def _validate_evidence_metrics(
             "canonical-service-process-restart",
         ):
             result = result_by_name.get(required_name)
+            if isinstance(suite_results, list) and sum(
+                isinstance(item, dict) and item.get("name") == required_name for item in suite_results
+            ) != 1:
+                issues.append(f"{path} must include exactly one {required_name} suite result")
             if not isinstance(result, dict) or result.get("status") != "pass":
                 issues.append(
                     f"{path} must include a passing {required_name} suite result"
@@ -654,6 +668,52 @@ def _validate_evidence_metrics(
             issues.append(
                 f"{path} service restart must be proven across a child-process boundary"
             )
+        issues.extend(_validate_process_recovery(payload, process_result, path=path))
+    return issues
+
+
+def _validate_process_recovery(payload: dict[str, Any], result: object, *, path: Path) -> list[str]:
+    issues: list[str] = []
+    result = result if isinstance(result, dict) else {}
+    if result.get("failure_mode") != "forced-process-exit":
+        issues.append(f"{path} service recovery must prove a forced process exit, not just a cold start")
+    for field in RECOVERY_VERIFIED_FLAGS:
+        if result.get(field) is not True:
+            issues.append(f"{path} service recovery must verify {field}")
+    original_pid = result.get("original_pid")
+    replacement_pid = result.get("replacement_pid")
+    if any(type(pid) is not int or pid <= 0 for pid in (original_pid, replacement_pid)) or original_pid == replacement_pid:
+        issues.append(f"{path} service recovery requires distinct positive original_pid and replacement_pid")
+    exit_code = result.get("original_exit_code")
+    if type(exit_code) is not int or exit_code == 0:
+        issues.append(f"{path} forced process exit requires a nonzero original_exit_code")
+    endpoint = result.get("original_endpoint")
+    match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", endpoint) if isinstance(endpoint, str) else None
+    if match is None or int(match[1]) > 65535 or result.get("replacement_endpoint") != endpoint:
+        issues.append(f"{path} original and replacement must use the same loopback endpoint")
+    for field in ("original_status_codes", "status_codes"):
+        if result.get(field) != [200] * 4:
+            issues.append(f"{path} {field} must cover liveness, readiness, runtime and configuration")
+    digest = result.get("backup_sha256")
+    if not isinstance(digest, str) or SHA256_PATTERN.fullmatch(digest) is None or result.get("restored_backup_sha256") != digest:
+        issues.append(f"{path} restored backup must match its recorded SHA-256")
+    timeline = result.get("timeline_seconds")
+    if not isinstance(timeline, dict) or any(not _number(timeline.get(event), minimum=0) for event in RECOVERY_TIMELINE_EVENTS):
+        issues.append(f"{path} service recovery requires a complete finite monotonic timeline")
+        return issues
+    ordered = [float(timeline[event]) for event in RECOVERY_TIMELINE_EVENTS]
+    if ordered != sorted(ordered) or timeline["replacement_ready"] <= timeline["forced_exit_requested"]:
+        issues.append(f"{path} service recovery timeline is out of order or has no outage interval")
+    durations = {
+        "recovery_time_seconds": timeline["replacement_ready"] - timeline["forced_exit_requested"],
+        "config_recovery_time_seconds": timeline["config_restored"] - timeline["config_corruption_observed"],
+        "service_recovery_time_seconds": timeline["replacement_ready"] - timeline["config_restored"],
+    }
+    for field, expected in durations.items():
+        if any(not _number(value, minimum=0) or abs(float(value) - expected) > 0.00001 for value in (payload.get(field), result.get(field))):
+            issues.append(f"{path} {field} must match the measured recovery timeline")
+    if not _number(result.get("recovery_point_seconds"), minimum=0) or not _number(payload.get("recovery_point_seconds"), minimum=0) or abs(result["recovery_point_seconds"] - payload["recovery_point_seconds"]) > 0.00001:
+        issues.append(f"{path} recovery_point_seconds must match the failure-time backup age")
     return issues
 
 

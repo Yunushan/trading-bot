@@ -740,6 +740,7 @@
       "request_fields": [
         "total_balance",
         "available_balance",
+        "observed_at",
         "source"
       ],
       "response_fields": [
@@ -766,6 +767,7 @@
         "closed_margin",
         "total_balance",
         "available_balance",
+        "observed_at",
         "source"
       ],
       "response_fields": [

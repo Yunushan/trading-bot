@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +15,19 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.config import build_default_config  # noqa: E402
 from app.core.positions import IntervalPositionGuard  # noqa: E402
 from app.core.strategy import StrategyEngine  # noqa: E402
+from app.desktop.service_bridge_snapshot_runtime import _get_service_operational_snapshot  # noqa: E402
+
+
+def _healthy_operational_snapshot():
+    generated_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "health": "ok",
+        "generated_at": generated_at,
+        "freshness": {
+            key: {"stale": False, "generated_at": generated_at, "age_seconds": 0.0, "max_age_seconds": limit}
+            for key, limit in (("exchange_connector", 120.0), ("account", 300.0), ("portfolio", 300.0))
+        },
+    }
 
 
 class _FakeStrategyBinance:
@@ -55,7 +71,7 @@ class _AbortGuardBinance(_FakeStrategyBinance):
             "rate_limit": {"active": False, "seconds_until_unban": 0.0},
             "network": {"offline": False, "offline_hits": 0},
         }
-        self.operational_snapshot = {}
+        self.operational_snapshot = _healthy_operational_snapshot()
         self.connector_snapshot_error: Exception | None = None
         self.operational_snapshot_error: Exception | None = None
 
@@ -119,6 +135,81 @@ class PositionGuardBehaviorTests(unittest.TestCase):
         StrategyEngine._GLOBAL_PAUSE.clear()
         StrategyEngine._CONNECTOR_ORDER_CIRCUIT_OPEN = False
         StrategyEngine._CONNECTOR_ORDER_BLOCK_EVENTS = []
+
+    @staticmethod
+    def _submit_probe(engine, abort_guard):
+        return engine._submit_futures_signal_order(
+            cw={"symbol": "BTCUSDT", "interval": "1m"}, side="BUY", flip_active=False,
+            context_key="1m:BUY:rsi|slot0", signature=("rsi", "slot0"),
+            key_bar=("BTCUSDT", "1m", "BUY"), key_dup=("BTCUSDT", "1m", "BUY"),
+            current_batch_index=0, order_batch_total=1, desired_ps=None, qty_est=1.0,
+            reduce_only=False, last_price=100.0, lev=5, abort_guard=abort_guard,
+        )
+
+    def test_desktop_bridge_missing_or_invalid_snapshot_blocks_live_submission(self):
+        for value in (None, {}, [], "ok", {"health": "ok"}, {"health": "ok", "freshness": {}}):
+            with self.subTest(snapshot=value):
+                client = SimpleNamespace(get_operational_snapshot=Mock(return_value=value))
+                window = SimpleNamespace(_desktop_service_client=client)
+                wrapper = _AbortGuardBinance()
+                wrapper.positions = []
+                wrapper.mode = "Live"
+                engine = _build_engine(wrapper=wrapper)
+                engine.config["mode"] = "Live"
+                engine.operational_snapshot_callback = lambda: _get_service_operational_snapshot(window)
+                abort = Mock()
+
+                result, success, aborted = self._submit_probe(engine, abort)
+
+                self.assertFalse(success)
+                self.assertTrue(aborted)
+                self.assertIn("operational safety gate", result["error"])
+                self.assertEqual(0, wrapper.place_calls)
+                abort.assert_called_once_with()
+                client.get_operational_snapshot.assert_called_once_with()
+
+    def test_desktop_bridge_outage_blocks_then_recovers_with_fresh_snapshot(self):
+        getter = Mock(side_effect=RuntimeError("api_secret=unit-private-secret service unavailable"))
+        window = SimpleNamespace(_desktop_service_client=SimpleNamespace(get_operational_snapshot=getter))
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        wrapper.mode = "Live"
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Live"
+        engine.operational_snapshot_callback = lambda: _get_service_operational_snapshot(window)
+        logs = []
+        engine.log = logs.append
+        abort = Mock()
+
+        result, success, aborted = self._submit_probe(engine, abort)
+
+        self.assertTrue(aborted)
+        self.assertFalse(success)
+        self.assertEqual(0, wrapper.place_calls)
+        self.assertNotIn("unit-private-secret", str(result) + str(logs))
+        abort.assert_called_once_with()
+        getter.side_effect = None
+        getter.return_value = _healthy_operational_snapshot()
+        _, success, aborted = self._submit_probe(engine, Mock())
+        self.assertTrue(success)
+        self.assertFalse(aborted)
+        self.assertEqual(1, wrapper.place_calls)
+
+    def test_missing_snapshot_warns_but_preserves_demo_submission(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        wrapper.mode = "Demo/Testnet"
+        engine = _build_engine(wrapper=wrapper)
+        engine.operational_snapshot_callback = lambda: None
+        logs = []
+        engine.log = logs.append
+
+        _, success, aborted = self._submit_probe(engine, Mock())
+
+        self.assertTrue(success)
+        self.assertFalse(aborted)
+        self.assertEqual(1, wrapper.place_calls)
+        self.assertIn("snapshot is unavailable", str(logs))
 
     def test_live_guard_fails_closed_when_position_snapshot_lookup_fails(self):
         guard = IntervalPositionGuard()
@@ -278,7 +369,7 @@ class PositionGuardBehaviorTests(unittest.TestCase):
         close_events: list[dict] = []
 
         def _close_stub(_symbol, _close_side, qty, _preferred_ps):
-            return True, {"ok": True, "sent_qty": qty}
+            return True, {"ok": True, "execution_confirmed": True, "executed_qty": qty, "sent_qty": qty}
 
         engine._current_futures_position_qty = lambda *_args, **_kwargs: 1.0
         engine._execute_close_with_fallback = _close_stub
@@ -505,14 +596,9 @@ class PositionGuardBehaviorTests(unittest.TestCase):
     def test_submit_order_blocks_live_when_operational_inputs_are_stale(self):
         wrapper = _AbortGuardBinance()
         wrapper.positions = []
-        wrapper.operational_snapshot = {
-            "health": "warning",
-            "freshness": {
-                "exchange_connector": {"stale": True},
-                "account": {"stale": True},
-                "portfolio": {"stale": False},
-            },
-        }
+        wrapper.operational_snapshot["health"] = "warning"
+        wrapper.operational_snapshot["freshness"]["exchange_connector"]["stale"] = True
+        wrapper.operational_snapshot["freshness"]["account"]["stale"] = True
         logs: list[str] = []
         engine = _build_engine(wrapper=wrapper)
         engine.config["mode"] = "Live"
@@ -736,15 +822,11 @@ class PositionGuardBehaviorTests(unittest.TestCase):
 
     def test_submit_order_warns_but_allows_demo_when_operational_inputs_are_stale(self):
         wrapper = _AbortGuardBinance()
+        wrapper.mode = "Demo/Testnet"
         wrapper.positions = []
-        wrapper.operational_snapshot = {
-            "health": "warning",
-            "freshness": {
-                "exchange_connector": {"stale": True},
-                "account": {"stale": False},
-                "portfolio": {"stale": True},
-            },
-        }
+        wrapper.operational_snapshot["health"] = "warning"
+        wrapper.operational_snapshot["freshness"]["exchange_connector"]["stale"] = True
+        wrapper.operational_snapshot["freshness"]["portfolio"]["stale"] = True
         logs: list[str] = []
         engine = _build_engine(wrapper=wrapper)
         engine.config["mode"] = "Demo/Testnet"

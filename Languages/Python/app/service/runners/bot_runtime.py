@@ -69,8 +69,12 @@ class BotRuntimeCoordinator(BotRuntimeStateMixin, BotRuntimeControlMixin):
         self._active_margin = None
         self._closed_pnl = None
         self._closed_margin = None
-        self._account_snapshot = build_account_snapshot(config=self._config, source="service-bootstrap")
-        self._portfolio_snapshot = build_portfolio_snapshot(config=self._config, source="service-bootstrap")
+        self._account_snapshot = build_account_snapshot(
+            config=self._config, source="service-bootstrap", generated_at="",
+        )
+        self._portfolio_snapshot = build_portfolio_snapshot(
+            config=self._config, source="service-bootstrap", generated_at="",
+        )
         self._exchange_connector_snapshot = build_exchange_connector_snapshot(
             config=self._config,
             source="service-bootstrap",

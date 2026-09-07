@@ -1,4 +1,5 @@
 #include "NativeConfigPersistence.h"
+#include "NativeOrderSafety.h"
 #include "generated/PythonParityContract.h"
 
 #include <QDate>
@@ -1277,6 +1278,11 @@ ServiceConfigValidationResult validateServiceRuntimeConfig(const QJsonObject &co
     validateText(&cfg, QStringLiteral("api_key"), &issues, {}, true);
     validateText(&cfg, QStringLiteral("api_secret"), &issues, {}, true);
     validateText(&cfg, QStringLiteral("mode"), &issues);
+    if (cfg.contains(QStringLiteral("mode"))
+        && !NativeOrderSafety::isSupportedExchangeMode(cfg.value(QStringLiteral("mode")).toString())) {
+        addValidationIssue(&issues, QStringLiteral("mode"),
+            QString::fromLatin1(PythonParityContract::kPythonInvalidExecutionModeError.data()));
+    }
     validateChoice(&cfg, QStringLiteral("account_type"), accountTypeChoices(), &issues);
     validateChoice(&cfg, QStringLiteral("margin_mode"), marginModeChoices(), &issues);
     validateSymbolList(&cfg, QStringLiteral("symbols"), &issues);

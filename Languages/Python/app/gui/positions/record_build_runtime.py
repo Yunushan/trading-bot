@@ -64,24 +64,7 @@ def merge_futures_rows_into_positions_map(
     _merge_futures_rows_into_positions_map(self, base_rows, positions_map, alloc_map_global)
 
 
-def _gui_on_positions_ready(self, rows: list, acct: str):
-    try:
-        try:
-            rows = sorted(rows, key=lambda r: (str(r.get("symbol") or ""), str(r.get("side_key") or "")))
-        except Exception:
-            rows = rows or []
-        base_rows = rows or []
-        alloc_map_global = getattr(self, "_entry_allocations", {}) or {}
-        prev_records = getattr(self, "_open_position_records", {}) or {}
-        if not isinstance(prev_records, dict):
-            prev_records = {}
-        positions_map = _seed_positions_map_from_rows(self, base_rows, alloc_map_global, prev_records)
-        acct_upper = str(acct or "").upper()
-        self._positions_account_type = acct_upper
-        self._positions_account_is_futures = acct_upper.startswith("FUT")
-        if acct_upper.startswith("FUT"):
-            _merge_futures_rows_into_positions_map(self, base_rows, positions_map, alloc_map_global)
-        self._update_position_history(positions_map)
-        self._render_positions_table()
-    except Exception as e:
-        self.log(f"Positions render failed: {e}")
+def _gui_on_positions_ready(self, rows: list, acct: str, observed_at: str = "", generation: int | None = None):
+    from .build_runtime import _gui_on_positions_ready as publish_observation
+
+    return publish_observation(self, rows, acct, observed_at, generation)

@@ -9,6 +9,8 @@ from .account_cache_runtime import _is_testnet_mode
 
 def _finite_float(value) -> float | None:
     """Return a finite numeric exchange value, rejecting NaN and infinity."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -88,7 +90,9 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
             if not isinstance(row, dict):
                 continue
             code = str(row.get("asset") or "").upper()
-            if code in preferred_assets and code not in candidates:
+            if code in candidates:
+                raise ValueError("Duplicate futures balance asset")
+            if code in preferred_assets:
                 candidates[code] = row
         for code in preferred_assets:
             if code in candidates:
@@ -107,29 +111,21 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
                     return parsed
             return None
 
-        available = _pick_float(("availableBalance", "maxWithdrawAmount", "crossWalletBalance"))
-        wallet = _pick_float(("walletBalance", "marginBalance", "balance", "crossWalletBalance"))
+        available = _pick_float(("availableBalance",))
+        wallet = _pick_float(("walletBalance", "balance"))
 
     if available is None or wallet is None:
+        # Do not combine a partial balance endpoint response with a different
+        # account snapshot, or use margin/withdrawal limits as wallet balances.
+        available = None
+        wallet = None
         acct_dict = self._get_futures_account_cached(force_refresh=force_refresh) or {}
         if isinstance(acct_dict, dict):
-            if available is None:
-                for key in ("availableBalance", "maxWithdrawAmount"):
-                    parsed = _finite_float(acct_dict.get(key))
-                    if parsed is not None:
-                        available = parsed
-                        break
-            if wallet is None:
-                for key in (
-                    "totalWalletBalance",
-                    "totalMarginBalance",
-                    "totalCrossWalletBalance",
-                    "totalCrossBalance",
-                ):
-                    parsed = _finite_float(acct_dict.get(key))
-                    if parsed is not None:
-                        wallet = parsed
-                        break
+            account_available = _finite_float(acct_dict.get("availableBalance"))
+            account_wallet = _finite_float(acct_dict.get("totalWalletBalance"))
+            if account_available is not None and account_wallet is not None:
+                available, wallet = account_available, account_wallet
+                asset = "USD" if acct_dict.get("multiAssetsMargin") is True else "USDT"
 
             if available is None or wallet is None:
                 assets_list = acct_dict.get("assets")
@@ -140,34 +136,21 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
                             if not isinstance(asset_row, dict):
                                 continue
                             code = str(asset_row.get("asset") or "").upper()
-                            if code in preferred_assets and code not in assets_map:
+                            if code in assets_map:
+                                raise ValueError("Duplicate futures account asset")
+                            if code in preferred_assets:
                                 assets_map[code] = asset_row
-                        # Preserve partial data for the selected asset. When it has
-                        # no finite values at all, advance through the supported
-                        # collateral assets instead of treating an invalid USDT row
-                        # as authoritative over a valid BUSD/USD fallback.
-                        candidate_codes = (asset,) if available is not None or wallet is not None else preferred_assets
-                        for code in candidate_codes:
+                        for code in preferred_assets:
                             chosen_asset = assets_map.get(code)
                             if not isinstance(chosen_asset, dict) or not chosen_asset:
                                 continue
-                            candidate_available = None
-                            candidate_wallet = None
-                            for key in ("availableBalance", "maxWithdrawAmount", "crossWalletBalance"):
-                                candidate_available = _finite_float(chosen_asset.get(key))
-                                if candidate_available is not None:
-                                    break
-                            for key in ("walletBalance", "marginBalance", "balance", "crossWalletBalance"):
-                                candidate_wallet = _finite_float(chosen_asset.get(key))
-                                if candidate_wallet is not None:
-                                    break
-                            if candidate_available is None and candidate_wallet is None:
+                            candidate_available = _finite_float(chosen_asset.get("availableBalance"))
+                            candidate_wallet = _finite_float(chosen_asset.get("walletBalance"))
+                            if candidate_available is None or candidate_wallet is None:
                                 continue
                             asset = code
-                            if available is None:
-                                available = candidate_available
-                            if wallet is None:
-                                wallet = candidate_wallet
+                            available = candidate_available
+                            wallet = candidate_wallet
                             break
                     except Exception as exc:
                         report_runtime_fallback(self, "Futures account asset fallback normalization failed", exc)
@@ -201,7 +184,7 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
                 suffix += f" | hint: {hint}"
             suffix += _testnet_auth_hints(self, code)
             raise RuntimeError(f"Futures balance fetch failed: {msg}{suffix}")
-        raise RuntimeError("Futures balance fetch failed: unrecognized balance response format")
+        raise RuntimeError("Futures balance fetch failed: incomplete balance response")
 
     if self.api_key and self.api_secret and not entries and (not acct_dict) and available is None and wallet is None:
         err = getattr(self, "_last_futures_http_error", None)
@@ -227,8 +210,10 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
             raise RuntimeError(f"Futures balance fetch failed: {msg}{suffix}")
         raise RuntimeError("Futures balance fetch failed: empty response")
 
-    available_val = float(available or 0.0)
-    wallet_val = float(wallet or 0.0)
+    if available is None or wallet is None:
+        raise RuntimeError("Futures balance fetch failed: incomplete balance response")
+    available_val = available
+    wallet_val = wallet
     total_val = max(available_val, wallet_val)
     return {"asset": asset, "available": available_val, "wallet": wallet_val, "total": total_val}
 
@@ -304,6 +289,8 @@ def get_futures_wallet_balance(self, *, force_refresh: bool = False) -> float:
 
 def get_total_usdt_value(self, *, force_refresh: bool = False) -> float:
     """Aggregate view of USDT value across futures and spot with graceful fallbacks."""
+    if self.account_type == "SPOT":
+        return self.get_spot_balance("USDT")
     candidates: list[float] = []
 
     def _push(value) -> None:
@@ -345,6 +332,8 @@ def get_total_unrealized_pnl(self) -> float:
             if parsed is None:
                 raise RuntimeError(f"futures position row {index} has invalid unrealized PnL")
             total += parsed
+        if not math.isfinite(total):
+            raise RuntimeError("futures unrealized PnL total is nonfinite")
         return float(total)
     except Exception as exc:
         primary_error = exc
@@ -366,20 +355,14 @@ def get_total_unrealized_pnl(self) -> float:
 
 
 def get_total_wallet_balance(self) -> float:
-    acct_dict = self._get_futures_account_cached()
-    if isinstance(acct_dict, dict):
-        for key in (
-            "totalWalletBalance",
-            "totalMarginBalance",
-            "totalInitialMargin",
-            "totalCrossWalletBalance",
-            "totalCrossBalance",
-        ):
-            parsed = _finite_float(acct_dict.get(key))
-            if parsed is not None:
-                return parsed
+    """Return the authoritative futures wallet total, never a balance estimate."""
     try:
-        return float(self.get_total_usdt_value())
+        acct_dict = self._get_futures_account_cached()
     except Exception as exc:
-        report_runtime_fallback(self, "Total wallet balance fallback failed", exc)
-        return 0.0
+        raise RuntimeError("futures wallet balance is unavailable") from exc
+    # Spot funds, initial margin, margin balance and cross-only balances do not
+    # measure the full futures wallet used as the account stop-loss denominator.
+    parsed = _finite_float(acct_dict.get("totalWalletBalance")) if isinstance(acct_dict, dict) else None
+    if parsed is None:
+        raise RuntimeError("futures wallet balance is unavailable or invalid")
+    return parsed

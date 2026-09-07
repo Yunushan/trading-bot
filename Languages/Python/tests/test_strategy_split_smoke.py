@@ -105,7 +105,7 @@ class StrategySplitSmokeTests(unittest.TestCase):
         )
 
         self.assertEqual(state["account_type"], "FUTURES")
-        self.assertAlmostEqual(state["free_usdt"], 123.5)
+        self.assertAlmostEqual(state["free_usdt"], 90.0)
         self.assertAlmostEqual(state["pct"], 0.25)
         self.assertAlmostEqual(state["price"], 101.5)
         self.assertEqual(wrapper.snapshot_calls, 1)

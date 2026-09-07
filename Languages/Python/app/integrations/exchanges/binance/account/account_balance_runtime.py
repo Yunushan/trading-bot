@@ -7,6 +7,8 @@ from ..runtime_diagnostics import report_runtime_fallback
 
 
 def _finite_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -79,15 +81,33 @@ def get_spot_position_cost(self, symbol: str, *, max_age: float = 10.0) -> dict 
     return result
 
 
-def get_spot_balance(self, asset="USDT") -> float:
+def _spot_balance_rows(self) -> list[dict]:
     info = self._spot_account_dict(force_refresh=True)
-    try:
-        for balance in info.get("balances", []):
-            if balance.get("asset") == asset:
-                return float(balance.get("free", 0.0))
-    except Exception as exc:
-        report_runtime_fallback(self, f"{asset} spot balance normalization failed", exc)
-        return 0.0
+    if not isinstance(info, dict) or not isinstance(info.get("balances"), list):
+        raise RuntimeError("Spot balance snapshot is unavailable or invalid")
+    rows = []
+    seen = set()
+    for balance in info["balances"]:
+        if not isinstance(balance, dict):
+            raise RuntimeError("Spot balance row is invalid")
+        asset = balance.get("asset")
+        if not isinstance(asset, str) or not asset.strip() or any(char.isspace() for char in asset.strip()):
+            raise RuntimeError("Spot balance asset is invalid")
+        asset = asset.strip().upper()
+        if asset in seen or asset in {"UNKNOWN", "NONE", "NULL", "-"}:
+            raise RuntimeError("Spot balance asset is invalid or duplicated")
+        seen.add(asset)
+        free, locked = _finite_float(balance.get("free")), _finite_float(balance.get("locked"))
+        if free is None or locked is None or free < 0.0 or locked < 0.0 or not math.isfinite(free + locked):
+            raise RuntimeError("Spot balance quantities must be finite and non-negative")
+        rows.append({"asset": asset, "free": free, "locked": locked, "total": free + locked})
+    return rows
+
+
+def get_spot_balance(self, asset="USDT") -> float:
+    for balance in _spot_balance_rows(self):
+        if balance["asset"] == str(asset).strip().upper():
+            return balance["free"]
     return 0.0
 
 
@@ -115,26 +135,7 @@ def get_balances(self) -> list[dict]:
             report_runtime_fallback(self, "Futures balance list normalization failed", exc)
             rows = []
     else:
-        info = self._spot_account_dict(force_refresh=True)
-        try:
-            for balance in info.get("balances", []):
-                asset = balance.get("asset")
-                if not asset:
-                    continue
-                free = float(balance.get("free", 0.0))
-                locked = float(balance.get("locked", 0.0))
-                total = free + locked
-                if total <= 0.0:
-                    continue
-                rows.append({
-                    "asset": asset,
-                    "free": free,
-                    "locked": locked,
-                    "total": total,
-                })
-        except Exception as exc:
-            report_runtime_fallback(self, "Spot balance list normalization failed", exc)
-            rows = []
+        rows = [row for row in _spot_balance_rows(self) if row["total"] > 0.0]
     return rows
 
 

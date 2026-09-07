@@ -2,18 +2,27 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
+import threading
 from typing import Any
 
-from trading_core.orders import order_submit_intent_from_params, validate_order_submit_intent
+from trading_core.orders import (
+    is_exchange_risk_reducing_order,
+    order_submit_intent_from_params,
+    validate_order_submit_intent,
+)
 
 from app.native_parity import ORDER_GUARD_BEHAVIOR
 from app.security.redaction import redact_text
+from ..metadata.filter_validation import quantity_filter_fields, validated_symbol_filters
 from app.settings.live_safety import (
     LiveTradingSafetyError,
     is_live_trading_mode,
     resolve_live_session_order_cap,
     validate_live_trading_safety,
 )
+
+
+_LIVE_SESSION_BUDGET_LOCK = threading.Lock()
 
 
 def _int_value(value: object, default: int = 1) -> int:
@@ -61,7 +70,10 @@ def _guard_config(self) -> Mapping[str, object]:
 
 
 def _live_submit_attempt_count(self) -> int:
-    return max(0, _int_value(getattr(self, "_live_order_submit_attempt_count", 0), 0))
+    count = getattr(self, "_live_order_submit_attempt_count", 0)
+    if type(count) is not int or count < 0:
+        raise LiveTradingSafetyError("live session order counter is invalid; submission blocked")
+    return count
 
 
 def _policy_applies_to_mode(rule: str, *, live_mode: bool) -> bool:
@@ -108,11 +120,11 @@ def _order_filter_errors(self, market_text: str, order_params: Mapping[str, Any]
     try:
         filters = getter(symbol) or {}
     except Exception as exc:
-        return [
-            f"{market_text} symbol filters unavailable for {symbol}: {redact_text(exc)}"
-        ]
-    if not isinstance(filters, Mapping):
-        return [f"{market_text} symbol filters invalid for {symbol}"]
+        return [f"{market_text} symbol filters unavailable for {symbol}: {redact_text(exc)}"]
+    try:
+        filter_values = validated_symbol_filters(filters)
+    except ValueError as exc:
+        return [f"{market_text} symbol filters invalid for {symbol}: {exc}"]
 
     raw_quantity = order_params.get("quantity")
     quantity = _decimal_value(raw_quantity)
@@ -122,25 +134,20 @@ def _order_filter_errors(self, market_text: str, order_params: Mapping[str, Any]
         return []
 
     errors: list[str] = []
-    filter_values: dict[str, Decimal] = {}
-    for name in ("stepSize", "minQty", "minNotional", "tickSize"):
-        raw_value = filters.get(name)
-        parsed = _decimal_value(raw_value)
-        if raw_value not in (None, "") and parsed is None:
-            errors.append(f"{symbol} {name} must be a finite number")
-        filter_values[name] = parsed if parsed is not None and parsed > 0 else Decimal("0")
-    step_size = filter_values["stepSize"]
-    min_qty = filter_values["minQty"]
     min_notional = filter_values["minNotional"]
     tick_size = filter_values["tickSize"]
     is_risk_reducing_exit = market_text == "futures" and (
         _truthy_param(order_params.get("reduceOnly")) or _truthy_param(order_params.get("closePosition"))
     )
 
-    if min_qty > 0 and quantity < min_qty and not is_risk_reducing_exit:
-        errors.append(f"order quantity {quantity} is below {symbol} minQty {min_qty}")
-    if step_size > 0 and not _aligned_to_step(quantity, step_size):
-        errors.append(f"order quantity {quantity} is not aligned to {symbol} stepSize {step_size}")
+    for min_name, max_name, step_name in quantity_filter_fields(filter_values, order_params.get("type", "")):
+        minimum, maximum, step = (filter_values[name] for name in (min_name, max_name, step_name))
+        if quantity < minimum and not is_risk_reducing_exit:
+            errors.append(f"order quantity {quantity} is below {symbol} {min_name} {minimum}")
+        if quantity > maximum:
+            errors.append(f"order quantity {quantity} exceeds {symbol} {max_name} {maximum}")
+        if step > 0 and not _aligned_to_step(quantity, step):
+            errors.append(f"order quantity {quantity} is not aligned to {symbol} {step_name} {step}")
 
     raw_price = order_params.get("price")
     price = _decimal_value(raw_price)
@@ -174,7 +181,7 @@ def _guard_live_order_submit(
     margin_mode: object | None = None,
     position_pct: object | None = None,
 ) -> None:
-    """Validate every exchange order; apply credential/session gates only in live mode."""
+    """Validate every exchange order; budget live exposure-increasing attempts."""
     mode = getattr(self, "mode", "")
     live_mode = is_live_trading_mode(mode)
 
@@ -227,15 +234,23 @@ def _guard_live_order_submit(
         errors.extend(validate_order_submit_intent(intent))
     if _policy_applies_to_mode("validate_exchange_filters_all_modes", live_mode=live_mode):
         errors.extend(_order_filter_errors(self, market_text, order_params))
-    submit_attempt_count = _live_submit_attempt_count(self)
-    if live_mode:
-        max_session_orders = resolve_live_session_order_cap(cfg)
-        if submit_attempt_count >= max_session_orders:
-            errors.append(f"live session order cap {max_session_orders} reached")
+    uses_session_budget = live_mode and not is_exchange_risk_reducing_order(market_text, order_params)
+    if uses_session_budget:
+        # Serialize only check-and-consume, never exchange or audit I/O. Every
+        # route using this wrapper must reserve from the same session counter.
+        with _LIVE_SESSION_BUDGET_LOCK:
+            try:
+                submit_attempt_count = _live_submit_attempt_count(self)
+            except LiveTradingSafetyError as exc:
+                errors.append(str(exc))
+            else:
+                max_session_orders = resolve_live_session_order_cap(cfg)
+                if submit_attempt_count >= max_session_orders:
+                    errors.append(f"live session order cap {max_session_orders} reached")
+                elif not errors:
+                    setattr(self, "_live_order_submit_attempt_count", submit_attempt_count + 1)
 
     if not errors:
-        if live_mode:
-            setattr(self, "_live_order_submit_attempt_count", submit_attempt_count + 1)
         return
 
     audit = getattr(self, "_audit_order_event", None)

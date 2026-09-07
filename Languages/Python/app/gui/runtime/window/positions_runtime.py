@@ -71,6 +71,7 @@ def _mw_reconfigure_positions_worker(self, symbols=None):
             connector_backend=self._runtime_connector_backend(suppress_refresh=True),
             live_safety_config=dict(getattr(self, "config", {}) or {}),
         )
+        self._on_positions_observation_failed(worker._observation_generation)
         setattr(self, "_pos_symbol_filter", target_symbols)
     except Exception:
         pass

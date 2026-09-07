@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from ..runtime_diagnostics import report_runtime_fallback
 from app.security.redaction import redact_text
+from trading_core.orders import order_execution_from_response
 
 
 def _finite_float(value: object, default: float = 0.0) -> float:
@@ -135,6 +136,7 @@ def _cancel_symbol_open_orders_or_error(self, symbol: str) -> str | None:
 
 def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_side: str | None = None):
     """Close exactly `qty` using reduce-only MARKET on the given `side`."""
+    submission_attempted = False
     try:
         sym = (symbol or "").upper()
         q = abs(_finite_float(qty))
@@ -150,6 +152,8 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
         ps_norm = str(position_side or "").upper().strip() or None
         if ps_norm not in ("LONG", "SHORT"):
             ps_norm = None
+        if ps_norm is not None and (side_up, ps_norm) not in {("SELL", "LONG"), ("BUY", "SHORT")}:
+            return {"ok": False, "error": "Close side must reduce the specified hedge position"}
         try:
             dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
         except Exception as exc:
@@ -302,17 +306,21 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             qty_send, qty_str = _coerce_order_qty(qty_try)
             if qty_send <= qty_tol:
                 continue
-            params = dict(symbol=sym, side=side_up, type="MARKET", quantity=qty_str)
+            params = dict(symbol=sym, side=side_up, type="MARKET", quantity=qty_str, newOrderRespType="RESULT")
             if ps_try:
                 params["positionSide"] = ps_try
             else:
                 params["reduceOnly"] = True
             params.setdefault("newClientOrderId", f"close-{sym}-{int(time.time() * 1000)}-{attempt_idx}")
             try:
+                submission_attempted = True
                 info, via = self._futures_create_order_with_fallback(params)
             except Exception as exc:
-                errors.append(f"{ps_try or 'reduceOnly'}: {redact_text(exc)}")
-                continue
+                return {
+                    "ok": False, "error": redact_text(exc), "submission_attempted": True,
+                    "reconciliation_required": True, "execution_confirmed": False,
+                }
+            execution = order_execution_from_response(info, qty_str, expected_params=params)
             fills_summary = {}
             warnings: list[str] = []
             try:
@@ -333,7 +341,18 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             except Exception as exc:
                 warning = report_runtime_fallback(self, f"{sym} confirmed close cache invalidation failed", exc)
                 warnings.append(warning)
-            res = {"ok": True, "info": info, "requested_qty": _finite_float(qty), "sent_qty": qty_send}
+            res = {
+                "ok": execution.complete,
+                "info": info,
+                "requested_qty": _finite_float(qty),
+                "sent_qty": qty_send,
+                "submission_attempted": True,
+                "execution_confirmed": True,
+                "executed_qty": execution.executed_qty,
+            }
+            if not execution.complete:
+                res["reconciliation_required"] = True
+                res["error"] = f"Close order is {execution.status}; remaining exposure requires reconciliation"
             if ps_try:
                 res["positionSide"] = ps_try
             if via and via != "primary":
@@ -355,7 +374,10 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
         }
     except Exception as exc:
         report_runtime_fallback(self, "Exact futures close failed", exc, level="error")
-        return {"ok": False, "error": redact_text(exc)}
+        return {
+            "ok": False, "error": redact_text(exc), "submission_attempted": submission_attempted,
+            "reconciliation_required": submission_attempted, "execution_confirmed": False,
+        }
 
 
 def close_futures_position(self, symbol: str):
@@ -485,7 +507,8 @@ def close_futures_position(self, symbol: str):
             side, target_ps = _resolve_close(amt, row.get("positionSide") or row.get("positionside"))
             if side not in ("BUY", "SELL"):
                 continue
-            params = dict(symbol=sym, side=side, type="MARKET", quantity=self._format_quantity_for_order(abs(amt), step))
+            params = dict(symbol=sym, side=side, type="MARKET", quantity=self._format_quantity_for_order(abs(amt), step),
+                          newOrderRespType="RESULT")
             if dual and target_ps in ("LONG", "SHORT"):
                 params["positionSide"] = target_ps
             else:

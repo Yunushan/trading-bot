@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-import math
 
 from .close_execution import _pause_for_close_uncertainty, _safe_log
 from .strategy_close_opposite_common_runtime import (
+    _close_quantity,
     _finalize_close_cleanup,
     _goal_met,
     _has_opposite_live,
     _reduce_goal,
     _refresh_positions_snapshot,
+    _validated_close_positions,
     _warn_oneway_overlap,
 )
 from .strategy_close_opposite_exchange_runtime import _close_symbol_level_positions
@@ -31,6 +32,8 @@ def _close_opposite_position(
     target_qty: float | None = None,
 ) -> bool:
     """Ensure no conflicting exposure remains before opening a new leg."""
+    if self.stopped():
+        return False
     interval_norm = str(interval or "").strip()
     interval_tokens = self._tokenize_interval_label(interval_norm)
     interval_norm_lower = interval_norm.lower()
@@ -50,7 +53,9 @@ def _close_opposite_position(
             interval_norm_guard = tuple(sorted(interval_tokens))
 
     try:
-        positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
+        positions = _validated_close_positions(
+            self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
+        )
     except Exception as e:
         _pause_for_close_uncertainty(
             self,
@@ -58,20 +63,14 @@ def _close_opposite_position(
             reconciliation_required=False,
         )
         return False
-    if not isinstance(positions, (list, tuple)):
-        _pause_for_close_uncertainty(
-            self,
-            f"{symbol}@{interval} read positions unavailable; opposite close blocked",
-            reconciliation_required=False,
-        )
-        return False
-
     desired = (next_side or "").upper()
     if desired not in ("BUY", "SELL"):
         _safe_log(self, f"{symbol}@{interval} close-opposite rejected invalid next side: {next_side!r}")
         return False
     try:
-        dual = bool(self.binance.get_futures_dual_side())
+        dual = self.binance.get_futures_dual_side()
+        if not isinstance(dual, bool):
+            raise ValueError("futures position mode is unknown")
     except Exception as exc:
         _pause_for_close_uncertainty(
             self,
@@ -134,9 +133,7 @@ def _close_opposite_position(
             return True
 
     try:
-        qty_goal = float(target_qty) if target_qty is not None else None
-        if qty_goal is not None and (not math.isfinite(qty_goal) or qty_goal < 0.0):
-            raise ValueError("target quantity must be finite and nonnegative")
+        qty_goal = _close_quantity(target_qty) if target_qty is not None else None
     except (TypeError, ValueError, OverflowError) as exc:
         _pause_for_close_uncertainty(
             self,
@@ -165,8 +162,12 @@ def _close_opposite_position(
         "indicator_target_cleared": False,
     }
 
-    if indicator_tokens and _indicator_scope_is_already_flat(self, state):
-        return True
+    if indicator_tokens:
+        flat = _indicator_scope_is_already_flat(self, state)
+        if flat is None or self.stopped():
+            return False
+        if flat:
+            return True
     if _goal_met(state):
         return True
 
@@ -176,7 +177,7 @@ def _close_opposite_position(
 
     indicator_result = _close_indicator_scope(self, state, indicator_position_side)
     if indicator_result is not None:
-        return indicator_result
+        return indicator_result and not self.stopped()
 
     if warn_oneway_needed and not allow_opposite_requested:
         try:
@@ -276,5 +277,6 @@ def _close_opposite_position(
 
     if not _close_symbol_level_positions(self, state):
         return False
-    _finalize_close_cleanup(self, state["symbol"], opp, float(state["qty_tol"]), bool(state["closed_any"]))
-    return True
+    return _finalize_close_cleanup(
+        self, state["symbol"], opp, float(state["qty_tol"]), bool(state["closed_any"])
+    ) and not self.stopped()

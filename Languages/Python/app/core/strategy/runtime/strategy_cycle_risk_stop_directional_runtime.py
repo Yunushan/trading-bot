@@ -83,10 +83,10 @@ def _apply_long_futures_stop(
     desired_ps = "LONG" if dual_side else None
     try:
         start_ts = time.time()
-        res = self.binance.close_futures_leg_exact(
-            cw["symbol"], qty_long, side="SELL", position_side=desired_ps
+        ok_close, res = self._execute_close_with_fallback(
+            cw["symbol"], "SELL", qty_long, desired_ps
         )
-        if isinstance(res, dict) and res.get("ok"):
+        if ok_close and not getattr(self, "_ledger_reconciliation_required", False):
             closed_qty = _reconciled_close_qty(res, qty_long)
             if closed_qty + max(1e-9, qty_long * 1e-6) < qty_long:
                 _safe_log(
@@ -223,10 +223,10 @@ def _apply_short_futures_stop(
     desired_ps = "SHORT" if dual_side else None
     try:
         start_ts = time.time()
-        res = self.binance.close_futures_leg_exact(
-            cw["symbol"], qty_short, side="BUY", position_side=desired_ps
+        ok_close, res = self._execute_close_with_fallback(
+            cw["symbol"], "BUY", qty_short, desired_ps
         )
-        if isinstance(res, dict) and res.get("ok"):
+        if ok_close and not getattr(self, "_ledger_reconciliation_required", False):
             closed_qty = _reconciled_close_qty(res, qty_short)
             if closed_qty + max(1e-9, qty_short * 1e-6) < qty_short:
                 _safe_log(

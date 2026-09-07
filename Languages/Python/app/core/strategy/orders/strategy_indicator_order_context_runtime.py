@@ -15,6 +15,7 @@ def _prepare_indicator_signal_request_context(
     qty_tol_indicator: float,
     now_ts: float,
     now_indicator_ts: float,
+    signal_bar_ts: float | None = None,
 ) -> dict[str, object] | None:
     strategy_type = type(self)
     indicator_key = indicator_label.lower()
@@ -135,7 +136,7 @@ def _prepare_indicator_signal_request_context(
         indicator_key,
         action_norm,
         interval_seconds_est,
-        now_indicator_ts,
+        signal_bar_ts,
     ):
         return None
     cooldown_remaining = self._indicator_cooldown_remaining(
@@ -209,6 +210,7 @@ def _prepare_fallback_indicator_request_context(
     indicator_label: str,
     indicator_action,
     now_indicator_ts: float,
+    signal_bar_ts: float | None = None,
 ) -> dict[str, object] | None:
     strategy_type = type(self)
     indicator_key = indicator_label.lower()
@@ -233,7 +235,7 @@ def _prepare_fallback_indicator_request_context(
         indicator_key,
         action_norm,
         interval_seconds_est,
-        now_indicator_ts,
+        signal_bar_ts,
     ):
         return None
     action_side_label = "BUY" if action_norm == "buy" else "SELL"

@@ -45,6 +45,13 @@ coverage gate. Remove those generated reports only after coverage validation so
 the final workspace-hygiene check evaluates the clean tree that would be
 committed.
 
+The critical coverage gate measures each configured package **and every dotted
+descendant package** using executed/executable file-line counts from the same
+full-suite XML report. It does not average package percentages or trust rounded
+summary rates. Empty, summary-only, malformed, or duplicate line evidence cannot
+satisfy a threshold. The JSON result lists each included package and its aggregate
+line counts so a well-covered parent cannot conceal an untested child package.
+
 ## 18-article completion gate
 
 | Article | Completion rule | Evidence |
@@ -535,6 +542,24 @@ evidence. CI and `tools/verify_all.py` validate the schema, run a read-only quic
 service probe, execute the deterministic config/restart recovery drill, and
 exercise incident plus order-audit rotation, redaction, corruption tolerance,
 and restart read-back. These local checks never submit orders.
+
+`python tools/run_service_capacity_probe.py --json` runs 600 GET requests at
+concurrency 16 against a read-only child service. Its unchanged default gate
+requires zero errors, p95 at most 500 ms, and at least 10 requests/second. This
+bounded regression is never production-promotion evidence. Startup readiness
+polls and the read-only preflight are excluded from the measured workload.
+
+When it fails, retain the original report before rerunning. `failure_counts`
+contains fixed error categories, `failure_stage_counts` identifies opener,
+response-header, body-read or JSON-decode failures, and `status_code_counts`
+includes zero when no HTTP response status was received. An HTTP 200 followed
+by a body timeout still counts as an error. `request_phase_latency_ms` reports
+count, p95 and maximum duration for each executed phase; `request_timeout_seconds`
+records the socket timeout, not a guaranteed total request deadline. The header
+phase includes connection/proxy setup, request transmission and waiting for
+headers; it cannot by itself identify which of those operations stalled.
+Diagnostics do not include raw exceptions, credentials, headers or response
+bodies. A passing repeat does not erase an unexplained failure.
 
 Use `python tools/run_service_sustained_probe.py --profile sustained --base-url https://service.example.test --output service-api-sustained-runtime.json --json`
 to collect the minimum 30-minute endurance artifact from a clean candidate

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import math
 import os
 import re
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PyQt6 import QtCore
 
 from app.security.redaction import redact_text
+from app.service.schemas.observation import observation_scope
 
 _NORMALIZE_CONNECTOR_BACKEND = None
 
@@ -44,6 +46,44 @@ def _normalize_connector_backend_safe(value) -> str | None:
         return func(value)
     except Exception:
         return None
+
+
+def _balance_request_scope(self) -> tuple:
+    config = getattr(self, "config", {})
+    connector = getattr(self, "connector_combo", None)
+    connector_value = None
+    if connector is not None:
+        connector_value = connector.currentData()
+        if connector_value is None:
+            connector_value = connector.currentText()
+    # Credential-bearing identity stays in memory and must never be logged.
+    return (
+        observation_scope(config if isinstance(config, dict) else {}),
+        getattr(self, "_service_observation_generation", 0),
+        getattr(self, "_account_observation_generation", 0),
+        self.api_key_edit.text().strip(), self.api_secret_edit.text().strip(),
+        self.mode_combo.currentText(), self.account_combo.currentText(), connector_value,
+    )
+
+
+def _balance_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"Balance {field} is unavailable or invalid")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Balance {field} is unavailable or invalid") from exc
+    if not math.isfinite(number) or number < 0.0:
+        raise ValueError(f"Balance {field} must be finite and non-negative")
+    return number
+
+
+def _invalidate_balance_observation(self, *, clear_values: bool = False) -> None:
+    snapshot = getattr(self, "_positions_balance_snapshot", None)
+    self._positions_balance_snapshot = (
+        {**snapshot, "observed_at": ""} if isinstance(snapshot, dict) and not clear_values else {}
+    )
+    self._update_positions_balance_labels(None, None)
 
 
 def bind_main_window_balance_runtime(
@@ -121,7 +161,7 @@ def update_balance_label(self):
     if not api_key or not api_secret:
         if getattr(self, "balance_label", None):
             self.balance_label.setText("API credentials missing")
-        self._update_positions_balance_labels(None, None)
+        _invalidate_balance_observation(self, clear_values=True)
         try:
             self._balance_refresh_token = None
         except Exception as exc:
@@ -133,6 +173,18 @@ def update_balance_label(self):
                     btn.setText(old_btn_text)
             except Exception as exc:
                 _record_balance_runtime_exception(self, "missing_credentials_button_restore", exc)
+        return
+
+    try:
+        request_scope = _balance_request_scope(self)
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "capture_balance_request_scope", exc)
+        self._balance_refresh_token = None
+        _invalidate_balance_observation(self, clear_values=True)
+        if btn:
+            btn.setEnabled(True)
+            if old_btn_text is not None:
+                btn.setText(old_btn_text)
         return
 
     wrapper_holder: dict[str, object | None] = {"wrapper": None}
@@ -176,36 +228,38 @@ def update_balance_label(self):
             available_balance_value = None
             bal = 0.0
             acct_upper = str(account_value or "").upper()
-            if acct_upper.startswith("FUT"):
-                snap = wrapper.get_futures_balance_snapshot(force_refresh=True) or {}
+            observed_at = datetime.now(timezone.utc).isoformat()
+            if acct_upper == "FUTURES":
+                snap = wrapper.get_futures_balance_snapshot(force_refresh=True)
                 if not isinstance(snap, dict):
                     raise RuntimeError(f"Unexpected futures balance snapshot type: {type(snap).__name__}")
-                try:
-                    total_balance_value = float(snap.get("total") or snap.get("wallet") or 0.0)
-                except Exception as exc:
-                    _record_balance_runtime_exception(self, "parse_futures_total_balance", exc)
-                    total_balance_value = 0.0
-                try:
-                    available_balance_value = float(snap.get("available") or 0.0)
-                except Exception as exc:
-                    _record_balance_runtime_exception(self, "parse_futures_available_balance", exc)
-                    available_balance_value = 0.0
+                total_balance_value = _balance_number(snap.get("total", snap.get("wallet")), "total")
+                available_balance_value = _balance_number(snap.get("available"), "available")
+                if "wallet" in snap:
+                    _balance_number(snap["wallet"], "wallet")
                 bal = available_balance_value if available_balance_value > 0.0 else total_balance_value
-            else:
-                bal = float(wrapper.get_spot_balance("USDT") or 0.0)
-                try:
-                    total_balance_value = float(wrapper.get_total_usdt_value() or bal)
-                except Exception as exc:
-                    _record_balance_runtime_exception(self, "parse_spot_total_balance", exc)
-                    total_balance_value = bal
+            elif acct_upper == "SPOT":
+                bal = _balance_number(wrapper.get_spot_balance("USDT"), "available")
+                total_balance_value = _balance_number(wrapper.get_total_usdt_value(force_refresh=True), "total")
                 available_balance_value = bal
-            return {"total": total_balance_value, "available": available_balance_value, "bal": bal, "wrapper": wrapper}
+            else:
+                raise ValueError("Balance account type is unsupported")
+            if available_balance_value > total_balance_value:
+                raise ValueError("Available balance exceeds total balance")
+            return {
+                "total": total_balance_value, "available": available_balance_value,
+                "bal": bal, "wrapper": wrapper, "observed_at": observed_at,
+            }
         except Exception as exc:
             return {"error": redact_text(exc), "wrapper": wrapper}
 
     def _done(res, err):
         if getattr(self, "_balance_refresh_token", None) != refresh_token:
             return
+        try:
+            scope_matches = _balance_request_scope(self) == request_scope
+        except Exception:
+            scope_matches = False
         try:
             self._balance_refresh_token = None
         except Exception as exc:
@@ -215,6 +269,13 @@ def update_balance_label(self):
                 self._balance_refresh_worker = None
         except Exception as exc:
             _record_balance_runtime_exception(self, "done_clear_balance_worker", exc)
+        if not scope_matches:
+            _invalidate_balance_observation(self, clear_values=True)
+            if btn:
+                btn.setEnabled(True)
+                if old_btn_text is not None:
+                    btn.setText(old_btn_text)
+            return
         total_balance_value = None
         available_balance_value = None
         err_msg = None
@@ -307,7 +368,7 @@ def update_balance_label(self):
                     self.balance_label.setText(label_text)
             except Exception as exc:
                 _record_balance_runtime_exception(self, "apply_balance_error_label", exc)
-            self._update_positions_balance_labels(None, None)
+            _invalidate_balance_observation(self)
         else:
             total_balance_value = res.get("total")
             available_balance_value = res.get("available")
@@ -333,7 +394,9 @@ def update_balance_label(self):
             except Exception as exc:
                 _record_balance_runtime_exception(self, "apply_balance_success_label", exc)
             try:
-                self._update_positions_balance_labels(total_balance_value, available_balance_value)
+                self._update_positions_balance_labels(
+                    total_balance_value, available_balance_value, observed_at=str(res.get("observed_at") or ""),
+                )
             except Exception as exc:
                 _record_balance_runtime_exception(self, "update_positions_balance_success", exc)
         if btn:
@@ -384,7 +447,11 @@ def update_balance_label(self):
         except Exception as exc:
             _record_balance_runtime_exception(self, "watchdog_balance_timeout_label", exc)
         try:
-            self._update_positions_balance_labels(None, None)
+            try:
+                scope_matches = _balance_request_scope(self) == request_scope
+            except Exception:
+                scope_matches = False
+            _invalidate_balance_observation(self, clear_values=not scope_matches)
         except Exception as exc:
             _record_balance_runtime_exception(self, "watchdog_update_positions_balance", exc)
         if btn:

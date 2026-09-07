@@ -4,6 +4,7 @@ import math
 import time
 
 from .close_execution import _pause_for_close_uncertainty, _safe_log
+from .strategy_close_opposite_common_runtime import _validated_close_positions
 
 
 def _entry_margin_value(entry: dict | None, leverage_fallback: float | int = 1) -> float:
@@ -54,19 +55,16 @@ def _current_futures_position_qty(
             return None
     else:
         rows = positions
+    try:
+        rows = _validated_close_positions(rows)
+    except (TypeError, ValueError, OverflowError):
+        return None
     side_norm = "BUY" if str(side_label or "").upper() in {"BUY", "LONG"} else "SELL"
     desired_pos_side = str(position_side or "").upper() if position_side else None
     best_qty = 0.0
     qty_tol = 1e-6
-    for pos in rows or []:
-        if not isinstance(pos, dict):
-            return None
-        try:
-            amt = float(pos.get("positionAmt") or 0.0)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not math.isfinite(amt):
-            return None
+    for pos in rows:
+        amt = pos["positionAmt"]
         if str(pos.get("symbol") or "").upper() != sym_norm:
             continue
         pos_side_val = str(pos.get("positionSide") or "").upper()
@@ -146,7 +144,7 @@ def _purge_flat_futures_legs(
         if str(leg_sym or "").upper() != sym_norm:
             continue
         try:
-            qty_recorded = max(0.0, float((leg or {}).get("qty") or 0.0))
+            qty_recorded = float((leg or {}).get("qty") or 0.0)
         except (AttributeError, TypeError, ValueError, OverflowError) as exc:
             _pause_for_close_uncertainty(
                 self,
@@ -154,10 +152,10 @@ def _purge_flat_futures_legs(
                 reconciliation_required=True,
             )
             continue
-        if not math.isfinite(qty_recorded):
+        if not math.isfinite(qty_recorded) or qty_recorded < 0.0:
             _pause_for_close_uncertainty(
                 self,
-                f"{sym_norm}@{leg_interval} recorded leg quantity is non-finite",
+                f"{sym_norm}@{leg_interval} recorded leg quantity is not finite and nonnegative",
                 reconciliation_required=True,
             )
             continue

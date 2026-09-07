@@ -28,7 +28,7 @@ class _CloseWrapper:
 
     def close_futures_leg_exact(self, *args, **kwargs):
         self.close_calls.append((args, kwargs))
-        return {"ok": True, "executedQty": "1", "avgPrice": "95"}
+        return {"ok": True, "execution_confirmed": True, "executed_qty": 1.0, "avgPrice": "95"}
 
 
 def _build_stop_engine(*, log_callback=None):
@@ -246,6 +246,7 @@ class StrategyStopLossHardeningTests(unittest.TestCase):
 
         engine._build_close_event_payload = fail_payload
         entry = {"qty": 1.0, "entry_price": 100.0, "ledger_id": "ledger-1"}
+        engine._leg_entries = lambda _key: [entry]
 
         closed_qty = engine._close_leg_entry(
             {"symbol": "BTCUSDT", "interval": "1m"},
@@ -279,6 +280,7 @@ class StrategyStopLossHardeningTests(unittest.TestCase):
 
         engine._remove_leg_entry = fail_remove
         entry = {"qty": 1.0, "entry_price": 100.0, "ledger_id": "ledger-1"}
+        engine._leg_entries = lambda _key: [entry]
 
         closed_qty = engine._close_leg_entry(
             {"symbol": "BTCUSDT", "interval": "1m"},

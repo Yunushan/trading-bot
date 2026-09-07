@@ -372,7 +372,7 @@ def _runtime_config_reference_cases() -> list[dict[str, object]]:
             {
                 "symbols": ["BTCUSDT"],
                 "intervals": ["15m"],
-                "mode": "paper",
+                "mode": "Demo/Testnet",
                 "position_pct": 1.5,
                 "side": "BUY",
                 "order_type": "MARKET",
@@ -3166,6 +3166,14 @@ def render_rust_module() -> str:
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
         (
+            "pub const PYTHON_OPERATIONAL_MAX_FUTURE_SKEW_MS: i64 = "
+            f"{int(summary['operational_freshness_reference']['max_future_skew_ms'])};"
+        ),
+        (
+            "pub const PYTHON_OPERATIONAL_FRESHNESS_REFERENCE_JSON: &str = "
+            f"{_rust_string(_contract_json(summary['operational_freshness_reference']['cases']))};"
+        ),
+        (
             "pub const PYTHON_RISK_DEFAULTS_JSON: &str = "
             f"{_rust_string(_contract_json(dict(summary['risk_defaults'])))};"
         ),
@@ -3318,6 +3326,8 @@ def render_rust_module() -> str:
             "PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS",
             list(mode_policy["testnet_markers"]),
         ),
+        _rust_array("PYTHON_NATIVE_RUNTIME_LIVE_MODE_VALUES", list(mode_policy["live_values"])),
+        f"pub const PYTHON_INVALID_EXECUTION_MODE_ERROR: &str = {_rust_string(mode_policy['invalid_mode_error'])};",
         (
             "pub const PYTHON_NATIVE_RUNTIME_DELEGATED_OWNER: &str = "
             f"{_rust_string(native_runtime_ownership['delegated_owner'])};"
@@ -3568,7 +3578,7 @@ def render_cpp_header() -> str:
         ),
         (
             "inline constexpr std::string_view kPythonOrderIntentReferenceJson = "
-            f"{_cpp_string(_contract_json(order_intent_reference))};"
+            f"{_cpp_string_chunks(_contract_json(order_intent_reference))};"
         ),
         (
             "inline constexpr std::string_view kPythonLiveSafetyReferenceJson = "
@@ -3651,6 +3661,8 @@ def render_cpp_header() -> str:
             "kPythonNativeRuntimeTestnetModeMarkers",
             list(mode_policy["testnet_markers"]),
         ),
+        _cpp_array("kPythonNativeRuntimeLiveModeValues", list(mode_policy["live_values"])),
+        f"inline constexpr std::string_view kPythonInvalidExecutionModeError = {_cpp_string(mode_policy['invalid_mode_error'])};",
         (
             "inline constexpr std::string_view kPythonNativeRuntimeDelegatedOwner = "
             f"{_cpp_string(native_runtime_ownership['delegated_owner'])};"

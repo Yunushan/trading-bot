@@ -120,9 +120,10 @@ def _auth_error_hint_for(mode: str | None, account_type: str | None, code: int |
         c = None
     if c not in {-2014, -2015}:
         return None
-    mode_text = str(mode or "").lower()
+    from app.settings.execution_mode import is_live_trading_mode
+
     acct = str(account_type or "").upper()
-    is_testnet = any(tag in mode_text for tag in ("demo", "test", "sandbox"))
+    is_testnet = not is_live_trading_mode(mode)
     if acct.startswith("FUT") and is_testnet:
         return (
             "Use Binance FUTURES TESTNET keys from testnet.binancefuture.com "

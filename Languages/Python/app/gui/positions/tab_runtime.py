@@ -158,6 +158,7 @@ def _create_positions_tab(self):
     self.req_pos_set_interval.connect(self._pos_worker.set_interval)
     self._pos_worker.moveToThread(self._pos_thread)
     self._pos_worker.positions_ready.connect(self._on_positions_ready)
+    self._pos_worker.observation_failed.connect(self._on_positions_observation_failed)
     self._pos_worker.error.connect(lambda e: self.log(f"Positions worker: {e}"))
     try:
         self._reconfigure_positions_worker()

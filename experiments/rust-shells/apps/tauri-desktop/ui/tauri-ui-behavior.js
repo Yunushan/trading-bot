@@ -727,11 +727,11 @@
   };
 
   const nativeRuntimeModeUsesTestnet = (value, markers = []) => {
-    const text = String(value || "").toLowerCase();
+    const text = String(value || "").trim().toLowerCase();
     return (Array.isArray(markers) ? markers : [])
       .map((marker) => String(marker || "").toLowerCase())
       .filter(Boolean)
-      .some((marker) => text.includes(marker));
+      .some((marker) => text === marker);
   };
 
   const dashboardPayloadFromStreamEvent = (event) => {
