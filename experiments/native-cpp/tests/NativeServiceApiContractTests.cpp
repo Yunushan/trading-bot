@@ -68,7 +68,7 @@ QByteArray requestQueryValue(const QByteArray &requestLine, const QByteArray &na
     const int valueStart = markerIndex + marker.size();
     const int valueEnd = requestLine.indexOf('&', valueStart);
     const QByteArray encoded = requestLine.mid(valueStart, valueEnd < 0 ? -1 : valueEnd - valueStart);
-    return QUrl::fromPercentEncoding(encoded);
+    return QUrl::fromPercentEncoding(encoded).toUtf8();
 }
 
 } // namespace
