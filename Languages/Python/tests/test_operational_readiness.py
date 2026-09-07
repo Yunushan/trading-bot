@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,21 @@ from tools import run_service_sustained_probe as service_probe  # noqa: E402
 
 
 POLICY_PATH = REPO_ROOT / "docs" / "operational-readiness-policy.json"
+
+
+def _valid_process_recovery_fixture() -> dict[str, object]:
+    return {
+        "name": "canonical-service-process-restart", "status": "pass",
+        "process_boundary": "child-process", "failure_mode": "forced-process-exit",
+        **dict.fromkeys(readiness.RECOVERY_VERIFIED_FLAGS, True),
+        "original_pid": 1001, "replacement_pid": 1002, "original_exit_code": -9,
+        "original_endpoint": "http://127.0.0.1:43210", "replacement_endpoint": "http://127.0.0.1:43210",
+        "original_status_codes": [200] * 4, "status_codes": [200] * 4,
+        "backup_sha256": "a" * 64, "restored_backup_sha256": "a" * 64,
+        "timeline_seconds": {event: float(index) for index, event in enumerate(readiness.RECOVERY_TIMELINE_EVENTS)},
+        "recovery_time_seconds": 6.0, "config_recovery_time_seconds": 1.0,
+        "service_recovery_time_seconds": 2.0, "recovery_point_seconds": 1.0,
+    }
 
 
 def _valid_slo_telemetry(*, window_end: datetime | None = None) -> dict[str, object]:
@@ -142,17 +158,15 @@ class OperationalReadinessTests(unittest.TestCase):
                     if requirement["id"] == "service-config-backup-restore":
                         payload.update(
                             {
-                                "config_recovery_time_seconds": 0.0,
-                                "service_recovery_time_seconds": 0.0,
+                                "config_recovery_time_seconds": 1.0,
+                                "service_recovery_time_seconds": 2.0,
+                                "recovery_time_seconds": 6.0,
+                                "recovery_point_seconds": 1.0,
                                 "suite_results": [
                                     {"name": "config-backup-secret-redaction", "status": "pass"},
                                     {"name": "config-restore-round-trip", "status": "pass"},
                                     {"name": "synthetic-credential-cleanup", "status": "pass"},
-                                    {
-                                        "name": "canonical-service-process-restart",
-                                        "status": "pass",
-                                        "process_boundary": "child-process",
-                                    },
+                                    _valid_process_recovery_fixture(),
                                 ],
                             }
                         )
@@ -302,6 +316,19 @@ class OperationalReadinessTests(unittest.TestCase):
         )
         self.assertEqual("pass", process_restart["status"])
         self.assertEqual("child-process", process_restart["process_boundary"])
+        self.assertEqual("forced-process-exit", process_restart.get("failure_mode"))
+        self.assertTrue(process_restart.get("original_ready"))
+        self.assertTrue(process_restart.get("original_exit_observed"))
+        self.assertTrue(process_restart.get("restored_config_matches"))
+        self.assertTrue(process_restart.get("read_only_verified"))
+        self.assertTrue(process_restart.get("same_endpoint"))
+        self.assertNotEqual(process_restart.get("original_pid"), process_restart.get("replacement_pid"))
+        self.assertTrue(process_restart["children_stopped"])
+        self.assertTrue(process_restart["auth_verified"])
+        policy = readiness.load_policy(POLICY_PATH)
+        requirement = next(item for item in policy["required_evidence"] if item["id"] == recovery.EVIDENCE_ID)
+        self.assertEqual([], readiness._validate_evidence_metrics(requirement, report, policy=policy, path=Path("recovery.json")))
+        self.assertGreaterEqual(report["recovery_time_seconds"] + 0.00001, report["config_recovery_time_seconds"] + report["service_recovery_time_seconds"])
         serialized = json.dumps(report)
         for secret in recovery.SYNTHETIC_SECRETS.values():
             self.assertNotIn(secret, serialized)
@@ -336,6 +363,66 @@ class OperationalReadinessTests(unittest.TestCase):
         )
 
         self.assertTrue(any("child-process boundary" in issue for issue in issues))
+
+    def test_cold_start_alone_is_not_process_recovery_evidence(self):
+        policy = readiness.load_policy(POLICY_PATH)
+        requirement = next(item for item in policy["required_evidence"] if item["id"] == "service-config-backup-restore")
+        payload = {
+            "recovery_time_seconds": 0.1,
+            "recovery_point_seconds": 0.1,
+            "config_recovery_time_seconds": 0.01,
+            "service_recovery_time_seconds": 0.1,
+            "suite_results": [
+                {"name": "config-backup-secret-redaction", "status": "pass"},
+                {"name": "config-restore-round-trip", "status": "pass"},
+                {"name": "synthetic-credential-cleanup", "status": "pass"},
+                {"name": "canonical-service-process-restart", "status": "pass", "process_boundary": "child-process"},
+            ],
+        }
+        issues = readiness._validate_evidence_metrics(requirement, payload, policy=policy, path=Path("recovery.json"))
+        self.assertTrue(any("forced process exit" in issue for issue in issues), issues)
+
+    def test_process_recovery_validator_rejects_missing_and_inconsistent_facts(self):
+        result = _valid_process_recovery_fixture()
+        payload = {key: result[key] for key in ("recovery_time_seconds", "config_recovery_time_seconds", "service_recovery_time_seconds", "recovery_point_seconds")}
+        self.assertEqual([], readiness._validate_process_recovery(payload, result, path=Path("fixture.json")))
+        mutations = [(field, value) for field in readiness.RECOVERY_VERIFIED_FLAGS for value in (None, False, 1, "true")]
+        mutations += [
+            ("original_pid", True), ("original_pid", 0), ("replacement_pid", 1001),
+            ("replacement_pid", "1002"), ("original_exit_code", 0), ("original_exit_code", True),
+            ("failure_mode", "cold-start"), ("replacement_endpoint", "http://127.0.0.1:43211"),
+            ("original_endpoint", "https://public.invalid:43210"),
+            ("backup_sha256", "invalid"), ("restored_backup_sha256", "b" * 64),
+            ("status_codes", [200] * 3), ("original_status_codes", [200, 200, 401, 200]),
+            ("timeline_seconds", {}), ("recovery_point_seconds", float("nan")),
+            ("recovery_time_seconds", 0.0), ("config_recovery_time_seconds", 0.0),
+            ("service_recovery_time_seconds", 0.0),
+        ]
+        for field, value in mutations:
+            with self.subTest(field=field, value=value):
+                changed = {**result, field: value}
+                self.assertTrue(readiness._validate_process_recovery(payload, changed, path=Path("fixture.json")))
+        for event in readiness.RECOVERY_TIMELINE_EVENTS:
+            for value in (None, -1, True, float("nan"), float("inf")):
+                with self.subTest(event=event, value=value):
+                    changed = copy.deepcopy(result)
+                    changed["timeline_seconds"][event] = value
+                    self.assertTrue(readiness._validate_process_recovery(payload, changed, path=Path("fixture.json")))
+        changed = copy.deepcopy(result)
+        changed["timeline_seconds"]["config_restored"] = 0.5
+        self.assertTrue(readiness._validate_process_recovery(payload, changed, path=Path("fixture.json")))
+        for field in payload:
+            with self.subTest(top_level_metric=field):
+                self.assertTrue(readiness._validate_process_recovery({**payload, field: 0.0}, result, path=Path("fixture.json")))
+
+    def test_process_recovery_validator_rejects_duplicate_results(self):
+        policy = readiness.load_policy(POLICY_PATH)
+        requirement = next(item for item in policy["required_evidence"] if item["id"] == recovery.EVIDENCE_ID)
+        result = _valid_process_recovery_fixture()
+        payload = {key: result[key] for key in ("recovery_time_seconds", "config_recovery_time_seconds", "service_recovery_time_seconds", "recovery_point_seconds")}
+        payload["suite_results"] = [result, result]
+        issues = readiness._validate_evidence_metrics(requirement, payload, policy=policy, path=Path("fixture.json"))
+        self.assertTrue(any("exactly one canonical-service-process-restart" in issue for issue in issues))
 
     def test_incident_audit_continuity_drill_recovers_rotated_redacted_logs(self):
         report = audit_continuity.run_continuity_drill()

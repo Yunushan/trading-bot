@@ -12,6 +12,16 @@ namespace NativeOrderSafety {
 
 inline constexpr const char *LiveTradingAcknowledgement = "I_UNDERSTAND_LIVE_TRADING_RISK";
 
+struct OrderExecution {
+    bool valid = false;
+    bool complete = false;
+    double executedQty = 0.0;
+    QString status;
+    QString error;
+};
+
+OrderExecution orderExecutionFromResponse(const QJsonValue &response, const QJsonValue &submittedQuantity);
+
 struct OrderSubmitIntent {
     QString market;
     QString symbol;
@@ -31,6 +41,11 @@ struct OrderSymbolFilters {
     double tickSize = 0.0;
     double minQty = 0.0;
     double minNotional = 0.0;
+    double maxQty = 0.0;
+    bool hasMarketLotSize = false;
+    double marketMinQty = 0.0;
+    double marketMaxQty = 0.0;
+    double marketStepSize = 0.0;
 };
 
 struct LiveTradingSafetyConfig {
@@ -242,6 +257,7 @@ QStringList validateOrderFilterConstraintsWithRawParams(
     const QVector<QPair<QString, QString>> &params);
 QStringList validateConnectorHealthErrors(const QString &state, const QString &health);
 bool isLiveTradingMode(const QString &mode);
+bool isSupportedExchangeMode(const QString &mode);
 QStringList validateLiveTradingSafety(const LiveOrderGuardInput &input);
 LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input);
 MinimumOrderAutoBumpGuardResult guardFuturesMinimumOrderAutoBump(

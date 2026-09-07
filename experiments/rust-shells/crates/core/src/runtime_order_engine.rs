@@ -15,7 +15,10 @@ use crate::order_guard::{
     BinanceOrderSubmitGuardInput, BinanceOrderSubmitGuardResult, LiveTradingSafetyConfig,
     OrderSymbolFilters, guard_live_order_submit,
 };
-use crate::orders::{BinanceFuturesOrderParams, BinanceFuturesOrderResult};
+use crate::orders::{
+    BinanceFuturesOrderParams, BinanceFuturesOrderResult, OrderExecution,
+    order_execution_from_response,
+};
 use crate::position_close::{
     BinanceFuturesCloseDirective, BinanceFuturesCloseMethod, build_reduce_only_close_params,
 };
@@ -268,7 +271,8 @@ impl RuntimeOrderEngine {
         }
         batch.remaining_qty = remaining_qty(batch.requested_qty, batch.closed_qty);
         batch.ok = batch.requested_qty <= 0.0
-            || batch.remaining_qty <= close_qty_epsilon(batch.requested_qty);
+            || (batch.remaining_qty <= close_qty_epsilon(batch.requested_qty)
+                && batch.attempts.iter().all(|attempt| attempt.success));
         batch.audit_status = Some(self.audit_status());
         batch
     }
@@ -343,7 +347,8 @@ impl RuntimeOrderEngine {
         }
         batch.remaining_qty = remaining_qty(batch.requested_qty, batch.closed_qty);
         batch.ok = batch.requested_qty <= 0.0
-            || batch.remaining_qty <= close_qty_epsilon(batch.requested_qty);
+            || (batch.remaining_qty <= close_qty_epsilon(batch.requested_qty)
+                && batch.attempts.iter().all(|attempt| attempt.success));
         batch.audit_status = Some(self.audit_status());
         batch
     }
@@ -371,39 +376,16 @@ impl RuntimeOrderEngine {
             };
         }
 
-        let close_result = if self.dry_run {
-            self.execute_close_with_fallback(
-                &plan.symbol,
-                &plan.close_side,
-                target_qty,
-                plan.position_side.as_deref(),
-                "close_opposite_position",
-                now_iso.as_ref(),
-                source.as_ref(),
-                &mut |_directive| {
-                    Ok(BinanceFuturesOrderResult {
-                        symbol: plan.symbol.clone(),
-                        side: plan.close_side.clone(),
-                        position_side: plan.position_side.clone().unwrap_or_default(),
-                        order_id: "dry-run-close-opposite".to_owned(),
-                        status: "DRY_RUN".to_owned(),
-                        executed_qty: target_qty,
-                        avg_price: 0.0,
-                    })
-                },
-            )
-        } else {
-            self.execute_close_with_fallback(
-                &plan.symbol,
-                &plan.close_side,
-                target_qty,
-                plan.position_side.as_deref(),
-                "close_opposite_position",
-                now_iso.as_ref(),
-                source.as_ref(),
-                &mut execute,
-            )
-        };
+        let close_result = self.execute_close_with_fallback(
+            &plan.symbol,
+            &plan.close_side,
+            target_qty,
+            plan.position_side.as_deref(),
+            "close_opposite_position",
+            now_iso.as_ref(),
+            source.as_ref(),
+            &mut execute,
+        );
         let allowed_to_open_now =
             close_result.ok && close_result.remaining_qty <= close_qty_epsilon(target_qty);
         let reason = if allowed_to_open_now {
@@ -468,6 +450,25 @@ impl RuntimeOrderEngine {
                 }
             };
 
+            if self.dry_run {
+                self.write_close_audit(
+                    "order_close_dry_run",
+                    &directive,
+                    now_iso,
+                    source,
+                    reason,
+                    None,
+                    "Dry run is not exchange-confirmed execution.",
+                );
+                result.attempts.push(RuntimeCloseAttempt {
+                    directive: Some(directive),
+                    success: false,
+                    result: None,
+                    error: "Dry run is not exchange-confirmed execution.".to_owned(),
+                });
+                break;
+            }
+
             self.write_close_audit(
                 "order_close_attempt",
                 &directive,
@@ -479,22 +480,34 @@ impl RuntimeOrderEngine {
             );
             match execute(&directive) {
                 Ok(order_result) => {
-                    let closed_qty = reconciled_executed_qty(&order_result, directive.quantity);
+                    let execution = reconciled_close_execution(&order_result, &directive);
+                    let complete = execution.as_ref().is_ok_and(|value| value.complete);
+                    let error = match &execution {
+                        Ok(_) if complete => String::new(),
+                        Ok(_) => "Close remains unconfirmed; reconciliation required.".to_owned(),
+                        Err(error) => {
+                            format!("Invalid close execution; reconciliation required: {error}")
+                        }
+                    };
                     self.write_close_audit(
-                        "order_close_accepted",
+                        if complete {
+                            "order_close_accepted"
+                        } else {
+                            "order_close_unconfirmed"
+                        },
                         &directive,
                         now_iso,
                         source,
                         reason,
                         Some(order_result_json(&order_result)),
-                        "",
+                        &error,
                     );
-                    result.closed_qty += closed_qty;
+                    result.closed_qty += execution.map(|value| value.executed_qty).unwrap_or(0.0);
                     result.attempts.push(RuntimeCloseAttempt {
                         directive: Some(directive),
-                        success: true,
+                        success: complete,
                         result: Some(order_result),
-                        error: String::new(),
+                        error,
                     });
                     break;
                 }
@@ -814,12 +827,33 @@ fn push_position_side_attempt(attempts: &mut Vec<Option<String>>, value: Option<
     attempts.push(normalized);
 }
 
-fn reconciled_executed_qty(result: &BinanceFuturesOrderResult, requested_qty: f64) -> f64 {
-    if result.executed_qty.is_finite() && result.executed_qty > 0.0 {
-        result.executed_qty.min(requested_qty)
+fn reconciled_close_execution(
+    result: &BinanceFuturesOrderResult,
+    directive: &BinanceFuturesCloseDirective,
+) -> Result<OrderExecution> {
+    let position_side = if directive.position_side.is_empty() {
+        "BOTH"
     } else {
-        requested_qty
+        &directive.position_side
+    };
+    let actual_position_side = if result.position_side.is_empty() {
+        "BOTH"
+    } else {
+        &result.position_side
+    };
+    if result.symbol != directive.symbol
+        || result.side != directive.side
+        || actual_position_side != position_side
+        || result.order_id.is_empty()
+    {
+        return Err(anyhow!(
+            "close response does not identify the requested position"
+        ));
     }
+    order_execution_from_response(
+        &json!({"status": result.status, "executedQty": result.executed_qty}),
+        &json!(directive.quantity),
+    )
 }
 
 fn remaining_qty(requested: f64, closed: f64) -> f64 {
@@ -898,6 +932,8 @@ mod tests {
                 tick_size: 0.1,
                 min_qty: 0.001,
                 min_notional: 5.0,
+                max_qty: 100.0,
+                ..Default::default()
             }),
             last_price: Some(100.0),
             connector_state: "ready".to_owned(),
@@ -1019,6 +1055,41 @@ mod tests {
         assert!(audit.contains("\"dry_run\":true"));
         assert!(!audit.contains("order_submit_attempt"));
         fs::remove_file(audit_path).ok();
+    }
+
+    #[test]
+    fn unsupported_execution_modes_never_reach_the_executor_even_with_valid_credentials() {
+        let order = build_futures_market_order_params("ETHUSDT", "BUY", 0.5, false, "")
+            .expect("order params");
+        for mode in [
+            "",
+            "paper",
+            "real",
+            "PaperLocal",
+            "contest",
+            "my-demo-mode",
+            "unknown",
+        ] {
+            for dry_run in [true, false] {
+                let (audit_path, incident_path) = temp_paths("unsupported-mode");
+                let mut engine = live_engine(audit_path.clone(), incident_path.clone());
+                engine.mode = mode.to_owned();
+                engine.dry_run = dry_run;
+                let result = engine.submit_futures_order(submit_input(&order), |_| {
+                    panic!("unsupported mode must not invoke any exchange executor")
+                });
+                assert!(!result.allowed, "mode={mode:?}, dry_run={dry_run}");
+                assert!(result.error.contains("unsupported execution mode"));
+                assert!(result.order_result.is_none());
+                assert_eq!(engine.live_submit_attempt_count, 0);
+                let audit = fs::read_to_string(&audit_path).expect("blocked audit");
+                assert!(audit.contains("order_blocked"));
+                assert!(!audit.contains("order_submit_attempt"));
+                assert!(!audit.contains("order_dry_run"));
+                fs::remove_file(audit_path).ok();
+                fs::remove_file(incident_path).ok();
+            }
+        }
     }
 
     #[test]
@@ -1156,6 +1227,76 @@ mod tests {
     }
 
     #[test]
+    fn unconfirmed_or_invalid_closes_never_authorize_a_reversal() {
+        let request = CloseOppositeRequest {
+            symbol: "BTCUSDT".to_owned(),
+            next_side: "BUY".to_owned(),
+            allow_opposite_positions: false,
+            ..Default::default()
+        };
+        let plan = plan_close_opposite_position(
+            &request,
+            &[FuturesRiskPosition {
+                symbol: "BTCUSDT".to_owned(),
+                position_side: "BOTH".to_owned(),
+                position_amt: -2.0,
+                ..Default::default()
+            }],
+        );
+        for (status, qty, expected_closed, complete) in [
+            ("NEW", 0.0, 0.0, false),
+            ("NEW", 2.0, 0.0, false),
+            ("PARTIALLY_FILLED", 1.0, 1.0, false),
+            ("PARTIALLY_FILLED", 2.0, 2.0, false),
+            ("FILLED", 0.0, 0.0, false),
+            ("FILLED", 1.0, 0.0, false),
+            ("FILLED", 3.0, 0.0, false),
+            ("FILLED", f64::NAN, 0.0, false),
+            ("FILLED", f64::INFINITY, 0.0, false),
+            ("FILLED", 2.0, 2.0, true),
+        ] {
+            let (audit, incident) = temp_paths("unconfirmed-close");
+            let mut engine = live_engine(audit.clone(), incident);
+            let mut calls = 0;
+            let result = engine.execute_close_opposite_plan(
+                &plan,
+                2.0,
+                "2026-06-18T00:00:02Z",
+                "test",
+                |directive| {
+                    calls += 1;
+                    let mut response = order_result(
+                        &directive.symbol,
+                        &directive.side,
+                        qty,
+                        &directive.position_side,
+                    );
+                    response.status = status.to_owned();
+                    Ok(response)
+                },
+            );
+            assert_eq!(calls, 1, "{status}: {qty}");
+            assert_eq!(result.allowed_to_open_now, complete, "{status}: {qty}");
+            assert_eq!(result.close_result.ok, complete, "{status}: {qty}");
+            assert_eq!(
+                result.close_result.closed_qty, expected_closed,
+                "{status}: {qty}"
+            );
+            fs::remove_file(audit).ok();
+        }
+        let (audit, incident) = temp_paths("dry-run-opposite");
+        let mut engine = live_engine(audit.clone(), incident);
+        engine.dry_run = true;
+        let result =
+            engine.execute_close_opposite_plan(&plan, 2.0, "2026-06-18T00:00:02Z", "test", |_| {
+                panic!("dry-run close must not execute")
+            });
+        assert!(!result.allowed_to_open_now);
+        assert_eq!(result.close_result.closed_qty, 0.0);
+        fs::remove_file(audit).ok();
+    }
+
+    #[test]
     fn close_opposite_execution_blocks_open_until_residual_is_flat() {
         let (audit_path, incident_path) = temp_paths("close-opposite");
         let mut engine = live_engine(audit_path, incident_path);
@@ -1183,12 +1324,14 @@ mod tests {
             "2026-06-18T00:00:02Z",
             "close-opposite",
             |directive| {
-                Ok(order_result(
+                let mut response = order_result(
                     &directive.symbol,
                     &directive.side,
                     1.0,
-                    "BOTH",
-                ))
+                    &directive.position_side,
+                );
+                response.status = "PARTIALLY_FILLED".to_owned();
+                Ok(response)
             },
         );
         assert!(!blocked.allowed_to_open_now);
@@ -1206,7 +1349,7 @@ mod tests {
                     &directive.symbol,
                     &directive.side,
                     2.0,
-                    "BOTH",
+                    &directive.position_side,
                 ))
             },
         );

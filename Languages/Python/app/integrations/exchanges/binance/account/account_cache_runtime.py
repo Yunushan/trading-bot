@@ -8,8 +8,9 @@ from ..transport.helpers import _as_futures_account_dict, _as_futures_balance_en
 
 
 def _is_testnet_mode(mode: str | None) -> bool:
-    text = str(mode or "").lower()
-    return any(tag in text for tag in ("demo", "test", "sandbox"))
+    from app.settings.execution_mode import is_testnet_trading_mode
+
+    return is_testnet_trading_mode(mode)
 
 
 def _invalidate_futures_account_cache(self) -> None:

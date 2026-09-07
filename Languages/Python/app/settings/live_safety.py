@@ -5,6 +5,11 @@ import math
 from collections.abc import Mapping
 
 from .exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+from .execution_mode import (
+    InvalidExecutionModeError,
+    execution_environment,
+    is_live_trading_mode as is_live_trading_mode,
+)
 from .risk import coerce_bool
 
 LIVE_TRADING_ACKNOWLEDGEMENT = "I_UNDERSTAND_LIVE_TRADING_RISK"
@@ -19,7 +24,6 @@ DEFAULT_LIVE_MAX_POSITION_PCT = 10.0
 DEFAULT_LIVE_MAX_SESSION_ORDERS = 100
 MAX_LIVE_MAX_SESSION_ORDERS = 100_000
 
-_NON_LIVE_MODE_TOKENS = ("demo", "test", "sandbox", "paper")
 _PLACEHOLDER_CREDENTIALS = {
     "api_key",
     "api-secret",
@@ -42,13 +46,6 @@ _PLACEHOLDER_CREDENTIALS = {
 
 class LiveTradingSafetyError(RuntimeError):
     """Raised when a live exchange runtime is requested without safety confirmation."""
-
-
-def is_live_trading_mode(mode: object) -> bool:
-    text = str(mode or "").strip().lower()
-    if not text:
-        return False
-    return not any(token in text for token in _NON_LIVE_MODE_TOKENS)
 
 
 def _mapping(config: Mapping[str, object] | None) -> Mapping[str, object]:
@@ -139,7 +136,11 @@ def validate_live_trading_safety(
     env: Mapping[str, str] | None = None,
 ) -> None:
     """Fail closed before a runtime can talk to live exchange endpoints."""
-    if not is_live_trading_mode(mode):
+    try:
+        environment = execution_environment(mode)
+    except InvalidExecutionModeError as exc:
+        raise LiveTradingSafetyError(f"Live trading safety check failed for mode {mode!r}: {exc}.") from exc
+    if environment == "testnet":
         return
 
     cfg = _mapping(config)

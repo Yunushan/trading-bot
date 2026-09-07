@@ -208,31 +208,6 @@ impl BinanceSignedRestClient {
         self
     }
 
-    pub(crate) fn alternate_futures_prefix_client(&self) -> Result<Self> {
-        let alternate_market = match self.market {
-            BinanceMarket::Futures => BinanceMarket::CoinFutures,
-            BinanceMarket::CoinFutures => BinanceMarket::Futures,
-            BinanceMarket::Spot => bail!("spot market has no futures prefix fallback"),
-        };
-        let mut client =
-            Self::with_http_client(alternate_market, self.base_url.clone(), self.http.clone())?;
-        client.recv_window_ms = self.recv_window_ms;
-        client.testnet = self.testnet;
-        Ok(client)
-    }
-
-    pub(crate) fn futures_fallback_allowed(&self) -> bool {
-        if !self.market.is_futures() {
-            return false;
-        }
-        let base_url = self.base_url.to_ascii_lowercase();
-        self.testnet
-            || base_url.contains("127.0.0.1")
-            || base_url.contains("localhost")
-            || base_url.contains("[::1]")
-            || base_url.contains("testnet")
-    }
-
     pub fn futures_balance_url(&self) -> String {
         self.futures_account_path("balance")
     }

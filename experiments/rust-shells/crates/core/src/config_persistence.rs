@@ -171,6 +171,14 @@ fn validate_service_runtime_config_state(
     validate_text(&mut cfg, "api_key", &mut issues, "", true);
     validate_text(&mut cfg, "api_secret", &mut issues, "", true);
     validate_text(&mut cfg, "mode", &mut issues, "", false);
+    if let Some(mode) = cfg.get("mode")
+        && !crate::order_guard::is_supported_exchange_mode(mode.as_str().unwrap_or_default())
+    {
+        issues.push(ServiceConfigValidationIssue::new(
+            "mode",
+            crate::generated_python_parity::PYTHON_INVALID_EXECUTION_MODE_ERROR,
+        ));
+    }
     validate_choice(
         &mut cfg,
         "account_type",

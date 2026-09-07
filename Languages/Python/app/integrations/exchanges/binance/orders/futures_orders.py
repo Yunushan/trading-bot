@@ -7,10 +7,23 @@ from collections.abc import Mapping
 from app.settings.live_safety import is_live_trading_mode
 from app.settings.risk import coerce_bool
 from app.security.redaction import redact_text
+from trading_core.orders import order_execution_from_response
 
 from .order_audit_runtime import audit_order_method
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _market_execution_result(info: object, submitted_qty: str) -> dict[str, object]:
+    execution = order_execution_from_response(info, submitted_qty)
+    return {
+        "ok": execution.complete,
+        "submitted_qty": submitted_qty,
+        "execution_confirmed": True,
+        "executed_qty": execution.executed_qty,
+        "exchange_status": execution.status,
+        "reconciliation_required": execution.status in {"NEW", "PARTIALLY_FILLED"},
+    }
 
 
 def _finite_float(value: object) -> float | None:
@@ -273,7 +286,7 @@ def place_futures_market_order(
                 order["avgPrice"] = fills_summary.get("avg_price")
         self._invalidate_futures_positions_cache()
         result = {
-            "ok": True,
+            **_market_execution_result(order, qty_str),
             "info": order,
             "computed": {
                 "qty": qty,
@@ -294,6 +307,7 @@ def place_futures_market_order(
         return {
             "ok": False,
             "error": redact_text(exc),
+            "reconciliation_required": True,
             "computed": {
                 "qty": qty,
                 "px": px,
@@ -434,7 +448,7 @@ def _place_futures_market_order_STRICT(
         info, via = self._futures_create_order_with_fallback(params)
         self._invalidate_futures_positions_cache()
         res = {
-            "ok": True,
+            **_market_execution_result(info, qty_str),
             "info": info,
             "computed": {
                 "qty": qty,
@@ -455,6 +469,7 @@ def _place_futures_market_order_STRICT(
             "symbol": sym,
             "error": redact_text(exc),
             "computed": {"qty": qty, "px": px, "step": step, "lev": lev},
+            "reconciliation_required": True,
             "mode": mode,
         }
 
@@ -635,7 +650,7 @@ def _place_futures_market_order_FLEX(
         order, via = self._futures_create_order_with_fallback(params)
         self._invalidate_futures_positions_cache()
         res = {
-            "ok": True,
+            **_market_execution_result(order, qty_str),
             "info": order,
             "computed": {
                 "qty": qty,
@@ -656,6 +671,7 @@ def _place_futures_market_order_FLEX(
             "symbol": sym,
             "error": redact_text(exc),
             "computed": {"qty": qty, "px": px, "step": step, "lev": lev},
+            "reconciliation_required": True,
             "mode": mode,
         }
 

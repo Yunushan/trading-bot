@@ -39,6 +39,10 @@ SERVICE_TESTS = (
         "operational health snapshots, connector incidents, JSONL rotation, and redaction",
     ),
     ServiceTestEntry(
+        "tests.test_service_snapshot_observation_freshness",
+        "observation timestamps, cached snapshot freshness, and live preflight across service transports",
+    ),
+    ServiceTestEntry(
         "tests.test_service_lifecycle_runtime",
         "lifecycle control, control-plane descriptors, runtime samples, and live preflight gates",
     ),

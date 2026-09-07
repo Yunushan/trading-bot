@@ -1559,6 +1559,63 @@ int main(int argc, char **argv) {
               && observedCoinPositionMarginRequest.contains("positionSide=LONG"),
           QStringLiteral("C++ Coin-M position-margin cleanup should mirror Python signed options"));
 
+    QTcpServer quantityMetadataServer;
+    check(quantityMetadataServer.listen(QHostAddress::LocalHost, 0),
+          QStringLiteral("local quantity metadata server should listen"));
+    const auto lotRule = QJsonDocument::fromJson(
+        R"({"filterType":"LOT_SIZE","minQty":"0.001","maxQty":"100","stepSize":"0.001"})").object();
+    const auto marketRule = QJsonDocument::fromJson(
+        R"({"filterType":"MARKET_LOT_SIZE","minQty":"0.1","maxQty":"1","stepSize":"0.1"})").object();
+    QJsonArray quantityRules = {lotRule, marketRule};
+    QObject::connect(&quantityMetadataServer, &QTcpServer::newConnection, [&]() {
+        auto *socket = quantityMetadataServer.nextPendingConnection();
+        QObject::connect(socket, &QTcpSocket::readyRead, [&, socket]() {
+            const auto request = socket->readAll();
+            if (!request.contains("\r\n\r\n")) {
+                return;
+            }
+            check(request.startsWith("GET "), QStringLiteral("quantity metadata checks must be read-only"));
+            const QJsonObject symbol = {{QStringLiteral("symbol"), QStringLiteral("BTCUSDT")},
+                {QStringLiteral("filters"), quantityRules}};
+            writeJsonResponseAndClose(socket, QJsonDocument(QJsonObject{
+                {QStringLiteral("symbols"), QJsonArray{symbol}}}).toJson(QJsonDocument::Compact));
+        });
+    });
+    const auto quantityBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(quantityMetadataServer.serverPort());
+    const auto fetchQuantityRules = [&](bool futures) {
+        return futures ? BinanceRestClient::fetchFuturesSymbolFilters(QStringLiteral("BTCUSDT"), false, 5000, quantityBaseUrl)
+                       : BinanceRestClient::fetchSpotSymbolFilters(QStringLiteral("BTCUSDT"), false, 5000, quantityBaseUrl);
+    };
+    for (const bool futures : {false, true}) {
+        quantityRules = {lotRule, marketRule};
+        const auto filters = fetchQuantityRules(futures);
+        check(filters.ok && filters.maxQty == 100.0 && filters.minQty == 0.001 && filters.stepSize == 0.001
+                  && filters.hasMarketLotSize && filters.marketMaxQty == 1.0
+                  && filters.marketMinQty == 0.1 && filters.marketStepSize == 0.1,
+              QStringLiteral("C++ metadata must retain both quantity rules"));
+        for (int index = 0; index < 2; ++index) {
+            for (const auto &field : {QStringLiteral("minQty"), QStringLiteral("maxQty"), QStringLiteral("stepSize")}) {
+                for (const auto &bad : QJsonArray{QJsonValue(), true, -1, QStringLiteral("NaN"), QStringLiteral("inf"), QJsonObject{}, QJsonArray{}}) {
+                    quantityRules = {lotRule, marketRule};
+                    auto rule = quantityRules.at(index).toObject();
+                    rule.insert(field, bad);
+                    quantityRules.replace(index, rule);
+                    check(!fetchQuantityRules(futures).ok, QStringLiteral("C++ must reject invalid quantity metadata"));
+                }
+                quantityRules = {lotRule, marketRule};
+                auto rule = quantityRules.at(index).toObject();
+                rule.remove(field);
+                quantityRules.replace(index, rule);
+                check(!fetchQuantityRules(futures).ok, QStringLiteral("C++ must reject incomplete quantity metadata"));
+            }
+        }
+        for (const auto &rows : {QJsonArray{}, QJsonArray{marketRule}, QJsonArray{lotRule, lotRule},
+                 QJsonArray{lotRule, marketRule, marketRule}}) {
+            quantityRules = rows;
+            check(!fetchQuantityRules(futures).ok, QStringLiteral("C++ must reject missing or duplicate quantity rules"));
+        }
+    }
+
     QTcpServer spotServer;
     check(spotServer.listen(QHostAddress::LocalHost, 0),
           QStringLiteral("local Spot HTTP test server should listen"));

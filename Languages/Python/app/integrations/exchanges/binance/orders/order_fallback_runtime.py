@@ -7,6 +7,8 @@ from binance.client import Client
 from app.settings.live_safety import LiveTradingSafetyError
 from app.security.redaction import redact_text
 
+from .order_close_confirmation_runtime import confirm_market_order
+
 from ..clients.connector_clients import _normalize_connector_choice
 from ..transport.helpers import _is_binance_error_payload, _requests_timeout
 
@@ -15,8 +17,9 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _is_testnet_mode(mode: str | None) -> bool:
-    text = str(mode or "").lower()
-    return any(tag in text for tag in ("demo", "test", "sandbox"))
+    from app.settings.execution_mode import is_testnet_trading_mode
+
+    return is_testnet_trading_mode(mode)
 
 
 def _ensure_binance_client_order_id(params: dict) -> dict:
@@ -73,6 +76,9 @@ def _testnet_order_fallback_client(self):
 
 def _futures_create_order_with_fallback(self, params: dict):
     params = _ensure_binance_client_order_id(params)
+    market_order = params.get("type") == "MARKET"
+    if market_order:
+        params["newOrderRespType"] = "RESULT"
     order_via = "primary"
     audit = getattr(self, "_audit_order_event", None)
     guard = getattr(self, "_guard_live_order_submit", None)
@@ -168,11 +174,37 @@ def _futures_create_order_with_fallback(self, params: dict):
         status = str(order_obj.get("status") or "").upper()
         if not status:
             _raise_from_last_error("order rejected: response has no explicit order status")
-        if status in {"REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "CANCELED"}:
+        if not market_order and status in {"REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "CANCELED"}:
             msg = redact_text(order_obj.get("msg") or order_obj.get("message") or status.lower())
             raise RuntimeError(f"order rejected (status={status}): {msg}")
         if not _order_has_id(order_obj):
             _raise_from_last_error("order rejected: response has no order identifier")
+
+    if market_order:
+        _audit("exchange_order_request", order_params=params, via=order_via)
+        try:
+            _guard_order_submit(via=order_via)
+            _record_submit(via=order_via)
+        except Exception as exc:
+            _audit("exchange_order_error", order_params=params, error=exc, via=order_via)
+            raise
+        error = ""
+        try:
+            order = self.client.futures_create_order(**params)
+            _raise_if_error_payload(order)
+        except Exception as exc:
+            error = redact_text(exc)
+            order = None
+            if callable(mark_unknown) and intent_started:
+                mark_unknown(params, error=error)
+            _audit("exchange_order_error", order_params=params, error=error, via=order_via)
+        # An uncertain market order may already have filled, including on testnet.
+        # Only query its persisted identity; never enter the POST fallback chain.
+        order, reconciled = confirm_market_order(self, params, order, error=error)
+        if reconciled:
+            order_via = "primary-reconciled"
+        _audit("exchange_order_response", order_params=params, result=order, via=order_via)
+        return order, order_via
 
     try:
         _audit("exchange_order_request", order_params=params, via=order_via)
@@ -203,6 +235,8 @@ def _futures_create_order_with_fallback(self, params: dict):
             except Exception as exc:
                 fb_err = exc
                 _audit("exchange_order_error", order_params=params, error=exc, via="fallback-pybinance")
+                if isinstance(exc, LiveTradingSafetyError):
+                    raise
 
         rest_err = None
         if _is_testnet_mode(self.mode):
@@ -225,6 +259,8 @@ def _futures_create_order_with_fallback(self, params: dict):
             except Exception as exc:
                 rest_err = exc
                 _audit("exchange_order_error", order_params=params, error=exc, via="fallback-rest")
+                if isinstance(exc, LiveTradingSafetyError):
+                    raise
                 try:
                     last_err = getattr(self, "_last_futures_http_error", None)
                     err_code = last_err.get("code") if isinstance(last_err, dict) else None
@@ -244,14 +280,16 @@ def _futures_create_order_with_fallback(self, params: dict):
                             prefix=alt_prefix,
                         )
                         _raise_if_error_payload(order, allow_last_error=True)
-                        self._futures_api_prefix_override = alt_prefix
                         order_via = "fallback-rest-alt"
                         _record_accepted(via=order_via, result=order)
+                        self._futures_api_prefix_override = alt_prefix
                         _audit("exchange_order_response", order_params=params, result=order, via=order_via)
                         return order, order_via
                     except Exception as alt_exc:
                         rest_err = alt_exc
                         _audit("exchange_order_error", order_params=params, error=alt_exc, via="fallback-rest-alt")
+                        if isinstance(alt_exc, LiveTradingSafetyError):
+                            raise
 
         msg = redact_text(primary_err)
         if fb_err is not None:

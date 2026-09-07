@@ -13,6 +13,8 @@ from app.integrations.llm.discovery import discover_llm_models  # noqa: E402
 
 
 class _Response:
+    status_code = 200
+
     def __init__(self, payload):
         self._payload = payload
 
@@ -69,6 +71,7 @@ class LLMModelDiscoveryTests(unittest.TestCase):
         self.assertEqual("Bearer kilo-secret-token", get.call_args.kwargs["headers"]["Authorization"])
         self.assertEqual("trading-bot-model-discovery", get.call_args.kwargs["headers"]["User-Agent"])
         self.assertEqual(17.0, get.call_args.kwargs["timeout"])
+        self.assertFalse(get.call_args.kwargs["allow_redirects"])
 
     def test_discovery_failure_retains_static_models_and_redacts_key(self):
         with mock.patch(

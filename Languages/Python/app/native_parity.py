@@ -94,6 +94,13 @@ from .settings.indicators import (
     build_backtest_indicator_defaults,
     build_runtime_indicator_defaults,
 )
+from .settings.execution_mode import (
+    INVALID_EXECUTION_MODE_MESSAGE,
+    LIVE_MODE_VALUES,
+    TESTNET_MODE_VALUES,
+    InvalidExecutionModeError,
+    is_testnet_trading_mode,
+)
 from .settings.live_safety import (
     BINANCE_MAX_FUTURES_LEVERAGE,
     LIVE_TRADING_ACK_ENV,
@@ -150,9 +157,7 @@ INDICATOR_SOURCE_OPTIONS = (
     "Binance futures",
 )
 _COERCE_BOOL_PROBE_VALUES = ("1", "true", "yes", "on", "y")
-PYTHON_COERCE_BOOL_TRUE_VALUES = tuple(
-    value for value in _COERCE_BOOL_PROBE_VALUES if coerce_bool(value, False)
-)
+PYTHON_COERCE_BOOL_TRUE_VALUES = tuple(value for value in _COERCE_BOOL_PROBE_VALUES if coerce_bool(value, False))
 
 # Native shells must derive their direct-execution boundary from Python as well
 # as their option catalogs. Anything outside this deliberately small surface is
@@ -209,25 +214,30 @@ NATIVE_RUNTIME_OWNERSHIP = {
     "delegated_owner": "Python Service API/provider connector",
 }
 
-NATIVE_RUNTIME_TESTNET_MODE_MARKERS = ("demo", "test", "sandbox")
+NATIVE_RUNTIME_TESTNET_MODE_MARKERS = TESTNET_MODE_VALUES
 
 
 def native_runtime_mode_is_testnet(value: object) -> bool:
     """Mirror Python's Binance mode-to-testnet URL selection policy."""
 
-    text = str(value or "").lower()
-    return any(marker in text for marker in NATIVE_RUNTIME_TESTNET_MODE_MARKERS)
+    try:
+        return is_testnet_trading_mode(value)
+    except InvalidExecutionModeError:
+        return False
 
 
 def native_runtime_mode_reference_cases() -> list[dict[str, object]]:
     """Expose representative and adversarial mode strings to native targets."""
 
     raw_cases = (
-        ("empty-live", ""),
+        ("empty-invalid", ""),
         ("live", "Live"),
         ("production", "Production"),
         ("demo", "Demo"),
         ("demo-testnet", "Demo/Testnet"),
+        ("demo-trading", "Demo Trading"),
+        ("live-trading", "Live Trading"),
+        ("test", "Test"),
         ("testnet", "Testnet"),
         ("sandbox", "Sandbox"),
         ("embedded-test-marker", "contest"),
@@ -278,9 +288,7 @@ def native_runtime_connector_input_is_owned(value: object) -> bool:
 
     text = raw.casefold()
     return text == "binance_sdk_derivatives_trading_usds_futures" or (
-        "sdk" in text
-        and "future" in text
-        and ("usd" in text or "usds" in text)
+        "sdk" in text and "future" in text and ("usd" in text or "usds" in text)
     )
 
 
@@ -325,12 +333,8 @@ def native_runtime_routing_is_owned(config: object) -> bool:
     """Return whether Python allows native handling for one runtime config."""
 
     source = config if isinstance(config, dict) else {}
-    selected_exchange = str(
-        source.get("selected_exchange") or NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"][0]
-    ).strip()
-    direct_exchanges = {
-        str(exchange).casefold() for exchange in NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"]
-    }
+    selected_exchange = str(source.get("selected_exchange") or NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"][0]).strip()
+    direct_exchanges = {str(exchange).casefold() for exchange in NATIVE_RUNTIME_OWNERSHIP["direct_exchanges"]}
     if selected_exchange.casefold() not in direct_exchanges:
         return False
     if not native_runtime_connector_input_is_owned(source.get("connector_backend", "")):
@@ -346,9 +350,7 @@ def native_runtime_routing_is_owned(config: object) -> bool:
         _native_runtime_indicator_source_key(key)
         for key, _market_family in NATIVE_RUNTIME_OWNERSHIP["indicator_source_market_families"]
     }
-    direct_sources.update(
-        _native_runtime_indicator_source_key(label) for label in INDICATOR_SOURCE_OPTIONS
-    )
+    direct_sources.update(_native_runtime_indicator_source_key(label) for label in INDICATOR_SOURCE_OPTIONS)
     return _native_runtime_indicator_source_key(indicator_source) in direct_sources
 
 
@@ -533,6 +535,52 @@ DASHBOARD_STRATEGY_TEMPLATE_DEFINITIONS = {
     "top100": {"label": "Top 100 %1 per trade 1x"},
 }
 
+
+def order_session_budget_reference_cases() -> list[dict[str, object]]:
+    from trading_core.orders import is_exchange_risk_reducing_order
+
+    base = {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"}
+    fixtures = [
+        ("one-way-long-close", "futures", {"reduceOnly": True}, True),
+        ("one-way-short-close", "futures", {"side": "BUY", "reduceOnly": "true"}, True),
+        ("explicit-both-close", "futures", {"positionSide": "BOTH", "reduceOnly": "true"}, True),
+        ("limit-close", "futures", {"type": "LIMIT", "price": "100", "reduceOnly": "true"}, True),
+        ("hedge-long-close", "futures", {"positionSide": "LONG"}, True),
+        ("hedge-short-close", "futures", {"side": "BUY", "positionSide": "SHORT"}, True),
+        ("hedge-long-entry", "futures", {"side": "BUY", "positionSide": "LONG"}, False),
+        ("hedge-short-entry", "futures", {"positionSide": "SHORT"}, False),
+        ("ordinary-sell", "futures", {}, False),
+        ("spot-sell", "spot", {}, False),
+        ("spot-reduce-flag", "spot", {"reduceOnly": "true"}, False),
+        ("reduce-alias", "futures", {"reduce_only": "true"}, False),
+        ("position-alias", "futures", {"position_side": "LONG"}, False),
+        ("reduce-key-case", "futures", {"reduceonly": "true"}, False),
+        ("reduce-key-whitespace", "futures", {"reduceOnly ": "true"}, False),
+        ("position-value-case", "futures", {"positionSide": "long"}, False),
+        ("side-value-case", "futures", {"side": "sell", "reduceOnly": "true"}, False),
+        ("type-value-case", "futures", {"type": "market", "reduceOnly": "true"}, False),
+        ("conflicting-alias", "futures", {"reduceOnly": "false", "reduce_only": "true"}, False),
+        ("invalid-position-side", "futures", {"positionSide": "wrong", "reduceOnly": "true"}, False),
+        ("hedge-with-reduce-flag", "futures", {"positionSide": "LONG", "reduceOnly": "true"}, False),
+        ("invalid-side", "futures", {"side": "HOLD", "reduceOnly": "true"}, False),
+        ("unsupported-order-type", "futures", {"type": "STOP_MARKET", "reduceOnly": "true"}, False),
+        ("close-all-flag", "futures", {"closePosition": "true"}, False),
+        ("conflicting-close-flags", "futures", {"closePosition": "false", "reduceOnly": "true"}, False),
+    ]
+    fixtures.extend(
+        (f"noncanonical-reduce-flag-{index}", "futures", {"reduceOnly": value}, False)
+        for index, value in enumerate((False, "false", 1, "1", "yes", "on", "y", "True", " true ", ""))
+    )
+    cases = []
+    for name, market, updates, expected in fixtures:
+        params = {**base, **updates}
+        actual = is_exchange_risk_reducing_order(market, params)
+        if actual != expected:
+            raise AssertionError(f"Session budget fixture mismatch: {name}")
+        cases.append({"name": name, "market": market, "params": params, "exempt": expected})
+    return cases
+
+
 # Exchange order requests must be structurally safe in every mode. Live mode
 # adds credential acknowledgement and session budget gates; it does not own the
 # basic request, filter, connector, or audit validation contract.
@@ -557,6 +605,8 @@ ORDER_GUARD_BEHAVIOR = {
         "max_session_orders": LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
     },
     "environment_bool_true_values": PYTHON_COERCE_BOOL_TRUE_VALUES,
+    "session_order_budget_scope": "exposure-increasing-submission-attempts",
+    "session_budget_exit_cases": order_session_budget_reference_cases(),
 }
 
 # Canonical runtime-series keys for every user-selectable indicator.  Python's
@@ -671,9 +721,7 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
             "cpp_config_persistence_uses_python_source_options",
             "cpp_config_service_api_uses_python_source_routes",
         ),
-        rust_required_before_full_parity=(
-            "rust_config_persistence_uses_python_source_options",
-        ),
+        rust_required_before_full_parity=("rust_config_persistence_uses_python_source_options",),
         cpp_full_parity=True,
         rust_full_parity=True,
     ),
@@ -842,9 +890,7 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         key="startup_packaging_platform",
         title="Startup, packaging, and platform integration",
         python_surface="Product entrypoints, startup splash/suppression, Windows taskbar metadata, PyInstaller packaging, service wrappers, and release smoke tests.",
-        cpp_required_before_full_parity=(
-            "cpp_startup_packaging_contract",
-        ),
+        cpp_required_before_full_parity=("cpp_startup_packaging_contract",),
         rust_required_before_full_parity=(
             "rust_startup_packaging_contract",
             "tauri_environment_versions_backend_uses_python_source_catalog",
@@ -1087,9 +1133,7 @@ def native_position_reconciliation_reference_cases() -> list[dict[str, object]]:
             "steps": [
                 {
                     "live_position_records": {
-                        "BTCUSDT:L": _native_position_reference_record(
-                            "BTCUSDT", "L", "", quantity=1.0
-                        )
+                        "BTCUSDT:L": _native_position_reference_record("BTCUSDT", "L", "", quantity=1.0)
                     },
                     "policy": {
                         "positions_missing_threshold": 2,
@@ -1105,9 +1149,7 @@ def native_position_reconciliation_reference_cases() -> list[dict[str, object]]:
         {
             "name": "threshold-autoclose-after-two-misses",
             "initial_state": _native_position_reference_state(
-                open_position_records={
-                    "ETHUSDT:S": _native_position_reference_record("ETHUSDT", "S", "1m")
-                }
+                open_position_records={"ETHUSDT:S": _native_position_reference_record("ETHUSDT", "S", "1m")}
             ),
             "steps": [
                 {
@@ -1160,9 +1202,7 @@ def native_position_reconciliation_reference_cases() -> list[dict[str, object]]:
         {
             "name": "autoclose-disabled-drops-record",
             "initial_state": _native_position_reference_state(
-                open_position_records={
-                    "SOLUSDT:S": _native_position_reference_record("SOLUSDT", "S", "1m")
-                }
+                open_position_records={"SOLUSDT:S": _native_position_reference_record("SOLUSDT", "S", "1m")}
             ),
             "steps": [
                 {
@@ -1408,6 +1448,11 @@ def native_runtime_config_invalid_reference_cases() -> list[dict[str, object]]:
     invalid_cases: tuple[tuple[str, dict[str, object]], ...] = (
         ("invalid-unknown-key", {"unknown_key": True}),
         ("invalid-mode-empty", {"mode": ""}),
+        ("invalid-mode-paper", {"mode": "Paper"}),
+        ("invalid-mode-paper-local", {"mode": "Paper Local"}),
+        ("invalid-mode-embedded-test", {"mode": "contest"}),
+        ("invalid-mode-embedded-demo", {"mode": "my-demo-mode"}),
+        ("invalid-mode-unknown", {"mode": "unknown"}),
         ("invalid-account-type", {"account_type": "margin"}),
         ("invalid-symbol-type", {"symbols": 42}),
         ("invalid-symbol-content", {"symbols": ["BTC USDT"]}),
@@ -1887,7 +1932,7 @@ def native_backtest_interval_seconds_reference_cases() -> list[dict[str, object]
     return [
         {
             "input": value,
-        "seconds": backtest_interval_seconds(value),
+            "seconds": backtest_interval_seconds(value),
         }
         for value in values
     ]
@@ -1985,7 +2030,7 @@ def native_order_intent_reference_cases() -> dict[str, object]:
                 "type": "MARKET",
                 "closePosition": "true",
             },
-            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "minNotional": 5.0},
+            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "maxQty": 100.0, "minNotional": 5.0},
             100.0,
         ),
         (
@@ -1998,7 +2043,7 @@ def native_order_intent_reference_cases() -> dict[str, object]:
                 "quantity": "0.001",
                 "closePosition": "y",
             },
-            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "minNotional": 5.0},
+            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "maxQty": 100.0, "minNotional": 5.0},
             100.0,
         ),
         (
@@ -2014,7 +2059,7 @@ def native_order_intent_reference_cases() -> dict[str, object]:
                 "close_position": "yes",
                 "reduce_only": "on",
             },
-            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "minNotional": 5.0},
+            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "maxQty": 100.0, "minNotional": 5.0},
             2000.0,
         ),
         (
@@ -2028,12 +2073,53 @@ def native_order_intent_reference_cases() -> dict[str, object]:
                 "closePosition": "true",
                 "reduceOnly": "true",
             },
-            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "minNotional": 5.0},
+            {"stepSize": 0.001, "tickSize": 0.1, "minQty": 0.01, "maxQty": 100.0, "minNotional": 5.0},
             2000.0,
         ),
     )
     cases: list[dict[str, object]] = []
-    for name, market, params, filters, last_price in raw_cases:
+    quantity_cases = []
+    for market in ("spot", "futures"):
+        for name, order_type, quantity, reduce_only, overrides in (
+            ("market-minimum", "MARKET", "0.1", False, {}),
+            ("market-maximum", "MARKET", "1", False, {}),
+            ("market-below-minimum", "MARKET", "0.05", False, {}),
+            ("market-above-maximum", "MARKET", "1.1", False, {}),
+            ("market-step", "MARKET", "0.15", False, {}),
+            ("limit-ignores-market-lot", "LIMIT", "1.5", False, {}),
+            ("general-maximum", "LIMIT", "101", False, {}),
+            ("market-zero-maximum", "MARKET", "0.1", False, {"marketMinQty": 0, "marketMaxQty": 0}),
+            ("market-zero-step-keeps-general-step", "MARKET", "0.15", False, {"stepSize": 0.02, "marketStepSize": 0}),
+            ("market-general-step-also-applies", "MARKET", "0.15", False, {"stepSize": 0.02, "marketStepSize": 0.03}),
+            ("market-common-step", "MARKET", "0.12", False, {"stepSize": 0.02, "marketStepSize": 0.03}),
+            ("protective-exit-still-bounded", "MARKET", "1.1", True, {}),
+        ):
+            if reduce_only and market != "futures":
+                continue
+            params = {"symbol": "BTCUSDT", "side": "SELL", "type": order_type, "quantity": quantity}
+            if order_type == "LIMIT":
+                params["price"] = "100"
+            if reduce_only:
+                params["reduceOnly"] = "true"
+            quantity_cases.append(
+                (
+                    f"{market}-{name}",
+                    market,
+                    params,
+                    {
+                        "stepSize": 0.001,
+                        "minQty": 0.001,
+                        "maxQty": 100,
+                        "minNotional": 0,
+                        "marketMinQty": 0.1,
+                        "marketMaxQty": 1,
+                        "marketStepSize": 0.1,
+                        **overrides,
+                    },
+                    100,
+                )
+            )
+    for name, market, params, filters, last_price in (*raw_cases, *quantity_cases):
         intent = order_submit_intent_from_params(market, params)
         wrapper = _FixtureWrapper(filters, last_price)
         cases.append(
@@ -2050,7 +2136,55 @@ def native_order_intent_reference_cases() -> dict[str, object]:
                 },
             }
         )
-    return {"schema_version": 1, "cases": cases}
+    return {"schema_version": 1, "cases": cases, "execution_cases": native_order_execution_reference_cases()}
+
+
+def native_order_execution_reference_cases() -> list[dict[str, object]]:
+    """Derive native fill-accounting expectations from the canonical validator."""
+    from trading_core.orders import order_execution_from_response
+
+    base = {"status": "FILLED", "executedQty": "2", "origQty": "2"}
+    inputs = [
+        ("filled", "2", base),
+        ("new", "2", {**base, "status": "NEW", "executedQty": "0"}),
+        ("partial", "2", {**base, "status": "PARTIALLY_FILLED", "executedQty": "1"}),
+        ("partial-not-final", "2", {**base, "status": "PARTIALLY_FILLED"}),
+        ("canceled-partial", "2", {**base, "status": "CANCELED", "executedQty": "1"}),
+        ("expired-empty", "2", {**base, "status": "EXPIRED", "executedQty": "0"}),
+        ("expired-in-match", "2", {**base, "status": "EXPIRED_IN_MATCH", "executedQty": "1"}),
+        ("rejected-empty", "2", {**base, "status": "REJECTED", "executedQty": "0"}),
+        ("new-conflicting-fill", "2", {**base, "status": "NEW"}),
+        ("filled-zero", "2", {**base, "executedQty": "0"}),
+        ("filled-short", "2", {**base, "executedQty": "1"}),
+        ("overfilled", "2", {**base, "executedQty": "3"}),
+        ("different-original", "2", {**base, "origQty": "3"}),
+        ("no-original", "2", {"status": "FILLED", "executedQty": "2"}),
+        ("missing-execution", "2", {"status": "FILLED", "origQty": "2"}),
+        ("missing-status", "2", {"executedQty": "2"}),
+        ("unknown-status", "2", {**base, "status": "UNKNOWN"}),
+        ("numeric-status", "2", {**base, "status": 1}),
+        ("lowercase-status", "2", {**base, "status": "filled"}),
+        ("zero-submitted", "0", base),
+        ("negative-submitted", "-2", base),
+        ("boolean-submitted", True, base),
+        ("null-response", "2", None),
+    ]
+    for name, value in (
+        ("negative", "-1"), ("boolean", True), ("null", None),
+        ("nan", "NaN"), ("infinite", "Infinity"), ("overflow", "1e999"),
+        ("malformed", "not-a-number"), ("array", []),
+    ):
+        inputs.append((name, "2", {**base, "executedQty": value}))
+    cases: list[dict[str, object]] = []
+    for name, submitted, response in inputs:
+        try:
+            result = order_execution_from_response(response, submitted)
+        except ValueError:
+            expected = {"valid": False}
+        else:
+            expected = {"valid": True, **asdict(result)}
+        cases.append({"name": name, "submitted_qty": submitted, "response": response, "expected": expected})
+    return cases
 
 
 def native_live_safety_reference_cases() -> dict[str, object]:
@@ -2151,7 +2285,25 @@ def native_live_safety_reference_cases() -> dict[str, object]:
     )
 
     cases: list[dict[str, object]] = []
-    for name, input_case in raw_cases:
+    for name, input_case in (
+        *raw_cases,
+        *(
+            (
+                f"unsupported-execution-mode-{index}",
+                {
+                    "mode": mode,
+                    "api_key": "live-api-key",
+                    "api_secret": "live-api-secret",
+                    "account_type": "Futures",
+                    "leverage": 1,
+                    "margin_mode": "Isolated",
+                    "position_pct": 2.0,
+                    "config": dict(safe_config),
+                },
+            )
+            for index, mode in enumerate(("", "Paper", "Paper Local", "contest", "my-demo-mode", "unknown"))
+        ),
+    ):
         try:
             validate_live_trading_safety(**input_case, env={})
         except LiveTradingSafetyError as exc:
@@ -2254,9 +2406,7 @@ def native_llm_output_policy_reference_cases() -> dict[str, object]:
 def native_llm_chat_request_reference_cases() -> dict[str, object]:
     """Return deterministic Python LLM request payloads for native consumers."""
 
-    raw_cases: tuple[
-        tuple[str, dict[str, object], str, str, dict[str, object] | None], ...
-    ] = (
+    raw_cases: tuple[tuple[str, dict[str, object], str, str, dict[str, object] | None], ...] = (
         (
             "openai-cloud-context-and-reasoning",
             {
@@ -2480,6 +2630,63 @@ def native_python_risk_defaults() -> dict[str, object]:
     return defaults
 
 
+def native_operational_freshness_reference() -> dict[str, object]:
+    from .core.strategy.orders.operational_snapshot import (
+        _MAX_FUTURE_SKEW_SECONDS,
+        operational_snapshot_issues,
+    )
+
+    now_ms = 1_780_000_000_000
+    cases = []
+    for name, timestamp_ms, generated_at_ms, consumed_at_ms, limit_ms, reported_age_ms in (
+        ("fresh", now_ms - 1_000, now_ms, now_ms, 300_000, 1_000),
+        ("age-boundary", now_ms - 300_000, now_ms, now_ms, 300_000, 300_000),
+        ("expired", now_ms - 300_001, now_ms, now_ms, 300_000, 300_001),
+        ("missing", None, now_ms, now_ms, 300_000, None),
+        ("negative-timestamp", -1, now_ms, now_ms, 300_000, 0),
+        ("skew-boundary", now_ms + 5_000, now_ms, now_ms, 300_000, 0),
+        ("future", now_ms + 5_001, now_ms, now_ms, 300_000, 0),
+        ("zero-limit", now_ms, now_ms, now_ms, 0, 0),
+        ("negative-limit", now_ms, now_ms, now_ms, -1, 0),
+        ("negative-clock", now_ms, now_ms, -1, 300_000, 0),
+        ("cached-expired", now_ms, now_ms, now_ms + 300_001, 300_000, 0),
+        ("envelope-expired", now_ms, now_ms - 300_001, now_ms, 300_000, 0),
+        ("envelope-future", now_ms, now_ms + 5_001, now_ms, 300_000, 0),
+        ("envelope-negative", now_ms, -1, now_ms, 300_000, 0),
+        ("reported-age-expired", now_ms, now_ms, now_ms, 300_000, 300_001),
+        ("reported-age-negative", now_ms, now_ms, now_ms, 300_000, -1),
+        ("reported-age-missing", now_ms, now_ms, now_ms, 300_000, None),
+    ):
+        component = {
+            "stale": False,
+            "generated_at": None if timestamp_ms is None else timestamp_ms / 1_000,
+            "age_seconds": None if reported_age_ms is None else reported_age_ms / 1_000,
+            "max_age_seconds": limit_ms / 1_000,
+        }
+        # Exercise the actual Python consumer, including cached reported ages.
+        snapshot = {
+            "health": "ok",
+            "generated_at": generated_at_ms / 1_000,
+            "freshness": {key: dict(component) for key in ("exchange_connector", "account", "portfolio")},
+        }
+        config = {
+            f"operational_{key}_snapshot_stale_seconds": limit_ms / 1_000
+            for key in ("connector", "account", "portfolio")
+        }
+        cases.append(
+            {
+                "name": name,
+                "timestamp_ms": timestamp_ms,
+                "generated_at_ms": generated_at_ms,
+                "now_ms": consumed_at_ms,
+                "max_age_ms": limit_ms,
+                "reported_age_ms": reported_age_ms,
+                "allowed": not operational_snapshot_issues(snapshot, config, now_epoch=consumed_at_ms / 1_000),
+            }
+        )
+    return {"max_future_skew_ms": int(_MAX_FUTURE_SKEW_SECONDS * 1_000), "cases": cases}
+
+
 def native_order_sizing_reference_cases() -> list[dict[str, object]]:
     """Return order-sizing cases evaluated by the Python source implementation.
 
@@ -2522,6 +2729,7 @@ def native_order_sizing_reference_cases() -> list[dict[str, object]]:
     filters = {
         "stepSize": 0.01,
         "minQty": 0.02,
+        "maxQty": 100.0,
         "minNotional": 5.0,
     }
     cases: list[dict[str, object]] = []
@@ -2684,8 +2892,12 @@ def native_python_source_contract_payload() -> dict[str, Any]:
         "native_runtime_routing_json_coercion_reference": native_runtime_routing_json_coercion_reference_cases(),
         "native_runtime_mode_policy": {
             "testnet_markers": list(NATIVE_RUNTIME_TESTNET_MODE_MARKERS),
+            "live_values": list(LIVE_MODE_VALUES),
+            "match_policy": "exact-trimmed-case-insensitive",
+            "invalid_mode_error": INVALID_EXECUTION_MODE_MESSAGE,
         },
         "native_runtime_mode_reference": native_runtime_mode_reference_cases(),
+        "operational_freshness_reference": native_operational_freshness_reference(),
         "domains": [_domain_payload(domain) for domain in NATIVE_PARITY_DOMAINS],
         "service_api": {
             **service_api_contract_payload(),
@@ -2860,23 +3072,20 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "contract_hash": native_python_source_contract_hash(),
         "order_guard_behavior": dict(payload["order_guard_behavior"]),
         "native_runtime_ownership": dict(payload["native_runtime_ownership"]),
-        "native_runtime_connector_ownership_reference": list(
-            payload["native_runtime_connector_ownership_reference"]
-        ),
+        "native_runtime_connector_ownership_reference": list(payload["native_runtime_connector_ownership_reference"]),
         "native_runtime_routing_reference": list(payload["native_runtime_routing_reference"]),
         "native_runtime_routing_json_coercion_reference": list(
             payload["native_runtime_routing_json_coercion_reference"]
         ),
         "native_runtime_mode_policy": dict(payload["native_runtime_mode_policy"]),
         "native_runtime_mode_reference": list(payload["native_runtime_mode_reference"]),
+        "operational_freshness_reference": dict(payload["operational_freshness_reference"]),
         "domains": list(payload["domains"]),
         "domain_keys": [domain["key"] for domain in payload["domains"]],
         "route_names": list(SERVICE_API_ROUTE_SUFFIXES),
         "service_routes": service_routes,
         "service_route_schemas": service_route_schemas,
-        "remote_service_config_protected_fields": list(
-            payload["service_api"]["remote_config_protected_fields"]
-        ),
+        "remote_service_config_protected_fields": list(payload["service_api"]["remote_config_protected_fields"]),
         "backtest_run_request_fields": list(SERVICE_BACKTEST_RUN_REQUEST_FIELDS),
         "indicators": list(payload["ui_options"]["indicators"]),
         "indicator_keys": [definition.key for definition in INDICATOR_CATALOG],
@@ -2887,12 +3096,9 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "llm_model_catalog_path_env": str(payload["llm_catalog"]["model_catalog_path_env"]),
         "ollama_model_size_hints": list(payload["llm_catalog"]["ollama_model_size_hints"]),
         "llm_provider_choices": [
-            {"key": key, "value": value}
-            for key, value in payload["llm_provider_choices"].items()
+            {"key": key, "value": value} for key, value in payload["llm_provider_choices"].items()
         ],
-        "config_choice_maps": {
-            name: dict(values) for name, values in payload["config_choice_maps"].items()
-        },
+        "config_choice_maps": {name: dict(values) for name, values in payload["config_choice_maps"].items()},
         "runtime_config_choice_reference": list(payload["runtime_config_choice_reference"]),
         "runtime_config_invalid_reference": list(payload["runtime_config_invalid_reference"]),
         "strategy_controls_reference": list(payload["strategy_controls_reference"]),

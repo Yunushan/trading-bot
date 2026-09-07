@@ -80,6 +80,19 @@ def _load_repo_tool(module_name: str, path: Path):
 
 
 class NativeGeneratedParityContractTests(unittest.TestCase):
+    def test_execution_reference_preserves_explicit_fill_and_status_boundaries(self):
+        reference = native_python_source_contract_summary()["order_intent_reference"]
+        cases = {case["name"]: case for case in reference["execution_cases"]}
+        self.assertEqual(31, len(cases))
+        complete = {name for name, case in cases.items() if case["expected"].get("complete")}
+        self.assertEqual({"filled", "no-original"}, complete)
+        self.assertEqual(0.0, cases["new"]["expected"]["executed_qty"])
+        self.assertEqual(1.0, cases["partial"]["expected"]["executed_qty"])
+        self.assertFalse(cases["partial-not-final"]["expected"]["complete"])
+        for name in ("missing-execution", "filled-zero", "new-conflicting-fill", "different-original", "overfilled", "boolean", "nan"):
+            with self.subTest(name=name):
+                self.assertFalse(cases[name]["expected"]["valid"])
+
     def test_local_model_status_contract_covers_python_dataclass(self):
         declared_fields = set(SERVICE_API_ROUTE_SCHEMAS["llm_local_model_status"]["response_fields"])
         python_fields = {field.name for field in dataclass_fields(LocalModelStatus)}
@@ -90,6 +103,17 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         )
 
     maxDiff = None
+
+    def test_operational_freshness_reference_preserves_python_failure_boundaries(self):
+        reference = native_python_source_contract_summary()["operational_freshness_reference"]
+        self.assertEqual(5_000, reference["max_future_skew_ms"])
+        cases = reference["cases"]
+        self.assertEqual(17, len(cases))
+        self.assertEqual(
+            {"fresh", "age-boundary", "skew-boundary"},
+            {case["name"] for case in cases if case["allowed"]},
+        )
+        self.assertEqual(len(cases), len({case["name"] for case in cases}))
 
     def test_runtime_config_reference_covers_every_python_choice_alias(self):
         cases = _runtime_config_reference_cases()
@@ -230,15 +254,37 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         payload = native_python_source_contract_summary()["order_intent_reference"]
         self.assertEqual(payload["schema_version"], 1)
         cases = payload["cases"]
-        self.assertEqual(
-            {
-                "canonical-close-position",
-                "python-intent-y-is-false-filter-y-is-true",
-                "canonical-aliases-and-conflicting-flags",
-                "spot-rejects-futures-flags",
-            },
-            {case["name"] for case in cases},
-        )
+        expected_names = {
+            "canonical-close-position",
+            "python-intent-y-is-false-filter-y-is-true",
+            "canonical-aliases-and-conflicting-flags",
+            "spot-rejects-futures-flags",
+            "futures-protective-exit-still-bounded",
+        }
+        quantity_outcomes = {
+            "market-minimum": True,
+            "market-maximum": True,
+            "market-below-minimum": False,
+            "market-above-maximum": False,
+            "market-step": False,
+            "limit-ignores-market-lot": True,
+            "general-maximum": False,
+            "market-zero-maximum": False,
+            "market-zero-step-keeps-general-step": False,
+            "market-general-step-also-applies": False,
+            "market-common-step": True,
+        }
+        by_name = {case["name"]: case for case in cases}
+        for market in ("spot", "futures"):
+            for name, allowed in quantity_outcomes.items():
+                case_name = f"{market}-{name}"
+                expected_names.add(case_name)
+                with self.subTest(case=case_name):
+                    self.assertEqual([], by_name[case_name]["expected"]["intent_errors"])
+                    self.assertEqual(allowed, not by_name[case_name]["expected"]["filter_errors"])
+        self.assertTrue(by_name["futures-protective-exit-still-bounded"]["expected"]["filter_errors"])
+        self.assertEqual(expected_names, set(by_name))
+        self.assertEqual(len(expected_names), len(cases))
         y_boundary = next(
             case
             for case in cases
@@ -286,10 +332,25 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
                 "live-spot-position-cap",
                 "live-invalid-caps-and-futures-controls",
                 "live-rejects-placeholder-credentials",
+                "unsupported-execution-mode-0",
+                "unsupported-execution-mode-1",
+                "unsupported-execution-mode-2",
+                "unsupported-execution-mode-3",
+                "unsupported-execution-mode-4",
+                "unsupported-execution-mode-5",
             },
             set(cases),
         )
         self.assertEqual(cases["demo-mode-bypasses-live-gates"]["expected_errors"], [])
+        for name, case in cases.items():
+            if name.startswith("unsupported-execution-mode-"):
+                with self.subTest(case=name):
+                    self.assertTrue(case["expected_errors"])
+                    self.assertIn("unsupported execution mode", "; ".join(case["expected_errors"]))
+        self.assertEqual(
+            {"", "Paper", "Paper Local", "contest", "my-demo-mode", "unknown"},
+            {case["input"]["mode"] for name, case in cases.items() if name.startswith("unsupported-execution-mode-")},
+        )
         self.assertEqual(cases["live-safe-futures"]["expected_errors"], [])
         self.assertIn(
             "set live_trading_enabled=true",
@@ -768,7 +829,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
     def test_native_runtime_mode_reference_covers_python_testnet_policy(self):
         summary = native_python_source_contract_summary()
         self.assertEqual(
-            ["demo", "test", "sandbox"],
+            ["demo", "demo/testnet", "demo trading", "test", "testnet", "sandbox"],
             summary["native_runtime_mode_policy"]["testnet_markers"],
         )
         cases = summary["native_runtime_mode_reference"]

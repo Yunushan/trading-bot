@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -13,8 +14,9 @@ use crate::backtest_runtime::default_config_choice;
 use crate::generated_python_parity::{
     PYTHON_ACCOUNT_TYPE_CONFIG_CHOICES, PYTHON_ASSETS_MODE_CONFIG_CHOICES,
     PYTHON_DEFAULT_EXECUTION_JSON, PYTHON_MARGIN_MODE_CONFIG_CHOICES,
-    PYTHON_POSITION_MODE_CONFIG_CHOICES, PYTHON_RISK_DEFAULTS_JSON, PYTHON_SIDE_CONFIG_CHOICES,
-    PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES, PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
+    PYTHON_OPERATIONAL_MAX_FUTURE_SKEW_MS, PYTHON_POSITION_MODE_CONFIG_CHOICES,
+    PYTHON_RISK_DEFAULTS_JSON, PYTHON_SIDE_CONFIG_CHOICES, PYTHON_STOP_LOSS_MODE_CONFIG_CHOICES,
+    PYTHON_STOP_LOSS_SCOPE_CONFIG_CHOICES,
 };
 use crate::native_indicators::{
     compute_configured_indicator_series, default_runtime_indicator_configs,
@@ -528,6 +530,7 @@ pub struct NativeRuntimeFreshnessInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeRuntimeFreshnessSnapshot {
     pub stale: bool,
+    pub required: bool,
     pub max_age_ms: i64,
     pub age_ms: Option<i64>,
     pub timestamp_ms: Option<i64>,
@@ -2379,6 +2382,7 @@ impl NativeRuntimeLoop {
         let risk_positions = input.risk_positions.clone();
         let market = input.market.clone();
         let now_ms = input.market_cycle.now_ms;
+        let cycle_started = Instant::now();
         let mut market_cycle = self.run_read_only_market_cycle(input.market_cycle)?;
         let risk_directives = self.evaluate_stop_loss(
             &market,
@@ -2543,9 +2547,23 @@ impl NativeRuntimeLoop {
                 "Native strategy emitted an unsupported signal; no order was considered.",
             ));
         }
-        if !operational_preflight_orders_allowed(&input.operational_preflight) {
+        if is_native_live_trading_mode(&engine.mode)
+            && !is_native_live_trading_mode(&input.operational_preflight.mode)
+        {
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                None,
+                None,
+                "blocked",
+                "Live order engine requires a live operational preflight snapshot.",
+            ));
+        }
+        if !operational_preflight_orders_allowed(
+            &input.operational_preflight,
+            consumption_time_ms(now_ms, cycle_started),
+        ) {
             let reason = if input.operational_preflight.orders.reasons.is_empty() {
-                "Native operational preflight blocked order submission.".to_owned()
+                "Native operational preflight blocked order submission: snapshot is stale or invalid.".to_owned()
             } else {
                 format!(
                     "Native operational preflight blocked order submission: {}",
@@ -2724,6 +2742,19 @@ impl NativeRuntimeLoop {
                 exposure.desired_position_side.as_deref().unwrap_or(""),
             )?
         };
+        // Close preparation and execution may block. Re-age before opening a new leg.
+        if !operational_preflight_orders_allowed(
+            &input.operational_preflight,
+            consumption_time_ms(now_ms, cycle_started),
+        ) {
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                Some(exposure),
+                None,
+                "blocked",
+                "Native operational snapshot expired before new order submission; refresh required.",
+            ));
+        }
         let submit = engine.submit_futures_order(
             RuntimeOrderSubmitInput {
                 order: &order,
@@ -2737,7 +2768,15 @@ impl NativeRuntimeLoop {
                 now_epoch_seconds: input.now_epoch_seconds,
                 source: non_empty_or(&input.source, "native-runtime-guarded-cycle"),
             },
-            |params| execute(params),
+            |params| {
+                if !operational_preflight_orders_allowed(
+                    &input.operational_preflight,
+                    consumption_time_ms(now_ms, cycle_started),
+                ) {
+                    bail!("Native operational snapshot expired before exchange submission.");
+                }
+                execute(params)
+            },
         );
         let state = if submit.allowed {
             "accepted"
@@ -3593,7 +3632,7 @@ pub fn evaluate_native_spot_account_preflight(
 pub fn build_native_operational_preflight(
     input: NativeRuntimeOperationalPreflightInput,
 ) -> NativeRuntimeOperationalPreflightSnapshot {
-    let generated_at_ms = input.generated_at_ms.max(0);
+    let generated_at_ms = input.generated_at_ms;
     let mut health = input.health.trim().to_ascii_lowercase();
     if health.is_empty() {
         health = "unknown".to_owned();
@@ -3602,14 +3641,17 @@ pub fn build_native_operational_preflight(
         health = "error".to_owned();
     }
 
+    // Warning preferences cannot make critical trading observations optional.
+    let critical_freshness = |input: &NativeRuntimeFreshnessInput, now_ms| {
+        let mut required = input.clone();
+        required.should_warn = true;
+        build_native_freshness_payload(&required, now_ms)
+    };
     let freshness = NativeRuntimeOperationalFreshnessSnapshot {
-        exchange_connector: build_native_freshness_payload(
-            &input.exchange_connector,
-            generated_at_ms,
-        ),
+        exchange_connector: critical_freshness(&input.exchange_connector, generated_at_ms),
         execution: build_native_freshness_payload(&input.execution, generated_at_ms),
-        account: build_native_freshness_payload(&input.account, generated_at_ms),
-        portfolio: build_native_freshness_payload(&input.portfolio, generated_at_ms),
+        account: critical_freshness(&input.account, generated_at_ms),
+        portfolio: critical_freshness(&input.portfolio, generated_at_ms),
     };
 
     let mut start_stale_labels = Vec::new();
@@ -3701,17 +3743,15 @@ pub fn build_native_freshness_payload(
     input: &NativeRuntimeFreshnessInput,
     now_ms: i64,
 ) -> NativeRuntimeFreshnessSnapshot {
-    let max_age_ms = input.max_age_ms.max(0);
-    let age_ms = input.timestamp_ms.map(|timestamp_ms| {
-        if now_ms > timestamp_ms {
-            now_ms - timestamp_ms
-        } else {
-            0
-        }
-    });
-    let stale = input.should_warn && age_ms.is_none_or(|age_ms| age_ms > max_age_ms);
+    let max_age_ms = input.max_age_ms;
+    let age_ms = native_observation_age_ms(input.timestamp_ms, now_ms);
+    let stale = now_ms < 0
+        || max_age_ms <= 0
+        || (input.timestamp_ms.is_some() && age_ms.is_none())
+        || (input.should_warn && age_ms.is_none_or(|age_ms| age_ms > max_age_ms));
     NativeRuntimeFreshnessSnapshot {
         stale,
+        required: input.should_warn,
         max_age_ms,
         age_ms,
         timestamp_ms: input.timestamp_ms,
@@ -3722,23 +3762,83 @@ pub fn build_native_freshness_payload(
 }
 
 pub fn is_native_live_trading_mode(mode: impl AsRef<str>) -> bool {
-    let text = mode.as_ref().trim().to_ascii_lowercase();
-    !text.is_empty()
-        && !["demo", "test", "sandbox", "paper"]
-            .iter()
-            .any(|token| text.contains(token))
+    crate::order_guard::is_live_trading_mode(mode)
 }
 
 pub fn operational_preflight_start_allowed(
     preflight: &NativeRuntimeOperationalPreflightSnapshot,
+    now_ms: i64,
 ) -> bool {
     preflight.start.allowed
+        && (!preflight.start.gate_enabled
+            || !is_native_live_trading_mode(&preflight.mode)
+            || (critical_preflight_freshness_valid(preflight, now_ms)
+                && (!preflight.freshness.execution.required
+                    || freshness_valid_at(
+                        &preflight.freshness.execution,
+                        preflight.generated_at_ms,
+                        now_ms,
+                    ))))
 }
 
 pub fn operational_preflight_orders_allowed(
     preflight: &NativeRuntimeOperationalPreflightSnapshot,
+    now_ms: i64,
 ) -> bool {
     preflight.orders.allowed
+        && (!preflight.orders.gate_enabled
+            || !is_native_live_trading_mode(&preflight.mode)
+            || critical_preflight_freshness_valid(preflight, now_ms))
+}
+
+pub fn native_observation_age_ms(timestamp_ms: Option<i64>, now_ms: i64) -> Option<i64> {
+    let timestamp_ms = timestamp_ms?;
+    if now_ms < 0
+        || timestamp_ms < 0
+        || timestamp_ms.saturating_sub(now_ms) > PYTHON_OPERATIONAL_MAX_FUTURE_SKEW_MS
+    {
+        return None;
+    }
+    Some(now_ms.saturating_sub(timestamp_ms).max(0))
+}
+
+fn freshness_valid_at(
+    item: &NativeRuntimeFreshnessSnapshot,
+    generated_at_ms: i64,
+    now_ms: i64,
+) -> bool {
+    let Some(age_ms) = native_observation_age_ms(item.timestamp_ms, now_ms) else {
+        return false;
+    };
+    let Some(envelope_age_ms) = native_observation_age_ms(Some(generated_at_ms), now_ms) else {
+        return false;
+    };
+    !item.stale
+        && item.max_age_ms > 0
+        && item
+            .age_ms
+            .is_some_and(|reported| reported >= 0 && reported.max(age_ms) <= item.max_age_ms)
+        && envelope_age_ms <= item.max_age_ms
+}
+
+fn critical_preflight_freshness_valid(
+    preflight: &NativeRuntimeOperationalPreflightSnapshot,
+    now_ms: i64,
+) -> bool {
+    [
+        &preflight.freshness.exchange_connector,
+        &preflight.freshness.account,
+        &preflight.freshness.portfolio,
+    ]
+    .into_iter()
+    .all(|item| freshness_valid_at(item, preflight.generated_at_ms, now_ms))
+}
+
+fn consumption_time_ms(now_ms: i64, started: Instant) -> i64 {
+    if now_ms < 0 {
+        return now_ms;
+    }
+    now_ms.saturating_add(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX))
 }
 
 fn apply_signal_side_exposure(input: &mut NativeRuntimeExposureGuardInput, signal: &str) {
@@ -3973,6 +4073,7 @@ pub fn evaluate_native_exposure_guard(
         price_precision: 0,
         quote_asset_precision: 0,
         max_leverage: 0,
+        ..Default::default()
     };
     let quantity_adjustment = if input.market.eq_ignore_ascii_case("spot") {
         adjust_spot_quantity_to_filters(
@@ -4567,6 +4668,8 @@ mod tests {
                 tick_size: 0.1,
                 min_qty: 0.001,
                 min_notional: 5.0,
+                max_qty: 100.0,
+                ..Default::default()
             }),
             market: "futures".to_owned(),
             connector_state: "ready".to_owned(),
@@ -4588,7 +4691,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("trading-bot-guarded-cycle-{stamp}"));
         fs::create_dir_all(&directory).expect("audit directory");
         let engine = RuntimeOrderEngine::new(
-            "paper",
+            "Demo/Testnet",
             OrderAuditConfig {
                 enabled: true,
                 path: directory.join("audit.jsonl").display().to_string(),
@@ -4601,6 +4704,10 @@ mod tests {
                 block_window_seconds: 60.0,
             },
             "bootstrap",
+        );
+        assert!(
+            engine.dry_run,
+            "the offline fixture must never enable exchange execution"
         );
         (engine, directory)
     }
@@ -4832,7 +4939,7 @@ mod tests {
     }
 
     #[test]
-    fn guarded_execution_cycle_audits_a_valid_paper_signal_without_calling_executor() {
+    fn guarded_execution_cycle_audits_a_valid_dry_run_signal_without_calling_executor() {
         let mut runtime = loop_under_test();
         runtime.start();
         let (mut engine, directory) = dry_run_engine();
@@ -4907,7 +5014,7 @@ mod tests {
     }
 
     #[test]
-    fn guarded_execution_cycle_applies_python_per_trade_stop_loss_before_ordering() {
+    fn dry_run_stop_loss_does_not_claim_confirmed_execution() {
         let mut runtime = loop_under_test();
         runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
             "stop_loss": {
@@ -4940,9 +5047,12 @@ mod tests {
             })
             .expect("guarded cycle");
 
-        assert_eq!(snapshot.state, "closed");
+        assert_eq!(snapshot.state, "blocked");
         assert!(snapshot.order.is_none());
         assert!(snapshot.status_message.contains("per_trade_stop_loss"));
+        let audit = fs::read_to_string(directory.join("audit.jsonl")).expect("audit log");
+        assert!(audit.contains("order_close_dry_run"));
+        assert!(!audit.contains("order_close_accepted"));
         fs::remove_dir_all(directory).ok();
     }
 
@@ -5077,7 +5187,7 @@ mod tests {
     }
 
     #[test]
-    fn guarded_execution_cycle_executes_python_opposite_close_before_new_order() {
+    fn dry_run_opposite_close_does_not_authorize_a_new_order() {
         let mut runtime = loop_under_test();
         runtime.config.risk_controls = normalize_strategy_risk_controls(&serde_json::json!({
             "allow_opposite_positions": false,
@@ -5106,14 +5216,16 @@ mod tests {
             .expect("guarded cycle");
 
         assert_eq!(
-            snapshot.state, "accepted",
+            snapshot.state, "blocked",
             "unexpected native close result: {:?}",
             snapshot
         );
-        assert!(snapshot.status_message.contains("dry run"));
+        assert!(snapshot.status_message.contains("opposite close residual"));
+        assert!(snapshot.order.is_none());
         let audit = fs::read_to_string(directory.join("audit.jsonl")).expect("audit log");
         assert!(audit.contains("close_opposite_position"));
-        assert!(audit.contains("order_close_accepted"));
+        assert!(audit.contains("order_close_dry_run"));
+        assert!(!audit.contains("order_close_accepted"));
         fs::remove_dir_all(directory).ok();
     }
 
@@ -6374,6 +6486,152 @@ mod tests {
     }
 
     #[test]
+    fn native_preflight_rejects_missing_and_future_critical_observations_without_warning_flags() {
+        let runtime = loop_under_test();
+        let now_ms = 1_780_000_000_000;
+        for timestamp in [None, Some(-1), Some(now_ms + 5_001)] {
+            for component in ["connector", "account", "portfolio"] {
+                let mut input = fresh_operational_preflight_input(&runtime, now_ms);
+                let item = match component {
+                    "connector" => &mut input.exchange_connector,
+                    "account" => &mut input.account,
+                    _ => &mut input.portfolio,
+                };
+                item.timestamp_ms = timestamp;
+                item.should_warn = false;
+                let preflight = runtime.build_operational_preflight(input);
+                assert!(!preflight.orders.allowed, "{component}: {timestamp:?}");
+                assert!(!preflight.start.allowed, "{component}: {timestamp:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_preflight_consumption_matches_python_freshness_reference() {
+        let cases: Value = serde_json::from_str(
+            crate::generated_python_parity::PYTHON_OPERATIONAL_FRESHNESS_REFERENCE_JSON,
+        )
+        .expect("Python freshness cases");
+        let runtime = loop_under_test();
+        for case in cases.as_array().expect("cases") {
+            let mut preflight = runtime.build_operational_preflight(
+                fresh_operational_preflight_input(&runtime, 1_780_000_000_000),
+            );
+            preflight.generated_at_ms = case["generated_at_ms"].as_i64().unwrap();
+            for item in [
+                &mut preflight.freshness.exchange_connector,
+                &mut preflight.freshness.account,
+                &mut preflight.freshness.portfolio,
+            ] {
+                item.timestamp_ms = case["timestamp_ms"].as_i64();
+                item.age_ms = case["reported_age_ms"].as_i64();
+                item.max_age_ms = case["max_age_ms"].as_i64().unwrap();
+                // Cached flags cannot authorize stale or malformed observations.
+                item.stale = false;
+                item.required = false;
+            }
+            let now_ms = case["now_ms"].as_i64().unwrap();
+            assert_eq!(
+                operational_preflight_orders_allowed(&preflight, now_ms),
+                case["allowed"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn native_preflight_reages_heartbeat_only_for_start_and_preserves_bootstrap_exception() {
+        let runtime = loop_under_test();
+        let now_ms = 1_780_000_000_000;
+        let mut input = fresh_operational_preflight_input(&runtime, now_ms);
+        let snapshot = runtime.build_operational_preflight(input.clone());
+        assert!(operational_preflight_start_allowed(
+            &snapshot,
+            now_ms + 7_000
+        ));
+        assert!(!operational_preflight_start_allowed(
+            &snapshot,
+            now_ms + 7_001
+        ));
+        assert!(operational_preflight_orders_allowed(
+            &snapshot,
+            now_ms + 7_001
+        ));
+        input.execution.timestamp_ms = None;
+        input.execution.should_warn = false;
+        let snapshot = runtime.build_operational_preflight(input);
+        assert!(operational_preflight_start_allowed(
+            &snapshot,
+            now_ms + 7_001
+        ));
+        assert!(!operational_preflight_start_allowed(
+            &snapshot,
+            now_ms + 90_001
+        ));
+        assert!(!operational_preflight_orders_allowed(
+            &snapshot,
+            now_ms + 90_001
+        ));
+    }
+
+    #[test]
+    fn native_observation_time_validation_is_bounded_and_does_not_overflow() {
+        assert_eq!(native_observation_age_ms(Some(i64::MIN), i64::MAX), None);
+        assert_eq!(native_observation_age_ms(Some(i64::MAX), i64::MIN), None);
+        assert_eq!(native_observation_age_ms(Some(i64::MAX), 0), None);
+        assert_eq!(native_observation_age_ms(Some(0), i64::MAX), Some(i64::MAX));
+        assert_eq!(native_observation_age_ms(Some(5_000), 0), Some(0));
+        assert_eq!(native_observation_age_ms(Some(5_001), 0), None);
+    }
+
+    #[test]
+    fn guarded_execution_cycle_cannot_use_demo_preflight_for_a_live_engine() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let mut input = guarded_execution_input(&runtime);
+        input.operational_preflight.mode = "Demo/Testnet".to_owned();
+        let (mut engine, directory) = dry_run_engine();
+        engine.mode = "Live".to_owned();
+        let result = runtime
+            .run_guarded_execution_cycle(&mut engine, input, |_| {
+                panic!("demo preflight must not authorize a live engine");
+            })
+            .expect("guarded cycle");
+        assert_eq!(result.state, "blocked");
+        assert!(
+            result
+                .status_message
+                .contains("requires a live operational preflight")
+        );
+        assert!(result.order.is_none());
+        assert_eq!(engine.live_submit_attempt_count, 0);
+        fs::remove_dir_all(directory).expect("remove audit fixture");
+    }
+
+    #[test]
+    fn guarded_execution_cycle_rejects_expired_cached_preflight_before_order_engine() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let mut input = guarded_execution_input(&runtime);
+        input.market_cycle.now_ms += 120_001;
+        let (mut engine, directory) = dry_run_engine();
+        let result = runtime
+            .run_guarded_execution_cycle(&mut engine, input, |_| {
+                panic!("expired preflight must never invoke the executor");
+            })
+            .expect("guarded cycle");
+        assert_eq!(result.state, "blocked");
+        assert!(
+            result
+                .status_message
+                .contains("snapshot is stale or invalid")
+        );
+        assert!(result.order.is_none());
+        fs::remove_dir_all(directory).expect("remove audit fixture");
+    }
+
+    #[test]
     fn native_runtime_operational_preflight_blocks_live_start_and_orders_like_python() {
         let runtime = loop_under_test();
         let now_ms = 1_718_711_400_000;
@@ -6412,8 +6670,8 @@ mod tests {
             "Live preflight blocked. Review the reasons before starting or submitting orders."
         );
         assert!(preflight.live_mode);
-        assert!(!operational_preflight_start_allowed(&preflight));
-        assert!(!operational_preflight_orders_allowed(&preflight));
+        assert!(!operational_preflight_start_allowed(&preflight, now_ms));
+        assert!(!operational_preflight_orders_allowed(&preflight, now_ms));
         assert!(preflight.start.gate_enabled);
         assert!(preflight.orders.gate_enabled);
         assert!(
@@ -6476,8 +6734,8 @@ mod tests {
             "Preflight has warnings. Live gate behavior depends on the enabled safety gates."
         );
         assert!(!preflight.live_mode);
-        assert!(operational_preflight_start_allowed(&preflight));
-        assert!(operational_preflight_orders_allowed(&preflight));
+        assert!(operational_preflight_start_allowed(&preflight, now_ms));
+        assert!(operational_preflight_orders_allowed(&preflight, now_ms));
         assert!(
             preflight
                 .reasons
@@ -6500,8 +6758,8 @@ mod tests {
 
         let preflight = runtime.build_operational_preflight(input);
         assert_eq!(preflight.state, "warning");
-        assert!(operational_preflight_start_allowed(&preflight));
-        assert!(operational_preflight_orders_allowed(&preflight));
+        assert!(operational_preflight_start_allowed(&preflight, now_ms));
+        assert!(operational_preflight_orders_allowed(&preflight, now_ms));
         assert!(!preflight.start.gate_enabled);
         assert!(!preflight.orders.gate_enabled);
         assert!(
@@ -6529,8 +6787,8 @@ mod tests {
             "Preflight passed. Start and order gates have fresh critical snapshots."
         );
         assert!(preflight.live_mode);
-        assert!(operational_preflight_start_allowed(&preflight));
-        assert!(operational_preflight_orders_allowed(&preflight));
+        assert!(operational_preflight_start_allowed(&preflight, now_ms));
+        assert!(operational_preflight_orders_allowed(&preflight, now_ms));
         assert!(preflight.critical_stale.start.is_empty());
         assert!(preflight.critical_stale.orders.is_empty());
         assert!(preflight.reasons.is_empty());

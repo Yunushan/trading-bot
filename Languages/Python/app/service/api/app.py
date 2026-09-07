@@ -239,6 +239,7 @@ if FASTAPI_AVAILABLE:
     class AccountSnapshotRequest(BaseModel):
         total_balance: float | None = None
         available_balance: float | None = None
+        observed_at: str | None = None
         source: str = "api"
 
     class PortfolioSnapshotRequest(BaseModel):
@@ -251,6 +252,7 @@ if FASTAPI_AVAILABLE:
         closed_margin: float | None = None
         total_balance: float | None = None
         available_balance: float | None = None
+        observed_at: str | None = None
         source: str = "api"
 
     class ExchangeConnectorSnapshotRequest(BaseModel):
@@ -981,9 +983,7 @@ def create_service_api_app(
     @api_router.put("/account", dependencies=[Depends(_require_write_api_auth)])
     def set_account_snapshot(payload: AccountSnapshotRequest):
         snapshot = _service().set_account_snapshot(
-            total_balance=payload.total_balance,
-            available_balance=payload.available_balance,
-            source=payload.source,
+            **{**payload.model_dump(exclude_unset=True), "source": payload.source},
         )
         return snapshot.to_dict()
 
@@ -994,16 +994,7 @@ def create_service_api_app(
     @api_router.put("/portfolio", dependencies=[Depends(_require_write_api_auth)])
     def set_portfolio_snapshot(payload: PortfolioSnapshotRequest):
         snapshot = _service().set_portfolio_snapshot(
-            open_position_records=payload.open_position_records,
-            closed_position_records=payload.closed_position_records,
-            closed_trade_registry=payload.closed_trade_registry,
-            active_pnl=payload.active_pnl,
-            active_margin=payload.active_margin,
-            closed_pnl=payload.closed_pnl,
-            closed_margin=payload.closed_margin,
-            total_balance=payload.total_balance,
-            available_balance=payload.available_balance,
-            source=payload.source,
+            **{**payload.model_dump(exclude_unset=True), "source": payload.source},
         )
         return snapshot.to_dict()
 

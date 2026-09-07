@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Mapping
 
 from .close_execution import _pause_for_close_uncertainty, _safe_log
 
@@ -14,12 +15,44 @@ def _finite_state_float(value: object, *, default: float) -> float:
     return number if math.isfinite(number) else default
 
 
+def _close_quantity(value: object) -> float:
+    if value is None or isinstance(value, bool):
+        raise ValueError("close quantity is unavailable or invalid")
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0:
+        raise ValueError("close quantity must be finite and nonnegative")
+    return number
+
+
+def _validated_close_positions(positions: object) -> list[dict]:
+    if not isinstance(positions, (list, tuple)):
+        raise ValueError("futures position snapshot unavailable")
+    validated = []
+    for pos in positions:
+        if not isinstance(pos, Mapping):
+            raise ValueError("futures position snapshot contains an invalid row")
+        symbol = pos.get("symbol")
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError("futures position snapshot is missing a symbol")
+        raw_amount = pos.get("positionAmt")
+        if raw_amount is None or isinstance(raw_amount, bool):
+            raise ValueError("futures position amount is unavailable or invalid")
+        amount = float(raw_amount)
+        if not math.isfinite(amount):
+            raise ValueError("futures position amount is non-finite")
+        side = str(pos.get("positionSide") or pos.get("positionside") or "BOTH").upper()
+        if side not in {"LONG", "SHORT", "BOTH"}:
+            raise ValueError("futures position side is invalid")
+        if (side == "LONG" and amount < 0) or (side == "SHORT" and amount > 0):
+            raise ValueError("futures position side and amount disagree")
+        validated.append(dict(pos, symbol=symbol.strip().upper(), positionAmt=amount, positionSide=side))
+    return validated
+
+
 def _refresh_positions_snapshot(self, symbol: str, interval: str) -> list[dict] | None:
     try:
         positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
-        if not isinstance(positions, (list, tuple)):
-            raise RuntimeError("futures position snapshot unavailable")
-        return list(positions)
+        return _validated_close_positions(positions)
     except Exception as refresh_exc:
         _pause_for_close_uncertainty(
             self,
@@ -69,11 +102,11 @@ def _goal_met(state: dict[str, object]) -> bool:
 
 def _has_opposite_live(pos_iterable, symbol: str, opp: str) -> bool:
     tol = 1e-9
-    for pos in pos_iterable:
+    for pos in _validated_close_positions(pos_iterable):
         if str(pos.get("symbol") or "").upper() != symbol:
             continue
         pos_side = str(pos.get("positionSide") or pos.get("positionside") or "BOTH").upper()
-        amt_val = float(pos.get("positionAmt") or 0.0)
+        amt_val = pos["positionAmt"]
         if opp == "BUY":
             if (pos_side == "LONG" and amt_val > tol) or (pos_side in {"BOTH", ""} and amt_val > tol):
                 return True
@@ -83,24 +116,13 @@ def _has_opposite_live(pos_iterable, symbol: str, opp: str) -> bool:
     return False
 
 
-def _finalize_close_cleanup(self, symbol: str, opp: str, qty_tol: float, closed_any: bool) -> None:
+def _finalize_close_cleanup(self, symbol: str, opp: str, qty_tol: float, closed_any: bool) -> bool:
     if closed_any:
         opposite_flat_verified = False
         try:
             for _ in range(6):
                 positions_refresh = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
-                if not isinstance(positions_refresh, (list, tuple)):
-                    raise RuntimeError("futures position snapshot unavailable during close cleanup")
-                still_opposite = False
-                for pos in positions_refresh:
-                    if str(pos.get("symbol") or "").upper() != symbol:
-                        continue
-                    amt_chk = _finite_state_float(pos.get("positionAmt"), default=float("nan"))
-                    if not math.isfinite(amt_chk):
-                        raise RuntimeError("non-finite position amount during close cleanup")
-                    if (opp == "SELL" and amt_chk < 0) or (opp == "BUY" and amt_chk > 0):
-                        still_opposite = True
-                        break
+                still_opposite = _has_opposite_live(positions_refresh, symbol, opp)
                 if not still_opposite:
                     opposite_flat_verified = True
                     break
@@ -111,55 +133,41 @@ def _finalize_close_cleanup(self, symbol: str, opp: str, qty_tol: float, closed_
                 f"{symbol} close-opposite cleanup snapshot failed: {exc}",
                 reconciliation_required=True,
             )
-            return
+            return False
         if not opposite_flat_verified:
             _pause_for_close_uncertainty(
                 self,
                 f"{symbol} close-opposite cleanup retained ledger because exposure is still open",
                 reconciliation_required=True,
             )
-            return
-        for key in list(self._leg_ledger.keys()):
-            if key[0] == symbol and key[2] == opp:
-                try:
-                    self._remove_leg_entry(key, None)
-                    self._guard_mark_leg_closed(key)
-                except Exception as exc:
-                    _pause_for_close_uncertainty(
-                        self,
-                        f"{symbol} close-opposite ledger cleanup failed: {exc}",
-                        reconciliation_required=True,
-                    )
-                    return
+            return False
     try:
-        positions_latest = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
-        if not isinstance(positions_latest, (list, tuple)):
-            raise RuntimeError("latest futures position snapshot unavailable")
+        positions_latest = _validated_close_positions(
+            self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True)
+        )
+        if closed_any and _has_opposite_live(positions_latest, symbol, opp):
+            raise RuntimeError("opposite exposure reappeared before final cleanup")
         live_qty_latest = 0.0
         for pos in positions_latest:
             if str(pos.get("symbol") or "").upper() != symbol:
                 continue
-            amount = _finite_state_float(pos.get("positionAmt"), default=float("nan"))
-            if not math.isfinite(amount):
-                raise RuntimeError("non-finite latest position amount")
+            amount = pos["positionAmt"]
             live_qty_latest = max(live_qty_latest, abs(amount))
-        if live_qty_latest <= qty_tol:
-            for key in list(self._leg_ledger.keys()):
-                if key[0] != symbol:
-                    continue
-                try:
-                    self._remove_leg_entry(key, None)
-                    self._guard_mark_leg_closed(key)
-                except Exception as exc:
-                    _pause_for_close_uncertainty(
-                        self,
-                        f"{symbol} final ledger cleanup failed: {exc}",
-                        reconciliation_required=True,
-                    )
-                    return
+        # Do not delete history until every required snapshot has been validated.
+        for key in list(self._leg_ledger.keys()):
+            if key[0] != symbol:
+                continue
+            if live_qty_latest > qty_tol and not (closed_any and key[2] == opp):
+                continue
+            self._remove_leg_entry(key, None)
+            self._guard_mark_leg_closed(key)
+            if getattr(self, "_ledger_reconciliation_required", False):
+                return False
     except Exception as exc:
         _pause_for_close_uncertainty(
             self,
             f"{symbol} final close-opposite snapshot failed: {exc}",
             reconciliation_required=True,
         )
+        return False
+    return True

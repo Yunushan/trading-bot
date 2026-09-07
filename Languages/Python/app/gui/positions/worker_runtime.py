@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import datetime, timezone
 
 from PyQt6 import QtCore
 
@@ -12,8 +13,52 @@ from ..runtime.account import margin_runtime
 from ..shared import helper_runtime
 
 
+def _observation_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{field} must be a finite number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field} must be a finite number") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be a finite number")
+    return number
+
+
+def _validate_observation_rows(rows: object, account_type: str) -> None:
+    if not isinstance(rows, (list, tuple)):
+        raise ValueError("Positions observation must be a complete list")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Position row must be an object")
+        key = "symbol" if account_type == "FUTURES" else "asset"
+        symbol = row.get(key)
+        if (
+            not isinstance(symbol, str) or not symbol.strip()
+            or symbol.strip().upper() in {"UNKNOWN", "NONE", "NULL", "-"}
+            or any(char.isspace() for char in symbol.strip())
+        ):
+            raise ValueError(f"Position {key} is missing or invalid")
+        fields = ("positionAmt",) if account_type == "FUTURES" else ("free", "locked")
+        for field in fields:
+            number = _observation_number(row.get(field), field)
+            if account_type == "SPOT" and number < 0.0:
+                raise ValueError(f"{field} must not be negative")
+        if account_type == "FUTURES":
+            side = row.get("positionSide")
+            if side not in (None, "BOTH", "LONG", "SHORT"):
+                raise ValueError("Position side is invalid")
+            amount = _observation_number(row["positionAmt"], "positionAmt")
+            if (side == "LONG" and amount < 0.0) or (side == "SHORT" and amount > 0.0):
+                raise ValueError("Position amount contradicts its hedge side")
+            for field in ("markPrice", "entryPrice", "notional", "leverage", "unRealizedProfit"):
+                if row.get(field) not in (None, ""):
+                    _observation_number(row[field], field)
+
+
 class _PositionsWorker(QtCore.QObject):
-    positions_ready = QtCore.pyqtSignal(list, str)  # rows, account_type
+    positions_ready = QtCore.pyqtSignal(list, str, str, int)  # rows, account_type, observed_at, generation
+    observation_failed = QtCore.pyqtSignal(int)
     error = QtCore.pyqtSignal(str)
 
     def __init__(
@@ -43,6 +88,7 @@ class _PositionsWorker(QtCore.QObject):
             connector_backend
         )
         self._live_safety_config = dict(live_safety_config or {})
+        self._observation_generation = 0
 
     @QtCore.pyqtSlot(int)
     def start_with_interval(self, interval_ms: int):
@@ -70,6 +116,7 @@ class _PositionsWorker(QtCore.QObject):
     def stop_timer(self):
         try:
             self._enabled = False
+            self._observation_generation += 1
             if self._timer is not None:
                 try:
                     self._timer.stop()
@@ -99,6 +146,7 @@ class _PositionsWorker(QtCore.QObject):
         connector_backend=None,
         live_safety_config=None,
     ):
+        self._observation_generation += 1
         if api_key is not None:
             self._api_key = api_key
         if api_secret is not None:
@@ -235,20 +283,8 @@ class _PositionsWorker(QtCore.QObject):
                 "liquidation_price": liq_price if liq_price > 0.0 else 0.0,
                 "contract_type": contract_type or None,
             }
-        except Exception:
-            return {
-                "size_usdt": 0.0,
-                "margin_usdt": 0.0,
-                "margin_balance": 0.0,
-                "maint_margin": 0.0,
-                "pnl_roi": "-",
-                "margin_ratio": 0.0,
-                "pnl_value": 0.0,
-                "roi_percent": 0.0,
-                "update_time": None,
-                "leverage": None,
-                "mark": 0.0,
-            }
+        except Exception as exc:
+            raise ValueError("Futures position metrics are unavailable or invalid") from exc
 
     def _tick(self):
         if not self._enabled:
@@ -256,31 +292,26 @@ class _PositionsWorker(QtCore.QObject):
         if self._busy:
             return
         self._busy = True
+        generation = self._observation_generation
         try:
             acct = str(self._acct or "FUTURES").upper()
+            if acct not in {"FUTURES", "SPOT"}:
+                raise ValueError("Positions account type is invalid")
             self._ensure_wrapper()
-            if self._wrapper is None:
-                return
+            wrapper = self._wrapper
+            if wrapper is None:
+                raise ValueError("Positions connector is unavailable")
             rows = []
+            # Start the observation clock before I/O, not after queueing/rendering.
+            observed_at = datetime.now(timezone.utc).isoformat()
             if acct == "FUTURES":
-                try:
-                    positions = (
-                        self._wrapper.list_open_futures_positions(
-                            max_age=0.0,
-                            force_refresh=True,
-                        )
-                        or []
-                    )
-                except Exception as exc:
-                    if time.time() - self._last_err_ts > 5:
-                        self._last_err_ts = time.time()
-                        self.error.emit(f"Positions error: {redact_text(exc)}")
+                positions = wrapper.list_open_futures_positions(max_age=0.0, force_refresh=True)
+                if generation != self._observation_generation:
                     return
+                _validate_observation_rows(positions, acct)
                 for p in positions:
                     try:
-                        sym = str(p.get("symbol"))
-                        if self._symbols and sym not in self._symbols:
-                            continue
+                        sym = p["symbol"].strip().upper()
                         amt = float(p.get("positionAmt") or 0.0)
                         if abs(amt) <= 0.0:
                             continue
@@ -303,27 +334,24 @@ class _PositionsWorker(QtCore.QObject):
                         data_row.update(metrics)
                         data_row["stop_loss_enabled"] = False
                         rows.append(data_row)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        raise ValueError("Futures position row could not be converted") from exc
             else:
-                try:
-                    balances = self._wrapper.get_balances() or []
-                except Exception as exc:
-                    self.error.emit(f"Spot balances error: {redact_text(exc)}")
+                balances = wrapper.get_balances()
+                if generation != self._observation_generation:
                     return
+                _validate_observation_rows(balances, acct)
                 base = "USDT"
                 for b in balances:
                     try:
-                        asset = b.get("asset")
-                        free = float(b.get("free") or 0.0)
-                        locked = float(b.get("locked") or 0.0)
-                        total = free + locked
+                        asset = b["asset"].strip().upper()
+                        free = _observation_number(b["free"], "free")
+                        locked = _observation_number(b["locked"], "locked")
+                        total = _observation_number(free + locked, "balance total")
                         if asset in (base, None) or total <= 0:
                             continue
                         sym = f"{asset}{base}"
-                        if self._symbols and sym not in self._symbols:
-                            continue
-                        last = float(self._wrapper.get_last_price(sym, max_age=8.0) or 0.0)
+                        last = _observation_number(wrapper.get_last_price(sym, max_age=8.0), "spot price")
                         value = total * last
                         cost_snap = None
                         try:
@@ -362,6 +390,7 @@ class _PositionsWorker(QtCore.QObject):
                                 "margin_usdt": margin_usdt,
                                 "pnl_roi": pnl_roi,
                                 "pnl_value": pnl_value,
+                                "roi_percent": roi,
                                 "side_key": "L",
                                 "raw_position": {
                                     "cost_usdt": margin_usdt,
@@ -370,8 +399,22 @@ class _PositionsWorker(QtCore.QObject):
                                 "stop_loss_enabled": False,
                             }
                         )
-                    except Exception:
-                        pass
-            self.positions_ready.emit(rows, acct)
+                    except Exception as exc:
+                        raise ValueError("Spot position row could not be converted") from exc
+            for row in rows:
+                for field in ("qty", "mark", "value", "margin_usdt", "pnl_value", "roi_percent"):
+                    number = _observation_number(row.get(field), field)
+                    if field in {"qty", "mark"} and number <= 0.0:
+                        raise ValueError(f"Position {field} must be positive")
+                    if field in {"value", "margin_usdt"} and number < 0.0:
+                        raise ValueError(f"Position {field} must not be negative")
+            if generation == self._observation_generation and self._enabled:
+                self.positions_ready.emit(rows, acct, observed_at, generation)
+        except Exception as exc:
+            if generation == self._observation_generation and self._enabled:
+                self.observation_failed.emit(generation)
+                if time.time() - self._last_err_ts > 5:
+                    self._last_err_ts = time.time()
+                    self.error.emit(f"Positions observation unavailable: {redact_text(exc)}")
         finally:
             self._busy = False

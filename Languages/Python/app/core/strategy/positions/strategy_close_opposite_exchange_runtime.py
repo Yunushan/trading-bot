@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .close_execution import _pause_for_close_uncertainty, _safe_log
-from .strategy_close_opposite_common_runtime import _goal_met, _reduce_goal
+from .strategy_close_opposite_common_runtime import _goal_met, _reduce_goal, _validated_close_positions
 
 
 def _close_symbol_level_positions(self, state: dict[str, object]) -> bool:
@@ -11,11 +11,19 @@ def _close_symbol_level_positions(self, state: dict[str, object]) -> bool:
     dual = bool(state["dual"])
     qty_goal = state.get("qty_goal")
 
-    for pos in state["positions"]:
+    try:
+        positions = _validated_close_positions(state["positions"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        _pause_for_close_uncertainty(
+            self, f"{symbol}@{interval} close-opposite snapshot is invalid: {exc}",
+            reconciliation_required=False,
+        )
+        return False
+    for pos in positions:
         try:
             if str(pos.get("symbol") or "").upper() != symbol:
                 continue
-            amt = float(pos.get("positionAmt") or 0.0)
+            amt = pos["positionAmt"]
             position_side_flag = None
             if dual:
                 pos_side = str(pos.get("positionSide") or pos.get("positionside") or "").upper()

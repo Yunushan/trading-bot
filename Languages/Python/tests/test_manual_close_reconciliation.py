@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,39 @@ def _active_allocation(*, trade_id: str, slot_id: str, open_time: str) -> dict:
 
 
 class ManualCloseReconciliationTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("app.gui.positions.actions_state_runtime.get_save_position_allocations", return_value=None))
+
+    def test_missing_or_conflicting_target_never_consumes_neighbor(self):
+        for target in (
+            {"trade_id": "missing"},
+            {"trade_id": "missing", "slot_id": "neighbor-slot"},
+            {"trade_id": "missing", "client_order_id": "client-neighbor"},
+            {"trade_id": "neighbor", "client_order_id": "missing"},
+        ):
+            with self.subTest(target=target):
+                window = _ManualCloseWindowStub()
+                neighbor = _active_allocation(trade_id="neighbor", slot_id="neighbor-slot", open_time="2026-09-06")
+                window._entry_allocations[("BTCUSDT", "L")] = [copy.deepcopy(neighbor)]
+                changed = reduce_local_position_allocation_state(
+                    window, "BTCUSDT", "L", interval="1m", qty=0.25, target_identity=target,
+                )
+                self.assertFalse(changed)
+                self.assertEqual([neighbor], window._entry_allocations[("BTCUSDT", "L")])
+
+    def test_ambiguous_identity_or_quantity_preserves_all_allocations(self):
+        for copies, qty in ((2, 0.25), (1, 0.5), (1, 0), (1, -0.1), (1, True), (1, "nan"), (1, "inf")):
+            with self.subTest(copies=copies, qty=qty):
+                window = _ManualCloseWindowStub()
+                entry = _active_allocation(trade_id="target", slot_id="slot", open_time="2026-09-06")
+                before = [copy.deepcopy(entry) for _ in range(copies)]
+                window._entry_allocations[("BTCUSDT", "L")] = copy.deepcopy(before)
+                changed = reduce_local_position_allocation_state(
+                    window, "BTCUSDT", "L", interval="1m", qty=qty, target_identity={"trade_id": "target"},
+                )
+                self.assertFalse(changed)
+                self.assertEqual(before, window._entry_allocations[("BTCUSDT", "L")])
+
     def test_manual_close_reduces_targeted_same_interval_allocation_only(self):
         window = _ManualCloseWindowStub()
         first = _active_allocation(

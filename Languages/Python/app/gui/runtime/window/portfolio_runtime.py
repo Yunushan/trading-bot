@@ -7,6 +7,8 @@ def _update_positions_balance_labels(
     self,
     total_balance: float | None,
     available_balance: float | None,
+    *,
+    observed_at: str = "",
 ) -> None:
     try:
         snapshot = getattr(self, "_positions_balance_snapshot", None)
@@ -15,9 +17,12 @@ def _update_positions_balance_labels(
     if total_balance is None and available_balance is None and isinstance(snapshot, dict):
         total_balance = snapshot.get("total")
         available_balance = snapshot.get("available")
+        observed_at = str(snapshot.get("observed_at") or "")
     else:
         try:
-            self._positions_balance_snapshot = {"total": total_balance, "available": available_balance}
+            self._positions_balance_snapshot = {
+                "total": total_balance, "available": available_balance, "observed_at": observed_at,
+            }
         except Exception:
             pass
 
@@ -39,6 +44,7 @@ def _update_positions_balance_labels(
             total_balance=total_balance,
             available_balance=available_balance,
             source="desktop-balance",
+            observed_at=observed_at,
         )
     except Exception:
         pass

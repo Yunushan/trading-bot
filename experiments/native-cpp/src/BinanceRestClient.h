@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QtGlobal>
 
 #include <functional>
 #include <optional>
@@ -149,11 +150,18 @@ public:
         int quantityPrecision = 0;
         int pricePrecision = 0;
         int maxLeverage = 0;
+        bool hasMarketLotSize = false;
+        double marketMinQty = 0.0;
+        double marketMaxQty = 0.0;
+        double marketStepSize = 0.0;
         QString error;
     };
 
     struct FuturesOrderResult {
+        // Success means a confirmed full fill, not merely an acknowledgement.
         bool ok = false;
+        bool reconciliationRequired = false;
+        QString clientOrderId;
         QString symbol;
         QString side;
         QString positionSide;
@@ -162,6 +170,12 @@ public:
         double executedQty = 0.0;
         double avgPrice = 0.0;
         QString error;
+
+        bool hasConfirmedFill(double requestedQuantity) const {
+            return ok && !reconciliationRequired && status == QStringLiteral("FILLED")
+                && qIsFinite(executedQty) && executedQty > 0.0
+                && qIsFinite(requestedQuantity) && executedQty == requestedQuantity;
+        }
     };
 
     struct FuturesOpenOrder {

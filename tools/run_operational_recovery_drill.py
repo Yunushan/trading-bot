@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise service config backup/restore and read-only restart recovery."""
+"""Exercise forced process exit, config backup/restore and read-only service recovery."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import secrets
@@ -17,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +52,6 @@ else:
 
 
 EVIDENCE_ID = "service-config-backup-restore"
-SERVICE_START_ATTEMPTS = 3
 SYNTHETIC_SECRETS = {
     "api_key": "recovery-drill-exchange-key",
     "api_secret": "recovery-drill-exchange-secret",
@@ -64,7 +64,7 @@ class _NoRedirectHandler(HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = build_opener(_NoRedirectHandler)
+_NO_REDIRECT_OPENER = build_opener(ProxyHandler({}), _NoRedirectHandler)
 
 
 def _now_iso() -> str:
@@ -96,19 +96,33 @@ def _reserve_loopback_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def _read_only_status(url: str, *, api_token: str) -> int:
+def _read_only_json(url: str, *, api_token: str, deadline: float) -> tuple[int, dict[str, Any]]:
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        return 0, {}
     request = Request(
         url,
         headers={"Accept": "application/json", "Authorization": f"Bearer {api_token}"},
         method="GET",
     )
     try:
-        with _NO_REDIRECT_OPENER.open(request, timeout=1.0) as response:  # noqa: S310 - fixed loopback origin
-            return int(response.status)
+        with _NO_REDIRECT_OPENER.open(request, timeout=min(1.0, remaining)) as response:  # noqa: S310 - fixed loopback origin
+            status = int(response.status)
+            raw = response.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                return status, {}
+            try:
+                payload = json.loads(raw)
+            except (ValueError, UnicodeError):
+                return status, {}
+            return status, payload if isinstance(payload, dict) else {}
     except HTTPError as exc:
-        return int(exc.code)
+        try:
+            return int(exc.code), {}
+        finally:
+            exc.close()
     except (OSError, TimeoutError, URLError):
-        return 0
+        return 0, {}
 
 
 def _stop_child(process: subprocess.Popen[bytes]) -> None:
@@ -136,82 +150,192 @@ def _redacted_process_diagnostic(handle, *, api_token: str) -> str:  # noqa: ANN
     return redact_text(text[-4000:]).strip()
 
 
-def _run_canonical_service_restart(
-    *,
-    config_path: Path,
-    timeout_seconds: float,
-) -> tuple[bool, float, list[int], int | None, str, int]:
-    started = time.perf_counter()
-    deadline = time.monotonic() + max(1.0, timeout_seconds)
-    status_codes = [0, 0, 0]
-    exit_code: int | None = None
-    diagnostic = ""
-    attempts = 0
-    while attempts < SERVICE_START_ATTEMPTS and time.monotonic() < deadline:
-        attempts += 1
-        port = _reserve_loopback_port()
-        base_url = f"http://127.0.0.1:{port}"
-        api_token = secrets.token_urlsafe(32)
-        command = [
-            sys.executable,
-            str(REPO_ROOT / "apps" / "service-api" / "main.py"),
-            "--serve",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--config-path",
-            str(config_path),
-            "--load-config",
+def _child_environment(config_path: Path, api_token: str) -> dict[str, str]:
+    # Carry only OS launch necessities, never caller credentials or trading/TLS/proxy flags.
+    allowed = {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE", "TEMP", "TMP", "LANG", "LC_ALL"}
+    environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    environment.update({
+        "HOME": str(config_path.parent),
+        "USERPROFILE": str(config_path.parent),
+        "APPDATA": str(config_path.parent),
+        "LOCALAPPDATA": str(config_path.parent),
+        "XDG_CONFIG_HOME": str(config_path.parent),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUTF8": "1",
+        "BOT_SERVICE_API_TOKEN": api_token,
+        "BOT_SERVICE_API_READ_ONLY": "1",
+        "BOT_ENABLE_LIVE_TRADING": "0",
+    })
+    return environment
+
+
+def _launch_child(config_path: Path, port: int, api_token: str, output) -> subprocess.Popen[bytes]:  # noqa: ANN001
+    return subprocess.Popen(
+        [sys.executable, str(REPO_ROOT / "apps" / "service-api" / "main.py"),
+         "--serve", "--host", "127.0.0.1", "--port", str(port),
+         "--config-path", str(config_path), "--load-config"],
+        cwd=REPO_ROOT,
+        env=_child_environment(config_path, api_token),
+        stdin=subprocess.DEVNULL,
+        stdout=output,
+        stderr=subprocess.STDOUT,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def _persisted_config_view(payload: dict[str, Any]) -> dict[str, Any]:
+    view = json.loads(json.dumps(payload))
+    llm = view.get("llm")
+    if isinstance(llm, dict):
+        # These describe the host's catalog, not settings restored from the backup.
+        llm.pop("catalog_path", None)
+        llm.pop("model_suggestions", None)
+    return view
+
+
+def _wait_for_service(process, base_url: str, api_token: str, expected_config: dict[str, Any], deadline: float) -> dict[str, Any]:  # noqa: ANN001
+    expected_config = _persisted_config_view(expected_config)
+    observation: dict[str, Any] = {"ready": False}
+    while process.poll() is None and time.perf_counter() < deadline:
+        responses = [
+            _read_only_json(f"{base_url}{path}", api_token=api_token, deadline=deadline)
+            for path in ("/livez", "/readyz", "/api/v1/runtime", "/api/v1/config")
         ]
-        environment = os.environ.copy()
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        environment["BOT_SERVICE_API_TOKEN"] = api_token
-        with tempfile.TemporaryFile() as child_output:
-            try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=REPO_ROOT,
-                    env=environment,
-                    stdin=subprocess.DEVNULL,
-                    stdout=child_output,
-                    stderr=subprocess.STDOUT,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-            except OSError as exc:
-                diagnostic = redact_text(f"{type(exc).__name__}: {exc}")
-                continue
-            try:
-                while time.monotonic() < deadline:
-                    exit_code = process.poll()
-                    if exit_code is not None:
-                        diagnostic = _redacted_process_diagnostic(child_output, api_token=api_token)
-                        break
-                    status_codes = [
-                        _read_only_status(f"{base_url}/livez", api_token=api_token),
-                        _read_only_status(f"{base_url}/readyz", api_token=api_token),
-                        _read_only_status(
-                            f"{base_url}/api/v1/runtime",
-                            api_token=api_token,
-                        ),
-                    ]
-                    if all(status_code == 200 for status_code in status_codes):
-                        return (
-                            True,
-                            time.perf_counter() - started,
-                            status_codes,
-                            process.poll(),
-                            "",
-                            attempts,
-                        )
-                    time.sleep(0.1)
-                else:
-                    diagnostic = _redacted_process_diagnostic(child_output, api_token=api_token)
-            finally:
-                _stop_child(process)
-        if exit_code is None:
-            break
-    return False, time.perf_counter() - started, status_codes, exit_code, diagnostic, attempts
+        codes = [status for status, _ in responses]
+        live, ready, runtime, config = [body for _, body in responses]
+        config = _persisted_config_view(config)
+        unauthenticated_status, _ = _read_only_json(f"{base_url}/api/v1/config", api_token="", deadline=deadline)
+        control = runtime.get("control_plane")
+        read_only = ready.get("read_only") is True and isinstance(control, dict) and control.get("trading_execution_supported") is False
+        observation = {
+            "status_codes": codes,
+            "config_matches": config == expected_config,
+            "config_mismatch_fields": sorted(key for key in config.keys() | expected_config.keys() if config.get(key) != expected_config.get(key)),
+            "read_only_verified": read_only,
+            "auth_verified": unauthenticated_status == 401,
+        }
+        observation["ready"] = bool(
+            codes == [200] * 4 and live.get("status") == "ok" and ready.get("status") == "ready"
+            and runtime.get("service_name") == "trading-bot-service" and observation["config_matches"]
+            and read_only and observation["auth_verified"] and process.poll() is None
+            and time.perf_counter() < deadline
+        )
+        if observation["ready"]:
+            return observation
+        time.sleep(min(0.1, max(0.0, deadline - time.perf_counter())))
+    return {**observation, "ready": False}
+
+
+def _restore_config_backup(config_path: Path, backup_path: Path) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=config_path.parent, prefix=".restore-", delete=False) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(backup_path.read_bytes())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, config_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _run_canonical_service_restart(
+    *, config_path: Path, backup_path: Path, expected_config: dict[str, Any],
+    backup_created_at: float, timeout_seconds: float,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    timeline: dict[str, float] = {}
+    result: dict[str, Any] = {
+        "name": "canonical-service-process-restart", "status": "fail",
+        "process_boundary": "child-process", "timeline_seconds": timeline,
+        "original_ready": False, "original_exit_observed": False,
+        "endpoint_down_observed": False, "config_corruption_observed": False,
+        "restored_config_matches": False, "read_only_verified": False, "auth_verified": False,
+        "replacement_ready": False, "same_endpoint": False,
+        "recovery_time_seconds": 0.0, "config_recovery_time_seconds": 0.0,
+        "service_recovery_time_seconds": 0.0, "recovery_point_seconds": 0.0,
+    }
+    children = []
+    tokens = [secrets.token_urlsafe(32), secrets.token_urlsafe(32)]
+    port = _reserve_loopback_port()
+    base_url = f"http://127.0.0.1:{port}"
+    with tempfile.TemporaryFile() as output:
+        try:
+            if config_path.is_symlink() or backup_path.is_symlink():
+                raise ValueError("Recovery fixture files must not be symlinks")
+            backup_digest = hashlib.sha256(backup_path.read_bytes()).hexdigest()
+            original = _launch_child(config_path, port, tokens[0], output)
+            children.append(original)
+            result.update(original_pid=original.pid, original_endpoint=base_url, backup_sha256=backup_digest)
+            observation = _wait_for_service(original, base_url, tokens[0], expected_config, started + timeout_seconds)
+            result["original_ready"] = observation["ready"]
+            result["original_status_codes"] = observation.get("status_codes", [])
+            result["original_verification"] = observation
+            if not observation["ready"]:
+                raise ValueError("Original service did not prove authenticated read-only configuration readiness")
+            timeline["original_ready"] = time.perf_counter() - started
+            outage_started = time.perf_counter()
+            deadline = outage_started + timeout_seconds
+            timeline["forced_exit_requested"] = outage_started - started
+            result["recovery_point_seconds"] = max(0.0, outage_started - backup_created_at)
+            original.kill()
+            result["failure_mode"] = "forced-process-exit"
+            result["original_exit_code"] = original.wait(timeout=max(0.01, deadline - time.perf_counter()))
+            if result["original_exit_code"] == 0:
+                raise ValueError("Original service exited normally instead of demonstrating a forced exit")
+            result["original_exit_observed"] = True
+            timeline["original_exit_observed"] = time.perf_counter() - started
+            down_status, _ = _read_only_json(f"{base_url}/livez", api_token=tokens[0], deadline=deadline)
+            if down_status != 0 or time.perf_counter() >= deadline:
+                raise ValueError("The original endpoint did not become unavailable after forced process exit")
+            result["endpoint_down_observed"] = True
+            timeline["endpoint_down_observed"] = time.perf_counter() - started
+            config_path.write_text('{"config":', encoding="utf-8")
+            result["config_corruption_observed"] = hashlib.sha256(config_path.read_bytes()).hexdigest() != backup_digest
+            timeline["config_corruption_observed"] = time.perf_counter() - started
+            _restore_config_backup(config_path, backup_path)
+            result["restored_backup_sha256"] = hashlib.sha256(config_path.read_bytes()).hexdigest()
+            if result["restored_backup_sha256"] != backup_digest:
+                raise ValueError("Restored configuration does not match the backup bytes")
+            timeline["config_restored"] = time.perf_counter() - started
+            if time.perf_counter() >= deadline:
+                raise ValueError("Recovery deadline expired before replacement startup")
+            replacement = _launch_child(config_path, port, tokens[1], output)
+            children.append(replacement)
+            result.update(replacement_pid=replacement.pid, replacement_endpoint=base_url)
+            result["same_endpoint"] = result["original_endpoint"] == result["replacement_endpoint"]
+            timeline["replacement_started"] = time.perf_counter() - started
+            recovered = _wait_for_service(replacement, base_url, tokens[1], expected_config, deadline)
+            result["replacement_verification"] = recovered
+            result.update(
+                replacement_ready=recovered["ready"], status_codes=recovered.get("status_codes", []),
+                restored_config_matches=recovered.get("config_matches", False),
+                read_only_verified=observation["read_only_verified"] and recovered.get("read_only_verified", False),
+                auth_verified=observation["auth_verified"] and recovered.get("auth_verified", False),
+            )
+            if not recovered["ready"] or original.pid == replacement.pid:
+                raise ValueError("Distinct replacement did not prove authenticated read-only configuration readiness")
+            timeline["replacement_ready"] = time.perf_counter() - started
+            result["recovery_time_seconds"] = timeline["replacement_ready"] - timeline["forced_exit_requested"]
+            result["config_recovery_time_seconds"] = timeline["config_restored"] - timeline["config_corruption_observed"]
+            result["service_recovery_time_seconds"] = timeline["replacement_ready"] - timeline["config_restored"]
+            result["status"] = "pass"
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            result["diagnostic"] = redact_text(str(exc))
+            diagnostic = _redacted_process_diagnostic(output, api_token=tokens[0])
+            result["process_diagnostic"] = diagnostic.replace(tokens[1], "[REDACTED]")
+        finally:
+            for child in reversed(children):
+                try:
+                    _stop_child(child)
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    result["status"] = "fail"
+                    result["cleanup_error"] = type(exc).__name__
+            result["children_stopped"] = all(child.poll() is not None for child in children)
+            if not result["children_stopped"]:
+                result["status"] = "fail"
+    return result
 
 
 def run_recovery_drill(*, policy_path: Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
@@ -251,14 +375,15 @@ def run_recovery_drill(*, policy_path: Path = DEFAULT_POLICY_PATH) -> dict[str, 
                 "symbols": expected_symbols,
                 "intervals": expected_intervals,
                 "theme": "Dark",
+                "mode": "Demo/Testnet",
+                "live_trading_enabled": False,
+                "llm_enabled": False,
                 **SYNTHETIC_SECRETS,
             }
         )
-        cleanup_service = service
         try:
             service.save_config(source="operational-recovery-drill")
             shutil.copy2(config_path, backup_path)
-            backup_created_at = time.time()
             persisted_text = backup_path.read_text(encoding="utf-8")
             backup_payload = json.loads(persisted_text)
             persisted_config = (
@@ -287,35 +412,12 @@ def run_recovery_drill(*, policy_path: Path = DEFAULT_POLICY_PATH) -> dict[str, 
                 }
             )
 
-            service.update_config({"symbols": ["INVALIDUSDT"], "intervals": ["1m"]})
-            service.save_config(source="operational-recovery-drill-mutation")
-            recovery_started = time.perf_counter()
-            restore_temp = config_path.with_suffix(".restore.tmp")
-            shutil.copy2(backup_path, restore_temp)
-            restore_temp.replace(config_path)
-            restored = TradingBotService(
-                config_path=config_path, load_persisted_config=True
-            )
-            cleanup_service = restored
-            config_recovery_time = time.perf_counter() - recovery_started
-            recovery_point = max(0.0, time.time() - backup_created_at)
-            restored_payload = restored.get_config_payload().to_dict()
-            config_matches = (
-                restored_payload.get("symbols") == expected_symbols
-                and restored_payload.get("intervals") == expected_intervals
-                and restored_payload.get("theme") == "Dark"
-            )
-            suite_results.append(
-                {
-                    "name": "config-restore-round-trip",
-                    "status": "pass" if config_matches else "fail",
-                }
-            )
-
-            restored.update_config({field: "" for field in SYNTHETIC_SECRETS})
-            restored.save_config(source="operational-recovery-drill-secret-cleanup")
+            # Remove synthetic credentials before either child starts or the recovery backup is taken.
+            service.update_config({field: "" for field in SYNTHETIC_SECRETS})
+            service.save_config(source="operational-recovery-drill-secret-cleanup")
             persisted_after_cleanup = config_path.read_text(encoding="utf-8")
-            cleanup_pass = all(
+            cleanup_payload = json.loads(persisted_after_cleanup)
+            cleanup_pass = not cleanup_payload.get("credential_store_fields") and all(
                 secret not in persisted_after_cleanup
                 for secret in SYNTHETIC_SECRETS.values()
             )
@@ -326,30 +428,33 @@ def run_recovery_drill(*, policy_path: Path = DEFAULT_POLICY_PATH) -> dict[str, 
                 }
             )
 
-            restart_ready, service_recovery_time, status_codes, exit_code, diagnostic, attempts = (
-                _run_canonical_service_restart(
-                    config_path=config_path,
-                    timeout_seconds=min(30.0, rto_seconds),
-                )
+            if not safe_backup or not cleanup_pass:
+                raise ValueError("Recovery fixture must have a redacted backup and cleared synthetic credentials")
+            shutil.copy2(config_path, backup_path)
+            backup_created_at = time.perf_counter()
+            expected_config = service.get_config_payload().to_dict()
+            expected_config["llm"]["api_key_present"] = False
+            process_result = _run_canonical_service_restart(
+                config_path=config_path, backup_path=backup_path,
+                expected_config=expected_config,
+                backup_created_at=backup_created_at,
+                timeout_seconds=min(30.0, rto_seconds),
             )
-            suite_results.append(
-                {
-                    "name": "canonical-service-process-restart",
-                    "status": "pass" if restart_ready else "fail",
-                    "process_boundary": "child-process",
-                    "status_codes": status_codes,
-                    "premature_exit_code": exit_code,
-                    "startup_attempts": attempts,
-                    "diagnostic": diagnostic,
-                    "actual_seconds": round(service_recovery_time, 6),
-                }
-            )
+            suite_results.append(process_result)
+            suite_results.append({
+                "name": "config-restore-round-trip",
+                "status": "pass" if process_result["restored_config_matches"] else "fail",
+            })
+            config_recovery_time = process_result["config_recovery_time_seconds"]
+            service_recovery_time = process_result["service_recovery_time_seconds"]
+            recovery_time = process_result["recovery_time_seconds"]
+            recovery_point = process_result["recovery_point_seconds"]
         finally:
             try:
-                cleanup_service.update_config(
+                service.update_config(
                     {field: "" for field in SYNTHETIC_SECRETS}
                 )
-                cleanup_service.save_config(
+                service.save_config(
                     source="operational-recovery-drill-final-cleanup"
                 )
             except Exception as exc:
@@ -360,8 +465,6 @@ def run_recovery_drill(*, policy_path: Path = DEFAULT_POLICY_PATH) -> dict[str, 
                         "error_type": type(exc).__name__,
                     }
                 )
-
-    recovery_time = max(config_recovery_time, service_recovery_time)
 
     rto_pass = recovery_time <= rto_seconds
     rpo_pass = recovery_point <= rpo_seconds

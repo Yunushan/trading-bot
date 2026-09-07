@@ -4,10 +4,12 @@ import math
 from typing import cast
 
 try:
+    from .strategy_order_error_logging import pause_for_order_uncertainty
     from . import strategy_signal_order_margin_runtime
     from . import strategy_signal_order_position_gate_runtime
     from . import strategy_signal_order_slot_runtime
 except ImportError:  # pragma: no cover - standalone execution fallback
+    from strategy_order_error_logging import pause_for_order_uncertainty
     import strategy_signal_order_margin_runtime
     import strategy_signal_order_position_gate_runtime
     import strategy_signal_order_slot_runtime
@@ -16,16 +18,17 @@ except ImportError:  # pragma: no cover - standalone execution fallback
 def _resolve_signal_order_account_state(self, *, cw, last_price) -> dict[str, object]:
     account_type = str((self.config.get("account_type") or self.binance.account_type)).upper()
     futures_balance_snap = None
-    if account_type == "FUTURES" and hasattr(self.binance, "get_futures_balance_snapshot"):
+    if account_type == "FUTURES":
         try:
-            futures_balance_snap = self.binance.get_futures_balance_snapshot(force_refresh=True) or {}
-        except Exception:
-            futures_balance_snap = None
-    if isinstance(futures_balance_snap, dict) and futures_balance_snap:
-        try:
-            usdt_bal = float(futures_balance_snap.get("total") or futures_balance_snap.get("wallet") or 0.0)
-        except Exception:
-            usdt_bal = 0.0
+            snapshot = self.binance.get_futures_balance_snapshot(force_refresh=True)
+            available, wallet = strategy_signal_order_margin_runtime._futures_sizing_balances(snapshot)
+            futures_balance_snap = dict(snapshot, available=available, wallet=wallet)
+            usdt_bal = available
+        except Exception as exc:
+            pause_for_order_uncertainty(
+                self, f"Futures sizing balance snapshot failed: {exc}", reconciliation_required=False,
+            )
+            return {"aborted": True}
     else:
         usdt_bal = self.binance.get_total_usdt_value()
     pct_source = cw.get("position_pct", self.config.get("position_pct", 100.0))
@@ -65,6 +68,7 @@ def _resolve_signal_order_account_state(self, *, cw, last_price) -> dict[str, ob
     if not math.isfinite(price):
         price = 0.0
     return {
+        "aborted": False,
         "account_type": account_type,
         "futures_balance_snap": futures_balance_snap,
         "free_usdt": free_usdt,
