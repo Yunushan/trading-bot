@@ -213,6 +213,103 @@ bool parseSuccessfulBinanceMutation(
     return true;
 }
 
+bool hasMeaningfulJsonValue(const QJsonValue &value) {
+    return !value.isUndefined()
+        && !value.isNull()
+        && (!value.isString() || !value.toString().trimmed().isEmpty());
+}
+
+bool parseBooleanJsonValue(const QJsonValue &value, bool *out) {
+    if (!out) {
+        return false;
+    }
+    if (value.isBool()) {
+        *out = value.toBool();
+        return true;
+    }
+    if (!value.isString()) {
+        return false;
+    }
+    const QString token = value.toString().trimmed().toLower();
+    if (token == QStringLiteral("true") || token == QStringLiteral("1")
+        || token == QStringLiteral("yes") || token == QStringLiteral("on")) {
+        *out = true;
+        return true;
+    }
+    if (token == QStringLiteral("false") || token == QStringLiteral("0")
+        || token == QStringLiteral("no") || token == QStringLiteral("off")) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+QJsonObject normalizeBinanceOrderAcknowledgement(const QJsonObject &object) {
+    QJsonObject normalized = object;
+    if (object.value(QStringLiteral("data")).isObject()) {
+        normalized = object.value(QStringLiteral("data")).toObject();
+    }
+
+    const auto copyAlias = [&normalized](const QString &canonical, const QStringList &aliases) {
+        if (hasMeaningfulJsonValue(normalized.value(canonical))) {
+            return;
+        }
+        for (const QString &alias : aliases) {
+            const QJsonValue value = normalized.value(alias);
+            if (hasMeaningfulJsonValue(value)) {
+                normalized.insert(canonical, value);
+                return;
+            }
+        }
+    };
+    copyAlias(QStringLiteral("orderId"), {QStringLiteral("order_id"), QStringLiteral("id")});
+    copyAlias(QStringLiteral("clientOrderId"), {
+        QStringLiteral("client_order_id"), QStringLiteral("clientOrderID"),
+        QStringLiteral("newClientOrderId"),
+    });
+    copyAlias(QStringLiteral("executedQty"), {
+        QStringLiteral("executed_qty"), QStringLiteral("executedQuantity"),
+    });
+    copyAlias(QStringLiteral("origQty"), {QStringLiteral("orig_qty"), QStringLiteral("originalQty")});
+    copyAlias(QStringLiteral("positionSide"), {QStringLiteral("position_side")});
+    copyAlias(QStringLiteral("avgPrice"), {QStringLiteral("avg_price")});
+    copyAlias(QStringLiteral("cummulativeQuoteQty"), {
+        QStringLiteral("cumulativeQuoteQty"), QStringLiteral("cummulative_quote_qty"),
+    });
+
+    for (const QString &key : {
+             QStringLiteral("symbol"), QStringLiteral("side"), QStringLiteral("status"),
+             QStringLiteral("positionSide"),
+         }) {
+        const QJsonValue value = normalized.value(key);
+        if (value.isString()) {
+            normalized.insert(key, value.toString().trimmed().toUpper());
+        }
+    }
+    return normalized;
+}
+
+QString binanceOrderEnvelopeMessage(const QJsonObject &object) {
+    for (const QString &key : {QStringLiteral("message"), QStringLiteral("msg")}) {
+        const QString message = object.value(key).toString().trimmed();
+        if (!message.isEmpty()) {
+            return message;
+        }
+    }
+    const QJsonValue error = object.value(QStringLiteral("error"));
+    if (error.isString() && !error.toString().trimmed().isEmpty()) {
+        return error.toString().trimmed();
+    }
+    return QStringLiteral("order rejected");
+}
+
+bool isTerminalOrderStatus(const QString &status) {
+    return status == QStringLiteral("REJECTED")
+        || status == QStringLiteral("CANCELED")
+        || status == QStringLiteral("EXPIRED")
+        || status == QStringLiteral("EXPIRED_IN_MATCH");
+}
+
 bool parseBinanceOrderAcknowledgement(
     const QJsonObject &object,
     const QList<QPair<QString, QString>> &params,
@@ -221,23 +318,41 @@ bool parseBinanceOrderAcknowledgement(
     QString *error,
     QJsonObject *normalizedObject,
     NativeOrderSafety::OrderExecution *execution) {
-    QJsonObject normalized = object;
-    if (object.value(QStringLiteral("data")).isObject()) {
-        normalized = object.value(QStringLiteral("data")).toObject();
-    }
+    const QJsonObject normalized = normalizeBinanceOrderAcknowledgement(object);
     for (const auto &candidate : {object, normalized}) {
-        if (candidate.contains(QStringLiteral("code"))
-            || (candidate.contains(QStringLiteral("error")) && !candidate.value(QStringLiteral("error")).isNull())
-            || (candidate.contains(QStringLiteral("success")) && candidate.value(QStringLiteral("success")) != QJsonValue(true))) {
-            *error = QStringLiteral("Invalid order acknowledgement envelope; reconciliation required.");
+        if (candidate.contains(QStringLiteral("code"))) {
+            bool codeOk = false;
+            const int code = candidate.value(QStringLiteral("code")).toVariant().toInt(&codeOk);
+            if (!codeOk || (code != 0 && code != 200)) {
+                *error = QStringLiteral("Binance order rejected: %1; reconciliation required.")
+                             .arg(binanceOrderEnvelopeMessage(candidate));
+                return false;
+            }
+        }
+        const QJsonValue envelopeError = candidate.value(QStringLiteral("error"));
+        if (hasMeaningfulJsonValue(envelopeError)) {
+            *error = QStringLiteral("Binance order rejected: %1; reconciliation required.")
+                         .arg(binanceOrderEnvelopeMessage(candidate));
             return false;
+        }
+        if (candidate.contains(QStringLiteral("success"))) {
+            bool success = false;
+            if (!parseBooleanJsonValue(candidate.value(QStringLiteral("success")), &success)) {
+                *error = QStringLiteral("Invalid order acknowledgement envelope; reconciliation required.");
+                return false;
+            }
+            if (!success) {
+                *error = QStringLiteral("Binance order rejected: %1; reconciliation required.")
+                             .arg(binanceOrderEnvelopeMessage(candidate));
+                return false;
+            }
         }
     }
     QJsonObject expected;
     for (const auto &param : params) expected.insert(param.first, param.second);
     for (const auto &field : {QStringLiteral("symbol"), QStringLiteral("side"), QStringLiteral("clientOrderId")}) {
         const QString key = field == QStringLiteral("clientOrderId") ? QStringLiteral("newClientOrderId") : field;
-        if (!expected.contains(key) || normalized.value(field) != expected.value(key)) {
+        if (!hasMeaningfulJsonValue(expected.value(key)) || normalized.value(field) != expected.value(key)) {
             *error = QStringLiteral("Order acknowledgement identity mismatch; reconciliation required.");
             return false;
         }
@@ -247,6 +362,11 @@ bool parseBinanceOrderAcknowledgement(
             && normalized.value(QStringLiteral("positionSide")) != QJsonValue(positionSide))
         || (positionSide != QStringLiteral("BOTH") && !normalized.contains(QStringLiteral("positionSide")))) {
         *error = QStringLiteral("Order acknowledgement position side mismatch; reconciliation required.");
+        return false;
+    }
+    const QJsonValue responseStatus = normalized.value(QStringLiteral("status"));
+    if (!responseStatus.isString() || responseStatus.toString().trimmed().isEmpty()) {
+        *error = QStringLiteral("Order response missing explicit status; reconciliation required.");
         return false;
     }
     const QJsonValue id = normalized.value(QStringLiteral("orderId"));
@@ -271,6 +391,11 @@ bool parseBinanceOrderAcknowledgement(
     *status = execution->status;
     *orderId = parsedId;
     *normalizedObject = normalized;
+    if (isTerminalOrderStatus(*status)) {
+        *error = QStringLiteral("Binance order returned terminal failure status: %1; reconciliation required.")
+                     .arg(*status);
+        return false;
+    }
     return true;
 }
 
