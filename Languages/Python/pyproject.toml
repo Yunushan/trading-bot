@@ -60,7 +60,7 @@ security = [
     "truststore==0.10.4",
 ]
 metatrader5 = [
-    "MetaTrader5==5.0.6090; platform_system == 'Windows' and platform_machine == 'AMD64'",
+    "MetaTrader5==5.0.6147; platform_system == 'Windows' and platform_machine == 'AMD64'",
 ]
 citic-ctp = [
     "openctp-ctp==6.7.11.0; platform_system == 'Windows' or platform_system == 'Linux'",
