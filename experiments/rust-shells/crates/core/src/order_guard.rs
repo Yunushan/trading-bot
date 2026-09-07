@@ -1,8 +1,9 @@
 use crate::generated_python_parity::{
-    PYTHON_LIVE_SAFETY_ENV_TRUE_VALUES, PYTHON_LIVE_TRADING_ACK_ENV,
-    PYTHON_LIVE_TRADING_ACK_ENV_LEGACY, PYTHON_LIVE_TRADING_ENABLED_ENV,
-    PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV, PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV,
-    PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
+    PYTHON_INVALID_EXECUTION_MODE_ERROR, PYTHON_LIVE_SAFETY_ENV_TRUE_VALUES,
+    PYTHON_LIVE_TRADING_ACK_ENV, PYTHON_LIVE_TRADING_ACK_ENV_LEGACY,
+    PYTHON_LIVE_TRADING_ENABLED_ENV, PYTHON_LIVE_TRADING_MAX_LEVERAGE_ENV,
+    PYTHON_LIVE_TRADING_MAX_POSITION_PCT_ENV, PYTHON_LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
+    PYTHON_NATIVE_RUNTIME_LIVE_MODE_VALUES, PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS,
     PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
     PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES,
     PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES,
@@ -94,6 +95,10 @@ pub struct OrderSymbolFilters {
     pub tick_size: f64,
     pub min_qty: f64,
     pub min_notional: f64,
+    pub max_qty: f64,
+    pub market_min_qty: Option<f64>,
+    pub market_max_qty: Option<f64>,
+    pub market_step_size: Option<f64>,
 }
 
 impl Default for OrderSymbolFilters {
@@ -103,6 +108,10 @@ impl Default for OrderSymbolFilters {
             tick_size: 0.0,
             min_qty: 0.0,
             min_notional: 0.0,
+            max_qty: 0.0,
+            market_min_qty: None,
+            market_max_qty: None,
+            market_step_size: None,
         }
     }
 }
@@ -114,6 +123,10 @@ impl From<&BinanceFuturesSymbolFilters> for OrderSymbolFilters {
             tick_size: filters.tick_size,
             min_qty: filters.min_qty,
             min_notional: filters.min_notional,
+            max_qty: filters.max_qty,
+            market_min_qty: filters.market_min_qty,
+            market_max_qty: filters.market_max_qty,
+            market_step_size: filters.market_step_size,
         }
     }
 }
@@ -311,25 +324,92 @@ fn validate_order_filter_constraints_internal(
     last_price: Option<f64>,
     risk_reducing_exit: bool,
 ) -> Vec<String> {
+    let mut quantity_rules = vec![(
+        "minQty",
+        "maxQty",
+        "stepSize",
+        filters.min_qty,
+        filters.max_qty,
+        filters.step_size,
+    )];
+    let market = (
+        filters.market_min_qty,
+        filters.market_max_qty,
+        filters.market_step_size,
+    );
+    match market {
+        (Some(minimum), Some(maximum), Some(step)) => {
+            quantity_rules.push((
+                "marketMinQty",
+                "marketMaxQty",
+                "marketStepSize",
+                minimum,
+                maximum,
+                step,
+            ));
+        }
+        (None, None, None) => {}
+        _ => {
+            return vec![format!(
+                "{} symbol filters invalid for {}: incomplete MARKET_LOT_SIZE",
+                intent.market, intent.symbol
+            )];
+        }
+    }
+    if quantity_rules
+        .iter()
+        .any(|(_, _, _, minimum, maximum, step)| {
+            !minimum.is_finite()
+                || !maximum.is_finite()
+                || !step.is_finite()
+                || *minimum < 0.0
+                || *maximum < *minimum
+                || *step < 0.0
+        })
+        || !filters.min_notional.is_finite()
+        || filters.min_notional < 0.0
+        || !filters.tick_size.is_finite()
+        || filters.tick_size < 0.0
+    {
+        return vec![format!(
+            "{} symbol filters invalid for {}",
+            intent.market, intent.symbol
+        )];
+    }
     let Some(quantity) = intent.quantity.filter(|value| value.is_finite()) else {
         return Vec::new();
     };
     let mut errors = Vec::new();
-    if filters.min_qty > 0.0 && quantity < filters.min_qty && !risk_reducing_exit {
-        errors.push(format!(
-            "order quantity {} is below {} minQty {}",
-            decimal_text(quantity),
-            intent.symbol,
-            decimal_text(filters.min_qty)
-        ));
-    }
-    if filters.step_size > 0.0 && !aligned_to_step(quantity, filters.step_size) {
-        errors.push(format!(
-            "order quantity {} is not aligned to {} stepSize {}",
-            decimal_text(quantity),
-            intent.symbol,
-            decimal_text(filters.step_size)
-        ));
+    for (index, (min_name, max_name, step_name, minimum, maximum, step)) in
+        quantity_rules.iter().enumerate()
+    {
+        if index > 0 && intent.order_type != "MARKET" {
+            continue;
+        }
+        if quantity < *minimum && !risk_reducing_exit {
+            errors.push(format!(
+                "order quantity {} is below {} {min_name} {}",
+                decimal_text(quantity),
+                intent.symbol,
+                decimal_text(*minimum)
+            ));
+        }
+        if quantity > *maximum {
+            errors.push(format!(
+                "order quantity {} exceeds {} {max_name} {}",
+                decimal_text(quantity),
+                intent.symbol,
+                decimal_text(*maximum)
+            ));
+        }
+        if *step > 0.0 && !aligned_to_step(quantity, *step) {
+            errors.push(format!(
+                "order quantity {} is not aligned to {} {step_name} {}",
+                decimal_text(quantity),
+                intent.symbol,
+                decimal_text(*step)
+            ));
+        }
     }
 
     let price = intent
@@ -438,13 +518,14 @@ fn validate_order_numeric_params(
 }
 
 pub fn is_live_trading_mode(mode: impl AsRef<str>) -> bool {
-    let text = mode.as_ref().trim().to_lowercase();
-    if text.is_empty() {
-        return false;
-    }
-    !["demo", "test", "sandbox", "paper"]
-        .iter()
-        .any(|token| text.contains(token))
+    !PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS
+        .contains(&mode.as_ref().trim().to_ascii_lowercase().as_str())
+}
+
+pub fn is_supported_exchange_mode(mode: impl AsRef<str>) -> bool {
+    let normalized = mode.as_ref().trim().to_ascii_lowercase();
+    PYTHON_NATIVE_RUNTIME_LIVE_MODE_VALUES.contains(&normalized.as_str())
+        || PYTHON_NATIVE_RUNTIME_TESTNET_MODE_MARKERS.contains(&normalized.as_str())
 }
 
 pub fn validate_live_trading_safety(input: &LiveTradingSafetyInput) -> Vec<String> {
@@ -456,6 +537,9 @@ fn validate_live_trading_safety_with_environment(
     input: &LiveTradingSafetyInput,
     environment: &LiveTradingEnvironment,
 ) -> Vec<String> {
+    if !is_supported_exchange_mode(&input.mode) {
+        return vec![PYTHON_INVALID_EXECUTION_MODE_ERROR.to_owned()];
+    }
     if !is_live_trading_mode(&input.mode) {
         return Vec::new();
     }
@@ -537,6 +621,43 @@ fn validate_live_trading_safety_with_environment(
     errors
 }
 
+fn is_exchange_risk_reducing_order(market: &str, params: &[(String, String)]) -> bool {
+    if market != "futures" {
+        return false;
+    }
+    // Match Python's canonical wire fields, never normalized UI aliases. Unlike
+    // a Python mapping, native parameter pairs may contain ambiguous duplicates.
+    for field in [
+        "type",
+        "side",
+        "positionSide",
+        "reduceOnly",
+        "closePosition",
+    ] {
+        if params.iter().filter(|(key, _)| key == field).count() > 1 {
+            return false;
+        }
+    }
+    let value = |field: &str| {
+        params
+            .iter()
+            .find(|(key, _)| key == field)
+            .map(|(_, value)| value.as_str())
+    };
+    if !matches!(value("type"), Some("LIMIT" | "MARKET"))
+        || !matches!(value("side"), Some("BUY" | "SELL"))
+        || value("closePosition").is_some()
+    {
+        return false;
+    }
+    match value("positionSide").unwrap_or("BOTH") {
+        "BOTH" => value("reduceOnly") == Some("true"),
+        "LONG" => value("reduceOnly").is_none() && value("side") == Some("SELL"),
+        "SHORT" => value("reduceOnly").is_none() && value("side") == Some("BUY"),
+        _ => false,
+    }
+}
+
 pub fn guard_live_order_submit(
     input: &BinanceOrderSubmitGuardInput,
 ) -> BinanceOrderSubmitGuardResult {
@@ -544,9 +665,8 @@ pub fn guard_live_order_submit(
     let live_mode = is_live_trading_mode(&input.mode);
     let mut errors = Vec::new();
 
-    // Dry-run mode must still validate the order shape, exchange filters,
-    // connector health, and audit path. Credential/acknowledgement checks are
-    // specific to an actual live submission.
+    // Testnet still validates order shape, exchange filters, connector health
+    // and audit paths. It is an exchange environment, not the dry-run flag.
     if live_mode {
         let environment = process_live_trading_environment();
         errors.extend(validate_live_trading_safety_with_environment(
@@ -606,7 +726,9 @@ pub fn guard_live_order_submit(
         }
     }
 
-    if live_mode {
+    let uses_session_budget =
+        live_mode && !is_exchange_risk_reducing_order(&intent.market, &input.params);
+    if uses_session_budget {
         let environment = process_live_trading_environment();
         let max_session_orders = configured_integer(
             input.config.live_trading_max_session_orders,
@@ -624,7 +746,7 @@ pub fn guard_live_order_submit(
     BinanceOrderSubmitGuardResult {
         allowed,
         errors,
-        next_submit_attempt_count: if allowed && live_mode {
+        next_submit_attempt_count: if allowed && uses_session_budget {
             current_count + 1
         } else {
             current_count
@@ -752,6 +874,8 @@ mod tests {
             tick_size: 0.10,
             min_qty: 0.01,
             min_notional: 5.0,
+            max_qty: 100.0,
+            ..Default::default()
         }
     }
 
@@ -872,6 +996,10 @@ mod tests {
                 tick_size: filters["tickSize"].as_f64().unwrap_or_default(),
                 min_qty: filters["minQty"].as_f64().unwrap_or_default(),
                 min_notional: filters["minNotional"].as_f64().unwrap_or_default(),
+                max_qty: filters["maxQty"].as_f64().unwrap_or(f64::NAN),
+                market_min_qty: filters["marketMinQty"].as_f64(),
+                market_max_qty: filters["marketMaxQty"].as_f64(),
+                market_step_size: filters["marketStepSize"].as_f64(),
             };
             let last_price = case["last_price"].as_f64();
             let expected_filter_errors = case["expected"]["filter_errors"]
@@ -1055,16 +1183,19 @@ mod tests {
 
     #[test]
     fn live_safety_blocks_missing_ack_placeholders_and_caps() {
-        let errors = validate_live_trading_safety(&LiveTradingSafetyInput {
-            mode: "live".to_owned(),
-            api_key: "test".to_owned(),
-            api_secret: "secret".to_owned(),
-            leverage: 25,
-            position_pct: 20.0,
-            margin_mode: "invalid".to_owned(),
-            config: live_config(),
-            ..Default::default()
-        });
+        let errors = validate_live_trading_safety_with_environment(
+            &LiveTradingSafetyInput {
+                mode: "live".to_owned(),
+                api_key: "test".to_owned(),
+                api_secret: "secret".to_owned(),
+                leverage: 25,
+                position_pct: 20.0,
+                margin_mode: "invalid".to_owned(),
+                config: live_config(),
+                ..Default::default()
+            },
+            &LiveTradingEnvironment::default(),
+        );
         assert_eq!(
             errors,
             vec![
@@ -1075,13 +1206,16 @@ mod tests {
             ]
         );
 
-        let missing_ack = validate_live_trading_safety(&LiveTradingSafetyInput {
-            mode: "real".to_owned(),
-            api_key: "real-key".to_owned(),
-            api_secret: "real-secret".to_owned(),
-            config: LiveTradingSafetyConfig::default(),
-            ..Default::default()
-        });
+        let missing_ack = validate_live_trading_safety_with_environment(
+            &LiveTradingSafetyInput {
+                mode: "Live".to_owned(),
+                api_key: "real-key".to_owned(),
+                api_secret: "real-secret".to_owned(),
+                config: LiveTradingSafetyConfig::default(),
+                ..Default::default()
+            },
+            &LiveTradingEnvironment::default(),
+        );
         assert!(
             missing_ack
                 .iter()
@@ -1194,6 +1328,136 @@ mod tests {
     }
 
     #[test]
+    fn session_budget_matches_python_exit_cases_and_preserves_other_guards() {
+        let behavior: serde_json::Value =
+            serde_json::from_str(PYTHON_ORDER_GUARD_BEHAVIOR_JSON).unwrap();
+        let cases = behavior["session_budget_exit_cases"]
+            .as_array()
+            .expect("Python exit cases");
+        assert!(cases.len() >= 29);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let exempt = case["exempt"].as_bool().unwrap();
+            let mut input = BinanceOrderSubmitGuardInput {
+                mode: "Live".to_owned(),
+                market: case["market"].as_str().unwrap().to_owned(),
+                params: case["params"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(key, value)| {
+                        (
+                            key.clone(),
+                            value
+                                .as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| value.to_string()),
+                        )
+                    })
+                    .collect(),
+                api_key: "real-key".to_owned(),
+                api_secret: "real-secret".to_owned(),
+                config: live_config(),
+                filters: Some(futures_filters()),
+                last_price: Some(100.0),
+                connector_state: "ready".to_owned(),
+                connector_health: "ok".to_owned(),
+                live_submit_attempt_count: 3,
+                ..Default::default()
+            };
+            let result = guard_live_order_submit(&input);
+            assert_eq!(result.allowed, exempt, "{name}: {:?}", result.errors);
+            assert_eq!(result.next_submit_attempt_count, 3, "{name}");
+            assert_eq!(
+                result
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("session order cap")),
+                !exempt,
+                "{name}"
+            );
+            if exempt {
+                input.live_submit_attempt_count = 0;
+                let result = guard_live_order_submit(&input);
+                assert!(result.allowed, "{name}: {:?}", result.errors);
+                assert_eq!(result.next_submit_attempt_count, 0, "{name}");
+                input.live_submit_attempt_count = 3;
+                for condition in ["audit", "audit-write", "health", "quantity", "ack"] {
+                    let mut blocked = input.clone();
+                    match condition {
+                        "audit" => blocked.order_audit_enabled = false,
+                        "audit-write" => blocked.order_audit_writable = false,
+                        "health" => blocked.connector_state = "offline".to_owned(),
+                        "quantity" => {
+                            blocked
+                                .params
+                                .iter_mut()
+                                .find(|(key, _)| key == "quantity")
+                                .unwrap()
+                                .1 = "NaN".to_owned()
+                        }
+                        "ack" => blocked.config.live_trading_acknowledgement = "missing".to_owned(),
+                        _ => unreachable!(),
+                    }
+                    let result = guard_live_order_submit(&blocked);
+                    assert!(!result.allowed, "{name}: {condition}");
+                    assert_eq!(result.next_submit_attempt_count, 3);
+                    assert!(
+                        !result
+                            .errors
+                            .iter()
+                            .any(|error| error.contains("session order cap")),
+                        "{name}: {condition}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn session_budget_rejects_duplicate_wire_fields() {
+        let params = vec![
+            ("symbol".to_owned(), "ETHUSDT".to_owned()),
+            ("side".to_owned(), "SELL".to_owned()),
+            ("type".to_owned(), "MARKET".to_owned()),
+            ("quantity".to_owned(), "0.1".to_owned()),
+            ("reduceOnly".to_owned(), "true".to_owned()),
+            ("positionSide".to_owned(), "BOTH".to_owned()),
+        ];
+        for (key, value) in [
+            ("reduceOnly", "false"),
+            ("side", "BUY"),
+            ("type", "STOP_MARKET"),
+            ("positionSide", "LONG"),
+        ] {
+            for first in [true, false] {
+                let mut duplicate = params.clone();
+                duplicate.insert(
+                    if first { 0 } else { duplicate.len() },
+                    (key.to_owned(), value.to_owned()),
+                );
+                let result = guard_live_order_submit(&BinanceOrderSubmitGuardInput {
+                    mode: "Live".to_owned(),
+                    market: "futures".to_owned(),
+                    params: duplicate,
+                    config: live_config(),
+                    live_submit_attempt_count: 3,
+                    ..Default::default()
+                });
+                assert!(!result.allowed);
+                assert_eq!(result.next_submit_attempt_count, 3);
+                assert!(
+                    result
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("session order cap")),
+                    "{key}, first={first}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn live_order_guard_blocks_session_cap_and_demo_mode_keeps_structural_guards() {
         let params = vec![
             ("symbol".to_owned(), "ETHUSDT".to_owned()),
@@ -1235,7 +1499,7 @@ mod tests {
     }
 
     #[test]
-    fn paper_order_guard_allows_valid_dry_run_without_live_credentials() {
+    fn testnet_order_guard_allows_valid_structural_check_without_live_credentials() {
         const { assert!(PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES) };
         const { assert!(PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES) };
         const { assert!(PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES) };
@@ -1252,7 +1516,7 @@ mod tests {
             .map(|(key, value)| (key.to_owned(), value))
             .collect();
         let result = guard_live_order_submit(&BinanceOrderSubmitGuardInput {
-            mode: "paper".to_owned(),
+            mode: "Demo/Testnet".to_owned(),
             market: "futures".to_owned(),
             params,
             filters: Some(futures_filters()),
@@ -1278,6 +1542,7 @@ mod tests {
             price_precision: 1,
             quote_asset_precision: 8,
             max_leverage: 0,
+            ..Default::default()
         };
         assert_eq!(
             OrderSymbolFilters::from(&filters),
@@ -1286,6 +1551,8 @@ mod tests {
                 tick_size: 0.1,
                 min_qty: 0.01,
                 min_notional: 5.0,
+                max_qty: 100.0,
+                ..Default::default()
             }
         );
     }

@@ -45,8 +45,9 @@ def _throttle_request(self, path: str | None) -> None:
 
 
 def _environment_tag(mode_value: str | None) -> str:
-    text = str(mode_value or "").lower()
-    return "testnet" if any(tag in text for tag in ("test", "demo")) else "live"
+    from app.settings.execution_mode import execution_environment
+
+    return execution_environment(mode_value)
 
 
 def _account_tag(account_value: str | None) -> str:

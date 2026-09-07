@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from .strategy_close_opposite_common_runtime import _close_quantity
 from .close_execution import (
     _apply_entire_account_stop_loss,
     _close_leg_entry,
@@ -35,26 +36,39 @@ def _close_indicator_positions(
         indicator_norm = str(indicator_key or "").strip().lower()
     indicator_lookup_key = indicator_norm or indicator_key
     hedge_scope_only = self._strategy_coerce_bool(self.config.get("allow_opposite_positions"), True)
+    if qty_limit is not None:
+        try:
+            qty_limit = _close_quantity(qty_limit)
+        except (TypeError, ValueError, OverflowError) as exc:
+            _pause_for_close_uncertainty(
+                self, f"{symbol}@{interval_text or 'default'} close quantity limit is invalid: {exc}",
+                reconciliation_required=False,
+            )
+            return 0, 0.0
 
     if hedge_scope_only:
         # In hedge mode, we must close only the quantity associated with the specific
         # indicator and interval that triggered the close signal.
-        qty_for_indicator = self._indicator_open_qty(
-            symbol,
-            interval_text,
-            indicator_lookup_key,
-            side_label,
-            strict_interval=True,
-        )
+        try:
+            qty_for_indicator = _close_quantity(self._indicator_open_qty(
+                symbol, interval_text, indicator_lookup_key, side_label, strict_interval=True,
+            ))
+        except Exception as exc:
+            _pause_for_close_uncertainty(
+                self, f"{symbol}@{interval_text or 'default'} indicator close quantity lookup failed: {exc}",
+                reconciliation_required=False,
+            )
+            return 0, 0.0
         # Fallback: include trade-book and live exchange qty for this slot to avoid skipping closes.
         try:
-            book_qty = self._indicator_trade_book_qty(symbol, interval_text, indicator_lookup_key, side_label)
+            book_qty = _close_quantity(self._indicator_trade_book_qty(symbol, interval_text, indicator_lookup_key, side_label))
         except Exception as exc:
-            book_qty = 0.0
-            _safe_log(
+            _pause_for_close_uncertainty(
                 self,
                 f"{symbol}@{interval_text or 'default'} indicator trade-book quantity lookup failed: {exc}",
+                reconciliation_required=False,
             )
+            return 0, 0.0
         try:
             exch_qty = 0.0
             desired_ps_local = None
@@ -62,17 +76,7 @@ def _close_indicator_positions(
                 desired_ps_local = position_side
             elif self._strategy_coerce_bool(self.binance.get_futures_dual_side(), False):
                 desired_ps_local = "LONG" if side_label.upper() in {"BUY", "LONG"} else "SHORT"
-            exch_qty = max(
-                0.0,
-                float(
-                    self._current_futures_position_qty(
-                        symbol,
-                        side_label,
-                        desired_ps_local,
-                    )
-                    or 0.0
-                ),
-            )
+            exch_qty = _close_quantity(self._current_futures_position_qty(symbol, side_label, desired_ps_local))
         except Exception as exc:
             exch_qty = 0.0
             _pause_for_close_uncertainty(
@@ -80,6 +84,7 @@ def _close_indicator_positions(
                 f"{symbol}@{interval_text or 'default'} live indicator close quantity lookup failed: {exc}",
                 reconciliation_required=False,
             )
+            return 0, 0.0
         qty_for_indicator = max(qty_for_indicator or 0.0, book_qty or 0.0, exch_qty or 0.0)
         qty_tol = 1e-9
         if qty_for_indicator <= qty_tol:

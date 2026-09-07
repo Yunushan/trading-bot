@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 
 from PyQt6 import QtCore
 
@@ -73,11 +74,13 @@ def _normalize_interval_value(self, value) -> str | None:
 
 
 def _coerce_qty_value(value) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
-        qty_value = abs(float(value or 0.0))
+        qty_value = float(value or 0.0)
     except Exception:
         return None
-    if qty_value <= 0.0:
+    if not math.isfinite(qty_value) or qty_value <= 0.0:
         return None
     return qty_value
 
@@ -101,10 +104,9 @@ def _entry_matches_target_identity(entry: dict, target_identity: dict[str, str])
         "open_time": _identity_token(entry.get("open_time")),
     }
 
-    for key_name in ("trade_id", "client_order_id", "order_id", "event_uid"):
-        target_value = target_identity.get(key_name)
-        if target_value and entry_values.get(key_name) == target_value:
-            return True
+    strong_keys = [key for key in ("trade_id", "client_order_id", "order_id", "event_uid") if target_identity.get(key)]
+    if strong_keys:
+        return all(entry_values.get(key) == target_identity[key] for key in strong_keys)
 
     target_slot = target_identity.get("slot_id")
     if target_slot and entry_values.get("slot_id") == target_slot:
@@ -266,6 +268,8 @@ def reduce_local_position_allocation_state(
         target_payload = _close_target_identity(target_identity)
         normalized_interval = _normalize_interval_value(self, interval)
         qty_value = _coerce_qty_value(qty)
+        if qty is not None and qty_value is None:
+            return False
         qty_tol = 1e-9
 
         def _matches_interval(entry: dict) -> bool:
@@ -281,15 +285,22 @@ def reduce_local_position_allocation_state(
         survivors: list[dict] = list(entries)
         matched = False
         if target_payload:
+            targets = [entry for entry in entries if isinstance(entry, dict) and _allocation_is_active(entry)
+                       and _entry_matches_target_identity(entry, target_payload)]
+            if len(targets) != 1:
+                return False
+            available_qty = _coerce_qty_value(targets[0].get("qty"))
+            if qty_value is not None and (available_qty is None or qty_value > available_qty + qty_tol):
+                return False
             closed_snapshots, survivors, _qty_remaining, matched = _consume_closed_entries(
                 entries,
                 qty_remaining=qty_value,
                 qty_tol=qty_tol,
                 close_time_fmt=None,
-                matcher=lambda entry: _entry_matches_target_identity(entry, target_payload),
+                matcher=lambda entry: entry is targets[0],
             )
 
-        if not matched:
+        if not target_payload:
             closed_snapshots, survivors, _qty_remaining, matched = _consume_closed_entries(
                 entries,
                 qty_remaining=qty_value,

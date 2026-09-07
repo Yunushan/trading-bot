@@ -22,6 +22,7 @@ from app.settings.validation import (  # noqa: E402
     _ALLOWED_BACKTEST_CONFIG_KEYS,
     _ALLOWED_CHART_CONFIG_KEYS,
     _ALLOWED_RUNTIME_CONFIG_KEYS,
+    ConfigValidationError,
     validate_runtime_config,
 )
 
@@ -267,9 +268,11 @@ class NativeFullParityContractTests(unittest.TestCase):
         )
 
     def test_native_text_config_fields_preserve_python_contract(self):
+        with self.assertRaisesRegex(ConfigValidationError, "unsupported execution mode"):
+            validate_runtime_config({"mode": "custom-mode"})
         validated = validate_runtime_config(
             {
-                "mode": "custom-mode",
+                "mode": "Demo/Testnet",
                 "connector_backend": "custom-backend",
                 "indicator_source": "custom-source",
                 "theme": "custom-theme",
@@ -281,7 +284,7 @@ class NativeFullParityContractTests(unittest.TestCase):
                 },
             }
         )
-        self.assertEqual(validated["mode"], "custom-mode")
+        self.assertEqual(validated["mode"], "Demo/Testnet")
         self.assertEqual(validated["connector_backend"], "custom-backend")
         self.assertEqual(validated["indicator_source"], "custom-source")
         self.assertEqual(validated["theme"], "custom-theme")
@@ -1108,7 +1111,7 @@ class NativeFullParityContractTests(unittest.TestCase):
             native_runtime,
         )
         self.assertIn(
-            "guarded_execution_cycle_audits_a_valid_paper_signal_without_calling_executor",
+            "guarded_execution_cycle_audits_a_valid_dry_run_signal_without_calling_executor",
             native_runtime,
         )
         self.assertIn("native runtime loop coordinator", core)

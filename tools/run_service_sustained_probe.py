@@ -376,9 +376,12 @@ def run_probe(
         service.set_account_snapshot(
             total_balance=0.0,
             available_balance=0.0,
+            observed_at=probe_timestamp,
             source="operational-readiness-probe",
         )
-        service.set_portfolio_snapshot(source="operational-readiness-probe")
+        service.set_portfolio_snapshot(
+            open_position_records={}, observed_at=probe_timestamp, source="operational-readiness-probe",
+        )
         app = create_service_api_app(
             service=service,
             api_token=API_TOKEN,

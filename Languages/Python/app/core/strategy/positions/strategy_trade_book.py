@@ -118,6 +118,15 @@ def _purge_indicator_tracking(self, symbol: str, interval: str, indicator_key: s
     side_norm = _side_token(side)
     sym_norm = str(symbol or "").upper()
 
+    # Removing an entry must clear all of its owners, not only the purge trigger.
+    for leg_key in list(self._leg_ledger):
+        leg_sym, leg_interval, leg_side = leg_key
+        if str(leg_sym or "").upper() != sym_norm or _side_token(leg_side) != side_norm:
+            continue
+        if (str(leg_interval or "").strip().lower() or "default") != interval_norm:
+            continue
+        self._remove_leg_entry(leg_key, indicator_key=indicator_norm or None)
+
     with self._trade_book_lock:
         keys_to_drop = []
         for key in list(self._trade_book.keys()):
@@ -147,35 +156,6 @@ def _purge_indicator_tracking(self, symbol: str, interval: str, indicator_key: s
                     keys_to_drop.append(state_key)
         for key in keys_to_drop:
             self._indicator_state.pop(key, None)
-
-    to_purge = []
-    for leg_key in list(self._leg_ledger.keys()):
-        leg_sym, leg_interval, leg_side = leg_key
-        if str(leg_sym or "").upper() != sym_norm:
-            continue
-        leg_side_norm = _side_token(leg_side)
-        if leg_side_norm != side_norm:
-            continue
-        leg_interval_norm = str(leg_interval or "").strip().lower() or "default"
-        if leg_interval_norm != interval_norm:
-            continue
-        entries = self._leg_entries(leg_key)
-        keep_entries = []
-        for entry in entries:
-            keys = self._extract_indicator_keys(entry)
-            if indicator_norm:
-                if indicator_norm in keys:
-                    continue
-            else:
-                continue
-            keep_entries.append(entry)
-        if not keep_entries:
-            to_purge.append(leg_key)
-        else:
-            self._leg_ledger[leg_key]["entries"] = keep_entries
-            self._update_leg_snapshot(leg_key, self._leg_ledger[leg_key])
-    for leg_key in to_purge:
-        self._leg_ledger.pop(leg_key, None)
 
 
 def _trade_book_update_qty(

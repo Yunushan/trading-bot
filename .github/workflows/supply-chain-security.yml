@@ -10,6 +10,8 @@ on:
       - "apps/mobile-client/**"
       - "experiments/rust-shells/**"
       - "docker/**"
+      - "tools/check_container_vulnerability_policy.py"
+      - "tools/summarize_trivy_report.py"
       - ".github/dependabot.yml"
       - ".github/workflows/supply-chain-security.yml"
   schedule:
@@ -174,9 +176,11 @@ jobs:
             if docker build --pull \
               --provenance=false \
               --sbom=false \
+              --iidfile container-image-id.txt \
               --build-arg BUILD_COMMIT="$GITHUB_SHA" \
               --file docker/backend.Dockerfile \
               --tag trading-bot-service:supply-chain .; then
+              echo "image_id=$(cat container-image-id.txt)" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
@@ -190,9 +194,11 @@ jobs:
       - name: Verify image source revision label
         if: steps.image-build.outcome == 'success'
         shell: bash
+        env:
+          AUDIT_IMAGE_ID: ${{ steps.image-build.outputs.image_id }}
         run: |
           set -euo pipefail
-          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' trading-bot-service:supply-chain)"
+          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$AUDIT_IMAGE_ID")"
           if [[ "$image_revision" != "$GITHUB_SHA" ]]; then
             echo "Container image source revision label does not match GITHUB_SHA." >&2
             exit 1
@@ -201,33 +207,38 @@ jobs:
       - name: Verify runtime Python package versions
         if: steps.image-build.outcome == 'success'
         shell: bash
+        env:
+          AUDIT_IMAGE_ID: ${{ steps.image-build.outputs.image_id }}
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint /opt/venv/bin/python trading-bot-service:supply-chain -c \
-            'import importlib.metadata as metadata; import json; import sys; \
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --env AUDIT_IMAGE_ID \
+            --entrypoint /opt/venv/bin/python "$AUDIT_IMAGE_ID" -c \
+            'import importlib.metadata as metadata; import importlib.util as util; import json; import os; import sys; \
+             assert util.find_spec("pip") is None, "pip must not be shipped in the runtime image"; \
              expected = {"setuptools": "84.0.0", "msgpack": "1.2.1"}; \
              found = {name: set() for name in expected}; \
              [found[name].add(distribution.version) for distribution in metadata.distributions() \
               if (name := (distribution.metadata.get("Name") or "").lower()) in found]; \
              actual = {name: sorted(versions) for name, versions in found.items()}; \
-             print(json.dumps({"python": sys.version, "packages": actual})); \
-             assert actual == {name: [version] for name, version in expected.items()}, actual' \
+             assert actual == {name: [version] for name, version in expected.items()}, actual; \
+             print(json.dumps({"ok": True, "image_id": os.environ["AUDIT_IMAGE_ID"], "python": sys.version, "packages": actual}))' \
             | tee runtime-python-packages.json
 
       - name: Audit service container image
         if: steps.image-build.outcome == 'success'
         id: trivy
-        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
-          image-ref: trading-bot-service:supply-chain
+          image-ref: ${{ steps.image-build.outputs.image_id }}
           format: json
           output: trivy-service-results.json
           exit-code: "1"
           vuln-type: os,library
           severity: HIGH,CRITICAL
           scanners: vuln
+          list-all-pkgs: "true"
 
       - name: Summarize container findings
         if: always() && steps.trivy.outcome != 'skipped'
@@ -244,6 +255,7 @@ jobs:
           path: |
             trivy-service-results.json
             runtime-python-packages.json
+            container-image-id.txt
           if-no-files-found: warn
 
       - name: Enforce container vulnerability policy
@@ -253,4 +265,5 @@ jobs:
           set -euo pipefail
           python tools/check_container_vulnerability_policy.py \
             --report trivy-service-results.json \
-            --runtime runtime-python-packages.json
+            --runtime runtime-python-packages.json \
+            --image-id-file container-image-id.txt

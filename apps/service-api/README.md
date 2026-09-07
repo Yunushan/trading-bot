@@ -34,6 +34,7 @@ Focused service test map:
 | `tests.test_service_schema_contracts` | service response schema builders, payload normalization, and secret redaction contracts |
 | `tests.test_service_config_runtime` | service config validation and durable config persistence |
 | `tests.test_service_operational_runtime` | operational health snapshots, connector incidents, JSONL rotation, and redaction |
+| `tests.test_service_snapshot_observation_freshness` | observation timestamps, cached snapshot freshness, and live preflight across service transports |
 | `tests.test_service_lifecycle_runtime` | lifecycle control, control-plane descriptors, runtime samples, and live preflight gates |
 | `tests.test_service_runner_hardening` | runner shutdown, timestamp validation, and market-source fail-closed behavior |
 | `tests.test_service_client_integration` | desktop service client selection and service terminal/LLM commands |
@@ -76,6 +77,17 @@ config saves redact inline secret values by default; opt into plain-JSON secret
 persistence only with `BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS=1`.
 
 ## Contract Samples
+
+Account and portfolio `generated_at` values represent observation time, not
+response serialization time. They are empty until valid observations arrive.
+Publishers should send `observed_at` (timezone-aware ISO 8601) with balance and
+position updates; cached republishes must retain the original time. An explicit
+null, empty, or malformed timestamp cannot be replaced with receipt time.
+Legacy publishers omitting `observed_at` get receipt time only when supplying
+both valid balances or a known open-position mapping (including a confirmed
+empty mapping). Partial, history-only, PnL-only, and configuration updates do not
+renew freshness. Changing exchange/account identity invalidates cached service
+observations. Consumers must recheck age before ordering.
 
 The service keeps sample response payloads in `contracts/` for clients that
 consume the HTTP API directly.

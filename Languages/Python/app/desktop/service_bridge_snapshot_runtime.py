@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import copy
 
+from app.service.schemas.observation import observation_scope
+
 from .service_bridge_client_runtime import _ensure_service_client
 
 _MISSING = object()
 
 
 def _sync_service_config_snapshot(self) -> None:
-    client = _ensure_service_client(self)
-    if client is None:
-        return
     try:
-        client.replace_config(getattr(self, "config", None))
+        config = getattr(self, "config", None)
+        scope = observation_scope(config if isinstance(config, dict) else {})
+        if scope != getattr(self, "_service_observation_scope", None):
+            self._service_observation_generation = getattr(self, "_service_observation_generation", 0) + 1
+            self._positions_observed_at = ""
+            self._positions_balance_snapshot = {}
+        client = _ensure_service_client(self)
+        if client is None:
+            return
+        client.replace_config(config)
+        self._service_observation_scope = scope
     except Exception:
         return
 
@@ -59,12 +68,13 @@ def _sync_service_account_snapshot(
     total_balance=_MISSING,
     available_balance=_MISSING,
     *,
+    observed_at: str = "",
     source: str = "desktop-account",
 ) -> None:
     client = _ensure_service_client(self)
     if client is None:
         return
-    kwargs = {"source": source}
+    kwargs = {"source": source, "observed_at": observed_at}
     if total_balance is not _MISSING:
         kwargs["total_balance"] = total_balance
     if available_balance is not _MISSING:
@@ -139,6 +149,7 @@ def _sync_service_portfolio_snapshot(
                 total_balance=balance_snapshot.get("total"),
                 available_balance=balance_snapshot.get("available"),
                 source=source,
+                observed_at=str(getattr(self, "_positions_observed_at", "") or ""),
             )
     except Exception:
         pass

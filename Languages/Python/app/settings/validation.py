@@ -9,6 +9,7 @@ from datetime import datetime
 
 from .backtest import MDD_LOGIC_OPTIONS
 from .exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+from .execution_mode import InvalidExecutionModeError, execution_environment
 from .risk import normalize_stop_loss_dict
 from ..integrations.llm.providers import llm_provider_choices
 
@@ -891,6 +892,11 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     _validate_text(cfg, "api_key", issues, allow_empty=True)
     _validate_text(cfg, "api_secret", issues, allow_empty=True)
     _validate_text(cfg, "mode", issues)
+    if "mode" in cfg:
+        try:
+            execution_environment(cfg["mode"])
+        except InvalidExecutionModeError as exc:
+            issues.append(ConfigValidationIssue("mode", str(exc)))
     _validate_choice(cfg, "account_type", _ACCOUNT_TYPE_CHOICES, issues)
     _validate_choice(cfg, "margin_mode", _MARGIN_MODE_CHOICES, issues)
     _validate_symbol_list(cfg, "symbols", issues)

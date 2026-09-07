@@ -104,8 +104,8 @@ def _mw_render_positions_table(self):
     return render_runtime._mw_render_positions_table(self)
 
 
-def _gui_on_positions_ready(self, rows: list, acct: str):
-    return build_runtime._gui_on_positions_ready(self, rows, acct)
+def _gui_on_positions_ready(self, rows: list, acct: str, observed_at: str = "", generation: int | None = None):
+    return build_runtime._gui_on_positions_ready(self, rows, acct, observed_at, generation)
 
 
 def _mw_positions_records_per_trade(self, open_records: dict, closed_records: list) -> list:
@@ -197,6 +197,7 @@ def bind_main_window_positions(
 
     main_window_cls._update_positions_pnl_summary = _update_positions_pnl_summary
     main_window_cls._on_positions_ready = _gui_on_positions_ready
+    main_window_cls._on_positions_observation_failed = build_runtime._gui_on_positions_observation_failed
     main_window_cls._positions_records_per_trade = _mw_positions_records_per_trade
     main_window_cls._render_positions_table = _mw_render_positions_table
     main_window_cls._update_position_history = _mw_update_position_history

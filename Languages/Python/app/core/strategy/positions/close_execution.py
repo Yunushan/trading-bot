@@ -5,6 +5,7 @@ import math
 import time
 
 from app.security.redaction import redact_text
+from trading_core.orders import confirmed_close_quantity
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,6 +50,15 @@ def _finite_float(value: object, *, default: float = 0.0) -> float:
     return number if math.isfinite(number) else default
 
 
+def _account_value(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError("account observation is not numeric")
+    number = _finite_float(value, default=float("nan"))
+    if not math.isfinite(number):
+        raise ValueError("account observation is unavailable or nonfinite")
+    return number
+
+
 def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
     cw = ctx.get("cw") if isinstance(ctx, dict) else self.config
     if not isinstance(cw, dict):
@@ -59,7 +69,7 @@ def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
 
     total_unrealized = 0.0
     try:
-        total_unrealized = _finite_float(self.binance.get_total_unrealized_pnl())
+        total_unrealized = _account_value(self.binance.get_total_unrealized_pnl())
     except Exception as exc:
         _pause_for_close_uncertainty(
             self,
@@ -95,7 +105,9 @@ def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
     if not triggered and apply_percent_limit and math.isfinite(stop_percent_limit):
         total_wallet = 0.0
         try:
-            total_wallet = _finite_float(self.binance.get_total_wallet_balance())
+            total_wallet = _account_value(self.binance.get_total_wallet_balance())
+            if total_wallet <= 0.0:
+                raise ValueError("wallet balance must be positive to evaluate percentage stop-loss")
         except Exception as exc:
             _pause_for_close_uncertainty(
                 self,
@@ -103,7 +115,7 @@ def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
                 reconciliation_required=False,
             )
             return False
-        if total_wallet > 0.0 and total_unrealized < 0.0:
+        if total_unrealized < 0.0:
             loss_pct = (abs(total_unrealized) / total_wallet) * 100.0
             if loss_pct >= stop_percent_limit:
                 triggered = True
@@ -128,6 +140,8 @@ def _execute_close_with_fallback(
     preferred_ps: str | None,
 ) -> tuple[bool, dict | None]:
     """Close a leg without ever falling back across an explicit hedge side."""
+    if getattr(self, "_ledger_reconciliation_required", False):
+        return False, {"ok": False, "error": "Close blocked pending ledger reconciliation"}
     normalized_preferred = str(preferred_ps or "").upper() or None
     if normalized_preferred in {"LONG", "SHORT"}:
         # An explicit hedge side identifies the owned leg. Retrying another side or
@@ -152,25 +166,30 @@ def _execute_close_with_fallback(
                 position_side=ps,
             )
         except Exception as exc:
-            res = {"ok": False, "error": redact_text(exc)}
+            res = {"ok": False, "error": redact_text(exc), "reconciliation_required": True}
         last_res = res
-        if isinstance(res, dict) and res.get("ok"):
-            if res.get("reconciliation_required"):
-                warnings = res.get("warnings")
-                warning_text = "; ".join(str(item) for item in warnings) if isinstance(warnings, list) else ""
+        if isinstance(res, dict):
+            if res.get("ok"):
+                try:
+                    if confirmed_close_quantity(res, qty) < qty:
+                        raise ValueError("Close did not confirm the requested executed quantity")
+                except (TypeError, ValueError) as exc:
+                    res = dict(res, ok=False, error=str(exc), reconciliation_required=True)
+            if res.get("reconciliation_required") or (res.get("submission_attempted") and not res.get("ok")):
                 _pause_for_close_uncertainty(
-                    self,
-                    f"Confirmed {symbol} close requires reconciliation"
-                    + (f": {warning_text}" if warning_text else "."),
+                    self, f"{symbol} close requires reconciliation: {res.get('error') or res.get('warnings') or ''}",
                     reconciliation_required=True,
                 )
-            return True, res
+                return bool(res.get("ok")), res
+            if res.get("ok"):
+                return True, res
         if isinstance(res, dict):
             message = str(res.get("error") or res)
         else:
             message = str(res)
         if "position side does not match" in message.lower():
             continue
+        return False, last_res
     return False, last_res
 
 
@@ -193,6 +212,18 @@ def _close_leg_entry(
     symbol, interval, _ = leg_key
     qty_recorded = max(0.0, _finite_float(entry.get("qty")))
     if qty_recorded <= 0.0:
+        return 0.0
+    try:
+        ledger_id = entry.get("ledger_id")
+        if not isinstance(ledger_id, str) or not ledger_id.strip():
+            raise ValueError("targeted close requires an unambiguous ledger ID")
+        matches = [item for item in self._leg_entries(leg_key) if item.get("ledger_id") == ledger_id]
+        if len(matches) != 1 or _finite_float(matches[0].get("qty"), default=-1.0) != qty_recorded:
+            raise ValueError("targeted close ownership or quantity is missing, duplicated or stale")
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self, f"{symbol}@{interval} close refused: {exc}", reconciliation_required=True,
+        )
         return 0.0
     qty_to_close = qty_recorded
     if qty_limit is not None:
@@ -246,22 +277,18 @@ def _close_leg_entry(
     except Exception as exc:
         _safe_log(self, f"Per-trade stop-loss close error for {symbol}@{interval} ({side_label}): {exc}")
         return 0.0
-    if not ok_close:
+    try:
+        closed_qty = confirmed_close_quantity(res, qty_to_close)
+    except (TypeError, ValueError) as exc:
+        _pause_for_close_uncertainty(self, str(exc), reconciliation_required=True)
+        return 0.0
+    if closed_qty <= 0.0:
+        if ok_close:
+            _pause_for_close_uncertainty(
+                self, f"{symbol} close did not confirm an executed quantity", reconciliation_required=True,
+            )
         _safe_log(self, f"Per-trade stop-loss close failed for {symbol}@{interval} ({side_label}): {res}")
         return 0.0
-    closed_qty = qty_to_close
-    if isinstance(res, dict):
-        sent_qty = _finite_float(
-            res.get("sent_qty")
-            or res.get("executed_qty")
-            or res.get("executedQty")
-            or res.get("origQty")
-            or 0.0
-        )
-        if sent_qty > 0.0:
-            closed_qty = min(qty_to_close, sent_qty)
-    if closed_qty <= 0.0:
-        closed_qty = qty_to_close
     latency_s = max(0.0, time.time() - start_ts)
     try:
         payload = self._build_close_event_payload(
@@ -288,7 +315,7 @@ def _close_leg_entry(
     side_norm = "BUY" if str(side_label).upper() in ("BUY", "LONG", "L") else "SELL"
     remaining_qty = qty_recorded - closed_qty
     eps_remaining = max(1e-9, qty_recorded * 1e-6)
-    fully_closed = remaining_qty <= eps_remaining or not entry.get("ledger_id")
+    fully_closed = remaining_qty <= eps_remaining and ok_close
     payload["remaining_qty"] = max(0.0, remaining_qty)
     payload["fully_closed"] = fully_closed
     try:
@@ -323,7 +350,7 @@ def _close_leg_entry(
         )
     except Exception as exc:
         _safe_log(self, f"Confirmed {symbol}@{interval} ({side_label}) close notification failed: {exc}")
-    if queue_flip and fully_closed:
+    if queue_flip and fully_closed and not getattr(self, "_ledger_reconciliation_required", False):
         try:
             self._queue_flip_on_close(interval, side_label, entry, payload)
         except Exception as exc:

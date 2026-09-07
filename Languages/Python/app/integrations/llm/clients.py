@@ -10,6 +10,7 @@ import requests
 
 from app.security.redaction import REDACTED_TEXT, redact_text, redact_value
 
+from .http_policy import LLMRedirectError, reject_llm_redirect
 from .providers import (
     ANTHROPIC_MESSAGES_PROTOCOL,
     GEMINI_GENERATE_CONTENT_PROTOCOL,
@@ -736,7 +737,18 @@ def call_llm(
             headers=headers,
             json=request_payload["json"],
             timeout=max(1.0, float(timeout or request_payload.get("timeout_seconds") or 30.0)),
+            allow_redirects=False,
         )
+        reject_llm_redirect(response)
+    except LLMRedirectError as exc:
+        return {
+            "ok": False,
+            "dry_run": False,
+            "status_code": response.status_code,
+            "provider": request_payload.get("provider"),
+            "execution_policy": request_payload.get("execution_policy"),
+            "error": str(exc),
+        }
     except requests.RequestException as exc:
         return {
             "ok": False,

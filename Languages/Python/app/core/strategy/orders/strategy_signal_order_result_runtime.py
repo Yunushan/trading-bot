@@ -6,9 +6,45 @@ import math
 import time
 
 from app.security.redaction import redact_text, redact_value
+from trading_core.orders import OrderExecution, order_execution_from_response
+
+try:
+    from .strategy_signal_order_guard_runtime import _finish_bar_reservation
+except ImportError:  # pragma: no cover - standalone execution fallback
+    from strategy_signal_order_guard_runtime import _finish_bar_reservation
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _signal_order_execution(order_res: dict) -> OrderExecution | None:
+    info = order_res.get("info") if isinstance(order_res.get("info"), dict) else order_res
+    if order_res.get("ok") is not True and order_res.get("execution_confirmed") is not True:
+        if order_res.get("ok") is False:
+            return None
+        if info is not order_res or "ok" in order_res:
+            raise ValueError("Order result has no explicit successful acknowledgement")
+    if ("code" in info or info.get("error") is not None
+            or ("success" in info and info["success"] is not True)):
+        raise ValueError("Order result contains an exchange error")
+    computed = order_res.get("computed") if isinstance(order_res.get("computed"), dict) else {}
+    submitted_qty = order_res.get("submitted_qty", computed.get("qty", info.get("origQty")))
+    return order_execution_from_response(info, submitted_qty)
+
+
+def _execution_event_fields(execution: OrderExecution | None, uncertain: bool) -> dict[str, object]:
+    qty = execution.executed_qty if execution else 0.0
+    complete = execution is not None and execution.complete
+    return {
+        "qty": qty,
+        "executed_qty": qty,
+        "ok": qty > 0.0,
+        "status": "placed" if complete else "partial" if qty > 0.0 else "pending" if uncertain else "error",
+        "exchange_status": execution.status if execution else None,
+        "execution_confirmed": execution is not None,
+        "order_complete": complete,
+        "reconciliation_required": uncertain,
+    }
 
 
 def _float_or(value, default=0.0):
@@ -79,6 +115,7 @@ def _finalize_signal_order_guard(
     guard_key_symbol,
     signature_guard_key,
     guard_window: float,
+    reservation_token=None,
 ) -> None:
     outcome_ts = time.time()
     with type(self)._SYMBOL_GUARD_LOCK:
@@ -91,7 +128,10 @@ def _finalize_signal_order_guard(
         pending_map = entry_guard.get("pending_map")
         if not isinstance(pending_map, dict):
             pending_map = {}
-        pending_map.pop(signature_guard_key, None)
+        owners = entry_guard.setdefault("pending_owners", {})
+        if reservation_token is None or owners.get(signature_guard_key) is reservation_token:
+            pending_map.pop(signature_guard_key, None)
+            owners.pop(signature_guard_key, None)
         entry_guard["pending_map"] = pending_map
         if order_ok:
             signatures_state = entry_guard.get("signatures")
@@ -116,6 +156,8 @@ def _record_order_bar_signature(
     if current_bar_marker is None:
         return
     tracker = self._bar_order_tracker.get(bar_sig_key)
+    if isinstance(tracker, dict) and tracker.get("bar") != current_bar_marker:
+        return
     if not isinstance(tracker, dict) or tracker.get("bar") != current_bar_marker:
         tracker = {"bar": current_bar_marker, "signatures": set()}
         self._bar_order_tracker[bar_sig_key] = tracker
@@ -126,6 +168,8 @@ def _record_order_bar_signature(
     signatures.add(sig_sorted)
     with type(self)._BAR_GUARD_LOCK:
         global_tracker = type(self)._BAR_GLOBAL_SIGNATURES.get(bar_sig_key)
+        if isinstance(global_tracker, dict) and global_tracker.get("bar") != current_bar_marker:
+            return
         if not isinstance(global_tracker, dict) or global_tracker.get("bar") != current_bar_marker:
             global_tracker = {"bar": current_bar_marker, "signatures": set()}
             type(self)._BAR_GLOBAL_SIGNATURES[bar_sig_key] = global_tracker
@@ -136,16 +180,22 @@ def _record_order_bar_signature(
         global_signatures.add(sig_sorted)
 
 
-def _abort_signal_order_guard(self, guard_key_symbol, signature_guard_key) -> None:
+def _abort_signal_order_guard(
+    self, guard_key_symbol, signature_guard_key, *, reservation_token=None, bar_reservation=None,
+) -> None:
     with type(self)._SYMBOL_GUARD_LOCK:
         entry_guard = type(self)._SYMBOL_ORDER_STATE.get(guard_key_symbol)
         if isinstance(entry_guard, dict):
             pending_map = entry_guard.get("pending_map")
             if not isinstance(pending_map, dict):
                 pending_map = {}
-            pending_map.pop(signature_guard_key, None)
+            owners = entry_guard.setdefault("pending_owners", {})
+            if reservation_token is None or owners.get(signature_guard_key) is reservation_token:
+                pending_map.pop(signature_guard_key, None)
+                owners.pop(signature_guard_key, None)
             entry_guard["pending_map"] = pending_map
             type(self)._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
+        _finish_bar_reservation(self, bar_reservation, submitted=False)
 
 
 def _handle_futures_signal_order_result(
@@ -171,31 +221,43 @@ def _handle_futures_signal_order_result(
     price: float,
     qty_est: float,
     lev,
+    reservation_token=None,
 ) -> tuple[bool, object]:
     if not isinstance(order_res, dict):
-        _safe_log(self, f"Invalid futures order result for {cw.get('symbol')} {side}; expected an object.")
+        _pause_after_result_reconciliation_failure(
+            self, f"Invalid futures order result for {cw.get('symbol')} {side}; expected an object",
+        )
         try:
             _finalize_signal_order_guard(
                 self,
-                order_ok=False,
+                order_ok=True,
                 guard_claimed=guard_claimed,
                 guard_key_symbol=guard_key_symbol,
                 signature_guard_key=signature_guard_key,
                 guard_window=guard_window,
+                reservation_token=reservation_token,
             )
         except Exception:
             _LOGGER.exception("Failed to finalize guard for malformed futures order result")
-        return False, qty_est
+        return False, 0.0
 
-    order_ok = bool(order_res.get("ok", True))
-    qty_display = order_res.get("executedQty") or order_res.get("origQty") or qty_est
+    uncertain = order_res.get("reconciliation_required") is True
+    try:
+        execution = _signal_order_execution(order_res)
+    except (TypeError, ValueError) as exc:
+        execution = None
+        uncertain = True
+        _safe_log(self, f"Invalid {cw['symbol']} {side} execution confirmation: {exc}")
+    uncertain = uncertain or (execution is not None and execution.status in {"NEW", "PARTIALLY_FILLED"})
+    if uncertain:
+        _pause_after_result_reconciliation_failure(self, f"Unresolved {cw['symbol']} {side} market order")
+    fields = _execution_event_fields(execution, uncertain)
+    qty_display = fields["executed_qty"]
+    order_ok = bool(fields["ok"])
     info_meta = order_res.get("info") if isinstance(order_res.get("info"), dict) else {}
     computed_meta = order_res.get("computed") if isinstance(order_res.get("computed"), dict) else {}
     fills_meta = order_res.get("fills") if isinstance(order_res.get("fills"), dict) else {}
 
-    qty_emit = _float_or(computed_meta.get("qty"))
-    if qty_emit <= 0.0:
-        qty_emit = _float_or(info_meta.get("executedQty") or info_meta.get("origQty"))
     order_id = info_meta.get("orderId") or info_meta.get("order_id") or info_meta.get("orderID")
     client_order_id = (
         info_meta.get("clientOrderId")
@@ -215,8 +277,6 @@ def _handle_futures_signal_order_result(
         "symbol": cw["symbol"],
         "interval": cw.get("interval"),
         "side": side,
-        "qty": qty_emit,
-        "executed_qty": qty_emit,
         "price": cw.get("price"),
         "avg_price": avg_price if avg_price > 0.0 else cw.get("price"),
         "leverage": leverage_quick,
@@ -226,8 +286,7 @@ def _handle_futures_signal_order_result(
         "context_key": context_key,
         "event_uid": order_event_uid,
         "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-        "status": "placed",
-        "ok": order_ok,
+        **fields,
     }
     slot_id = _slot_identifier(slot_key_tuple)
     if slot_id:
@@ -255,14 +314,15 @@ def _handle_futures_signal_order_result(
             )
     _safe_trade_callback(self, event_payload, context="placed-event")
 
-    if not order_ok:
+    if not order_ok and not uncertain:
         _safe_trade_callback(
             self,
             {
                 "symbol": cw["symbol"],
                 "interval": cw.get("interval"),
                 "side": side,
-                "qty": _float_or(computed_meta.get("qty")),
+                "qty": 0.0,
+                "executed_qty": 0.0,
                 "price": cw.get("price"),
                 "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "error",
@@ -274,11 +334,12 @@ def _handle_futures_signal_order_result(
     try:
         _finalize_signal_order_guard(
             self,
-            order_ok=order_ok,
+            order_ok=order_ok or uncertain,
             guard_claimed=guard_claimed,
             guard_key_symbol=guard_key_symbol,
             signature_guard_key=signature_guard_key,
             guard_window=guard_window,
+            reservation_token=reservation_token,
         )
     except Exception as exc:
         _safe_log(self, f"Failed to finalize {cw['symbol']} {side} order guard: {exc}")
@@ -303,20 +364,8 @@ def _handle_futures_signal_order_result(
 
     key = (cw["symbol"], cw.get("interval"), side)
     try:
-        qty = _float_or(info_meta.get("origQty") or computed_meta.get("qty"))
-        exec_qty = self._order_field(order_res, "executedQty", "cumQty", "cumQuantity")
-        exec_qty_value = _float_or(exec_qty)
-        if exec_qty_value > 0.0:
-            qty = exec_qty_value
-        qty_from_fills = _float_or(fills_meta.get("filled_qty"))
-        if qty_from_fills > 0.0:
-            qty = qty_from_fills
-        if qty <= 0.0:
-            _pause_after_result_reconciliation_failure(
-                self,
-                f"Successful {cw['symbol']} {side} order has no positive executed quantity",
-            )
-            return True, qty_display
+        assert execution is not None
+        qty = execution.executed_qty
 
         entry_price_est = _float_or(info_meta.get("avgPrice") or computed_meta.get("px"), price)
         avg_from_fills = _float_or(fills_meta.get("avg_price"))
@@ -352,6 +401,10 @@ def _handle_futures_signal_order_result(
             "trigger_desc": trigger_desc_for_order,
             "context_key": context_key,
             "event_uid": order_event_uid,
+            "order_id": order_id,
+            "client_order_id": client_order_id,
+            "exchange_status": execution.status,
+            "reconciliation_required": uncertain,
         }
         if trigger_actions_for_order:
             entry_payload["trigger_actions"] = dict(trigger_actions_for_order)
@@ -420,22 +473,20 @@ def _emit_signal_order_info(
     info_meta = order_res.get("info") if isinstance(order_res.get("info"), dict) else {}
     computed_meta = order_res.get("computed") if isinstance(order_res.get("computed"), dict) else {}
     fills_info = order_res.get("fills") if isinstance(order_res.get("fills"), dict) else {}
+    uncertain = order_res.get("reconciliation_required") is True
+    try:
+        execution = _signal_order_execution(order_res)
+    except (TypeError, ValueError) as exc:
+        execution = None
+        uncertain = True
+        _safe_log(self, f"Invalid {cw['symbol']} {side} order info: {exc}")
+    uncertain = uncertain or (execution is not None and execution.status in {"NEW", "PARTIALLY_FILLED"})
+    fields = _execution_event_fields(execution, uncertain)
     avg_price = _float_or(info_meta.get("avgPrice"))
     if fills_info:
         avg_from_fills = _float_or(fills_info.get("avg_price"))
         if avg_from_fills > 0.0:
             avg_price = avg_from_fills
-    executed_qty = _float_or(
-        info_meta.get("executedQty")
-        or info_meta.get("origQty")
-        or computed_meta.get("qty")
-        or qty_display
-    )
-    if fills_info:
-        fill_qty = _float_or(fills_info.get("filled_qty"))
-        if fill_qty > 0.0:
-            executed_qty = fill_qty
-    qty_numeric = executed_qty if executed_qty else _float_or(qty_display)
     leverage_normalized = None
     if leverage_used is not None:
         leverage_normalized = _int_or(leverage_used, leverage_used)
@@ -443,8 +494,6 @@ def _emit_signal_order_info(
         "symbol": cw["symbol"],
         "interval": cw["interval"],
         "side": side,
-        "qty": qty_numeric,
-        "executed_qty": qty_numeric,
         "price": price,
         "avg_price": avg_price if avg_price > 0 else price,
         "leverage": leverage_normalized,
@@ -453,8 +502,7 @@ def _emit_signal_order_info(
         "trigger_desc": trigger_desc_for_order,
         "event_uid": order_event_uid,
         "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-        "status": "placed",
-        "ok": bool(order_res.get("ok", True)),
+        **fields,
     }
     if context_key:
         order_info["context_key"] = context_key
@@ -487,9 +535,7 @@ def _emit_signal_order_info(
             "trade_count": fills_info.get("trade_count"),
         }
     _safe_trade_callback(self, order_info, context="order-info")
-    order_ok = True
-    if isinstance(order_res, dict):
-        order_ok = bool(order_res.get("ok", True))
+    order_ok = bool(fields["ok"])
     if origin_timestamp is not None and order_ok:
         origin_value = _float_or(origin_timestamp, None)
         if origin_value is None:
@@ -507,7 +553,7 @@ def _emit_signal_order_info(
         _LOGGER.exception("Failed to redact signal order result")
     _safe_log(
         self,
-        f"{cw['symbol']}@{cw['interval']} Order placed: {redacted_result}",
+        f"{cw['symbol']}@{cw['interval']} Order {fields['status']}: {redacted_result}",
         level=logging.INFO,
     )
 

@@ -19,6 +19,8 @@ def run_once(self):
     is_cumulative = bool(ctx["is_cumulative"])
     if self._apply_entire_account_stop_loss(ctx=ctx):
         return
+    if self.stopped():
+        return
     market_state = self._fetch_cycle_market_state(ctx=ctx)
     if not market_state:
         return
@@ -87,6 +89,7 @@ def run_once(self):
         allow_opposite_enabled=allow_opposite_enabled,
         hedge_overlap_allowed=hedge_overlap_allowed,
         now_ts=now_ts,
+        current_bar_marker=current_bar_marker,
     )
     indicator_order_requests = self._merge_flip_requests_into_indicator_orders(
         cw=cw,
