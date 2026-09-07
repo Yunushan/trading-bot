@@ -637,6 +637,7 @@ def _submit_futures_signal_order(
         return {"ok": False, "symbol": cw["symbol"], "error": "stop_requested"}, False, True
 
     order_attempts = 0
+    submission_started = False
     price_for_order = last_price if (last_price is not None and last_price > 0.0) else cw.get("price")
     last_order_exc: BaseException | None = None
     try:
@@ -645,8 +646,8 @@ def _submit_futures_signal_order(
         rate_limit_tokens = ("too frequent", "-1003", "frequency", "rate limit", "request too many", "too many requests")
         while True:
             if self.stopped():
-                order_res = {"ok": False, "symbol": cw["symbol"], "error": "stop_requested"}
-                order_success = False
+                if not submission_started:
+                    order_res = {"ok": False, "symbol": cw["symbol"], "error": "stop_requested"}
                 break
             order_attempts += 1
             spacing_to_use = self._order_rate_min_spacing
@@ -658,7 +659,8 @@ def _submit_futures_signal_order(
             try:
                 type(self)._reserve_order_slot(spacing_to_use)
                 if self.stopped():
-                    order_res = {"ok": False, "symbol": cw["symbol"], "error": "stop_requested"}
+                    if not submission_started:
+                        order_res = {"ok": False, "symbol": cw["symbol"], "error": "stop_requested"}
                 else:
                     order_kwargs = dict(
                         percent_balance=None,
@@ -676,7 +678,12 @@ def _submit_futures_signal_order(
                     )
                     if on_submit is not None:
                         on_submit()
-                    order_res = self.binance.place_futures_market_order(cw["symbol"], side, **order_kwargs)
+                    if self.stopped():
+                        if not submission_started:
+                            order_res = {"ok": False, "symbol": cw["symbol"], "error": "stop_requested"}
+                    else:
+                        submission_started = True
+                        order_res = self.binance.place_futures_market_order(cw["symbol"], side, **order_kwargs)
             except Exception as exc_order:
                 last_order_exc = exc_order
                 order_res = {
@@ -693,7 +700,6 @@ def _submit_futures_signal_order(
                 order_res = {"ok": False, "reconciliation_required": True, "error": "Malformed order result"}
             order_success = order_res.get("ok") is True
             if self.stopped():
-                order_success = False
                 break
             if order_success or order_res.get("reconciliation_required") is True:
                 break
@@ -729,7 +735,8 @@ def _submit_futures_signal_order(
                     level="error",
                 )
 
-    if self.stopped():
+    # Stop prevents another submission, but cannot cancel accounting for one already started.
+    if self.stopped() and not submission_started:
         return order_res, order_success, True
     if order_success:
         via = order_res.get("via") or getattr(order_res.get("info", {}), "get", lambda *_: None)("via")

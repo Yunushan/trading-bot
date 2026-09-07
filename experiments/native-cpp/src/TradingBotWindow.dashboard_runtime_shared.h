@@ -8,6 +8,8 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
+
 class BinanceWsClient;
 class QTableWidget;
 class QTableWidgetItem;
@@ -85,6 +87,7 @@ bool hasMatchingOpenFuturesPosition(
     const QString &runtimeSide,
     bool hedgeMode);
 
+// A stop blocks later requests without discarding in-flight execution results.
 BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     const QString &apiKey,
     const QString &apiSecret,
@@ -96,7 +99,8 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     const QString &positionSide,
     int timeoutMs,
     const QString &baseUrlOverride,
-    double referencePrice = 0.0);
+    double referencePrice = 0.0,
+    const std::function<bool()> &stopRequested = {});
 BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
     const QString &apiKey,
     const QString &apiSecret,
@@ -107,6 +111,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
     const QString &positionSide,
     int timeoutMs,
     const QString &baseUrlOverride,
-    bool reduceOnly = false);
+    bool reduceOnly = false,
+    const std::function<bool()> &stopRequested = {});
 
 } // namespace TradingBotWindowDashboardRuntime

@@ -217,6 +217,12 @@ The token resolution order is explicit CLI token, `BOT_SERVICE_API_TOKEN`, then
 `BOT_SERVICE_API_TOKEN_FILE`. The file is limited to 4 KiB and must not be
 checked into source control.
 
+Configured tokens must contain only ASCII characters. Non-ASCII values are
+rejected at startup without including the token in the error message. Surrounding
+ASCII whitespace is trimmed, including the final newline in a token file.
+Non-ASCII bearer headers are rejected with HTTP 401 on protected routes; they are
+not normalized into valid credentials or passed to the constant-time comparison.
+
 POSIX token files reject all group and other-user permissions by default. For a
 Kubernetes Secret volume owned by an effective process group, set
 `BOT_SERVICE_API_TOKEN_FILE_ALLOW_GROUP_READ=1`; only group-read (`0440`), no

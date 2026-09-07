@@ -39,13 +39,51 @@ platform/installer/credential-gated evidence.
 | Config persistence | Complete native service config schema, save/load, dirty-state, hydration, and redaction behavior | Complete for this domain |
 | Strategy runtime | Complete indicator output keys, signal threshold/index semantics, controls normalization, override provenance, and worker lifecycle parity helpers/tests | Complete for this domain |
 | Exchange connectors | Complete connector support metadata, Python backend catalog, non-Binance rejection reasons, rate-limit/backoff, and diagnostic health snapshots | Complete for this domain |
-| Account, portfolio, and positions | Complete portfolio DTOs, history/allocation ledgers, close-all cache reconciliation, and native parity tests | Complete for this domain |
-| Order execution and risk | Complete native Binance USD-M/Coin-M Futures and Spot order audit, preflight, circuit breaker, exchange filters, signed market/limit or Spot market submission, account settings, force-order history, position-margin cleanup, retry/fallback, close/stop/shutdown guards, and risk behavior | Complete for the implemented Binance market scope; other venues remain gated |
+| Account, portfolio, and positions | Portfolio DTOs, history/allocation helpers, reconciliation, and selected native parity tests | Runtime qualification incomplete: manual close-all and stop-sweep allocation accounting still have known gaps |
+| Order execution and risk | Native Binance USD-M/Coin-M Futures and Spot order audit, preflight, circuit breaker, exchange filters, signed submission, account settings, and validated fill-result contracts | Qualification incomplete: durable pending-order recovery and all caller accounting/retry paths still require validation; other venues remain gated |
 | Backtest engine | Native C++ historical simulator and batch optimizer are the default local backend, with generated Python indicator defaults, paginated Binance candle loading, cancellation, bounded ranking, dashboard import, and a Python Service API compatibility backend | Complete for the implemented Binance backtest domain; live-trading ownership remains separate |
 | Charts and heatmaps | Complete chart state payloads, TradingView interval aliases, lightweight asset fallbacks, safe-mode guards, and liquidation provider catalog tests | Complete for this domain |
 | Logs, terminal, diagnostics | Complete controlled terminal UI delegated to the Python Service API, service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests | Complete for this domain |
 | LLM advisory | Complete prompt/config/local-model service route payloads, result redaction, output-policy checks, and local model status tests | Complete for this domain |
 | Startup, packaging, platform | Complete canonical entrypoint contracts, startup suppression flags, AppUserModelID/icon metadata, and release smoke contract tests | Complete for this domain |
+
+Native REST order results distinguish `executionConfirmed` from `ok`: a valid
+partial fill, including one on a canceled or expired order, retains the confirmed
+quantity and identity without being reported as a full fill. Invalid identities
+or execution quantities never supply a confirmed fill. The chunking wrappers
+stop on incomplete outcomes and preserve confirmed quantities in their audit
+payloads. Dashboard entry, close and stop submission paths share a UI-thread
+session barrier: incomplete or uncertain results retain their identity and block
+later submissions, including close sweeps. Confirmed partial quantities are not
+replaced by requested quantities, and blocked retries never replay prior fills.
+Manual selected-close and close-all submissions use the same session barrier;
+an uncertain result stops later closes rather than allowing a retry from another
+button. Close actions are serialized against strategy cycles and runtime start/stop,
+including events delivered while a confirmation dialog or network request is open.
+Chunk helpers check stop state between requests while retaining earlier fills.
+Stop requests during a strategy cycle or manual close are deferred until that
+action has finished accounting. This ordering does not establish that all native
+partial-fill allocation and shared-symbol accounting paths are complete.
+Allocation-specific stop closes retain the recorded quantity and cost basis,
+cap the submitted quantity to live exposure, and subtract only confirmed execution.
+Residual margin is scaled from the allocation even when no table row is present.
+The stop path updates a table row only when symbol, direction, interval, and exact
+connector key identify a unique match; ambiguous rows await reconciliation.
+This does not complete the separate account-wide sweep or manual-close accounting.
+The session barrier is not a durable intent store or an account-wide
+executor lease; it cannot qualify crash/restart recovery. Complete native position
+allocation/accounting and restart reconciliation still need validation. Keep
+native live-execution promotion blocked until those requirements are verified.
+
+`native_position_close_tests` exercises the actual Qt close buttons and stop lifecycle
+with an isolated loopback exchange fixture, rejecting external proxy, and temporary profile.
+It covers blocked and healthy paths,
+confirmed-partial identity retention, repeated manual submission after an unknown
+Spot result, modal reentrancy and deferred stop. Stop-accounting cases cover unequal
+live/allocation quantities, partial and full fills, HTTP/snapshot failures, absent
+table rows, and successive allocations sharing one exchange position. It does not
+submit real exchange orders or qualify all allocation paths, durable recovery,
+or every platform.
 
 ## Managed Python execution host
 

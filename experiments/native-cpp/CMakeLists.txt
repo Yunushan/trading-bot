@@ -259,6 +259,7 @@ add_executable(binance_backtest_tab
     src/NativeLlmAdvisory.h
     src/NativeOrderSafety.cpp
     src/NativeOrderSafety.h
+    src/NativeOrderExecutionSession.h
     src/NativePortfolio.cpp
     src/NativePortfolio.h
     src/NativeStartupPackaging.cpp
@@ -381,6 +382,11 @@ if (BUILD_TESTING)
 
     add_executable(native_service_api_contract_tests
         tests/NativeServiceApiContractTests.cpp
+        src/NativeOrderExecutionSession.h
+        src/TradingBotWindow.dashboard_runtime_shared.cpp
+        src/TradingBotWindow.dashboard_runtime_shared.h
+        src/BinanceWsClient.cpp
+        src/BinanceWsClient.h
         src/BinanceRestClient.cpp
         src/BinanceRestClient.h
         src/NativeConfigPersistence.cpp
@@ -396,6 +402,10 @@ if (BUILD_TESTING)
         src/generated/PythonParityContract.h
     )
     target_link_libraries(native_service_api_contract_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Network)
+    if (HAS_QT_WEBSOCKETS)
+        target_link_libraries(native_service_api_contract_tests PRIVATE Qt6::WebSockets)
+    endif()
+    target_compile_definitions(native_service_api_contract_tests PRIVATE HAS_QT_WEBSOCKETS=${HAS_QT_WEBSOCKETS})
     if (UNIX)
         target_compile_options(native_service_api_contract_tests PRIVATE -g0)
     endif()
@@ -407,6 +417,22 @@ if (BUILD_TESTING)
     endif()
     tb_apply_cxx26_mode(native_service_api_contract_tests)
     target_compile_definitions(native_service_api_contract_tests PRIVATE ${TB_NATIVE_PROJECT_ROOT_DEFINE})
+
+    # Exercise the real window callbacks without adding test entrypoints to the app.
+    get_target_property(_tb_position_test_sources binance_backtest_tab SOURCES)
+    list(REMOVE_ITEM _tb_position_test_sources src/main.cpp ${APP_ICON_RC})
+    add_executable(native_position_close_tests
+        tests/NativePositionCloseTests.cpp
+        ${_tb_position_test_sources}
+    )
+    get_target_property(_tb_position_test_libraries binance_backtest_tab LINK_LIBRARIES)
+    get_target_property(_tb_position_test_definitions binance_backtest_tab COMPILE_DEFINITIONS)
+    target_link_libraries(native_position_close_tests PRIVATE ${_tb_position_test_libraries})
+    target_compile_definitions(native_position_close_tests PRIVATE ${_tb_position_test_definitions})
+    tb_apply_cxx26_mode(native_position_close_tests)
+    if (MSVC)
+        target_compile_options(native_position_close_tests PRIVATE /Zc:__cplusplus)
+    endif()
 
     if (WIN32)
         get_target_property(_tb_qt_core_location Qt6::Core IMPORTED_LOCATION_RELEASE)
@@ -422,10 +448,16 @@ if (BUILD_TESTING)
             NAME native_service_api_contract_tests
             COMMAND "${CMAKE_COMMAND}" -E env "PATH=${_tb_qt_bin_dir};$ENV{PATH}" "$<TARGET_FILE:native_service_api_contract_tests>"
         )
+        add_test(
+            NAME native_position_close_tests
+            COMMAND "${CMAKE_COMMAND}" -E env "PATH=${_tb_qt_bin_dir};$ENV{PATH}" "$<TARGET_FILE:native_position_close_tests>"
+        )
     else()
         add_test(NAME native_order_safety_tests COMMAND native_order_safety_tests)
         add_test(NAME native_service_api_contract_tests COMMAND native_service_api_contract_tests)
+        add_test(NAME native_position_close_tests COMMAND native_position_close_tests)
     endif()
+    set_tests_properties(native_position_close_tests PROPERTIES TIMEOUT 240)
 endif()
 
 if (APPLE)

@@ -118,7 +118,9 @@ class PositionsTrackingExceptionLoggingTests(unittest.TestCase):
                 raise RuntimeError("render failed")
 
         window = _Window()
-        _apply_close_all_to_positions_cache(window, [{"symbol": "BTCUSDT", "ok": True}])
+        _apply_close_all_to_positions_cache(window, [{
+            "symbol": "BTCUSDT", "side_key": "L", "ok": True, "position_closed": True,
+        }])
 
         self.assertEqual({}, window._open_position_records)
         self.assertEqual("Closed", window._closed_position_records[0]["status"])

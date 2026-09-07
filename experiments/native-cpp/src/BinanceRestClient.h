@@ -161,6 +161,8 @@ public:
         // Success means a confirmed full fill, not merely an acknowledgement.
         bool ok = false;
         bool reconciliationRequired = false;
+        // Validated execution can be partial even when the overall order failed.
+        bool executionConfirmed = false;
         QString clientOrderId;
         QString symbol;
         QString side;
@@ -172,9 +174,15 @@ public:
         QString error;
 
         bool hasConfirmedFill(double requestedQuantity) const {
-            return ok && !reconciliationRequired && status == QStringLiteral("FILLED")
+            return executionConfirmed && ok && !reconciliationRequired && status == QStringLiteral("FILLED")
                 && qIsFinite(executedQty) && executedQty > 0.0
                 && qIsFinite(requestedQuantity) && executedQty == requestedQuantity;
+        }
+
+        double confirmedExecutedQuantity(double requestedQuantity) const {
+            return executionConfirmed && qIsFinite(requestedQuantity) && requestedQuantity > 0.0
+                    && qIsFinite(executedQty) && executedQty >= 0.0 && executedQty <= requestedQuantity
+                ? executedQty : 0.0;
         }
     };
 

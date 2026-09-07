@@ -3,6 +3,8 @@
 #include "../src/NativeConfigPersistence.h"
 #include "../src/NativeExchangeConnectors.h"
 #include "../src/NativeLlmAdvisory.h"
+#include "../src/NativeOrderExecutionSession.h"
+#include "../src/TradingBotWindow.dashboard_runtime_shared.h"
 #include "../src/generated/PythonParityContract.h"
 
 #include <QByteArray>
@@ -25,6 +27,7 @@
 #include <cmath>
 #include <iostream>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 
 namespace {
@@ -71,6 +74,172 @@ QByteArray requestQueryValue(const QByteArray &requestLine, const QByteArray &na
     return QUrl::fromPercentEncoding(encoded).toUtf8();
 }
 
+void checkChunkSubmissionStops(const std::function<void(bool, const QString &)> &check) {
+    using namespace TradingBotWindowDashboardRuntime;
+    const auto previousAuditConfig = nativeRuntimeOrderAuditLogConfig();
+    NativeOrderSafety::OrderAuditLogConfig auditConfig;
+    auditConfig.enabled = false;
+    setNativeRuntimeOrderAuditLogConfig(auditConfig);
+
+    struct Scenario {
+        QString name;
+        int stopAfterPosts = -1;
+        bool stopAfterMetadata = false;
+        bool stopCheckThrows = false;
+        bool partialFirstFill = false;
+        int dropPost = 0;
+        bool rejectFirstPost = false;
+        int expectedPosts = 2;
+        double expectedFill = 2.0;
+        bool complete = true;
+        bool uncertain = false;
+    };
+    const QList<Scenario> scenarios{
+        {QStringLiteral("complete")},
+        {QStringLiteral("stop-before-request"), 0, false, false, false, 0, false, 0, 0.0, false, false},
+        {QStringLiteral("stop-during-metadata"), -1, true, false, false, 0, false, 0, 0.0, false, false},
+        {QStringLiteral("stop-after-first-fill"), 1, false, false, false, 0, false, 1, 1.0, false, true},
+        {QStringLiteral("stop-after-final-fill"), 2},
+        {QStringLiteral("stop-check-throws-after-fill"), 1, false, true, false, 0, false, 1, 1.0, false, true},
+        {QStringLiteral("partial-fill-during-stop"), 1, false, false, true, 0, false, 1, 0.25, false, true},
+        {QStringLiteral("lost-ack-during-stop"), 2, false, false, false, 2, false, 2, 1.0, false, true},
+        {QStringLiteral("rejection-during-stop"), 1, false, false, false, 0, true, 1, 0.0, false, true},
+    };
+    for (bool closing : {false, true}) {
+        for (const auto &scenario : scenarios) {
+            const QString label = (closing ? QStringLiteral("close/") : QStringLiteral("open/")) + scenario.name;
+            QTcpServer server;
+            const bool listening = server.listen(QHostAddress::LocalHost, 0);
+            check(listening, label + QStringLiteral(": loopback fixture must listen"));
+            if (!listening) continue;
+            bool stop = scenario.stopAfterPosts == 0;
+            int requests = 0;
+            int posts = 0;
+            int unexpected = 0;
+            QStringList postedIds;
+            QStringList acceptedIds;
+            QObject::connect(&server, &QTcpServer::newConnection, &server, [&]() {
+                while (server.hasPendingConnections()) {
+                    QTcpSocket *socket = server.nextPendingConnection();
+                    QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                    QObject::connect(socket, &QTcpSocket::readyRead, socket, [&, socket]() {
+                        if (socket->property("handled").toBool()) return;
+                        QByteArray request = socket->property("request").toByteArray() + socket->readAll();
+                        socket->setProperty("request", request);
+                        if (!request.contains("\r\n\r\n")) return;
+                        socket->setProperty("handled", true);
+                        ++requests;
+                        const QList<QByteArray> firstLine = request.left(request.indexOf("\r\n")).split(' ');
+                        const QUrl url = QUrl::fromEncoded(firstLine.value(1));
+                        const QUrlQuery query(url);
+                        QJsonObject response;
+                        if (firstLine.value(0) == "GET" && url.path() == QStringLiteral("/fapi/v1/exchangeInfo")) {
+                            stop = stop || scenario.stopAfterMetadata;
+                            response = QJsonObject{{QStringLiteral("symbols"), QJsonArray{QJsonObject{
+                                {QStringLiteral("symbol"), QStringLiteral("BTCUSDT")},
+                                {QStringLiteral("quantityPrecision"), 2},
+                                {QStringLiteral("pricePrecision"), 2},
+                                {QStringLiteral("filters"), QJsonArray{
+                                    QJsonObject{{QStringLiteral("filterType"), QStringLiteral("LOT_SIZE")},
+                                                {QStringLiteral("minQty"), QStringLiteral("0.25")},
+                                                {QStringLiteral("maxQty"), QStringLiteral("1")},
+                                                {QStringLiteral("stepSize"), QStringLiteral("0.25")}},
+                                    QJsonObject{{QStringLiteral("filterType"), QStringLiteral("PRICE_FILTER")},
+                                                {QStringLiteral("tickSize"), QStringLiteral("0.01")}},
+                                }},
+                            }}}};
+                        } else if (firstLine.value(0) == "DELETE" && url.path() == QStringLiteral("/fapi/v1/allOpenOrders")) {
+                            response.insert(QStringLiteral("code"), 200);
+                        } else if (firstLine.value(0) == "POST" && url.path() == QStringLiteral("/fapi/v1/order")) {
+                            ++posts;
+                            stop = stop || (scenario.stopAfterPosts >= 0 && posts >= scenario.stopAfterPosts);
+                            const QString clientId = query.queryItemValue(QStringLiteral("newClientOrderId"));
+                            postedIds.append(clientId);
+                            check(!clientId.isEmpty(), label + QStringLiteral(": each POST must carry an identity"));
+                            check(query.queryItemValue(QStringLiteral("type")) == QStringLiteral("MARKET"),
+                                  label + QStringLiteral(": stopped or uncertain submissions must not fall back to IOC"));
+                            check(query.queryItemValue(QStringLiteral("quantity")).toDouble() == 1.0,
+                                  label + QStringLiteral(": fixture must exercise separate one-unit chunks"));
+                            if (scenario.dropPost == posts) {
+                                socket->abort();
+                                return;
+                            }
+                            if (scenario.rejectFirstPost && posts == 1) {
+                                response = QJsonObject{{QStringLiteral("code"), -4131},
+                                                       {QStringLiteral("msg"), QStringLiteral("PERCENT_PRICE filter")}};
+                            } else {
+                                const QString orderId = QString::number(800 + posts);
+                                acceptedIds.append(orderId);
+                                const bool partial = scenario.partialFirstFill && posts == 1;
+                                response = QJsonObject{
+                                    {QStringLiteral("symbol"), query.queryItemValue(QStringLiteral("symbol"))},
+                                    {QStringLiteral("side"), query.queryItemValue(QStringLiteral("side"))},
+                                    {QStringLiteral("clientOrderId"), clientId},
+                                    {QStringLiteral("orderId"), orderId},
+                                    {QStringLiteral("status"), partial ? QStringLiteral("CANCELED") : QStringLiteral("FILLED")},
+                                    {QStringLiteral("executedQty"), partial ? QStringLiteral("0.25") : QStringLiteral("1")},
+                                    {QStringLiteral("avgPrice"), QString::number(100 + posts * 10)},
+                                };
+                            }
+                        } else {
+                            ++unexpected;
+                            response.insert(QStringLiteral("error"), QStringLiteral("unexpected fixture route"));
+                        }
+                        writeJsonResponseAndClose(socket, QJsonDocument(response).toJson(QJsonDocument::Compact));
+                    });
+                }
+            });
+            const QString base = QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort());
+            const auto shouldStop = [&]() {
+                if (stop && scenario.stopCheckThrows) throw std::runtime_error("private stop-check diagnostic");
+                return stop;
+            };
+            NativeOrderExecutionSession session;
+            const auto submit = [&]() {
+                return session.submit(2.0, [&]() {
+                    return closing
+                        ? placeFuturesCloseOrderWithFallback(QStringLiteral("key"), QStringLiteral("secret"),
+                              QStringLiteral("BTCUSDT"), QStringLiteral("SELL"), 2.0, true, true,
+                              QString(), 2000, base, 100.0, shouldStop)
+                        : placeFuturesOpenOrderWithFallback(QStringLiteral("key"), QStringLiteral("secret"),
+                              QStringLiteral("BTCUSDT"), QStringLiteral("BUY"), 2.0, true,
+                              QString(), 2000, base, false, shouldStop);
+                });
+            };
+            const auto result = submit();
+            check(posts == scenario.expectedPosts && unexpected == 0,
+                  label + QStringLiteral(": stop must bound concrete order POSTs"));
+            check(result.ok == scenario.complete && result.hasConfirmedFill(2.0) == scenario.complete,
+                  label + QStringLiteral(": stop cannot erase completed fills or invent full execution"));
+            check(result.confirmedExecutedQuantity(2.0) == scenario.expectedFill
+                      && result.executionConfirmed == (scenario.expectedFill > 0.0),
+                  label + QStringLiteral(": preserve only exchange-confirmed execution"));
+            check(result.reconciliationRequired == scenario.uncertain
+                      && session.submissionBlocked() == scenario.uncertain,
+                  label + QStringLiteral(": retain the uncertainty barrier without inventing an unsent order"));
+            check(!result.error.contains(QStringLiteral("private stop-check diagnostic")),
+                  label + QStringLiteral(": stop-check exceptions must not leak diagnostics"));
+            if (scenario.stopAfterPosts == 0) {
+                check(requests == 0, label + QStringLiteral(": pre-stopped operation must not issue cancellation or metadata requests"));
+            }
+            if (scenario.expectedFill > 0.0) {
+                const double expectedPrice = scenario.complete ? 115.0 : 110.0;
+                check(result.avgPrice == expectedPrice && result.orderId == acceptedIds.join(QStringLiteral(",")),
+                      label + QStringLiteral(": preserve confirmed identities and weighted price"));
+                check(postedIds.contains(result.clientOrderId), label + QStringLiteral(": retain submission identity"));
+            }
+            if (scenario.uncertain) {
+                const int previousRequests = requests;
+                const auto retry = submit();
+                check(requests == previousRequests && retry.confirmedExecutedQuantity(2.0) == 0.0
+                          && !retry.executionConfirmed,
+                      label + QStringLiteral(": blocked retry must not send or double-account a fill"));
+            }
+        }
+    }
+    setNativeRuntimeOrderAuditLogConfig(previousAuditConfig);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -83,6 +252,8 @@ int main(int argc, char **argv) {
             ++failures;
         }
     };
+
+    checkChunkSubmissionStops(check);
 
     for (const auto &referenceCase : PythonParityContract::kPythonRuntimeConfigReferenceCases) {
         const QString caseName = parityString(referenceCase.name);
@@ -1960,6 +2131,225 @@ int main(int argc, char **argv) {
           QStringLiteral("C++ Futures market order should reject success=false acknowledgements"));
     check(futuresOrderResponses == 6,
           QStringLiteral("C++ Futures acknowledgement tests should exercise every response case"));
+
+    QTcpServer executionServer;
+    check(executionServer.listen(QHostAddress::LocalHost, 0),
+          QStringLiteral("local execution contract server should listen"));
+    QJsonObject executionResponse;
+    QString corruptExecutionField;
+    bool dropExecutionResponse = false;
+    int executionRequests = 0;
+    QByteArray executionRequestLine;
+    QObject::connect(&executionServer, &QTcpServer::newConnection, [&]() {
+        QTcpSocket *socket = executionServer.nextPendingConnection();
+        QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        QObject::connect(socket, &QTcpSocket::readyRead, socket, [&, socket]() {
+            if (socket->property("handled").toBool()) return;
+            const QByteArray request = socket->property("request").toByteArray() + socket->readAll();
+            socket->setProperty("request", request);
+            if (!request.contains("\r\n\r\n")) return;
+            socket->setProperty("handled", true);
+            ++executionRequests;
+            executionRequestLine = request.left(request.indexOf('\n')).trimmed();
+            if (dropExecutionResponse) {
+                socket->abort();
+                return;
+            }
+            QJsonObject payload = executionResponse;
+            payload.insert(QStringLiteral("symbol"), QStringLiteral("BTCUSDT"));
+            payload.insert(QStringLiteral("side"), QStringLiteral("BUY"));
+            payload.insert(QStringLiteral("clientOrderId"), QString::fromUtf8(
+                requestQueryValue(executionRequestLine, QByteArrayLiteral("newClientOrderId"))));
+            payload.insert(QStringLiteral("orderId"), QStringLiteral("901"));
+            payload.insert(QStringLiteral("avgPrice"), QStringLiteral("20000"));
+            if (!corruptExecutionField.isEmpty()) {
+                if (corruptExecutionField.startsWith(QStringLiteral("missing:"))) {
+                    payload.remove(corruptExecutionField.mid(8));
+                } else {
+                    payload.insert(corruptExecutionField, QStringLiteral("not-the-submitted-order"));
+                }
+            }
+            writeJsonResponseAndClose(socket, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        });
+    });
+    const QString executionBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(executionServer.serverPort());
+    const auto submitExecution = [&](const QString &kind) {
+        if (kind == QStringLiteral("spot")) {
+            return BinanceRestClient::placeSpotMarketOrder(
+                QStringLiteral("key"), QStringLiteral("secret"), QStringLiteral("BTCUSDT"),
+                QStringLiteral("BUY"), 2.0, true, 2000, executionBaseUrl);
+        }
+        if (kind == QStringLiteral("limit")) {
+            return BinanceRestClient::placeFuturesLimitOrder(
+                QStringLiteral("key"), QStringLiteral("secret"), QStringLiteral("BTCUSDT"),
+                QStringLiteral("BUY"), 2.0, 20000.0, true, false, QStringLiteral("BOTH"),
+                QStringLiteral("IOC"), 2000, executionBaseUrl);
+        }
+        return BinanceRestClient::placeFuturesMarketOrder(
+            QStringLiteral("key"), QStringLiteral("secret"), QStringLiteral("BTCUSDT"),
+            QStringLiteral("BUY"), 2.0, true, false, QStringLiteral("BOTH"), 2000, executionBaseUrl);
+    };
+    const QJsonObject executionReference = QJsonDocument::fromJson(
+        QByteArray(PythonParityContract::kPythonOrderIntentReferenceJson.data(),
+                   static_cast<qsizetype>(PythonParityContract::kPythonOrderIntentReferenceJson.size()))).object();
+    int checkedExecutionCases = 0;
+    for (const QString &kind : {QStringLiteral("market"), QStringLiteral("limit"), QStringLiteral("spot")}) {
+        for (const QJsonValue &value : executionReference.value(QStringLiteral("execution_cases")).toArray()) {
+            const QJsonObject fixture = value.toObject();
+            const QJsonObject expected = fixture.value(QStringLiteral("expected")).toObject();
+            if (!expected.value(QStringLiteral("valid")).toBool()) continue;
+            ++checkedExecutionCases;
+            executionResponse = fixture.value(QStringLiteral("response")).toObject();
+            const int requestsBefore = executionRequests;
+            NativeOrderExecutionSession executionSession;
+            const auto result = executionSession.submit(2.0, [&]() { return submitExecution(kind); });
+            const QString label = kind + QStringLiteral("/") + fixture.value(QStringLiteral("name")).toString();
+            const bool complete = expected.value(QStringLiteral("complete")).toBool();
+            check(executionRequests == requestsBefore + 1,
+                  label + QStringLiteral(": exactly one submission, with no alternate POST"));
+            check(result.ok == complete && result.reconciliationRequired == !complete,
+                  label + QStringLiteral(": only complete execution is successful"));
+            check(result.executionConfirmed
+                      && result.executedQty == expected.value(QStringLiteral("executed_qty")).toDouble()
+                      && result.confirmedExecutedQuantity(2.0) == result.executedQty,
+                  label + QStringLiteral(": preserve Python-confirmed partial and terminal execution quantity"));
+            check(result.hasConfirmedFill(2.0) == complete,
+                  label + QStringLiteral(": partial and pending execution cannot pass the full-fill gate"));
+            check(result.status == expected.value(QStringLiteral("status")).toString()
+                      && result.orderId == QStringLiteral("901") && result.avgPrice == 20000.0,
+                  label + QStringLiteral(": preserve confirmed order identity, state and price"));
+            check(result.clientOrderId.toUtf8()
+                      == requestQueryValue(executionRequestLine, QByteArrayLiteral("newClientOrderId")),
+                  label + QStringLiteral(": preserve submitted client identity"));
+            check(executionSession.submissionBlocked() == !complete,
+                  label + QStringLiteral(": incomplete execution must block later cycles and stop sweeps"));
+            if (!complete) {
+                const auto retry = executionSession.submit(2.0, [&]() { return submitExecution(kind); });
+                check(executionRequests == requestsBefore + 1 && !retry.ok
+                          && retry.reconciliationRequired && !retry.executionConfirmed
+                          && retry.confirmedExecutedQuantity(2.0) == 0.0,
+                      label + QStringLiteral(": a blocked retry must neither submit nor account the first fill twice"));
+                check(executionSession.unresolvedOrder().has_value()
+                          && executionSession.unresolvedOrder()->clientOrderId == result.clientOrderId
+                          && executionSession.unresolvedOrder()->executedQty == result.executedQty
+                          && executionSession.unresolvedRequestedQuantity() == 2.0,
+                      label + QStringLiteral(": retain original identity and partial quantity after retry is blocked"));
+            } else {
+                const auto second = executionSession.submit(2.0, [&]() { return submitExecution(kind); });
+                check(second.hasConfirmedFill(2.0) && executionRequests == requestsBefore + 2
+                          && !executionSession.submissionBlocked(),
+                      label + QStringLiteral(": fully confirmed completion permits the next submission"));
+            }
+        }
+        executionResponse = QJsonObject{
+            {QStringLiteral("status"), QStringLiteral("FILLED")},
+            {QStringLiteral("executedQty"), QStringLiteral("2")},
+            {QStringLiteral("origQty"), QStringLiteral("2")},
+        };
+        for (const QString &field : {
+                 QStringLiteral("symbol"), QStringLiteral("side"), QStringLiteral("clientOrderId"),
+                 QStringLiteral("positionSide"), QStringLiteral("executedQty"),
+                 QStringLiteral("missing:orderId"), QStringLiteral("missing:status"),
+                 QStringLiteral("missing:executedQty"),
+             }) {
+            corruptExecutionField = field;
+            const int requestsBefore = executionRequests;
+            NativeOrderExecutionSession executionSession;
+            const auto result = executionSession.submit(2.0, [&]() { return submitExecution(kind); });
+            check(!result.ok && result.reconciliationRequired && !result.executionConfirmed
+                      && result.executedQty == 0.0 && result.confirmedExecutedQuantity(2.0) == 0.0
+                      && result.avgPrice == 0.0 && executionRequests == requestsBefore + 1,
+                  kind + QStringLiteral("/") + field
+                      + QStringLiteral(": untrusted execution cannot create a fill or trigger a second POST"));
+            const auto retry = executionSession.submit(2.0, [&]() { return submitExecution(kind); });
+            check(executionRequests == requestsBefore + 1 && !retry.executionConfirmed
+                      && executionSession.reconciliationRequired(),
+                  kind + QStringLiteral("/") + field + QStringLiteral(": malformed outcome must block the next submission"));
+        }
+        corruptExecutionField.clear();
+    }
+    check(checkedExecutionCases >= 27,
+          QStringLiteral("REST execution tests must consume the Python-owned valid execution cases"));
+
+    dropExecutionResponse = true;
+    for (const QString &kind : {QStringLiteral("market"), QStringLiteral("limit"), QStringLiteral("spot")}) {
+        NativeOrderExecutionSession lostAcknowledgementSession;
+        const int requestsBefore = executionRequests;
+        const auto lost = lostAcknowledgementSession.submit(2.0, [&]() { return submitExecution(kind); });
+        const auto retry = lostAcknowledgementSession.submit(2.0, [&]() { return submitExecution(kind); });
+        check(executionRequests == requestsBefore + 1 && lostAcknowledgementSession.reconciliationRequired()
+                  && !lost.clientOrderId.isEmpty() && !lost.executionConfirmed && !retry.executionConfirmed,
+              kind + QStringLiteral(": lost HTTP acknowledgement must preserve uncertainty and prevent resubmission"));
+    }
+    dropExecutionResponse = false;
+
+    for (const QString &kind : {QStringLiteral("market"), QStringLiteral("limit"), QStringLiteral("spot")}) {
+        NativeOrderExecutionSession almostFilledSession;
+        executionResponse = QJsonObject{
+            {QStringLiteral("status"), QStringLiteral("CANCELED")},
+            {QStringLiteral("executedQty"), QStringLiteral("1.9999999999")},
+        };
+        const auto almostFilled = almostFilledSession.submit(2.0, [&]() { return submitExecution(kind); });
+        const double accounted = almostFilled.confirmedExecutedQuantity(2.0);
+        check(accounted > 0.0 && accounted < 2.0 && almostFilledSession.reconciliationRequired(),
+              kind + QStringLiteral(": a small positive unfilled remainder must not be rounded into a complete close"));
+    }
+
+    executionResponse = QJsonObject{
+        {QStringLiteral("status"), QStringLiteral("FILLED")},
+        {QStringLiteral("executedQty"), QStringLiteral("2")},
+    };
+    NativeOrderExecutionSession reentrantSession;
+    const int requestsBeforeReentry = executionRequests;
+    const auto outer = reentrantSession.submit(2.0, [&]() {
+        check(reentrantSession.submissionBlocked(), QStringLiteral("in-flight submissions must block nested stop-close requests"));
+        const auto nested = reentrantSession.submit(2.0, [&]() { return submitExecution(QStringLiteral("market")); });
+        check(!nested.ok && !nested.executionConfirmed, QStringLiteral("reentrant request must not claim execution"));
+        return submitExecution(QStringLiteral("market"));
+    });
+    check(outer.hasConfirmedFill(2.0) && executionRequests == requestsBeforeReentry + 1
+              && !reentrantSession.submissionBlocked(),
+          QStringLiteral("only the outer submission can run and its confirmed result must survive reentry"));
+
+    NativeOrderExecutionSession interruptedSession;
+    bool interrupted = false;
+    try {
+        interruptedSession.submit(2.0, []() -> BinanceRestClient::FuturesOrderResult {
+            throw std::runtime_error("simulated interruption");
+        });
+    } catch (const std::runtime_error &) {
+        interrupted = true;
+    }
+    int callsAfterInterruption = 0;
+    const auto afterInterruption = interruptedSession.submit(2.0, [&]() {
+        ++callsAfterInterruption;
+        return outer;
+    });
+    check(interrupted && interruptedSession.reconciliationRequired() && callsAfterInterruption == 0
+              && !afterInterruption.executionConfirmed,
+          QStringLiteral("an interrupted submission must leave the session blocked"));
+
+    NativeOrderExecutionSession preSubmitSession;
+    int validationCalls = 0;
+    const auto invalidQuantity = preSubmitSession.submit(0.0, [&]() {
+        ++validationCalls;
+        return outer;
+    });
+    const auto localRejection = preSubmitSession.submit(2.0, []() {
+        BinanceRestClient::FuturesOrderResult rejected;
+        rejected.error = QStringLiteral("local preflight denied before submission");
+        return rejected;
+    });
+    check(validationCalls == 0 && !invalidQuantity.ok && !localRejection.ok
+              && !preSubmitSession.submissionBlocked(),
+          QStringLiteral("local pre-submission validation must not invent execution uncertainty"));
+
+    NativeOrderExecutionSession inconsistentSession;
+    auto inconsistent = outer;
+    inconsistent.executedQty = 3.0;
+    const auto invalidFill = inconsistentSession.submit(2.0, [&]() { return inconsistent; });
+    check(!invalidFill.ok && invalidFill.confirmedExecutedQuantity(2.0) == 0.0 && inconsistentSession.reconciliationRequired(),
+          QStringLiteral("success flag cannot permit overfill accounting or bypass the reconciliation barrier"));
 
     QTcpServer futuresFallbackServer;
     check(futuresFallbackServer.listen(QHostAddress::LocalHost, 0),

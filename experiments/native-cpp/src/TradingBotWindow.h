@@ -2,6 +2,7 @@
 
 #include "BinanceRestClient.h"
 #include "NativeOrderSafety.h"
+#include "NativeOrderExecutionSession.h"
 #include "NativeStrategyRuntime.h"
 
 #include <QMainWindow>
@@ -14,6 +15,7 @@
 #include <QVariantMap>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 
 class QListWidget;
@@ -64,6 +66,8 @@ private slots:
     void updateWorkspacePage(int index);
 
 private:
+    friend class NativePositionCloseTests;
+
     // Tab/page creation helpers.
     QWidget *createMarketsGroup();
     QWidget *createParametersGroup();
@@ -72,6 +76,8 @@ private:
     QWidget *createDashboardTab();
     QWidget *createChartTab();
     QWidget *createPositionsTab();
+    bool beginPositionCloseAction();
+    void finishPositionCloseAction();
     QWidget *createBacktestTab();
     QWidget *createLiquidationHeatmapTab();
     QWidget *createLiquidationWebPanel(const QString &title, const QString &url, const QString &note = QString());
@@ -95,6 +101,9 @@ private:
     void startDashboardRuntime();
     void stopDashboardRuntime();
     void runDashboardRuntimeCycle();
+    BinanceRestClient::FuturesOrderResult submitDashboardOrder(
+        double requestedQuantity,
+        const std::function<BinanceRestClient::FuturesOrderResult()> &submit);
     bool startDashboardServiceRuntime(bool showDialogs = true);
     void stopDashboardServiceRuntime(bool showDialogs = true);
     bool ensureDashboardServiceApiAvailable(QString *errorOut = nullptr);
@@ -363,6 +372,9 @@ private:
     QProcess *managedPythonDesktopServiceProcess_ = nullptr;
     qint64 dashboardServiceLastLogSequenceId_ = 0;
     bool dashboardRuntimeCycleInProgress_ = false;
+    bool dashboardRuntimeStopRequested_ = false;
+    bool positionsCloseInProgress_ = false;
+    NativeOrderExecutionSession dashboardOrderExecutionSession_;
     int dashboardRuntimeLiveSubmitAttemptCount_ = 0;
     std::unique_ptr<NativeOrderSafety::ConnectorOrderCircuitBreaker> dashboardRuntimeConnectorOrderCircuit_;
     QMap<QString, QVariantMap> dashboardWaitingActiveEntries_;

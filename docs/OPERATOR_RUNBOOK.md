@@ -146,11 +146,36 @@ The intent ledger retains both submitted and executed quantities and the exact
 order identity. Terminal partial fills remain recorded but are not reported as
 fully completed orders. Unknown results never create a local position.
 
+Stopping or pausing the strategy prevents another submission; it does not cancel
+an exchange request that has already started. The Python strategy still consumes
+that request's result, records validated fills, and handles uncertain outcomes
+before returning. Reconcile pending exposure before restarting, even when the
+stop or shutdown request itself completed successfully.
+
 After an unresolved entry, reconcile that order's identity and cumulative fills,
 refresh the exchange account/positions, and reconcile local allocations and fees
 before explicitly resuming. An order-status query alone does not unpause the
 strategy or rebuild its local position allocations. Do not clear the pause or
 delete intent history to bypass this account-reconciliation step.
+
+When desktop close-on-exit is enabled, automatic exit is withheld until the local
+strategy engines are confirmed stopped and the captured account has fresh, valid
+position/balance and open-order snapshots, with no unresolved durable order intent.
+The final checks run in the worker against the captured account, not a cached or
+subsequently selected shared wrapper. Changing account settings during shutdown
+withholds exit and prevents applying the previous account's result to the UI.
+
+A failed query, stop warning, skipped/failed close, unconfirmed cancellation, or
+remaining exposure keeps the application open with a warning. Spot locked balances
+and non-USDT dust are still exposure, even when they cannot be sold automatically.
+Engines whose termination is unknown remain registered for a later stop attempt.
+The forced-exit timer is not armed while close-on-exit verification is pending.
+Resolve the reported condition and retry; do not erase intent records or treat a
+flat position snapshot alone as proof that an uncertain order is finished.
+
+These desktop checks do not certify that an independent remote service executor
+or another process has stopped. Verify those executors separately before treating
+the entire account as quiescent.
 
 These locks serialize cooperating processes using the same local ledger. They
 are not an account-wide executor lease across different ledger paths, hosts,

@@ -134,14 +134,41 @@ class StopRuntimeTests(unittest.TestCase):
         )
 
         engine = runtime.strategy_engines
-        self.assertEqual({}, engine)
-        self.assertEqual({}, runtime._engine_indicator_map)
+        self.assertEqual({"BTCUSDT@1m"}, set(engine))
+        self.assertEqual({"BTCUSDT@1m"}, set(runtime._engine_indicator_map))
+        self.assertFalse(result["engines_stopped"])
         self.assertFalse(runtime._is_stopping_engines)
         self.assertEqual({"ok": True, "call": 1}, result["cancel_open_orders_result"])
         self.assertEqual({"ok": True, "call": 2}, result["cancel_open_orders_after_close"])
         self.assertEqual({"ok": True, "closed": 1}, result["close_all_result"])
         self.assertEqual([{"auth": {"mode": "Testnet", "account_type": "Futures"}, "fast": True}], runtime.close_calls)
         self.assertTrue(any("still shutting down" in message for message in runtime.logged))
+
+    def test_stop_retry_retains_then_removes_engine_only_after_confirmed_termination(self) -> None:
+        runtime = _CloseRuntime()
+        engine = runtime.strategy_engines["BTCUSDT@1m"]
+        first = stop_strategy_sync(runtime, close_positions=False)
+        self.assertFalse(first["engines_stopped"])
+        self.assertIs(engine, runtime.strategy_engines["BTCUSDT@1m"])
+        engine.alive = False
+        second = stop_strategy_sync(runtime, close_positions=False)
+        self.assertTrue(second["engines_stopped"])
+        self.assertEqual({}, runtime.strategy_engines)
+        self.assertEqual({}, runtime._engine_indicator_map)
+        self.assertEqual(2, engine.stop_calls)
+
+    def test_unknown_engine_liveness_is_not_reported_as_stopped(self) -> None:
+        runtime = _CloseRuntime()
+        engine = runtime.strategy_engines["BTCUSDT@1m"]
+
+        def unavailable():
+            raise RuntimeError("offline liveness unavailable")
+
+        engine.is_alive = unavailable
+        result = stop_strategy_sync(runtime, close_positions=False)
+        self.assertFalse(result["engines_stopped"])
+        self.assertIs(engine, runtime.strategy_engines["BTCUSDT@1m"])
+        self.assertTrue(any("verify strategy engine shutdown" in item for item in result["warnings"]))
 
     def test_stop_strategy_reports_close_setup_failure(self) -> None:
         class _BrokenCloseRuntime(_CloseRuntime):

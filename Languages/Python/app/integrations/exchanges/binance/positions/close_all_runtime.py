@@ -440,26 +440,41 @@ def _cleanup_zero_qty_negative_margin_positions(binance, dual: bool) -> List[Dic
 
 
 def _gather_positions(binance, *, include_zero_qty_residuals: bool = False) -> tuple[List[Dict[str, Any]], bool]:
-    # Try position info first
-    infos = None
-    ok = False
+    def validated_rows(value):
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("position snapshot must be a list")
+        rows = []
+        for row in value:
+            if not isinstance(row, Mapping):
+                raise ValueError("position snapshot contains an invalid row")
+            symbol = row.get("symbol")
+            amount = row.get("positionAmt")
+            if not isinstance(symbol, str) or not symbol.strip() or isinstance(amount, bool):
+                raise ValueError("position snapshot is missing a valid symbol or quantity")
+            try:
+                decimal_amount = Decimal(str(amount))
+                numeric_amount = float(decimal_amount)
+            except (InvalidOperation, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("position snapshot has an invalid quantity") from exc
+            if not math.isfinite(numeric_amount) or (decimal_amount != 0 and numeric_amount == 0):
+                raise ValueError("position snapshot has a nonfinite or unrepresentable quantity")
+            if _normalize_position_side(row.get("positionSide")) not in {"BOTH", "LONG", "SHORT"}:
+                raise ValueError("position snapshot has an invalid position side")
+            rows.append({**row, "symbol": symbol.strip().upper(), "positionAmt": numeric_amount})
+        return rows
+
     try:
-        infos = binance.client.futures_position_information()
-        ok = True
+        infos = validated_rows(binance.client.futures_position_information())
     except Exception:
         try:
-            acct = binance.client.futures_account() or {}
-            infos = acct.get("positions", [])
-            ok = True
-        except Exception:
-            infos = []
-            ok = False
+            acct = binance.client.futures_account()
+            infos = validated_rows(acct.get("positions") if isinstance(acct, Mapping) else None)
+        except Exception as exc:
+            _record_close_all_exception(binance, "position_snapshot_unavailable", exc)
+            return [], False
     out: List[Dict[str, Any]] = []
-    for p in infos or []:
-        try:
-            amt = float(p.get("positionAmt") or 0.0)
-        except Exception:
-            amt = 0.0
+    for p in infos:
+        amt = p["positionAmt"]
         if abs(amt) <= 0.0:
             residual_amount = (
                 _zero_qty_negative_isolated_margin_amount(p)
@@ -489,7 +504,50 @@ def _gather_positions(binance, *, include_zero_qty_residuals: bool = False) -> t
                 "positionSide": _normalize_position_side(p.get("positionSide")),
             }
         )
-    return out, ok
+    return out, True
+
+
+def _position_scope(row: Mapping) -> dict[str, str]:
+    position_side = _normalize_position_side(row.get("positionSide"))
+    amount = float(row.get("positionAmt") or 0.0)
+    side_key = ("L" if position_side == "LONG" else "S" if position_side == "SHORT"
+                else "L" if amount > 0 else "S" if amount < 0 else "")
+    return {"symbol": str(row.get("symbol") or "").strip().upper(),
+            "positionSide": position_side, "side_key": side_key}
+
+
+def _unverified_close_results(results: list[dict]) -> list[dict]:
+    return [{**result, "ok": False, "position_closed": False,
+             "error": "close verification unavailable; local exposure must be reconciled"}
+            for result in results or [{}]]
+
+
+def _finalize_close_results(binance, results: list[dict]) -> list[dict]:
+    remaining, snapshot_ok = _gather_positions(binance)
+    if not snapshot_ok:
+        return _unverified_close_results(results)
+    open_keys = {(_position_scope(row)["symbol"], _position_scope(row)["side_key"]): row for row in remaining}
+    latest = {}
+    for result in results:
+        key = (str(result.get("symbol") or "").upper(), result.get("side_key", ""))
+        latest[key] = dict(result)
+    for key, row in open_keys.items():
+        result = latest.setdefault(key, _position_scope(row))
+        if result.get("ok", True):
+            result.update(error="position remained open after close attempts", method="verification")
+        result.update(ok=False, position_closed=False, remaining_qty=abs(row["positionAmt"]))
+    for key, result in latest.items():
+        if key in open_keys:
+            continue
+        if key[0] and key[1] in {"L", "S"} and not result.get("skipped"):
+            # Flatness confirms the position state, not the fate of an unresolved order.
+            # The durable intent ledger is never cleared by this account observation.
+            if not result.get("ok"):
+                result["reconciled"] = True
+            result.update(ok=True, position_closed=True, remaining_qty=0.0)
+        else:
+            result["position_closed"] = False
+    return list(latest.values())
 
 
 def _is_testnet_wrapper(binance) -> bool:
@@ -523,7 +581,9 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
             dual = False
 
     if fast:
-        positions, _ = _gather_positions(binance)
+        positions, snapshot_ok = _gather_positions(binance)
+        if not snapshot_ok:
+            return _unverified_close_results(results)
         cancel_failures: set[str] = set()
         for sym in sorted({str(p.get("symbol") or "").upper() for p in positions} - {""}):
             if not _cancel_all(binance, sym):
@@ -534,9 +594,11 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
         def _attempt_close_position(p):
             sym = p.get("symbol")
             pos_side = _normalize_position_side(p.get("positionSide"))
+            scope = _position_scope(p)
             normalized_sym = str(sym or "").upper()
             if normalized_sym in cancel_failures:
                 return {
+                    **scope,
                     "ok": False,
                     "symbol": sym,
                     "positionSide": pos_side,
@@ -549,6 +611,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 amt = 0.0
             if abs(amt) <= 0:
                 return {
+                    **scope,
                     "ok": True,
                     "symbol": sym,
                     "positionSide": pos_side,
@@ -565,6 +628,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 )
                 if not params:
                     return {
+                        **scope,
                         "ok": False,
                         "symbol": sym,
                         "positionSide": pos_side,
@@ -574,6 +638,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     }
                 od = _submit_futures_order(binance, params)
                 return {
+                    **scope,
                     "ok": True,
                     "symbol": sym,
                     "positionSide": pos_side,
@@ -582,6 +647,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 }
             except Exception as e:
                 return {
+                    **scope,
                     "ok": False,
                     "symbol": sym,
                     "positionSide": pos_side,
@@ -604,7 +670,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
             sym = str(res.get("symbol") or "").upper()
             if not sym:
                 return None
-            side = _normalize_position_side(res.get("positionSide"))
+            side = str(res.get("side_key") or "")
             return (sym, side)
 
         for idx, res in enumerate(results):
@@ -640,38 +706,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     if not r.get("ok")
                 ):
                     time.sleep(0.35)
-            remaining, remaining_ok = _gather_positions(binance)
-            if remaining_ok:
-                open_symbols = {str(p.get("symbol") or "").upper() for p in remaining}
-                for r in results:
-                    if r.get("ok"):
-                        continue
-                    if not _is_unknown_execution_error(r.get("error")):
-                        continue
-                    sym = str(r.get("symbol") or "").upper()
-                    if sym and sym not in open_symbols:
-                        r["ok"] = True
-                        r["reconciled"] = True
-                for p in remaining:
-                    key = _result_key(
-                        {
-                            "symbol": p.get("symbol"),
-                            "positionSide": p.get("positionSide"),
-                        }
-                    )
-                    if key is None:
-                        continue
-                    idx = result_index.get(key)
-                    stale = {
-                        "ok": False,
-                        "symbol": key[0],
-                        "positionSide": key[1],
-                        "error": "position remained open after close attempts",
-                        "positionAmt": p.get("positionAmt"),
-                        "method": "verification",
-                    }
-                    if idx is None or results[idx].get("ok"):
-                        _upsert_result(stale)
+        results = _finalize_close_results(binance, results)
         results.extend(_cleanup_zero_qty_negative_margin_positions(binance, dual))
         return results
 
@@ -679,12 +714,15 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
     # close is in flight. Binance requires symbol-scoped cancel-all requests.
     canceled_symbols: set[str] = set()
     for _ in range(3):
-        positions, _ = _gather_positions(binance)
+        positions, snapshot_ok = _gather_positions(binance)
+        if not snapshot_ok:
+            return _unverified_close_results(results)
         if not positions:
             break
         for p in positions:
             sym = p.get("symbol")
             pos_side = _normalize_position_side(p.get("positionSide"))
+            scope = _position_scope(p)
             try:
                 amt = float(p.get("positionAmt") or 0.0)
                 if abs(amt) <= 0:
@@ -693,6 +731,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     if not _cancel_all(binance, sym):
                         results.append(
                             {
+                                **scope,
                                 "ok": False,
                                 "symbol": sym,
                                 "positionSide": pos_side,
@@ -712,6 +751,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 if not params:
                     results.append(
                         {
+                            **scope,
                             "ok": False,
                             "symbol": sym,
                             "positionSide": pos_side,
@@ -725,6 +765,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     od = _submit_futures_order(binance, params)
                     results.append(
                         {
+                            **scope,
                             "ok": True,
                             "symbol": sym,
                             "positionSide": pos_side,
@@ -736,6 +777,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 except Exception as e:
                     results.append(
                         {
+                            **scope,
                             "ok": False,
                             "symbol": sym,
                             "positionSide": pos_side,
@@ -745,45 +787,8 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                         }
                     )
             except Exception as e:
-                results.append({"ok": False, "symbol": sym, "positionSide": pos_side, "error": str(e)})
+                results.append({**scope, "ok": False, "error": str(e)})
 
-    remaining, remaining_ok = _gather_positions(binance)
-    if remaining_ok:
-        remaining_by_key = {
-            (
-                str(p.get("symbol") or "").upper(),
-                _normalize_position_side(p.get("positionSide")),
-            ): p
-            for p in remaining
-            if str(p.get("symbol") or "").strip()
-        }
-        latest_by_key: dict[tuple[str, str], Dict[str, Any]] = {}
-        result_order: list[tuple[str, str]] = []
-        for result in results:
-            key = (
-                str(result.get("symbol") or "").upper(),
-                _normalize_position_side(result.get("positionSide")),
-            )
-            if not key[0]:
-                continue
-            if key not in latest_by_key:
-                result_order.append(key)
-            latest_by_key[key] = result
-        for key, position in remaining_by_key.items():
-            if key not in latest_by_key:
-                result_order.append(key)
-            latest_by_key[key] = {
-                "ok": False,
-                "symbol": key[0],
-                "positionSide": key[1],
-                "error": "position remained open after close attempts",
-                "positionAmt": position.get("positionAmt"),
-                "method": "verification",
-            }
-        for key, result in latest_by_key.items():
-            if key not in remaining_by_key and not result.get("ok"):
-                result["ok"] = True
-                result["reconciled"] = True
-        results = [latest_by_key[key] for key in result_order]
+    results = _finalize_close_results(binance, results)
     results.extend(_cleanup_zero_qty_negative_margin_positions(binance, dual))
     return results

@@ -536,12 +536,51 @@ void TradingBotWindow::refreshDashboardOpenPositionIndicatorValuesForSignalKey(
     applyPositionsViewMode(false, false);
 }
 
+BinanceRestClient::FuturesOrderResult TradingBotWindow::submitDashboardOrder(
+    double requestedQuantity,
+    const std::function<BinanceRestClient::FuturesOrderResult()> &submit) {
+    if (dashboardRuntimeStopRequested_) {
+        BinanceRestClient::FuturesOrderResult blocked;
+        blocked.error = QStringLiteral("Runtime stop requested before order submission.");
+        return blocked;
+    }
+    const bool alreadyUnresolved = dashboardOrderExecutionSession_.reconciliationRequired();
+    auto result = dashboardOrderExecutionSession_.submit(requestedQuantity, submit);
+    if (!alreadyUnresolved && dashboardOrderExecutionSession_.reconciliationRequired()) {
+        dashboardRuntimeEntryRetryAfterMs_.clear();
+        dashboardRuntimeOpenQtyCaps_.clear();
+        appendDashboardPositionLog(
+            QStringLiteral("Native execution paused for reconciliation: clientOrderId=%1, orderId=%2, status=%3, confirmedQty=%4, requestedQty=%5. %6")
+                .arg(result.clientOrderId, result.orderId, result.status,
+                     QString::number(result.confirmedExecutedQuantity(requestedQuantity), 'g', 17),
+                     QString::number(requestedQuantity, 'g', 17), NativeOrderSafety::redactText(result.error)));
+        for (QLabel *label : {botStatusLabel_, chartBotStatusLabel_, positionsBotStatusLabel_, codeBotStatusLabel_}) {
+            if (label) {
+                label->setText(QStringLiteral("Bot Status: PAUSED"));
+                label->setStyleSheet(QStringLiteral("color: #d97706; font-weight: 700;"));
+                label->setToolTip(QStringLiteral("Native order reconciliation required"));
+            }
+        }
+        if (dashboardBotStatusLabel_) {
+            dashboardBotStatusLabel_->setText(QStringLiteral("PAUSED"));
+            dashboardBotStatusLabel_->setStyleSheet(QStringLiteral("color: #d97706; font-weight: 700;"));
+            dashboardBotStatusLabel_->setToolTip(QStringLiteral("Native order reconciliation required"));
+        }
+        updateStatusMessage(QStringLiteral("Native execution paused: order reconciliation required."));
+    }
+    return result;
+}
+
 void TradingBotWindow::runDashboardRuntimeCycle() {
-    if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_ || dashboardRuntimeCycleInProgress_) {
+    if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_ || dashboardRuntimeCycleInProgress_
+        || positionsCloseInProgress_) {
         return;
     }
     if (dashboardServiceRuntimeActive_) {
         runDashboardServiceRuntimeCycle();
+        return;
+    }
+    if (dashboardRuntimeStopRequested_ || dashboardOrderExecutionSession_.submissionBlocked()) {
         return;
     }
     if (!dashboardOverridesTable_ || dashboardOverridesTable_->rowCount() <= 0) {
@@ -550,12 +589,19 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     dashboardRuntimeCycleInProgress_ = true;
     struct RuntimeCycleGuard final {
         bool *flag = nullptr;
+        std::function<void()> finished;
         ~RuntimeCycleGuard() {
             if (flag) {
                 *flag = false;
             }
+            finished();
         }
-    } runtimeCycleGuard{&dashboardRuntimeCycleInProgress_};
+    } runtimeCycleGuard{&dashboardRuntimeCycleInProgress_, [this]() {
+        if (dashboardRuntimeStopRequested_) {
+            dashboardRuntimeStopRequested_ = false;
+            stopDashboardRuntime();
+        }
+    }};
 
     bool positionsTableMutated = false;
     bool positionsTableStructureChanged = false;
@@ -1076,13 +1122,15 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     };
 
     for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
-        if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_) {
+        if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_ || dashboardRuntimeStopRequested_
+            || dashboardOrderExecutionSession_.submissionBlocked()) {
             break;
         }
         if (row > 0) {
             flushPendingPositionsView();
             pumpUiEvents();
-            if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_) {
+            if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_ || dashboardRuntimeStopRequested_
+                || dashboardOrderExecutionSession_.submissionBlocked()) {
                 break;
             }
         }
@@ -2110,7 +2158,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     }
                 }
                 dashboardRuntimeLiveSubmitAttemptCount_ = orderGuard.nextSubmitAttemptCount;
-                const auto openOrder = futures
+                const auto openOrder = submitDashboardOrder(orderQty, [&]() {
+                    return futures
                     ? placeFuturesOpenOrderWithFallback(
                           apiKey,
                           apiSecret,
@@ -2121,7 +2170,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                           openPositionSide,
                           10000,
                           rowConnectorCfg.baseUrl,
-                          openReduceOnly)
+                          openReduceOnly,
+                          [this]() { return dashboardRuntimeStopRequested_; })
                     : BinanceRestClient::placeSpotMarketOrder(
                           apiKey,
                           apiSecret,
@@ -2131,7 +2181,13 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                           isTestnet,
                           10000,
                           rowConnectorCfg.baseUrl);
-                if (!openOrder.ok) {
+                });
+                const double confirmedOpenQty = openOrder.confirmedExecutedQuantity(orderQty);
+                if (confirmedOpenQty <= 0.0) {
+                    if (openOrder.reconciliationRequired) {
+                        touchWaitingEntry(key, nowMs);
+                        continue;
+                    }
                     if (dashboardRuntimeConnectorOrderCircuit_) {
                         const NativeOrderSafety::ConnectorOrderBlockEvent circuitEvent{
                             static_cast<double>(QDateTime::currentMSecsSinceEpoch()) / 1000.0,
@@ -2211,9 +2267,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
 
                 openOrderId = openOrder.orderId;
                 openOrderInfo = openOrder.error;
-                filledQty = (qIsFinite(openOrder.executedQty) && openOrder.executedQty > 0.0)
-                    ? openOrder.executedQty
-                    : orderQty;
+                filledQty = confirmedOpenQty;
                 dashboardRuntimeEntryRetryAfterMs_.remove(key);
                 if (!openOrderInfo.trimmed().isEmpty() && isPercentPriceFilterError(openOrderInfo)) {
                     dashboardRuntimeOpenQtyCaps_.insert(key, std::max(filledQty, 0.0));
@@ -2233,7 +2287,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 }
             }
             double rowQty = filledQty;
-            if ((!qIsFinite(rowQty) || rowQty <= 1e-10)
+            if (paperTrading && (!qIsFinite(rowQty) || rowQty <= 1e-10)
                 && livePos
                 && qIsFinite(livePos->positionAmt)
                 && std::fabs(livePos->positionAmt) > 1e-10) {
@@ -2624,7 +2678,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         if (paperTrading) {
             closeOrderId = QStringLiteral("paper-close-%1").arg(QDateTime::currentMSecsSinceEpoch());
         } else {
-            const auto closeOrder = futures
+            const auto closeOrder = submitDashboardOrder(openPos.quantity, [&]() {
+                return futures
                 ? placeFuturesCloseOrderWithFallback(
                       apiKey,
                       apiSecret,
@@ -2636,7 +2691,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                       closePositionSide,
                       10000,
                       rowConnectorCfg.baseUrl,
-                      price)
+                      price,
+                      [this]() { return dashboardRuntimeStopRequested_; })
                 : BinanceRestClient::placeSpotMarketOrder(
                       apiKey,
                       apiSecret,
@@ -2646,7 +2702,12 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                       isTestnet,
                       10000,
                       rowConnectorCfg.baseUrl);
-            if (!closeOrder.ok) {
+            });
+            const double confirmedCloseQty = closeOrder.confirmedExecutedQuantity(openPos.quantity);
+            if (confirmedCloseQty <= 0.0) {
+                if (closeOrder.reconciliationRequired) {
+                    continue;
+                }
                 if (futures && isReduceOnlyRejectedError(closeOrder.error)) {
                     livePositionsCache.remove(connectorCacheKeyFor(rowConnectorCfg));
                     const auto *latestSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
@@ -2704,9 +2765,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             closePrice = (qIsFinite(closeOrder.avgPrice) && closeOrder.avgPrice > 0.0)
                 ? closeOrder.avgPrice
                 : price;
-            closeQty = (qIsFinite(closeOrder.executedQty) && closeOrder.executedQty > 0.0)
-                ? closeOrder.executedQty
-                : openPos.quantity;
+            closeQty = confirmedCloseQty;
         }
         const double effectiveCloseQty = std::max(0.0, std::min(openPos.quantity, closeQty));
         if (effectiveCloseQty <= 0.0) {
@@ -2723,8 +2782,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             : 1.0;
         const double closeRoiBasisUsed = std::max(1e-9, openPos.roiBasisUsdt * closeShareRatio);
         const double realizedPnlPct = (realizedPnlUsdt / closeRoiBasisUsed) * 100.0;
-        const double closeCompletionTolerance = std::max(1e-9, openPos.quantity * 1e-6);
-        const bool partialClose = (effectiveCloseQty + closeCompletionTolerance) < openPos.quantity;
+        const bool partialClose = effectiveCloseQty < openPos.quantity;
         double remainingQty = 0.0;
         double remainingNotional = 0.0;
         double remainingDisplayMarginUsdt = 0.0;
@@ -2766,9 +2824,6 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
 
         if (partialClose) {
             openPos.quantity = std::max(0.0, openPos.quantity - effectiveCloseQty);
-            if (openPos.quantity <= 1e-9) {
-                openPos.quantity = 0.0;
-            }
             appendDashboardPositionLog(
                 QString("%1 %2@%3 partially closed at %4, qty=%5 remaining=%6, PNL=%7 USDT (%8%%), connector=%9, orderId=%10: %11")
                     .arg(openPos.side,

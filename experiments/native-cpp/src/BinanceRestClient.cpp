@@ -394,8 +394,10 @@ bool parseBinanceOrderAcknowledgement(
     if (isTerminalOrderStatus(*status)) {
         *error = QStringLiteral("Binance order returned terminal failure status: %1; reconciliation required.")
                      .arg(*status);
-        return false;
+        execution->error = *error;
     }
+    // Parsing success preserves confirmed partial fills; execution.complete alone
+    // determines whether the submitted quantity was fully filled.
     return true;
 }
 
@@ -3606,6 +3608,7 @@ BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesMarketOrder
             &execution)) {
         return result;
     }
+    result.executionConfirmed = true;
     result.executedQty = execution.executedQty;
     parseJsonNumber(normalizedObject.value(QStringLiteral("avgPrice")), &result.avgPrice);
     if (!qIsFinite(result.avgPrice) || result.avgPrice <= 0.0) {
@@ -3685,6 +3688,7 @@ BinanceRestClient::SpotOrderResult BinanceRestClient::placeSpotMarketOrder(
             &execution)) {
         return result;
     }
+    result.executionConfirmed = true;
     result.executedQty = execution.executedQty;
     parseJsonNumber(normalizedObject.value(QStringLiteral("avgPrice")), &result.avgPrice);
     if (!qIsFinite(result.avgPrice) || result.avgPrice <= 0.0) {
@@ -3789,6 +3793,7 @@ BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesLimitOrder(
             &execution)) {
         return result;
     }
+    result.executionConfirmed = true;
     result.executedQty = execution.executedQty;
     parseJsonNumber(normalizedObject.value(QStringLiteral("avgPrice")), &result.avgPrice);
     if (!qIsFinite(result.avgPrice) || result.avgPrice <= 0.0) {

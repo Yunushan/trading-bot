@@ -434,6 +434,13 @@ def close_event(self, event, *, strategy_engine_cls=None):
                 return
 
     request_strategy_shutdown(strategy_engine_cls)
+    close_on_exit_enabled = bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked())
+    if close_on_exit_enabled:
+        # Neither the hard-exit timer nor the restore guard may bypass verification.
+        event.ignore()
+        self._begin_close_on_exit_sequence()
+        return
+
     try:
         app = QtWidgets.QApplication.instance()
         if app is not None:
@@ -443,12 +450,6 @@ def close_event(self, event, *, strategy_engine_cls=None):
                 arm_hard_exit()
     except Exception as exc:
         _record_suppressed_exception(self, "close_event_arm_app_exit", exc)
-
-    close_on_exit_enabled = bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked())
-    if close_on_exit_enabled:
-        event.ignore()
-        self._begin_close_on_exit_sequence()
-        return
 
     try:
         self.stop_strategy_async(close_positions=close_on_exit_enabled, blocking=True)

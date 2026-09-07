@@ -11,7 +11,7 @@ def stop_strategy_sync(
     strategy_engine_cls=None,
 ) -> dict:
     """Synchronous helper to stop engines and optionally close all positions."""
-    result: dict = {"ok": True}
+    result: dict = {"ok": True, "engines_stopped": False}
 
     def _record_warning(action: str, exc: Exception) -> None:
         message = f"{action}: {exc}"
@@ -69,19 +69,23 @@ def stop_strategy_sync(
             still_alive: list[str] = []
             for key, eng in engines.items():
                 try:
-                    alive = bool(getattr(eng, "is_alive", lambda: False)())
-                except Exception:
-                    alive = False
+                    alive = eng.is_alive()
+                    if not isinstance(alive, bool):
+                        raise ValueError("engine liveness must be a boolean")
+                except Exception as exc:
+                    _record_warning("Could not verify strategy engine shutdown", exc)
+                    alive = True
                 if alive:
                     still_alive.append(str(key))
-            try:
-                self.strategy_engines.clear()
-            except Exception as exc:
-                _record_warning("Could not clear strategy engine state", exc)
-            try:
-                self._engine_indicator_map.clear()
-            except Exception as exc:
-                _record_warning("Could not clear strategy indicator state", exc)
+                    continue
+                # Retain unconfirmed engines so another stop attempt can still join them.
+                try:
+                    if self.strategy_engines.get(key) is eng:
+                        self.strategy_engines.pop(key)
+                        getattr(self, "_engine_indicator_map", {}).pop(key, None)
+                except Exception as exc:
+                    _record_warning("Could not clear stopped strategy engine state", exc)
+            result["engines_stopped"] = not still_alive and not self.strategy_engines
             if still_alive:
                 self.log(
                     f"Signaled loops to stop but {len(still_alive)} engine(s) are still shutting down: {', '.join(still_alive)}"
@@ -89,6 +93,7 @@ def stop_strategy_sync(
             else:
                 self.log("Stopped all strategy engines.")
         else:
+            result["engines_stopped"] = not getattr(self, "strategy_engines", {})
             self.log("No engines to stop.")
 
         close_result = None

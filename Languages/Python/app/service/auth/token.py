@@ -63,7 +63,7 @@ def _service_api_token_from_file() -> str:
                     effective_groups = {os.getegid(), *os.getgroups()}
                     if file_stat.st_gid not in effective_groups:
                         raise RuntimeError(f"{SERVICE_API_TOKEN_FILE_ENV} group must match an effective process group.")
-            return handle.read().strip()
+            return handle.read()
     except FileNotFoundError as exc:
         raise RuntimeError(f"{SERVICE_API_TOKEN_FILE_ENV} does not point to a readable file.") from exc
     except OSError as exc:
@@ -76,7 +76,10 @@ def resolve_service_api_token(explicit_token: str | None = None) -> str:
         token = os.environ.get("BOT_SERVICE_API_TOKEN", "")
     if token in (None, ""):
         token = _service_api_token_from_file()
-    return str(token or "").strip()
+    resolved = str(token or "")
+    if not resolved.isascii():
+        raise RuntimeError("Service API token must contain only ASCII characters.")
+    return resolved.strip()
 
 
 def auth_required(token: str | None = None) -> bool:
@@ -186,7 +189,10 @@ def validate_bearer_token(authorization: str | None, expected_token: str | None 
     token = resolve_service_api_token(expected_token)
     if not token:
         return True
-    header = str(authorization or "").strip()
+    header = str(authorization or "")
+    if not header.isascii():
+        return False
+    header = header.strip()
     if not header:
         return False
     scheme, _, supplied = header.partition(" ")

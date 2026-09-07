@@ -6190,6 +6190,29 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         commands = [call.args[1] for call in run_step.call_args_list]
         self.assertTrue(any("native_order_safety_tests" in command for command in commands))
         self.assertTrue(any("native_service_api_contract_tests" in command for command in commands))
+        self.assertTrue(any("native_position_close_tests" in command for command in commands))
+
+    def test_native_cpp_full_build_includes_position_close_gui_regressions(self):
+        with (
+            patch.object(native_cpp.sys, "platform", "linux"),
+            patch.object(native_cpp.shutil, "which", side_effect=["cmake", "ctest"]),
+            patch.object(native_cpp, "_run_step", return_value={"ok": True}) as run_step,
+        ):
+            report = native_cpp.check_native_cpp(
+                build_dir=REPO_ROOT / "build" / "test-native-position-close",
+                config="Release",
+                require_webengine=False,
+                enable_qt_deploy_script=False,
+                smoke_targets_only=False,
+                qt_version=None,
+                timeout=30,
+            )
+
+        self.assertTrue(report["ok"])
+        commands = [call.args[1] for call in run_step.call_args_list]
+        build_index = next(i for i, command in enumerate(commands) if "native_position_close_tests" in command)
+        test_index = next(i for i, command in enumerate(commands) if command[0] == "ctest")
+        self.assertLess(build_index, test_index)
 
     def test_native_cpp_can_select_the_explicit_cxx26_mode(self):
         with (

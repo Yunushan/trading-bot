@@ -508,6 +508,14 @@ bool TradingBotWindow::runManagedPythonServiceSmoke(QString *errorOut) {
 }
 
 void TradingBotWindow::startDashboardRuntime() {
+    if (positionsCloseInProgress_) {
+        appendDashboardAllLog("Start blocked: a position close action is still in progress.");
+        return;
+    }
+    if (dashboardOrderExecutionSession_.submissionBlocked()) {
+        appendDashboardAllLog("Start blocked: native order outcome requires reconciliation.");
+        return;
+    }
     if (dashboardRuntimeStopping_) {
         appendDashboardAllLog("Start ignored: runtime stop/close sequence is still in progress.");
         return;
@@ -871,6 +879,10 @@ void TradingBotWindow::startDashboardRuntime() {
 }
 
 void TradingBotWindow::stopDashboardRuntime() {
+    if (dashboardRuntimeCycleInProgress_ || positionsCloseInProgress_) {
+        dashboardRuntimeStopRequested_ = true;
+        return;
+    }
     if (dashboardServiceRuntimeActive_) {
         stopDashboardServiceRuntime();
         return;
@@ -1131,6 +1143,8 @@ void TradingBotWindow::stopDashboardRuntime() {
         } else {
             appendDashboardPositionLog("Stop paper close summary: no active paper positions to close.");
         }
+    } else if (dashboardOrderExecutionSession_.submissionBlocked()) {
+        appendDashboardPositionLog("Stop close withheld: reconcile the unresolved native order before submitting another close.");
     } else if (!dashboardRuntimeOpenPositions_.isEmpty()) {
         if (!hasApiCredentials) {
             appendDashboardPositionLog("Stop close skipped: missing API credentials.");
@@ -1138,6 +1152,9 @@ void TradingBotWindow::stopDashboardRuntime() {
         } else {
             for (auto it = dashboardRuntimeOpenPositions_.begin(); it != dashboardRuntimeOpenPositions_.end(); ++it) {
                 pumpUiEvents();
+                if (dashboardOrderExecutionSession_.submissionBlocked()) {
+                    break;
+                }
                 const QString runtimeKey = it.key();
                 RuntimePosition &openPos = it.value();
                 const QString symbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
@@ -1152,36 +1169,8 @@ void TradingBotWindow::stopDashboardRuntime() {
                     connectorBaseUrl = keyParts.mid(3).join(QStringLiteral("|")).trimmed();
                 }
 
-            const auto *liveSnapshot = futures ? fetchStopLivePositions(connectorBaseUrl) : nullptr;
-                const auto *livePos = pickStopLivePosition(liveSnapshot, symbol, openPos.side);
-                if (livePos) {
-                    const double liveQty = std::fabs(livePos->positionAmt);
-                    if (qIsFinite(liveQty) && liveQty > 1e-10) {
-                        openPos.quantity = liveQty;
-                    }
-                    if (qIsFinite(livePos->entryPrice) && livePos->entryPrice > 0.0) {
-                        openPos.entryPrice = livePos->entryPrice;
-                    }
-                    if (qIsFinite(livePos->leverage) && livePos->leverage > 0.0) {
-                        openPos.leverage = livePos->leverage;
-                    }
-                    const double marginFallback = std::max(
-                        1e-9,
-                        (std::max(0.0, openPos.entryPrice) * std::max(0.0, openPos.quantity))
-                            / std::max(1.0, openPos.leverage));
-                    openPos.displayMarginUsdt = std::max(
-                        1e-9,
-                        livePositionTotalDisplayMargin(
-                            livePos,
-                            std::max(marginFallback, openPos.displayMarginUsdt)));
-                    openPos.roiBasisUsdt = std::max(
-                        1e-9,
-                        livePositionTotalRoiBasis(
-                            livePos,
-                            std::max(marginFallback, openPos.roiBasisUsdt)));
-                }
-
-                if (symbol.isEmpty() || !qIsFinite(openPos.quantity) || openPos.quantity <= 0.0) {
+                if (symbol.isEmpty() || !qIsFinite(openPos.quantity) || openPos.quantity <= 0.0
+                    || (openPos.side != QStringLiteral("LONG") && openPos.side != QStringLiteral("SHORT"))) {
                     ++closeFailed;
                     appendDashboardPositionLog(
                         QString("Stop close skipped: invalid runtime position key=%1 symbol=%2 qty=%3")
@@ -1189,26 +1178,52 @@ void TradingBotWindow::stopDashboardRuntime() {
                     continue;
                 }
 
+                const auto *liveSnapshot = futures ? fetchStopLivePositions(connectorBaseUrl) : nullptr;
+                if (futures && (!liveSnapshot || !liveSnapshot->ok)) {
+                    ++closeFailed;
+                    appendDashboardPositionLog(
+                        QString("Stop close withheld %1 %2@%3: live position snapshot failed.")
+                            .arg(openPos.side, symbol, interval));
+                    continue;
+                }
+                const auto *livePos = pickStopLivePosition(liveSnapshot, symbol, openPos.side);
+                // Python close_execution keeps ledger ownership separate from the account-wide cap.
+                double requestedCloseQty = openPos.quantity;
+                if (livePos) {
+                    requestedCloseQty = std::min(requestedCloseQty, std::fabs(livePos->positionAmt));
+                }
+
                 const QString closeOrderSide = (openPos.side == QStringLiteral("LONG")) ? QStringLiteral("SELL")
                                                                                          : QStringLiteral("BUY");
                 const QString closePositionSide = futures && hedgeMode ? openPos.side : QString();
                 const bool closeReduceOnly = futures && !hedgeMode;
                 int targetRow = -1;
+                int matchingRows = 0;
                 if (positionsTable_) {
+                    const QRegularExpression connectorKeyRe(QStringLiteral("\\[([^\\]]+)\\]"));
                     for (int row = positionsTable_->rowCount() - 1; row >= 0; --row) {
                         const QString rowSymbol = tableCellRaw(row, 0).trimmed().toUpper();
                         const QString rowInterval = tableCellRaw(row, 8).trimmed();
                         const QString rowStatus = tableCellRaw(row, 16).trimmed().toUpper();
-                        const QString rowConnectorHint = tableCellRaw(row, 17).trimmed().toLower();
+                        const QString rowSide = tableCellRaw(row, 12).trimmed().toUpper();
+                        const bool sideMatches = openPos.side == QStringLiteral("LONG")
+                            ? (rowSide == QStringLiteral("LONG") || rowSide == QStringLiteral("L") || rowSide == QStringLiteral("BUY"))
+                            : (rowSide == QStringLiteral("SHORT") || rowSide == QStringLiteral("S") || rowSide == QStringLiteral("SELL"));
+                        const auto connectorMatch = connectorKeyRe.match(tableCellRaw(row, 17));
+                        const QString rowConnectorKey = connectorMatch.hasMatch()
+                            ? connectorMatch.captured(1).trimmed().toLower()
+                            : defaultConnectorCfg.key.trimmed().toLower();
                         if (rowSymbol == symbol
                             && rowInterval.compare(interval, Qt::CaseInsensitive) == 0
                             && rowStatus == QStringLiteral("OPEN")
-                            && (connectorKey.isEmpty() || rowConnectorHint.contains(connectorKey))) {
+                            && sideMatches
+                            && rowConnectorKey == (connectorKey.isEmpty() ? defaultConnectorCfg.key.trimmed().toLower() : connectorKey)) {
                             targetRow = row;
-                            break;
+                            ++matchingRows;
                         }
                     }
                 }
+                if (matchingRows != 1) targetRow = -1;
                 double fallbackClosePrice = (livePos && qIsFinite(livePos->markPrice) && livePos->markPrice > 0.0)
                     ? livePos->markPrice
                     : 0.0;
@@ -1223,30 +1238,38 @@ void TradingBotWindow::stopDashboardRuntime() {
                     fallbackClosePrice = openPos.entryPrice;
                 }
                 ++closeRequested;
-                const auto closeOrder = futures
+                const auto closeOrder = submitDashboardOrder(requestedCloseQty, [&]() {
+                    return futures
                     ? placeFuturesCloseOrderWithFallback(
                           apiKey,
                           apiSecret,
                           symbol,
                           closeOrderSide,
-                          openPos.quantity,
+                          requestedCloseQty,
                           isTestnet,
                           closeReduceOnly,
                           closePositionSide,
                           10000,
                           connectorBaseUrl,
-                          fallbackClosePrice)
+                          fallbackClosePrice,
+                          [this]() { return dashboardRuntimeStopRequested_; })
                     : BinanceRestClient::placeSpotMarketOrder(
                           apiKey,
                           apiSecret,
                           symbol,
                           closeOrderSide,
-                          openPos.quantity,
+                          requestedCloseQty,
                           isTestnet,
                           10000,
                           connectorBaseUrl);
+                });
 
-                if (!closeOrder.ok) {
+                const double closeQty = closeOrder.confirmedExecutedQuantity(requestedCloseQty);
+                if (closeQty <= 0.0) {
+                    if (closeOrder.reconciliationRequired) {
+                        ++closeFailed;
+                        break;
+                    }
                     if (isReduceOnlyRejectedError(closeOrder.error)) {
                         clearStopLivePositionsCache(connectorBaseUrl);
                         const auto *snapshot = fetchStopLivePositions(connectorBaseUrl);
@@ -1281,9 +1304,6 @@ void TradingBotWindow::stopDashboardRuntime() {
                 const double closePrice = (qIsFinite(closeOrder.avgPrice) && closeOrder.avgPrice > 0.0)
                     ? closeOrder.avgPrice
                     : fallbackClosePrice;
-                const double closeQty = (qIsFinite(closeOrder.executedQty) && closeOrder.executedQty > 0.0)
-                    ? closeOrder.executedQty
-                    : openPos.quantity;
                 const double effectiveCloseQty = std::max(0.0, std::min(openPos.quantity, closeQty));
                 if (effectiveCloseQty <= 0.0) {
                     ++closeFailed;
@@ -1297,15 +1317,17 @@ void TradingBotWindow::stopDashboardRuntime() {
                     ? (closePrice - openPos.entryPrice) * effectiveCloseQty
                     : (openPos.entryPrice - closePrice) * effectiveCloseQty;
                 const double totalQtyBeforeClose = std::max(0.0, openPos.quantity);
-                const double fallbackCloseMarginUsed = std::max(
+                const double fallbackAllocationMargin = std::max(
                     1e-9,
-                    (openPos.entryPrice * effectiveCloseQty) / std::max(1.0, openPos.leverage));
-                const double closeShareRatio = totalQtyBeforeClose > 1e-9
-                    ? std::min(1.0, std::max(0.0, effectiveCloseQty / totalQtyBeforeClose))
-                    : 1.0;
+                    (openPos.entryPrice * totalQtyBeforeClose) / std::max(1.0, openPos.leverage));
+                const double allocationDisplayMargin = qIsFinite(openPos.displayMarginUsdt) && openPos.displayMarginUsdt > 0.0
+                    ? openPos.displayMarginUsdt : fallbackAllocationMargin;
+                const double allocationRoiBasis = qIsFinite(openPos.roiBasisUsdt) && openPos.roiBasisUsdt > 0.0
+                    ? openPos.roiBasisUsdt : fallbackAllocationMargin;
+                const double closeShareRatio = effectiveCloseQty / totalQtyBeforeClose;
                 const double closeRoiBasisUsed = std::max(
                     1e-9,
-                    std::max(fallbackCloseMarginUsed, openPos.roiBasisUsdt) * closeShareRatio);
+                    allocationRoiBasis * closeShareRatio);
                 const double realizedPnlPct = (realizedPnlUsdt / closeRoiBasisUsed) * 100.0;
 
                 if (targetRow >= 0) {
@@ -1323,34 +1345,26 @@ void TradingBotWindow::stopDashboardRuntime() {
                     }
                 }
 
-                const bool partialClose = (effectiveCloseQty + 1e-9) < openPos.quantity;
+                const bool partialClose = effectiveCloseQty < openPos.quantity;
                 if (partialClose) {
                     ++closePartial;
                     openPos.quantity = std::max(0.0, openPos.quantity - effectiveCloseQty);
+                    const double remainingRatio = openPos.quantity / totalQtyBeforeClose;
+                    openPos.displayMarginUsdt = allocationDisplayMargin * remainingRatio;
+                    openPos.roiBasisUsdt = allocationRoiBasis * remainingRatio;
                     if (targetRow >= 0) {
-                        const double remainingRatio = totalQtyBeforeClose > 1e-9
-                            ? std::min(1.0, std::max(0.0, openPos.quantity / totalQtyBeforeClose))
-                            : 0.0;
                         const double remainingNotional = std::max(0.0, openPos.quantity * closePrice);
-                        const double remainingDisplayMarginUsdt = std::max(
-                            0.0,
-                            std::max(fallbackCloseMarginUsed, openPos.displayMarginUsdt) * remainingRatio);
-                        const double remainingRoiBasisUsdt = std::max(
-                            0.0,
-                            std::max(fallbackCloseMarginUsed, openPos.roiBasisUsdt) * remainingRatio);
-                        openPos.displayMarginUsdt = std::max(1e-9, remainingDisplayMarginUsdt);
-                        openPos.roiBasisUsdt = std::max(1e-9, remainingRoiBasisUsdt);
                         setOrCreateCell(targetRow, 1, formatPositionSizeText(remainingNotional, openPos.quantity, symbol));
                         setOrCreateCell(
                             targetRow,
                             5,
-                            QString::number(remainingDisplayMarginUsdt, 'f', 2));
+                            QString::number(openPos.displayMarginUsdt, 'f', 2));
                         setOrCreateCell(targetRow, 6, formatQuantityWithSymbol(openPos.quantity, symbol));
                         setTableCellNumeric(positionsTable_, targetRow, 1, remainingNotional);
-                        setTableCellNumeric(positionsTable_, targetRow, 5, remainingDisplayMarginUsdt);
+                        setTableCellNumeric(positionsTable_, targetRow, 5, openPos.displayMarginUsdt);
                         setTableCellNumeric(positionsTable_, targetRow, 6, openPos.quantity);
                         if (QTableWidgetItem *pnlItem = positionsTable_->item(targetRow, 7)) {
-                            setTableCellRoiBasis(pnlItem, remainingRoiBasisUsdt);
+                            setTableCellRoiBasis(pnlItem, openPos.roiBasisUsdt);
                         }
                     }
                     appendDashboardPositionLog(
@@ -1397,10 +1411,14 @@ void TradingBotWindow::stopDashboardRuntime() {
         || !dashboardRuntimeOpenPositions_.isEmpty()
         || closeFailed > 0
         || closePartial > 0;
-    if (!keepOpenPositions && !paperTrading && futures && hasApiCredentials && !closeConnectorConfigs.isEmpty() && stopNeedsSweep) {
+    if (!keepOpenPositions && !paperTrading && futures && hasApiCredentials && !closeConnectorConfigs.isEmpty()
+        && stopNeedsSweep && !dashboardOrderExecutionSession_.submissionBlocked()) {
         QSet<QString> attemptedSweepKeys;
         for (auto cfgIt = closeConnectorConfigs.cbegin(); cfgIt != closeConnectorConfigs.cend(); ++cfgIt) {
             pumpUiEvents();
+            if (dashboardOrderExecutionSession_.submissionBlocked()) {
+                break;
+            }
             const ConnectorRuntimeConfig &cfg = cfgIt.value();
             const auto snapshot = BinanceRestClient::fetchOpenFuturesPositions(
                 apiKey,
@@ -1418,6 +1436,9 @@ void TradingBotWindow::stopDashboardRuntime() {
             }
             for (const auto &pos : snapshot.positions) {
                 pumpUiEvents();
+                if (dashboardOrderExecutionSession_.submissionBlocked()) {
+                    break;
+                }
                 const QString symbol = pos.symbol.trimmed().toUpper();
                 if (symbol.isEmpty()) {
                     continue;
@@ -1449,7 +1470,8 @@ void TradingBotWindow::stopDashboardRuntime() {
                 }
                 attemptedSweepKeys.insert(dedupeKey);
                 ++sweepRequested;
-                const auto closeOrder = placeFuturesCloseOrderWithFallback(
+                const auto closeOrder = submitDashboardOrder(qty, [&]() {
+                    return placeFuturesCloseOrderWithFallback(
                     apiKey,
                     apiSecret,
                     symbol,
@@ -1462,8 +1484,15 @@ void TradingBotWindow::stopDashboardRuntime() {
                     cfg.baseUrl,
                     (qIsFinite(pos.markPrice) && pos.markPrice > 0.0)
                         ? pos.markPrice
-                        : pos.entryPrice);
-                if (!closeOrder.ok) {
+                        : pos.entryPrice,
+                    [this]() { return dashboardRuntimeStopRequested_; });
+                });
+                const double filledQty = closeOrder.confirmedExecutedQuantity(qty);
+                if (filledQty <= 0.0) {
+                    if (closeOrder.reconciliationRequired) {
+                        ++sweepFailed;
+                        break;
+                    }
                     if (isReduceOnlyRejectedError(closeOrder.error)) {
                         clearStopLivePositionsCache(cfg.baseUrl);
                         const auto *snapshot = fetchStopLivePositions(cfg.baseUrl);
@@ -1488,10 +1517,7 @@ void TradingBotWindow::stopDashboardRuntime() {
                     continue;
                 }
                 clearStopLivePositionsCache(cfg.baseUrl);
-                const double filledQty = (qIsFinite(closeOrder.executedQty) && closeOrder.executedQty > 0.0)
-                    ? std::min(qty, closeOrder.executedQty)
-                    : qty;
-                if (!qIsFinite(filledQty) || filledQty <= 1e-10) {
+                if (!qIsFinite(filledQty) || filledQty <= 0.0) {
                     ++sweepFailed;
                     appendDashboardPositionLog(
                         QString("Stop sweep close failed %1 %2 qty=%3 (%4): zero fill.")
@@ -1501,7 +1527,7 @@ void TradingBotWindow::stopDashboardRuntime() {
                                  cfg.key.isEmpty() ? QStringLiteral("default") : cfg.key));
                     continue;
                 }
-                const bool partialSweep = (filledQty + 1e-9) < qty;
+                const bool partialSweep = filledQty < qty;
                 if (partialSweep) {
                     ++sweepPartial;
                     appendDashboardPositionLog(

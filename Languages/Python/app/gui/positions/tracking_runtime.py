@@ -4,8 +4,8 @@ import copy
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
+from app.core.positions.close_results import confirmed_closed_position_keys
 from app.security.redaction import redact_text
 
 _RESOLVE_TRIGGER_INDICATORS = None
@@ -195,32 +195,10 @@ def _handle_close_all_result(self, res):
 
 
 def _apply_close_all_to_positions_cache(self, res) -> None:
-    """Mark local position state as closed when a close-all command succeeds."""
-    details = res or []
-    if isinstance(details, dict):
-        details = [details]
-    elif not isinstance(details, (list, tuple, set)):
-        details = [details]
-
-    symbols_to_mark: set[str] = set()
-    had_error = False
-    for item in details:
-        if not isinstance(item, dict):
-            continue
-        sym_raw = str(item.get("symbol") or "").strip().upper()
-        if not sym_raw:
-            continue
-        ok_flag = bool(item.get("ok"))
-        skipped_flag = bool(item.get("skipped"))
-        if ok_flag or skipped_flag:
-            symbols_to_mark.add(sym_raw)
-        else:
-            had_error = True
-
+    """Clear only exact sides verified flat; refresh reconciles other outcomes."""
+    keys_to_mark = confirmed_closed_position_keys(res)
     open_records = getattr(self, "_open_position_records", {}) or {}
-    if not symbols_to_mark and not had_error and open_records:
-        symbols_to_mark = {sym for sym, _ in open_records.keys()}
-    if not symbols_to_mark:
+    if not keys_to_mark:
         return
 
     pending_close = getattr(self, "_pending_close_times", None)
@@ -243,7 +221,7 @@ def _apply_close_all_to_positions_cache(self, res) -> None:
     for key in list(open_records.keys()):
         sym_key, side_key = key
         record = open_records.get(key)
-        if sym_key not in symbols_to_mark:
+        if key not in keys_to_mark:
             continue
         if key not in pending_close:
             pending_close[key] = close_time_fmt
@@ -451,7 +429,29 @@ def _begin_close_on_exit_sequence(self):
     if getattr(self, "_close_in_progress", False):
         return
     self._close_in_progress = True
-    auth_snapshot = self._snapshot_auth_state()
+    self._force_close = False
+
+    def _hold_exit(message: str) -> None:
+        self._force_close = False
+        self._close_in_progress = False
+        text = redact_text(message)
+        try:
+            self.log(f"Automatic exit withheld: {text}")
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "log_exit_withheld", exc)
+        try:
+            from PyQt6 import QtWidgets
+
+            QtWidgets.QMessageBox.warning(self, "Close-on-exit not verified", text)
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "warn_exit_withheld", exc)
+
+    try:
+        auth_snapshot = dict(self._snapshot_auth_state())
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "capture_exit_auth", exc)
+        _hold_exit("Account settings could not be captured. The application will remain open.")
+        return
     if not hasattr(self, "_bg_workers"):
         self._bg_workers = []
     try:
@@ -473,10 +473,22 @@ def _begin_close_on_exit_sequence(self):
         self._close_progress_dialog = None
 
     def _do():
+        from .exit_verification import validate_exit_stop_result, verify_flat_exit
+
         stop_strategy_sync = _STOP_STRATEGY_SYNC
-        if callable(stop_strategy_sync):
-            return stop_strategy_sync(self, close_positions=True, auth=auth_snapshot)
-        return {"ok": False, "error": "_stop_strategy_sync is not configured"}
+        if not callable(stop_strategy_sync):
+            raise RuntimeError("Stop strategy helper is not configured.")
+        result = stop_strategy_sync(self, close_positions=True, auth=dict(auth_snapshot))
+        account_type = str(auth_snapshot.get("account_type") or "")
+        try:
+            validate_exit_stop_result(result, account_type)
+            # Do not verify a mutable shared wrapper or use its fast-mode position cache.
+            verifier = self._build_wrapper_from_values(dict(auth_snapshot))
+            verify_flat_exit(verifier, account_type)
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "verify_close_on_exit", exc)
+            return {"stop_result": result, "verified_flat": False, "error": redact_text(exc)}
+        return {"stop_result": result, "verified_flat": True}
 
     def _done(res, err):
         try:
@@ -487,69 +499,44 @@ def _begin_close_on_exit_sequence(self):
         self._close_progress_dialog = None
         self._close_in_progress = False
 
-        def _positions_remaining() -> list:
-            try:
-                acct_text = str(auth_snapshot.get("account_type") or "").upper()
-                if acct_text.startswith("FUT"):
-                    return [
-                        p
-                        for p in (self.shared_binance.list_open_futures_positions(force_refresh=True) or [])
-                        if abs(float(p.get("positionAmt") or 0.0)) > 0.0
-                    ]
-            except Exception as exc:
-                _record_positions_tracking_exception(self, "query_remaining_positions_on_exit", exc)
-                return []
-            return []
-
-        qtwidgets: Any = None
-        try:
-            from PyQt6 import QtWidgets as imported_qtwidgets
-            qtwidgets = imported_qtwidgets
-        except Exception as exc:
-            _record_positions_tracking_exception(self, "import_qtwidgets_for_exit_close", exc)
-            qtwidgets = None
-
-        if err:
-            try:
-                self.log(f"Stop error during exit: {err}")
-            except Exception as exc:
-                _record_positions_tracking_exception(self, "log_exit_stop_error", exc)
-            remaining = _positions_remaining()
-            if remaining and qtwidgets is not None:
-                qtwidgets.QMessageBox.warning(
-                    self,
-                    "Close-all failed",
-                    "Some positions are still open. Please try closing them manually.",
-                )
+        if err is not None:
+            _hold_exit(f"Stop error during exit: {redact_text(err)}")
             return
         try:
-            if isinstance(res, dict) and res.get("close_all_result"):
-                self._handle_close_all_result(res.get("close_all_result"))
+            if dict(self._snapshot_auth_state()) != auth_snapshot:
+                _hold_exit("Account settings changed during shutdown. Verify the original account before exiting.")
+                return
+            if getattr(self, "strategy_engines", {}):
+                _hold_exit("Strategy engine state changed during shutdown. Stop the remaining engines before exiting.")
+                return
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "recheck_exit_auth", exc)
+            _hold_exit("Account settings could not be rechecked. The application will remain open.")
+            return
+        if not isinstance(res, dict) or res.get("verified_flat") is not True:
+            message = res.get("error") if isinstance(res, dict) else None
+            _hold_exit(message or "Position closure could not be verified. The application will remain open.")
+            return
+        try:
+            stop_result = res["stop_result"]
+            from .exit_verification import validate_exit_stop_result
+
+            validate_exit_stop_result(stop_result, str(auth_snapshot.get("account_type") or ""))
+            self._handle_close_all_result(stop_result["close_all_result"])
         except Exception as exc:
             _record_positions_tracking_exception(self, "handle_exit_close_all_result", exc)
-        remaining = _positions_remaining()
-        if remaining:
-            try:
-                symbols_left = ", ".join(sorted({str(p.get("symbol") or "").upper() for p in remaining}))
-            except Exception as exc:
-                _record_positions_tracking_exception(self, "format_remaining_position_symbols", exc)
-                symbols_left = "some positions"
-            if qtwidgets is not None:
-                qtwidgets.QMessageBox.warning(
-                    self,
-                    "Positions still open",
-                    f"Could not close all positions automatically. Remaining: {symbols_left}. Please close manually.",
-                )
-            return
-        self._force_close = True
-        if qtwidgets is not None:
-            qtwidgets.QWidget.close(self)
+            _hold_exit("The verified close result could not be applied. Review position state before exiting.")
             return
         try:
-            self.close()
+            from PyQt6 import QtWidgets
+
+            self._force_close = True
+            QtWidgets.QWidget.close(self)
         except Exception as exc:
             _record_positions_tracking_exception(self, "force_close_after_exit_sequence", exc)
+            _hold_exit("The application could not finish closing.")
 
+    worker = None
     try:
         from app.gui.runtime.background_workers import CallWorker as _CallWorker
 
@@ -572,16 +559,16 @@ def _begin_close_on_exit_sequence(self):
         worker.start()
     except Exception as e:
         self._close_in_progress = False
+        if worker is not None and worker in self._bg_workers:
+            self._bg_workers.remove(worker)
+            worker.deleteLater()
         try:
             if getattr(self, "_close_progress_dialog", None):
                 self._close_progress_dialog.close()
         except Exception as exc:
             _record_positions_tracking_exception(self, "close_progress_dialog_after_setup_error", exc)
         self._close_progress_dialog = None
-        try:
-            self.log(f"Exit close setup error: {e}")
-        except Exception as exc:
-            _record_positions_tracking_exception(self, "log_exit_close_setup_error", exc)
+        _hold_exit(f"Exit close setup error: {redact_text(e)}")
 
 
 def bind_main_window_positions_tracking_runtime(

@@ -17,6 +17,7 @@
 #include <QMap>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QSet>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -179,6 +180,25 @@ QString canonicalPositionSideKey(const QString &value) {
 }
 
 } // namespace
+
+bool TradingBotWindow::beginPositionCloseAction() {
+    if (positionsCloseInProgress_ || dashboardRuntimeCycleInProgress_ || dashboardRuntimeStopping_
+        || dashboardRuntimeStopRequested_ || dashboardOrderExecutionSession_.submissionBlocked()) {
+        updateStatusMessage(QStringLiteral(
+            "Position close blocked: another runtime action is in progress, stop was requested, or an order requires reconciliation."));
+        return false;
+    }
+    positionsCloseInProgress_ = true;
+    return true;
+}
+
+void TradingBotWindow::finishPositionCloseAction() {
+    positionsCloseInProgress_ = false;
+    if (dashboardRuntimeStopRequested_) {
+        dashboardRuntimeStopRequested_ = false;
+        stopDashboardRuntime();
+    }
+}
 
 QWidget *TradingBotWindow::createPositionsTab() {
     auto *page = new QWidget(this);
@@ -533,6 +553,8 @@ QWidget *TradingBotWindow::createPositionsTab() {
         applyPositionsViewMode();
     });
     connect(closeSelectedBtn, &QPushButton::clicked, this, [=]() {
+        if (!beginPositionCloseAction()) return;
+        const auto closeActionGuard = qScopeGuard([this]() { finishPositionCloseAction(); });
         QSet<int> selectedRows;
         for (QTableWidgetItem *item : table->selectedItems()) {
             if (item && !table->isRowHidden(item->row())) {
@@ -601,6 +623,10 @@ QWidget *TradingBotWindow::createPositionsTab() {
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No);
         if (confirmation != QMessageBox::Yes) {
+            return;
+        }
+        if (dashboardRuntimeStopRequested_ || dashboardOrderExecutionSession_.submissionBlocked()) {
+            updateStatusMessage(QStringLiteral("Position close blocked after confirmation: stop requested or order reconciliation required."));
             return;
         }
 
@@ -729,15 +755,17 @@ QWidget *TradingBotWindow::createPositionsTab() {
         }
         const QString closeSide = sideKey == QStringLiteral("L") ? QStringLiteral("SELL") : QStringLiteral("BUY");
         if (!futuresMode) {
-            const auto order = BinanceRestClient::placeSpotMarketOrder(
-                apiKey,
-                apiSecret,
-                symbol,
-                closeSide,
-                quantity,
-                isTestnet,
-                10000,
-                connectorCfg.baseUrl);
+            const auto order = submitDashboardOrder(quantity, [&]() {
+                return BinanceRestClient::placeSpotMarketOrder(
+                    apiKey,
+                    apiSecret,
+                    symbol,
+                    closeSide,
+                    quantity,
+                    isTestnet,
+                    10000,
+                    connectorCfg.baseUrl);
+            });
             if (!order.ok) {
                 updateStatusMessage(QStringLiteral("Selected Spot position close failed for %1: %2")
                                         .arg(symbol, order.error));
@@ -798,18 +826,21 @@ QWidget *TradingBotWindow::createPositionsTab() {
         const double referencePrice = qIsFinite(liveMatch->markPrice) && liveMatch->markPrice > 0.0
             ? liveMatch->markPrice
             : (qIsFinite(liveMatch->entryPrice) ? liveMatch->entryPrice : 0.0);
-        const auto order = TradingBotWindowDashboardRuntime::placeFuturesCloseOrderWithFallback(
-            apiKey,
-            apiSecret,
-            symbol,
-            closeSide,
-            closeQuantity,
-            isTestnet,
-            true,
-            positionSide,
-            10000,
-            connectorCfg.baseUrl,
-            referencePrice);
+        const auto order = submitDashboardOrder(closeQuantity, [&]() {
+            return TradingBotWindowDashboardRuntime::placeFuturesCloseOrderWithFallback(
+                apiKey,
+                apiSecret,
+                symbol,
+                closeSide,
+                closeQuantity,
+                isTestnet,
+                true,
+                positionSide,
+                10000,
+                connectorCfg.baseUrl,
+                referencePrice,
+                [this]() { return dashboardRuntimeStopRequested_; });
+        });
         if (!order.ok) {
             updateStatusMessage(QStringLiteral("Selected position close failed for %1: %2").arg(symbol, order.error));
             return;
@@ -822,6 +853,8 @@ QWidget *TradingBotWindow::createPositionsTab() {
                                      order.orderId.trimmed().isEmpty() ? QStringLiteral("accepted") : order.orderId));
     });
     connect(closeAllBtn, &QPushButton::clicked, this, [=]() {
+        if (!beginPositionCloseAction()) return;
+        const auto closeActionGuard = qScopeGuard([this]() { finishPositionCloseAction(); });
         const int localRowCount = table->rowCount();
         const auto recordCloseAllSuccess = [this, table](const QStringList &symbols) {
             QJsonArray closeResults;
@@ -926,6 +959,10 @@ QWidget *TradingBotWindow::createPositionsTab() {
             QStringList successfulSymbols;
             QStringList failures;
             for (const auto &balance : balances.balances) {
+                if (dashboardRuntimeStopRequested_ || dashboardOrderExecutionSession_.submissionBlocked()) {
+                    failures.push_back(QStringLiteral("Further closes halted: stop requested or order reconciliation required."));
+                    break;
+                }
                 const QString asset = balance.asset.trimmed().toUpper();
                 if (asset == QStringLiteral("USDT")) {
                     continue;
@@ -987,18 +1024,21 @@ QWidget *TradingBotWindow::createPositionsTab() {
                     continue;
                 }
 
-                const auto order = BinanceRestClient::placeSpotMarketOrder(
-                    apiKey,
-                    apiSecret,
-                    symbol,
-                    QStringLiteral("SELL"),
-                    quantity,
-                    isTestnet,
-                    10000,
-                    connectorCfg.baseUrl);
+                const auto order = submitDashboardOrder(quantity, [&]() {
+                    return BinanceRestClient::placeSpotMarketOrder(
+                        apiKey,
+                        apiSecret,
+                        symbol,
+                        QStringLiteral("SELL"),
+                        quantity,
+                        isTestnet,
+                        10000,
+                        connectorCfg.baseUrl);
+                });
                 if (!order.ok) {
                     ++failed;
                     failures.push_back(QStringLiteral("%1: %2").arg(symbol, order.error));
+                    if (order.reconciliationRequired || dashboardRuntimeStopRequested_) break;
                     continue;
                 }
                 ++succeeded;
@@ -1006,9 +1046,6 @@ QWidget *TradingBotWindow::createPositionsTab() {
             }
             if (!successfulSymbols.isEmpty()) {
                 recordCloseAllSuccess(successfulSymbols);
-            }
-            if (failed == 0) {
-                table->setRowCount(0);
             }
             updateStatusMessage(
                 QString("Spot close-all evaluated %1 balance(s): %2 order(s) succeeded, %3 failed, %4 skipped%5.")
@@ -1041,6 +1078,10 @@ QWidget *TradingBotWindow::createPositionsTab() {
         QStringList successfulSymbols;
         QStringList failures;
         for (const auto &pos : livePositions.positions) {
+            if (dashboardRuntimeStopRequested_ || dashboardOrderExecutionSession_.submissionBlocked()) {
+                failures.push_back(QStringLiteral("Further closes halted: stop requested or order reconciliation required."));
+                break;
+            }
             if (!qIsFinite(pos.positionAmt) || std::fabs(pos.positionAmt) <= 1e-10) {
                 continue;
             }
@@ -1055,28 +1096,32 @@ QWidget *TradingBotWindow::createPositionsTab() {
                 ? pos.markPrice
                 : (qIsFinite(pos.entryPrice) ? pos.entryPrice : 0.0);
             ++requested;
-            const auto order = TradingBotWindowDashboardRuntime::placeFuturesCloseOrderWithFallback(
-                apiKey,
-                apiSecret,
-                symbol,
-                closeSide,
-                quantity,
-                isTestnet,
-                true,
-                positionSide,
-                10000,
-                connectorCfg.baseUrl,
-                referencePrice);
+            const auto order = submitDashboardOrder(quantity, [&]() {
+                return TradingBotWindowDashboardRuntime::placeFuturesCloseOrderWithFallback(
+                    apiKey,
+                    apiSecret,
+                    symbol,
+                    closeSide,
+                    quantity,
+                    isTestnet,
+                    true,
+                    positionSide,
+                    10000,
+                    connectorCfg.baseUrl,
+                    referencePrice,
+                    [this]() { return dashboardRuntimeStopRequested_; });
+            });
             if (order.ok) {
                 ++succeeded;
                 successfulSymbols.push_back(symbol);
             } else {
                 ++failed;
                 failures.push_back(QStringLiteral("%1: %2").arg(symbol, order.error));
+                if (order.reconciliationRequired || dashboardRuntimeStopRequested_) break;
             }
         }
 
-        if (requested == 0) {
+        if (requested == 0 && failures.isEmpty()) {
             recordCloseAllSuccess({});
             table->setRowCount(0);
             updateStatusMessage("Market close-all found no live futures positions; local open rows were cleared.");
@@ -1085,9 +1130,6 @@ QWidget *TradingBotWindow::createPositionsTab() {
         }
         if (!successfulSymbols.isEmpty()) {
             recordCloseAllSuccess(successfulSymbols);
-        }
-        if (failed == 0) {
-            table->setRowCount(0);
         }
         updateStatusMessage(
             QString("Market close-all requested %1 live position(s): %2 succeeded, %3 failed%4.")

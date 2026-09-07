@@ -282,6 +282,7 @@ def check_native_cpp(
             "native_cxx_standard_contract_tests",
             "native_order_safety_tests",
             "native_service_api_contract_tests",
+            "native_position_close_tests",
         ):
             steps.append(
                 _run_step(
@@ -327,6 +328,7 @@ def check_native_cpp(
             "native_cxx_standard_contract_tests",
             "native_order_safety_tests",
             "native_service_api_contract_tests",
+            "native_position_close_tests",
         ):
             steps.append(
                 _run_step(

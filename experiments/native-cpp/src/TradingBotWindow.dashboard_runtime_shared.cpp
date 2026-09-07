@@ -54,6 +54,19 @@ bool pythonIndicatorSourceUsesFutures(const QString &indicatorSourceText) {
     return indicatorSourceText.trimmed().toLower().contains(QStringLiteral("future"));
 }
 
+bool orderSubmissionStopped(
+    const std::function<bool()> &stopRequested,
+    BinanceRestClient::FuturesOrderResult &result) {
+    if (!stopRequested) return false;
+    try {
+        if (!stopRequested()) return false;
+        result.error = QStringLiteral("Native order submission stopped before the next request.");
+    } catch (...) {
+        result.error = QStringLiteral("Unable to check the native stop state; further submission is blocked.");
+    }
+    return true;
+}
+
 } // namespace
 
 bool qtWebSocketsRuntimeAvailable() {
@@ -192,6 +205,7 @@ QJsonObject futuresOrderResultAuditPayload(const BinanceRestClient::FuturesOrder
     return {
         {QStringLiteral("ok"), result.ok},
         {QStringLiteral("reconciliationRequired"), result.reconciliationRequired},
+        {QStringLiteral("executionConfirmed"), result.executionConfirmed},
         {QStringLiteral("clientOrderId"), result.clientOrderId},
         {QStringLiteral("symbol"), result.symbol.trimmed().toUpper()},
         {QStringLiteral("side"), result.side.trimmed().toUpper()},
@@ -970,7 +984,8 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     const QString &positionSide,
     int timeoutMs,
     const QString &baseUrlOverride,
-    double referencePrice) {
+    double referencePrice,
+    const std::function<bool()> &stopRequested) {
     BinanceRestClient::FuturesOrderResult aggregated;
     aggregated.symbol = symbol.trimmed().toUpper();
     aggregated.side = side.trimmed().toUpper();
@@ -995,6 +1010,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     // Match Python's close safety rule: a resting entry order must not be able
     // to refill the position after a close is accepted. Prefer the bulk
     // endpoint, then fall back to confirmed per-order cancellation.
+    if (orderSubmissionStopped(stopRequested, aggregated)) return aggregated;
     const auto bulkCancellation = BinanceRestClient::cancelAllOpenFuturesOrders(
         apiKey,
         apiSecret,
@@ -1016,6 +1032,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
             return aggregated;
         }
         for (const auto &openOrder : openOrders.orders) {
+            if (orderSubmissionStopped(stopRequested, aggregated)) return aggregated;
             const auto cancellation = BinanceRestClient::cancelFuturesOrder(
                 apiKey,
                 apiSecret,
@@ -1064,7 +1081,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
 
     auto consumeOrderFill = [&](const BinanceRestClient::FuturesOrderResult &order, double requestedQty) -> bool {
         aggregated.clientOrderId = order.clientOrderId;
-        const double filledQty = order.executedQty;
+        const double filledQty = order.confirmedExecutedQuantity(requestedQty);
         if (!qIsFinite(filledQty) || filledQty < 0.0 || filledQty > requestedQty) {
             aggregated.reconciliationRequired = true;
             aggregated.error = QStringLiteral("Invalid close execution quantity; reconciliation required.");
@@ -1128,6 +1145,8 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     };
 
     while (remainingQty > kQtyEpsilon && attempts < maxAttempts) {
+        // Do not discard fills from an earlier chunk when stopping this batch.
+        if (orderSubmissionStopped(stopRequested, aggregated)) break;
         chunkQty = nextChunkFrom(chunkQty > 0.0 ? chunkQty : remainingQty);
         if (chunkQty <= 0.0) {
             aggregated.error = QStringLiteral("Unable to derive valid close quantity.");
@@ -1206,6 +1225,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
                     pricePrecision,
                     isBuy);
                 if (limitPrice > 0.0) {
+                    if (orderSubmissionStopped(stopRequested, aggregated)) break;
                     const auto limitAuditParams = futuresOrderAuditParams(
                         aggregated.symbol,
                         aggregated.side,
@@ -1288,6 +1308,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     }
 
     aggregated.executedQty = totalExecutedQty;
+    aggregated.executionConfirmed = totalExecutedQty > 0.0;
     if (totalExecutedQty > 0.0 && weightedPriceSum > 0.0) {
         aggregated.avgPrice = weightedPriceSum / totalExecutedQty;
     }
@@ -1392,7 +1413,8 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
     const QString &positionSide,
     int timeoutMs,
     const QString &baseUrlOverride,
-    bool reduceOnly) {
+    bool reduceOnly,
+    const std::function<bool()> &stopRequested) {
     // Python's active strategy submits through place_futures_market_order and
     // currently keeps order_type/tif/gtd_minutes at the validated, persisted
     // configuration layer. Keep this native direct-entry path MARKET-only
@@ -1420,6 +1442,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
 
     constexpr double kQtyEpsilon = 1e-10;
 
+    if (orderSubmissionStopped(stopRequested, aggregated)) return aggregated;
     const auto filters = BinanceRestClient::fetchFuturesSymbolFilters(
         aggregated.symbol,
         testnet,
@@ -1538,6 +1561,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
     };
 
     while (remainingQty > kQtyEpsilon && attempts < maxAttempts) {
+        if (orderSubmissionStopped(stopRequested, aggregated)) break;
         chunkQty = nextChunkFrom(chunkQty > 0.0 ? chunkQty : remainingQty);
         if (chunkQty <= 0.0) {
             aggregated.error = QStringLiteral("Unable to derive valid open quantity.");
@@ -1589,7 +1613,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
             });
         if (order.ok || order.reconciliationRequired) {
             aggregated.clientOrderId = order.clientOrderId;
-            const double filledQty = order.executedQty;
+            const double filledQty = order.confirmedExecutedQuantity(chunkQty);
             if (!qIsFinite(filledQty) || filledQty < 0.0 || filledQty > chunkQty) {
                 aggregated.reconciliationRequired = true;
                 aggregated.error = QStringLiteral("Invalid open execution quantity; reconciliation required.");
@@ -1668,6 +1692,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
     }
 
     aggregated.executedQty = totalExecutedQty;
+    aggregated.executionConfirmed = totalExecutedQty > 0.0;
     if (totalExecutedQty > 0.0 && weightedPriceSum > 0.0) {
         aggregated.avgPrice = weightedPriceSum / totalExecutedQty;
     }

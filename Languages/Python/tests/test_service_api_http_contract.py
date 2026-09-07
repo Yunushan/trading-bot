@@ -626,6 +626,69 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 validate_service_api_exposure("0.0.0.0", "x" * MIN_NON_LOOPBACK_SERVICE_API_TOKEN_LENGTH)
             validate_service_api_exposure("127.0.0.1", "short-token")
 
+    def test_service_api_auth_rejects_non_ascii_without_comparison_or_normalization(self):
+        for header in ("Bearer bad\u00e9", "Bearer token-123\u00a0", "\u2003Bearer token-123", "Bearer \ud800"):
+            with self.subTest(header=ascii(header)), mock.patch("app.service.auth.token.hmac.compare_digest") as compare:
+                self.assertFalse(validate_bearer_token(header, "token-123"))
+                compare.assert_not_called()
+        with mock.patch("app.service.auth.token.hmac.compare_digest", return_value=True) as compare:
+            self.assertTrue(validate_bearer_token("bearer token-123", "token-123"))
+            compare.assert_called_once_with("token-123", "token-123")
+
+    def test_service_api_invalid_configured_tokens_fail_closed_without_disclosure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / "service-api-token"
+            for token in ("synthetic-secret-\u00e9", "synthetic-secret\u00a0", "\u2003"):
+                token_file.write_text(token, encoding="utf-8")
+                token_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                for source in ("explicit", "environment", "file"):
+                    with self.subTest(source=source, token=ascii(token)):
+                        env = {"BOT_SERVICE_API_TOKEN": token} if source == "environment" else {
+                            SERVICE_API_TOKEN_FILE_ENV: str(token_file),
+                        } if source == "file" else {}
+                        with mock.patch.dict(os.environ, env, clear=True):
+                            with self.assertRaisesRegex(RuntimeError, "ASCII") as caught:
+                                resolve_service_api_token(token if source == "explicit" else None)
+                            self.assertNotIn(token, str(caught.exception))
+                            self.assertNotIn("synthetic-secret", str(caught.exception))
+                            self.assertEqual("valid-token", resolve_service_api_token("valid-token"))
+
+    @unittest.skipUnless(FASTAPI_TESTCLIENT_AVAILABLE, "FastAPI TestClient optional dependencies are not installed")
+    def test_service_api_non_ascii_headers_rejected_on_read_write_and_stream_routes(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.dict(os.environ, {"HOME": directory, "USERPROFILE": directory}, clear=True):
+            service = TradingBotService()
+            app = create_service_api_app(service=service, api_token="token-123", enable_local_executor=False)
+            with _create_test_client(app) as client:
+                for base in (SERVICE_API_BASE_PATH, SERVICE_API_LEGACY_BASE_PATH):
+                    for header in (b"Bearer bad\xe9", b"Bearer token-123\xa0", b"\xa0Bearer token-123"):
+                        for method, suffix, payload in (("GET", "/status", None),
+                                                        ("PATCH", "/config", {"config": {"theme": "Dark"}}),
+                                                        ("GET", "/stream/dashboard?max_events=1", None)):
+                            with self.subTest(base=base, header=header, suffix=suffix):
+                                before = dict(service.config)
+                                response = client.request(method, base + suffix, json=payload,
+                                                          headers={b"authorization": header})
+                                self.assertEqual(401, response.status_code)
+                                self.assertEqual("Bearer", response.headers["WWW-Authenticate"])
+                                self.assertNotIn("token-123", response.text)
+                                self.assertNotIn("bad", response.text)
+                                self.assertEqual(before, service.config)
+                                self.assertEqual(0, app.state.service_api_streams_active)
+                headers = {"Authorization": "Bearer token-123"}
+                self.assertEqual(200, client.get(f"{SERVICE_API_BASE_PATH}/status", headers=headers).status_code)
+                self.assertEqual(200, client.patch(f"{SERVICE_API_BASE_PATH}/config", headers=headers,
+                                                  json={"config": {"theme": "Dark"}}).status_code)
+                self.assertEqual("Dark", service.config["theme"])
+                self.assertEqual(200, client.get(f"{SERVICE_API_STREAM_DASHBOARD_PATH}?max_events=1",
+                                                headers=headers).status_code)
+                self.assertEqual(0, app.state.service_api_streams_active)
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_rejects_non_ascii_configured_token_at_startup(self):
+        with self.assertRaisesRegex(RuntimeError, "ASCII"):
+            create_service_api_app(api_token="synthetic-secret-\u00e9", enable_local_executor=False)
+
     def test_service_api_token_file_fallback_is_bounded_and_explicit_token_wins(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             token_file = Path(temporary_directory) / "service-api-token"
