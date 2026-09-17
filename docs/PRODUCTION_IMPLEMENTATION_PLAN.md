@@ -37,7 +37,7 @@ The initial offline parallel lanes are security (002→003→018), trading (004 
 | PRD-003 | P1 / DONE | Security + LLM | S–M | 002 design | Uniform LLM HTTPS/loopback URL policy |
 | PRD-004 | P1 / DONE | Exchange runtime | S | — | ccxt protected-order parameter validation |
 | PRD-005 | P1 / DONE | Strategy + market data | M | — | Live event-time and OHLCV quality gate |
-| PRD-006 | P1 / TODO | Release tooling | M | — | Executable deployment smoke contracts |
+| PRD-006 | P1 / DONE | Release tooling | M | — | Executable deployment smoke contracts |
 | PRD-007 | P1 / TODO | Release + security | M–L | 006 | Exact-digest trusted build/scan provenance |
 | PRD-008 | P1 / TODO | Runtime + operator | L | 001 scope | Account identity and single-owner/fencing contract |
 | PRD-009 | P1 / TODO | Risk runtime + operator | L | 008 identity | Durable aggregate risk and kill state |
@@ -320,6 +320,25 @@ Evidence records must identify: task ID; source SHA; clean/dirty state; environm
 - External blockers / decisions needed: initial product scope, repository governance, deployment/provenance inputs and operational evidence remain unchanged from the audit.
 - Next ready task: **PRD-006** (deployment smoke integration), with **PRD-007** following after its evidence path is verified.
 - Score change: **not assessed**; the dated baseline remains 58/100 until a fresh evidence review.
+
+### 2026-09-17 — PRD-006 implementation checkpoint
+
+- Status: **DONE** (offline implementation; production promotion remains out of scope).
+- Assignee and scope: Codex implementation checkpoint; deployment probe path confinement, expected deployment SHA/read-only verification, workflow integration and regression coverage.
+- Starting SHA and state: `05b42bd2d03cc533ef14004478e0ab1f9445f44f`, clean before this change; no unrelated paths were modified.
+- Failure reproduced: the F04/F05 audit found that the workflow wrote its probe output outside the probe's permitted evidence directory and ran a quick probe that could report success for a wrong build or writable server. The probe now accepts a full expected deployment SHA, verifies every observed `/readyz` identity, and can require server `read_only=true`; the workflow writes and uploads the canonical ignored artifact path.
+- Files and behavior changed: `tools/run_service_sustained_probe.py` adds the expected-commit/read-only contract and explicit server-verification fields; `.github/workflows/deploy-production-readonly.yml` passes the deployment SHA/read-only requirement and uses `artifacts/operational-readiness/`; deployment/readiness tests cover positive and negative remote identity cases and workflow wiring; the deployment README documents the distinction between client probe safety and server mode.
+- Tests and exact outcomes:
+  - `.\.venv\Scripts\python.exe -m pytest --no-cov Languages/Python/tests/test_operational_readiness.py Languages/Python/tests/test_production_deployment_workflow.py Languages/Python/tests/test_production_deployment.py -q` — **43 passed, 1 warning, 112 subtests passed** (warning is the existing Starlette/AnyIO deprecation).
+  - `.\.venv\Scripts\ruff.exe check --select E4,E7,E9,F tools/run_service_sustained_probe.py Languages/Python/tests/test_operational_readiness.py Languages/Python/tests/test_production_deployment_workflow.py` — **all checks passed**; `git diff --check` passed.
+  - `.\.venv\Scripts\python.exe tools/check_production_deployment.py --json` — template manifest policy check **passed with no issues**.
+  - `.\.venv\Scripts\python.exe tools/run_service_sustained_probe.py --profile quick --cycles 1 --minimum-requests 6 --json` — local diagnostic **passed** (6 GETs, four seeded local snapshots, no errors); `promotion_eligible=false` as required.
+  - `.\.venv\Scripts\python.exe tools/run_service_sustained_probe.py --profile quick --cycles 1 --minimum-requests 6 --output artifacts/operational-readiness/prd006-path-verification.json --json` — workflow-equivalent writer created the canonical artifact path successfully; the temporary ignored artifact was removed after verification.
+- Commit: `5b1908987ccefe0995887d6a76f1cd5948c00303` (`Harden production deployment probe verification`). No PR, push, cluster mutation or production credential was used.
+- Acceptance items still open: the actual unseeded standalone observer still lacks three trading freshness observations and needs a versioned topology/capability contract or genuine approved ingestion; real HTTPS/TLS, mixed-replica rollout/rollback, registry attestation/scan provenance, cluster policy and capacity evidence remain external. The strict active-trading freshness gate was not weakened.
+- External blockers / decisions needed: initial product scope, repository governance, trusted image provenance, authorized cluster/TLS/monitoring/token inputs, operator ownership and genuine observation/recovery windows remain unchanged. PRD-007 is the next code/design task; PRD-015/022 remain evidence-gated.
+- Next ready task: **PRD-007** (exact-digest trusted build/scan provenance), followed by the operator-dependent ownership/risk/protection tasks.
+- Score change: **not assessed**; the dated baseline remains **58/100, unattended production NO-GO** until a fresh evidence review.
 
 ### Template for the next implementation checkpoint
 

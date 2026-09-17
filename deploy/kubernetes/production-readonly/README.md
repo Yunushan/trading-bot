@@ -80,7 +80,12 @@ The repository also provides a protected manual workflow,
 protected semantic-version tag, requires the exact tag commit in the image and
 manifest, checks the image's `org.opencontainers.image.revision` label, performs
 a Kubernetes server-side dry run, waits for rollout, and runs a post-deploy
-HTTPS identity smoke. Configure `PRODUCTION_KUBECONFIG_B64` and
+HTTPS identity smoke. The post-deploy probe compares every observed `/readyz`
+`build_commit` with the rendered deployment commit and requires the server's
+`read_only` flag to be `true`; the probe's own GET-only `read_only` field is not
+used as proof of server configuration. Its JSON evidence is written beneath
+the repository's canonical, ignored `artifacts/operational-readiness/` path and
+uploaded with the rendered manifest. Configure `PRODUCTION_KUBECONFIG_B64` and
 `BOT_SERVICE_API_TOKEN` as protected `production` environment secrets and
 `PRODUCTION_SERVICE_API_ORIGIN` as its exact HTTPS origin variable. The image
 publisher must pass the source commit when building, for example:
