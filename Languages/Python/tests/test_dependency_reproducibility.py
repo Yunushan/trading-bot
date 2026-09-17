@@ -658,6 +658,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
         self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
         self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
+        self.assertIn('name = "rustls"\nversion = "0.23.45"', cargo_lock)
+        self.assertNotIn('name = "rustls"\nversion = "0.23.43"', cargo_lock)
+        self.assertNotIn('name = "rustls"\nversion = "0.23.44"', cargo_lock)
 
         rust_manifest = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.toml").read_text(
             encoding="utf-8"
