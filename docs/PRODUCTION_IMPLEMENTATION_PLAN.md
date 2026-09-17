@@ -2,7 +2,7 @@
 
 **Baseline:** 2026-09-17, `e574dae633d2186b8af4af1013076ff91f778bb9`, **58/100**, unattended production **NO-GO**. See [audit/evidence](PRODUCTION_READINESS_AUDIT.md) and [new-chat handoff](PRODUCTION_HANDOFF.md).
 
-This is the canonical task-status register. It does not authorize deployments, live/testnet orders, new cloud spending, production secrets, repository settings, or risk-limit changes. Those actions require the applicable user/operator authorization. Ordinary implementation and offline tests can proceed when the user asks to implement the plan. The audit request itself did not implement these fixes.
+This is the canonical task-status register. It does not authorize deployments, live/testnet orders, new cloud spending, production secrets, repository settings, or risk-limit changes. Those actions require the applicable user/operator authorization. Ordinary implementation and offline tests can proceed when the user asks to implement the plan. The baseline audit did not implement fixes; later implementation checkpoints are recorded below.
 
 ## How to use the plan
 
@@ -12,7 +12,7 @@ This is the canonical task-status register. It does not authorize deployments, l
 4. Record status, actual assignee, changed files, commands/results, remaining risks and commit/PR in this file's work log. A `DONE` task needs acceptance evidence, not a reassuring summary.
 5. Update the handoff's next task and blockers. Re-score only from a new dated evidence review; never increment the score automatically.
 
-Statuses: `TODO`, `IN_PROGRESS`, `BLOCKED_EXTERNAL`, `DONE`, `DEFERRED_SCOPE`. All implementation is currently **TODO** unless marked external. Role labels are proposed owners, not assigned people. Dependency `—` means offline work can start now; external prerequisites still apply before a release. Effort: S roughly 0.5–2 engineering days, M 3–5, L 1–2 weeks, XL design/spikes and multiple increments. Estimates exclude reviews, hardware/venue access and observation windows; they are not delivery promises.
+Statuses: `TODO`, `IN_PROGRESS`, `BLOCKED_EXTERNAL`, `DONE`, `DEFERRED_SCOPE`. Items remain **TODO** unless marked otherwise in the register and work log. Role labels are proposed owners, not assigned people. Dependency `—` means offline work can start now; external prerequisites still apply before a release. Effort: S roughly 0.5–2 engineering days, M 3–5, L 1–2 weeks, XL design/spikes and multiple increments. Estimates exclude reviews, hardware/venue access and observation windows; they are not delivery promises.
 
 ## Recommended release path and gates
 
@@ -33,7 +33,7 @@ The initial offline parallel lanes are security (002→003→018), trading (004 
 | ID | Priority / status | Proposed owner | Effort | Dependencies | Deliverable |
 | --- | --- | --- | --- | --- | --- |
 | PRD-001 | P1 / BLOCKED_EXTERNAL | Maintainer + release lead | S | — | Scope decision and enforced main/release governance |
-| PRD-002 | P1 / TODO | Security + API | M | — | Host-owned LLM credential/destination boundary |
+| PRD-002 | P1 / DONE | Security + API | M | — | Host-owned LLM credential/destination boundary |
 | PRD-003 | P1 / TODO | Security + LLM | S–M | 002 design | Uniform LLM HTTPS/loopback URL policy |
 | PRD-004 | P1 / TODO | Exchange runtime | S | — | ccxt protected-order parameter validation |
 | PRD-005 | P1 / TODO | Strategy + market data | M | — | Live event-time and OHLCV quality gate |
@@ -254,6 +254,23 @@ Evidence records must identify: task ID; source SHA; clean/dirty state; environm
 - Product fixes completed: **none in this audit task**. All statuses above intentionally remain open/deferred/external.
 - Next recommended implementation: **PRD-002**, alongside independent **PRD-004** and **PRD-006** if parallel work is available; begin PRD-001 operator decisions. PRD-005 follows immediately in the trading lane.
 - External inputs not supplied: production release scope/owners/risk policy, account/host ownership proof, repository-setting authorization, deployment registry/cluster/TLS/telemetry, signing/QA evidence. Do not invent them.
+
+### 2026-09-17 — PRD-002 implementation checkpoint
+
+- Status: **DONE** (offline implementation; production promotion remains out of scope).
+- Assignee and scope: Codex implementation checkpoint; Python service/API/remote-terminal mutation boundary, regression coverage, service documentation and generated parity artifacts.
+- Starting SHA and state: `0e7cc787f70d730866a84cd84cd7ca7a4d057e4b`, clean before this change; no unrelated paths were modified.
+- Failure reproduced: the F02 synthetic audit showed that a remote caller could select an arbitrary LLM environment-variable name and endpoint. Remote `/config`, `/llm/config` and terminal mutations now reject provider, credential-reference, destination and public-network-consent fields before persistence; model and validated advisory options remain editable.
+- Files and behavior changed: `app/service/config_store.py` protects `llm_api_key_env`, `llm_base_url`, `llm_allow_public_network` and `llm_provider`; API error guidance and `docs/SERVICE_API.md` describe the host-owned boundary; HTTP/terminal regression tests cover rejection plus allowed model/options; native/C++/Tauri parity contracts were regenerated from the Python source of truth.
+- Tests and exact outcomes:
+  - `.\.venv\Scripts\python.exe -m pytest Languages/Python/tests/test_service_api_http_contract.py Languages/Python/tests/test_service_config_runtime.py Languages/Python/tests/test_service_client_integration.py Languages/Python/tests/test_llm_clients_privacy.py -p no:cacheprovider --no-cov -q` — **73 passed, 1 skipped** (host symlink capability), 1 dependency warning.
+  - `.\.venv\Scripts\python.exe -m pytest Languages/Python/tests/test_llm_model_discovery.py Languages/Python/tests/test_llm_local_models.py Languages/Python/tests/test_llm_redirect_safety.py Languages/Python/tests/test_native_option_parity.py Languages/Python/tests/test_native_generated_parity_contract.py Languages/Python/tests/test_native_full_parity_contract.py Languages/Python/tests/test_service_api_host_contract.py -p no:cacheprovider --no-cov -q` — **95 passed, 341 subtests passed**.
+  - `.\.venv\Scripts\python.exe -m ruff check Languages/Python/app/service/config_store.py Languages/Python/app/service/api/app.py Languages/Python/tests/test_service_api_http_contract.py` — **all checks passed**; `git diff --check` passed; parity generator reported `changed=True`.
+- Commit: `6335304f593ae70383c2b454f6e0c707f20e29d5` (`Harden remote LLM configuration boundaries`). No PR or push was created.
+- Acceptance items still open: host-approved provider/endpoint binding must be configured and verified on the eventual execution host; HTTPS/loopback URL enforcement is PRD-003; no live request, deployment or production secret was used. Re-run the complete canonical gate before any score change.
+- External blockers / decisions needed: initial product scope, repository governance, deployment/provenance inputs and operational evidence remain unchanged from the audit.
+- Next ready task: **PRD-003** (uniform LLM HTTPS/loopback URL policy), with independent **PRD-004** and **PRD-006** still ready.
+- Score change: **not assessed**; the dated baseline remains 58/100 until a fresh evidence review.
 
 ### Template for the next implementation checkpoint
 
