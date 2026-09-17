@@ -622,14 +622,28 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(17, len(exceptions))
+        self.assertEqual(7, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
         }
+        advisory_ids = {identity[1] for identity in identities}
         self.assertEqual(len(exceptions), len(identities))
         self.assertNotIn(("unsound", "RUSTSEC-2026-0097", "rand", "0.9.2"), identities)
         self.assertNotIn(("unsound", "RUSTSEC-2024-0429", "glib", "0.18.5"), identities)
+        for advisory_id in (
+            "RUSTSEC-2024-0411",
+            "RUSTSEC-2024-0412",
+            "RUSTSEC-2024-0413",
+            "RUSTSEC-2024-0414",
+            "RUSTSEC-2024-0415",
+            "RUSTSEC-2024-0416",
+            "RUSTSEC-2024-0417",
+            "RUSTSEC-2024-0418",
+            "RUSTSEC-2024-0419",
+            "RUSTSEC-2024-0420",
+        ):
+            self.assertNotIn(advisory_id, advisory_ids)
         self.assertIn(("yanked", "YANKED", "chacha20", "0.10.1"), identities)
         for exception in exceptions:
             with self.subTest(advisory=exception["id"], package=exception["package"]):
@@ -644,6 +658,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
         self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
         self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
+        self.assertIn('name = "rustls"\nversion = "0.23.45"', cargo_lock)
+        self.assertNotIn('name = "rustls"\nversion = "0.23.43"', cargo_lock)
+        self.assertNotIn('name = "rustls"\nversion = "0.23.44"', cargo_lock)
 
         rust_manifest = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.toml").read_text(
             encoding="utf-8"
@@ -761,8 +778,8 @@ class DependencyReproducibilityTests(unittest.TestCase):
         package = json.loads((mobile_root / "package.json").read_text(encoding="utf-8"))
         lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
 
-        self.assertEqual("4.3.1", package["overrides"]["@expo/xcpretty"]["js-yaml"])
-        self.assertEqual("4.3.1", lockfile["packages"]["node_modules/js-yaml"]["version"])
+        self.assertEqual("4.3.2", package["overrides"]["@expo/xcpretty"]["js-yaml"])
+        self.assertEqual("4.3.2", lockfile["packages"]["node_modules/js-yaml"]["version"])
 
     def test_codeql_workflow_scans_python_javascript_and_native_languages_with_pinned_actions(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
