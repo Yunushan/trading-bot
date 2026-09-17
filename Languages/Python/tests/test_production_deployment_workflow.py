@@ -35,6 +35,12 @@ class ProductionDeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("rollout status", self.workflow)
         self.assertIn("run_service_sustained_probe.py", self.workflow)
         self.assertIn("--profile quick", self.workflow)
+        self.assertIn("--expected-commit \"${DEPLOY_COMMIT}\"", self.workflow)
+        self.assertIn("--require-server-read-only", self.workflow)
+        self.assertIn(
+            "PROBE_OUTPUT: artifacts/operational-readiness/production-readonly-quick-probe-${{ github.run_id }}.json",
+            self.workflow,
+        )
 
     def test_deployment_never_places_service_token_in_command_arguments(self):
         self.assertIn("BOT_SERVICE_API_TOKEN: ${{ secrets.BOT_SERVICE_API_TOKEN }}", self.workflow)

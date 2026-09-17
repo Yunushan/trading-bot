@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import copy
+import os
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -216,6 +219,114 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertFalse(report["promotion_eligible"])
         self.assertIn("requires --base-url", report["issues"][0])
+
+    def test_deployment_probe_can_require_server_commit_and_read_only_state(self):
+        now = datetime.now(timezone.utc).isoformat()
+        expected_commit = "a" * 40
+        preflight = {
+            "freshness": {
+                component: {
+                    timestamp_field: now,
+                    "age_seconds": 0.0,
+                    "stale": False,
+                }
+                for component, timestamp_field in service_probe.OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS.items()
+            }
+        }
+
+        class _RemoteClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def get(self, endpoint, *, headers):  # noqa: ARG002
+                if endpoint.endswith("/readyz"):
+                    payload = {"status": "ready", "build_commit": expected_commit, "read_only": True}
+                elif endpoint.endswith("/operational-preflight"):
+                    payload = preflight
+                else:
+                    payload = {"status": "ok"}
+                return SimpleNamespace(status_code=200, json=lambda: payload)
+
+        with patch.object(service_probe, "_RemoteReadOnlyClient", _RemoteClient), patch.dict(
+            os.environ, {"PROBE_TEST_TOKEN": "synthetic-token"}, clear=False
+        ):
+            report = service_probe.run_probe(
+                profile_name="quick",
+                cycles=1,
+                minimum_requests=6,
+                base_url="https://service.example",
+                api_token_env="PROBE_TEST_TOKEN",
+                expected_commit=expected_commit,
+                require_server_read_only=True,
+            )
+
+        self.assertTrue(report["ok"], report["issues"])
+        self.assertTrue(report["server_identity_verified"])
+        self.assertTrue(report["server_read_only_verified"])
+        self.assertEqual(expected_commit, report["expected_commit"])
+        identity_result = next(
+            item
+            for item in report["suite_results"]
+            if item.get("name") == "server-read-only-and-commit-identity"
+        )
+        self.assertEqual("pass", identity_result["status"])
+
+    def test_deployment_probe_rejects_wrong_commit_or_writable_server(self):
+        now = datetime.now(timezone.utc).isoformat()
+        preflight = {
+            "freshness": {
+                component: {
+                    timestamp_field: now,
+                    "age_seconds": 0.0,
+                    "stale": False,
+                }
+                for component, timestamp_field in service_probe.OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS.items()
+            }
+        }
+
+        class _RemoteClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def get(self, endpoint, *, headers):  # noqa: ARG002
+                if endpoint.endswith("/readyz"):
+                    payload = {"status": "ready", "build_commit": "f" * 40, "read_only": False}
+                elif endpoint.endswith("/operational-preflight"):
+                    payload = preflight
+                else:
+                    payload = {"status": "ok"}
+                return SimpleNamespace(status_code=200, json=lambda: payload)
+
+        with patch.object(service_probe, "_RemoteReadOnlyClient", _RemoteClient), patch.dict(
+            os.environ, {"PROBE_TEST_TOKEN": "synthetic-token"}, clear=False
+        ):
+            report = service_probe.run_probe(
+                profile_name="quick",
+                cycles=1,
+                minimum_requests=6,
+                base_url="https://service.example",
+                api_token_env="PROBE_TEST_TOKEN",
+                expected_commit="a" * 40,
+                require_server_read_only=True,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["server_identity_verified"])
+        self.assertFalse(report["server_read_only_verified"])
+        self.assertTrue(any("expected_commit" in issue for issue in report["issues"]))
+        self.assertTrue(any("read_only=true" in issue for issue in report["issues"]))
 
     def test_sustained_evidence_rejects_missing_operational_snapshot_samples(self):
         policy = readiness.load_policy(POLICY_PATH)

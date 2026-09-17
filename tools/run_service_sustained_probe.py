@@ -201,6 +201,21 @@ def _payload_build_commit(payload: object) -> str:
     return candidate if re.fullmatch(r"[0-9a-f]{7,64}", candidate) else ""
 
 
+def _payload_read_only(payload: object) -> tuple[bool, bool | None]:
+    """Return whether a payload exposes a server read-only flag and its value."""
+
+    if not isinstance(payload, dict):
+        return False, None
+    if "read_only" in payload:
+        value = payload.get("read_only")
+        return True, value if isinstance(value, bool) else None
+    service_api = payload.get("service_api")
+    if isinstance(service_api, dict) and "read_only" in service_api:
+        value = service_api.get("read_only")
+        return True, value if isinstance(value, bool) else None
+    return False, None
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -272,6 +287,8 @@ def run_probe(
     base_url: str | None = None,
     api_token_env: str = DEFAULT_API_TOKEN_ENV,
     request_timeout_seconds: float = 10.0,
+    expected_commit: str | None = None,
+    require_server_read_only: bool = False,
 ) -> dict[str, Any]:
     resolved_policy_path = (
         policy_path if policy_path.is_absolute() else REPO_ROOT / policy_path
@@ -327,6 +344,16 @@ def run_probe(
         else max(0.001, float(max_p95_ms))
     )
     timeout_seconds = max(0.1, float(request_timeout_seconds))
+
+    expected_commit_norm = str(expected_commit or "").strip().lower()
+    if expected_commit is not None and not re.fullmatch(r"[0-9a-f]{40}", expected_commit_norm):
+        return {
+            "ok": False,
+            "status": "fail",
+            "profile": profile_name,
+            "promotion_eligible": False,
+            "issues": ["expected_commit must be a full lowercase 40-character SHA"],
+        }
 
     normalized_base_url = ""
     transport_https = False
@@ -403,6 +430,7 @@ def run_probe(
     snapshot_freshness_issues: list[str] = []
     snapshot_freshness_issue_count = 0
     observed_deployment_commits: set[str] = set()
+    identity_observations: list[dict[str, object]] = []
     request_count = 0
     completed_cycles = 0
     started = time.perf_counter()
@@ -449,6 +477,14 @@ def run_probe(
                     remaining_issue_slots = max(0, 20 - len(snapshot_freshness_issues))
                     snapshot_freshness_issues.extend(
                         freshness_issues[:remaining_issue_slots]
+                    )
+                if endpoint.endswith("/readyz"):
+                    identity_observations.append(
+                        {
+                            "build_commit": _payload_build_commit(payload),
+                            "read_only_present": _payload_read_only(payload)[0],
+                            "read_only": _payload_read_only(payload)[1],
+                        }
                     )
                 observed_commit = _payload_build_commit(payload)
                 if observed_commit:
@@ -539,17 +575,42 @@ def run_probe(
         if len(observed_deployment_commits) == 1
         else ""
     )
-    deployment_identity_matches = bool(
-        normalized_base_url
-        and current_commit
-        and deployed_commit == current_commit
-        and len(observed_deployment_commits) == 1
+    if expected_commit_norm:
+        deployment_identity_matches = bool(
+            normalized_base_url
+            and identity_observations
+            and all(
+                observation.get("build_commit") == expected_commit_norm
+                for observation in identity_observations
+            )
+        )
+    else:
+        deployment_identity_matches = bool(
+            normalized_base_url
+            and current_commit
+            and deployed_commit == current_commit
+            and len(observed_deployment_commits) == 1
+        )
+    server_identity_required = bool(expected_commit_norm or require_server_read_only)
+    server_read_only_verified = bool(
+        identity_observations
+        and all(
+            observation.get("read_only_present") is True
+            and observation.get("read_only") is True
+            for observation in identity_observations
+        )
     )
+    server_identity_pass = bool(
+        (not expected_commit_norm or deployment_identity_matches)
+        and (not require_server_read_only or server_read_only_verified)
+    ) if server_identity_required else True
     production_transport_pass = bool(normalized_base_url and transport_https)
     production_probe_prerequisites_pass = bool(
-        production_transport_pass and deployment_identity_matches
+        production_transport_pass
+        and deployment_identity_matches
+        and server_identity_pass
     )
-    ok = bool(minimums_met and thresholds_pass and endpoints_pass)
+    ok = bool(minimums_met and thresholds_pass and endpoints_pass and server_identity_pass)
     if profile_name == "sustained":
         ok = bool(ok and production_probe_prerequisites_pass)
     configured_promotion_minimums_met = (
@@ -599,6 +660,24 @@ def run_probe(
             "allowed_maximum_age_seconds": snapshot_max_age_limit,
         },
     ]
+    if server_identity_required:
+        suite_results.append(
+            {
+                "name": "server-read-only-and-commit-identity",
+                "status": "pass" if server_identity_pass else "fail",
+                "expected_commit": expected_commit_norm or None,
+                "observed_commits": sorted(
+                    {
+                        str(observation.get("build_commit") or "")
+                        for observation in identity_observations
+                    }
+                ),
+                "read_only_values": [
+                    observation.get("read_only") for observation in identity_observations
+                ],
+                "read_only_verified": server_read_only_verified,
+            }
+        )
     if profile_name == "sustained":
         suite_results.extend(
             [
@@ -610,7 +689,7 @@ def run_probe(
                 {
                     "name": "deployed-commit-identity",
                     "status": "pass" if deployment_identity_matches else "fail",
-                    "expected_commit": current_commit,
+                    "expected_commit": expected_commit_norm or current_commit,
                     "observed_commit": deployed_commit,
                 },
             ]
@@ -647,8 +726,16 @@ def run_probe(
         )
     if profile_name == "sustained" and not deployment_identity_matches:
         issues.append(
-            "deployed service build_commit must match the current repository commit"
+            "deployed service build_commit must match the expected deployment commit"
+            if expected_commit_norm
+            else "deployed service build_commit must match the current repository commit"
         )
+    if server_identity_required and not identity_observations:
+        issues.append("deployed service /readyz identity payload was missing")
+    if require_server_read_only and not server_read_only_verified:
+        issues.append("deployed service read_only=true was not verified on /readyz")
+    if expected_commit_norm and identity_observations and not deployment_identity_matches:
+        issues.append("deployed service /readyz build_commit did not match expected_commit")
     return {
         "ok": ok,
         "evidence_id": DEFAULT_EVIDENCE_ID,
@@ -662,10 +749,14 @@ def run_probe(
         "generated_at": _now_iso(),
         "commit": current_commit,
         "deployed_commit": deployed_commit,
+        "expected_commit": expected_commit_norm,
         "source_tree_clean": source_tree_clean,
         "policy_sha256": policy_sha256(policy),
         "secrets_redacted": True,
         "read_only": True,
+        "server_read_only_required": bool(require_server_read_only),
+        "server_read_only_verified": server_read_only_verified,
+        "server_identity_verified": server_identity_pass,
         "order_submission_attempted": False,
         "runtime_ready_claimed": False,
         "production_slo_proven": False,
@@ -715,6 +806,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url")
     parser.add_argument("--api-token-env", default=DEFAULT_API_TOKEN_ENV)
     parser.add_argument("--request-timeout-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--expected-commit",
+        help="Require the deployed /readyz build_commit to match this full commit SHA.",
+    )
+    parser.add_argument(
+        "--require-server-read-only",
+        action="store_true",
+        help="Require the deployed /readyz payload to prove read_only=true.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -731,6 +831,8 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             api_token_env=args.api_token_env,
             request_timeout_seconds=args.request_timeout_seconds,
+            expected_commit=args.expected_commit,
+            require_server_read_only=args.require_server_read_only,
         )
         if args.output:
             policy_path = (
