@@ -36,7 +36,7 @@ The initial offline parallel lanes are security (002→003→018), trading (004 
 | PRD-002 | P1 / DONE | Security + API | M | — | Host-owned LLM credential/destination boundary |
 | PRD-003 | P1 / DONE | Security + LLM | S–M | 002 design | Uniform LLM HTTPS/loopback URL policy |
 | PRD-004 | P1 / DONE | Exchange runtime | S | — | ccxt protected-order parameter validation |
-| PRD-005 | P1 / TODO | Strategy + market data | M | — | Live event-time and OHLCV quality gate |
+| PRD-005 | P1 / DONE | Strategy + market data | M | — | Live event-time and OHLCV quality gate |
 | PRD-006 | P1 / TODO | Release tooling | M | — | Executable deployment smoke contracts |
 | PRD-007 | P1 / TODO | Release + security | M–L | 006 | Exact-digest trusted build/scan provenance |
 | PRD-008 | P1 / TODO | Runtime + operator | L | 001 scope | Account identity and single-owner/fencing contract |
@@ -303,6 +303,22 @@ Evidence records must identify: task ID; source SHA; clean/dirty state; environm
 - Acceptance items still open: venue-specific live semantics and real exchange evidence remain external; no live order or production credential was used. Re-run the complete canonical gate before any score change.
 - External blockers / decisions needed: initial product scope, repository governance, deployment/provenance inputs and operational evidence remain unchanged from the audit.
 - Next ready task: **PRD-005** (live event-time and OHLCV quality gate), with **PRD-006** deployment smoke integration still ready.
+- Score change: **not assessed**; the dated baseline remains 58/100 until a fresh evidence review.
+
+### 2026-09-17 — PRD-005 implementation checkpoint
+
+- Status: **DONE** (offline implementation; production promotion remains out of scope).
+- Assignee and scope: Codex implementation checkpoint; Binance live OHLCV provenance/quality, WebSocket ordering, strategy signal timestamps, operational order preflight and regression coverage.
+- Starting SHA and state: `44fa8c838762587b9fdaddf28cee464e5116302f`, clean before this change; no unrelated paths were modified.
+- Failure reproduced: the F07 audit showed that successful but stale or malformed live candles could reach signal generation, while signals were stamped with local `time.time()` rather than source event time. Cached/replayed data could therefore appear fresh at the order boundary.
+- Files and behavior changed: `binance/market/data_quality.py` now validates interval cadence, unique/monotonic indexes, gap policy, finite/positive OHLCV relationships, exchange event time, receipt time, clock skew, freshness and closed-bar status. `market_data.py` carries quality metadata through cache/fallback paths; `ws_runtime.py` rejects replayed/out-of-order/invalid candles without refreshing receipt time; strategy state and order candidates carry source quality and source event timestamps. Live cycles and exposure-increasing futures submissions fail closed with actionable reasons; `reduce_only` exits remain available. Historical range retrieval is unchanged.
+- Tests and exact outcomes:
+  - `.\.venv\Scripts\python.exe -m pytest Languages/Python/tests/test_live_market_data_quality.py Languages/Python/tests/test_binance_market_data_runtime.py Languages/Python/tests/test_binance_ws_runtime.py Languages/Python/tests/test_strategy_cycle_runtime.py Languages/Python/tests/test_strategy_runtime_safety.py Languages/Python/tests/test_strategy_runtime_behavior.py Languages/Python/tests/test_position_guard_behavior.py Languages/Python/tests/test_operational_order_snapshot.py -p no:cacheprovider --no-cov -q` — **132 passed, 165 subtests passed**.
+  - `.\.venv\Scripts\python.exe -m ruff check Languages/Python/app/integrations/exchanges/binance/market/data_quality.py Languages/Python/app/integrations/exchanges/binance/market/market_data.py Languages/Python/app/integrations/exchanges/binance/transport/ws_runtime.py Languages/Python/app/integrations/exchanges/binance/wrapper.py Languages/Python/app/core/strategy/runtime/strategy_runtime.py Languages/Python/app/core/strategy/runtime/strategy_cycle_runtime.py Languages/Python/app/core/strategy/orders/operational_snapshot.py Languages/Python/app/core/strategy/orders/strategy_signal_order_submit_runtime.py Languages/Python/app/core/strategy/orders/strategy_signal_order_prepare_runtime.py Languages/Python/app/core/strategy/orders/strategy_signal_order_execute_runtime.py Languages/Python/tests/test_live_market_data_quality.py` — **all checks passed**; `git diff --check` passed; parity generator reported `changed=False`.
+- Commit: `1d7779bcad5d055594d660dcb76e4fa6c95c7d59` (`Gate live orders on source market data quality`). No PR or push was created.
+- Acceptance items still open: live exchange clock/stream behavior, reconnect recovery in the deployed topology, and genuine production telemetry remain external; no live order or production credential was used. Re-run the complete canonical gate and a fresh evidence review before any score change.
+- External blockers / decisions needed: initial product scope, repository governance, deployment/provenance inputs and operational evidence remain unchanged from the audit.
+- Next ready task: **PRD-006** (deployment smoke integration), with **PRD-007** following after its evidence path is verified.
 - Score change: **not assessed**; the dated baseline remains 58/100 until a fresh evidence review.
 
 ### Template for the next implementation checkpoint
