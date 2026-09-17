@@ -31,6 +31,8 @@ class NetworkUrlSecurityTests(unittest.TestCase):
             "https://user:secret@downloads.example.com/archive.zip",
             "https://downloads.example.com/archive.zip#section",
             "https://downloads.example.com:invalid/archive.zip",
+            "https://downloads.example.com:",
+            "https://downloads.example.com\n/archive.zip",
             "https://downloads.example.com\\@attacker.example/archive.zip",
             "https://downloads.example.com/archive zip",
         )
@@ -43,6 +45,13 @@ class NetworkUrlSecurityTests(unittest.TestCase):
                 "https://service.example.com?redirect=attacker",
                 allow_query=False,
             )
+
+    def test_public_network_classification_matches_loopback_and_private_policy(self):
+        self.assertFalse(network_url.url_uses_public_network("http://localhost:11434"))
+        self.assertFalse(network_url.url_uses_public_network("http://worker.localhost:11434"))
+        self.assertFalse(network_url.url_uses_public_network("https://192.168.1.5:8443"))
+        self.assertFalse(network_url.url_uses_public_network("https://[::1]:8443"))
+        self.assertTrue(network_url.url_uses_public_network("https://llm.example.test/v1"))
 
     def test_open_uses_validated_request_and_can_disable_redirects(self):
         response = object()

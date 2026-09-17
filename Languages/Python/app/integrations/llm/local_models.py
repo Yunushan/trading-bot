@@ -7,7 +7,7 @@ import subprocess
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from app.security.network_url import _is_loopback_host, validate_http_url
+from app.security.network_url import is_loopback_host, validate_http_url
 from app.security.redaction import redact_text
 
 from .http_policy import reject_llm_redirect
@@ -177,7 +177,7 @@ def _validate_local_model_base_url(base_url: str, *, allow_public_network: bool 
         allow_query=False,
     )
     hostname = urlsplit(validated).hostname
-    if not allow_public_network and not _is_loopback_host(hostname):
+    if not allow_public_network and not is_loopback_host(hostname):
         raise ValueError(
             "local model base URL must target loopback unless public network access is enabled."
         )

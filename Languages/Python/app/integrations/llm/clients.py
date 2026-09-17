@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import copy
-import ipaddress
 import json
 import os
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode
 
 import requests
 
+from app.security.network_url import url_uses_public_network, validate_http_url
 from app.security.redaction import REDACTED_TEXT, redact_text, redact_value
 
 from .http_policy import LLMRedirectError, reject_llm_redirect
@@ -151,20 +151,6 @@ def _context_for_provider(context: dict | None, *, mode: str, allow_public_netwo
     if str(mode or "").strip().lower() == "cloud" or bool(allow_public_network):
         return _cloud_safe_context(context)
     return context
-
-
-def _base_url_uses_public_network(base_url: str) -> bool:
-    host = str(urlsplit(str(base_url or "").strip()).hostname or "").strip()
-    if not host:
-        return False
-    lowered = host.lower()
-    if lowered in {"localhost", "127.0.0.1", "::1"} or lowered.endswith(".local"):
-        return False
-    try:
-        address = ipaddress.ip_address(lowered)
-    except ValueError:
-        return True
-    return not (address.is_loopback or address.is_private or address.is_link_local)
 
 
 def _openai_compatible_reasoning_body(provider: str, model: str, effort: str) -> dict[str, object]:
@@ -358,13 +344,17 @@ def build_llm_chat_request(
     provider = str(payload["provider"])
     protocol = str(payload["protocol"])
     mode = str(payload["mode"])
-    base_url = str(payload["base_url"])
+    base_url = validate_http_url(
+        payload["base_url"],
+        field_name="LLM base URL",
+        allow_loopback_http=True,
+    )
     model = str(payload["model"])
     reasoning_effort = _reasoning_effort(payload)
     context_window = int(payload.get("context_window") or 0)
     max_output_tokens = int(payload.get("max_output_tokens") or 0)
     allow_public_network = bool(payload.get("allow_public_network"))
-    base_url_uses_public_network = _base_url_uses_public_network(base_url)
+    base_url_uses_public_network = url_uses_public_network(base_url)
     if mode != "cloud" and base_url_uses_public_network and not allow_public_network:
         raise ValueError(
             "Public local/custom LLM endpoints are disabled. Enable the public network endpoint control before using this base URL."

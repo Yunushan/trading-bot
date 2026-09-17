@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 
-def _is_loopback_host(hostname: str | None) -> bool:
+def is_loopback_host(hostname: str | None) -> bool:
     host = str(hostname or "").strip().lower().strip("[]")
     if host == "localhost" or host.endswith(".localhost"):
         return True
@@ -18,6 +18,33 @@ def _is_loopback_host(hostname: str | None) -> bool:
         return False
 
 
+# Kept as a private alias for integrations that imported the helper before it
+# became part of the shared URL policy.
+_is_loopback_host = is_loopback_host
+
+
+def url_uses_public_network(value: object) -> bool:
+    """Return whether a validated URL targets a public network destination.
+
+    Loopback, RFC1918/private, link-local and ``.local`` names are treated as
+    local destinations. Callers should run :func:`validate_http_url` first so
+    malformed authorities cannot be classified as safe by accident.
+    """
+
+    try:
+        hostname = urlsplit(str(value or "").strip()).hostname
+    except ValueError:
+        return True
+    host = str(hostname or "").strip().lower()
+    if not host or is_loopback_host(host) or host.endswith(".local"):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (address.is_loopback or address.is_private or address.is_link_local)
+
+
 def validate_http_url(
     value: object,
     *,
@@ -25,10 +52,13 @@ def validate_http_url(
     allow_loopback_http: bool = False,
     allow_query: bool = True,
 ) -> str:
-    text = str(value or "").strip()
+    raw_text = str(value or "")
+    if any(ord(character) < 32 for character in raw_text):
+        raise ValueError(f"{field_name} contains invalid characters")
+    text = raw_text.strip()
     if not text:
         raise ValueError(f"{field_name} is required")
-    if "\\" in text or any(character.isspace() or ord(character) < 32 for character in text):
+    if "\\" in text or any(character.isspace() for character in text):
         raise ValueError(f"{field_name} contains invalid characters")
 
     parsed = urlsplit(text)
@@ -43,13 +73,15 @@ def validate_http_url(
         raise ValueError(f"{field_name} must be an absolute HTTP(S) URL")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError(f"{field_name} must not contain credentials")
+    if parsed.netloc.endswith(":"):
+        raise ValueError(f"{field_name} must contain a valid host and port")
     if port is not None and port < 1:
         raise ValueError(f"{field_name} must contain a valid port")
     if parsed.fragment:
         raise ValueError(f"{field_name} must not contain a fragment")
     if parsed.query and not allow_query:
         raise ValueError(f"{field_name} must not contain a query string")
-    if scheme == "http" and not (allow_loopback_http and _is_loopback_host(hostname)):
+    if scheme == "http" and not (allow_loopback_http and is_loopback_host(hostname)):
         raise ValueError(f"{field_name} must use HTTPS unless it targets loopback")
     return text
 
@@ -100,4 +132,4 @@ def open_validated_url(
     return opener.open(request, timeout=timeout_value)
 
 
-__all__ = ["open_validated_url", "validate_http_url"]
+__all__ = ["is_loopback_host", "open_validated_url", "url_uses_public_network", "validate_http_url"]

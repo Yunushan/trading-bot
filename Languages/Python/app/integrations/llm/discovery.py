@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import ipaddress
 import os
 from collections.abc import Iterable
 from typing import Any
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode
 
 try:
     import requests
 except ModuleNotFoundError:  # Optional until live discovery is requested.
     requests = None  # type: ignore[assignment]
 
+from app.security.network_url import url_uses_public_network, validate_http_url
 from .http_policy import reject_llm_redirect
 from .providers import (
     ANTHROPIC_MESSAGES_PROTOCOL,
@@ -22,20 +22,6 @@ from .providers import (
 
 def _join_url(base_url: str, path: str) -> str:
     return f"{str(base_url or '').rstrip('/')}/{str(path or '').lstrip('/')}"
-
-
-def _base_url_uses_public_network(base_url: str) -> bool:
-    host = str(urlsplit(str(base_url or "").strip()).hostname or "").strip()
-    if not host:
-        return False
-    lowered = host.lower()
-    if lowered in {"localhost", "127.0.0.1", "::1"} or lowered.endswith(".local"):
-        return False
-    try:
-        address = ipaddress.ip_address(lowered)
-    except ValueError:
-        return True
-    return not (address.is_loopback or address.is_private or address.is_link_local)
 
 
 def _api_key(config: dict[str, object], env_name: str) -> str:
@@ -241,10 +227,25 @@ def discover_llm_models(
     payload = build_llm_config_payload(raw_config)
     static = _static_model_records(payload)
     provider = str(payload.get("provider") or "")
-    base_url = str(payload.get("base_url") or "")
+    try:
+        base_url = validate_http_url(
+            payload.get("base_url"),
+            field_name="LLM base URL",
+            allow_loopback_http=True,
+        )
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "provider": provider,
+            "catalog_revision": LLM_PROVIDER_CATALOG_REVISION,
+            "dynamic_count": 0,
+            "models": static,
+            "error": str(exc),
+        }
+    payload["base_url"] = base_url
     mode = str(payload.get("mode") or "")
     allow_public_network = bool(payload.get("allow_public_network"))
-    if mode != "cloud" and _base_url_uses_public_network(base_url) and not allow_public_network:
+    if mode != "cloud" and url_uses_public_network(base_url) and not allow_public_network:
         return {
             "ok": False,
             "provider": provider,
