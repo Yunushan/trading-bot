@@ -2277,9 +2277,13 @@ int main(int argc, char **argv) {
         const int requestsBefore = executionRequests;
         const auto lost = lostAcknowledgementSession.submit(2.0, [&]() { return submitExecution(kind); });
         const auto retry = lostAcknowledgementSession.submit(2.0, [&]() { return submitExecution(kind); });
-        check(executionRequests == requestsBefore + 1 && lostAcknowledgementSession.reconciliationRequired()
-                  && !lost.clientOrderId.isEmpty() && !lost.executionConfirmed && !retry.executionConfirmed,
-              kind + QStringLiteral(": lost HTTP acknowledgement must preserve uncertainty and prevent resubmission"));
+        check(executionRequests == requestsBefore + 1,
+              kind + QStringLiteral(": lost HTTP acknowledgement must not replay the order request"));
+        check(lostAcknowledgementSession.reconciliationRequired()
+                  && !lost.clientOrderId.isEmpty() && !lost.executionConfirmed,
+              kind + QStringLiteral(": lost HTTP acknowledgement must preserve uncertainty"));
+        check(!retry.executionConfirmed && executionRequests == requestsBefore + 1,
+              kind + QStringLiteral(": lost HTTP acknowledgement must prevent resubmission"));
     }
     dropExecutionResponse = false;
 

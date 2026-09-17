@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QEventLoop>
 #include <QHash>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMap>
@@ -19,9 +20,46 @@
 #include <QUrlQuery>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <utility>
 
 namespace {
+class NonReplayableUploadDevice final : public QIODevice {
+public:
+    explicit NonReplayableUploadDevice(QByteArray payload)
+        : payload_(std::move(payload)) {
+        open(QIODevice::ReadOnly);
+    }
+
+    bool isSequential() const override { return true; }
+    bool reset() override { return false; }
+    bool seek(qint64) override { return false; }
+
+    qint64 bytesAvailable() const override {
+        return static_cast<qint64>(payload_.size()) - offset_ + QIODevice::bytesAvailable();
+    }
+
+protected:
+    qint64 readData(char *data, qint64 maxSize) override {
+        if (maxSize <= 0 || offset_ >= payload_.size()) {
+            return 0;
+        }
+        const qint64 count = std::min(
+            maxSize,
+            static_cast<qint64>(payload_.size()) - offset_);
+        std::memcpy(data, payload_.constData() + offset_, static_cast<std::size_t>(count));
+        offset_ += count;
+        return count;
+    }
+
+    qint64 writeData(const char *, qint64) override { return -1; }
+
+private:
+    QByteArray payload_;
+    qint64 offset_ = 0;
+};
+
 qint64 pythonIntervalMilliseconds(QString interval) {
     interval = interval.trimmed().toLower();
     if (interval.isEmpty()) return 60'000;
@@ -437,24 +475,33 @@ QJsonDocument httpRequestJson(
     int timeoutMs,
     QString *error,
     const QByteArray &body = {}) {
+    // Qt automatically retries a request when the peer closes before sending a
+    // response. A resettable QByteArray upload would replay a mutating order,
+    // so keep upload data sequential and explicitly non-resettable.
+    NonReplayableUploadDevice uploadDevice(body);
     QNetworkAccessManager manager;
     QNetworkRequest request{QUrl(url)};
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("trading-bot-cpp/1.0"));
-    if (!body.isEmpty()) {
+    const QString verb = method.trimmed().toUpper();
+    const bool mutatingRequest = verb == QStringLiteral("POST")
+        || verb == QStringLiteral("PUT")
+        || verb == QStringLiteral("DELETE");
+    if (mutatingRequest) {
         request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/x-www-form-urlencoded"));
+        request.setHeader(QNetworkRequest::ContentLengthHeader, static_cast<qint64>(body.size()));
+        request.setAttribute(QNetworkRequest::DoNotBufferUploadDataAttribute, true);
     }
     for (const auto &header : headers) {
         request.setRawHeader(header.first, header.second);
     }
 
-    const QString verb = method.trimmed().toUpper();
     QNetworkReply *reply = nullptr;
     if (verb == QStringLiteral("POST")) {
-        reply = manager.post(request, body);
+        reply = manager.post(request, &uploadDevice);
     } else if (verb == QStringLiteral("DELETE")) {
-        reply = manager.sendCustomRequest(request, QByteArrayLiteral("DELETE"), body);
+        reply = manager.sendCustomRequest(request, QByteArrayLiteral("DELETE"), &uploadDevice);
     } else if (verb == QStringLiteral("PUT")) {
-        reply = manager.put(request, body);
+        reply = manager.put(request, &uploadDevice);
     } else {
         reply = manager.get(request);
     }
