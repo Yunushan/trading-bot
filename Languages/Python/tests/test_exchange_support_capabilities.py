@@ -711,6 +711,79 @@ class ExchangeSupportCapabilitiesTests(unittest.TestCase):
         self.assertEqual("okx", created[-1][0])
         self.assertTrue(created[-1][2].sandbox_enabled)
 
+    def test_ccxt_order_routing_rejects_protected_param_collisions_before_exchange_build(self):
+        created: list[tuple[str, dict[str, object], _FakeCcxtExchange]] = []
+
+        def factory(exchange_id: str, options: dict[str, object]) -> _FakeCcxtExchange:
+            exchange = _FakeCcxtExchange()
+            created.append((exchange_id, options, exchange))
+            return exchange
+
+        connector = CcxtDiagnosticsConnector(
+            selected_exchange="OKX",
+            api_key="real-key",
+            api_secret="real-secret",
+            mode="Demo/Testnet",
+            exchange_factory=factory,
+        )
+        collisions = (
+            {"reduceOnly": False},
+            {"reduce_only": True},
+            {"reduce-only": True},
+            {"clientOrderId": "wrong-client-id"},
+            {"newClientOrderId": "wrong-client-id"},
+            {"client_order_id": "wrong-client-id"},
+            {"quantity": 10},
+            {"options": {"reduceOnly": False}},
+            {"type": "limit"},
+        )
+        for params in collisions:
+            with self.subTest(params=params):
+                with self.assertRaisesRegex(ValueError, "must not override validated fields"):
+                    connector.submit_order(
+                        symbol="BTC/USDT",
+                        side="buy",
+                        amount=0.01,
+                        client_order_id="safe-client-id",
+                        reduce_only=True,
+                        dry_run=False,
+                        allow_live=True,
+                        params=params,
+                    )
+
+        with self.assertRaisesRegex(ValueError, "params must be a mapping"):
+            connector.submit_order(
+                symbol="BTC/USDT",
+                side="buy",
+                amount=0.01,
+                dry_run=True,
+                params=[("timeInForce", "GTC")],  # type: ignore[arg-type]
+            )
+        self.assertEqual([], created)
+
+    def test_ccxt_order_routing_preserves_explicit_fields_and_allows_additive_params(self):
+        connector = CcxtDiagnosticsConnector(selected_exchange="OKX")
+        result = connector.submit_order(
+            symbol="BTC/USDT",
+            side="sell",
+            amount=0.02,
+            order_type="limit",
+            price=42_000,
+            client_order_id="safe-client-id",
+            reduce_only=True,
+            params={"timeInForce": "GTC", "positionSide": "SHORT"},
+        )
+
+        self.assertEqual(
+            {
+                "timeInForce": "GTC",
+                "positionSide": "SHORT",
+                "clientOrderId": "safe-client-id",
+                "reduceOnly": True,
+            },
+            result["request"]["params"],
+        )
+
     def test_order_connectors_reject_boolean_and_non_finite_numeric_inputs(self):
         cases = (
             (

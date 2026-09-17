@@ -10,6 +10,62 @@ from ...settings.exchange_support import build_exchange_support_payload, ccxt_ex
 ExchangeFactory = Callable[[str, Mapping[str, object]], object]
 
 
+_PROTECTED_ORDER_PARAM_ALIASES: dict[str, frozenset[str]] = {
+    "symbol": frozenset({"symbol", "market", "instrument"}),
+    "type": frozenset({"type", "ordertype", "order_type"}),
+    "side": frozenset({"side", "direction"}),
+    "amount": frozenset({"amount", "quantity", "qty", "size", "units"}),
+    "price": frozenset({"price", "limitprice", "limit_price"}),
+    "client_order_id": frozenset(
+        {
+            "clientorderid",
+            "client_order_id",
+            "newclientorderid",
+            "new_client_order_id",
+        }
+    ),
+    "reduce_only": frozenset({"reduceonly", "reduce_only", "reduce-only"}),
+}
+
+
+def _canonical_order_param_key(value: object) -> str:
+    return str(value or "").strip().lower().replace("-", "_")
+
+
+def _protected_order_param_paths(value: object, *, path: str = "params") -> list[str]:
+    if isinstance(value, Mapping):
+        conflicts: list[str] = []
+        for key, nested in value.items():
+            key_text = str(key or "").strip()
+            key_path = f"{path}.{key_text}" if key_text else path
+            canonical = _canonical_order_param_key(key)
+            if any(canonical in aliases for aliases in _PROTECTED_ORDER_PARAM_ALIASES.values()):
+                conflicts.append(key_path)
+            conflicts.extend(_protected_order_param_paths(nested, path=key_path))
+        return conflicts
+    if isinstance(value, (list, tuple)):
+        conflicts = []
+        for index, nested in enumerate(value):
+            conflicts.extend(_protected_order_param_paths(nested, path=f"{path}[{index}]"))
+        return conflicts
+    return []
+
+
+def _validate_order_params(params: Mapping[str, object] | None) -> dict[str, object]:
+    if params is None:
+        return {}
+    if not isinstance(params, Mapping):
+        raise ValueError("ccxt order params must be a mapping")
+    conflicts = _protected_order_param_paths(params)
+    if conflicts:
+        labels = ", ".join(sorted(set(conflicts)))
+        raise ValueError(
+            "ccxt order params must not override validated fields; "
+            f"use explicit order arguments instead ({labels})"
+        )
+    return dict(params)
+
+
 def _load_ccxt():
     import ccxt  # type: ignore
 
@@ -245,7 +301,7 @@ class CcxtDiagnosticsConnector:
         clean_price = None if price in (None, "") else _positive_float(price, field="price")
         if clean_type == "limit" and clean_price is None:
             raise ValueError("limit orders require price")
-        order_params = dict(params) if isinstance(params, Mapping) else {}
+        order_params = _validate_order_params(params)
         if client_order_id:
             order_params.setdefault("clientOrderId", str(client_order_id).strip())
         if reduce_only:
