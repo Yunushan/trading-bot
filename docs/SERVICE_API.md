@@ -465,9 +465,12 @@ plain-JSON credentials. Inline secret values are redacted from saved config
 files. The legacy `BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS` setting is reported
 for migration visibility but does not enable plain-JSON secret persistence.
 Remote config replacement, patch, LLM config, and terminal commands cannot set
-credential fields or audit/incident-log filesystem paths; configure those
-values on the service host through environment variables or OS credential
-storage.
+credential fields, LLM provider/credential-reference/destination/network-consent
+fields, or audit/incident-log filesystem paths. Configure those values on the
+service host through environment variables or OS credential storage. Remote
+clients may still select models and validated advisory request options, but they
+cannot redirect a host credential or change the provider binding used to reach
+it.
 
 When an operating-system credential store is available, service secrets use the
 native platform API (Windows Credential Manager, macOS Keychain, or Linux Secret

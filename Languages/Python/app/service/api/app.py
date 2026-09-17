@@ -739,8 +739,9 @@ def create_service_api_app(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "Remote configuration cannot set credential or filesystem-path fields. "
-                "Configure those values on the service host."
+                "Remote configuration cannot set credential references, LLM connection "
+                "or provider fields, or filesystem-path fields. Configure those values "
+                "on the service host."
             ),
         )
 

@@ -49,6 +49,14 @@ REMOTE_SERVICE_CONFIG_PROTECTED_FIELDS = frozenset(
         "api_key",
         "api_secret",
         "llm_api_key",
+        # LLM credential references and destinations are host-owned.  Allowing a
+        # remote caller to choose an environment variable or endpoint would let
+        # an otherwise authorized prompt caller redirect a host secret.  Local
+        # service-host configuration remains able to edit these fields.
+        "llm_api_key_env",
+        "llm_base_url",
+        "llm_allow_public_network",
+        "llm_provider",
         "order_audit_log_path",
         "connector_order_circuit_incident_log_path",
     }

@@ -10,7 +10,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "79510857db8ed1a4c498e52e280c5b41eaf1cc8d968a381b77283dd924a6d12c";
+inline constexpr std::string_view kPythonSourceContractHash = "4e22326f1fb7d080996823da9d2ffe94a538277efc64df9b98e002bd266b370e";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -529,11 +529,15 @@ inline constexpr std::array<std::string_view, 12> kPythonParityDomainKeys = {
     "startup_packaging_platform",
 };
 
-inline constexpr std::array<std::string_view, 5> kPythonRemoteServiceConfigProtectedFields = {
+inline constexpr std::array<std::string_view, 9> kPythonRemoteServiceConfigProtectedFields = {
     "api_key",
     "api_secret",
     "connector_order_circuit_incident_log_path",
+    "llm_allow_public_network",
     "llm_api_key",
+    "llm_api_key_env",
+    "llm_base_url",
+    "llm_provider",
     "order_audit_log_path",
 };
 

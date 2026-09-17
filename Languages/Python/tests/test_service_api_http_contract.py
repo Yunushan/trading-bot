@@ -953,6 +953,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         app = create_service_api_app(service=service, api_token="token-123")
         client = _create_test_client(app)
         headers = {"Authorization": "Bearer token-123"}
+        initial_config = json.dumps(service.config, sort_keys=True)
         requests = (
             (
                 "patch",
@@ -984,6 +985,30 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 {"config": {"llm_api_key": "remote-llm-key"}},
                 "remote-llm-key",
             ),
+            (
+                "patch",
+                f"{SERVICE_API_BASE_PATH}/llm/config",
+                {"config": {"llm_api_key_env": "AUDIT_SYNTHETIC_SECRET"}},
+                "AUDIT_SYNTHETIC_SECRET",
+            ),
+            (
+                "patch",
+                f"{SERVICE_API_BASE_PATH}/llm/config",
+                {"config": {"llm_base_url": "https://attacker.example.test/v1"}},
+                "https://attacker.example.test/v1",
+            ),
+            (
+                "patch",
+                f"{SERVICE_API_BASE_PATH}/llm/config",
+                {"config": {"llm_allow_public_network": True}},
+                '"llm_allow_public_network": true',
+            ),
+            (
+                "patch",
+                f"{SERVICE_API_BASE_PATH}/llm/config",
+                {"config": {"llm_provider": "open-source"}},
+                "open-source",
+            ),
         )
 
         for method, route, payload, protected_value in requests:
@@ -991,7 +1016,42 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 response = client.request(method, route, headers=headers, json=payload)
                 self.assertEqual(403, response.status_code)
                 self.assertIn("service host", response.json()["detail"])
+                self.assertEqual(initial_config, json.dumps(service.config, sort_keys=True))
                 self.assertNotIn(protected_value, json.dumps(service.config, sort_keys=True))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_remote_llm_model_and_advisory_options_remain_editable(self):
+        service = TradingBotService()
+        service.update_llm_config(
+            {
+                "llm_provider": "openai",
+                "llm_api_key_env": "HOST_LLM_KEY",
+                "llm_base_url": "https://api.openai.com/v1",
+            }
+        )
+        app = create_service_api_app(service=service, api_token="token-123")
+        client = _create_test_client(app)
+        response = client.patch(
+            f"{SERVICE_API_BASE_PATH}/llm/config",
+            headers={"Authorization": "Bearer token-123"},
+            json={
+                "config": {
+                    "llm_model": "host-approved-model-alias",
+                    "llm_api_style": "responses",
+                    "llm_reasoning_effort": "high",
+                    "llm_timeout_seconds": 45,
+                }
+            },
+        )
+
+        self.assertEqual(200, response.status_code)
+        payload = response.json()
+        self.assertEqual("host-approved-model-alias", payload["model"])
+        self.assertEqual("openai-responses", payload["protocol"])
+        self.assertEqual("high", payload["reasoning_effort"])
+        self.assertEqual(45, payload["timeout_seconds"])
+        self.assertEqual("HOST_LLM_KEY", service.config["llm_api_key_env"])
+        self.assertEqual("https://api.openai.com/v1", service.config["llm_base_url"])
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_remote_terminal_restricts_sensitive_config_mutations(self):
@@ -1008,6 +1068,10 @@ class ServiceApiHttpContractTests(unittest.TestCase):
                 "config set api_secret=remote-terminal-secret",
                 "config set order_audit_log_path=C:/remote/terminal-audit.jsonl",
                 "llm set llm_api_key=remote-terminal-llm-secret",
+                "llm set llm_api_key_env=AUDIT_SYNTHETIC_SECRET",
+                "llm set llm_base_url=https://attacker.example.test/v1",
+                "llm set llm_allow_public_network=true",
+                "llm set llm_provider=open-source",
             )
 
             with mock.patch.dict(os.environ, {"BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH": "1"}, clear=False):
