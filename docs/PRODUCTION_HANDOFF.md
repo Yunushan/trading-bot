@@ -6,11 +6,12 @@ This file makes the work resumable in a new chat **without the old conversation*
 
 - Audit date: **2026-09-17**.
 - Audited source: `e574dae633d2186b8af4af1013076ff91f778bb9` on `main`.
-- Current implementation source: `6335304f593ae70383c2b454f6e0c707f20e29d5` on `main`.
+- Current implementation source: `206fa48a07c8e774faebb51d1470d84e37547058` on `main`.
 - Score: **58/100 for unattended real-money production; NO-GO**. This is not a profitability score or a score for every possible deployment scope.
 - Delivered: deep audit, verification ledger, prioritized implementation backlog, this handoff, repository navigation pointers.
 - Product fixes in this audit: **none**. No live orders, deployments, remote settings or credentials changed. Documentation does not close findings.
-- Latest implementation checkpoint: **PRD-002 DONE** in commit `6335304f593ae70383c2b454f6e0c707f20e29d5`; it hardens the host-owned LLM provider, credential-reference, destination and public-network-consent boundary. The baseline score has not been re-scored.
+- Previous implementation checkpoint: **PRD-002 DONE** in commit `6335304f593ae70383c2b454f6e0c707f20e29d5`; it hardens the host-owned LLM provider, credential-reference, destination and public-network-consent boundary.
+- Latest implementation checkpoint: **PRD-003 DONE** in commit `206fa48a07c8e774faebb51d1470d84e37547058`; it enforces HTTPS or explicit loopback HTTP for LLM inference/discovery and rejects unsafe endpoint syntax before network calls. The baseline score has not been re-scored.
 - Canonical evidence/findings: [PRODUCTION_READINESS_AUDIT.md](PRODUCTION_READINESS_AUDIT.md).
 - Canonical task statuses/acceptance criteria/work log: [PRODUCTION_IMPLEMENTATION_PLAN.md](PRODUCTION_IMPLEMENTATION_PLAN.md).
 
@@ -19,7 +20,7 @@ This file makes the work resumable in a new chat **without the old conversation*
 1. Read root `AGENTS.md`, then this file, the audit verdict/findings and the implementation plan. Do not rely on memory of an earlier chat.
 2. Run `git status --short --branch` and `git rev-parse HEAD`. Preserve unrelated changes. Compare current code with the audited SHA; findings and remote statuses may have changed.
 3. Read the task register and latest work-log entry. Reproduce the selected defect offline before fixing it; never assume it remains unfixed.
-4. Recommended next task: **PRD-003 (uniform LLM HTTPS/loopback URL policy)**. Independent tasks: **PRD-004 (ccxt protected fields)** and **PRD-006 (deployment probe integration)**. PRD-005 live-data validity is also urgent. PRD-001 needs owner/settings decisions.
+4. Recommended next task: **PRD-004 (ccxt protected-order parameter validation)**. Independent task: **PRD-006 (deployment probe integration)**. PRD-005 live-data validity is also urgent. PRD-001 needs owner/settings decisions.
 5. Follow the chosen task's dependencies and acceptance criteria. Finish a coherent patch with regression tests. Do not weaken safety/tests, hand-edit generated parity, make speculative broad rewrites, or promote unsupported targets.
 6. Update the task register/work log and this checkpoint with the actual tests, SHA/PR, remaining blockers and next task before ending the turn. Keep the historical audit baseline intact; add dated reassessments.
 
@@ -30,7 +31,7 @@ Continue this repository's production-readiness implementation.
 Read AGENTS.md, docs/PRODUCTION_HANDOFF.md,
 docs/PRODUCTION_READINESS_AUDIT.md and docs/PRODUCTION_IMPLEMENTATION_PLAN.md.
 Inspect current git state and the latest work log; preserve unrelated changes.
-Implement the next ready high-priority task (current recommendation PRD-003),
+Implement the next ready high-priority task (current recommendation PRD-004),
 reproduce the issue, add regression tests and run the appropriate gates.
 Do not place orders, deploy, change live risk limits, expose secrets, or change
 GitHub settings without the necessary explicit authorization.
@@ -38,7 +39,7 @@ Update the task register and handoff with evidence and the next action.
 Do not claim production readiness from green CI or documentation alone.
 ```
 
-To request planning only, replace “Implement” with “Review and propose changes for”. To choose a task, replace `PRD-003` with its task ID.
+To request planning only, replace “Implement” with “Review and propose changes for”. To choose a task, replace `PRD-004` with its task ID.
 
 ## Known environment/evidence caveats
 

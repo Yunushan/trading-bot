@@ -34,7 +34,7 @@ The initial offline parallel lanes are security (002→003→018), trading (004 
 | --- | --- | --- | --- | --- | --- |
 | PRD-001 | P1 / BLOCKED_EXTERNAL | Maintainer + release lead | S | — | Scope decision and enforced main/release governance |
 | PRD-002 | P1 / DONE | Security + API | M | — | Host-owned LLM credential/destination boundary |
-| PRD-003 | P1 / TODO | Security + LLM | S–M | 002 design | Uniform LLM HTTPS/loopback URL policy |
+| PRD-003 | P1 / DONE | Security + LLM | S–M | 002 design | Uniform LLM HTTPS/loopback URL policy |
 | PRD-004 | P1 / TODO | Exchange runtime | S | — | ccxt protected-order parameter validation |
 | PRD-005 | P1 / TODO | Strategy + market data | M | — | Live event-time and OHLCV quality gate |
 | PRD-006 | P1 / TODO | Release tooling | M | — | Executable deployment smoke contracts |
@@ -270,6 +270,23 @@ Evidence records must identify: task ID; source SHA; clean/dirty state; environm
 - Acceptance items still open: host-approved provider/endpoint binding must be configured and verified on the eventual execution host; HTTPS/loopback URL enforcement is PRD-003; no live request, deployment or production secret was used. Re-run the complete canonical gate before any score change.
 - External blockers / decisions needed: initial product scope, repository governance, deployment/provenance inputs and operational evidence remain unchanged from the audit.
 - Next ready task: **PRD-003** (uniform LLM HTTPS/loopback URL policy), with independent **PRD-004** and **PRD-006** still ready.
+- Score change: **not assessed**; the dated baseline remains 58/100 until a fresh evidence review.
+
+### 2026-09-17 — PRD-003 implementation checkpoint
+
+- Status: **DONE** (offline implementation; production promotion remains out of scope).
+- Assignee and scope: Codex implementation checkpoint; shared URL policy, LLM inference/discovery transport, local-model helper reuse and regression coverage.
+- Starting SHA and state: `b3617649a62218619e0a3750264ba0ccfdf12391`, clean before this change; no unrelated paths were modified.
+- Failure reproduced: the F03 audit identified that LLM inference and model discovery used direct `requests` calls without the shared HTTPS/loopback URL validator, so public HTTP custom endpoints could pass when network consent was enabled. Invalid endpoint text could reach the request layer.
+- Files and behavior changed: `app/security/network_url.py` now exposes the shared loopback/public-network policy and rejects control characters, credentials, fragments and malformed authorities; inference and discovery validate base URLs before POST/GET and retain explicit public-network consent; local-model validation uses the public shared loopback helper. New tests cover every provider API style, invalid destinations before network calls, loopback HTTP, private addresses and approved HTTPS.
+- Tests and exact outcomes:
+  - `.\.venv\Scripts\python.exe -m pytest Languages/Python/tests/test_network_url_security.py Languages/Python/tests/test_llm_url_security.py Languages/Python/tests/test_llm_clients_privacy.py Languages/Python/tests/test_llm_model_discovery.py Languages/Python/tests/test_llm_redirect_safety.py Languages/Python/tests/test_llm_local_models.py -p no:cacheprovider --no-cov -q` — **49 passed, 196 subtests passed**.
+  - `.\.venv\Scripts\python.exe -m pytest Languages/Python/tests/test_service_api_http_contract.py Languages/Python/tests/test_service_client_integration.py Languages/Python/tests/test_service_config_runtime.py -p no:cacheprovider --no-cov -q` — **58 passed, 1 skipped** (host symlink capability), 57 subtests and 1 dependency warning.
+  - `.\.venv\Scripts\python.exe -m ruff check Languages/Python/app/security/network_url.py Languages/Python/app/integrations/llm/clients.py Languages/Python/app/integrations/llm/discovery.py Languages/Python/app/integrations/llm/local_models.py Languages/Python/tests/test_network_url_security.py Languages/Python/tests/test_llm_url_security.py` — **all checks passed**; `git diff --check` passed; parity generator reported `changed=False`.
+- Commit: `206fa48a07c8e774faebb51d1470d84e37547058` (`Enforce secure LLM endpoint transport`). No PR or push was created.
+- Acceptance items still open: real-host certificate/egress behavior and deployment evidence remain external; no live request or production secret was used. Re-run the complete canonical gate before any score change.
+- External blockers / decisions needed: initial product scope, repository governance, deployment/provenance inputs and operational evidence remain unchanged from the audit.
+- Next ready task: **PRD-004** (ccxt protected-order parameter validation), with **PRD-006** deployment smoke integration still ready.
 - Score change: **not assessed**; the dated baseline remains 58/100 until a fresh evidence review.
 
 ### Template for the next implementation checkpoint
