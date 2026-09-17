@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 import time
 
 import pandas as pd
@@ -10,6 +11,8 @@ from binance.exceptions import BinanceAPIException
 from ..clients.connector_clients import CcxtConnectorError, OfficialConnectorError
 from ..transport.helpers import _coerce_interval_seconds
 from app.security.redaction import redact_text
+
+from .data_quality import build_live_market_data_quality
 
 FUTURES_NATIVE_INTERVALS = {
     "1m",
@@ -73,6 +76,40 @@ def _require_supported_live_kline_source(source: str) -> None:
     )
 
 
+def _raw_timestamp_ms(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < 0.0:
+        return None
+    try:
+        return int(number)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _attach_live_market_data_quality(
+    frame: pd.DataFrame,
+    interval: object,
+    *,
+    metadata: dict[str, object],
+    source: str,
+    now_epoch: float | None = None,
+) -> dict[str, object]:
+    quality = build_live_market_data_quality(
+        frame,
+        interval,
+        metadata=metadata,
+        now_epoch=now_epoch,
+        source=source,
+    )
+    frame.attrs["market_data_quality"] = quality
+    return quality
+
+
 def _fetch_futures_klines_rest(self, params: dict, *, live: bool = False):
     """
     Fetch klines directly from REST. When live=True, always hit production futures
@@ -110,8 +147,11 @@ def get_klines(self, symbol, interval, limit=500):
         if entry:
             age = now - entry["ts"]
             if age < ttl:
-                return entry["df"].copy(deep=True)
+                cached_result = entry["df"].copy(deep=True)
+                self._last_market_data_quality = cached_result.attrs.get("market_data_quality")
+                return cached_result
             cached_df = entry["df"].copy(deep=True)
+            self._last_market_data_quality = cached_df.attrs.get("market_data_quality")
 
     ban_remaining = self._seconds_until_unban()
     if ban_remaining > 0.0:
@@ -120,6 +160,7 @@ def get_klines(self, symbol, interval, limit=500):
                 eta = datetime.fromtimestamp(time.time() + ban_remaining).strftime("%H:%M:%S")
                 self._last_ban_log = now
                 self._log(f"REST ban active (~{ban_remaining:.0f}s). Serving cached klines for {symbol}@{interval} until {eta}.", lvl="warn")
+            self._last_market_data_quality = cached_df.attrs.get("market_data_quality")
             return cached_df
         raise RuntimeError(f"binance_rest_banned:{ban_remaining:.0f}s")
 
@@ -131,11 +172,39 @@ def get_klines(self, symbol, interval, limit=500):
         df_custom = self.get_klines_range(symbol, interval_key or interval, start_dt, end_dt, fetch_limit)
         if df_custom is None or df_custom.empty:
             if cached_df is not None:
+                self._last_market_data_quality = cached_df.attrs.get("market_data_quality")
                 return cached_df
             raise RuntimeError(f"No kline data returned for interval '{interval}'")
         trimmed = df_custom.tail(int(limit or 1)).copy()
+        receipt_time_ms = int(time.time() * 1000)
+        custom_index_monotonic = bool(trimmed.index.is_monotonic_increasing)
+        custom_index_unique = bool(trimmed.index.is_unique)
+        custom_event_time_ms = None
+        custom_closed = False
+        try:
+            last_open_ms = int(pd.Timestamp(trimmed.index[-1]).timestamp() * 1000)
+            interval_ms = int(interval_seconds * 1000)
+            custom_closed = last_open_ms + interval_ms <= receipt_time_ms + 1_000
+            custom_event_time_ms = last_open_ms + interval_ms if custom_closed else last_open_ms
+        except (IndexError, TypeError, ValueError, OverflowError):
+            pass
+        quality = _attach_live_market_data_quality(
+            trimmed,
+            interval_key or interval,
+            metadata={
+                "source": f"{source or 'binance'}-custom-range",
+                "event_time_ms": custom_event_time_ms,
+                "receipt_time_ms": receipt_time_ms,
+                "closed": custom_closed,
+                "index_monotonic": custom_index_monotonic,
+                "index_unique": custom_index_unique,
+            },
+            source=f"{source or 'binance'}-custom-range",
+            now_epoch=receipt_time_ms / 1000.0,
+        )
         with self._kline_cache_lock:
-            self._kline_cache[cache_key] = {"df": trimmed.copy(deep=True), "ts": time.time()}
+            self._kline_cache[cache_key] = {"df": trimmed.copy(deep=True), "ts": receipt_time_ms / 1000.0}
+        self._last_market_data_quality = quality
         return trimmed
 
     raw = None
@@ -221,6 +290,7 @@ def get_klines(self, symbol, interval, limit=500):
     if raw is None:
         raise RuntimeError("kline_fetch_failed: no data returned")
 
+    receipt_time_ms = int(time.time() * 1000)
     cols = ["open_time", "open", "high", "low", "close", "volume", "close_time", "qav", "num_trades", "taker_base", "taker_quote", "ignore"]
     df = pd.DataFrame(raw, columns=cols)
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
@@ -228,7 +298,35 @@ def get_klines(self, symbol, interval, limit=500):
     for column in ["open", "high", "low", "close", "volume"]:
         df[column] = pd.to_numeric(df[column], errors="coerce")
     trimmed = df[["open", "high", "low", "close", "volume"]].copy(deep=True)
-    ws_row = self._ws_latest_candle(symbol, interval) if use_live_fut else None
+    frame_index_monotonic = bool(trimmed.index.is_monotonic_increasing)
+    frame_index_unique = bool(trimmed.index.is_unique)
+    source_label = (
+        "binance-futures-rest"
+        if source in ("", "binance futures", "binance_futures", "futures")
+        else "binance-spot-rest"
+    )
+    event_time_ms = None
+    closed = False
+    sequence_ok: bool | None = None
+    try:
+        last_raw = raw[-1]
+        open_ms = _raw_timestamp_ms(last_raw[0])
+        close_ms = _raw_timestamp_ms(last_raw[6]) if len(last_raw) > 6 else None
+        if open_ms is not None and close_ms is not None:
+            closed = close_ms <= receipt_time_ms + 1_000
+            event_time_ms = close_ms if closed else open_ms
+        else:
+            event_time_ms = open_ms
+    except (IndexError, TypeError, ValueError):
+        pass
+
+    ws_row = None
+    if use_live_fut:
+        metadata_getter = getattr(self, "_ws_latest_candle_metadata", None)
+        if callable(metadata_getter):
+            ws_row = metadata_getter(symbol, interval)
+        else:
+            ws_row = self._ws_latest_candle(symbol, interval)
     if ws_row:
         try:
             ts = pd.to_datetime(ws_row["open_time"], unit="ms")
@@ -238,11 +336,40 @@ def get_klines(self, symbol, interval, limit=500):
                 columns=["open", "high", "low", "close", "volume"],
             )
             trimmed.loc[ts] = patch.iloc[0]
+            frame_index_monotonic = bool(trimmed.index.is_monotonic_increasing)
+            frame_index_unique = bool(trimmed.index.is_unique)
             trimmed = trimmed.sort_index()
+            ws_event_time = _raw_timestamp_ms(ws_row.get("event_time"))
+            ws_receipt_time = _raw_timestamp_ms(ws_row.get("receipt_time_ms"))
+            if ws_event_time is not None:
+                event_time_ms = ws_event_time
+            if ws_receipt_time is not None:
+                receipt_time_ms = ws_receipt_time
+            if isinstance(ws_row.get("closed"), bool):
+                closed = bool(ws_row["closed"])
+            if isinstance(ws_row.get("sequence_ok"), bool):
+                sequence_ok = bool(ws_row["sequence_ok"])
+            source_label = "binance-futures-websocket+rest"
         except Exception:
             pass
+    quality = _attach_live_market_data_quality(
+        trimmed,
+        interval,
+        metadata={
+            "source": source_label,
+            "event_time_ms": event_time_ms,
+            "receipt_time_ms": receipt_time_ms,
+            "closed": closed,
+            "sequence_ok": sequence_ok if sequence_ok is not None else True,
+            "index_monotonic": frame_index_monotonic,
+            "index_unique": frame_index_unique,
+        },
+        source=source_label,
+        now_epoch=receipt_time_ms / 1000.0,
+    )
     with self._kline_cache_lock:
-        self._kline_cache[cache_key] = {"df": trimmed.copy(deep=True), "ts": time.time()}
+        self._kline_cache[cache_key] = {"df": trimmed.copy(deep=True), "ts": receipt_time_ms / 1000.0}
+    self._last_market_data_quality = quality
     self._last_network_error_log = 0.0
     self._handle_network_recovered()
     return trimmed

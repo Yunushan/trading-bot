@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import math
 import time
 
 import requests
 
 from ..runtime_diagnostics import report_runtime_fallback
-from .helpers import _env_flag
+from .helpers import _coerce_interval_seconds, _env_flag
+
+
+_WS_PUBLIC_CANDLE_FIELDS = (
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "closed",
+    "event_time",
+)
 
 try:
     from binance.streams import ThreadedWebsocketManager as _TWM
@@ -96,18 +109,62 @@ def _ws_kline_handler(self, msg):
         if not sym or not interval:
             return
         open_time = int(k.get("t") or 0)
+        event_time = int(msg.get("E") or 0)
+        if open_time <= 0 or event_time <= 0:
+            return
+        try:
+            open_value = float(k.get("o"))
+            high_value = float(k.get("h"))
+            low_value = float(k.get("l"))
+            close_value = float(k.get("c"))
+            volume_value = float(k.get("v"))
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not all(math.isfinite(value) for value in (open_value, high_value, low_value, close_value, volume_value)):
+            return
+        if (
+            min(open_value, high_value, low_value, close_value) <= 0.0
+            or volume_value < 0.0
+            or high_value < max(open_value, close_value, low_value)
+            or low_value > min(open_value, close_value, high_value)
+        ):
+            return
         row = {
             "open_time": open_time,
-            "open": float(k.get("o") or 0.0),
-            "high": float(k.get("h") or 0.0),
-            "low": float(k.get("l") or 0.0),
-            "close": float(k.get("c") or 0.0),
-            "volume": float(k.get("v") or 0.0),
+            "open": open_value,
+            "high": high_value,
+            "low": low_value,
+            "close": close_value,
+            "volume": volume_value,
             "closed": bool(k.get("x") or False),
-            "event_time": int(msg.get("E") or 0),
+            "event_time": event_time,
+            "receipt_time_ms": int(time.time() * 1000),
+            "sequence_ok": True,
         }
         key = (sym, interval)
         with self._ws_lock:
+            previous = self._ws_kline_cache.get(key)
+            if isinstance(previous, dict):
+                previous_event = int(previous.get("event_time") or 0)
+                previous_open = int(previous.get("open_time") or 0)
+                if event_time <= previous_event or open_time < previous_open:
+                    rejections = getattr(self, "_ws_kline_rejections", None)
+                    if not isinstance(rejections, dict):
+                        rejections = {}
+                        setattr(self, "_ws_kline_rejections", rejections)
+                    rejections[key] = {
+                        "reason": "replayed or out-of-order websocket candle",
+                        "event_time": event_time,
+                        "open_time": open_time,
+                        "rejected_at_ms": row["receipt_time_ms"],
+                    }
+                    return
+                try:
+                    interval_ms = int(_coerce_interval_seconds(interval) * 1000)
+                except (TypeError, ValueError, OverflowError):
+                    interval_ms = 0
+                if interval_ms > 0 and open_time - previous_open > interval_ms + 1_000:
+                    row["sequence_ok"] = False
             self._ws_kline_cache[key] = row
     except Exception as exc:
         report_runtime_fallback(self, "WebSocket kline payload was malformed", exc)
@@ -142,7 +199,22 @@ def _ws_latest_candle(self, symbol: str, interval: str):
     sym = (symbol or "").upper()
     key = (sym, interval)
     with self._ws_lock:
-        return self._ws_kline_cache.get(key)
+        row = self._ws_kline_cache.get(key)
+        if not isinstance(row, dict):
+            return None
+        return {field: row[field] for field in _WS_PUBLIC_CANDLE_FIELDS if field in row}
+
+
+def _ws_latest_candle_metadata(self, symbol: str, interval: str):
+    """Return the internal candle metadata used by live-data quality checks."""
+
+    if not self._ws_enabled:
+        return None
+    sym = (symbol or "").upper()
+    key = (sym, interval)
+    with self._ws_lock:
+        row = self._ws_kline_cache.get(key)
+        return dict(row) if isinstance(row, dict) else None
 
 
 def bind_binance_ws_runtime(wrapper_cls) -> None:
@@ -153,3 +225,4 @@ def bind_binance_ws_runtime(wrapper_cls) -> None:
     wrapper_cls._ws_kline_handler = _ws_kline_handler
     wrapper_cls._ensure_ws_stream = _ensure_ws_stream
     wrapper_cls._ws_latest_candle = _ws_latest_candle
+    wrapper_cls._ws_latest_candle_metadata = _ws_latest_candle_metadata

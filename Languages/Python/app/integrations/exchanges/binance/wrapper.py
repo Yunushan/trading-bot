@@ -287,6 +287,7 @@ class BinanceWrapper:
         self._futures_dual_side_cache_ts = 0.0
         self._kline_cache = {}
         self._kline_cache_lock = threading.Lock()
+        self._last_market_data_quality: dict | None = None
         self._positions_cache = None
         self._positions_cache_ts = 0.0
         self._positions_cache_lock = threading.Lock()
@@ -299,6 +300,7 @@ class BinanceWrapper:
         self._ws_twm = None
         self._ws_streams = {}
         self._ws_kline_cache = {}
+        self._ws_kline_rejections = {}
         self._ws_lock = threading.Lock()
         self._futures_account_balance_cache_ts = 0.0
         self._futures_account_cache_lock = threading.Lock()

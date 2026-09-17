@@ -99,7 +99,12 @@ def _live_mode_for_order_guard(self, wrapper) -> bool:  # noqa: ANN001
     return bool(is_live_trading_mode(mode) or is_live_trading_mode(getattr(wrapper, "mode", "")))
 
 
-def _evaluate_operational_order_guard(self, wrapper) -> tuple[bool, str, str, dict[str, Any]]:  # noqa: ANN001
+def _evaluate_operational_order_guard(
+    self,
+    wrapper,
+    *,
+    exposure_increasing: bool = True,
+) -> tuple[bool, str, str, dict[str, Any]]:  # noqa: ANN001
     config = getattr(self, "config", {}) or {}
     if not isinstance(config, dict):
         config = {}
@@ -127,7 +132,18 @@ def _evaluate_operational_order_guard(self, wrapper) -> tuple[bool, str, str, di
             "warning",
             {},
         )
-    issues = operational_snapshot_issues(snapshot, config, now_epoch=time.time())
+    market_data_quality = None
+    if exposure_increasing:
+        market_data_quality = getattr(self, "_current_market_data_quality", None)
+        if market_data_quality is None:
+            market_data_quality = getattr(wrapper, "_last_market_data_quality", None)
+    issues = operational_snapshot_issues(
+        snapshot,
+        config,
+        now_epoch=time.time(),
+        market_data_quality=market_data_quality,
+        require_closed_market_data=exposure_increasing,
+    )
     if not issues:
         return True, "", "info", snapshot
 
@@ -396,7 +412,11 @@ def _submit_futures_signal_order(
         )
 
     operational_allowed, operational_message, operational_level, operational_snapshot = (
-        _evaluate_operational_order_guard(self, self.binance)
+        _evaluate_operational_order_guard(
+            self,
+            self.binance,
+            exposure_increasing=not reduce_only,
+        )
     )
     if not operational_allowed:
         strategy_order_error_logging.log_order_error(

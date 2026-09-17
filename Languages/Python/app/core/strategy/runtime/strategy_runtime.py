@@ -9,6 +9,7 @@ import traceback
 
 try:
     from ....integrations.exchanges.binance import NetworkConnectivityError
+    from ....integrations.exchanges.binance.market.data_quality import market_data_quality_issues
     from ....settings.live_safety import is_live_trading_mode
     from ....security.redaction import redact_text
     from ....config import (
@@ -19,6 +20,7 @@ try:
     )
 except ImportError:  # pragma: no cover - standalone execution fallback
     from binance_wrapper import NetworkConnectivityError
+    from integrations.exchanges.binance.market.data_quality import market_data_quality_issues
     from settings.live_safety import is_live_trading_mode
     from security.redaction import redact_text
     from config import (
@@ -324,16 +326,58 @@ def _fetch_cycle_market_state(self, *, ctx: dict[str, object]) -> dict[str, obje
     if self.stopped():
         return None
 
+    # Clear the previous result before every fetch so an exception or a missing
+    # metadata path can never reuse a healthy-looking quality result from an
+    # earlier bar.
+    self._current_market_data_quality = None
     df = self.binance.get_klines(cw["symbol"], cw["interval"], limit=cw.get("lookback", 200))
     if self.stopped():
         return None
+
+    quality = None
+    try:
+        attrs = getattr(df, "attrs", None)
+        if isinstance(attrs, dict):
+            quality = attrs.get("market_data_quality")
+    except Exception:
+        quality = None
+    if quality is None:
+        quality = getattr(self.binance, "_last_market_data_quality", None)
+    self._current_market_data_quality = quality
+    configured_mode = self.config.get("mode") if isinstance(self.config, dict) else None
+    live_mode = is_live_trading_mode(configured_mode) or is_live_trading_mode(getattr(self.binance, "mode", ""))
+    if live_mode:
+        quality_issues = market_data_quality_issues(
+            quality,
+            now_epoch=time.time(),
+            require_closed=True,
+        )
+        if quality_issues:
+            _safe_log(
+                self,
+                f"{cw['symbol']}@{cw['interval']} live cycle blocked by market-data quality: "
+                + "; ".join(quality_issues),
+            )
+            return None
 
     ind = self.compute_indicators(df)
     if self.stopped():
         return None
 
     signal, trigger_desc, trigger_price, trigger_sources, trigger_actions = self.generate_signal(df, ind)
-    signal_timestamp = time.time() if signal else None
+    signal_timestamp = None
+    if signal:
+        event_time_ms = quality.get("event_time_ms") if isinstance(quality, dict) else None
+        try:
+            event_time_value = float(event_time_ms)
+            signal_timestamp = event_time_value / 1_000.0 if math.isfinite(event_time_value) else None
+        except (TypeError, ValueError, OverflowError):
+            signal_timestamp = None
+        # Non-live/demo strategy simulations may not have transport metadata.
+        # Live mode was rejected above, so this fallback cannot manufacture a
+        # fresh timestamp for stale source data at the exposure boundary.
+        if signal_timestamp is None and not live_mode:
+            signal_timestamp = time.time()
     try:
         current_bar_marker = int(df.index[-1].value) if not df.empty else None
     except Exception:
@@ -359,6 +403,7 @@ def _fetch_cycle_market_state(self, *, ctx: dict[str, object]) -> dict[str, obje
         "ind": ind,
         "signal": signal,
         "signal_timestamp": signal_timestamp,
+        "market_data_quality": quality,
         "trigger_desc": trigger_desc,
         "trigger_price": trigger_price,
         "trigger_sources": trigger_sources,

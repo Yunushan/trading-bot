@@ -113,6 +113,7 @@ def _build_signal_order_candidates(
     trigger_desc,
     trigger_actions,
     trigger_segments,
+    market_data_quality=None,
 ) -> list[dict[str, object]]:
     base_trigger_labels = list(dict.fromkeys(trigger_sources or []))
     base_signature = tuple(sorted(base_trigger_labels))
@@ -181,6 +182,7 @@ def _build_signal_order_candidates(
                     "flip_qty_target": request.get("flip_qty_target"),
                     "trigger_desc": request_trigger_desc,
                     "trigger_actions": request_trigger_actions,
+                    "market_data_quality": market_data_quality,
                 }
             )
     elif signal:
@@ -205,6 +207,7 @@ def _build_signal_order_candidates(
                 "timestamp": signal_timestamp,
                 "trigger_desc": str(trigger_desc or ""),
                 "trigger_actions": fallback_trigger_actions,
+                "market_data_quality": market_data_quality,
             }
         )
     return orders_to_execute
@@ -471,6 +474,7 @@ def _filter_signal_order_candidates(
                     "flip_qty_target": order.get("flip_qty_target"),
                     "trigger_desc": order.get("trigger_desc"),
                     "trigger_actions": order.get("trigger_actions"),
+                    "market_data_quality": order.get("market_data_quality"),
                 }
             )
     return filtered_orders, positions_cache_snapshot, False
@@ -490,6 +494,7 @@ def _prepare_signal_orders(
     dual_side: bool,
     positions_cache=None,
     load_positions_cache=None,
+    market_data_quality=None,
 ) -> tuple[list[dict[str, object]], list[dict] | None, bool]:
     orders_to_execute = self._build_signal_order_candidates(
         cw=cw,
@@ -500,6 +505,7 @@ def _prepare_signal_orders(
         trigger_desc=trigger_desc,
         trigger_actions=trigger_actions,
         trigger_segments=trigger_segments,
+        market_data_quality=market_data_quality,
     )
     initial_orders_count = len(orders_to_execute)
     orders_to_execute, positions_cache_snapshot, aborted = self._filter_signal_order_candidates(

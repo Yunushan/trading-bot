@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from datetime import datetime
 
 from app.settings.execution import ExecutionSettings
+from app.integrations.exchanges.binance.market.data_quality import market_data_quality_issues
 
 
 _DEFAULTS = ExecutionSettings()
@@ -44,7 +45,12 @@ def _timestamp_epoch(value: object) -> float | None:
 
 
 def operational_snapshot_issues(
-    snapshot: object, config: Mapping[str, object], *, now_epoch: float,
+    snapshot: object,
+    config: Mapping[str, object],
+    *,
+    now_epoch: float,
+    market_data_quality: object | None = None,
+    require_closed_market_data: bool = True,
 ) -> list[str]:
     if not isinstance(snapshot, dict) or not snapshot:
         return ["operational safety snapshot is unavailable or invalid"]
@@ -62,38 +68,46 @@ def operational_snapshot_issues(
 
     freshness = snapshot.get("freshness")
     if not isinstance(freshness, dict):
-        return issues + ["critical snapshot freshness is missing or invalid"]
+        issues.append("critical snapshot freshness is missing or invalid")
+    else:
+        for key, label, config_key in _CRITICAL_COMPONENTS:
+            item = freshness.get(key)
+            if not isinstance(item, dict):
+                issues.append(f"{label} freshness is missing or invalid")
+                continue
+            stale = item.get("stale")
+            if not isinstance(stale, bool):
+                issues.append(f"{label} freshness stale flag is missing or invalid")
+            elif stale:
+                issues.append(f"{label} snapshot is stale")
 
-    for key, label, config_key in _CRITICAL_COMPONENTS:
-        item = freshness.get(key)
-        if not isinstance(item, dict):
-            issues.append(f"{label} freshness is missing or invalid")
-            continue
-        stale = item.get("stale")
-        if not isinstance(stale, bool):
-            issues.append(f"{label} freshness stale flag is missing or invalid")
-        elif stale:
-            issues.append(f"{label} snapshot is stale")
+            age = _nonnegative_number(item.get("age_seconds"))
+            epoch = _timestamp_epoch(item.get("generated_at"))
+            reported_limit = _nonnegative_number(item.get("max_age_seconds"))
+            configured_limit = _nonnegative_number(config.get(config_key, getattr(_DEFAULTS, config_key)))
+            if age is None or epoch is None:
+                issues.append(f"{label} freshness age or timestamp is missing or invalid")
+            if reported_limit is None or configured_limit is None or reported_limit == 0.0 or configured_limit == 0.0:
+                issues.append(f"{label} freshness limit is missing or invalid")
+                continue
+            if age is None or epoch is None:
+                continue
+            if epoch - now_epoch > _MAX_FUTURE_SKEW_SECONDS:
+                issues.append(f"{label} freshness timestamp is in the future")
+                continue
 
-        age = _nonnegative_number(item.get("age_seconds"))
-        epoch = _timestamp_epoch(item.get("generated_at"))
-        reported_limit = _nonnegative_number(item.get("max_age_seconds"))
-        configured_limit = _nonnegative_number(config.get(config_key, getattr(_DEFAULTS, config_key)))
-        if age is None or epoch is None:
-            issues.append(f"{label} freshness age or timestamp is missing or invalid")
-        if reported_limit is None or configured_limit is None or reported_limit == 0.0 or configured_limit == 0.0:
-            issues.append(f"{label} freshness limit is missing or invalid")
-            continue
-        if age is None or epoch is None:
-            continue
-        if epoch - now_epoch > _MAX_FUTURE_SKEW_SECONDS:
-            issues.append(f"{label} freshness timestamp is in the future")
-            continue
-
-        # Re-age cached snapshots and never let remote metadata relax the local limit.
-        limit = min(reported_limit, configured_limit)
-        if max(age, now_epoch - epoch) > limit:
-            issues.append(f"{label} snapshot is stale")
-        if snapshot_epoch is not None and now_epoch - snapshot_epoch > limit:
-            issues.append(f"operational snapshot is stale for {label}")
-    return issues
+            # Re-age cached snapshots and never let remote metadata relax the local limit.
+            limit = min(reported_limit, configured_limit)
+            if max(age, now_epoch - epoch) > limit:
+                issues.append(f"{label} snapshot is stale")
+            if snapshot_epoch is not None and now_epoch - snapshot_epoch > limit:
+                issues.append(f"operational snapshot is stale for {label}")
+    if market_data_quality is not None:
+        issues.extend(
+            market_data_quality_issues(
+                market_data_quality,
+                now_epoch=now_epoch,
+                require_closed=require_closed_market_data,
+            )
+        )
+    return list(dict.fromkeys(issues))

@@ -31,6 +31,7 @@ def run_once(self):
     trigger_sources = market_state["trigger_sources"]
     trigger_actions = market_state["trigger_actions"]
     trigger_segments = list(market_state.get("trigger_segments") or [])
+    market_data_quality = market_state.get("market_data_quality")
     current_bar_marker = market_state["current_bar_marker"]
     last_rsi = market_state["last_rsi"]
 
@@ -110,6 +111,7 @@ def run_once(self):
         dual_side=dual_side,
         positions_cache=positions_cache,
         load_positions_cache=_load_positions_cache,
+        market_data_quality=market_data_quality,
     )
     if stop_requested:
         return
@@ -143,5 +145,5 @@ def run_once(self):
             current_bar_marker=current_bar_marker,
             positions_cache_holder=positions_cache_holder,
             order_batch_state=order_batch_state,
+            market_data_quality=market_data_quality,
         )
-

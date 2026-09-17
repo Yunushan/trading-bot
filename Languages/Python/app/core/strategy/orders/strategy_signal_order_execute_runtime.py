@@ -38,7 +38,10 @@ def _execute_signal_order(
     current_bar_marker=None,
     positions_cache_holder: dict | None = None,
     order_batch_state: dict | None = None,
+    market_data_quality=None,
 ) -> None:
+    if market_data_quality is not None:
+        self._current_market_data_quality = market_data_quality
     positions_cache = positions_cache_holder.get("value") if isinstance(positions_cache_holder, dict) else None
     if not isinstance(order_batch_state, dict):
         order_batch_state = {}
