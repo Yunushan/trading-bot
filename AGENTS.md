@@ -31,3 +31,9 @@ These instructions apply to the entire repository and are intentionally shared b
 - Run focused tests for every changed surface, then the repository verification gate appropriate to the change.
 - For LLM changes, cover provider catalog/config validation, request serialization, context redaction/bounding, output policy, model discovery, generated parity, Rust, native C++, and Tauri UI behavior.
 - Preserve unrelated user changes and do not weaken tests or safety checks to make a build pass.
+
+## Production-readiness continuity
+
+- For production-readiness audit or implementation work, start with `docs/PRODUCTION_HANDOFF.md`.
+- Use `docs/PRODUCTION_IMPLEMENTATION_PLAN.md` as the canonical task-status and acceptance-criteria register; the dated baseline evidence is in `docs/PRODUCTION_READINESS_AUDIT.md`.
+- Recheck the current source revision and evidence before relying on historical scores. Update the plan work log and handoff after implementation; never treat documentation or green CI alone as production sign-off.

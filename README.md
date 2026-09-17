@@ -202,6 +202,9 @@ verification gate.
 
 Contributor-facing structure and maintenance docs now live here:
 
+- [Production readiness: start here / new-chat handoff](docs/PRODUCTION_HANDOFF.md)
+- [Production-readiness audit and score](docs/PRODUCTION_READINESS_AUDIT.md)
+- [Prioritized production implementation plan](docs/PRODUCTION_IMPLEMENTATION_PLAN.md)
 - `docs/PROJECT_STRUCTURE.md`
 - `docs/DEVELOPMENT.md`
 - `docs/PLATFORM_EXPANSION_PLAN.md`
