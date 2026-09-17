@@ -35,7 +35,7 @@ The initial offline parallel lanes are security (002→003→018), trading (004 
 | PRD-001 | P1 / BLOCKED_EXTERNAL | Maintainer + release lead | S | — | Scope decision and enforced main/release governance |
 | PRD-002 | P1 / DONE | Security + API | M | — | Host-owned LLM credential/destination boundary |
 | PRD-003 | P1 / DONE | Security + LLM | S–M | 002 design | Uniform LLM HTTPS/loopback URL policy |
-| PRD-004 | P1 / TODO | Exchange runtime | S | — | ccxt protected-order parameter validation |
+| PRD-004 | P1 / DONE | Exchange runtime | S | — | ccxt protected-order parameter validation |
 | PRD-005 | P1 / TODO | Strategy + market data | M | — | Live event-time and OHLCV quality gate |
 | PRD-006 | P1 / TODO | Release tooling | M | — | Executable deployment smoke contracts |
 | PRD-007 | P1 / TODO | Release + security | M–L | 006 | Exact-digest trusted build/scan provenance |
@@ -287,6 +287,22 @@ Evidence records must identify: task ID; source SHA; clean/dirty state; environm
 - Acceptance items still open: real-host certificate/egress behavior and deployment evidence remain external; no live request or production secret was used. Re-run the complete canonical gate before any score change.
 - External blockers / decisions needed: initial product scope, repository governance, deployment/provenance inputs and operational evidence remain unchanged from the audit.
 - Next ready task: **PRD-004** (ccxt protected-order parameter validation), with **PRD-006** deployment smoke integration still ready.
+- Score change: **not assessed**; the dated baseline remains 58/100 until a fresh evidence review.
+
+### 2026-09-17 — PRD-004 implementation checkpoint
+
+- Status: **DONE** (offline implementation; production promotion remains out of scope).
+- Assignee and scope: Codex implementation checkpoint; ccxt order-parameter boundary, exchange-support regression coverage and dry-run/live preflight behavior.
+- Starting SHA and state: `9752f7bb20dc6b9d788310e5f32a9afd0509eb1e`, clean before this change; no unrelated paths were modified.
+- Failure reproduced: the F01 audit showed that `submit_order` used `setdefault` for `clientOrderId` and `reduceOnly`, silently allowing conflicting aliases in `params` to override validated explicit intent. Non-mapping params were also ignored instead of failing closed.
+- Files and behavior changed: `app/integrations/exchanges/ccxt_diagnostics.py` now rejects protected top-level and nested parameter aliases for symbol/type/side/amount/price/client ID/reduce-only, rejects malformed `params` before exchange construction and preserves only additive exchange options; explicit validated arguments populate canonical ccxt fields. Regression tests prove zero exchange-factory/order calls on collisions and preserve valid additive parameters.
+- Tests and exact outcomes:
+  - `.\.venv\Scripts\python.exe -m pytest Languages/Python/tests/test_exchange_support_capabilities.py -p no:cacheprovider --no-cov -q` — **31 passed, 150 subtests passed**.
+  - `.\.venv\Scripts\python.exe -m ruff check Languages/Python/app/integrations/exchanges/ccxt_diagnostics.py Languages/Python/tests/test_exchange_support_capabilities.py` — **all checks passed**; `git diff --check` passed; parity generator reported `changed=False`.
+- Commit: `01a24cf8c6a2f831f357d1ddc5f445c32bc17b04` (`Reject ccxt protected order parameter collisions`). No PR or push was created.
+- Acceptance items still open: venue-specific live semantics and real exchange evidence remain external; no live order or production credential was used. Re-run the complete canonical gate before any score change.
+- External blockers / decisions needed: initial product scope, repository governance, deployment/provenance inputs and operational evidence remain unchanged from the audit.
+- Next ready task: **PRD-005** (live event-time and OHLCV quality gate), with **PRD-006** deployment smoke integration still ready.
 - Score change: **not assessed**; the dated baseline remains 58/100 until a fresh evidence review.
 
 ### Template for the next implementation checkpoint
