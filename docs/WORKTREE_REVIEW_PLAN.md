@@ -1,7 +1,7 @@
 # Worktree Review Plan
 
-The current working tree is intentionally broad. Review it in slices instead of
-as one large patch.
+For a broad working tree, review changes in slices instead of as one large
+patch.
 
 Run:
 
@@ -27,7 +27,10 @@ Before final review, run:
 python tools/verify_all.py
 ```
 
-`tool versions`, `workspace hygiene`, `risky pattern audit`, and `ruff
-availability` are advisory in that wrapper because they depend on the local
-machine setup or provide triage counts instead of hard failure policy. CI
-enforces the pinned runtime versions and source hygiene on clean runners.
+`tool versions` is a blocking advisory: a failure makes the wrapper fail even
+though it is reported separately from required checks. `risky pattern audit`
+is required and blocks success on regression or high-severity findings.
+`workspace hygiene`, `worktree summary`, `client dependency locks`, and `ruff
+availability` are nonblocking advisories in this wrapper. Python lint remains
+a required check, so missing Ruff still blocks through that check. CI also
+enforces pinned runtime versions and source hygiene on clean runners.

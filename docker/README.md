@@ -95,6 +95,12 @@ runtime versions absent from the scan, duplicate JSON fields, unreviewed
 suppressed findings and scanner execution failures cannot pass the gate.
 These checks bind local CI evidence; they do not replace signed release
 provenance or establish that a deployed image is the same candidate.
+The separate protected-tag
+`.github/workflows/publish-production-readonly-image.yml` builds and scans one
+published GHCR digest, then signs build, SPDX SBOM, and passing scan-policy
+attestations for that digest. The production deployment workflow verifies all
+three fresh attestations before it receives Kubernetes credentials; see
+`deploy/kubernetes/production-readonly/README.md` for retention and revocation.
 
 ## What is included
 

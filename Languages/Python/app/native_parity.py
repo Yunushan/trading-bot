@@ -27,6 +27,7 @@ from .gui.code.code_language_catalog import (
     _rust_dependency_targets_for_config,
 )
 from .core.backtest.indicator_selection_runtime import _enabled as backtest_indicator_enabled
+from .core.backtest.models import EXECUTION_MODEL_SAME_CLOSE_LEGACY
 from .gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
 from .native_interval_semantics import (
     backtest_interval_seconds,
@@ -2982,7 +2983,10 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "indicators": _indicator_payload(),
         },
         "default_execution": execution_defaults.to_config_dict(),
-        "default_backtest": backtest_defaults.to_config_dict(),
+        "default_backtest": {
+            **backtest_defaults.to_config_dict(),
+            "execution_model": EXECUTION_MODEL_SAME_CLOSE_LEGACY,
+        },
         "risk_defaults": risk_defaults,
         "ui_defaults": ui_defaults,
         "llm_providers": _llm_provider_payload(),

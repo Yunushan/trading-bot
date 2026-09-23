@@ -8,7 +8,7 @@ from .order_fallback_runtime import _ensure_binance_client_order_id
 from ..transport.helpers import _is_binance_error_payload
 from ..metadata.filter_validation import validated_symbol_filters
 from app.security.redaction import redact_text
-from app.settings.live_safety import LiveTradingSafetyError
+from app.settings.live_safety import LiveTradingSafetyError, is_live_trading_mode
 
 
 def _finite_float(value: object) -> float | None:
@@ -175,12 +175,26 @@ def place_spot_market_order(
         mark_submitted = getattr(self, "_mark_order_intent_submitted", None)
         mark_accepted = getattr(self, "_mark_order_intent_accepted", None)
         mark_unknown = getattr(self, "_mark_order_intent_unknown", None)
+        owner_submission = getattr(self, "_spot_execution_submission", None)
+        owner_required = (
+            getattr(self, "_enforce_spot_execution_owner", False)
+            and is_live_trading_mode(getattr(self, "mode", None))
+        ) or getattr(self, "_spot_owner_initial_live", False)
+        if owner_required and not all(
+            callable(operation)
+            for operation in (begin_intent, mark_submitted, mark_accepted, mark_unknown, owner_submission)
+        ):
+            raise LiveTradingSafetyError("Spot execution owner or durable order intent gate is unavailable.")
         if callable(begin_intent):
             begin_intent(params, market="spot", source="place_spot_market_order")
             intent_started = True
         if callable(mark_submitted):
             mark_submitted(params, via="primary")
-        res = _validated_spot_order_response(self.client.create_order(**params))
+        if owner_required:
+            with owner_submission():
+                res = _validated_spot_order_response(self.client.create_order(**params))
+        else:
+            res = _validated_spot_order_response(self.client.create_order(**params))
         if callable(mark_accepted) and intent_started:
             mark_accepted(params, via="primary", result=res)
         return {

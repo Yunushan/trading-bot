@@ -29,6 +29,7 @@ class BacktestCheckpointStoreTests(unittest.TestCase):
             start=datetime(2025, 1, 1),
             end=datetime(2025, 1, 2),
             capital=1000.0,
+            execution_model="next_bar_open",
             pair_overrides=[
                 PairOverride(
                     symbol="BTCUSDT",
@@ -65,6 +66,7 @@ class BacktestCheckpointStoreTests(unittest.TestCase):
             restored = deserialize_backtest_request(checkpoint["request"])
             self.assertEqual(request.symbols, restored.symbols)
             self.assertEqual(request.start, restored.start)
+            self.assertEqual("next_bar_open", restored.execution_model)
             self.assertEqual(["rsi"], restored.pair_overrides[0].indicators)
 
             delete_backtest_checkpoint_file(checkpoint_path)

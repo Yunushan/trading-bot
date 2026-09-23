@@ -8,7 +8,9 @@ contract used by the desktop-remote and mobile thin-client paths.
 ## Scope
 
 - inspect runtime, status, backtest state, config, account, portfolio, and logs
-- request service lifecycle heartbeat start/stop through the service API
+- request lifecycle start/stop through the service API; the backend control
+  plane determines whether the request is desktop-forwarded, heartbeat-only,
+  or intent-only
 - edit service-owned runtime config state
 - save or load the durable service config file
 - trigger and stop service-owned backtests
@@ -24,8 +26,9 @@ Load File validates that file before replacing the current runtime config.
 ## Auth Handling
 
 When bearer auth is enabled, the dashboard keeps the API token in browser
-session storage for the current tab/session. It does not write the token to
-long-lived local storage.
+memory for the current page only. A reload requires entering it again. The
+dashboard persists the API base URL in local storage, but removes legacy tokens
+from local or session storage instead of restoring them.
 
 Live dashboard updates use a `fetch`-based event-stream request with the
 `Authorization` header. The token is not added to the stream URL.
@@ -60,6 +63,8 @@ The Control Plane card also interprets backend control-plane metadata.
   where the live/demo runtime owns strategy and order execution.
 - Heartbeat Only means standalone service start/stop only maintains a lifecycle
   heartbeat. It does not run strategies, market-data loops, or exchange orders.
+  The dashboard can request service lifecycle heartbeat start/stop through the
+  service API in this mode.
 - Intent Only means lifecycle requests are recorded until an execution adapter
   attaches.
 - Trading Execution shows whether the attached owner reports strategy and order

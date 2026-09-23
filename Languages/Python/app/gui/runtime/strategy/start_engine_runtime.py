@@ -125,6 +125,15 @@ def _prepare_strategy_runtime_start(
     except Exception:
         pass
 
+    if (
+        not is_futures_account and is_live_trading_mode(getattr(self.shared_binance, "mode", None))
+        and getattr(self.shared_binance, "_enforce_spot_execution_owner", False)
+    ):
+        claim_owner = getattr(self.shared_binance, "_ensure_spot_execution_owner", None)
+        if not callable(claim_owner):
+            raise RuntimeError("Spot execution owner gate is unavailable.")
+        claim_owner()
+
     guard_obj = getattr(self, "guard", None)
     guard_can_open = getattr(guard_obj, "can_open", None) if guard_obj else None
     if guard_obj:

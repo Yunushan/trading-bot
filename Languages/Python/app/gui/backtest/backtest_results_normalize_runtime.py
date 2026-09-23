@@ -84,6 +84,7 @@ def _normalize_backtest_run(run):
             "position_mode": getattr(run, "position_mode", None),
             "assets_mode": getattr(run, "assets_mode", None),
             "account_mode": getattr(run, "account_mode", None),
+            "execution_model": getattr(run, "execution_model", "same_close_legacy"),
             "optimizer_rank": getattr(run, "optimizer_rank", None),
             "optimizer_metric": getattr(run, "optimizer_metric", ""),
             "optimizer_primary_score": getattr(run, "optimizer_primary_score", None),
@@ -115,6 +116,7 @@ def _normalize_backtest_run(run):
             ),
         }
     data.setdefault("indicator_keys", [])
+    data.setdefault("execution_model", "same_close_legacy")
     had_position_pct = "position_pct" in data and data.get("position_pct") not in (None, "")
     keys = data.get("indicator_keys") or []
     if not isinstance(keys, (list, tuple)):
@@ -191,6 +193,7 @@ def _normalize_backtest_run(run):
         "position_mode",
         "assets_mode",
         "account_mode",
+        "execution_model",
         "connector_backend",
         "optimizer_metric",
         "optimizer_mode",

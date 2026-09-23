@@ -24,6 +24,7 @@ class BacktestSnapshotStoreTests(unittest.TestCase):
                 session_id="session-1",
                 state="running",
                 status_message="Backtest running.",
+                execution_model="next_bar_open",
                 symbols=["BTCUSDT"],
                 intervals=["1h"],
                 runs=[{"symbol": "BTCUSDT", "interval": "1h", "indicator_keys": ["rsi"]}],
@@ -37,6 +38,7 @@ class BacktestSnapshotStoreTests(unittest.TestCase):
             self.assertIsNotNone(recovered)
             self.assertEqual("interrupted", recovered.state)
             self.assertEqual("session-1", recovered.session_id)
+            self.assertEqual("next_bar_open", recovered.execution_model)
             self.assertEqual(["BTCUSDT"], list(recovered.symbols))
             self.assertIn("interrupted by a service restart", recovered.errors[-1].error)
 
@@ -47,10 +49,15 @@ class BacktestSnapshotStoreTests(unittest.TestCase):
                 session_id="session-2",
                 state="completed",
                 status_message="Backtest completed.",
+                execution_model="next_bar_open",
                 symbols=["ETHUSDT"],
                 intervals=["15m"],
                 run_count=1,
-                runs=[{"symbol": "ETHUSDT", "interval": "15m", "indicator_keys": ["rsi"]}],
+                runs=[{
+                    "symbol": "ETHUSDT", "interval": "15m", "indicator_keys": ["rsi"],
+                    "execution_model": "next_bar_open",
+                    "terminal_valuation": "mark_to_market_open_position",
+                }],
             )
             write_backtest_snapshot_file(snapshot, path=path)
 
@@ -60,3 +67,5 @@ class BacktestSnapshotStoreTests(unittest.TestCase):
             self.assertEqual("completed", recovered.state)
             self.assertEqual("session-2", recovered.session_id)
             self.assertEqual(1, recovered.run_count)
+            self.assertEqual("next_bar_open", recovered.execution_model)
+            self.assertEqual("next_bar_open", recovered.runs[0].execution_model)

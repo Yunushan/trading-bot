@@ -26,9 +26,16 @@ class _Response:
     def __init__(self, payload):
         self._payload = payload
         self.text = str(payload)
+        self.headers = {}
 
     def json(self):
         return self._payload
+
+    def iter_content(self, chunk_size):
+        yield json.dumps(self._payload).encode("utf-8")
+
+    def close(self):
+        pass
 
 
 class LLMClientPrivacyTests(unittest.TestCase):
@@ -264,7 +271,7 @@ class LLMClientPrivacyTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual("Keep deterministic risk controls.", result["text"])
-        self.assertEqual(30, post.call_args.kwargs["timeout"])
+        self.assertEqual((10.0, 15.0), post.call_args.kwargs["timeout"])
 
     def test_llm_transport_failure_is_structured_and_redacted(self):
         with mock.patch("app.integrations.llm.clients.requests.post") as post:

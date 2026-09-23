@@ -3,9 +3,41 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from typing import Dict, List, Optional
 
 from ...config import MDD_LOGIC_DEFAULT
+
+
+EXECUTION_MODEL_SAME_CLOSE_LEGACY = "same_close_legacy"
+EXECUTION_MODEL_NEXT_BAR_OPEN = "next_bar_open"
+BACKTEST_EXECUTION_MODELS = (
+    EXECUTION_MODEL_SAME_CLOSE_LEGACY,
+    EXECUTION_MODEL_NEXT_BAR_OPEN,
+)
+
+
+def validate_execution_model(value: object) -> str:
+    model = str(value).strip()
+    if model not in BACKTEST_EXECUTION_MODELS:
+        raise ValueError(
+            f"Invalid backtest execution_model {model!r}; expected one of "
+            + ", ".join(BACKTEST_EXECUTION_MODELS)
+        )
+    return model
+
+
+def validate_execution_cost_bps(value: object, *, field: str) -> float:
+    try:
+        bps = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Invalid backtest {field}: expected finite nonnegative basis points") from exc
+    if not isfinite(bps) or bps < 0.0:
+        raise ValueError(f"Invalid backtest {field}: expected finite nonnegative basis points")
+    if field == "slippage_bps" and bps >= 10_000.0:
+        # At 100% adverse slippage, one side of a fill has a zero/negative price.
+        raise ValueError("Invalid backtest slippage_bps: must be below 10000 basis points")
+    return bps
 
 
 @dataclass
@@ -64,6 +96,7 @@ class BacktestRequest:
     stop_loss_scope: str = "per_trade"
     fee_bps: float = 5.0
     slippage_bps: float = 2.0
+    execution_model: str = EXECUTION_MODEL_SAME_CLOSE_LEGACY
     pair_overrides: Optional[Iterable[PairOverride]] = None
     optimizer_max_duration_seconds: int = 0
 
@@ -104,6 +137,10 @@ class BacktestRunResult:
     fee_bps: float | None = None
     slippage_bps: float | None = None
     fees_paid: float | None = None
+    execution_model: str = EXECUTION_MODEL_SAME_CLOSE_LEGACY
+    terminal_valuation: str = ""
+    terminal_position_open: bool = False
+    terminal_unrealized_pnl: float = 0.0
     strategy_controls: Dict[str, object] | None = None
     optimizer_rank: int | None = None
     optimizer_metric: str | None = None

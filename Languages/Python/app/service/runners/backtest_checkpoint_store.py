@@ -8,7 +8,13 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
-from ...core.backtest.models import BacktestRequest, IndicatorDefinition, PairOverride
+from ...core.backtest.models import (
+    EXECUTION_MODEL_SAME_CLOSE_LEGACY,
+    BacktestRequest,
+    IndicatorDefinition,
+    PairOverride,
+    validate_execution_model,
+)
 
 BACKTEST_CHECKPOINT_FILE_KIND = "trading-bot-backtest-checkpoint"
 BACKTEST_CHECKPOINT_FORMAT_VERSION = 1
@@ -86,6 +92,7 @@ def serialize_backtest_request(request: BacktestRequest) -> dict[str, object]:
         "stop_loss_scope": request.stop_loss_scope,
         "fee_bps": request.fee_bps,
         "slippage_bps": request.slippage_bps,
+        "execution_model": request.execution_model,
         "pair_overrides": [_pair_override_payload(item) for item in (request.pair_overrides or [])],
         "optimizer_max_duration_seconds": request.optimizer_max_duration_seconds,
         "optimizer_result_limit": getattr(request, "optimizer_result_limit", 0),
@@ -145,6 +152,9 @@ def deserialize_backtest_request(payload: Mapping[str, object]) -> BacktestReque
         stop_loss_scope=str(payload.get("stop_loss_scope") or "per_trade"),
         fee_bps=float(payload.get("fee_bps") or 0.0),
         slippage_bps=float(payload.get("slippage_bps") or 0.0),
+        execution_model=validate_execution_model(
+            payload.get("execution_model", EXECUTION_MODEL_SAME_CLOSE_LEGACY)
+        ),
         pair_overrides=overrides or None,
         optimizer_max_duration_seconds=int(payload.get("optimizer_max_duration_seconds") or 0),
     )

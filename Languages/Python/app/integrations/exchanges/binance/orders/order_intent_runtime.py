@@ -6,17 +6,20 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
-from app.settings.live_safety import LiveTradingSafetyError
+from app.settings.live_safety import LiveTradingSafetyError, is_live_trading_mode
 from app.settings.execution_mode import execution_environment
 from app.security.redaction import redact_text
 from trading_core.orders import is_exchange_risk_reducing_order, order_execution_from_response
 
 from .order_intent_store import ledger_transaction, write_ledger
+from .spot_execution_owner import SpotExecutionOwner, claim_execution_owner
 
 
 _INTENT_FORMAT_VERSION = 2
@@ -52,7 +55,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _intent_path(self) -> Path:
+def _legacy_intent_path(self) -> Path:
     audit_path = getattr(self, "_order_audit_log_path", None)
     if audit_path:
         path = Path(audit_path).expanduser()
@@ -60,6 +63,88 @@ def _intent_path(self) -> Path:
     else:
         path = Path.home() / ".trading-bot" / "order_intents.json"
     path = path.parent.resolve() / path.name
+    if path.is_symlink():
+        raise LiveTradingSafetyError("Order intent ledger must not be a symbolic link; submission is blocked.")
+    return path
+
+
+def _spot_owner_scope(self) -> bool:
+    return bool(getattr(self, "_enforce_spot_execution_owner", False)) and is_live_trading_mode(
+        getattr(self, "mode", None)
+    ) and str(
+        getattr(self, "account_type", "") or ""
+    ).strip().upper() == "SPOT"
+
+
+def _resolve_spot_account_uid(self) -> int:
+    """Use a fresh signed Spot account response once per immutable wrapper context."""
+    initial = getattr(self, "_spot_owner_initial_context", None)
+    if initial is not None and (
+        initial[:4] != (
+            getattr(self, "api_key", None), getattr(self, "api_secret", None),
+            getattr(self, "mode", None), getattr(self, "account_type", None),
+        ) or initial[4] is not getattr(self, "client", None)
+    ):
+        raise LiveTradingSafetyError("Spot execution wrapper context changed after construction.")
+    if getattr(self, "_spot_execution_revoked", False):
+        raise LiveTradingSafetyError("Spot execution owner was revoked after an account configuration change.")
+    if str(getattr(self, "account_type", "") or "").strip().upper() != "SPOT":
+        raise LiveTradingSafetyError("Spot execution owner account type changed after wrapper construction.")
+    key = getattr(self, "api_key", None)
+    secret = getattr(self, "api_secret", None)
+    client = getattr(self, "client", None)
+    if not isinstance(key, str) or not key.strip() or not isinstance(secret, str) or not secret.strip():
+        raise LiveTradingSafetyError("Spot execution owner requires signed account credentials.")
+    environment = execution_environment(getattr(self, "mode", None))
+    context = getattr(self, "_verified_spot_account_context", None)
+    if context is not None:
+        if context[:3] != (key, secret, environment) or context[3] is not client:
+            raise LiveTradingSafetyError("Spot execution credentials or client changed after account verification.")
+        uid_value = context[4]
+        if type(uid_value) is not int or uid_value <= 0:
+            raise LiveTradingSafetyError("Cached Spot account UID is invalid.")
+        return cast(int, uid_value)
+    request = getattr(self, "_http_signed_spot", None)
+    if not callable(request):
+        raise LiveTradingSafetyError("Signed Spot account identity endpoint is unavailable.")
+    try:
+        response = request("/v3/account")
+    except Exception as exc:
+        raise LiveTradingSafetyError(f"Spot account identity could not be verified: {redact_text(exc)}") from exc
+    uid = response.get("uid") if isinstance(response, Mapping) else None
+    if type(uid) is not int or uid <= 0 or response.get("accountType") != "SPOT":
+        raise LiveTradingSafetyError("Signed Spot account identity is missing or invalid.")
+    self._verified_spot_account_context = (key, secret, environment, client, uid)
+    return uid
+
+
+def _spot_account_uid(self) -> int:
+    resolver = getattr(self, "_resolve_spot_account_uid", None)
+    if callable(resolver):
+        uid_value = resolver()
+        if type(uid_value) is not int or uid_value <= 0:
+            raise LiveTradingSafetyError("Signed Spot account UID is invalid.")
+        return cast(int, uid_value)
+    # The offline administration command supplies an expected UID to choose
+    # the storage path. The trading wrapper always takes the signed branch.
+    uid = getattr(self, "_operator_spot_account_uid", None)
+    if type(uid) is not int or uid <= 0:
+        raise LiveTradingSafetyError("Spot account UID is required for offline storage administration.")
+    return uid
+
+
+def _intent_path(self) -> Path:
+    if not _spot_owner_scope(self):
+        return _legacy_intent_path(self)
+    environment = execution_environment(getattr(self, "mode", None))
+    uid = _spot_account_uid(self)
+    home = Path.home().resolve()
+    path = home
+    for component in (".trading-bot", "account-state", "binance", "spot", environment, f"uid-{uid}"):
+        path = path / component
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise LiveTradingSafetyError("Spot account state root is not a local directory; submission is blocked.")
+    path = path / "order_intents.json"
     if path.is_symlink():
         raise LiveTradingSafetyError("Order intent ledger must not be a symbolic link; submission is blocked.")
     return path
@@ -78,6 +163,47 @@ def _intent_binding(self) -> dict[str, str]:
         "environment": environment,
         "credential_fingerprint": hashlib.sha256(b"binance-order-intents-v1\0" + key.strip().encode()).hexdigest(),
     }
+
+
+def _ensure_spot_execution_owner(self) -> SpotExecutionOwner:
+    if not _spot_owner_scope(self):
+        raise LiveTradingSafetyError("Spot execution owner requires a Spot trading wrapper.")
+    uid = _spot_account_uid(self)
+    path = _intent_path(self)
+    binding = _intent_binding(self)
+    with ledger_transaction(path):
+        ledger = _read_ledger(path, expected_binding=binding)
+    owner = claim_execution_owner(
+        path, uid=uid, environment=binding["environment"],
+        store_id=str(ledger["store_id"]), credential_fingerprint=binding["credential_fingerprint"],
+        owner_wrapper=self,
+    )
+    self._spot_execution_owner = owner
+    return owner
+
+
+@contextmanager
+def _spot_execution_submission(self):
+    if not _spot_owner_scope(self):
+        raise LiveTradingSafetyError("Spot execution owner scope changed before order submission.")
+    owner = getattr(self, "_spot_execution_owner", None)
+    if not isinstance(owner, SpotExecutionOwner):
+        raise LiveTradingSafetyError("Spot execution owner was not acquired before order submission.")
+    uid = _spot_account_uid(self)
+    binding = _intent_binding(self)
+    with owner.submission(
+        uid=uid, environment=binding["environment"],
+        credential_fingerprint=binding["credential_fingerprint"],
+        owner_wrapper=self,
+    ):
+        yield
+
+
+def _revoke_spot_execution_owner(self) -> None:
+    self._spot_execution_revoked = True
+    owner = getattr(self, "_spot_execution_owner", None)
+    if isinstance(owner, SpotExecutionOwner):
+        owner.close()
 
 
 def _read_ledger(
@@ -169,6 +295,13 @@ def _intent_record(params: Mapping[str, object], *, market: str, source: str) ->
 
 
 def _begin_order_intent(self, params: Mapping[str, object], *, market: str, source: str) -> dict[str, object]:
+    if market == "spot" and getattr(self, "_enforce_spot_execution_owner", False) and (
+        is_live_trading_mode(getattr(self, "mode", None))
+        or getattr(self, "_spot_owner_initial_live", False)
+    ):
+        if not _spot_owner_scope(self):
+            raise LiveTradingSafetyError("Spot execution owner requires a Spot account wrapper.")
+        _ensure_spot_execution_owner(self)
     record = _intent_record(params, market=market, source=source)
     path = _intent_path(self)
     with ledger_transaction(path):
@@ -471,6 +604,10 @@ def get_order_intent_status(self) -> dict[str, object]:
 
 
 def bind_binance_order_intent_runtime(wrapper_cls) -> None:
+    wrapper_cls._resolve_spot_account_uid = _resolve_spot_account_uid
+    wrapper_cls._ensure_spot_execution_owner = _ensure_spot_execution_owner
+    wrapper_cls._spot_execution_submission = _spot_execution_submission
+    wrapper_cls._revoke_spot_execution_owner = _revoke_spot_execution_owner
     wrapper_cls._begin_order_intent = _begin_order_intent
     wrapper_cls._mark_order_intent_submitted = _mark_order_intent_submitted
     wrapper_cls._mark_order_intent_accepted = _mark_order_intent_accepted

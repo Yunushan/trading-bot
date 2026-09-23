@@ -2721,7 +2721,9 @@ mod tests {
 
         let http = reqwest::blocking::Client::builder()
             .no_proxy()
-            .timeout(std::time::Duration::from_secs(2))
+            // A short timeout under a busy test runner can obscure the malformed
+            // acknowledgement this fixture is intended to exercise.
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("proxy-free order fallback client");
         let client = BinanceSignedRestClient::with_http_client(
@@ -2738,7 +2740,11 @@ mod tests {
             false,
             "",
         );
-        assert!(result.is_err());
+        let error = result.expect_err("malformed futures acknowledgement must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "futures order response must be an object"
+        );
 
         let (listener, first_line) = server.join().expect("order fallback fixture server");
         listener.set_nonblocking(true).unwrap();

@@ -18,6 +18,7 @@ from app.service.runners.backtest_executor_request_runtime import (  # noqa: E40
     rank_optimizer_runs,
     sort_runs,
 )
+from app.service.schemas.backtest import build_backtest_run_record, build_backtest_snapshot  # noqa: E402
 
 
 def _build_runtime():
@@ -32,6 +33,65 @@ def _build_runtime():
 
 
 class BacktestRequestBehaviorTests(unittest.TestCase):
+    def test_service_request_and_snapshot_expose_execution_model(self):
+        runtime = _build_runtime()
+        patch = {
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1h"],
+            "capital": 1000.0,
+            "start": "2025-01-01T00:00:00",
+            "end": "2025-01-02T00:00:00",
+            "indicators": {"rsi": {"enabled": True, "length": 14, "buy_value": 30, "sell_value": 70}},
+            "execution_model": "next_bar_open",
+        }
+        request, _wrapper_kwargs, summary = build_request(runtime, patch)
+
+        self.assertEqual("next_bar_open", request.execution_model)
+        self.assertEqual("next_bar_open", summary["execution_model"])
+        record = build_backtest_run_record({
+            "symbol": "BTCUSDT",
+            "interval": "1h",
+            "execution_model": "next_bar_open",
+            "terminal_valuation": "mark_to_market_open_position",
+            "terminal_position_open": True,
+            "terminal_unrealized_pnl": 25.0,
+        })
+        snapshot = build_backtest_snapshot(
+            execution_model=summary["execution_model"], runs=[record]
+        ).to_dict()
+        self.assertEqual("next_bar_open", snapshot["execution_model"])
+        self.assertEqual("next_bar_open", snapshot["runs"][0]["execution_model"])
+        self.assertTrue(snapshot["runs"][0]["terminal_position_open"])
+        self.assertEqual(25.0, snapshot["runs"][0]["terminal_unrealized_pnl"])
+
+        with self.assertRaisesRegex(ValueError, "Invalid backtest execution_model"):
+            build_request(runtime, {**patch, "execution_model": "unknown"})
+
+    def test_service_request_rejects_invalid_execution_costs(self):
+        runtime = _build_runtime()
+        patch = {
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1h"],
+            "capital": 1000.0,
+            "start": "2025-01-01T00:00:00",
+            "end": "2025-01-02T00:00:00",
+            "indicators": {"rsi": {"enabled": True, "length": 14, "buy_value": 30, "sell_value": 70}},
+            "execution_model": "next_bar_open",
+        }
+        invalid_costs = (
+            ("fee_bps", -1.0),
+            ("fee_bps", float("nan")),
+            ("fee_bps", float("inf")),
+            ("slippage_bps", -1.0),
+            ("slippage_bps", float("nan")),
+            ("slippage_bps", float("inf")),
+            ("slippage_bps", 10_000.0),
+        )
+        for field, value in invalid_costs:
+            with self.subTest(field=field, value=value):
+                with self.assertRaisesRegex(ValueError, field):
+                    build_request(runtime, {**patch, field: value})
+
     def test_build_indicator_definitions_coerces_string_enabled_flags(self):
         indicators = build_indicator_definitions(
             {

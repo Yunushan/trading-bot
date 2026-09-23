@@ -120,6 +120,8 @@ def _on_backtest_finished(self, result: dict, error: object):
     summary_parts = []
     if run_dicts:
         summary_parts.append(f"{len(run_dicts)} run(s) completed")
+        execution_models = sorted({str(run.get("execution_model") or "same_close_legacy") for run in run_dicts})
+        summary_parts.append("Execution model: " + ", ".join(execution_models))
         total_roi = sum(r.get("roi_value", 0.0) for r in run_dicts)
         summary_parts.append(f"Total ROI: {total_roi:+.2f} USDT")
         avg_roi_pct = sum(r.get("roi_percent", 0.0) for r in run_dicts) / max(

@@ -4904,6 +4904,7 @@
         api_key: apiKey,
         api_secret: apiSecret,
         capital: numberFrom("backtest-capital", defaultBacktest.capital ?? 1000),
+        execution_model: String(defaultBacktest.execution_model || ""),
         start: backtestStart,
         end: backtestEnd,
         start_date: backtestStart,

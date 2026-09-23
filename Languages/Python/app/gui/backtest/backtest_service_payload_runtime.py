@@ -154,6 +154,7 @@ def build_service_backtest_request_payload(
         "mdd_logic": _clean_text(request.mdd_logic),
         "fee_bps": float(request.fee_bps or 0.0),
         "slippage_bps": float(request.slippage_bps or 0.0),
+        "execution_model": request.execution_model,
         "stop_loss": {
             "enabled": bool(request.stop_loss_enabled),
             "mode": _clean_text(request.stop_loss_mode) or "usdt",

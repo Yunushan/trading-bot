@@ -7,7 +7,14 @@ import pandas as pd
 
 from ...config import MDD_LOGIC_DEFAULT, MDD_LOGIC_OPTIONS, STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS
 from .engine_signal_runtime import IndicatorCache, SignalCache, collect_indicator_signals
-from .models import BacktestRequest, BacktestRunResult, IndicatorDefinition
+from .models import (
+    EXECUTION_MODEL_NEXT_BAR_OPEN,
+    BacktestRequest,
+    BacktestRunResult,
+    IndicatorDefinition,
+    validate_execution_cost_bps,
+    validate_execution_model,
+)
 
 
 def simulate_backtest(
@@ -24,6 +31,9 @@ def simulate_backtest(
     work_df: Optional[pd.DataFrame] = None,
     work_start_idx: int | None = None,
 ) -> Optional[BacktestRunResult]:
+    execution_model = validate_execution_model(request.execution_model)
+    fee_rate = validate_execution_cost_bps(request.fee_bps, field="fee_bps") / 10_000.0
+    slippage_rate = validate_execution_cost_bps(request.slippage_bps, field="slippage_bps") / 10_000.0
     logic = (request.logic or "AND").upper()
     if work_df is None:
         work_df = df.loc[df.index >= request.start]
@@ -47,9 +57,6 @@ def simulate_backtest(
     leverage = max(1.0, float(leverage_override if leverage_override is not None else (request.leverage or 1.0)))
     margin_mode = (request.margin_mode or "Isolated").strip().upper()
     side_pref = (request.side or "BOTH").strip().upper()
-    fee_rate = max(0.0, float(getattr(request, "fee_bps", 0.0) or 0.0)) / 10_000.0
-    slippage_rate = max(0.0, float(getattr(request, "slippage_bps", 0.0) or 0.0)) / 10_000.0
-
     indicator_signals, indicator_keys = collect_indicator_signals(
         symbol=symbol,
         interval=interval,
@@ -185,16 +192,22 @@ def simulate_backtest(
     def _exit_execution_price(market_price: float, direction_value: str) -> float:
         return market_price * (1.0 - slippage_rate if direction_value == "LONG" else 1.0 + slippage_rate)
 
+    def _record_fee(fee: float) -> None:
+        nonlocal fees_paid
+        total = fees_paid + fee
+        if not np.isfinite(fee) or not np.isfinite(total):
+            raise ValueError("Invalid backtest fee: calculation exceeds finite range")
+        fees_paid = total
+
     def _realize_close(market_price: float) -> tuple[float, float]:
         """Return slippage-adjusted exit price and net PnL after the exit fee."""
-        nonlocal fees_paid
         exit_px = _exit_execution_price(float(market_price), direction)
         if direction == "LONG":
             gross_pnl = (exit_px - entry_price) * units
         else:
             gross_pnl = (entry_price - exit_px) * units
         exit_fee = abs(exit_px * units) * fee_rate
-        fees_paid += exit_fee
+        _record_fee(exit_fee)
         return exit_px, gross_pnl - exit_fee
 
     def _finalize_trade(exit_price: float | None = None, realized_pnl: float | None = None) -> None:
@@ -256,6 +269,7 @@ def simulate_backtest(
         return None
 
     close_values = work_df["close"].to_numpy(dtype=float, copy=False)
+    open_values = work_df["open"].to_numpy(dtype=float, copy=False)
     high_values = work_df["high"].to_numpy(dtype=float, copy=False) if "high" in work_df else close_values
     low_values = work_df["low"].to_numpy(dtype=float, copy=False) if "low" in work_df else close_values
 
@@ -296,9 +310,83 @@ def simulate_backtest(
     entry_buy_array = raw_buy_array & entry_filter_array
     entry_sell_array = raw_sell_array & entry_filter_array
 
+    def _apply_signal(
+        *,
+        market_price: float,
+        raw_buy: bool,
+        raw_sell: bool,
+        entry_buy: bool,
+        entry_sell: bool,
+    ) -> None:
+        nonlocal direction, entry_price, equity, position_margin, position_open, trades, units
+        if position_open:
+            if direction == "LONG" and raw_sell:
+                exit_price, pnl = _realize_close(market_price)
+                equity = max(0.0, equity + pnl)
+                _record_realized_equity(equity)
+                _finalize_trade(exit_price, realized_pnl=pnl)
+                position_open = False
+                units = 0.0
+                position_margin = 0.0
+                direction = ""
+                entry_sell = bool(can_short and entry_sell and equity > 0.0)
+            elif direction == "SHORT" and raw_buy:
+                exit_price, pnl = _realize_close(market_price)
+                equity = max(0.0, equity + pnl)
+                _record_realized_equity(equity)
+                _finalize_trade(exit_price, realized_pnl=pnl)
+                position_open = False
+                units = 0.0
+                position_margin = 0.0
+                direction = ""
+                entry_buy = bool(can_long and entry_buy and equity > 0.0)
+
+        if not position_open and equity > 0.0:
+            if entry_buy and can_long:
+                entry_price = _entry_execution_price(market_price, "LONG")
+                position_margin = equity * pct_fraction
+                units = (position_margin * leverage) / entry_price if entry_price > 0.0 else 0.0
+                if units <= 0.0:
+                    position_margin = 0.0
+                    return
+                entry_fee = abs(entry_price * units) * fee_rate
+                _record_fee(entry_fee)
+                equity = max(0.0, equity - entry_fee)
+                position_open = True
+                direction = "LONG"
+                _start_trade(direction, units, entry_fee)
+                trades += 1
+            elif entry_sell and can_short:
+                entry_price = _entry_execution_price(market_price, "SHORT")
+                position_margin = equity * pct_fraction
+                units = (position_margin * leverage) / entry_price if entry_price > 0.0 else 0.0
+                if units <= 0.0:
+                    position_margin = 0.0
+                    return
+                entry_fee = abs(entry_price * units) * fee_rate
+                _record_fee(entry_fee)
+                equity = max(0.0, equity - entry_fee)
+                position_open = True
+                direction = "SHORT"
+                _start_trade(direction, units, entry_fee)
+                trades += 1
+
     for idx in range(n_rows):
         if should_stop_cb and callable(should_stop_cb) and should_stop_cb():
             raise RuntimeError("backtest_cancelled")
+        if execution_model == EXECUTION_MODEL_NEXT_BAR_OPEN and idx > 0:
+            # Candle-close signals are knowable only after the previous bar.
+            # Execute them at this bar's open before observing its high/low/close.
+            open_price = float(open_values[idx])
+            if not np.isfinite(open_price) or open_price <= 0.0:
+                raise ValueError("Invalid backtest open price for next_bar_open execution")
+            _apply_signal(
+                market_price=open_price,
+                raw_buy=bool(raw_buy_array[idx - 1]),
+                raw_sell=bool(raw_sell_array[idx - 1]),
+                entry_buy=bool(entry_buy_array[idx - 1]),
+                entry_sell=bool(entry_sell_array[idx - 1]),
+            )
         price = float(close_values[idx] if np.isfinite(close_values[idx]) else 0.0)
         if price <= 0.0:
             continue
@@ -399,64 +487,35 @@ def simulate_backtest(
                     trades += 1
                     continue
 
-            if direction == "LONG" and raw_sell:
-                exit_price, pnl = _realize_close(price)
-                equity = max(0.0, equity + pnl)
-                _record_realized_equity(equity)
-                _finalize_trade(exit_price, realized_pnl=pnl)
-                position_open = False
-                units = 0.0
-                position_margin = 0.0
-                direction = ""
-                if can_short and entry_sell and equity > 0.0:
-                    entry_sell = True
-                else:
-                    entry_sell = False
-            elif direction == "SHORT" and raw_buy:
-                exit_price, pnl = _realize_close(price)
-                equity = max(0.0, equity + pnl)
-                _record_realized_equity(equity)
-                _finalize_trade(exit_price, realized_pnl=pnl)
-                position_open = False
-                units = 0.0
-                position_margin = 0.0
-                direction = ""
-                if can_long and entry_buy and equity > 0.0:
-                    entry_buy = True
-                else:
-                    entry_buy = False
+        if execution_model != EXECUTION_MODEL_NEXT_BAR_OPEN:
+            _apply_signal(
+                market_price=price,
+                raw_buy=raw_buy,
+                raw_sell=raw_sell,
+                entry_buy=entry_buy,
+                entry_sell=entry_sell,
+            )
 
-        if not position_open and equity > 0.0:
-            if entry_buy and can_long:
-                entry_price = _entry_execution_price(price, "LONG")
-                position_margin = equity * pct_fraction
-                units = (position_margin * leverage) / entry_price if entry_price > 0.0 else 0.0
-                if units <= 0.0:
-                    position_margin = 0.0
-                    continue
-                entry_fee = abs(entry_price * units) * fee_rate
-                fees_paid += entry_fee
-                equity = max(0.0, equity - entry_fee)
-                position_open = True
-                direction = "LONG"
-                _start_trade(direction, units, entry_fee)
-                trades += 1
-            elif entry_sell and can_short:
-                entry_price = _entry_execution_price(price, "SHORT")
-                position_margin = equity * pct_fraction
-                units = (position_margin * leverage) / entry_price if entry_price > 0.0 else 0.0
-                if units <= 0.0:
-                    position_margin = 0.0
-                    continue
-                entry_fee = abs(entry_price * units) * fee_rate
-                fees_paid += entry_fee
-                equity = max(0.0, equity - entry_fee)
-                position_open = True
-                direction = "SHORT"
-                _start_trade(direction, units, entry_fee)
-                trades += 1
-
-    if position_open and units > 0.0:
+    terminal_position_open = bool(position_open and units > 0.0)
+    terminal_unrealized_pnl = 0.0
+    terminal_valuation = "realized_flat"
+    if terminal_position_open and execution_model == EXECUTION_MODEL_NEXT_BAR_OPEN:
+        # The last close is observable, but there is no following bar on which
+        # to execute a close-derived exit. Mark the open position without
+        # inventing a fill, exit fee, or exit slippage.
+        last_price = float(work_df["close"].iloc[-1])
+        if not np.isfinite(last_price) or last_price <= 0.0:
+            raise ValueError("Invalid backtest final close price for next_bar_open valuation")
+        if direction == "LONG":
+            terminal_unrealized_pnl = (last_price - entry_price) * units
+        else:
+            terminal_unrealized_pnl = (entry_price - last_price) * units
+        equity = max(0.0, equity + terminal_unrealized_pnl)
+        _update_drawdown(drawdown_state_cumulative, equity)
+        if mdd_logic == "entire_account":
+            _update_drawdown(drawdown_state_account, equity)
+        terminal_valuation = "mark_to_market_open_position"
+    elif terminal_position_open:
         last_price = float(work_df["close"].iloc[-1] or 0.0)
         exit_price, pnl = _realize_close(last_price)
         equity = max(0.0, equity + pnl)
@@ -466,6 +525,8 @@ def simulate_backtest(
         units = 0.0
         position_margin = 0.0
         direction = ""
+        terminal_position_open = False
+        terminal_valuation = "forced_same_close_exit"
 
     roi_value = equity - capital
     roi_percent = (roi_value / capital * 100.0) if capital else 0.0
@@ -526,4 +587,8 @@ def simulate_backtest(
         fee_bps=float(fee_rate * 10_000.0),
         slippage_bps=float(slippage_rate * 10_000.0),
         fees_paid=float(fees_paid),
+        execution_model=execution_model,
+        terminal_valuation=terminal_valuation,
+        terminal_position_open=terminal_position_open,
+        terminal_unrealized_pnl=float(terminal_unrealized_pnl),
     )

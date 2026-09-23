@@ -15,9 +15,12 @@ This runbook is the short checklist for running the project safely.
 
 ## Order Intent Storage
 
-The canonical Python runtime persists order intents beside the configured audit
-log as `<audit-stem>.intents.json`, or uses `~/.trading-bot/order_intents.json`
-when no audit path is configured. Keep this ledger on a local filesystem.
+For Futures and Spot testnet, the canonical Python runtime persists order intents
+beside the configured audit log as `<audit-stem>.intents.json`, or uses
+`~/.trading-bot/order_intents.json` when no audit path is configured. Live Spot
+uses the fixed local path
+`~/.trading-bot/account-state/binance/spot/live/uid-<verified-uid>/order_intents.json`,
+independent of the audit path. Keep these ledgers on a local filesystem.
 
 ### Initialize or Upgrade Storage
 
@@ -74,6 +77,51 @@ has no reset or rebind option. Credential rotation of an established store
 requires a reviewed, history-preserving account-identity/reconciliation
 procedure; it is not yet automated. Do not initialize a new empty path to
 silently discard history during rotation.
+
+### Live Spot execution owner (single OS user and host)
+
+Live Spot resolves its account UID from a fresh, signed Binance
+`GET /api/v3/account` response before claiming execution ownership. It retains
+a separate local lock from strategy activation or the first order until the
+owning wrapper is released or its process exits. A second wrapper, process or
+audit path under the same OS user cannot become the active owner while that lock
+is held. Read-only wrappers do not claim it. Spot testnet keeps the earlier
+ledger path and does not use this owner gate yet.
+
+First-use Live Spot provisioning needs the exchange-reported UID in an
+environment variable. The offline command uses that value to select the fixed
+directory; the runtime independently verifies the UID with the signed endpoint.
+The audit path below is used to detect existing history, not to choose the new
+ledger path:
+
+```bash
+trading-bot-order-store initialize --account-type Spot --spot-account-uid-env BOT_BINANCE_SPOT_UID --audit-log-path /state/order_audit.jsonl --mode Live --api-key-env BOT_BINANCE_API_KEY --acknowledgement I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE
+```
+
+Existing history at the former audit-derived path blocks first-use
+initialization. Do not delete it or create a fresh ledger under a different
+audit path. A reviewed history-preserving migration is still required for
+existing Live Spot installations.
+
+The owner state changes to `active` before an order can be submitted. A crash
+leaves it active; a clean owner release marks it `recovery_required`. Either
+state blocks a new owner. After stopping every executor and reconciling exchange
+orders, fills, balances and positions, an operator may rearm with a recorded
+evidence or incident reference:
+
+```bash
+trading-bot-order-store rearm --account-type Spot --spot-account-uid-env BOT_BINANCE_SPOT_UID --mode Live --api-key-env BOT_BINANCE_API_KEY --acknowledgement I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE --reconciliation-reference INC-1234
+```
+
+The rearm command is offline. It checks for unresolved local intents and a free
+owner lock, then records the operator attestation; it does not verify exchange
+reconciliation itself. A missing marker or ledger blocks trading rather than
+being silently recreated. Key rotation remains blocked by the version-two
+credential fingerprint until a reviewed rotation procedure preserves history.
+The fixed root is shared only by processes using the same OS profile on one
+host. Other OS users, hosts, native runtimes, external bots and still-valid
+Binance keys are outside this local lock. Do not treat it as exchange-side
+fencing or account-wide production sign-off.
 
 The same administration code is available without a console launcher:
 
@@ -177,10 +225,11 @@ These desktop checks do not certify that an independent remote service executor
 or another process has stopped. Verify those executors separately before treating
 the entire account as quiescent.
 
-These locks serialize cooperating processes using the same local ledger. They
-are not an account-wide executor lease across different ledger paths, hosts,
-native runtimes or network filesystems. Do not run competing trading executors
-for an account. Cross-host fencing and hardware/power-loss recovery still need
+Futures and Spot testnet locks serialize cooperating processes using the same
+local ledger. Live Spot also has the retained single-profile owner lock above.
+None of these locks fence different OS users, hosts, native runtimes, external
+bots or network filesystems. Do not run competing trading executors for an
+account. Cross-host fencing and hardware/power-loss recovery still need
 separate production validation; local process-kill tests do not certify them.
 
 ## LLM Usage

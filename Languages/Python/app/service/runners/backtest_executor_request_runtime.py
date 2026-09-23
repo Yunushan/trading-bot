@@ -13,7 +13,14 @@ from ...core.backtest.indicator_selection_runtime import (
 )
 from ...core.backtest.indicator_runtime import filter_indicators, signal_indicators
 from ...core.backtest.intervals import normalize_backtest_interval, normalize_backtest_intervals
-from ...core.backtest.models import BacktestRequest, IndicatorDefinition, PairOverride
+from ...core.backtest.models import (
+    EXECUTION_MODEL_SAME_CLOSE_LEGACY,
+    BacktestRequest,
+    IndicatorDefinition,
+    PairOverride,
+    validate_execution_cost_bps,
+    validate_execution_model,
+)
 from ...core.backtest.optimizer_limits_runtime import (
     MAX_BACKTEST_EXPECTED_RUN_TRACKING,
     MAX_BACKTEST_OPTIMIZER_RUNS,
@@ -616,8 +623,15 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         "percent",
     )
     mdd_logic = clean_text(patch.get("mdd_logic", backtest_cfg.get("mdd_logic", "per_trade")), "per_trade")
-    fee_bps = max(0.0, coerce_number(patch.get("fee_bps", backtest_cfg.get("fee_bps", 5.0)), 5.0))
-    slippage_bps = max(0.0, coerce_number(patch.get("slippage_bps", backtest_cfg.get("slippage_bps", 2.0)), 2.0))
+    fee_bps = validate_execution_cost_bps(
+        patch.get("fee_bps", backtest_cfg.get("fee_bps", 5.0)), field="fee_bps"
+    )
+    slippage_bps = validate_execution_cost_bps(
+        patch.get("slippage_bps", backtest_cfg.get("slippage_bps", 2.0)), field="slippage_bps"
+    )
+    execution_model = validate_execution_model(
+        patch.get("execution_model", EXECUTION_MODEL_SAME_CLOSE_LEGACY)
+    )
 
     request = BacktestRequest(
         symbols=symbols,
@@ -644,6 +658,7 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         stop_loss_scope=clean_text(stop_loss_cfg.get("scope"), "per_trade"),
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
+        execution_model=execution_model,
         pair_overrides=pair_overrides,
         optimizer_max_duration_seconds=(
             optimizer_max_duration_seconds if optimizer_generated_overrides else 0
@@ -685,6 +700,7 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         "logic": logic,
         "symbol_source": symbol_source,
         "capital": capital,
+        "execution_model": execution_model,
         "estimated_run_count": estimated_run_count,
         "optimizer_enabled": optimizer_generated_overrides,
         "optimizer_mode": optimizer_mode,

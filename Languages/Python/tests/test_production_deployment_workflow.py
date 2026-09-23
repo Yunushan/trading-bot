@@ -34,11 +34,12 @@ class ProductionDeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("kubectl apply", self.workflow)
         self.assertIn("rollout status", self.workflow)
         self.assertIn("run_service_sustained_probe.py", self.workflow)
-        self.assertIn("--profile quick", self.workflow)
+        self.assertIn("--profile observer-smoke", self.workflow)
+        self.assertNotIn("--profile quick", self.workflow)
         self.assertIn("--expected-commit \"${DEPLOY_COMMIT}\"", self.workflow)
         self.assertIn("--require-server-read-only", self.workflow)
         self.assertIn(
-            "PROBE_OUTPUT: artifacts/operational-readiness/production-readonly-quick-probe-${{ github.run_id }}.json",
+            "PROBE_OUTPUT: artifacts/operational-readiness/production-readonly-observer-smoke-${{ github.run_id }}.json",
             self.workflow,
         )
 

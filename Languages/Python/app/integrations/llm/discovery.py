@@ -18,6 +18,15 @@ from .providers import (
     LLM_PROVIDER_CATALOG_REVISION,
     build_llm_config_payload,
 )
+from .transport_limits import (
+    MAX_LLM_DISCOVERY_BYTES,
+    check_deadline,
+    effective_timeout_seconds,
+    read_bounded_json,
+    require_http_request_bounds,
+    run_with_total_deadline,
+    socket_timeouts,
+)
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -256,8 +265,19 @@ def discover_llm_models(
         }
 
     url, headers = _discovery_request(raw_config, payload)
+    try:
+        require_http_request_bounds(url, headers)
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "provider": provider,
+            "catalog_revision": LLM_PROVIDER_CATALOG_REVISION,
+            "dynamic_count": 0,
+            "models": static,
+            "error": str(exc),
+        }
     api_key = _api_key(raw_config, str(payload.get("api_key_env") or ""))
-    request_timeout = max(1.0, float(timeout or payload.get("timeout_seconds") or 30.0))
+    request_timeout = effective_timeout_seconds(timeout or payload.get("timeout_seconds"))
     if requests is None:
         return {
             "ok": False,
@@ -268,10 +288,30 @@ def discover_llm_models(
             "error": "Live model discovery requires the optional requests dependency.",
         }
     try:
-        response = requests.get(url, headers=headers, timeout=request_timeout, allow_redirects=False)
-        reject_llm_redirect(response)
-        response.raise_for_status()
-        response_payload = response.json()
+        def send(deadline, cancelled, register_response):
+            response = None
+            try:
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    timeout=socket_timeouts(request_timeout),
+                    stream=True,
+                    allow_redirects=False,
+                )
+                register_response(response)
+                reject_llm_redirect(response)
+                check_deadline(deadline, cancelled)
+                response.raise_for_status()
+                return read_bounded_json(
+                    response,
+                    maximum=MAX_LLM_DISCOVERY_BYTES,
+                    deadline=deadline,
+                    cancelled=cancelled,
+                )
+            finally:
+                if response is not None and not 300 <= response.status_code < 400:
+                    response.close()
+        response_payload = run_with_total_deadline(send, total_seconds=request_timeout)
         discovered = [
             record
             for record in (_model_record(item) for item in _model_items(response_payload))

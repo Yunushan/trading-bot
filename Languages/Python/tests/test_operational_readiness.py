@@ -208,6 +208,284 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertFalse(report["promotion_eligible"])
         self.assertFalse(report["production_slo_proven"])
 
+    def test_unseeded_standalone_read_only_service_has_no_trading_freshness_claim(self):
+        from fastapi.testclient import TestClient
+        from app.service.api import create_service_api_app
+
+        with patch.dict(os.environ, {"BOT_SERVICE_API_READ_ONLY": "1"}):
+            app = create_service_api_app(
+                api_token="synthetic-probe-token",
+                host_context="standalone-service",
+            )
+            with TestClient(app) as client:
+                readiness_response = client.get("/readyz")
+                response = client.get(
+                    "/api/v1/runtime/operational-preflight",
+                    headers={"Authorization": "Bearer synthetic-probe-token"},
+                )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(200, readiness_response.status_code)
+        self.assertIs(readiness_response.json()["trading_execution_supported"], False)
+        self.assertTrue(app.state.service_api_read_only)
+        ages, issues = service_probe._operational_snapshot_freshness_samples(response.json())
+        self.assertEqual(1, len(ages))
+        self.assertEqual(3, len(issues))
+        for component in ("execution", "account", "portfolio"):
+            self.assertTrue(any(component in issue for issue in issues), issues)
+
+    def test_unseeded_observer_smoke_passes_service_health_without_trading_promotion(self):
+        from fastapi.testclient import TestClient
+
+        from app.service.api import create_service_api_app
+
+        commit = "a" * 40
+        token = "synthetic-observer-probe-token"
+        with patch.dict(os.environ, {
+            "BOT_SERVICE_API_READ_ONLY": "1",
+            "BOT_SERVICE_API_TOKEN": token,
+            "TRADING_BOT_BUILD_COMMIT": commit,
+        }):
+            app = create_service_api_app(api_token=token)
+            with TestClient(app) as client:
+                readiness_response = client.get("/readyz")
+
+                class _InProcessRemote:
+                    def __init__(self, *_args, **_kwargs):
+                        pass
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *_args):
+                        return None
+
+                    def get(self, endpoint, *, headers):
+                        return client.get(endpoint, headers=headers)
+
+                with patch.object(service_probe, "_RemoteReadOnlyClient", _InProcessRemote), patch.object(
+                    service_probe, "_source_tree_clean", return_value=True,
+                ):
+                    observer = service_probe.run_probe(
+                        profile_name="observer-smoke",
+                        cycles=1,
+                        minimum_requests=6,
+                        base_url="https://observer.example",
+                        expected_commit=commit,
+                    )
+                    strict_quick = service_probe.run_probe(
+                        profile_name="quick",
+                        cycles=1,
+                        minimum_requests=6,
+                        base_url="https://observer.example",
+                        expected_commit=commit,
+                        require_server_read_only=True,
+                    )
+
+        self.assertEqual(service_probe.OBSERVER_SMOKE_CONTRACT_VERSION,
+                         readiness_response.json()["observation_contract_version"])
+        self.assertIs(readiness_response.json()["trading_observation_supported"], False)
+        self.assertTrue(observer["ok"], observer["issues"])
+        self.assertTrue(observer["source_tree_clean"])
+        self.assertEqual(service_probe.OBSERVER_SMOKE_EVIDENCE_ID, observer["evidence_id"])
+        self.assertEqual("unavailable", observer["trading_observations"]["status"])
+        self.assertIsNone(observer["trading_observations"]["freshness_age_seconds"])
+        self.assertEqual(0, observer["operational_snapshot_sample_count"])
+        self.assertEqual(0, observer["operational_snapshot_expected_count"])
+        self.assertFalse(observer["promotion_eligible"])
+        self.assertFalse(observer["runtime_ready_claimed"])
+        self.assertFalse(observer["production_slo_proven"])
+        self.assertNotIn("operational-snapshot-freshness", {
+            item["name"] for item in observer["suite_results"] if "name" in item
+        })
+        self.assertFalse(strict_quick["ok"])
+        self.assertEqual(1, strict_quick["operational_snapshot_sample_count"])
+        self.assertEqual(4, strict_quick["operational_snapshot_expected_count"])
+
+        policy = readiness.load_policy(POLICY_PATH)
+        requirement = next(item for item in policy["required_evidence"]
+                           if item["id"] == "service-api-sustained-runtime")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / requirement["filename"]
+            path.write_text(json.dumps(observer), encoding="utf-8")
+            issues = readiness._validate_evidence(
+                requirement,
+                policy=policy,
+                path=path,
+                expected_policy_hash=readiness.policy_sha256(policy),
+                expected_commit=observer["commit"],
+                require_current_commit=True,
+                require_clean_source=True,
+            )
+        self.assertTrue(any("evidence_id must be" in issue for issue in issues))
+        self.assertTrue(any("promotion_eligible must be true" in issue for issue in issues))
+
+    def test_read_only_injected_service_does_not_inherit_standalone_observer_contract(self):
+        from fastapi.testclient import TestClient
+
+        from app.service.api import create_service_api_app
+        from app.service.runtime import TradingBotService
+
+        with patch.dict(os.environ, {"BOT_SERVICE_API_READ_ONLY": "1"}):
+            app = create_service_api_app(service=TradingBotService(), api_token="synthetic-token")
+            with TestClient(app) as client:
+                response = client.get("/readyz")
+        self.assertEqual(200, response.status_code)
+        self.assertIs(response.json()["read_only"], True)
+        self.assertNotIn("observation_contract_version", response.json())
+        self.assertNotIn("trading_observation_supported", response.json())
+
+    def test_standalone_server_launcher_declares_no_observation_provider(self):
+        from fastapi.testclient import TestClient
+
+        from app.service.api import run_service_api_server
+
+        with patch.dict(os.environ, {"BOT_SERVICE_API_READ_ONLY": "1"}), patch(
+            "uvicorn.run"
+        ) as serve:
+            run_service_api_server(api_token="synthetic-token")
+            app = serve.call_args.args[0]
+            with TestClient(app) as client:
+                response = client.get("/readyz")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            service_probe.OBSERVER_SMOKE_CONTRACT_VERSION,
+            response.json()["observation_contract_version"],
+        )
+        self.assertIs(response.json()["trading_observation_supported"], False)
+
+    def test_observer_smoke_rejects_false_or_mixed_scope_claims(self):
+        from fastapi.testclient import TestClient
+
+        from app.service.api import create_service_api_app
+
+        commit = "a" * 40
+        token = "synthetic-observer-probe-token"
+        cases = {
+            "writable": lambda payload: payload.__setitem__("read_only", False),
+            "trading executor": lambda payload: payload.__setitem__("trading_execution_supported", True),
+            "missing execution flag": lambda payload: payload.pop("trading_execution_supported"),
+            "trading observation": lambda payload: payload.__setitem__("trading_observation_supported", True),
+            "missing observation flag": lambda payload: payload.pop("trading_observation_supported"),
+            "malformed observation flag": lambda payload: payload.__setitem__("trading_observation_supported", "false"),
+            "wrong contract": lambda payload: payload.__setitem__("observation_contract_version", "unknown/v1"),
+            "wrong source": lambda payload: payload.__setitem__("trading_observation_source", "exchange"),
+            "wrong host topology": lambda payload: payload.__setitem__("host_context", "desktop-hosted"),
+            "wrong commit": lambda payload: payload.__setitem__("build_commit", "b" * 40),
+        }
+        with patch.dict(os.environ, {
+            "BOT_SERVICE_API_READ_ONLY": "1",
+            "BOT_SERVICE_API_TOKEN": token,
+            "TRADING_BOT_BUILD_COMMIT": commit,
+        }):
+            app = create_service_api_app(api_token=token)
+            with TestClient(app) as client:
+                for name, mutate in cases.items():
+                    with self.subTest(name=name):
+                        class _MutatedRemote:
+                            def __init__(self, *_args, **_kwargs):
+                                pass
+
+                            def __enter__(self):
+                                return self
+
+                            def __exit__(self, *_args):
+                                return None
+
+                            def get(self, endpoint, *, headers):
+                                response = client.get(endpoint, headers=headers)
+                                if endpoint == "/readyz":
+                                    payload = response.json()
+                                    mutate(payload)
+                                    return SimpleNamespace(status_code=200, json=lambda: payload)
+                                return response
+
+                        with patch.object(service_probe, "_RemoteReadOnlyClient", _MutatedRemote):
+                            report = service_probe.run_probe(
+                                profile_name="observer-smoke",
+                                cycles=1,
+                                minimum_requests=6,
+                                base_url="https://observer.example",
+                                expected_commit=commit,
+                            )
+                        self.assertFalse(report["ok"])
+                        self.assertFalse(report["promotion_eligible"])
+                        self.assertNotEqual("unavailable", report["trading_observations"]["status"])
+
+                class _MixedOrSeededRemote:
+                    def __init__(self, *_args, **_kwargs):
+                        self.ready_count = 0
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *_args):
+                        return None
+
+                    def get(self, endpoint, *, headers):
+                        response = client.get(endpoint, headers=headers)
+                        if endpoint == "/readyz":
+                            self.ready_count += 1
+                            payload = response.json()
+                            if self.ready_count == 2:
+                                payload["trading_observation_supported"] = True
+                            return SimpleNamespace(status_code=200, json=lambda: payload)
+                        return response
+
+                with patch.object(service_probe, "_RemoteReadOnlyClient", _MixedOrSeededRemote):
+                    mixed = service_probe.run_probe(
+                        profile_name="observer-smoke", cycles=2, minimum_requests=12,
+                        base_url="https://observer.example", expected_commit=commit,
+                    )
+                self.assertFalse(mixed["ok"])
+
+                class _MalformedPreflightRemote(_MixedOrSeededRemote):
+                    def get(self, endpoint, *, headers):
+                        if endpoint.endswith("/operational-preflight"):
+                            return SimpleNamespace(status_code=200, json=lambda: {})
+                        return client.get(endpoint, headers=headers)
+
+                with patch.object(service_probe, "_RemoteReadOnlyClient", _MalformedPreflightRemote):
+                    malformed = service_probe.run_probe(
+                        profile_name="observer-smoke", cycles=1, minimum_requests=6,
+                        base_url="https://observer.example", expected_commit=commit,
+                    )
+                self.assertFalse(malformed["ok"])
+                self.assertTrue(any("preflight" in issue for issue in malformed["issues"]))
+
+                class _SeededPreflightRemote(_MixedOrSeededRemote):
+                    def get(self, endpoint, *, headers):
+                        if endpoint.endswith("/operational-preflight"):
+                            payload = client.get(endpoint, headers=headers).json()
+                            timestamp = datetime.now(timezone.utc).isoformat()
+                            for component, timestamp_field in service_probe.OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS.items():
+                                payload["freshness"][component].update({
+                                    timestamp_field: timestamp,
+                                    "age_seconds": 0.0,
+                                    "source": "synthetic-probe",
+                                })
+                            return SimpleNamespace(status_code=200, json=lambda: payload)
+                        return client.get(endpoint, headers=headers)
+
+                with patch.object(service_probe, "_RemoteReadOnlyClient", _SeededPreflightRemote):
+                    seeded = service_probe.run_probe(
+                        profile_name="observer-smoke", cycles=1, minimum_requests=6,
+                        base_url="https://observer.example", expected_commit=commit,
+                    )
+                self.assertFalse(seeded["ok"])
+                self.assertFalse(seeded["promotion_eligible"])
+                self.assertEqual("unverified", seeded["trading_observations"]["status"])
+
+        for kwargs in (
+            {"base_url": "http://observer.example", "expected_commit": commit},
+            {"base_url": "https://observer.example"},
+            {"expected_commit": commit},
+        ):
+            with self.subTest(kwargs=kwargs):
+                report = service_probe.run_probe(profile_name="observer-smoke", **kwargs)
+                self.assertFalse(report["ok"])
+                self.assertFalse(report["promotion_eligible"])
+
     def test_sustained_probe_requires_a_deployed_service_origin(self):
         report = service_probe.run_probe(
             profile_name="sustained",
@@ -246,7 +524,12 @@ class OperationalReadinessTests(unittest.TestCase):
 
             def get(self, endpoint, *, headers):  # noqa: ARG002
                 if endpoint.endswith("/readyz"):
-                    payload = {"status": "ready", "build_commit": expected_commit, "read_only": True}
+                    payload = {
+                        "status": "ready",
+                        "build_commit": expected_commit,
+                        "read_only": True,
+                        "trading_execution_supported": False,
+                    }
                 elif endpoint.endswith("/operational-preflight"):
                     payload = preflight
                 else:
@@ -302,7 +585,12 @@ class OperationalReadinessTests(unittest.TestCase):
 
             def get(self, endpoint, *, headers):  # noqa: ARG002
                 if endpoint.endswith("/readyz"):
-                    payload = {"status": "ready", "build_commit": "f" * 40, "read_only": False}
+                    payload = {
+                        "status": "ready",
+                        "build_commit": "f" * 40,
+                        "read_only": False,
+                        "trading_execution_supported": False,
+                    }
                 elif endpoint.endswith("/operational-preflight"):
                     payload = preflight
                 else:
@@ -327,6 +615,64 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertFalse(report["server_read_only_verified"])
         self.assertTrue(any("expected_commit" in issue for issue in report["issues"]))
         self.assertTrue(any("read_only=true" in issue for issue in report["issues"]))
+
+    def test_read_only_deployment_probe_rejects_trading_capable_runtime(self):
+        now = datetime.now(timezone.utc).isoformat()
+        expected_commit = "a" * 40
+        preflight = {
+            "freshness": {
+                component: {
+                    timestamp_field: now,
+                    "age_seconds": 0.0,
+                    "stale": False,
+                }
+                for component, timestamp_field in service_probe.OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS.items()
+            }
+        }
+
+        class _RemoteClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def get(self, endpoint, *, headers):  # noqa: ARG002
+                if endpoint.endswith("/readyz"):
+                    payload = {
+                        "status": "ready",
+                        "build_commit": expected_commit,
+                        "read_only": True,
+                        "trading_execution_supported": True,
+                    }
+                elif endpoint.endswith("/operational-preflight"):
+                    payload = preflight
+                else:
+                    payload = {"status": "ok"}
+                return SimpleNamespace(status_code=200, json=lambda: payload)
+
+        for profile_name, explicit_read_only in (("quick", True), ("sustained", False)):
+            with self.subTest(profile_name=profile_name), patch.object(
+                service_probe, "_RemoteReadOnlyClient", _RemoteClient
+            ):
+                report = service_probe.run_probe(
+                    profile_name=profile_name,
+                    cycles=1,
+                    minimum_duration_seconds=0,
+                    minimum_requests=6,
+                    base_url="https://service.example",
+                    expected_commit=expected_commit,
+                    require_server_read_only=explicit_read_only,
+                )
+
+            self.assertFalse(report["ok"])
+            self.assertFalse(report["server_observer_scope_verified"])
+            self.assertTrue(
+                any("trading_execution_supported=false" in issue for issue in report["issues"])
+            )
 
     def test_sustained_evidence_rejects_missing_operational_snapshot_samples(self):
         policy = readiness.load_policy(POLICY_PATH)

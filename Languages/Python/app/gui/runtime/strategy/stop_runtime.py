@@ -107,9 +107,12 @@ def stop_strategy_sync(
                     fast_close = any(tag in mode_txt for tag in ("demo", "test", "sandbox"))
                 except Exception:
                     fast_close = False
-                self.shared_binance = self._build_wrapper_from_values(auth)
+                acct_text = str(auth.get("account_type") or "").upper()
+                if acct_text.startswith("FUT") or getattr(
+                    getattr(self, "shared_binance", None), "_spot_execution_owner", None,
+                ) is None:
+                    self.shared_binance = self._build_wrapper_from_values(auth)
                 try:
-                    acct_text = str(auth.get("account_type") or "").upper()
                     if acct_text.startswith("FUT") and self.shared_binance is not None:
                         cancel_res = self.shared_binance.cancel_all_open_futures_orders()
                         result["cancel_open_orders_result"] = cancel_res

@@ -1638,6 +1638,7 @@ void TradingBotWindow::startBacktest(bool optimizerRequested) {
         request.insert(QStringLiteral("api_secret"), apiSecret);
     }
     request.insert(QStringLiteral("capital"), doubleSpinValue(backtestCapitalSpin_, backtestDefaults.value(QStringLiteral("capital")).toDouble(1000.0)));
+    request.insert(QStringLiteral("execution_model"), backtestDefaults.value(QStringLiteral("execution_model")).toString());
     request.insert(QStringLiteral("start"), startDate.toString(Qt::ISODate));
     request.insert(QStringLiteral("end"), endDate.toString(Qt::ISODate));
     request.insert(QStringLiteral("start_date"), request.value(QStringLiteral("start")));

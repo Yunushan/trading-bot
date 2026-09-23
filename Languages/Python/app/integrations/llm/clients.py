@@ -18,6 +18,22 @@ from .providers import (
     OPENAI_RESPONSES_PROTOCOL,
     build_llm_config_payload,
 )
+from .transport_limits import (
+    LLMResourceLimitError,
+    MAX_LLM_CONTEXT_BYTES,
+    MAX_LLM_PROMPT_BYTES,
+    MAX_LLM_REQUEST_BYTES,
+    MAX_LLM_RESPONSE_BYTES,
+    MAX_LLM_SYSTEM_PROMPT_BYTES,
+    bounded_json_bytes,
+    check_deadline,
+    effective_timeout_seconds,
+    read_bounded_json,
+    require_http_request_bounds,
+    require_text_bytes,
+    run_with_total_deadline,
+    socket_timeouts,
+)
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -36,12 +52,6 @@ def _system_message(system_prompt: str) -> list[dict[str, str]]:
     return [{"role": "system", "content": text}] if text else []
 
 
-def _context_json_text(context: dict) -> str:
-    """Serialize the already-redacted context consistently across native clients."""
-
-    return json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
 def _bounded_context_json_text(
     context: dict,
     *,
@@ -50,38 +60,22 @@ def _bounded_context_json_text(
     prompt: str,
     system_prompt: str,
 ) -> str:
-    serialized = _context_json_text(context)
-    if context_window <= 0:
-        return serialized
-    fixed_characters = len(prompt) + len(system_prompt) + len(_execution_boundary_text())
-    fixed_tokens = max(256, (fixed_characters + 3) // 4)
-    output_reserve = max_output_tokens if max_output_tokens > 0 else min(4096, max(256, context_window // 8))
-    available_tokens = max(0, context_window - fixed_tokens - output_reserve)
-    character_budget = available_tokens * 4
-    if len(serialized) <= character_budget:
-        return serialized
-    if character_budget < 160:
-        return json.dumps(
-            {
-                "context_truncated": True,
-                "original_characters": len(serialized),
-                "excerpt": "",
-            },
-            separators=(",", ":"),
-        )
-    excerpt_budget = max(32, character_budget - 120)
-    prefix_length = max(16, excerpt_budget * 2 // 3)
-    suffix_length = max(16, excerpt_budget - prefix_length)
-    return json.dumps(
-        {
-            "context_truncated": True,
-            "original_characters": len(serialized),
-            "prefix": serialized[:prefix_length],
-            "suffix": serialized[-suffix_length:],
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+    byte_budget = MAX_LLM_CONTEXT_BYTES
+    if context_window > 0:
+        fixed_characters = len(prompt) + len(system_prompt) + len(_execution_boundary_text())
+        fixed_tokens = max(256, (fixed_characters + 3) // 4)
+        output_reserve = max_output_tokens if max_output_tokens > 0 else min(4096, max(256, context_window // 8))
+        available_tokens = max(0, context_window - fixed_tokens - output_reserve)
+        byte_budget = min(byte_budget, max(1, available_tokens * 4))
+    try:
+        return bounded_json_bytes(
+            context,
+            label="context",
+            maximum=byte_budget,
+            sort_keys=True,
+        ).decode("utf-8")
+    except LLMResourceLimitError:
+        return '{"context_truncated":true,"excerpt":""}'
 
 
 def _execution_boundary_text() -> str:
@@ -339,8 +333,19 @@ def build_llm_chat_request(
     system_prompt: str = "",
     context: dict | None = None,
 ) -> dict[str, object]:
-    payload = build_llm_config_payload(config)
+    user_prompt = require_text_bytes(str(prompt or ""), label="prompt", maximum=MAX_LLM_PROMPT_BYTES).strip()
+    system_prompt = require_text_bytes(
+        str(system_prompt or ""), label="system prompt", maximum=MAX_LLM_SYSTEM_PROMPT_BYTES
+    )
+    if not user_prompt:
+        raise ValueError("LLM prompt cannot be empty.")
     raw_config = config if isinstance(config, dict) else {}
+    request_options = raw_config.get("llm_request_options")
+    if isinstance(request_options, str):
+        require_text_bytes(request_options, label="request JSON", maximum=MAX_LLM_REQUEST_BYTES)
+    elif isinstance(request_options, dict):
+        bounded_json_bytes(request_options, label="request JSON", maximum=MAX_LLM_REQUEST_BYTES)
+    payload = build_llm_config_payload(config)
     provider = str(payload["provider"])
     protocol = str(payload["protocol"])
     mode = str(payload["mode"])
@@ -365,9 +370,6 @@ def build_llm_chat_request(
         mode=mode,
         allow_public_network=public_network,
     )
-    user_prompt = str(prompt or "").strip()
-    if not user_prompt:
-        raise ValueError("LLM prompt cannot be empty.")
     if not model:
         raise ValueError(f"Select an LLM model before calling {payload['provider_label']}.")
 
@@ -472,6 +474,8 @@ def build_llm_chat_request(
         model=model,
         protocol=protocol,
     )
+    bounded_json_bytes(body, label="request JSON", maximum=MAX_LLM_REQUEST_BYTES)
+    require_http_request_bounds(url, headers)
 
     return {
         "provider": provider,
@@ -480,7 +484,7 @@ def build_llm_chat_request(
         "url": url,
         "headers": headers,
         "json": body,
-        "timeout_seconds": int(payload.get("timeout_seconds") or 30),
+        "timeout_seconds": int(effective_timeout_seconds(payload.get("timeout_seconds"))),
         "execution_policy": payload.get("execution_policy"),
     }
 
@@ -687,12 +691,15 @@ def call_llm(
     dry_run: bool = True,
     timeout: float | None = None,
 ) -> dict[str, object]:
-    request_payload = build_llm_chat_request(
-        config,
-        prompt=prompt,
-        system_prompt=system_prompt,
-        context=context,
-    )
+    try:
+        request_payload = build_llm_chat_request(
+            config,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            context=context,
+        )
+    except LLMResourceLimitError as exc:
+        return {"ok": False, "dry_run": dry_run, "error": str(exc)}
     if dry_run:
         return {
             "ok": True,
@@ -722,19 +729,50 @@ def call_llm(
         }
 
     try:
-        response = requests.post(
-            str(request_payload["url"]),
-            headers=headers,
-            json=request_payload["json"],
-            timeout=max(1.0, float(timeout or request_payload.get("timeout_seconds") or 30.0)),
-            allow_redirects=False,
+        request_body = bounded_json_bytes(
+            request_payload["json"], label="request JSON", maximum=MAX_LLM_REQUEST_BYTES
         )
-        reject_llm_redirect(response)
+        total_seconds = effective_timeout_seconds(timeout or request_payload.get("timeout_seconds"))
+
+        def send(deadline, cancelled, register_response):
+            response = None
+            try:
+                response = requests.post(
+                    str(request_payload["url"]),
+                    headers=headers,
+                    data=request_body,
+                    timeout=socket_timeouts(total_seconds),
+                    stream=True,
+                    allow_redirects=False,
+                )
+                register_response(response)
+                reject_llm_redirect(response)
+                check_deadline(deadline, cancelled)
+                payload = read_bounded_json(
+                    response,
+                    maximum=MAX_LLM_RESPONSE_BYTES,
+                    deadline=deadline,
+                    cancelled=cancelled,
+                )
+                return response.status_code, payload
+            finally:
+                if response is not None and not 300 <= response.status_code < 400:
+                    response.close()
+
+        status_code, payload = run_with_total_deadline(send, total_seconds=total_seconds)
     except LLMRedirectError as exc:
         return {
             "ok": False,
             "dry_run": False,
-            "status_code": response.status_code,
+            "status_code": exc.status_code,
+            "provider": request_payload.get("provider"),
+            "execution_policy": request_payload.get("execution_policy"),
+            "error": str(exc),
+        }
+    except LLMResourceLimitError as exc:
+        return {
+            "ok": False,
+            "dry_run": False,
             "provider": request_payload.get("provider"),
             "execution_policy": request_payload.get("execution_policy"),
             "error": str(exc),
@@ -747,15 +785,11 @@ def call_llm(
             "execution_policy": request_payload.get("execution_policy"),
             "error": redact_text(f"LLM provider request failed: {exc}"),
         }
-    try:
-        payload = response.json()
-    except Exception:
-        payload = {"text": response.text}
-    if response.status_code >= 400:
+    if status_code >= 400:
         return {
             "ok": False,
             "dry_run": False,
-            "status_code": response.status_code,
+            "status_code": status_code,
             "error": redact_value(payload),
         }
     protocol = str(request_payload.get("protocol") or "")
@@ -764,7 +798,7 @@ def call_llm(
     return {
         "ok": not bool(violations),
         "dry_run": False,
-        "status_code": response.status_code,
+        "status_code": status_code,
         "provider": request_payload.get("provider"),
         "execution_policy": request_payload.get("execution_policy"),
         "output_policy": {

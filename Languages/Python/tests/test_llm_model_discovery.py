@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -17,12 +18,19 @@ class _Response:
 
     def __init__(self, payload):
         self._payload = payload
+        self.headers = {}
 
     def raise_for_status(self):
         return None
 
     def json(self):
         return self._payload
+
+    def iter_content(self, chunk_size):
+        yield json.dumps(self._payload).encode("utf-8")
+
+    def close(self):
+        pass
 
 
 class LLMModelDiscoveryTests(unittest.TestCase):
@@ -70,7 +78,8 @@ class LLMModelDiscoveryTests(unittest.TestCase):
         self.assertEqual("https://api.kilo.ai/api/gateway/models", get.call_args.args[0])
         self.assertEqual("Bearer kilo-secret-token", get.call_args.kwargs["headers"]["Authorization"])
         self.assertEqual("trading-bot-model-discovery", get.call_args.kwargs["headers"]["User-Agent"])
-        self.assertEqual(17.0, get.call_args.kwargs["timeout"])
+        self.assertEqual((10.0, 15.0), get.call_args.kwargs["timeout"])
+        self.assertTrue(get.call_args.kwargs["stream"])
         self.assertFalse(get.call_args.kwargs["allow_redirects"])
 
     def test_discovery_failure_retains_static_models_and_redacts_key(self):

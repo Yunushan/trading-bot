@@ -253,6 +253,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertEqual("ready", readiness.json()["status"])
         self.assertEqual("trading-bot-service", readiness.json()["service_name"])
         self.assertEqual("a" * 40, readiness.json()["build_commit"])
+        self.assertIs(readiness.json()["trading_execution_supported"], False)
 
         with mock.patch.object(app.state.service, "describe_runtime", side_effect=RuntimeError("boom")):
             not_ready = client.get("/readyz")
