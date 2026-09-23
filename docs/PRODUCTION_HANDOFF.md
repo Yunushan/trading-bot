@@ -6,8 +6,8 @@ This file makes the work resumable in a new chat **without the old conversation*
 
 - Audit date: **2026-09-17**.
 - Audited source: `e574dae633d2186b8af4af1013076ff91f778bb9` on `main`.
-- Latest pre-change source: `8700725f4e76a49bd195d6d2ba99e3ff3c792b67` on `main`; the 2026-09-23 implementation is on `codex/production-readiness-20260923`. Check `git rev-parse HEAD` for its current commit.
-- Score: **58/100 for unattended real-money production; NO-GO**. This is not a profitability score or a score for every possible deployment scope.
+- Current tested code commit: `7cf7f7d46db7aa0715722b866e90d455fe602514` on `codex/production-readiness-20260923`, based on clean `main` commit `8700725f4e76a49bd195d6d2ba99e3ff3c792b67`. Check `git rev-parse HEAD` for later documentation commits.
+- Current dated score: **65/100 for unattended real-money production; NO-GO** at clean code commit `7cf7f7d46db7aa0715722b866e90d455fe602514`. The 2026-09-17 **58/100** audit is the historical baseline. Neither score is a profitability estimate or a score for every deployment scope.
 - Delivered: deep audit, verification ledger, prioritized implementation backlog, this handoff, repository navigation pointers.
 - Product fixes delivered offline: **PRD-002–006, PRD-018 and PRD-023**. **PRD-007, PRD-019 and PRD-020** have bounded implementations in progress. No live orders, deployments, remote settings or credentials changed. Documentation and offline tests do not close external production evidence requirements.
 - Previous implementation checkpoint: **PRD-002 DONE** in commit `6335304f593ae70383c2b454f6e0c707f20e29d5`; it hardens the host-owned LLM provider, credential-reference, destination and public-network-consent boundary.
@@ -18,6 +18,7 @@ This file makes the work resumable in a new chat **without the old conversation*
 - 2026-09-23 source checkpoint: an exact-digest read-only image publisher/verifier, bounded advisory LLM transport, an enforced redacted Git-history secret scan, a next-bar-open backtest mode and corrected support docs are implemented. The full source gate passed with **1,901 Python tests, 2 skips and 54.01% coverage**, plus service/web/mobile/Rust/Tauri/C++ checks. One advisory workspace-hygiene check observed ignored build/cache files. The external promotion evidence-import check was explicitly skipped; no real image was published or deployed.
 - Remaining immediate blockers: `main` and the `production` environment lack observed enforcement; no independent reviewer/release approvers or approved account/host/risk policy is recorded. The read-only observer yields only **1 of 4** required unseeded trading-freshness samples. Two distinct ledger paths can each accept a synthetic intent, so PRD-008 account-wide execution ownership is open. Six reviewed Rust dependency exceptions expire **2026-10-10** and need named owners.
 - Canonical evidence/findings: [PRODUCTION_READINESS_AUDIT.md](PRODUCTION_READINESS_AUDIT.md).
+- Current dated score and strict-gate result: [PRODUCTION_READINESS_REVIEW_2026-09-23.md](PRODUCTION_READINESS_REVIEW_2026-09-23.md).
 - Canonical task statuses/acceptance criteria/work log: [PRODUCTION_IMPLEMENTATION_PLAN.md](PRODUCTION_IMPLEMENTATION_PLAN.md).
 
 ## First actions for a new agent
@@ -41,8 +42,8 @@ reproduce the issue, add regression tests and run the appropriate gates.
 Do not place orders, deploy, change live risk limits, expose secrets, or change
 GitHub settings without the necessary explicit authorization.
 Update the task register and handoff with evidence and the next action.
-Do not claim production readiness from green CI or documentation alone. Keep the
-58/100 unattended-production baseline until a fresh dated evidence review.
+Do not claim production readiness from green CI or documentation alone. Use the
+65/100 dated NO-GO reassessment and preserve the 58/100 historical audit.
 ```
 
 To request planning only, replace “Implement” with “Review and propose changes for”. To choose a task, replace `PRD-007` with its task ID.
