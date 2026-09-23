@@ -88,8 +88,15 @@ kubectl -n trading-bot-readonly get deployment,pods,service,pdb,hpa,networkpolic
 ```
 
 Verify `/readyz` through the HTTPS origin and confirm its `build_commit` equals
-the rendered commit and `read_only` is `true`. Then run the repository's
-sustained deployed-service probe against that HTTPS origin before promotion.
+the rendered commit, `read_only` is `true`, and
+`trading_execution_supported` is `false`, and the versioned
+`standalone-readonly-observer/v1` contract declares
+`trading_observation_supported=false` with source `none`. Run the
+`observer-smoke` profile against that HTTPS origin to verify service health.
+Its passing result is not sustained operational or trading-monitor promotion
+evidence. The existing quick and sustained profiles still require four fresh
+trading snapshot samples and cannot pass on this unseeded topology; active
+trading additionally requires evidence that those samples came from the owner.
 Run `tools/run_service_capacity_probe.py --base-url https://<origin> --json`
 with the token supplied only through `BOT_SERVICE_API_TOKEN` as a bounded
 concurrency regression, then perform the deployment-specific load test used to
@@ -102,10 +109,16 @@ manifest, checks the image's `org.opencontainers.image.revision` label, and
 verifies signed exact-digest build, SBOM, and scan evidence **before obtaining
 Kubernetes credentials or applying anything**. It then performs a Kubernetes
 server-side dry run, waits for rollout, and runs a post-deploy
-HTTPS identity smoke. The post-deploy probe compares every observed `/readyz`
+HTTPS observer service-health smoke. The post-deploy probe compares every
+observed `/readyz`
 `build_commit` with the rendered deployment commit and requires the server's
-`read_only` flag to be `true`; the probe's own GET-only `read_only` field is not
-used as proof of server configuration. Its JSON evidence is written beneath
+`read_only` flag to be `true` and `trading_execution_supported` to be `false`;
+the probe's own GET-only `read_only` field is not used as proof of server
+configuration. The observer contract reports trading observations unavailable;
+it does not establish exchange/account data freshness or active-trading
+readiness. Load-balanced HTTPS requests sample responding replicas; verify
+every pod's build and configuration separately through cluster evidence.
+Its JSON evidence is written beneath
 the repository's canonical, ignored `artifacts/operational-readiness/` path and
 uploaded with the rendered manifest. Configure `PRODUCTION_KUBECONFIG_B64` and
 `BOT_SERVICE_API_TOKEN` as protected `production` environment secrets and

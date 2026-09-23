@@ -241,6 +241,12 @@ def _invalidate_shared_binance(self, reason: str | None = None):
     except Exception:
         existing = None
     if existing is not None:
+        revoke_owner = getattr(existing, "_revoke_spot_execution_owner", None)
+        if callable(revoke_owner):
+            try:
+                revoke_owner()
+            except Exception as exc:
+                _record_account_runtime_exception(self, "invalidate_shared_binance_owner", exc)
         try:
             self.shared_binance = None
         except Exception:

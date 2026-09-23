@@ -18,6 +18,7 @@ from ...core.backtest.models import (
     BacktestRequest,
     IndicatorDefinition,
     PairOverride,
+    validate_execution_cost_bps,
     validate_execution_model,
 )
 from ...core.backtest.optimizer_limits_runtime import (
@@ -622,8 +623,12 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         "percent",
     )
     mdd_logic = clean_text(patch.get("mdd_logic", backtest_cfg.get("mdd_logic", "per_trade")), "per_trade")
-    fee_bps = max(0.0, coerce_number(patch.get("fee_bps", backtest_cfg.get("fee_bps", 5.0)), 5.0))
-    slippage_bps = max(0.0, coerce_number(patch.get("slippage_bps", backtest_cfg.get("slippage_bps", 2.0)), 2.0))
+    fee_bps = validate_execution_cost_bps(
+        patch.get("fee_bps", backtest_cfg.get("fee_bps", 5.0)), field="fee_bps"
+    )
+    slippage_bps = validate_execution_cost_bps(
+        patch.get("slippage_bps", backtest_cfg.get("slippage_bps", 2.0)), field="slippage_bps"
+    )
     execution_model = validate_execution_model(
         patch.get("execution_model", EXECUTION_MODEL_SAME_CLOSE_LEGACY)
     )

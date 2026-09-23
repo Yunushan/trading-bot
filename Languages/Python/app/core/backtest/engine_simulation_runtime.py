@@ -12,6 +12,7 @@ from .models import (
     BacktestRequest,
     BacktestRunResult,
     IndicatorDefinition,
+    validate_execution_cost_bps,
     validate_execution_model,
 )
 
@@ -31,6 +32,8 @@ def simulate_backtest(
     work_start_idx: int | None = None,
 ) -> Optional[BacktestRunResult]:
     execution_model = validate_execution_model(request.execution_model)
+    fee_rate = validate_execution_cost_bps(request.fee_bps, field="fee_bps") / 10_000.0
+    slippage_rate = validate_execution_cost_bps(request.slippage_bps, field="slippage_bps") / 10_000.0
     logic = (request.logic or "AND").upper()
     if work_df is None:
         work_df = df.loc[df.index >= request.start]
@@ -54,9 +57,6 @@ def simulate_backtest(
     leverage = max(1.0, float(leverage_override if leverage_override is not None else (request.leverage or 1.0)))
     margin_mode = (request.margin_mode or "Isolated").strip().upper()
     side_pref = (request.side or "BOTH").strip().upper()
-    fee_rate = max(0.0, float(getattr(request, "fee_bps", 0.0) or 0.0)) / 10_000.0
-    slippage_rate = max(0.0, float(getattr(request, "slippage_bps", 0.0) or 0.0)) / 10_000.0
-
     indicator_signals, indicator_keys = collect_indicator_signals(
         symbol=symbol,
         interval=interval,
@@ -192,16 +192,22 @@ def simulate_backtest(
     def _exit_execution_price(market_price: float, direction_value: str) -> float:
         return market_price * (1.0 - slippage_rate if direction_value == "LONG" else 1.0 + slippage_rate)
 
+    def _record_fee(fee: float) -> None:
+        nonlocal fees_paid
+        total = fees_paid + fee
+        if not np.isfinite(fee) or not np.isfinite(total):
+            raise ValueError("Invalid backtest fee: calculation exceeds finite range")
+        fees_paid = total
+
     def _realize_close(market_price: float) -> tuple[float, float]:
         """Return slippage-adjusted exit price and net PnL after the exit fee."""
-        nonlocal fees_paid
         exit_px = _exit_execution_price(float(market_price), direction)
         if direction == "LONG":
             gross_pnl = (exit_px - entry_price) * units
         else:
             gross_pnl = (entry_price - exit_px) * units
         exit_fee = abs(exit_px * units) * fee_rate
-        fees_paid += exit_fee
+        _record_fee(exit_fee)
         return exit_px, gross_pnl - exit_fee
 
     def _finalize_trade(exit_price: float | None = None, realized_pnl: float | None = None) -> None:
@@ -312,7 +318,7 @@ def simulate_backtest(
         entry_buy: bool,
         entry_sell: bool,
     ) -> None:
-        nonlocal direction, entry_price, equity, fees_paid, position_margin, position_open, trades, units
+        nonlocal direction, entry_price, equity, position_margin, position_open, trades, units
         if position_open:
             if direction == "LONG" and raw_sell:
                 exit_price, pnl = _realize_close(market_price)
@@ -344,7 +350,7 @@ def simulate_backtest(
                     position_margin = 0.0
                     return
                 entry_fee = abs(entry_price * units) * fee_rate
-                fees_paid += entry_fee
+                _record_fee(entry_fee)
                 equity = max(0.0, equity - entry_fee)
                 position_open = True
                 direction = "LONG"
@@ -358,7 +364,7 @@ def simulate_backtest(
                     position_margin = 0.0
                     return
                 entry_fee = abs(entry_price * units) * fee_rate
-                fees_paid += entry_fee
+                _record_fee(entry_fee)
                 equity = max(0.0, equity - entry_fee)
                 position_open = True
                 direction = "SHORT"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from typing import Dict, List, Optional
 
 from ...config import MDD_LOGIC_DEFAULT
@@ -24,6 +25,19 @@ def validate_execution_model(value: object) -> str:
             + ", ".join(BACKTEST_EXECUTION_MODELS)
         )
     return model
+
+
+def validate_execution_cost_bps(value: object, *, field: str) -> float:
+    try:
+        bps = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Invalid backtest {field}: expected finite nonnegative basis points") from exc
+    if not isfinite(bps) or bps < 0.0:
+        raise ValueError(f"Invalid backtest {field}: expected finite nonnegative basis points")
+    if field == "slippage_bps" and bps >= 10_000.0:
+        # At 100% adverse slippage, one side of a fill has a zero/negative price.
+        raise ValueError("Invalid backtest slippage_bps: must be below 10000 basis points")
+    return bps
 
 
 @dataclass

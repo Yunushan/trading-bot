@@ -92,6 +92,24 @@
         "/api/v1/runtime/operational-preflight"
       ]
     },
+    "observer-smoke": {
+      "contract_version": "standalone-readonly-observer/v1",
+      "promotion_eligible": false,
+      "cycles": 10,
+      "minimum_duration_seconds": 0,
+      "minimum_requests": 60,
+      "cycle_interval_seconds": 0,
+      "max_error_rate": 0.0,
+      "max_p95_ms": 500.0,
+      "endpoints": [
+        "/livez",
+        "/readyz",
+        "/api/v1/runtime",
+        "/api/v1/status",
+        "/api/v1/metrics",
+        "/api/v1/runtime/operational-preflight"
+      ]
+    },
     "sustained": {
       "promotion_eligible": true,
       "cycles": 1,

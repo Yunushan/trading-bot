@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.core.positions.close_results import confirmed_closed_position_keys
 from app.security.redaction import redact_text
+from app.settings.live_safety import LiveTradingSafetyError
 
 _RESOLVE_TRIGGER_INDICATORS = None
 _CLOSED_HISTORY_MAX = None
@@ -318,7 +319,8 @@ def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = Fa
         close_all_futures_positions as _close_all_futures,
     )
 
-    # Rebuild wrapper each time so close-all uses latest mode/credentials even if launch-time wrapper was different.
+    # An active Spot owner belongs to one wrapper for its whole execution
+    # session. Closing positions must use that wrapper and its verified key.
     if auth is None:
         auth = self._snapshot_auth_state()
     timeout_override = None
@@ -330,10 +332,21 @@ def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = Fa
         os.environ["BINANCE_HTTP_CONNECT_TIMEOUT"] = "2"
         os.environ["BINANCE_HTTP_READ_TIMEOUT"] = "6"
     try:
-        self.shared_binance = self._build_wrapper_from_values(auth)
         acct_text = str(auth.get("account_type") or "").upper() or (
             self.account_combo.currentText().upper() if hasattr(self, "account_combo") else ""
         )
+        existing = getattr(self, "shared_binance", None)
+        if not acct_text.startswith("FUT") and getattr(existing, "_spot_execution_owner", None) is not None:
+            if (
+                acct_text != "SPOT"
+                or getattr(existing, "api_key", None) != auth.get("api_key")
+                or getattr(existing, "api_secret", None) != auth.get("api_secret")
+                or getattr(existing, "mode", None) != auth.get("mode")
+                or str(getattr(existing, "account_type", "") or "").upper() != "SPOT"
+            ):
+                raise LiveTradingSafetyError("Spot close requires the active owner credentials and account mode.")
+        else:
+            self.shared_binance = self._build_wrapper_from_values(auth)
         if acct_text.startswith("FUT"):
             results = _close_all_futures(self.shared_binance, fast=fast) or []
             if not fast:

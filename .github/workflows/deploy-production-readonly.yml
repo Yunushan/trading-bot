@@ -209,7 +209,7 @@ jobs:
         env:
           BOT_SERVICE_API_TOKEN: ${{ secrets.BOT_SERVICE_API_TOKEN }}
           SERVICE_BASE_URL: ${{ vars.PRODUCTION_SERVICE_API_ORIGIN }}
-          PROBE_OUTPUT: artifacts/operational-readiness/production-readonly-quick-probe-${{ github.run_id }}.json
+          PROBE_OUTPUT: artifacts/operational-readiness/production-readonly-observer-smoke-${{ github.run_id }}.json
         shell: bash
         run: |
           set -euo pipefail
@@ -222,7 +222,7 @@ jobs:
             exit 1
           fi
           python tools/run_service_sustained_probe.py \
-            --profile quick \
+            --profile observer-smoke \
             --base-url "${SERVICE_BASE_URL}" \
             --api-token-env BOT_SERVICE_API_TOKEN \
             --expected-commit "${DEPLOY_COMMIT}" \
@@ -238,7 +238,7 @@ jobs:
           path: |
             ${{ steps.render.outputs.manifest_path }}
             artifacts/operational-readiness/production-readonly-provenance-${{ github.run_id }}.json
-            artifacts/operational-readiness/production-readonly-quick-probe-${{ github.run_id }}.json
+            artifacts/operational-readiness/production-readonly-observer-smoke-${{ github.run_id }}.json
           if-no-files-found: error
 
       - name: Remove temporary Kubernetes credentials

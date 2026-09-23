@@ -717,6 +717,69 @@ class BacktestBehaviorTests(unittest.TestCase):
         self.assertGreater(costed.fees_paid or 0.0, 1.0)
         self.assertLess(costed.final_equity, frictionless.final_equity)
 
+    def test_next_bar_open_cost_sensitivity_is_adverse_for_long_and_short(self):
+        df = _build_frame([100.0, 100.0, 100.0])
+        indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]
+        for side, signals in (("BUY", [20.0, 80.0, 50.0]), ("SELL", [80.0, 20.0, 50.0])):
+            with self.subTest(side=side):
+                engine = _SyntheticBacktestEngine({"synthetic": signals})
+
+                def run_costs(fee_bps: float, slippage_bps: float):
+                    return engine._simulate(
+                        "BTCUSDT", "1h", df, indicators,
+                        _build_request(
+                            df, indicators, execution_model="next_bar_open", side=side,
+                            fee_bps=fee_bps, slippage_bps=slippage_bps,
+                        ),
+                    )
+
+                baseline = run_costs(0.0, 0.0)
+                fee_only = run_costs(10.0, 0.0)
+                slippage_only = run_costs(0.0, 10.0)
+                combined = run_costs(10.0, 10.0)
+                assert baseline is not None and fee_only is not None
+                assert slippage_only is not None and combined is not None
+                self.assertAlmostEqual(1000.0, baseline.final_equity)
+                self.assertLess(fee_only.final_equity, baseline.final_equity)
+                self.assertLess(slippage_only.final_equity, baseline.final_equity)
+                self.assertLess(combined.final_equity, min(fee_only.final_equity, slippage_only.final_equity))
+                self.assertGreater(fee_only.fees_paid or 0.0, 0.0)
+                self.assertEqual(0.0, slippage_only.fees_paid)
+
+    def test_next_bar_open_rejects_invalid_execution_costs_for_direct_simulation(self):
+        df = _build_frame([100.0, 100.0])
+        indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]
+        engine = _SyntheticBacktestEngine({"synthetic": [20.0, 50.0]})
+        invalid_costs = (
+            ("fee_bps", -1.0),
+            ("fee_bps", float("nan")),
+            ("fee_bps", float("inf")),
+            ("slippage_bps", -1.0),
+            ("slippage_bps", float("nan")),
+            ("slippage_bps", float("inf")),
+            ("slippage_bps", 10_000.0),
+        )
+        for field, value in invalid_costs:
+            with self.subTest(field=field, value=value):
+                with self.assertRaisesRegex(ValueError, field):
+                    engine._simulate(
+                        "BTCUSDT", "1h", df, indicators,
+                        _build_request(df, indicators, execution_model="next_bar_open", **{field: value}),
+                    )
+
+    def test_next_bar_open_rejects_fee_arithmetic_overflow(self):
+        df = _build_frame([100.0, 100.0])
+        indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]
+        engine = _SyntheticBacktestEngine({"synthetic": [20.0, 50.0]})
+        with self.assertRaisesRegex(ValueError, "backtest fee"):
+            engine._simulate(
+                "BTCUSDT", "1h", df, indicators,
+                _build_request(
+                    df, indicators, execution_model="next_bar_open",
+                    fee_bps=1e308, leverage=10_000.0,
+                ),
+            )
+
     def test_next_bar_open_intrabar_stop_applies_after_open_fill(self):
         df = _build_frame(
             [100.0, 95.0], opens=[100.0, 90.0],

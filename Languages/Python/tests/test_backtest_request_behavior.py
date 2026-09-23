@@ -67,6 +67,31 @@ class BacktestRequestBehaviorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid backtest execution_model"):
             build_request(runtime, {**patch, "execution_model": "unknown"})
 
+    def test_service_request_rejects_invalid_execution_costs(self):
+        runtime = _build_runtime()
+        patch = {
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1h"],
+            "capital": 1000.0,
+            "start": "2025-01-01T00:00:00",
+            "end": "2025-01-02T00:00:00",
+            "indicators": {"rsi": {"enabled": True, "length": 14, "buy_value": 30, "sell_value": 70}},
+            "execution_model": "next_bar_open",
+        }
+        invalid_costs = (
+            ("fee_bps", -1.0),
+            ("fee_bps", float("nan")),
+            ("fee_bps", float("inf")),
+            ("slippage_bps", -1.0),
+            ("slippage_bps", float("nan")),
+            ("slippage_bps", float("inf")),
+            ("slippage_bps", 10_000.0),
+        )
+        for field, value in invalid_costs:
+            with self.subTest(field=field, value=value):
+                with self.assertRaisesRegex(ValueError, field):
+                    build_request(runtime, {**patch, field: value})
+
     def test_build_indicator_definitions_coerces_string_enabled_flags(self):
         indicators = build_indicator_definitions(
             {

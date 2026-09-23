@@ -50,6 +50,8 @@ else:
 
 
 DEFAULT_EVIDENCE_ID = "service-api-sustained-runtime"
+OBSERVER_SMOKE_EVIDENCE_ID = "read-only-observer-service-health-smoke"
+OBSERVER_SMOKE_CONTRACT_VERSION = "standalone-readonly-observer/v1"
 API_TOKEN = "operational-readiness-probe-token"
 OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS = {
     "exchange_connector": "generated_at",
@@ -178,6 +180,26 @@ def _operational_snapshot_freshness_samples(
     return ages, issues
 
 
+def _observer_preflight_reports_unavailable(payload: object) -> bool:
+    """Require the standalone observer's bootstrap state, never fresh trading data."""
+    if not isinstance(payload, dict):
+        return False
+    freshness = payload.get("freshness")
+    if not isinstance(freshness, dict):
+        return False
+    for component, timestamp_field in OPERATIONAL_FRESHNESS_TIMESTAMP_FIELDS.items():
+        item = freshness.get(component)
+        if not isinstance(item, dict) or item.get("source") not in {
+            "service-bootstrap", "service-config",
+        }:
+            return False
+        if component != "exchange_connector" and (
+            timestamp_field in item or "age_seconds" in item
+        ):
+            return False
+    return True
+
+
 def _normalize_base_url(value: str) -> tuple[str, bool]:
     parsed = urlsplit(str(value or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -214,6 +236,13 @@ def _payload_read_only(payload: object) -> tuple[bool, bool | None]:
         value = service_api.get("read_only")
         return True, value if isinstance(value, bool) else None
     return False, None
+
+
+def _payload_trading_execution_supported(payload: object) -> tuple[bool, bool | None]:
+    if not isinstance(payload, dict) or "trading_execution_supported" not in payload:
+        return False, None
+    value = payload["trading_execution_supported"]
+    return True, value if isinstance(value, bool) else None
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -313,7 +342,32 @@ def run_probe(
             "issues": [f"Unknown probe profile: {profile_name}"],
         }
     profile = profiles[profile_name]
+    if not isinstance(profile, dict) or not isinstance(profile.get("endpoints"), list):
+        return {
+            "ok": False,
+            "status": "fail",
+            "profile": profile_name,
+            "promotion_eligible": False,
+            "issues": ["probe profile is malformed"],
+        }
     endpoints = [str(endpoint) for endpoint in profile["endpoints"]]
+    observer_smoke = profile_name == "observer-smoke"
+    if observer_smoke and (
+        profile.get("contract_version") != OBSERVER_SMOKE_CONTRACT_VERSION
+        or profile.get("promotion_eligible") is not False
+        or set(endpoints) != {
+            "/livez", "/readyz", "/api/v1/runtime", "/api/v1/status",
+            "/api/v1/metrics", "/api/v1/runtime/operational-preflight",
+        }
+        or len(endpoints) != 6
+    ):
+        return {
+            "ok": False,
+            "status": "fail",
+            "profile": profile_name,
+            "promotion_eligible": False,
+            "issues": ["observer-smoke policy does not match its versioned service-health contract"],
+        }
     configured_cycles = int(profile["cycles"])
     configured_duration = float(profile["minimum_duration_seconds"])
     configured_requests = int(profile["minimum_requests"])
@@ -359,6 +413,16 @@ def run_probe(
     transport_https = False
     if base_url:
         normalized_base_url, transport_https = _normalize_base_url(base_url)
+    if observer_smoke and (
+        not normalized_base_url or not transport_https or not expected_commit_norm
+    ):
+        return {
+            "ok": False,
+            "status": "fail",
+            "profile": profile_name,
+            "promotion_eligible": False,
+            "issues": ["observer-smoke requires a deployed HTTPS origin and full expected_commit"],
+        }
     if profile_name == "sustained" and not normalized_base_url:
         return {
             "ok": False,
@@ -431,6 +495,8 @@ def run_probe(
     snapshot_freshness_issue_count = 0
     observed_deployment_commits: set[str] = set()
     identity_observations: list[dict[str, object]] = []
+    observer_preflight_observations: list[bool] = []
+    observer_runtime_observations: list[bool] = []
     request_count = 0
     completed_cycles = 0
     started = time.perf_counter()
@@ -466,17 +532,27 @@ def run_probe(
                                 "error": error,
                             }
                         )
-                if endpoint.endswith("/operational-preflight") and isinstance(
-                    payload, dict
-                ):
-                    ages, freshness_issues = _operational_snapshot_freshness_samples(
-                        payload
-                    )
-                    snapshot_ages.extend(ages)
-                    snapshot_freshness_issue_count += len(freshness_issues)
-                    remaining_issue_slots = max(0, 20 - len(snapshot_freshness_issues))
-                    snapshot_freshness_issues.extend(
-                        freshness_issues[:remaining_issue_slots]
+                if endpoint.endswith("/operational-preflight"):
+                    if observer_smoke:
+                        observer_preflight_observations.append(
+                            _observer_preflight_reports_unavailable(payload)
+                        )
+                    elif isinstance(payload, dict):
+                        ages, freshness_issues = _operational_snapshot_freshness_samples(
+                            payload
+                        )
+                        snapshot_ages.extend(ages)
+                        snapshot_freshness_issue_count += len(freshness_issues)
+                        remaining_issue_slots = max(0, 20 - len(snapshot_freshness_issues))
+                        snapshot_freshness_issues.extend(
+                            freshness_issues[:remaining_issue_slots]
+                        )
+                if observer_smoke and endpoint.endswith("/api/v1/runtime"):
+                    control_plane = payload.get("control_plane") if isinstance(payload, dict) else None
+                    observer_runtime_observations.append(
+                        isinstance(control_plane, dict)
+                        and control_plane.get("mode") == "intent-only"
+                        and control_plane.get("trading_execution_supported") is False
                     )
                 if endpoint.endswith("/readyz"):
                     identity_observations.append(
@@ -484,6 +560,14 @@ def run_probe(
                             "build_commit": _payload_build_commit(payload),
                             "read_only_present": _payload_read_only(payload)[0],
                             "read_only": _payload_read_only(payload)[1],
+                            "trading_execution_supported_present": _payload_trading_execution_supported(payload)[0],
+                            "trading_execution_supported": _payload_trading_execution_supported(payload)[1],
+                            "observation_contract_version": payload.get("observation_contract_version") if isinstance(payload, dict) else None,
+                            "observation_scope": payload.get("observation_scope") if isinstance(payload, dict) else None,
+                            "trading_observation_supported": payload.get("trading_observation_supported") if isinstance(payload, dict) else None,
+                            "trading_observation_source": payload.get("trading_observation_source") if isinstance(payload, dict) else None,
+                            "host_context": payload.get("host_context") if isinstance(payload, dict) else None,
+                            "host_owner": payload.get("host_owner") if isinstance(payload, dict) else None,
                         }
                     )
                 observed_commit = _payload_build_commit(payload)
@@ -504,7 +588,7 @@ def run_probe(
     duration = time.perf_counter() - started
     error_count = sum(endpoint_errors.values())
     error_rate = error_count / request_count if request_count else 1.0
-    snapshot_expected_count = sum(
+    snapshot_expected_count = 0 if observer_smoke else sum(
         endpoint_counts[endpoint]
         for endpoint in endpoints
         if endpoint.endswith("/runtime/operational-preflight")
@@ -528,6 +612,12 @@ def run_probe(
         and snapshot_max_age is not None
         and snapshot_max_age_limit is not None
         and snapshot_max_age <= snapshot_max_age_limit
+    )
+    observer_preflight_unavailable = bool(
+        observer_preflight_observations and all(observer_preflight_observations)
+    )
+    observer_runtime_scope_verified = bool(
+        observer_runtime_observations and all(observer_runtime_observations)
     )
     latency_summary = {
         "p50": round(_percentile(latencies, 0.50), 3),
@@ -566,7 +656,7 @@ def run_probe(
     thresholds_pass = (
         error_rate <= allowed_error_rate
         and latency_summary["p95"] <= allowed_p95_ms
-        and snapshot_freshness_pass
+        and (observer_preflight_unavailable if observer_smoke else snapshot_freshness_pass)
     )
     endpoints_pass = all(result["status"] == "pass" for result in endpoint_results)
     current_commit = _current_commit(REPO_ROOT)
@@ -591,7 +681,10 @@ def run_probe(
             and deployed_commit == current_commit
             and len(observed_deployment_commits) == 1
         )
-    server_identity_required = bool(expected_commit_norm or require_server_read_only)
+    read_only_scope_required = bool(
+        require_server_read_only or profile_name in {"sustained", "observer-smoke"}
+    )
+    server_identity_required = bool(expected_commit_norm or read_only_scope_required)
     server_read_only_verified = bool(
         identity_observations
         and all(
@@ -600,9 +693,31 @@ def run_probe(
             for observation in identity_observations
         )
     )
+    server_observer_scope_verified = bool(
+        identity_observations
+        and all(
+            observation.get("trading_execution_supported_present") is True
+            and observation.get("trading_execution_supported") is False
+            for observation in identity_observations
+        )
+    )
+    server_observation_scope_verified = bool(
+        identity_observations
+        and all(
+            observation.get("observation_contract_version") == OBSERVER_SMOKE_CONTRACT_VERSION
+            and observation.get("observation_scope") == "service-health-only"
+            and observation.get("trading_observation_supported") is False
+            and observation.get("trading_observation_source") == "none"
+            and observation.get("host_context") == "standalone-service"
+            and observation.get("host_owner") == "service-process"
+            for observation in identity_observations
+        )
+    )
     server_identity_pass = bool(
         (not expected_commit_norm or deployment_identity_matches)
-        and (not require_server_read_only or server_read_only_verified)
+        and (not read_only_scope_required or server_read_only_verified)
+        and (not read_only_scope_required or server_observer_scope_verified)
+        and (not observer_smoke or server_observation_scope_verified)
     ) if server_identity_required else True
     production_transport_pass = bool(normalized_base_url and transport_https)
     production_probe_prerequisites_pass = bool(
@@ -613,6 +728,8 @@ def run_probe(
     ok = bool(minimums_met and thresholds_pass and endpoints_pass and server_identity_pass)
     if profile_name == "sustained":
         ok = bool(ok and production_probe_prerequisites_pass)
+    if observer_smoke:
+        ok = bool(ok and production_probe_prerequisites_pass and observer_runtime_scope_verified)
     configured_promotion_minimums_met = (
         profile_name == "sustained"
         and duration >= configured_duration
@@ -623,6 +740,7 @@ def run_probe(
     source_tree_clean = _source_tree_clean(REPO_ROOT)
     promotion_eligible = bool(
         ok
+        and profile_name == "sustained"
         and profile.get("promotion_eligible") is True
         and configured_promotion_minimums_met
         and production_probe_prerequisites_pass
@@ -648,7 +766,20 @@ def run_probe(
             "actual_p95_ms": latency_summary["p95"],
             "maximum_p95_ms": allowed_p95_ms,
         },
-        {
+    ]
+    if observer_smoke:
+        suite_results.append({
+            "name": "trading-observations-unavailable",
+            "status": "pass" if observer_preflight_unavailable else "fail",
+            "trading_observation_supported": False,
+            "genuine_snapshot_sample_count": 0,
+        })
+        suite_results.append({
+            "name": "standalone-runtime-scope",
+            "status": "pass" if observer_runtime_scope_verified else "fail",
+        })
+    else:
+        suite_results.append({
             "name": "operational-snapshot-freshness",
             "status": "pass" if snapshot_freshness_pass else "fail",
             "sample_count": snapshot_sample_count,
@@ -658,8 +789,7 @@ def run_probe(
                 round(snapshot_max_age, 3) if snapshot_max_age is not None else None
             ),
             "allowed_maximum_age_seconds": snapshot_max_age_limit,
-        },
-    ]
+        })
     if server_identity_required:
         suite_results.append(
             {
@@ -676,6 +806,8 @@ def run_probe(
                     observation.get("read_only") for observation in identity_observations
                 ],
                 "read_only_verified": server_read_only_verified,
+                "observer_scope_verified": server_observer_scope_verified,
+                "observation_scope_verified": server_observation_scope_verified if observer_smoke else None,
             }
         )
     if profile_name == "sustained":
@@ -703,7 +835,12 @@ def run_probe(
         issues.append(
             f"p95 latency {latency_summary['p95']:.3f}ms exceeded {allowed_p95_ms:.3f}ms"
         )
-    if not snapshot_samples_complete:
+    if observer_smoke:
+        if not observer_preflight_unavailable:
+            issues.append("standalone observer preflight did not prove trading observations unavailable")
+        if not observer_runtime_scope_verified:
+            issues.append("standalone observer runtime scope was not verified")
+    elif not snapshot_samples_complete:
         issues.append(
             "operational preflight freshness samples were missing or malformed "
             f"({snapshot_sample_count}/{snapshot_expected_count} valid)"
@@ -720,7 +857,7 @@ def run_probe(
         )
     if failures:
         issues.append(f"{error_count} read-only service requests failed")
-    if profile_name == "sustained" and not production_transport_pass:
+    if profile_name in {"sustained", "observer-smoke"} and not production_transport_pass:
         issues.append(
             "production promotion probes require a deployed HTTPS service endpoint"
         )
@@ -732,20 +869,29 @@ def run_probe(
         )
     if server_identity_required and not identity_observations:
         issues.append("deployed service /readyz identity payload was missing")
-    if require_server_read_only and not server_read_only_verified:
+    if read_only_scope_required and not server_read_only_verified:
         issues.append("deployed service read_only=true was not verified on /readyz")
+    if read_only_scope_required and not server_observer_scope_verified:
+        issues.append(
+            "deployed service trading_execution_supported=false was not verified on /readyz"
+        )
+    if observer_smoke and not server_observation_scope_verified:
+        issues.append("deployed standalone observer service-health contract was not verified on /readyz")
     if expected_commit_norm and identity_observations and not deployment_identity_matches:
         issues.append("deployed service /readyz build_commit did not match expected_commit")
     return {
         "ok": ok,
-        "evidence_id": DEFAULT_EVIDENCE_ID,
+        "evidence_id": OBSERVER_SMOKE_EVIDENCE_ID if observer_smoke else DEFAULT_EVIDENCE_ID,
         "status": "pass" if ok else "fail",
         "evidence_scope": (
-            f"deployed-{profile_name}-service-api-probe"
+            "deployed-standalone-readonly-observer-service-health-only"
+            if observer_smoke
+            else f"deployed-{profile_name}-service-api-probe"
             if normalized_base_url
             else f"local-{profile_name}-service-api-probe"
         ),
         "profile": profile_name,
+        "observation_contract_version": OBSERVER_SMOKE_CONTRACT_VERSION if observer_smoke else None,
         "generated_at": _now_iso(),
         "commit": current_commit,
         "deployed_commit": deployed_commit,
@@ -754,8 +900,11 @@ def run_probe(
         "policy_sha256": policy_sha256(policy),
         "secrets_redacted": True,
         "read_only": True,
-        "server_read_only_required": bool(require_server_read_only),
+        "server_read_only_required": read_only_scope_required,
         "server_read_only_verified": server_read_only_verified,
+        "server_observer_scope_verified": server_observer_scope_verified,
+        "server_observation_scope_verified": server_observation_scope_verified if observer_smoke else None,
+        "observer_runtime_scope_verified": observer_runtime_scope_verified if observer_smoke else None,
         "server_identity_verified": server_identity_pass,
         "order_submission_attempted": False,
         "runtime_ready_claimed": False,
@@ -781,6 +930,15 @@ def run_probe(
         "operational_snapshot_max_age_seconds": (
             round(snapshot_max_age, 3) if snapshot_max_age is not None else None
         ),
+        "trading_observations": (
+            {
+                "status": "unavailable" if ok else "unverified",
+                "source": "none" if ok else None,
+                "freshness_age_seconds": None,
+                "genuine_snapshot_sample_count": 0 if ok else None,
+            }
+            if observer_smoke else None
+        ),
         "thresholds": {
             "max_error_rate": allowed_error_rate,
             "max_p95_ms": allowed_p95_ms,
@@ -795,7 +953,7 @@ def run_probe(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("quick", "sustained"), default="quick")
+    parser.add_argument("--profile", choices=("quick", "observer-smoke", "sustained"), default="quick")
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY_PATH)
     parser.add_argument("--cycles", type=int)
     parser.add_argument("--minimum-duration-seconds", type=float)

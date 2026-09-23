@@ -119,6 +119,9 @@ SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_
 SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS"
 SERVICE_API_READ_ONLY_ENV = "BOT_SERVICE_API_READ_ONLY"
 SERVICE_BUILD_COMMIT_ENV = "TRADING_BOT_BUILD_COMMIT"
+# The standalone constructor has no trading snapshot ingestion provider. A
+# supplied service or another host topology does not inherit this declaration.
+STANDALONE_OBSERVATION_PROVIDER = "none"
 DEFAULT_SERVICE_API_MAX_REQUEST_BYTES = 1_048_576
 DEFAULT_SERVICE_API_WRITE_RATE_LIMIT_MAX_CLIENTS = 10_000
 SERVICE_API_DEFAULT_DASHBOARD_LOG_LIMIT = 30
@@ -280,6 +283,7 @@ def create_service_api_app(
     host_owner: str = "service-process",
     bound_host: str = "127.0.0.1",
     enable_local_executor: bool | None = None,
+    observation_provider: str | None = None,
 ):
     _require_fastapi()
     resolved_api_token = resolve_service_api_token(api_token)
@@ -294,6 +298,20 @@ def create_service_api_app(
         enable_local_executor = service is None and resolved_host_context == "standalone-service"
     if read_only_mode:
         enable_local_executor = False
+    observation_provider = (
+        str(observation_provider).strip()
+        if observation_provider is not None
+        else STANDALONE_OBSERVATION_PROVIDER
+        if service is None and resolved_host_context == "standalone-service"
+        else "unspecified"
+    )
+    standalone_observer_service_health = bool(
+        read_only_mode
+        and observation_provider == "none"
+        and resolved_host_context == "standalone-service"
+        and resolved_host_owner == "service-process"
+        and not enable_local_executor
+    )
     if enable_local_executor:
         try:
             service_instance.enable_local_executor()
@@ -319,6 +337,8 @@ def create_service_api_app(
     app.state.service_api_host_owner = resolved_host_owner
     app.state.service_api_non_loopback_bind = host_requires_service_api_token(bound_host)
     app.state.service_api_read_only = read_only_mode
+    app.state.standalone_observer_service_health = standalone_observer_service_health
+    app.state.observation_provider = observation_provider
     app.state.service_api_streaming = True
     app.state.service_api_version = SERVICE_API_VERSION
     app.state.service_api_base_path = SERVICE_API_BASE_PATH
@@ -377,14 +397,25 @@ def create_service_api_app(
         service_name = str(getattr(descriptor, "service_name", "") or "").strip()
         if not service_name:
             raise RuntimeError("Service runtime descriptor is incomplete")
-        return {
+        payload: dict[str, object] = {
             "status": "ready",
             "service_name": service_name,
             "host_context": app.state.service_api_host_context,
             "host_owner": app.state.service_api_host_owner,
             "build_commit": _service_build_commit(),
             "read_only": bool(app.state.service_api_read_only),
+            "trading_execution_supported": bool(descriptor.control_plane.trading_execution_supported),
         }
+        if app.state.standalone_observer_service_health:
+            payload.update(
+                {
+                    "observation_contract_version": "standalone-readonly-observer/v1",
+                    "observation_scope": "service-health-only",
+                    "trading_observation_supported": False,
+                    "trading_observation_source": app.state.observation_provider,
+                }
+            )
+        return payload
 
     def _build_dashboard_payload(*, log_limit: int = 30, incident_limit: int = 20) -> dict[str, object]:
         payload = dict(_service().get_dashboard_snapshot(log_limit=log_limit))
@@ -1261,6 +1292,9 @@ def run_service_api_server(
         host_owner="service-process",
         bound_host=host,
         enable_local_executor=True,
+        observation_provider=(
+            STANDALONE_OBSERVATION_PROVIDER if service is None else "unspecified"
+        ),
     )
     uvicorn.run(
         app,

@@ -5,7 +5,7 @@ from decimal import getcontext
 
 from binance.client import Client
 from ....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
-from ....settings.live_safety import validate_live_trading_safety
+from ....settings.live_safety import is_live_trading_mode, validate_live_trading_safety
 from app.settings.execution_mode import is_testnet_trading_mode
 from app.security.redaction import redact_text
 from .account import bind_binance_account_data
@@ -90,6 +90,8 @@ def _configure_python_binance_urls(mode: str | None) -> None:
 DEFAULT_CONNECTOR_BACKEND = "binance-sdk-derivatives-trading-usds-futures"
 
 class BinanceWrapper:
+    _enforce_spot_execution_owner = True
+
     @property
     def mode(self):
         """Routing is fixed for the lifetime of an exchange client."""
@@ -220,6 +222,8 @@ class BinanceWrapper:
         self.futures_leverage = initial_leverage
         self._default_margin_mode = str((default_margin_mode or "ISOLATED")).upper()
         self.account_type = (account_type or "Spot").strip().upper()  # "SPOT" or "FUTURES"
+        self._spot_owner_initial_live = is_live_trading_mode(self.mode) and self.account_type == "SPOT"
+        self._spot_execution_revoked = False
         try:
             self._configure_order_audit(config=live_safety_config)
         except Exception:
@@ -275,6 +279,9 @@ class BinanceWrapper:
         with self._client_url_lock:
             _configure_python_binance_urls(self.mode)
             self.client = self._build_client()
+        self._spot_owner_initial_context = (
+            self.api_key, self.api_secret, self.mode, self.account_type, self.client,
+        )
         try:
             if hasattr(self.client, "_bw_throttled"):
                 setattr(self.client, "_bw_throttle", self._throttle_request)
