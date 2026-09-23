@@ -90,10 +90,12 @@ jobs:
             echo "The published image's revision label does not match the release commit." >&2
             exit 1
           fi
-          echo "image_name=${image_name}" >> "${GITHUB_OUTPUT}"
-          echo "image_digest=${digest}" >> "${GITHUB_OUTPUT}"
-          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
-          echo "image_id=${image_id}" >> "${GITHUB_OUTPUT}"
+          {
+            printf 'image_name=%s\n' "${image_name}"
+            printf 'image_digest=%s\n' "${digest}"
+            printf 'image_ref=%s\n' "${image_ref}"
+            printf 'image_id=%s\n' "${image_id}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Verify runtime Python packages in published image
         env:
