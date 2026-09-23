@@ -218,7 +218,7 @@ class CriticalCoverageGateTests(unittest.TestCase):
 
         self.assertFalse(report["ok"])
         self.assertIn("coverage report not found", report["error"])
-        self.assertIn("tools/run_python_tests.py --runner pytest", report["error"])
+        self.assertIn("Languages/Python/tools/run_python_tests.py --runner pytest", report["error"])
         self.assertEqual({}, report["packages"])
 
     def test_non_finite_or_out_of_range_package_rates_fail_closed(self):

@@ -92,6 +92,7 @@
     "capital",
     "connector_backend",
     "end",
+    "execution_model",
     "indicators",
     "intervals",
     "leverage",
@@ -811,7 +812,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "4e22326f1fb7d080996823da9d2ffe94a538277efc64df9b98e002bd266b370e",
+  "contractHash": "f924ff5fcf7a141fdc863059a7f865d9a2d8140821272f4b29f8d3a7e63f61dc",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -892,6 +893,7 @@
     "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
     "end_date": null,
     "execution_backend": "local",
+    "execution_model": "same_close_legacy",
     "fee_bps": 5.0,
     "indicators": {
       "adx": {
@@ -6922,6 +6924,7 @@
       "logic",
       "symbol_source",
       "capital",
+      "execution_model",
       "run_count",
       "error_count",
       "cancelled",
@@ -7551,6 +7554,7 @@
         "logic",
         "symbol_source",
         "capital",
+        "execution_model",
         "run_count",
         "error_count",
         "cancelled",

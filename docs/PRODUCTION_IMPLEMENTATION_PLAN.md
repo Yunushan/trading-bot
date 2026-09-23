@@ -38,7 +38,7 @@ The initial offline parallel lanes are security (002→003→018), trading (004 
 | PRD-004 | P1 / DONE | Exchange runtime | S | — | ccxt protected-order parameter validation |
 | PRD-005 | P1 / DONE | Strategy + market data | M | — | Live event-time and OHLCV quality gate |
 | PRD-006 | P1 / DONE | Release tooling | M | — | Executable deployment smoke contracts |
-| PRD-007 | P1 / TODO | Release + security | M–L | 006 | Exact-digest trusted build/scan provenance |
+| PRD-007 | P1 / IN_PROGRESS | Release + security | M–L | 006 | Exact-digest trusted build/scan provenance; offline workflow/verifier implemented, real publish pending |
 | PRD-008 | P1 / TODO | Runtime + operator | L | 001 scope | Account identity and single-owner/fencing contract |
 | PRD-009 | P1 / TODO | Risk runtime + operator | L | 008 identity | Durable aggregate risk and kill state |
 | PRD-010 | P1 / TODO | Exchange + risk runtime | L–XL | 004,005,008,009 | Crash-independent position protection |
@@ -49,12 +49,12 @@ The initial offline parallel lanes are security (002→003→018), trading (004 
 | PRD-015 | P1 / BLOCKED_EXTERNAL | Operations | ≥30 calendar days | 006,007,013,014,022 | Genuine sustained/SLO production evidence |
 | PRD-016 | P1 / BLOCKED_EXTERNAL | Release QA + operator | L | G0,011,014 | Exact-candidate signed release acceptance |
 | PRD-017 | P2 / TODO | QA + domain owners | L, incremental | 002–006 regressions | Risk-based coverage, typing and error handling |
-| PRD-018 | P2 / TODO | Security + LLM | M | 002,003 | Absolute LLM byte/time/concurrency bounds |
-| PRD-019 | P2 / TODO | Security + build | M | — | Threat model, secret scanning, dependency evidence |
-| PRD-020 | P2 / TODO | Research + runtime | L | 005 data contract | Causal/reproducible backtest validation |
+| PRD-018 | P2 / DONE | Security + LLM | M | 002,003 | Absolute LLM byte/time/concurrency bounds, verified offline |
+| PRD-019 | P2 / IN_PROGRESS | Security + build | M | — | Threat model, secret scanning, dependency evidence |
+| PRD-020 | P2 / IN_PROGRESS | Research + runtime | L | 005 data contract | Causal/reproducible backtest validation |
 | PRD-021 | P2 / TODO | Persistence + performance | M benchmark; L if migration | 008,009 | Long-history ledger capacity proof |
 | PRD-022 | P1 / BLOCKED_EXTERNAL | Operations | M + soak | 006,007,013,016 | Real read-only deployment/rollback/capacity proof |
-| PRD-023 | P2 / TODO | Documentation + QA | S | — | Correct stale docs and operating scope |
+| PRD-023 | P2 / DONE | Documentation + QA | S | — | Correct stale docs and operating scope, verified offline |
 | PRD-024 | P3 / DEFERRED_SCOPE | Connector/platform owners | Per target | G2,001 expansion decision | Evidence-backed expansion only |
 
 Priority is not permission or a CVSS score. External tasks can be prepared with code/tests now, but cannot be closed without their listed real inputs. PRD-019's exception review has a concrete **2026-10-10 expiry**; schedule it before then even while larger work continues.
@@ -339,6 +339,19 @@ Evidence records must identify: task ID; source SHA; clean/dirty state; environm
 - External blockers / decisions needed: initial product scope, repository governance, trusted image provenance, authorized cluster/TLS/monitoring/token inputs, operator ownership and genuine observation/recovery windows remain unchanged. PRD-007 is the next code/design task; PRD-015/022 remain evidence-gated.
 - Next ready task: **PRD-007** (exact-digest trusted build/scan provenance), followed by the operator-dependent ownership/risk/protection tasks.
 - Score change: **not assessed**; the dated baseline remains **58/100, unattended production NO-GO** until a fresh evidence review.
+
+### 2026-09-23 — offline production-readiness implementation checkpoint
+
+- Starting source: `8700725f4e76a49bd195d6d2ba99e3ff3c792b67` on a clean `main`; work was isolated on `codex/production-readiness-20260923`. The prior 2026-09-17 audit SHA and score remain historical evidence, not this branch's score.
+- **PRD-007 IN_PROGRESS:** added a protected-tag, published-release GHCR publisher that builds once, scans the pulled image ID, produces an SPDX SBOM and signs build, SBOM and passing-scan attestations for one immutable digest. The deployment workflow verifies signer, repository, ref, commit, digest, same run, hosted runner and freshness before loading Kubernetes credentials. Offline negative/positive provenance and no-mutation tests pass. No protected tag, real image, attestation, registry retention proof or cluster deployment was produced, so the task is not closed.
+- **PRD-018 DONE offline:** inference and model discovery now bound request/context/response bytes, connect/read/total time and concurrent network workers. A blocked call returns at its wall deadline while retaining its worker slot until I/O exits. Cyclic/oversized JSON and slow/never-ending streams fail safely; provider option tokens remain editable and LLM output remains advisory.
+- **PRD-019 IN_PROGRESS:** an unconditional `Secret Scan` pull-request job scans fetched Git history with redacted findings and a removed synthetic-token regression. The full local history scan passed. The Rust lockfile moved yanked `chacha20` 0.10.1 to 0.10.2; fresh RustSec review found zero vulnerabilities and six remaining reviewed unmaintained warnings, all expiring 2026-10-10. `SECURITY.md` records trust boundaries. Named exception owners, two clean candidate-build manifests, fresh Python/Node/container candidate findings and administrator verification of repository settings remain open.
+- **PRD-020 IN_PROGRESS:** `next_bar_open` executes prior-close signals at the following open and marks a still-open terminal position without inventing a closing fill; an invalid terminal close fails closed. The historical `same_close_legacy` default is explicit and carried through Service API, checkpoints, C++ and Tauri requests using Python-owned generated parity. Indicator causality, gaps/intrabar ambiguity, market costs, dataset provenance, holdout/walk-forward and live replay remain open.
+- **PRD-023 DONE offline:** corrected browser token lifetime, control-plane and coverage wording, and executable remediation paths. A fresh unseeded, read-only service regression observed only **1 valid trading freshness sample of 4**, confirming F14 remains open; no synthetic freshness was substituted.
+- **PRD-001/008 evidence:** [the governance proposal](PRODUCTION_GOVERNANCE_PROPOSAL.md) records the unprotected `main` and `production` environment observations, the missing repository ruleset, and concrete settings drills; no remote setting changed. An offline PRD-008 reproduction found two independently provisioned ledger paths can each accept an intent with the same synthetic key. The path lock is transaction serialization, not an account execution lease. Authoritative account identity, owner fencing, key rotation and reconciliation remain unresolved.
+- Verification on the changed tree: `.\.venv\Scripts\python.exe tools/verify_all.py --skip-promotion-evidence --json` passed the repository source gate (**41 checks evaluated; 1 advisory workspace-hygiene nonpass**, 1 external Rust evidence-import check explicitly skipped). The Python suite reported **1,901 passed, 2 Windows symlink skips, 54.01% coverage** against the 46% floor. Service, web, mobile, Rust, Tauri, native C++, deployment, parity, lint, type, coverage and source-compile checks passed. Report SHA-256: `071df5347cc5b5ef90053cc2e171c4b2c3c6724e424171f01f60ca26e31f399a` (local temporary JSON, not durable production evidence). Focused PRD-019 checks also passed: 67 Python cases/165 subtests, 313 Rust core tests, actionlint, full-history Gitleaks and synthetic history regression. The first full run had three contract failures; these were fixed and the stated result is the complete rerun.
+- No live orders, credentials, repository settings, image publication or cluster mutation occurred. The strict external promotion gate still requires a clean candidate and genuine release/operational artifacts. Next: choose the initial operating scope and named owners, implement PRD-008/009/010 safety contracts, execute an authorized PRD-007 release attestation path, and resolve the F14 observer data contract and remaining PRD-020 research controls.
+- Score change: **not assessed**. The 2026-09-17 **58/100 unattended-production NO-GO** baseline remains the last scored audit until a fresh dated evidence review; green source verification alone is not sign-off.
 
 ### Template for the next implementation checkpoint
 

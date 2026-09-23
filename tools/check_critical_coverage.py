@@ -71,7 +71,7 @@ def build_coverage_report(coverage_file: Path) -> dict[str, object]:
         if isinstance(exc, FileNotFoundError):
             error = (
                 f"coverage report not found at {coverage_file}; run "
-                "python tools/run_python_tests.py --runner pytest before "
+                "python Languages/Python/tools/run_python_tests.py --runner pytest before "
                 "checking critical coverage"
             )
         else:

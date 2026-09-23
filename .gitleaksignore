@@ -1,0 +1,18 @@
+# PRD-019 reviewed 2026-09-23. These are exact historical fingerprints, not
+# rule/path allowlists. New commits and changed lines remain scannable.
+# The seven StrategySpec.key literals are public strategy identifiers.
+5b2c066ea8a1ea140c00bb30081e7889745db5e1:Languages/Python/Crypto-Exchanges/Binance/tools/scan_backtest_2025.py:generic-api-key:42
+8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/Bitget/tools/scan_backtest_2025.py:generic-api-key:42
+8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/Bybit/tools/scan_backtest_2025.py:generic-api-key:42
+8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/Gate/tools/scan_backtest_2025.py:generic-api-key:42
+8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/KuCoin/tools/scan_backtest_2025.py:generic-api-key:42
+8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/MEXC/tools/scan_backtest_2025.py:generic-api-key:42
+8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/OKX/tools/scan_backtest_2025.py:generic-api-key:42
+
+# A variable name in strategy bookkeeping and ordinary backup-policy prose.
+cf3a7a714231cc30d90da7ab5af119fc56dba8cd:Languages/Python/app/core/strategy/positions/strategy_trade_book.py:generic-api-key:128
+0e7cc787f70d730866a84cd84cd7ca7a4d057e4b:docs/PRODUCTION_IMPLEMENTATION_PLAN.md:generic-api-key:152
+
+# Generated Rust/JavaScript mirrors of a public Python backtest template key.
+00b2371fb9f705d9132bbefc5d4c30e20b93827b:experiments/rust-shells/apps/tauri-desktop/ui/generated-python-parity.js:generic-api-key:129
+00b2371fb9f705d9132bbefc5d4c30e20b93827b:experiments/rust-shells/crates/core/src/generated_python_parity.rs:generic-api-key:1162

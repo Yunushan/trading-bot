@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -104,7 +105,10 @@ class LLMUrlSecurityTests(unittest.TestCase):
 
         with mock.patch("app.integrations.llm.clients.requests.post") as post:
             response = mock.Mock(status_code=200)
-            response.json.return_value = {"choices": [{"message": {"content": "Advisory."}}]}
+            response.headers = {}
+            response.iter_content.return_value = [
+                json.dumps({"choices": [{"message": {"content": "Advisory."}}]}).encode("utf-8")
+            ]
             post.return_value = response
             result = call_llm(
                 {

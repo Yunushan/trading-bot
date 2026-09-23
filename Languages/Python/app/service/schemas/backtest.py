@@ -142,6 +142,10 @@ class ServiceBacktestRunRecord:
     fee_bps: float | None = None
     slippage_bps: float | None = None
     fees_paid: float | None = None
+    execution_model: str = "same_close_legacy"
+    terminal_valuation: str = ""
+    terminal_position_open: bool = False
+    terminal_unrealized_pnl: float = 0.0
     strategy_controls: dict[str, object] = field(default_factory=dict)
     optimizer_rank: int | None = None
     optimizer_metric: str = ""
@@ -189,6 +193,10 @@ class ServiceBacktestRunRecord:
             "fee_bps": self.fee_bps,
             "slippage_bps": self.slippage_bps,
             "fees_paid": self.fees_paid,
+            "execution_model": self.execution_model,
+            "terminal_valuation": self.terminal_valuation,
+            "terminal_position_open": self.terminal_position_open,
+            "terminal_unrealized_pnl": self.terminal_unrealized_pnl,
             "strategy_controls": deepcopy(self.strategy_controls),
             "optimizer_rank": self.optimizer_rank,
             "optimizer_metric": self.optimizer_metric,
@@ -252,6 +260,7 @@ class ServiceBacktestSnapshot:
     logic: str = ""
     symbol_source: str = ""
     capital: float = 0.0
+    execution_model: str = "same_close_legacy"
     run_count: int = 0
     error_count: int = 0
     cancelled: bool = False
@@ -276,6 +285,7 @@ class ServiceBacktestSnapshot:
             "logic": self.logic,
             "symbol_source": self.symbol_source,
             "capital": self.capital,
+            "execution_model": self.execution_model,
             "run_count": self.run_count,
             "error_count": self.error_count,
             "cancelled": self.cancelled,
@@ -323,6 +333,10 @@ def build_backtest_run_record(run) -> ServiceBacktestRunRecord:  # noqa: ANN001
         fee_bps=_coerce_optional_float(_read_field(run, "fee_bps")),
         slippage_bps=_coerce_optional_float(_read_field(run, "slippage_bps")),
         fees_paid=_coerce_optional_float(_read_field(run, "fees_paid")),
+        execution_model=_clean_text(_read_field(run, "execution_model"), "same_close_legacy"),
+        terminal_valuation=_clean_text(_read_field(run, "terminal_valuation")),
+        terminal_position_open=bool(_read_field(run, "terminal_position_open", False)),
+        terminal_unrealized_pnl=_coerce_float(_read_field(run, "terminal_unrealized_pnl", 0.0)),
         strategy_controls=_normalize_mapping_payload(_read_field(run, "strategy_controls")),
         optimizer_rank=_coerce_optional_int(_read_field(run, "optimizer_rank")),
         optimizer_metric=_clean_text(_read_field(run, "optimizer_metric", "")),
@@ -373,6 +387,7 @@ def build_backtest_snapshot(
     logic: str = "",
     symbol_source: str = "",
     capital=0.0,  # noqa: ANN001
+    execution_model: str = "same_close_legacy",
     run_count=0,  # noqa: ANN001
     error_count=0,  # noqa: ANN001
     cancelled=False,  # noqa: ANN001
@@ -425,6 +440,7 @@ def build_backtest_snapshot(
         logic=_clean_text(logic),
         symbol_source=_clean_text(symbol_source),
         capital=_coerce_float(capital, 0.0),
+        execution_model=_clean_text(execution_model, "same_close_legacy"),
         run_count=max(0, _coerce_int(run_count, 0)),
         error_count=max(0, _coerce_int(error_count, 0)),
         cancelled=bool(cancelled),

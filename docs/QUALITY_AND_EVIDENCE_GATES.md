@@ -45,12 +45,13 @@ coverage gate. Remove those generated reports only after coverage validation so
 the final workspace-hygiene check evaluates the clean tree that would be
 committed.
 
-The critical coverage gate measures each configured package **and every dotted
-descendant package** using executed/executable file-line counts from the same
-full-suite XML report. It does not average package percentages or trust rounded
-summary rates. Empty, summary-only, malformed, or duplicate line evidence cannot
-satisfy a threshold. The JSON result lists each included package and its aggregate
-line counts so a well-covered parent cannot conceal an untested child package.
+The critical coverage gate applies one threshold to each configured package
+subtree: the package and all of its dotted descendants are aggregated using
+executed/executable file-line counts from the same full-suite XML report. It
+does not enforce a separate threshold for each descendant, average package
+percentages, or trust rounded summary rates. Empty, summary-only, malformed,
+or duplicate line evidence cannot satisfy a threshold. The JSON result lists
+the included packages and aggregate line counts for each configured subtree.
 
 ## 18-article completion gate
 

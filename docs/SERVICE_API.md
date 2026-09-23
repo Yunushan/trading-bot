@@ -239,7 +239,9 @@ python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
 When bearer auth is enabled:
 
 - REST requests use `Authorization: Bearer ...`
-- the browser dashboard stores the token in tab-scoped session storage, not long-lived local storage
+- the browser dashboard keeps the token in page memory only; a reload requires
+  entering it again. It persists the API base URL in local storage and removes
+  legacy tokens from local or session storage without restoring them
 - dashboard live updates use a `fetch`-based event stream with `Authorization: Bearer ...`
 - the SSE endpoint does not accept bearer tokens in query strings; use the
   `Authorization` header or polling from clients that cannot set stream headers
@@ -446,6 +448,27 @@ declares real trading execution ownership, such as the desktop-hosted Python
 runtime. It requires bearer authentication, `confirm_close: true`, a validated
 futures side, and a finite positive quantity. The standalone lifecycle
 heartbeat rejects the request without attempting an order.
+
+### Backtest execution timing
+
+`POST /api/v1/backtest/run` accepts `request.execution_model`. The default
+`same_close_legacy` preserves historical calculations: a signal derived from
+a candle's close can enter or reverse at that same close, and any position
+remaining at the final close is forcibly closed there. Results identify this
+legacy assumption in `execution_model` and `terminal_valuation`.
+
+Set `execution_model` to `next_bar_open` to execute a close-derived signal at
+the following candle's open, before evaluating that candle's high/low/close.
+A signal on the final candle has no fill. If a position remains open at the
+end, `final_equity` includes its last-close mark-to-market value without an
+invented exit fill, fee, or slippage. Results expose
+`terminal_position_open`, `terminal_unrealized_pnl`, and `terminal_valuation`.
+Fees and adverse slippage still apply to actual simulated entries and exits.
+
+This timing choice does not establish that every indicator, dataset, stop
+sequence, or optimized strategy is suitable for capital allocation. Intrabar
+high/low ordering, gap stops, funding, spread, latency, liquidity, data
+provenance, and holdout evaluation still require separate validation.
 
 ## Service config persistence
 

@@ -208,6 +208,29 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertFalse(report["promotion_eligible"])
         self.assertFalse(report["production_slo_proven"])
 
+    def test_unseeded_standalone_read_only_service_has_no_trading_freshness_claim(self):
+        from fastapi.testclient import TestClient
+        from app.service.api import create_service_api_app
+
+        with patch.dict(os.environ, {"BOT_SERVICE_API_READ_ONLY": "1"}):
+            app = create_service_api_app(
+                api_token="synthetic-probe-token",
+                host_context="standalone-service",
+            )
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/v1/runtime/operational-preflight",
+                    headers={"Authorization": "Bearer synthetic-probe-token"},
+                )
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(app.state.service_api_read_only)
+        ages, issues = service_probe._operational_snapshot_freshness_samples(response.json())
+        self.assertEqual(1, len(ages))
+        self.assertEqual(3, len(issues))
+        for component in ("execution", "account", "portfolio"):
+            self.assertTrue(any(component in issue for issue in issues), issues)
+
     def test_sustained_probe_requires_a_deployed_service_origin(self):
         report = service_probe.run_probe(
             profile_name="sustained",

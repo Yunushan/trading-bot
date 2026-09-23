@@ -371,6 +371,7 @@
         "logic",
         "symbol_source",
         "capital",
+        "execution_model",
         "run_count",
         "error_count",
         "cancelled",

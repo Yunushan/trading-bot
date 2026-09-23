@@ -1,0 +1,204 @@
+name: Publish Production Read-only Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: production-readonly-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, scan, and attest one immutable image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout protected release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate published stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_PROTECTED: ${{ github.ref_protected }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_REF_TYPE}" != "tag" || ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "${RELEASE_REF_PROTECTED}" != "true" ]]; then
+            echo "Only a protected semantic-version tag may publish a production image." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "${GITHUB_SHA}" || -n "$(git status --porcelain)" ]]; then
+            echo "The publisher must use a clean checkout at the tag commit." >&2
+            exit 1
+          fi
+          release_state="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')"
+          IFS=$'\t' read -r draft prerelease name <<< "${release_state}"
+          if [[ "${draft}" != "false" || "${prerelease}" != "false" || "${name}" != "${RELEASE_TAG}" ]]; then
+            echo "Only a published stable release may publish a production image." >&2
+            exit 1
+          fi
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Build and publish candidate once
+        id: publish
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_name="ghcr.io/${GITHUB_REPOSITORY,,}/service"
+          candidate_tag="${RELEASE_TAG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker buildx build --pull --platform linux/amd64 --push \
+            --provenance=false --sbom=false \
+            --metadata-file container-build-metadata.json \
+            --build-arg "BUILD_COMMIT=${GITHUB_SHA}" \
+            --file docker/backend.Dockerfile \
+            --tag "${image_name}:${candidate_tag}" .
+          digest="$(python -c 'import json; print(json.load(open("container-build-metadata.json"))["containerimage.digest"])')"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Buildx did not return a full immutable registry digest." >&2
+            exit 1
+          fi
+          image_ref="${image_name}@${digest}"
+          docker pull "${image_ref}"
+          if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${image_ref}" | grep -Fx -- "${image_ref}" >/dev/null; then
+            echo "The pulled image did not resolve to the published digest." >&2
+            exit 1
+          fi
+          image_id="$(docker image inspect --format '{{.Id}}' "${image_ref}")"
+          printf '%s\n' "${image_id}" > container-image-id.txt
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${image_ref}")"
+          if [[ "${revision}" != "${GITHUB_SHA}" ]]; then
+            echo "The published image's revision label does not match the release commit." >&2
+            exit 1
+          fi
+          echo "image_name=${image_name}" >> "${GITHUB_OUTPUT}"
+          echo "image_digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
+          echo "image_id=${image_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify runtime Python packages in published image
+        env:
+          PUBLISHED_IMAGE: ${{ steps.publish.outputs.image_ref }}
+          AUDIT_IMAGE_ID: ${{ steps.publish.outputs.image_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --env AUDIT_IMAGE_ID \
+            --entrypoint /opt/venv/bin/python "${PUBLISHED_IMAGE}" -c \
+            'import importlib.metadata as metadata; import importlib.util as util; import json; import os; import sys; \
+             assert util.find_spec("pip") is None, "pip must not be shipped in the runtime image"; \
+             expected = {"setuptools": "84.0.0", "msgpack": "1.2.1"}; \
+             found = {name: set() for name in expected}; \
+             [found[name].add(distribution.version) for distribution in metadata.distributions() \
+              if (name := (distribution.metadata.get("Name") or "").lower()) in found]; \
+             actual = {name: sorted(versions) for name, versions in found.items()}; \
+             assert actual == {name: [version] for name, version in expected.items()}, actual; \
+             print(json.dumps({"ok": True, "image_id": os.environ["AUDIT_IMAGE_ID"], "python": sys.version, "packages": actual}))' \
+            > runtime-python-packages.json
+
+      - name: Scan published image ID
+        id: trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.publish.outputs.image_id }}
+          format: json
+          output: trivy-service-results.json
+          exit-code: "0"
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          list-all-pkgs: "true"
+
+      - name: Generate SPDX SBOM for the published digest
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ steps.publish.outputs.image_ref }}
+          output-file: container-sbom.spdx.json
+          format: spdx-json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Enforce exact-image scan policy and prepare signed result
+        env:
+          PUBLISHED_IMAGE: ${{ steps.publish.outputs.image_ref }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/write_container_scan_attestation.py \
+            --image "${PUBLISHED_IMAGE}" --commit "${GITHUB_SHA}" \
+            --release-tag "${RELEASE_TAG}" \
+            --report trivy-service-results.json \
+            --runtime runtime-python-packages.json \
+            --image-id-file container-image-id.txt \
+            --sbom container-sbom.spdx.json \
+            --output container-scan-predicate.json
+
+      - name: Attest exact-digest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ steps.publish.outputs.image_name }}
+          subject-digest: ${{ steps.publish.outputs.image_digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest exact-digest SPDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ steps.publish.outputs.image_name }}
+          subject-digest: ${{ steps.publish.outputs.image_digest }}
+          sbom-path: container-sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest exact-digest passing scan policy
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ steps.publish.outputs.image_name }}
+          subject-digest: ${{ steps.publish.outputs.image_digest }}
+          predicate-type: https://github.com/${{ github.repository }}/attestations/container-scan/v1
+          predicate-path: container-scan-predicate.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Retain scan and SBOM evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: production-readonly-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            container-build-metadata.json
+            container-image-id.txt
+            runtime-python-packages.json
+            trivy-service-results.json
+            container-sbom.spdx.json
+            container-scan-predicate.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Print immutable deployment image
+        env:
+          PUBLISHED_IMAGE: ${{ steps.publish.outputs.image_ref }}
+        shell: bash
+        run: |
+          printf 'Approved image: %s\n' "${PUBLISHED_IMAGE}" >> "${GITHUB_STEP_SUMMARY}"

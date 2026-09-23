@@ -8,6 +8,10 @@ from typing import Any
 class LLMRedirectError(ValueError):
     """A redirect is not permission to contact another endpoint."""
 
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def reject_llm_redirect(response: Any) -> None:
     if 300 <= response.status_code < 400:
@@ -16,5 +20,6 @@ def reject_llm_redirect(response: Any) -> None:
         finally:
             # Do not echo Location or the response body: either may contain secrets.
             raise LLMRedirectError(
-                f"LLM HTTP redirect ({response.status_code}) refused; configure the final approved endpoint URL."
+                f"LLM HTTP redirect ({response.status_code}) refused; configure the final approved endpoint URL.",
+                status_code=response.status_code,
             )

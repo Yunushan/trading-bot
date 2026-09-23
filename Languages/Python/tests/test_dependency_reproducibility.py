@@ -622,7 +622,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(7, len(exceptions))
+        self.assertEqual(6, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
@@ -644,11 +644,10 @@ class DependencyReproducibilityTests(unittest.TestCase):
             "RUSTSEC-2024-0420",
         ):
             self.assertNotIn(advisory_id, advisory_ids)
-        self.assertIn(("yanked", "YANKED", "chacha20", "0.10.1"), identities)
+        self.assertNotIn(("yanked", "YANKED", "chacha20", "0.10.1"), identities)
         for exception in exceptions:
             with self.subTest(advisory=exception["id"], package=exception["package"]):
-                expected_reviewed = "2026-08-28" if exception["id"] == "YANKED" else "2026-08-26"
-                self.assertEqual(expected_reviewed, exception["reviewed"])
+                self.assertEqual("2026-08-26", exception["reviewed"])
                 self.assertEqual("2026-10-10", exception["expires"])
                 self.assertTrue(exception["scope"])
                 self.assertTrue(exception["reason"])
@@ -658,6 +657,8 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
         self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
         self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
+        self.assertIn('name = "chacha20"\nversion = "0.10.2"', cargo_lock)
+        self.assertNotIn('name = "chacha20"\nversion = "0.10.1"', cargo_lock)
         self.assertIn('name = "rustls"\nversion = "0.23.45"', cargo_lock)
         self.assertNotIn('name = "rustls"\nversion = "0.23.43"', cargo_lock)
         self.assertNotIn('name = "rustls"\nversion = "0.23.44"', cargo_lock)
