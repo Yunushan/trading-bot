@@ -2,7 +2,7 @@
 
 ## Verdict and tested revision
 
-**74/100 for the selected first target (Python desktop + Binance Spot on one host): NO-GO for live trading.** This review applies to source revision `TO_BE_FILLED` on `codex/prd009-futures-snapshot-guard`. The score is an engineering assurance assessment, not a profitability estimate, loss probability, or authorization to trade or deploy.
+**74/100 for the selected first target (Python desktop + Binance Spot on one host): NO-GO for live trading.** This review applies to source revision `2070f9de` on `codex/prd009-futures-snapshot-guard`. The score is an engineering assurance assessment, not a profitability estimate, loss probability, or authorization to trade or deploy.
 
 The new guard closes a false-assurance path: the dashboard exposed a stop-loss setting as applicable to live trades, but strategy stop management only evaluated Futures positions. Live Spot BUYs now fail before order intent creation and before exchange submission when `stop_loss.enabled` is true. The guard checks both current strategy settings and the lower-level Binance Spot order method, so a stale wrapper config cannot bypass the desktop strategy check. It leaves Spot SELL reductions available and updates the UI wording to say Futures only.
 
