@@ -15,14 +15,12 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
 
 from app.integrations.exchanges.binance.orders import order_intent_admin as admin
 from app.integrations.exchanges.binance.orders import order_intent_provisioning as provisioning
 from app.integrations.exchanges.binance.orders import order_intent_runtime as ledger
 from app.integrations.exchanges.binance.orders import order_intent_store as store
 from app.integrations.exchanges.binance.transport.http_diagnostic_runtime import get_connector_health_snapshot
-from app.service.schemas.status import build_exchange_connector_snapshot
 from app.settings.live_safety import LiveTradingSafetyError
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -47,11 +45,15 @@ def _initialize_race(directory, barrier, results):
 
 class OrderIntentProvisioningTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import Mock, patch
+
+        self.Mock = Mock
+        self.patch = patch
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.owner = _owner(self.directory)
         self.path = ledger._intent_path(self.owner)
-        self.enterContext(patch.object(socket.socket, "connect", side_effect=AssertionError("Network forbidden")))
-        self.enterContext(patch.dict(os.environ, {
+        self.enterContext(self.patch.object(socket.socket, "connect", side_effect=AssertionError("Network forbidden")))
+        self.enterContext(self.patch.dict(os.environ, {
             "USERPROFILE": str(self.directory), "HOME": str(self.directory),
             "TEMP": str(self.directory), "TMP": str(self.directory),
         }, clear=True))
@@ -65,7 +67,7 @@ class OrderIntentProvisioningTests(unittest.TestCase):
 
     def assert_storage_blocked(self, owner=None, message=""):
         owner = owner or self.owner
-        owner._query_order_intent_exchange = Mock(side_effect=AssertionError("No exchange query without trusted history"))
+        owner._query_order_intent_exchange = self.Mock(side_effect=AssertionError("No exchange query without trusted history"))
         for operation in (
             lambda: self.begin(owner), lambda: ledger.get_order_intent_status(owner),
             lambda: ledger._mark_order_intent_submitted(owner, PARAMS, via="test"),
@@ -145,9 +147,9 @@ class OrderIntentProvisioningTests(unittest.TestCase):
         wrapper = _FuturesAuditWrapper()
         self.addCleanup(wrapper.close)
         wrapper._configure_order_audit(path=self.owner._order_audit_log_path)
-        wrapper.client.futures_create_order = Mock(side_effect=AssertionError("No primary POST"))
-        wrapper._testnet_order_fallback_client = Mock(side_effect=AssertionError("No fallback POST"))
-        with patch.object(provisioning, "provision_order_intent_store") as automatic:
+        wrapper.client.futures_create_order = self.Mock(side_effect=AssertionError("No primary POST"))
+        wrapper._testnet_order_fallback_client = self.Mock(side_effect=AssertionError("No fallback POST"))
+        with self.patch.object(provisioning, "provision_order_intent_store") as automatic:
             with self.assertRaisesRegex(LiveTradingSafetyError, "ledger is missing"):
                 wrapper._futures_create_order_with_fallback(dict(PARAMS))
             automatic.assert_not_called()
@@ -180,7 +182,7 @@ class OrderIntentProvisioningTests(unittest.TestCase):
     def test_home_expansion_also_applies_to_audit_history_check(self):
         self.owner._order_audit_log_path = "~/audit.jsonl"
         (self.directory / "audit.jsonl.1").write_text("previous history")
-        with patch.object(Path, "home", return_value=self.directory), patch.dict(os.environ, {
+        with self.patch.object(Path, "home", return_value=self.directory), self.patch.dict(os.environ, {
             "USERPROFILE": str(self.directory), "HOME": str(self.directory),
         }):
             with self.assertRaisesRegex(LiveTradingSafetyError, "Audit history exists"):
@@ -296,7 +298,7 @@ class OrderIntentProvisioningTests(unittest.TestCase):
                         raise OSError(errno.ENOSPC, "simulated disk full")
                     publish(*args)
 
-                with patch.object(store, "_publish", side_effect=fail_selected):
+                with self.patch.object(store, "_publish", side_effect=fail_selected):
                     with self.assertRaises(LiveTradingSafetyError):
                         self.initialize(migrate=True)
                 self.assertEqual(old, json.loads(self.path.read_text()))
@@ -312,7 +314,7 @@ class OrderIntentProvisioningTests(unittest.TestCase):
             if path == self.path:
                 raise OSError(errno.EIO, "publication completion unknown")
 
-        with patch.object(store, "_publish", side_effect=uncertain):
+        with self.patch.object(store, "_publish", side_effect=uncertain):
             with self.assertRaises(LiveTradingSafetyError):
                 self.initialize(migrate=True)
         restarted = _owner(self.directory)
@@ -322,7 +324,7 @@ class OrderIntentProvisioningTests(unittest.TestCase):
             self.begin(restarted)
 
     def test_initialize_write_failure_leaves_no_usable_empty_store(self):
-        with patch.object(store, "_publish", side_effect=OSError(errno.ENOSPC, "simulated disk full")):
+        with self.patch.object(store, "_publish", side_effect=OSError(errno.ENOSPC, "simulated disk full")):
             with self.assertRaises(LiveTradingSafetyError):
                 self.initialize()
         self.assertFalse(self.path.exists())
@@ -341,7 +343,7 @@ class OrderIntentProvisioningTests(unittest.TestCase):
         self.assertEqual("unrelated contents", target.read_text())
 
     def test_symlink_detection_blocks_before_storage_access_on_all_hosts(self):
-        with patch.object(Path, "is_symlink", return_value=True), patch.object(ledger, "ledger_transaction") as transaction:
+        with self.patch.object(Path, "is_symlink", return_value=True), self.patch.object(ledger, "ledger_transaction") as transaction:
             for operation in (lambda: self.initialize(), lambda: self.initialize(migrate=True), lambda: self.begin()):
                 with self.assertRaisesRegex(LiveTradingSafetyError, "symbolic link"):
                     operation()
@@ -371,13 +373,15 @@ class OrderIntentProvisioningTests(unittest.TestCase):
             results.close()
 
     def test_connector_and_service_health_expose_storage_failure_and_redact_error(self):
+        from app.service.schemas.status import build_exchange_connector_snapshot
+
         self.owner.api_secret = "offline-secret"
         self.owner.get_order_intent_status = lambda: ledger.get_order_intent_status(self.owner)
         snapshot = get_connector_health_snapshot(self.owner)
         self.assertEqual("error", snapshot["health"])
         self.assertEqual("order_intent_storage_unavailable", snapshot["state"])
         self.assertFalse(snapshot["order_intents"]["storage_ready"])
-        self.owner.get_order_intent_status = Mock(side_effect=LiveTradingSafetyError("api_secret=private-value"))
+        self.owner.get_order_intent_status = self.Mock(side_effect=LiveTradingSafetyError("api_secret=private-value"))
         snapshot = get_connector_health_snapshot(self.owner)
         self.assertNotIn("private-value", repr(snapshot))
         snapshot.update(health="ok", state="ready")
@@ -392,7 +396,7 @@ class OrderIntentProvisioningTests(unittest.TestCase):
     def cli(self, action, *extras, default_path=False):
         paths = ["--default-intent-path"] if default_path else ["--audit-log-path", str(self.owner._order_audit_log_path)]
         args = [action, *paths, "--mode", "Live", "--api-key-env", "UNIT_STORE_API_KEY", *extras]
-        with patch.dict(os.environ, {"UNIT_STORE_API_KEY": KEY}), contextlib.redirect_stdout(io.StringIO()) as output:
+        with self.patch.dict(os.environ, {"UNIT_STORE_API_KEY": KEY}), contextlib.redirect_stdout(io.StringIO()) as output:
             code = admin.main(args)
         self.assertNotIn(KEY, output.getvalue())
         return code, json.loads(output.getvalue())
@@ -413,7 +417,7 @@ class OrderIntentProvisioningTests(unittest.TestCase):
         code, result = self.cli("migrate", "--acknowledgement", ACK)
         self.assertEqual(0, code)
         self.assertTrue(Path(result["backup_path"]).exists())
-        with patch.object(Path, "home", return_value=self.directory):
+        with self.patch.object(Path, "home", return_value=self.directory):
             code, result = self.cli("initialize", "--acknowledgement", ACK, default_path=True)
         self.assertEqual(0, code)
         self.assertEqual(self.directory / ".trading-bot" / "order_intents.json", Path(result["path"]))
