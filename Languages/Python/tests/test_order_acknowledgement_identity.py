@@ -151,6 +151,29 @@ class OrderAcknowledgementIdentityTests(unittest.TestCase):
         self.assertEqual(1, len(wrapper.client.orders))
         self.assert_blocked(wrapper)
 
+    def test_unrecognized_spot_acknowledgement_stays_unresolved_and_blocks_retry(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        wrapper = _LedgerSpotWrapper()
+        wrapper.mode, wrapper.api_key = "Live", "unit-key"
+        wrapper._configure_order_audit(path=Path(directory) / "spot.jsonl")
+        provision_order_intent_store(wrapper, acknowledgement=PROVISION_ACK)
+        wrapper.client.create_order = Mock(side_effect=lambda **params: {
+            "orderId": 321,
+            "symbol": params["symbol"],
+            "clientOrderId": params["newClientOrderId"],
+            "status": "SUCCESS",
+        })
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("unsupported order status", result["error"])
+        self.assertEqual(1, intents.get_order_intent_status(wrapper)["unresolved_count"])
+        retry = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=1)
+        self.assertFalse(retry["ok"])
+        self.assertIn("Unresolved exchange order intent", retry["error"])
+        wrapper.client.create_order.assert_called_once()
+
     def test_live_spot_buy_fails_closed_when_unsupported_stop_loss_is_enabled(self):
         directory = self.enterContext(tempfile.TemporaryDirectory())
         wrapper = _LedgerSpotWrapper()

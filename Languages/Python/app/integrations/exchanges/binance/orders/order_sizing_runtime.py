@@ -14,6 +14,14 @@ from app.settings.live_safety import (
     live_spot_stop_loss_block_reason,
 )
 
+_SPOT_ACCEPTED_ORDER_STATUSES = frozenset({
+    "NEW",
+    "PARTIALLY_FILLED",
+    "FILLED",
+    "PENDING_NEW",
+    "PENDING_CANCEL",
+})
+
 
 def _finite_float(value: object) -> float | None:
     try:
@@ -62,6 +70,8 @@ def _validated_spot_order_response(response: object) -> dict:
     if status in {"REJECTED", "EXPIRED", "CANCELED"}:
         message = payload.get("msg") or payload.get("message") or status.lower()
         raise RuntimeError(f"spot order rejected (status={status}): {message}")
+    if status not in _SPOT_ACCEPTED_ORDER_STATUSES:
+        raise RuntimeError("spot order rejected: response has an unsupported order status")
     if not any(payload.get(key) for key in ("orderId", "order_id", "id")):
         raise RuntimeError("spot order rejected: response has no order identifier")
     return payload
