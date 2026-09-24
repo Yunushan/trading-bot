@@ -213,6 +213,39 @@ class OrderIntentProvisioningTests(unittest.TestCase):
                 self.assert_storage_blocked()
                 self.assertEqual(before, self.path.read_bytes())
 
+    def test_malformed_credential_rotation_history_blocks_ledger_use(self):
+        self.initialize()
+        original = json.loads(self.path.read_text())
+        current_fingerprint = original["binding"]["credential_fingerprint"]
+        first = {
+            "previous_fingerprint": "a" * 64,
+            "new_fingerprint": "b" * 64,
+            "rotated_at": "2026-09-24T12:00:00+00:00",
+            "reconciliation_reference": "change-1",
+        }
+        second = {
+            "previous_fingerprint": "b" * 64,
+            "new_fingerprint": current_fingerprint,
+            "rotated_at": "2026-09-24T12:01:00+00:00",
+            "reconciliation_reference": "change-2",
+        }
+        cases = [
+            None,
+            [{**first, "previous_fingerprint": "bad"}],
+            [{**first, "rotated_at": "2026-09-24T12:00:00"}],
+            [{**first, "reconciliation_reference": 12}],
+            [{**first, "previous_fingerprint": current_fingerprint, "new_fingerprint": current_fingerprint}],
+            [first, {**second, "previous_fingerprint": "c" * 64}],
+        ]
+        for history in cases:
+            with self.subTest(history=history):
+                payload = copy.deepcopy(original)
+                payload["credential_rotation_history"] = history
+                self.path.write_text(json.dumps(payload))
+                before = self.path.read_bytes()
+                self.assert_storage_blocked(message="credential rotation history")
+                self.assertEqual(before, self.path.read_bytes())
+
     def legacy_payload(self):
         records = {state: {"client_order_id": state, "state": state, "symbol": "BTCUSDT", "custom": {"preserve": True}}
                    for state in ("pending", "submitted", "unknown", "accepted", "rejected")}

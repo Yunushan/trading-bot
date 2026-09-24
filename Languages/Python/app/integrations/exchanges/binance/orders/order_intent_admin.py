@@ -9,13 +9,17 @@ from types import SimpleNamespace
 
 from app.settings.live_safety import LiveTradingSafetyError
 
-from .order_intent_provisioning import provision_order_intent_store, rearm_spot_execution_owner
+from .order_intent_provisioning import (
+    provision_order_intent_store,
+    rearm_spot_execution_owner,
+    rotate_spot_owner_credentials,
+)
 from .order_intent_runtime import get_order_intent_status
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("status", "initialize", "migrate", "rearm"))
+    parser.add_argument("action", choices=("status", "initialize", "migrate", "rearm", "rotate-credentials"))
     paths = parser.add_mutually_exclusive_group()
     paths.add_argument("--audit-log-path", type=Path, help="The exact audit path used by the runtime.")
     paths.add_argument("--default-intent-path", action="store_true", help="Use only when no audit path is configured.")
@@ -24,7 +28,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--account-type", choices=("Spot", "Futures"), default="Futures")
     parser.add_argument("--spot-account-uid-env", help="Environment variable containing the exchange-reported Spot UID.")
     parser.add_argument("--acknowledgement", default="")
-    parser.add_argument("--reconciliation-reference", default="", help="Operator evidence or incident reference for Spot owner rearm.")
+    parser.add_argument(
+        "--reconciliation-reference", default="",
+        help="Operator evidence or incident reference for Spot owner rearm or credential rotation.",
+    )
     args = parser.parse_args(argv)
     if args.account_type == "Futures" and not (args.audit_log_path or args.default_intent_path):
         parser.error("Futures storage administration requires an intent path selector.")
@@ -50,6 +57,11 @@ def main(argv: list[str] | None = None) -> int:
             result = get_order_intent_status(owner)
         elif args.action == "rearm":
             result = rearm_spot_execution_owner(
+                owner, acknowledgement=args.acknowledgement,
+                reconciliation_reference=args.reconciliation_reference,
+            )
+        elif args.action == "rotate-credentials":
+            result = rotate_spot_owner_credentials(
                 owner, acknowledgement=args.acknowledgement,
                 reconciliation_reference=args.reconciliation_reference,
             )

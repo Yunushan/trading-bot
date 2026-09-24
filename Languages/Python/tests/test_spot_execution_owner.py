@@ -20,6 +20,7 @@ from app.integrations.exchanges.binance.orders.order_intent_provisioning import 
     PROVISION_ACK,
     provision_order_intent_store,
     rearm_spot_execution_owner,
+    rotate_spot_owner_credentials,
 )
 from app.integrations.exchanges.binance.orders.order_sizing_runtime import bind_binance_order_sizing_runtime
 from app.integrations.exchanges.binance.orders.spot_execution_owner import owner_lock_path, owner_marker_path
@@ -167,6 +168,125 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         restarted._ensure_spot_execution_owner()
         self.assertEqual("incident-123", json.loads(owner_marker_path(self.path).read_text())["reconciliation_reference"])
 
+    def test_offline_credential_rotation_preserves_intents_and_requires_rearm(self):
+        self.provision()
+        original = _SpotWrapper(self.audit_a)
+        self.addCleanup(self.close_owner, original)
+        result = original.place_spot_market_order("BTCUSDT", "BUY", quantity=0.1, price=100.0)
+        self.assertTrue(result["ok"], result)
+        self.close_owner(original)
+
+        before = intents._read_ledger(self.path)
+        before_intents = json.loads(json.dumps(before["intents"]))
+        store_id = before["store_id"]
+        previous_fingerprint = before["binding"]["credential_fingerprint"]
+        rotated_admin = _offline_admin(self.audit_b, key="new-offline-key")
+        rotated = rotate_spot_owner_credentials(
+            rotated_admin,
+            acknowledgement=PROVISION_ACK,
+            reconciliation_reference="change-456",
+        )
+
+        self.assertTrue(rotated["rotated"])
+        self.assertTrue(rotated["requires_rearm"])
+        current = intents._read_ledger(self.path, expected_binding=intents._intent_binding(rotated_admin))
+        self.assertEqual(store_id, current["store_id"])
+        self.assertEqual(before_intents, current["intents"])
+        history = current["credential_rotation_history"]
+        self.assertEqual(1, len(history))
+        self.assertEqual(previous_fingerprint, history[0]["previous_fingerprint"])
+        self.assertEqual(current["binding"]["credential_fingerprint"], history[0]["new_fingerprint"])
+        self.assertEqual("change-456", history[0]["reconciliation_reference"])
+        marker_path = owner_marker_path(self.path)
+        self.assertEqual("recovery_required", json.loads(marker_path.read_text())["state"])
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "different credentials"):
+            intents._ensure_spot_execution_owner(original)
+        restarted = _SpotWrapper(self.audit_b, key="new-offline-key")
+        with self.assertRaisesRegex(LiveTradingSafetyError, "reconciliation"):
+            restarted._ensure_spot_execution_owner()
+
+        rearm_spot_execution_owner(
+            rotated_admin, acknowledgement=PROVISION_ACK, reconciliation_reference="change-456-verified",
+        )
+        restarted._ensure_spot_execution_owner()
+        self.addCleanup(self.close_owner, restarted)
+
+    def test_rotation_refuses_unresolved_intents_without_changing_ledger_or_marker(self):
+        self.provision()
+        wrapper = _SpotWrapper(self.audit_a)
+        self.addCleanup(self.close_owner, wrapper)
+        intents._begin_order_intent(wrapper, PARAMS, market="spot", source="offline-test")
+        self.close_owner(wrapper)
+        ledger_before = self.path.read_bytes()
+        marker_path = owner_marker_path(self.path)
+        marker_before = marker_path.read_bytes()
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved order intents"):
+            rotate_spot_owner_credentials(
+                _offline_admin(self.audit_b, key="new-offline-key"),
+                acknowledgement=PROVISION_ACK,
+                reconciliation_reference="change-457",
+            )
+        self.assertEqual(ledger_before, self.path.read_bytes())
+        self.assertEqual(marker_before, marker_path.read_bytes())
+
+    def test_rotation_requires_acknowledgement_and_reference_before_disarming(self):
+        self.provision()
+        ledger_before = self.path.read_bytes()
+        marker_path = owner_marker_path(self.path)
+        marker_before = marker_path.read_bytes()
+        rotated_admin = _offline_admin(self.audit_b, key="new-offline-key")
+        for acknowledgement, reference, expected in (
+            ("", "change-458", "Stop all executors"),
+            (PROVISION_ACK, "", "reference"),
+        ):
+            with self.subTest(acknowledgement=acknowledgement, reference=reference):
+                with self.assertRaisesRegex(LiveTradingSafetyError, expected):
+                    rotate_spot_owner_credentials(
+                        rotated_admin, acknowledgement=acknowledgement,
+                        reconciliation_reference=reference,
+                    )
+                self.assertEqual(ledger_before, self.path.read_bytes())
+                self.assertEqual(marker_before, marker_path.read_bytes())
+
+        running = _SpotWrapper(self.audit_a)
+        self.addCleanup(self.close_owner, running)
+        running._ensure_spot_execution_owner()
+        ledger_before = self.path.read_bytes()
+        marker_before = marker_path.read_bytes()
+        with self.assertRaisesRegex(LiveTradingSafetyError, "owner is active"):
+            rotate_spot_owner_credentials(
+                rotated_admin, acknowledgement=PROVISION_ACK,
+                reconciliation_reference="change-459",
+            )
+        self.assertEqual(ledger_before, self.path.read_bytes())
+        self.assertEqual(marker_before, marker_path.read_bytes())
+
+    def test_rotation_write_failure_leaves_owner_disarmed_and_old_binding_recoverable(self):
+        self.provision()
+        ledger_before = self.path.read_bytes()
+        with patch(
+            "app.integrations.exchanges.binance.orders.order_intent_provisioning.write_ledger",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaisesRegex(LiveTradingSafetyError, "storage failed"):
+                rotate_spot_owner_credentials(
+                    _offline_admin(self.audit_b, key="new-offline-key"),
+                    acknowledgement=PROVISION_ACK,
+                    reconciliation_reference="change-460",
+                )
+
+        self.assertEqual(ledger_before, self.path.read_bytes())
+        marker_path = owner_marker_path(self.path)
+        self.assertEqual("recovery_required", json.loads(marker_path.read_text())["state"])
+        rearm_spot_execution_owner(
+            self.admin, acknowledgement=PROVISION_ACK, reconciliation_reference="change-460-recovered",
+        )
+        recovered = _SpotWrapper(self.audit_a)
+        self.addCleanup(self.close_owner, recovered)
+        recovered._ensure_spot_execution_owner()
+
     def test_owner_marker_change_and_unresolved_history_block_submission_and_rearm(self):
         self.provision()
         wrapper = _SpotWrapper(self.audit_a)
@@ -209,6 +329,13 @@ class SpotExecutionOwnerTests(unittest.TestCase):
                 self.assertEqual(0, admin_cli.main(args))
             self.assertTrue(json.loads(output.getvalue())["rearmed"])
             self.assertEqual("INC-1234", json.loads(owner_marker_path(self.path).read_text())["reconciliation_reference"])
+            args[0] = "rotate-credentials"
+            args[args.index("--api-key-env") + 1] = "SPOT_KEY_ROTATED_TEST"
+            with patch.dict(os.environ, {"SPOT_KEY_ROTATED_TEST": "new-offline-key"}):
+                with redirect_stdout(StringIO()) as output:
+                    self.assertEqual(0, admin_cli.main(args))
+                self.assertTrue(json.loads(output.getvalue())["rotated"])
+            self.assertEqual("recovery_required", json.loads(owner_marker_path(self.path).read_text())["state"])
 
     def test_separate_process_cannot_claim_and_crash_requires_reconciliation(self):
         self.provision()

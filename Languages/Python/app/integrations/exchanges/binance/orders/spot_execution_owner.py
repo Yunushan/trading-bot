@@ -162,23 +162,46 @@ def rearm_owner_marker(
 def rearm_owner_marker_locked(
     ledger_path: Path, *, uid: int, environment: str, store_id: str,
     acknowledgement: str, reconciliation_reference: str,
-) -> None:
+) -> str:
     """Caller must hold owner_administration_lock for the full state transition."""
     if acknowledgement != RECONCILIATION_ACK:
         raise LiveTradingSafetyError("Rearm requires the operator exchange-reconciliation acknowledgement.")
-    if (
-        not isinstance(reconciliation_reference, str)
-        or not reconciliation_reference.strip()
-        or len(reconciliation_reference) > 160
-        or any(character in reconciliation_reference for character in "\r\n\0")
-    ):
-        raise LiveTradingSafetyError("Rearm requires a short reconciliation evidence reference.")
+    reference = _validated_reconciliation_reference(reconciliation_reference)
     path = owner_marker_path(ledger_path)
     marker = _read_marker(path, uid=uid, environment=environment, store_id=store_id)
     if marker["state"] == "armed":
         raise LiveTradingSafetyError("Spot execution owner is already armed.")
-    marker["reconciliation_reference"] = reconciliation_reference.strip()
+    marker["reconciliation_reference"] = reference
     _write_marker(path, marker, state="armed")
+    return reference
+
+
+def mark_owner_recovery_required_locked(
+    ledger_path: Path,
+    *,
+    uid: int,
+    environment: str,
+    store_id: str,
+    reconciliation_reference: str,
+) -> str:
+    """Disarm the marker before a credential binding transition; caller holds the admin lock."""
+    reference = _validated_reconciliation_reference(reconciliation_reference)
+    path = owner_marker_path(ledger_path)
+    marker = _read_marker(path, uid=uid, environment=environment, store_id=store_id)
+    marker["reconciliation_reference"] = reference
+    _write_marker(path, marker, state="recovery_required", increment=True)
+    return reference
+
+
+def _validated_reconciliation_reference(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > 160
+        or any(character in value for character in "\r\n\0")
+    ):
+        raise LiveTradingSafetyError("A short reconciliation evidence reference is required.")
+    return value.strip()
 
 
 class SpotExecutionOwner:

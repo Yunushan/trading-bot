@@ -20,6 +20,7 @@ from .order_intent_runtime import (
 )
 from .order_intent_store import ledger_transaction, write_ledger
 from .spot_execution_owner import (
+    mark_owner_recovery_required_locked,
     owner_administration_lock,
     owner_marker_path,
     provision_owner_marker_locked,
@@ -105,9 +106,70 @@ def rearm_spot_execution_owner(
             intents = ledger["intents"]
             if not isinstance(intents, dict) or any(_is_unresolved(record) for record in intents.values()):
                 raise LiveTradingSafetyError("Unresolved order intents require reconciliation before owner rearm.")
-        rearm_owner_marker_locked(
+        reference = rearm_owner_marker_locked(
             path, uid=_spot_account_uid(self), environment=binding["environment"],
             store_id=str(ledger["store_id"]), acknowledgement=acknowledgement,
             reconciliation_reference=reconciliation_reference,
         )
-    return {"path": str(path), "rearmed": True, "reconciliation_reference": reconciliation_reference.strip()}
+    return {"path": str(path), "rearmed": True, "reconciliation_reference": reference}
+
+
+def rotate_spot_owner_credentials(
+    self, *, acknowledgement: str, reconciliation_reference: str,
+) -> dict[str, object]:
+    """Rebind an offline Spot ledger without discarding intents, then require explicit rearm."""
+    if not _spot_owner_scope(self):
+        raise LiveTradingSafetyError("Spot credential rotation requires a Spot account scope.")
+    if acknowledgement != PROVISION_ACK:
+        raise LiveTradingSafetyError("Stop all executors and reconcile exchange state before rotating credentials.")
+
+    path = _intent_path(self)
+    binding = _intent_binding(self)
+    with owner_administration_lock(path):
+        with ledger_transaction(path):
+            ledger = _read_ledger(path)
+            current_binding = ledger.get("binding")
+            if not isinstance(current_binding, dict):
+                raise LiveTradingSafetyError("Spot intent ledger has no credential binding to rotate.")
+            if (
+                current_binding.get("exchange") != binding["exchange"]
+                or current_binding.get("environment") != binding["environment"]
+            ):
+                raise LiveTradingSafetyError("Credential rotation cannot change the exchange or environment.")
+            previous_fingerprint = current_binding.get("credential_fingerprint")
+            next_fingerprint = binding["credential_fingerprint"]
+            if not isinstance(previous_fingerprint, str):
+                raise LiveTradingSafetyError("Spot intent ledger has no valid credential fingerprint to rotate.")
+            if previous_fingerprint == next_fingerprint:
+                raise LiveTradingSafetyError("Credential rotation requires a different API key.")
+
+            intents = ledger.get("intents")
+            if not isinstance(intents, dict) or any(_is_unresolved(record) for record in intents.values()):
+                raise LiveTradingSafetyError("Unresolved order intents require reconciliation before credential rotation.")
+            history = ledger.get("credential_rotation_history", [])
+            if not isinstance(history, list):
+                raise LiveTradingSafetyError("Credential rotation history is malformed; reconcile the ledger first.")
+
+            reference = mark_owner_recovery_required_locked(
+                path, uid=_spot_account_uid(self), environment=binding["environment"],
+                store_id=str(ledger["store_id"]), reconciliation_reference=reconciliation_reference,
+            )
+            ledger["credential_rotation_history"] = [
+                *history,
+                {
+                    "previous_fingerprint": previous_fingerprint,
+                    "new_fingerprint": next_fingerprint,
+                    "rotated_at": _now(),
+                    "reconciliation_reference": reference,
+                },
+            ]
+            ledger["binding"] = binding
+            write_ledger(path, ledger)
+
+    return {
+        "path": str(path),
+        "intent_count": len(intents),
+        "rotated": True,
+        "requires_rearm": True,
+        "reconciliation_reference": reference,
+    }

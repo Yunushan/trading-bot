@@ -259,6 +259,41 @@ def _read_ledger(
             or not isinstance(binding.get("credential_fingerprint"), str)
             or re.fullmatch(r"[0-9a-f]{64}", binding["credential_fingerprint"]) is None):
         raise LiveTradingSafetyError("Order intent ledger has invalid credential/environment binding.")
+    rotation_history = payload.get("credential_rotation_history", [])
+    if not isinstance(rotation_history, list):
+        raise LiveTradingSafetyError("Order intent ledger has invalid credential rotation history.")
+    previous_rotation_fingerprint = None
+    for rotation in rotation_history:
+        if (
+            not isinstance(rotation, dict)
+            or set(rotation) != {"previous_fingerprint", "new_fingerprint", "rotated_at", "reconciliation_reference"}
+            or not isinstance(rotation.get("previous_fingerprint"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", rotation["previous_fingerprint"]) is None
+            or not isinstance(rotation.get("new_fingerprint"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", rotation["new_fingerprint"]) is None
+            or rotation["previous_fingerprint"] == rotation["new_fingerprint"]
+            or not isinstance(rotation.get("rotated_at"), str)
+            or not isinstance(rotation.get("reconciliation_reference"), str)
+        ):
+            raise LiveTradingSafetyError("Order intent ledger has invalid credential rotation history.")
+        try:
+            rotated_at = datetime.fromisoformat(rotation["rotated_at"].replace("Z", "+00:00"))
+            if rotated_at.tzinfo is None:
+                raise ValueError("missing timezone")
+        except (ValueError, TypeError) as exc:
+            raise LiveTradingSafetyError("Order intent ledger has invalid credential rotation history.") from exc
+        reference = rotation["reconciliation_reference"]
+        if (
+            not isinstance(reference, str)
+            or not reference.strip()
+            or len(reference) > 160
+            or any(character in reference for character in "\r\n\0")
+            or (previous_rotation_fingerprint is not None and rotation["previous_fingerprint"] != previous_rotation_fingerprint)
+        ):
+            raise LiveTradingSafetyError("Order intent ledger has invalid credential rotation history.")
+        previous_rotation_fingerprint = rotation["new_fingerprint"]
+    if rotation_history and previous_rotation_fingerprint != binding["credential_fingerprint"]:
+        raise LiveTradingSafetyError("Order intent ledger credential rotation history does not match its binding.")
     if expected_binding is not None and binding != expected_binding:
         raise LiveTradingSafetyError("Order intent ledger belongs to different credentials or environment; submission is blocked.")
     return payload
