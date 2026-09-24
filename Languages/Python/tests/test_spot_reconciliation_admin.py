@@ -152,6 +152,83 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         self.assertEqual(1, request.call_count)
         self.assertEqual("active", json.loads(owner_marker_path(self.path).read_text(encoding="utf-8"))["state"])
 
+    def account_reconcile_args(self) -> list[str]:
+        args = self.args()
+        args[0] = "reconcile-spot-account"
+        return args
+
+    def run_account_cli_with_responses(self, responses: list[object]) -> tuple[int, dict[str, object], object]:
+        with patch.dict(os.environ, {
+            "SPOT_RECONCILE_TEST_KEY": API_KEY,
+            "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
+        }):
+            with patch.object(spot_admin_runtime.requests, "get", side_effect=responses) as request:
+                with redirect_stdout(StringIO()) as output:
+                    code = admin_cli.main(self.account_reconcile_args())
+        return code, json.loads(output.getvalue()), request
+
+    @staticmethod
+    def account_overview_response() -> object:
+        return SimpleNamespace(status_code=200, json=lambda: {
+            "uid": UID,
+            "accountType": "SPOT",
+            "balances": [
+                {"asset": "BTC", "free": "0.1", "locked": "0"},
+                {"asset": "USDT", "free": "0", "locked": "2"},
+            ],
+        })
+
+    def test_account_reconciliation_matches_all_open_orders_and_redacts_balances(self):
+        self.set_up_pending_after_owner_loss()
+        responses = [
+            SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
+            SimpleNamespace(status_code=200, json=lambda: {
+                "clientOrderId": PARAMS["newClientOrderId"], "symbol": "BTCUSDT",
+                "orderId": 55, "status": "NEW",
+            }),
+            self.account_overview_response(),
+            SimpleNamespace(status_code=200, json=lambda: [{
+                "clientOrderId": PARAMS["newClientOrderId"], "symbol": "BTCUSDT",
+                "orderId": 55, "status": "NEW",
+            }]),
+        ]
+        code, result, request = self.run_account_cli_with_responses(responses)
+        self.assertEqual(0, code)
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, result["balance_asset_count"])
+        self.assertEqual(2, result["nonzero_balance_asset_count"])
+        self.assertEqual(1, result["locked_balance_asset_count"])
+        self.assertEqual(1, result["matched_open_order_count"])
+        self.assertEqual(0, result["unmatched_exchange_open_order_count"])
+        self.assertEqual(0, result["unresolved_after"])
+        self.assertFalse(result["balances_reconciled_to_strategy_state"])
+        self.assertFalse(result["automatic_rearm"])
+        rendered = json.dumps(result)
+        for secret_or_balance in (
+            "offline-reconcile-secret", "0.1", "BTC", PARAMS["newClientOrderId"],
+        ):
+            self.assertNotIn(secret_or_balance, rendered)
+        self.assertEqual(4, request.call_count)
+        self.assertEqual("https://api.binance.com/api/v3/openOrders", request.call_args_list[-1].args[0])
+        self.assertEqual("recovery_required", json.loads(owner_marker_path(self.path).read_text(encoding="utf-8"))["state"])
+
+    def test_account_reconciliation_fails_on_untracked_exchange_order_without_echoing_id(self):
+        external_client_order_id = "operator-or-other-key-order"
+        responses = [
+            SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
+            self.account_overview_response(),
+            SimpleNamespace(status_code=200, json=lambda: [{
+                "clientOrderId": external_client_order_id, "symbol": "ETHUSDT",
+                "orderId": 77, "status": "PARTIALLY_FILLED",
+            }]),
+        ]
+        code, result, _request = self.run_account_cli_with_responses(responses)
+        self.assertEqual(1, code)
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, result["unmatched_exchange_open_order_count"])
+        self.assertNotIn(external_client_order_id, json.dumps(result))
+        self.assertEqual(0, intents.get_order_intent_status(self.admin_owner)["unresolved_count"])
+
 
 if __name__ == "__main__":
     unittest.main()

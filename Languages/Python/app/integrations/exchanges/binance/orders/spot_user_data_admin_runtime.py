@@ -1,8 +1,8 @@
 """Narrow read-only Binance Spot USER_DATA transport for recovery tooling.
 
-This transport exposes only signed GET requests for account identity and one
-existing order lookup. It has no order placement, cancellation, or endpoint
-override surface.
+This transport exposes only signed GET requests for account identity, account
+balances, account-wide open orders, and one existing order lookup. It has no
+order placement, cancellation, or endpoint override surface.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import time
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
 import requests
@@ -19,7 +20,7 @@ from app.settings.live_safety import LiveTradingSafetyError
 
 
 _SPOT_API_BASE = "https://api.binance.com/api"
-_SIGNED_PATHS = {"/v3/account", "/v3/order"}
+_SIGNED_PATHS = {"/v3/account", "/v3/order", "/v3/openOrders"}
 _REQUEST_TIMEOUT = (3, 8)
 
 
@@ -34,12 +35,14 @@ class SpotUserDataTransport:
         self._api_key = api_key.strip()
         self._api_secret = api_secret.strip()
 
-    def _signed_get(self, path: str, params: Mapping[str, str] | None = None) -> dict[str, object]:
+    def _signed_get(
+        self, path: str, params: Mapping[str, str] | None = None,
+    ) -> dict[str, object] | list[object]:
         if path not in _SIGNED_PATHS:
             raise LiveTradingSafetyError("Spot reconciliation requested an unsupported read-only endpoint.")
         if (path == "/v3/account" and params) or (
             path == "/v3/order" and set(params or {}) != {"symbol", "origClientOrderId"}
-        ):
+        ) or (path == "/v3/openOrders" and params):
             raise LiveTradingSafetyError("Spot reconciliation requested invalid read-only query parameters.")
         payload: dict[str, str | int] = dict(params or {})
         payload["timestamp"] = int(time.time() * 1000)
@@ -65,12 +68,16 @@ class SpotUserDataTransport:
             body = response.json()
         except Exception:
             raise LiveTradingSafetyError("Binance Spot USER_DATA response was not valid JSON.") from None
-        if not isinstance(body, Mapping):
-            raise LiveTradingSafetyError("Binance Spot USER_DATA response was not an object.")
-        return dict(body)
+        if isinstance(body, Mapping):
+            return dict(body)
+        if isinstance(body, list):
+            return body
+        raise LiveTradingSafetyError("Binance Spot USER_DATA response had an invalid JSON shape.")
 
-    def get_account_uid(self) -> int:
-        response = self._signed_get("/v3/account")
+    @staticmethod
+    def _account_object(response: object) -> dict[str, object]:
+        if not isinstance(response, dict):
+            raise LiveTradingSafetyError("Signed Binance Spot account identity is missing or invalid.")
         uid = response.get("uid")
         if (
             "code" in response
@@ -79,7 +86,65 @@ class SpotUserDataTransport:
             or uid <= 0
         ):
             raise LiveTradingSafetyError("Signed Binance Spot account identity is missing or invalid.")
-        return uid
+        return response
+
+    def get_account_uid(self) -> int:
+        return int(self._account_object(self._signed_get("/v3/account"))["uid"])
+
+    def get_account_overview(self) -> dict[str, int]:
+        """Validate account balances, returning counts only (never amounts/assets)."""
+        response = self._account_object(self._signed_get("/v3/account"))
+        balances = response.get("balances")
+        if not isinstance(balances, list) or len(balances) > 100_000:
+            raise LiveTradingSafetyError("Binance Spot account balances are missing or invalid.")
+        seen_assets: set[str] = set()
+        nonzero_assets = 0
+        locked_assets = 0
+        for balance in balances:
+            if not isinstance(balance, Mapping):
+                raise LiveTradingSafetyError("Binance Spot account balances are malformed.")
+            asset = balance.get("asset")
+            if (
+                not isinstance(asset, str)
+                or not asset
+                or not asset.isascii()
+                or not asset.isalnum()
+                or asset != asset.upper()
+                or asset in seen_assets
+            ):
+                raise LiveTradingSafetyError("Binance Spot account balances contain an invalid asset identity.")
+            seen_assets.add(asset)
+            values: list[Decimal] = []
+            for field in ("free", "locked"):
+                raw = balance.get(field)
+                if not isinstance(raw, str):
+                    raise LiveTradingSafetyError("Binance Spot account balances contain an invalid amount.")
+                try:
+                    amount = Decimal(raw)
+                except InvalidOperation:
+                    raise LiveTradingSafetyError("Binance Spot account balances contain an invalid amount.") from None
+                if not amount.is_finite() or amount < 0:
+                    raise LiveTradingSafetyError("Binance Spot account balances contain an invalid amount.")
+                values.append(amount)
+            if values[0] > 0 or values[1] > 0:
+                nonzero_assets += 1
+            if values[1] > 0:
+                locked_assets += 1
+        return {
+            "account_uid": int(response["uid"]),
+            "balance_asset_count": len(seen_assets),
+            "nonzero_balance_asset_count": nonzero_assets,
+            "locked_balance_asset_count": locked_assets,
+        }
+
+    def get_open_orders(self) -> list[dict[str, object]]:
+        """Read all Spot open orders; callers must not treat this as exchange-side fencing."""
+        response = self._signed_get("/v3/openOrders")
+        if not isinstance(response, list) or len(response) > 10_000:
+            raise LiveTradingSafetyError("Binance Spot open orders response is missing or too large.")
+        if any(not isinstance(order, Mapping) for order in response):
+            raise LiveTradingSafetyError("Binance Spot open orders response is malformed.")
+        return [dict(order) for order in response if isinstance(order, Mapping)]
 
     def get_order(self, *, symbol: str, origClientOrderId: str) -> dict[str, object]:
         if (
@@ -95,7 +160,10 @@ class SpotUserDataTransport:
             or any(not (character.isalnum() or character in "._:/-") for character in origClientOrderId)
         ):
             raise LiveTradingSafetyError("Spot order reconciliation requires a valid symbol and client order ID.")
-        return self._signed_get(
+        response = self._signed_get(
             "/v3/order",
             {"symbol": symbol, "origClientOrderId": origClientOrderId},
         )
+        if not isinstance(response, dict):
+            raise LiveTradingSafetyError("Binance Spot order response was not an object.")
+        return response

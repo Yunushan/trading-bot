@@ -638,6 +638,116 @@ def get_order_intent_status(self) -> dict[str, object]:
     }
 
 
+def get_spot_open_order_reconciliation_status(
+    self, exchange_open_orders: object,
+) -> dict[str, int]:
+    """Compare account-wide Binance open orders with this UID ledger without mutating it."""
+    open_statuses = {"NEW", "PARTIALLY_FILLED", "PENDING_NEW", "PENDING_CANCEL"}
+    allowed_statuses = _ORDER_STATUSES | _SPOT_PENDING_STATUSES
+    if not isinstance(exchange_open_orders, list) or len(exchange_open_orders) > 10_000:
+        raise LiveTradingSafetyError("Binance Spot open orders response is missing or too large.")
+
+    def valid_symbol(value: object) -> bool:
+        return (
+            isinstance(value, str) and bool(value) and value.isascii()
+            and value.isalnum() and value == value.upper()
+        )
+
+    def valid_client_order_id(value: object) -> bool:
+        return (
+            isinstance(value, str) and bool(value) and len(value) <= 36 and value.isascii()
+            and all(character.isalnum() or character in "._:/-" for character in value)
+        )
+
+    exchange_orders: dict[tuple[str, str], dict[str, object]] = {}
+    for value in exchange_open_orders:
+        if not isinstance(value, Mapping) or "code" in value:
+            raise LiveTradingSafetyError("Binance Spot open orders response is malformed.")
+        symbol = value.get("symbol")
+        client_order_id = value.get("clientOrderId")
+        status = value.get("status")
+        order_id = _exchange_order_id(value)
+        if (
+            not valid_symbol(symbol) or not valid_client_order_id(client_order_id)
+            or not isinstance(status, str) or status.strip().upper() not in open_statuses
+            or not order_id
+        ):
+            raise LiveTradingSafetyError("Binance Spot open orders response contains an invalid order identity.")
+        key = (cast(str, symbol), cast(str, client_order_id))
+        if key in exchange_orders:
+            raise LiveTradingSafetyError("Binance Spot open orders response contains a duplicate order.")
+        exchange_orders[key] = dict(value)
+
+    path = _intent_path(self)
+    with ledger_transaction(path):
+        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+    intents = ledger.get("intents")
+    if not isinstance(intents, dict):
+        raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
+
+    local_orders: dict[tuple[str, str], Mapping[str, object]] = {}
+    expected_open: set[tuple[str, str]] = set()
+    local_status_conflicts = 0
+    for client_order_id, record in intents.items():
+        if (
+            not isinstance(client_order_id, str)
+            or not valid_client_order_id(client_order_id)
+            or not isinstance(record, Mapping)
+            or record.get("market") != "spot"
+        ):
+            raise LiveTradingSafetyError("Live Spot order ledger contains an invalid market record.")
+        symbol = record.get("symbol")
+        if not valid_symbol(symbol) or client_order_id != record.get("client_order_id"):
+            raise LiveTradingSafetyError("Live Spot order ledger contains an invalid order identity.")
+        key = (cast(str, symbol), client_order_id)
+        if key in local_orders:
+            raise LiveTradingSafetyError("Live Spot order ledger contains a duplicate order identity.")
+        local_orders[key] = record
+        raw_status = record.get("exchange_status")
+        state = record.get("state")
+        if raw_status in (None, ""):
+            if state == "accepted":
+                local_status_conflicts += 1
+            continue
+        if not isinstance(raw_status, str) or raw_status.strip().upper() not in allowed_statuses:
+            raise LiveTradingSafetyError("Live Spot order ledger contains an invalid exchange status.")
+        if raw_status.strip().upper() in open_statuses:
+            if state == "rejected":
+                local_status_conflicts += 1
+            else:
+                expected_open.add(key)
+
+    unmatched_exchange_open_orders = 0
+    for key, exchange_order in exchange_orders.items():
+        local_record = local_orders.get(key)
+        if local_record is None:
+            unmatched_exchange_open_orders += 1
+            continue
+        local_status = local_record.get("exchange_status")
+        if (
+            local_record.get("state") == "rejected"
+            or not isinstance(local_status, str)
+            or local_status.strip().upper() not in open_statuses
+        ):
+            local_status_conflicts += 1
+            continue
+        local_order_id = local_record.get("exchange_order_id")
+        exchange_order_id = _exchange_order_id(exchange_order)
+        if local_order_id and str(local_order_id) != exchange_order_id:
+            local_status_conflicts += 1
+
+    local_open_orders_missing_from_exchange = sum(
+        1 for key in expected_open if key not in exchange_orders
+    )
+    return {
+        "exchange_open_order_count": len(exchange_orders),
+        "matched_open_order_count": len(exchange_orders) - unmatched_exchange_open_orders,
+        "unmatched_exchange_open_order_count": unmatched_exchange_open_orders,
+        "local_open_orders_missing_from_exchange_count": local_open_orders_missing_from_exchange,
+        "local_open_order_status_conflict_count": local_status_conflicts,
+    }
+
+
 def bind_binance_order_intent_runtime(wrapper_cls) -> None:
     wrapper_cls._resolve_spot_account_uid = _resolve_spot_account_uid
     wrapper_cls._ensure_spot_execution_owner = _ensure_spot_execution_owner

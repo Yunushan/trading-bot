@@ -21,14 +21,17 @@ from .order_intent_runtime import _query_order_intent_exchange, get_order_intent
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("status", "initialize", "migrate", "migrate-spot", "rearm", "rotate-credentials", "reconcile-spot"),
+        "action", choices=(
+            "status", "initialize", "migrate", "migrate-spot", "rearm", "rotate-credentials",
+            "reconcile-spot", "reconcile-spot-account",
+        ),
     )
     paths = parser.add_mutually_exclusive_group()
     paths.add_argument("--audit-log-path", type=Path, help="The exact audit path used by the runtime.")
     paths.add_argument("--default-intent-path", action="store_true", help="Use only when no audit path is configured.")
     parser.add_argument("--mode", choices=("Live", "Demo/Testnet"), required=True)
     parser.add_argument("--api-key-env", required=True, help="Environment variable containing the runtime API key; never pass its value.")
-    parser.add_argument("--api-secret-env", help="For reconcile-spot only: environment variable containing the HMAC API secret.")
+    parser.add_argument("--api-secret-env", help="For Spot reconciliation only: environment variable containing the HMAC API secret.")
     parser.add_argument("--account-type", choices=("Spot", "Futures"), default="Futures")
     parser.add_argument("--spot-account-uid-env", help="Environment variable containing the exchange-reported Spot UID.")
     parser.add_argument("--acknowledgement", default="")
@@ -38,13 +41,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--limit", type=int, default=25, help="Maximum unresolved Spot orders to query (1–100).")
     args = parser.parse_args(argv)
-    if args.action == "reconcile-spot" and args.account_type != "Spot":
+    reconcile_actions = {"reconcile-spot", "reconcile-spot-account"}
+    if args.action in reconcile_actions and args.account_type != "Spot":
         parser.error("Spot reconciliation requires --account-type Spot.")
     if args.account_type == "Futures" and not (args.audit_log_path or args.default_intent_path):
         parser.error("Futures storage administration requires an intent path selector.")
     spot_uid = None
     if args.account_type == "Spot":
-        if args.action == "reconcile-spot":
+        if args.action in reconcile_actions:
             if args.mode != "Live":
                 parser.error("Spot reconciliation currently supports Live mode only.")
             if not args.api_secret_env:
@@ -70,11 +74,15 @@ def main(argv: list[str] | None = None) -> int:
         _operator_spot_account_uid=spot_uid,
     )
     try:
-        if args.action == "reconcile-spot":
+        if args.action in reconcile_actions:
             # Import the network transport only for this explicit action so all
             # other storage administration remains offline and SDK-independent.
             from .spot_user_data_admin_runtime import SpotUserDataTransport
-            from .order_intent_runtime import _intent_path, reconcile_unresolved_order_intents
+            from .order_intent_runtime import (
+                _intent_path,
+                get_spot_open_order_reconciliation_status,
+                reconcile_unresolved_order_intents,
+            )
             from .spot_execution_owner import owner_administration_lock
 
             transport = SpotUserDataTransport(owner.api_key, os.environ.get(args.api_secret_env))
@@ -92,16 +100,47 @@ def main(argv: list[str] | None = None) -> int:
 
             remaining = count_unresolved(after)
             initial = count_unresolved(before)
+            if args.action == "reconcile-spot":
+                ok = (
+                    initial is not None and initial <= args.limit and remaining == 0
+                    and all(item.get("reconciled") is True for item in results)
+                )
+                print(json.dumps({
+                    "ok": ok,
+                    "unresolved_before": initial,
+                    "result_count": len(results),
+                    "unresolved_after": remaining,
+                    "results": results,
+                }, indent=2))
+                return 0 if ok else 1
+
+            overview = transport.get_account_overview()
+            account_identity_matches = overview.pop("account_uid", None) == owner._operator_spot_account_uid
+            open_orders = transport.get_open_orders()
+            open_order_status = get_spot_open_order_reconciliation_status(owner, open_orders)
+            clean_local_exchange_state = (
+                open_order_status["unmatched_exchange_open_order_count"] == 0
+                and open_order_status["local_open_orders_missing_from_exchange_count"] == 0
+                and open_order_status["local_open_order_status_conflict_count"] == 0
+            )
             ok = (
-                initial is not None and initial <= args.limit and remaining == 0
+                account_identity_matches
+                and initial is not None and initial <= args.limit and remaining == 0
                 and all(item.get("reconciled") is True for item in results)
+                and clean_local_exchange_state
             )
             print(json.dumps({
                 "ok": ok,
+                "scope": "read-only single-key Live Spot snapshot",
+                "account_identity_verified_twice": account_identity_matches,
+                **overview,
                 "unresolved_before": initial,
-                "result_count": len(results),
+                "exact_order_result_count": len(results),
                 "unresolved_after": remaining,
-                "results": results,
+                **open_order_status,
+                "balances_reconciled_to_strategy_state": False,
+                "external_keys_users_hosts_or_executors_fenced": False,
+                "automatic_rearm": False,
             }, indent=2))
             return 0 if ok else 1
         if args.action == "status":

@@ -42,6 +42,55 @@ class SpotUserDataTransportTests(unittest.TestCase):
         get.assert_called_once()
         self.assert_signed_get(get.call_args, "/v3/account")
 
+    def test_account_overview_validates_balances_and_returns_counts_only(self):
+        response = {
+            "uid": 12345678,
+            "accountType": "SPOT",
+            "balances": [
+                {"asset": "BTC", "free": "0.25", "locked": "0"},
+                {"asset": "USDT", "free": "0", "locked": "12.5"},
+                {"asset": "ETH", "free": "0", "locked": "0"},
+            ],
+        }
+        with patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get") as get:
+            get.return_value = self.response(response)
+            result = self.transport.get_account_overview()
+        self.assertEqual({
+            "account_uid": 12345678,
+            "balance_asset_count": 3,
+            "nonzero_balance_asset_count": 2,
+            "locked_balance_asset_count": 1,
+        }, result)
+        self.assertNotIn("BTC", repr(result))
+        self.assertNotIn("0.25", repr(result))
+        self.assert_signed_get(get.call_args, "/v3/account")
+
+    def test_open_orders_uses_fixed_account_wide_signed_get(self):
+        orders = [{
+            "symbol": "BTCUSDT", "clientOrderId": "known-order", "orderId": 9,
+            "status": "NEW",
+        }]
+        with patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get") as get:
+            get.return_value = self.response(orders)
+            self.assertEqual(orders, self.transport.get_open_orders())
+        self.assert_signed_get(get.call_args, "/v3/openOrders")
+
+    def test_account_overview_rejects_duplicate_or_invalid_balances(self):
+        for balances in (
+            [
+                {"asset": "BTC", "free": "1", "locked": "0"},
+                {"asset": "BTC", "free": "2", "locked": "0"},
+            ],
+            [{"asset": "BTC", "free": "-1", "locked": "0"}],
+            [{"asset": "BTC", "free": "NaN", "locked": "0"}],
+            [{"asset": "BTC", "free": "1", "locked": 0}],
+        ):
+            with self.subTest(balances=balances), patch(
+                "app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get",
+                return_value=self.response({"uid": 12345678, "accountType": "SPOT", "balances": balances}),
+            ), self.assertRaises(LiveTradingSafetyError):
+                self.transport.get_account_overview()
+
     def test_order_query_is_exactly_scoped_to_existing_client_order_id(self):
         expected_response = {"orderId": 55, "clientOrderId": "existing-order-1", "symbol": "BTCUSDT", "status": "FILLED"}
         with patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get") as get:
