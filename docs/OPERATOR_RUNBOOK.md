@@ -155,6 +155,25 @@ balances, positions, open orders, fills and other executors separately; this
 command does not establish complete account-wide reconciliation. After that
 review, use the explicit rearm procedure above with a recorded reference.
 
+For a broader read-only audit, `reconcile-spot-account` also validates the
+signed account's balance records and compares every account-wide open order
+against the UID-scoped ledger. Use the USER_DATA-only key and stop the desktop
+and every other executor first:
+
+```bash
+trading-bot-order-store reconcile-spot-account --account-type Spot --mode Live --api-key-env BOT_BINANCE_READ_API_KEY --api-secret-env BOT_BINANCE_READ_API_SECRET --limit 25
+```
+
+The JSON output contains balance asset counts and order counts only; it does not
+print asset names, balance amounts or client order IDs. A nonzero result means
+an order is unresolved, untracked, missing from the exchange open-order view, or
+conflicts with local status. The account and open-order reads are sequential,
+not an atomic exchange snapshot. This command does not compare balances or fills
+with strategy-owned portfolio history, inspect other API keys/users/hosts, fence
+external executors, change ledger status except for exact unresolved-order
+queries, or rearm the owner. Manually reconcile the full account and preserve
+the recovery block until discrepancies are resolved.
+
 The supported first target is the Python desktop with Binance Spot on one host.
 For Live Spot credential rotation, stop every executor, reconcile exchange
 orders, fills, balances and positions, then use the new API key through an
