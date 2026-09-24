@@ -100,8 +100,23 @@ trading-bot-order-store initialize --account-type Spot --spot-account-uid-env BO
 
 Existing history at the former audit-derived path blocks first-use
 initialization. Do not delete it or create a fresh ledger under a different
-audit path. A reviewed history-preserving migration is still required for
-existing Live Spot installations.
+audit path. To migrate a resolved version-one or version-two Live Spot ledger,
+stop every executor first. Version-two history must be opened with its currently
+bound API key; rotate credentials separately after migration if needed. The
+offline migration preserves the ledger contents in a backup, moves the legacy
+path out of service, and leaves the new owner marker in `recovery_required`:
+
+```bash
+trading-bot-order-store migrate-spot --account-type Spot --spot-account-uid-env BOT_BINANCE_SPOT_UID --audit-log-path /state/order_audit.jsonl --mode Live --api-key-env BOT_BINANCE_API_KEY --acknowledgement I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE --reconciliation-reference MIGRATION-123
+```
+
+Unresolved local intents, a conflicting target, a mismatched version-two
+credential binding, or an unrecognized owner marker blocks migration. If the
+command is interrupted after it disarms the target, rerun it with the same UID,
+environment, key and reconciliation reference to resume from the preserved
+source or backup. Review the result and backup, then explicitly rearm before
+starting the desktop. The command does not contact Binance or verify the
+operator's reconciliation attestation.
 
 The owner state changes to `active` before an order can be submitted. A crash
 leaves it active; a clean owner release marks it `recovery_required`. Either
