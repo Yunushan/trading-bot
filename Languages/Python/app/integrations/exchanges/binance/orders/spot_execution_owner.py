@@ -11,6 +11,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID
 
 from app.security.redaction import redact_text
 from app.settings.live_safety import LiveTradingSafetyError
@@ -55,7 +56,9 @@ def _lock_file(path: Path) -> int:
         ) from exc
 
 
-def _read_marker(path: Path, *, uid: int, environment: str, store_id: str) -> dict[str, object]:
+def _read_marker(
+    path: Path, *, uid: int, environment: str, store_id: str | None,
+) -> dict[str, object]:
     if path.is_symlink():
         raise LiveTradingSafetyError("Spot execution owner state must not be a symbolic link.")
     def unique_fields(pairs):
@@ -70,6 +73,11 @@ def _read_marker(path: Path, *, uid: int, environment: str, store_id: str) -> di
         marker = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_fields)
     except (OSError, ValueError) as exc:
         raise LiveTradingSafetyError("Spot execution owner state is missing or unreadable; submission is blocked.") from exc
+    try:
+        marker_store_id = marker.get("store_id") if isinstance(marker, dict) else None
+        valid_store_id = isinstance(marker_store_id, str) and str(UUID(marker_store_id)) == marker_store_id
+    except (ValueError, TypeError):
+        valid_store_id = False
     if (
         not isinstance(marker, dict)
         or set(marker) != {
@@ -81,7 +89,8 @@ def _read_marker(path: Path, *, uid: int, environment: str, store_id: str) -> di
         or type(marker["account_uid"]) is not int
         or marker["account_uid"] != uid
         or marker["environment"] != environment
-        or marker["store_id"] != store_id
+        or not valid_store_id
+        or (store_id is not None and marker["store_id"] != store_id)
         or not isinstance(marker["state"], str)
         or marker["state"] not in _OWNER_STATES
         or type(marker["generation"]) is not int
@@ -130,22 +139,39 @@ def provision_owner_marker(ledger_path: Path, *, uid: int, environment: str, sto
         provision_owner_marker_locked(ledger_path, uid=uid, environment=environment, store_id=store_id)
 
 
-def provision_owner_marker_locked(ledger_path: Path, *, uid: int, environment: str, store_id: str) -> None:
+def provision_owner_marker_locked(
+    ledger_path: Path,
+    *,
+    uid: int,
+    environment: str,
+    store_id: str,
+    state: str = "armed",
+    reconciliation_reference: str | None = None,
+) -> None:
     """Caller must hold owner_administration_lock for the full state transition."""
     path = owner_marker_path(ledger_path)
     if path.exists() or path.is_symlink():
         raise LiveTradingSafetyError("Spot execution owner state already exists; it will not be overwritten.")
+    if state not in {"armed", "recovery_required"}:
+        raise LiveTradingSafetyError("Spot execution owner can only be provisioned armed or recovery-required.")
+    reference = reconciliation_reference
+    if state == "recovery_required":
+        reference = _validated_reconciliation_reference(reference)
+    elif reference is None:
+        reference = "initial-provisioning-attestation"
+    else:
+        reference = _validated_reconciliation_reference(reference)
     marker = {
         "format_version": _MARKER_VERSION,
         "account_uid": uid,
         "environment": environment,
         "store_id": store_id,
-        "state": "armed",
+        "state": state,
         "generation": 0,
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "reconciliation_reference": "initial-provisioning-attestation",
+        "reconciliation_reference": reference,
     }
-    _write_marker(path, marker, state="armed")
+    _write_marker(path, marker, state=state)
 
 
 def rearm_owner_marker(

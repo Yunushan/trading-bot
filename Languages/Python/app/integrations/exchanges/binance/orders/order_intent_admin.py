@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from app.settings.live_safety import LiveTradingSafetyError
 
 from .order_intent_provisioning import (
+    migrate_spot_order_intent_store,
     provision_order_intent_store,
     rearm_spot_execution_owner,
     rotate_spot_owner_credentials,
@@ -19,7 +20,9 @@ from .order_intent_runtime import get_order_intent_status
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("status", "initialize", "migrate", "rearm", "rotate-credentials"))
+    parser.add_argument(
+        "action", choices=("status", "initialize", "migrate", "migrate-spot", "rearm", "rotate-credentials"),
+    )
     paths = parser.add_mutually_exclusive_group()
     paths.add_argument("--audit-log-path", type=Path, help="The exact audit path used by the runtime.")
     paths.add_argument("--default-intent-path", action="store_true", help="Use only when no audit path is configured.")
@@ -62,6 +65,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.action == "rotate-credentials":
             result = rotate_spot_owner_credentials(
+                owner, acknowledgement=args.acknowledgement,
+                reconciliation_reference=args.reconciliation_reference,
+            )
+        elif args.action == "migrate-spot":
+            result = migrate_spot_order_intent_store(
                 owner, acknowledgement=args.acknowledgement,
                 reconciliation_reference=args.reconciliation_reference,
             )

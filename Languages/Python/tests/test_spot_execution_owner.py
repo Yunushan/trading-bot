@@ -18,6 +18,7 @@ from app.integrations.exchanges.binance.orders import order_intent_runtime as in
 from app.integrations.exchanges.binance.orders import order_intent_admin as admin_cli
 from app.integrations.exchanges.binance.orders.order_intent_provisioning import (
     PROVISION_ACK,
+    migrate_spot_order_intent_store,
     provision_order_intent_store,
     rearm_spot_execution_owner,
     rotate_spot_owner_credentials,
@@ -287,6 +288,110 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         self.addCleanup(self.close_owner, recovered)
         recovered._ensure_spot_execution_owner()
 
+    def test_spot_history_migration_preserves_legacy_ledger_and_requires_rearm(self):
+        legacy_path = intents._legacy_intent_path(self.admin)
+        legacy_path.write_text(json.dumps({
+            "format_version": 1,
+            "intents": {
+                "legacy-complete": {
+                    "client_order_id": "legacy-complete", "state": "rejected", "market": "spot",
+                    "symbol": "BTCUSDT", "operator_metadata": {"retain": ["all", "fields"]},
+                },
+            },
+        }))
+        original_bytes = legacy_path.read_bytes()
+
+        migration = migrate_spot_order_intent_store(
+            self.admin, acknowledgement=PROVISION_ACK, reconciliation_reference="migration-001",
+        )
+        self.assertTrue(migration["migrated"])
+        self.assertFalse(migration["resumed"])
+        self.assertTrue(migration["requires_rearm"])
+        self.assertFalse(legacy_path.exists())
+        self.assertEqual(original_bytes, Path(migration["backup_path"]).read_bytes())
+        current = intents._read_ledger(self.path, expected_binding=intents._intent_binding(self.admin))
+        self.assertEqual(2, current["format_version"])
+        self.assertEqual("rejected", current["intents"]["legacy-complete"]["state"])
+        self.assertEqual({"retain": ["all", "fields"]}, current["intents"]["legacy-complete"]["operator_metadata"])
+        marker = json.loads(owner_marker_path(self.path).read_text())
+        self.assertEqual("recovery_required", marker["state"])
+        self.assertEqual("migration-001", marker["reconciliation_reference"])
+
+        rearm_spot_execution_owner(
+            self.admin, acknowledgement=PROVISION_ACK, reconciliation_reference="migration-001-verified",
+        )
+        runtime = _SpotWrapper(self.audit_b)
+        self.addCleanup(self.close_owner, runtime)
+        runtime._ensure_spot_execution_owner()
+
+    def test_spot_history_migration_resumes_safely_after_target_write_failure(self):
+        legacy_path = intents._legacy_intent_path(self.admin)
+        legacy_path.write_text(json.dumps({
+            "format_version": 1,
+            "intents": {
+                "legacy-rejected": {"client_order_id": "legacy-rejected", "state": "rejected"},
+            },
+        }))
+        with patch(
+            "app.integrations.exchanges.binance.orders.order_intent_provisioning.write_ledger",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaisesRegex(LiveTradingSafetyError, "storage failed"):
+                migrate_spot_order_intent_store(
+                    self.admin, acknowledgement=PROVISION_ACK, reconciliation_reference="migration-002",
+                )
+
+        self.assertFalse(self.path.exists())
+        self.assertFalse(legacy_path.exists())
+        marker_path = owner_marker_path(self.path)
+        self.assertEqual("recovery_required", json.loads(marker_path.read_text())["state"])
+        backup_path = legacy_path.with_name(f"{legacy_path.name}.spot-live-uid-{UID}.backup")
+        self.assertTrue(backup_path.exists())
+
+        resumed = migrate_spot_order_intent_store(
+            self.admin, acknowledgement=PROVISION_ACK, reconciliation_reference="migration-002",
+        )
+        self.assertTrue(resumed["resumed"])
+        self.assertTrue(self.path.exists())
+        self.assertEqual("recovery_required", json.loads(marker_path.read_text())["state"])
+
+    def test_spot_history_migration_preserves_existing_v2_store_identity(self):
+        legacy_path = intents._legacy_intent_path(self.admin)
+        source = {
+            "format_version": 2,
+            "binding": intents._intent_binding(self.admin),
+            "store_id": "00000000-0000-4000-8000-000000000001",
+            "created_at": "2026-09-23T12:00:00+00:00",
+            "intents": {"legacy-v2-rejected": {"client_order_id": "legacy-v2-rejected", "state": "rejected"}},
+        }
+        legacy_path.write_text(json.dumps(source))
+
+        migration = migrate_spot_order_intent_store(
+            self.admin, acknowledgement=PROVISION_ACK, reconciliation_reference="migration-v2-001",
+        )
+        self.assertEqual(source["store_id"], intents._read_ledger(self.path)["store_id"])
+        self.assertEqual(source["intents"], intents._read_ledger(self.path)["intents"])
+        self.assertEqual("recovery_required", json.loads(owner_marker_path(self.path).read_text())["state"])
+        self.assertTrue(Path(migration["backup_path"]).exists())
+
+    def test_spot_history_migration_refuses_unresolved_intent_without_mutation(self):
+        legacy_path = intents._legacy_intent_path(self.admin)
+        legacy_path.write_text(json.dumps({
+            "format_version": 1,
+            "intents": {
+                "legacy-pending": {"client_order_id": "legacy-pending", "state": "pending"},
+            },
+        }))
+        original_bytes = legacy_path.read_bytes()
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved order intents"):
+            migrate_spot_order_intent_store(
+                self.admin, acknowledgement=PROVISION_ACK, reconciliation_reference="migration-003",
+            )
+        self.assertEqual(original_bytes, legacy_path.read_bytes())
+        self.assertFalse(self.path.exists())
+        self.assertFalse(owner_marker_path(self.path).exists())
+
     def test_owner_marker_change_and_unresolved_history_block_submission_and_rearm(self):
         self.provision()
         wrapper = _SpotWrapper(self.audit_a)
@@ -334,8 +439,30 @@ class SpotExecutionOwnerTests(unittest.TestCase):
             with patch.dict(os.environ, {"SPOT_KEY_ROTATED_TEST": "new-offline-key"}):
                 with redirect_stdout(StringIO()) as output:
                     self.assertEqual(0, admin_cli.main(args))
-                self.assertTrue(json.loads(output.getvalue())["rotated"])
+            self.assertTrue(json.loads(output.getvalue())["rotated"])
             self.assertEqual("recovery_required", json.loads(owner_marker_path(self.path).read_text())["state"])
+
+    def test_cli_migrates_existing_spot_history_offline(self):
+        legacy_path = intents._legacy_intent_path(self.admin)
+        legacy_path.write_text(json.dumps({
+            "format_version": 1,
+            "intents": {"cli-rejected": {"client_order_id": "cli-rejected", "state": "rejected"}},
+        }))
+        args = [
+            "migrate-spot", "--account-type", "Spot", "--spot-account-uid-env", "SPOT_UID_MIGRATION_TEST",
+            "--audit-log-path", str(self.audit_a), "--mode", "Live", "--api-key-env", "SPOT_KEY_MIGRATION_TEST",
+            "--acknowledgement", PROVISION_ACK, "--reconciliation-reference", "migration-cli-001",
+        ]
+        with patch.dict(os.environ, {
+            "SPOT_UID_MIGRATION_TEST": str(UID), "SPOT_KEY_MIGRATION_TEST": "offline-key",
+        }):
+            with redirect_stdout(StringIO()) as output:
+                self.assertEqual(0, admin_cli.main(args))
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["migrated"])
+        self.assertTrue(result["requires_rearm"])
+        self.assertFalse(legacy_path.exists())
+        self.assertTrue(self.path.exists())
 
     def test_separate_process_cannot_claim_and_crash_requires_reconciliation(self):
         self.provision()
