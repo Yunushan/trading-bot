@@ -42,7 +42,7 @@ The initial offline parallel lanes are security (002→003→018), trading (004 
 | PRD-008 | P1 / IN_PROGRESS | Runtime + operator | L | 001 scope | Same-user/host Live Spot gate and offline credential rotation; migration, reconciliation and broader fencing remain open |
 | PRD-009 | P1 / IN_PROGRESS | Risk runtime + operator | L | 008 identity | Fail-closed Futures stop snapshots implemented; durable aggregate risk and kill state remain open |
 | PRD-010 | P1 / IN_PROGRESS | Exchange + risk runtime | L–XL | 004,005,008,009 | Crash-independent position protection |
-| PRD-011 | P1 / TODO | Runtime QA | L | 005,008,009,010 | Fault-injection and account recovery proof |
+| PRD-011 | P1 / IN_PROGRESS | Runtime QA | L | 005,008,009,010 | Unknown Spot acknowledgements stay unresolved; the broader fault matrix remains open |
 | PRD-012 | P2 / DEFERRED_SCOPE | Architecture | XL | 001 decision,008–011 | Headless trading extraction, only if chosen |
 | PRD-013 | P1 / TODO | Operations + runtime | M | 005,009 | Deployed alerts, dashboards and runbooks |
 | PRD-014 | P1 / IN_PROGRESS | Operations + runtime | M–L | 008,009,011 | Local restore/continuity drills pass; trading DR evidence remains open |
@@ -452,6 +452,14 @@ Evidence records must identify: task ID; source SHA; clean/dirty state; environm
 - Strict readiness check on that clean commit accepted `service-config-backup-restore` and `incident-audit-continuity`. The two remaining artifacts are `service-api-sustained-runtime` (requires a deployed HTTPS service for at least 30 minutes and 18,000 read-only requests) and `production-service-slo-window` (requires genuine rolling 30-day production telemetry). Artifact files are ignored and must be regenerated whenever the candidate commit changes.
 - This evidence adds two points to Operations and production evidence, moving the target-limited score from **74/100 to 76/100**. The [76/100 recovery-evidence reassessment](PRODUCTION_READINESS_REVIEW_2026-09-24_RECOVERY_EVIDENCE.md) remains **NO-GO**. No live exchange request, credential, order, deployment, repository setting or remote branch changed.
 - Next: continue PRD-010/011 exchange-resident protection and fault recovery. To clear the final strict evidence gate, supply an HTTPS deployment running the frozen candidate and its credential-free telemetry export; a 30-day window cannot be inferred from local tests.
+
+### 2026-09-24 — PRD-011 Spot acknowledgement status validation
+
+- Source commit: `53385f70` on `codex/prd009-futures-snapshot-guard`. The Spot primary-response boundary now accepts only known active Spot order statuses. Unrecognized statuses return an error; when a durable intent exists, the intent remains unresolved and blocks a retry. This closes an inconsistent early-boundary response path but does not implement exchange-resident protection or the PRD-011 fault matrix.
+- Focused offline tests: **23 passed, 100 subtests passed** across Spot response validation, intent identity/reconciliation and fake exchange execution. Ruff passed on all changed files.
+- Full gate `.venv\Scripts\python.exe tools/verify_all.py --skip-promotion-evidence --json` returned `ok=true`: **1,954 Python tests passed, 2 skipped, 54.48% coverage**; Ruff, mypy (30 files), service/API, web/mobile, Rust (313), Tauri and native C++ (4/4) passed. The Rust external evidence import was skipped; live-smoke preflight attempted no network request. Workspace hygiene remained advisory for ignored Rust build/cache files.
+- Score remains **76/100, NO-GO**. The bounded acknowledgement validation adds no independent production acceptance evidence; see the [current 76/100 reassessment](PRODUCTION_READINESS_REVIEW_2026-09-24_SPOT_ACK_VALIDATION.md) for the carried-forward scorecard and blockers. No live Binance request, credential, order, deployment or repository setting changed.
+- Local operational artifacts were last generated for source commit `1122de9c` and are now stale. Regenerate both after the final documentation commit, then rerun the strict current-commit/clean-source gate. The sustained deployed-service probe and genuine 30-day SLO remain externally blocked.
 
 ### Template for the next implementation checkpoint
 
