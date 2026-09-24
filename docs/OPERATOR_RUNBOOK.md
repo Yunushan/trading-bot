@@ -72,11 +72,11 @@ a backup alone does not prove it contains the latest submitted intent.
 
 Version two binds the ledger to the Binance environment and a fingerprint of
 the API key, not to a verified exchange-account-wide identifier. Changing the
-key or moving from testnet to live blocks the store. The command deliberately
-has no reset or rebind option. Credential rotation of an established store
-requires a reviewed, history-preserving account-identity/reconciliation
-procedure; it is not yet automated. Do not initialize a new empty path to
-silently discard history during rotation.
+key or moving from testnet to live blocks the store. The generic Futures and
+Spot-testnet administration path has no reset or rebind option. Live Spot has
+the separate offline rotation procedure below; it preserves local history but
+does not verify account identity or exchange reconciliation. Do not initialize
+a new empty path to silently discard history during rotation.
 
 ### Live Spot execution owner (single OS user and host)
 
@@ -116,8 +116,31 @@ trading-bot-order-store rearm --account-type Spot --spot-account-uid-env BOT_BIN
 The rearm command is offline. It checks for unresolved local intents and a free
 owner lock, then records the operator attestation; it does not verify exchange
 reconciliation itself. A missing marker or ledger blocks trading rather than
-being silently recreated. Key rotation remains blocked by the version-two
-credential fingerprint until a reviewed rotation procedure preserves history.
+being silently recreated.
+
+The supported first target is the Python desktop with Binance Spot on one host.
+For Live Spot credential rotation, stop every executor, reconcile exchange
+orders, fills, balances and positions, then use the new API key through an
+environment variable. This operation preserves the ledger and store ID, refuses
+unresolved intents, records old/new credential fingerprints with a reference,
+and moves the owner marker to `recovery_required` before changing the ledger
+binding:
+
+```bash
+trading-bot-order-store rotate-credentials --account-type Spot --spot-account-uid-env BOT_BINANCE_SPOT_UID --audit-log-path /state/order_audit.jsonl --mode Live --api-key-env BOT_BINANCE_API_KEY_NEXT --acknowledgement I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE --reconciliation-reference CHANGE-456
+```
+
+Rotation is an offline operator attestation. It does not contact Binance or
+verify that the supplied UID and new key identify the same account. The first
+runtime start independently verifies the UID with the signed endpoint and
+blocks on a missing ledger, mismatched binding or recovery marker. After
+reviewing the rotation result, explicitly rearm with the new API key and a
+reconciliation reference before starting the desktop:
+
+```bash
+trading-bot-order-store rearm --account-type Spot --spot-account-uid-env BOT_BINANCE_SPOT_UID --mode Live --api-key-env BOT_BINANCE_API_KEY_NEXT --acknowledgement I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE --reconciliation-reference CHANGE-456-VERIFIED
+```
+
 The fixed root is shared only by processes using the same OS profile on one
 host. Other OS users, hosts, native runtimes, external bots and still-valid
 Binance keys are outside this local lock. Do not treat it as exchange-side
