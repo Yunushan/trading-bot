@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import time
 
+from app.settings.live_safety import live_spot_stop_loss_block_reason
+
 try:
     from . import strategy_indicator_order_common_runtime
     from . import strategy_order_error_logging
@@ -442,6 +444,16 @@ def _execute_signal_order(
                     reservation_token=reservation_token,
                 )
             else:
+                protection_block = live_spot_stop_loss_block_reason(
+                    mode=getattr(self.binance, "mode", None),
+                    account_type=account_type,
+                    side=side,
+                    config=self.config,
+                )
+                if protection_block:
+                    strategy_order_error_logging.safe_strategy_log(self, protection_block, level="warning")
+                    _guard_abort()
+                    return
                 filters = self.binance.get_spot_symbol_filters(cw["symbol"])
                 min_notional = float(filters.get("minNotional", 0.0) or 0.0)
                 price = float(last_price or 0.0)

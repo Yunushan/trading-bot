@@ -88,6 +88,29 @@ def _live_confirmation_present(config: Mapping[str, object], env: Mapping[str, s
     return bool(env_enabled and env_ack == LIVE_TRADING_ACKNOWLEDGEMENT)
 
 
+def live_spot_stop_loss_block_reason(
+    *,
+    mode: object,
+    account_type: object,
+    side: object,
+    config: Mapping[str, object] | None,
+) -> str | None:
+    """Block live Spot exposure when its configured stop-loss is not executable."""
+    if not is_live_trading_mode(mode):
+        return None
+    if not str(account_type or "").strip().upper().startswith("SPOT"):
+        return None
+    if str(side or "").strip().upper() != "BUY":
+        return None
+    stop_loss = _mapping(config).get("stop_loss")
+    if not isinstance(stop_loss, Mapping) or not coerce_bool(stop_loss.get("enabled"), False):
+        return None
+    return (
+        "Live Spot BUY blocked: stop_loss is enabled but Binance Spot exchange-resident "
+        "stop protection is not implemented. Resolve the Spot risk policy before enabling live buys."
+    )
+
+
 def _credential_is_real(value: object) -> bool:
     text = str(value or "").strip()
     if not text:

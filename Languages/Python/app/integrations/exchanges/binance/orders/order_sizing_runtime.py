@@ -8,7 +8,11 @@ from .order_fallback_runtime import _ensure_binance_client_order_id
 from ..transport.helpers import _is_binance_error_payload
 from ..metadata.filter_validation import validated_symbol_filters
 from app.security.redaction import redact_text
-from app.settings.live_safety import LiveTradingSafetyError, is_live_trading_mode
+from app.settings.live_safety import (
+    LiveTradingSafetyError,
+    is_live_trading_mode,
+    live_spot_stop_loss_block_reason,
+)
 
 
 def _finite_float(value: object) -> float | None:
@@ -108,6 +112,14 @@ def place_spot_market_order(
     side_up = str(side or "").strip().upper()
     if side_up not in {"BUY", "SELL"}:
         return {"ok": False, "error": f"Unsupported spot order side: {side!r}"}
+    protection_block = live_spot_stop_loss_block_reason(
+        mode=getattr(self, "mode", None),
+        account_type=self.account_type,
+        side=side_up,
+        config=getattr(self, "_live_safety_config", {}),
+    )
+    if protection_block:
+        return {"ok": False, "error": protection_block}
     px = _finite_float(price if price is not None else (self.get_last_price(sym) or 0.0))
     if px is None or px <= 0:
         return {"ok": False, "error": "No price available"}

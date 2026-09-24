@@ -151,6 +151,39 @@ class OrderAcknowledgementIdentityTests(unittest.TestCase):
         self.assertEqual(1, len(wrapper.client.orders))
         self.assert_blocked(wrapper)
 
+    def test_live_spot_buy_fails_closed_when_unsupported_stop_loss_is_enabled(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        wrapper = _LedgerSpotWrapper()
+        wrapper.mode, wrapper.api_key = "Live", "unit-key"
+        wrapper._live_safety_config = {"stop_loss": {"enabled": True, "mode": "usdt", "usdt": 25.0}}
+        wrapper._configure_order_audit(path=Path(directory) / "spot.jsonl")
+        provision_order_intent_store(wrapper, acknowledgement=PROVISION_ACK)
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("exchange-resident stop protection is not implemented", result["error"])
+        self.assertEqual([], wrapper.client.orders)
+        self.assertEqual(0, intents.get_order_intent_status(wrapper)["intent_count"])
+
+    def test_live_spot_sell_remains_available_when_stop_loss_is_enabled(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        wrapper = _LedgerSpotWrapper()
+        wrapper.mode, wrapper.api_key = "Live", "unit-key"
+        wrapper._live_safety_config = {"stop_loss": {"enabled": True, "mode": "usdt", "usdt": 25.0}}
+        wrapper._configure_order_audit(path=Path(directory) / "spot.jsonl")
+        provision_order_intent_store(wrapper, acknowledgement=PROVISION_ACK)
+        wrapper.client.create_order = Mock(
+            side_effect=lambda **params: response(
+                clientOrderId=params["newClientOrderId"], side=params["side"],
+            )
+        )
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "SELL", quantity=1)
+
+        self.assertTrue(result["ok"])
+        wrapper.client.create_order.assert_called_once()
+
     def test_spot_submission_does_not_undo_concurrent_reconciliation(self):
         directory = self.enterContext(tempfile.TemporaryDirectory())
         wrapper = _LedgerSpotWrapper()
