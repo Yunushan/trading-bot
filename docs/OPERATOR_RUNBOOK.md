@@ -133,6 +133,28 @@ owner lock, then records the operator attestation; it does not verify exchange
 reconciliation itself. A missing marker or ledger blocks trading rather than
 being silently recreated.
 
+To query only the existing Live Spot client order IDs that remain unresolved in
+the UID-scoped local ledger, stop the desktop and every other executor first.
+Use an HMAC API key configured for Binance `USER_DATA` access only, and place
+its key and secret in environment variables. Binance distinguishes `USER_DATA`
+order-status access from `TRADE` order placement/cancellation; the command has
+only signed GET operations for account identity and an exact existing-order
+lookup. See Binance's [Spot REST API security types](https://developers.binance.com/en/docs/products/spot/rest-api).
+
+```bash
+trading-bot-order-store reconcile-spot --account-type Spot --mode Live --api-key-env BOT_BINANCE_READ_API_KEY --api-secret-env BOT_BINANCE_READ_API_SECRET --limit 25
+```
+
+The command gets the account UID from the signed account response, reads that
+UID's local ledger, and queries only its unresolved client order IDs (up to the
+requested limit). A failed, missing, malformed or mismatched exchange response
+keeps the intent unresolved and returns a nonzero exit status. It also returns
+nonzero if more records remain than the limit. It never places or cancels an
+order and never rearms the execution owner. Review the output and reconcile
+balances, positions, open orders, fills and other executors separately; this
+command does not establish complete account-wide reconciliation. After that
+review, use the explicit rearm procedure above with a recorded reference.
+
 The supported first target is the Python desktop with Binance Spot on one host.
 For Live Spot credential rotation, stop every executor, reconcile exchange
 orders, fills, balances and positions, then use the new API key through an
