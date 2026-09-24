@@ -5,7 +5,11 @@ import math
 import time
 
 from ....security.redaction import redact_text
-from .strategy_cycle_risk_stop_context_runtime import _reconciled_close_qty
+from .strategy_cycle_risk_stop_context_runtime import (
+    _reconciled_close_qty,
+    validate_futures_stop_positions,
+)
+from ..positions.close_execution import _pause_for_close_uncertainty
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,58 +44,60 @@ def apply_cumulative_futures_stop_management(
     if not math.isfinite(last_price) or last_price <= 0.0:
         return False
     load_positions_cache = state.get("load_positions_cache")
-    cache = load_positions_cache() if callable(load_positions_cache) else []
+    try:
+        if state.get("positions_cache_ok") is False:
+            return False
+        if callable(load_positions_cache):
+            cache = load_positions_cache()
+        else:
+            cache = state.get("positions_cache")
+            if cache is None:
+                raise ValueError("futures stop position snapshot was not loaded")
+        positions = validate_futures_stop_positions(
+            cache,
+            symbol=cw["symbol"],
+            dual_side=dual_side,
+            require_margin=apply_percent_limit,
+        )
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{cw.get('symbol', 'Futures')} cumulative stop-loss position snapshot is invalid: {exc}",
+            reconciliation_required=False,
+        )
+        return False
     totals = {
         "LONG": {"qty": 0.0, "loss": 0.0, "margin": 0.0},
         "SHORT": {"qty": 0.0, "loss": 0.0, "margin": 0.0},
     }
-    for pos in cache:
-        try:
-            if str(pos.get("symbol") or "").upper() != cw["symbol"]:
-                continue
-            pos_side = str(pos.get("positionSide") or "").upper()
-            amt = float(pos.get("positionAmt") or 0.0)
-            entry_px = float(pos.get("entryPrice") or 0.0)
-            if not math.isfinite(amt) or not math.isfinite(entry_px) or entry_px <= 0.0:
+    try:
+        for _pos, position_symbol, amt, entry_px, pos_side, qty_pos, margin_val in positions:
+            if position_symbol != str(cw["symbol"]).strip().upper() or qty_pos <= 0.0:
                 continue
             if dual_side:
-                if pos_side == "LONG":
-                    qty_pos = max(0.0, float(pos.get("positionAmt") or 0.0))
-                    side_key = "LONG"
-                elif pos_side == "SHORT":
-                    qty_pos = max(0.0, abs(float(pos.get("positionAmt") or 0.0)))
-                    side_key = "SHORT"
-                else:
-                    continue
+                side_key = pos_side
+                if side_key not in {"LONG", "SHORT"}:
+                    raise ValueError("hedge-mode position side is unavailable")
             else:
-                if amt > 0.0:
-                    qty_pos = amt
-                    side_key = "LONG"
-                elif amt < 0.0:
-                    qty_pos = abs(amt)
-                    side_key = "SHORT"
-                else:
-                    continue
-            if not math.isfinite(qty_pos) or qty_pos <= 0.0:
-                continue
-            margin_val = float(pos.get("isolatedWallet") or 0.0)
-            if not math.isfinite(margin_val) or margin_val <= 0.0:
-                margin_val = float(pos.get("initialMargin") or 0.0)
-            if not math.isfinite(margin_val) or margin_val <= 0.0:
-                notional_val = abs(float(pos.get("notional") or 0.0))
-                lev = float(pos.get("leverage") or 1.0) or 1.0
-                if math.isfinite(notional_val) and math.isfinite(lev) and lev > 0.0:
-                    margin_val = notional_val / lev
+                side_key = "LONG" if amt > 0.0 else "SHORT"
             if side_key == "LONG":
                 loss_val = max(0.0, (entry_px - last_price) * qty_pos)
             else:
                 loss_val = max(0.0, (last_price - entry_px) * qty_pos)
+            if not math.isfinite(loss_val):
+                raise ValueError("cumulative stop-loss amount overflowed")
             totals[side_key]["qty"] += qty_pos
             totals[side_key]["loss"] += loss_val
-            totals[side_key]["margin"] += max(0.0, margin_val) if math.isfinite(margin_val) else 0.0
-        except Exception:
-            _LOGGER.debug("Skipping malformed cumulative stop-loss position", exc_info=True)
-            continue
+            totals[side_key]["margin"] += margin_val
+            if any(not math.isfinite(value) for value in totals[side_key].values()):
+                raise ValueError("cumulative stop-loss totals are non-finite")
+    except Exception as exc:
+        _pause_for_close_uncertainty(
+            self,
+            f"{cw.get('symbol', 'Futures')} cumulative stop-loss totals are invalid: {exc}",
+            reconciliation_required=False,
+        )
+        return False
     cumulative_triggered = False
     for side_key in ("LONG", "SHORT"):
         data = totals[side_key]

@@ -29,7 +29,13 @@ def apply_futures_cycle_risk_management(
     scope: str,
     is_cumulative: bool,
 ):
-    state = build_futures_stop_state(self, cw=cw, df=df)
+    state = build_futures_stop_state(
+        self,
+        cw=cw,
+        df=df,
+        dual_side=dual_side,
+        require_margin=apply_percent_limit and is_cumulative,
+    )
     last_price = state.get("last_price")
     load_positions_cache = state.get("load_positions_cache")
 
