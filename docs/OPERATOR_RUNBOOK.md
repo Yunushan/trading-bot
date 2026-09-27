@@ -174,6 +174,33 @@ external executors, change ledger status except for exact unresolved-order
 queries, or rearm the owner. Manually reconcile the full account and preserve
 the recovery block until discrepancies are resolved.
 
+To recover exact terminal positive Spot market **BUY** fills into the desktop's
+durable portfolio, stop the desktop and every other executor first. Use the
+same USER_DATA-only key and run:
+
+```bash
+trading-bot-order-store recover-spot-market-fills --account-type Spot --mode Live --api-key-env BOT_BINANCE_READ_API_KEY --api-secret-env BOT_BINANCE_READ_API_SECRET --limit 25
+```
+
+The command rechecks each exact unresolved order, loads all its `myTrades`
+records with bounded pagination, and obtains that symbol's base/quote assets
+from Binance public metadata. It supports USDT-quoted BUYs with commissions
+charged in the base asset or USDT. It subtracts base-asset commission from
+inventory and adds USDT commission to cost. After an atomic write to the
+desktop allocation snapshot, the intent is accepted only when the stored
+portfolio quantity and fill signature match the exact exchange evidence. A
+retry with the same evidence is idempotent. The command uses exchange reads and
+local portfolio/intent writes only; it never places or cancels an order, rearms
+the owner, or treats a successful response as full account reconciliation.
+
+Non-USDT quote pairs, SELL fills, third-asset commissions, unsupported intent
+types, incomplete trade history, contradictory totals or malformed state stay
+blocked. If any unresolved or unsupported positive fills remain, this command
+returns failure and the owner remains disarmed. Continue the account-wide
+balance/open-order review and independently reconcile all fills and positions;
+do not rearm while a positive fill lacks a matching durable allocation. This
+workflow does not cover other keys, users, hosts or executors.
+
 The supported first target is the Python desktop with Binance Spot on one host.
 For Live Spot credential rotation, stop every executor, reconcile exchange
 orders, fills, balances and positions, then use the new API key through an
