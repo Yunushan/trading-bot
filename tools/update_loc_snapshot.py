@@ -12,8 +12,8 @@ from pathlib import Path
 
 START_MARKER = "<!-- LOC-SNAPSHOT:START -->"
 END_MARKER = "<!-- LOC-SNAPSHOT:END -->"
-SNAPSHOT_TIME_PATTERN = re.compile(
-    r"^- Snapshot date: `(\d{2}\.\d{2}\.\d{4}) GMT\+3 Time \d{2}:\d{2}:\d{2}`$",
+SNAPSHOT_DATETIME_PATTERN = re.compile(
+    r"^- Snapshot date: `\d{2}\.\d{2}\.\d{4} GMT\+3 Time \d{2}:\d{2}:\d{2}`$",
     flags=re.MULTILINE,
 )
 
@@ -79,10 +79,10 @@ def _count_lines(path: Path) -> tuple[int, int]:
     return total, non_empty
 
 
-def _normalized_snapshot_time(text: str) -> str:
-    """Normalize volatile time-of-day so --check stays meaningful."""
-    return SNAPSHOT_TIME_PATTERN.sub(
-        r"- Snapshot date: `\1 GMT+3 Time <time>`",
+def _normalized_snapshot_datetime(text: str) -> str:
+    """Normalize the volatile timestamp so --check stays meaningful."""
+    return SNAPSHOT_DATETIME_PATTERN.sub(
+        r"- Snapshot date: `<timestamp>`",
         text,
     )
 
@@ -158,7 +158,7 @@ def main() -> int:
         if changed:
             original = readme_path.read_text(encoding="utf-8")
             # Ignore time-only drift; still enforce date, counts, and scope text.
-            if _normalized_snapshot_time(original) == _normalized_snapshot_time(updated):
+            if _normalized_snapshot_datetime(original) == _normalized_snapshot_datetime(updated):
                 print("LOC snapshot is up-to-date.")
                 return 0
             print("LOC snapshot is outdated.")
