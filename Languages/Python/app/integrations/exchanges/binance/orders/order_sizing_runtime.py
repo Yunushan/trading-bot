@@ -67,7 +67,7 @@ def _validated_spot_order_response(response: object) -> dict:
     status = str(payload.get("status") or "").upper()
     if not status:
         raise RuntimeError("spot order rejected: response has no explicit order status")
-    if status in {"REJECTED", "EXPIRED", "CANCELED"}:
+    if status in {"REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "CANCELED"}:
         message = payload.get("msg") or payload.get("message") or status.lower()
         raise RuntimeError(f"spot order rejected (status={status}): {message}")
     if status not in _SPOT_ACCEPTED_ORDER_STATUSES:

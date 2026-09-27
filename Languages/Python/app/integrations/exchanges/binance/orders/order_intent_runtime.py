@@ -31,7 +31,7 @@ _SPOT_PENDING_STATUSES = {"PENDING_NEW", "PENDING_CANCEL"}
 
 def _requires_execution_confirmation(record: Mapping[str, object]) -> bool:
     return bool(record.get("requires_close_confirmation")) or (
-        record.get("market") == "futures" and record.get("type") == "MARKET"
+        record.get("market") in {"spot", "futures"} and record.get("type") == "MARKET"
     )
 
 
@@ -397,6 +397,10 @@ def _mark_order_intent_accepted(self, params: Mapping[str, object], *, via: str,
         if _requires_execution_confirmation(record):
             assert isinstance(result, Mapping)
             execution_updates["executed_qty"] = str(result["executedQty"])
+            if record.get("market") == "spot" and status in {
+                "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED",
+            }:
+                raise LiveTradingSafetyError("Spot market acknowledgement is terminal; reconciliation is required.")
         elif state != "accepted" or status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}:
             raise LiveTradingSafetyError("Order response does not confirm an accepted submission.")
     except (TypeError, ValueError, LiveTradingSafetyError) as exc:

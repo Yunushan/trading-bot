@@ -106,7 +106,9 @@ class OrderIntentReconciliationSafetyTests(unittest.TestCase):
     def test_documented_spot_pending_states_are_supported_only_for_spot(self):
         for status in ("PENDING_NEW", "PENDING_CANCEL"):
             with self.subTest(status=status):
-                ledger._update_order_intent_by_id(self.owner, "reconcile-A", state="unknown", market="spot")
+                ledger._update_order_intent_by_id(
+                    self.owner, "reconcile-A", state="unknown", market="spot", type="LIMIT",
+                )
                 result = self.reconcile(self.response(status=status, executedQty="0"))
                 self.assertTrue(result["reconciled"])
                 self.assertEqual("accepted", result["state"])

@@ -75,11 +75,12 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             "--api-secret-env", "SPOT_RECONCILE_TEST_SECRET",
         ]
 
-    def set_up_pending_after_owner_loss(self) -> Path:
+    def set_up_pending_after_owner_loss(self, *, order_type: str = "MARKET") -> Path:
         wrapper = _SpotRuntime(self.audit_path)
         wrapper._ensure_spot_execution_owner()
+        params = {**PARAMS, "type": order_type}
         intents._begin_order_intent(
-            wrapper, PARAMS, market="spot", source="offline-reconciliation-test",
+            wrapper, params, market="spot", source="offline-reconciliation-test",
         )
         owner = wrapper._spot_execution_owner
         owner.close()
@@ -102,8 +103,8 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         responses = [
             SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
             SimpleNamespace(status_code=200, json=lambda: {
-                "clientOrderId": PARAMS["newClientOrderId"], "symbol": "BTCUSDT",
-                "orderId": 55, "status": "FILLED",
+                "clientOrderId": PARAMS["newClientOrderId"], "symbol": "BTCUSDT", "side": "BUY",
+                "orderId": 55, "status": "FILLED", "origQty": "0.1", "executedQty": "0.1",
             }),
         ]
         code, result, request = self.run_cli_with_responses(responses)
@@ -179,7 +180,7 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         })
 
     def test_account_reconciliation_matches_all_open_orders_and_redacts_balances(self):
-        self.set_up_pending_after_owner_loss()
+        self.set_up_pending_after_owner_loss(order_type="LIMIT")
         responses = [
             SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
             SimpleNamespace(status_code=200, json=lambda: {
