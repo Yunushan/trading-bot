@@ -531,6 +531,12 @@ def _validate_reconciliation_response(record: Mapping[str, object], result: obje
             raise LiveTradingSafetyError("Order execution quantity regressed during reconciliation.")
         if execution.status in {"NEW", "PARTIALLY_FILLED"}:
             return "unknown", status, order_id
+        if (market == "spot" and record.get("type") == "MARKET"
+                and status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
+                and execution.executed_qty > 0):
+            # A terminal market order can still leave a partial Spot position.
+            # Keep new entries blocked until portfolio/fill reconciliation exists.
+            return "unknown", status, order_id
     if status == "REJECTED":
         executed = result.get("executedQty")
         try:

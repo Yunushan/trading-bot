@@ -95,6 +95,37 @@ class OrderIntentReconciliationSafetyTests(unittest.TestCase):
                 with self.assertRaisesRegex(LiveTradingSafetyError, "already has state accepted"):
                     ledger._begin_order_intent(self.owner, self.params, market="futures", source="offline-test")
 
+    def test_spot_market_partial_terminal_fill_remains_unresolved(self):
+        for status in ("CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"):
+            with self.subTest(status=status):
+                ledger._update_order_intent_by_id(
+                    self.owner, "reconcile-A", state="unknown", market="spot", type="MARKET",
+                    executed_qty="0",
+                )
+                result = self.reconcile(self.response(status=status, executedQty="0.5"))
+                self.assertTrue(result["reconciled"])
+                self.assertEqual("unknown", result["state"])
+                self.assertEqual(status, result["exchange_status"])
+                self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+                with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved exchange order intent"):
+                    ledger._begin_order_intent(
+                        self.owner, {**self.params, "newClientOrderId": "reconcile-B"},
+                        market="spot", source="offline-test",
+                    )
+
+    def test_spot_market_terminal_order_with_zero_execution_resolves(self):
+        ledger._update_order_intent_by_id(
+            self.owner, "reconcile-A", state="unknown", market="spot", type="MARKET",
+        )
+        result = self.reconcile(self.response(status="CANCELED", executedQty="0"))
+        self.assertTrue(result["reconciled"])
+        self.assertEqual("accepted", result["state"])
+        self.assertEqual(0, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+        ledger._begin_order_intent(
+            self.owner, {**self.params, "newClientOrderId": "reconcile-B"},
+            market="spot", source="offline-test",
+        )
+
     def test_rejected_response_requires_explicit_zero_execution(self):
         for executed in (None, "", "nan", "inf", "-1", "0.1", False, 0, 0.0, {}, []):
             with self.subTest(executed=executed):
