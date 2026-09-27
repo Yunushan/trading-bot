@@ -68,12 +68,13 @@ class OrderAcknowledgementIdentityTests(unittest.TestCase):
                     executed = {"NEW": "0", "PARTIALLY_FILLED": "0.5", "FILLED": "1"}[status]
                     intents._mark_order_intent_accepted(owner, PARAMS, via="primary", result=response(status=status, executedQty=executed))
                     record = intents._get_order_intent_record(owner, "ack-A")
+                    portfolio_pending = market == "spot" and status == "FILLED"
                     state = "unknown" if status != "FILLED" else "accepted"
                     self.assertEqual((state, "123", status),
                                      (record["state"], record["exchange_order_id"], record["exchange_status"]))
                     with self.assertRaisesRegex(LiveTradingSafetyError, f"already has state {state}"):
                         intents._begin_order_intent(owner, PARAMS, market=market, source="offline-test")
-                    if state == "unknown":
+                    if state == "unknown" or portfolio_pending:
                         self.assert_blocked(owner, market=market)
                     else:
                         intents._begin_order_intent(owner, dict(PARAMS, newClientOrderId="ack-B"), market=market, source="offline-test")

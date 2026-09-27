@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -31,6 +33,35 @@ def _get_allocations_file_path(this_file: Path) -> Path:
                 return legacy_path
 
     return primary_path
+
+
+def get_position_allocations_path(this_file: Path) -> Path:
+    """Return the canonical allocation snapshot path without exposing its payload."""
+    return _get_allocations_file_path(this_file)
+
+
+def _write_snapshot(file_path: Path, payload: dict) -> None:
+    if file_path.is_symlink():
+        raise OSError("allocation state must not be a symbolic link")
+    encoded = json.dumps(payload, indent=2, allow_nan=False, default=str) + "\n"
+    fd, temp_name = tempfile.mkstemp(prefix=f".{file_path.name}.", suffix=".tmp", dir=file_path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if file_path.is_symlink():
+            raise OSError("allocation state became a symbolic link")
+        os.replace(temp_path, file_path)
+        if os.name != "nt":
+            directory_fd = os.open(file_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _serialize_allocation_key(key: tuple) -> str:
@@ -113,8 +144,7 @@ def save_position_allocations(
             "entry_allocations": serialized_allocations,
             "open_position_records": serialized_records,
         }
-        with open(file_path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, default=str)
+        _write_snapshot(file_path, data)
         return True
     except Exception:
         return False
@@ -140,10 +170,6 @@ def load_position_allocations(
 
         saved_mode = data.get("mode")
         if mode and saved_mode and saved_mode != mode:
-            return entry_allocations, open_position_records
-
-        saved_ts = data.get("timestamp", 0)
-        if time.time() - saved_ts > 86400:
             return entry_allocations, open_position_records
 
         for str_key, entries in data.get("entry_allocations", {}).items():

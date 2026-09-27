@@ -58,16 +58,17 @@ def _safe_float(value):
         return None
 
 
-def _persist_trade_allocations(self, save_position_allocations) -> None:
+def _persist_trade_allocations(self, save_position_allocations) -> bool:
     try:
         mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
-        save_position_allocations(
+        result = save_position_allocations(
             getattr(self, "_entry_allocations", {}),
             getattr(self, "_open_position_records", {}),
             mode=mode,
         )
+        return result is True
     except Exception:
-        pass
+        return False
 
 
 def _refresh_trade_views(self, sym, *, mark_traded: bool = True) -> None:

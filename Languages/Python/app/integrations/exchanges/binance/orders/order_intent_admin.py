@@ -1,4 +1,4 @@
-"""Offline order-intent storage administration; never contacts an exchange."""
+"""Order-intent administration and explicit read-only Binance Spot recovery."""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "action", choices=(
             "status", "initialize", "migrate", "migrate-spot", "rearm", "rotate-credentials",
-            "reconcile-spot", "reconcile-spot-account",
+            "reconcile-spot", "reconcile-spot-account", "recover-spot-market-fills",
         ),
     )
     paths = parser.add_mutually_exclusive_group()
@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     paths.add_argument("--default-intent-path", action="store_true", help="Use only when no audit path is configured.")
     parser.add_argument("--mode", choices=("Live", "Demo/Testnet"), required=True)
     parser.add_argument("--api-key-env", required=True, help="Environment variable containing the runtime API key; never pass its value.")
-    parser.add_argument("--api-secret-env", help="For Spot reconciliation only: environment variable containing the HMAC API secret.")
+    parser.add_argument("--api-secret-env", help="For Spot reconciliation/recovery: environment variable containing the HMAC API secret.")
     parser.add_argument("--account-type", choices=("Spot", "Futures"), default="Futures")
     parser.add_argument("--spot-account-uid-env", help="Environment variable containing the exchange-reported Spot UID.")
     parser.add_argument("--acknowledgement", default="")
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--limit", type=int, default=25, help="Maximum unresolved Spot orders to query (1–100).")
     args = parser.parse_args(argv)
-    reconcile_actions = {"reconcile-spot", "reconcile-spot-account"}
+    reconcile_actions = {"reconcile-spot", "reconcile-spot-account", "recover-spot-market-fills"}
     if args.action in reconcile_actions and args.account_type != "Spot":
         parser.error("Spot reconciliation requires --account-type Spot.")
     if args.account_type == "Futures" and not (args.audit_log_path or args.default_intent_path):
@@ -79,18 +79,107 @@ def main(argv: list[str] | None = None) -> int:
             # other storage administration remains offline and SDK-independent.
             from .spot_user_data_admin_runtime import SpotUserDataTransport
             from .order_intent_runtime import (
+                _get_order_intent_record,
                 _intent_path,
+                _mark_order_intent_portfolio_reconciled,
                 get_spot_open_order_reconciliation_status,
+                reconcile_order_intent,
                 reconcile_unresolved_order_intents,
             )
             from .spot_execution_owner import owner_administration_lock
+            from .spot_fill_recovery_runtime import (
+                collect_spot_order_trades,
+                persist_spot_buy_allocation,
+                summarize_spot_market_fill,
+            )
 
             transport = SpotUserDataTransport(owner.api_key, os.environ.get(args.api_secret_env))
             owner._operator_spot_account_uid = transport.get_account_uid()
             owner.client = transport
             owner._query_order_intent_exchange = MethodType(_query_order_intent_exchange, owner)
+            owner._mark_order_intent_portfolio_reconciled = MethodType(
+                _mark_order_intent_portfolio_reconciled, owner,
+            )
             with owner_administration_lock(_intent_path(owner)):
                 before = get_order_intent_status(owner)
+                if args.action == "recover-spot-market-fills":
+                    unresolved_ids = before.get("unresolved_client_order_ids")
+                    if not isinstance(unresolved_ids, list):
+                        raise LiveTradingSafetyError("Spot order intent status is invalid.")
+                    recovered_count = 0
+                    recovered_trade_count = 0
+                    unsupported_count = 0
+                    failed_count = 0
+                    for client_order_id in unresolved_ids[:args.limit]:
+                        observation = reconcile_order_intent(
+                            owner, str(client_order_id), include_execution=True,
+                        )
+                        response = observation.get("order_response")
+                        if not isinstance(response, dict) or observation.get("portfolio_reconciliation_required") is not True:
+                            if observation.get("reconciled") is not True:
+                                failed_count += 1
+                            continue
+                        intent = _get_order_intent_record(owner, str(client_order_id))
+                        if (
+                            not isinstance(intent, dict)
+                            or intent.get("market") != "spot"
+                            or intent.get("type") != "MARKET"
+                            or intent.get("side") != "BUY"
+                        ):
+                            unsupported_count += 1
+                            continue
+                        try:
+                            symbol = str(intent.get("symbol") or "")
+                            order_id = int(str(intent.get("exchange_order_id") or "0"))
+                            base_asset, quote_asset = transport.get_symbol_assets(symbol=symbol)
+                            trades = collect_spot_order_trades(
+                                transport, symbol=symbol, order_id=order_id,
+                            )
+                            fill = summarize_spot_market_fill(
+                                intent, response, trades,
+                                base_asset=base_asset, quote_asset=quote_asset,
+                            )
+                            from app.gui.shared.allocation_persistence import get_position_allocations_path
+
+                            app_root = Path(__file__).resolve().parents[4]
+                            allocation_path = get_position_allocations_path(
+                                app_root / "gui" / "window_shell.py",
+                            )
+                            persist_spot_buy_allocation(allocation_path, fill)
+                            owner._mark_order_intent_portfolio_reconciled(
+                                str(client_order_id),
+                                portfolio_signature=str(fill["signature"]),
+                                portfolio_quantity=str(fill["net_qty"]),
+                            )
+                            recovered_count += 1
+                            recovered_trade_count += int(fill["trade_count"])
+                        except Exception:
+                            failed_count += 1
+                    identity_verified_twice = transport.get_account_uid() == owner._operator_spot_account_uid
+                    after = get_order_intent_status(owner)
+                    remaining_value = after.get("unresolved_count")
+                    initial_value = before.get("unresolved_count")
+                    remaining = remaining_value if type(remaining_value) is int and remaining_value >= 0 else None
+                    initial = initial_value if type(initial_value) is int and initial_value >= 0 else None
+                    ok = (
+                        identity_verified_twice
+                        and initial is not None and initial <= args.limit and remaining == 0
+                        and unsupported_count == 0 and failed_count == 0
+                    )
+                    print(json.dumps({
+                        "ok": ok,
+                        "scope": "read-only Binance Spot queries plus local BUY allocation recovery",
+                        "account_identity_verified_twice": identity_verified_twice,
+                        "unresolved_before": initial,
+                        "recovered_buy_fill_count": recovered_count,
+                        "recovered_trade_count": recovered_trade_count,
+                        "unsupported_positive_fill_count": unsupported_count,
+                        "failed_recovery_count": failed_count,
+                        "unresolved_after": remaining,
+                        "automatic_rearm": False,
+                        "exchange_orders_placed": False,
+                    }, indent=2))
+                    return 0 if ok else 1
                 results = reconcile_unresolved_order_intents(
                     owner, limit=args.limit, include_execution=True,
                 )

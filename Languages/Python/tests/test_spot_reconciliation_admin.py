@@ -285,6 +285,59 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         for private_order_detail in (PARAMS["newClientOrderId"], "BTCUSDT", "0.1", "2000"):
             self.assertNotIn(private_order_detail, rendered)
 
+    def test_recover_command_imports_exact_commission_aware_buy_fill_before_resolving_intent(self):
+        self.set_up_pending_after_owner_loss()
+        args = self.args()
+        args[0] = "recover-spot-market-fills"
+        responses = [
+            SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
+            SimpleNamespace(status_code=200, json=lambda: {
+                "clientOrderId": PARAMS["newClientOrderId"], "symbol": "BTCUSDT", "side": "BUY",
+                "orderId": 55, "status": "FILLED", "type": "MARKET", "price": "0",
+                "origQty": "0.1", "executedQty": "0.1", "cummulativeQuoteQty": "2000",
+                "updateTime": 1780000000000,
+            }),
+            SimpleNamespace(status_code=200, json=lambda: {"symbols": [{
+                "symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT",
+            }]}),
+            SimpleNamespace(status_code=200, json=lambda: [{
+                "symbol": "BTCUSDT", "id": 77, "orderId": 55,
+                "price": "20000", "qty": "0.1", "quoteQty": "2000",
+                "commission": "0.0001", "commissionAsset": "BTC",
+                "time": 1780000000000, "isBuyer": True,
+            }]),
+            SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            allocation_path = Path(tmp) / ".trading_bot_allocations.json"
+            with patch.dict(os.environ, {
+                "SPOT_RECONCILE_TEST_KEY": API_KEY,
+                "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
+            }), patch.object(
+                spot_admin_runtime.requests, "get", side_effect=responses,
+            ) as request, patch(
+                "app.gui.shared.allocation_persistence.get_position_allocations_path",
+                return_value=allocation_path,
+            ), redirect_stdout(StringIO()) as output:
+                code = admin_cli.main(args)
+            saved = json.loads(allocation_path.read_text(encoding="utf-8"))
+            recovered = saved["entry_allocations"]["BTCUSDT:L"][0]
+
+        result = json.loads(output.getvalue())
+        self.assertEqual(0, code)
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["recovered_buy_fill_count"])
+        self.assertEqual(1, result["recovered_trade_count"])
+        self.assertEqual(0, result["unresolved_after"])
+        self.assertFalse(result["automatic_rearm"])
+        self.assertFalse(result["exchange_orders_placed"])
+        self.assertEqual(5, request.call_count)
+        self.assertEqual("recovery_required", json.loads(owner_marker_path(self.path).read_text(encoding="utf-8"))["state"])
+        self.assertEqual(0, intents.get_order_intent_status(self.admin_owner)["unresolved_count"])
+        self.assertAlmostEqual(0.0999, recovered["qty"])
+        self.assertAlmostEqual(20020.02002002, recovered["entry_price"])
+        self.assertEqual("0.0001", recovered["spot_fill_recovery"]["commissions"][0]["amount"])
+
 
 if __name__ == "__main__":
     unittest.main()

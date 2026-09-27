@@ -1,8 +1,9 @@
 """Narrow read-only Binance Spot USER_DATA transport for recovery tooling.
 
 This transport exposes only signed GET requests for account identity, account
-balances, account-wide open orders, and one existing order lookup. It has no
-order placement, cancellation, or endpoint override surface.
+balances, account-wide open orders, existing order lookups, and exact-order
+trade history. It also reads public symbol metadata from the fixed host. It has
+no order placement, cancellation, or endpoint override surface.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from app.settings.live_safety import LiveTradingSafetyError
 
 
 _SPOT_API_BASE = "https://api.binance.com/api"
-_SIGNED_PATHS = {"/v3/account", "/v3/order", "/v3/openOrders"}
+_SIGNED_PATHS = {"/v3/account", "/v3/order", "/v3/openOrders", "/v3/myTrades"}
 _REQUEST_TIMEOUT = (3, 8)
 
 
@@ -36,7 +37,7 @@ class SpotUserDataTransport:
         self._api_secret = api_secret.strip()
 
     def _signed_get(
-        self, path: str, params: Mapping[str, str] | None = None,
+        self, path: str, params: Mapping[str, str | int] | None = None,
     ) -> dict[str, object] | list[object]:
         if path not in _SIGNED_PATHS:
             raise LiveTradingSafetyError("Spot reconciliation requested an unsupported read-only endpoint.")
@@ -44,6 +45,24 @@ class SpotUserDataTransport:
             path == "/v3/order" and set(params or {}) != {"symbol", "origClientOrderId"}
         ) or (path == "/v3/openOrders" and params):
             raise LiveTradingSafetyError("Spot reconciliation requested invalid read-only query parameters.")
+        if path == "/v3/myTrades":
+            trade_params = dict(params or {})
+            if (
+                not {"symbol", "orderId", "limit"}.issubset(trade_params)
+                or set(trade_params) - {"symbol", "orderId", "fromId", "limit"}
+                or not isinstance(trade_params.get("symbol"), str)
+                or not trade_params["symbol"].isascii()
+                or not trade_params["symbol"].isalnum()
+                or trade_params["symbol"] != trade_params["symbol"].upper()
+                or type(trade_params.get("orderId")) is not int
+                or trade_params["orderId"] <= 0
+                or type(trade_params.get("limit")) is not int
+                or not 1 <= trade_params["limit"] <= 1000
+                or ("fromId" in trade_params and (
+                    type(trade_params["fromId"]) is not int or trade_params["fromId"] < 0
+                ))
+            ):
+                raise LiveTradingSafetyError("Spot reconciliation requested invalid read-only trade parameters.")
         payload: dict[str, str | int] = dict(params or {})
         payload["timestamp"] = int(time.time() * 1000)
         payload["recvWindow"] = 5000
@@ -167,3 +186,50 @@ class SpotUserDataTransport:
         if not isinstance(response, dict):
             raise LiveTradingSafetyError("Binance Spot order response was not an object.")
         return response
+
+    def get_my_trades(
+        self, *, symbol: str, order_id: int, from_id: int | None = None, limit: int = 1000,
+    ) -> list[dict[str, object]]:
+        params: dict[str, str | int] = {"symbol": symbol, "orderId": order_id, "limit": limit}
+        if from_id is not None:
+            params["fromId"] = from_id
+        response = self._signed_get("/v3/myTrades", params)
+        if not isinstance(response, list) or len(response) > limit:
+            raise LiveTradingSafetyError("Binance Spot exact-order trade history is missing or invalid.")
+        if any(not isinstance(trade, Mapping) for trade in response):
+            raise LiveTradingSafetyError("Binance Spot exact-order trade history is malformed.")
+        return [dict(trade) for trade in response if isinstance(trade, Mapping)]
+
+    def get_symbol_assets(self, *, symbol: str) -> tuple[str, str]:
+        """Resolve one exact symbol's base and quote assets from Binance public metadata."""
+        if (
+            not isinstance(symbol, str) or not symbol or not symbol.isascii()
+            or not symbol.isalnum() or symbol != symbol.upper()
+        ):
+            raise LiveTradingSafetyError("Spot fill recovery requires a valid symbol.")
+        try:
+            response = requests.get(
+                f"{_SPOT_API_BASE}/v3/exchangeInfo",
+                params={"symbol": symbol},
+                timeout=_REQUEST_TIMEOUT,
+            )
+            if type(getattr(response, "status_code", None)) is not int or response.status_code != 200:
+                raise LiveTradingSafetyError("Binance Spot public symbol metadata is unavailable.")
+            body = response.json()
+        except LiveTradingSafetyError:
+            raise
+        except (requests.RequestException, ValueError, TypeError):
+            raise LiveTradingSafetyError("Binance Spot public symbol metadata request failed.") from None
+        symbols = body.get("symbols") if isinstance(body, Mapping) else None
+        if not isinstance(symbols, list) or len(symbols) != 1 or not isinstance(symbols[0], Mapping):
+            raise LiveTradingSafetyError("Binance Spot public symbol metadata is invalid.")
+        item = symbols[0]
+        base, quote = item.get("baseAsset"), item.get("quoteAsset")
+        if (
+            item.get("symbol") != symbol
+            or not isinstance(base, str) or not base.isascii() or not base.isalnum() or base != base.upper()
+            or not isinstance(quote, str) or not quote.isascii() or not quote.isalnum() or quote != quote.upper()
+            or base == quote
+        ):
+            raise LiveTradingSafetyError("Binance Spot public symbol metadata is invalid.")
+        return base, quote

@@ -18,7 +18,7 @@ class SpotUserDataTransportTests(unittest.TestCase):
     def response(self, body: object, status_code: int = 200):
         return SimpleNamespace(status_code=status_code, json=Mock(return_value=body))
 
-    def assert_signed_get(self, call, path: str, expected: dict[str, str] | None = None) -> None:
+    def assert_signed_get(self, call, path: str, expected: dict[str, str | int] | None = None) -> None:
         args, kwargs = call
         self.assertEqual(f"https://api.binance.com/api{path}", args[0])
         self.assertEqual("offline-api-key", kwargs["headers"]["X-MBX-APIKEY"])
@@ -103,6 +103,47 @@ class SpotUserDataTransportTests(unittest.TestCase):
         self.assert_signed_get(
             get.call_args, "/v3/order", {"symbol": "BTCUSDT", "origClientOrderId": "existing-order-1"},
         )
+
+    def test_my_trades_query_is_scoped_to_one_order_and_supports_bounded_pagination(self):
+        trades = [{"id": 17, "orderId": 91, "symbol": "BTCUSDT"}]
+        with patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get") as get:
+            get.return_value = self.response(trades)
+            self.assertEqual(
+                trades,
+                self.transport.get_my_trades(
+                    symbol="BTCUSDT", order_id=91, from_id=17, limit=1000,
+                ),
+            )
+        self.assert_signed_get(
+            get.call_args,
+            "/v3/myTrades",
+            {"symbol": "BTCUSDT", "orderId": 91, "fromId": 17, "limit": 1000},
+        )
+
+    def test_my_trades_rejects_unscoped_or_invalid_queries_before_network(self):
+        with patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get") as get:
+            for params in (
+                {"symbol": "BTCUSDT", "order_id": 91, "from_id": -1},
+                {"symbol": "BTCUSDT", "order_id": 0},
+                {"symbol": "BTCUSDT", "order_id": 91, "limit": 1001},
+                {"symbol": "../BTC", "order_id": 91},
+            ):
+                with self.subTest(params=params), self.assertRaises(LiveTradingSafetyError):
+                    self.transport.get_my_trades(**params)
+        get.assert_not_called()
+
+    def test_public_symbol_metadata_uses_only_the_fixed_https_host(self):
+        response = self.response({"symbols": [{
+            "symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT",
+        }]})
+        with patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get") as get:
+            get.return_value = response
+            self.assertEqual(("BTC", "USDT"), self.transport.get_symbol_assets(symbol="BTCUSDT"))
+        args, kwargs = get.call_args
+        self.assertEqual("https://api.binance.com/api/v3/exchangeInfo", args[0])
+        self.assertEqual({"symbol": "BTCUSDT"}, kwargs["params"])
+        self.assertNotIn("headers", kwargs)
+        self.assertNotIn("offline-api-secret", repr(get.call_args))
 
     def test_account_identity_and_order_query_fail_closed(self):
         for body in (

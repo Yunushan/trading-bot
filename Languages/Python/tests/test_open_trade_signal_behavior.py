@@ -4,6 +4,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -70,7 +71,13 @@ def _ctx() -> dict:
     }
 
 
-def _dispatch(window: _OpenSignalWindowStub, order_info: dict) -> None:
+def _dispatch(
+    window: _OpenSignalWindowStub,
+    order_info: dict,
+    *,
+    persist_trade_allocations=None,
+    sync_open_position_snapshot=None,
+) -> None:
     handle_non_close_trade_signal(
         window,
         order_info,
@@ -83,12 +90,48 @@ def _dispatch(window: _OpenSignalWindowStub, order_info: dict) -> None:
         normalize_interval=_normalize_interval,
         side_key_from_value=_side_key_from_value,
         refresh_trade_views=lambda *_args, **_kwargs: None,
-        persist_trade_allocations=lambda *_args, **_kwargs: None,
-        sync_open_position_snapshot=lambda *_args, **_kwargs: None,
+        persist_trade_allocations=persist_trade_allocations or (lambda *_args, **_kwargs: None),
+        sync_open_position_snapshot=sync_open_position_snapshot or (lambda *_args, **_kwargs: None),
     )
 
 
 class OpenTradeSignalBehaviorTests(unittest.TestCase):
+    def test_filled_spot_buy_is_marked_only_after_snapshot_sync_and_durable_save(self):
+        window = _OpenSignalWindowStub()
+        events = []
+
+        def mark(client_order_id, *, portfolio_signature, portfolio_quantity):
+            events.append(("mark", client_order_id, portfolio_signature, portfolio_quantity))
+
+        window.shared_binance = SimpleNamespace(_mark_order_intent_portfolio_reconciled=mark)
+
+        def sync(*_args, **_kwargs):
+            events.append("sync")
+
+        def persist(*_args, **_kwargs):
+            events.append("persist")
+            return True
+
+        _dispatch(
+            window,
+            {
+                "symbol": "BTCUSDT", "interval": "1m", "side": "BUY",
+                "qty": 0.0999, "executed_qty": 0.0999, "avg_price": 20020.02002002,
+                "status": "placed", "ok": True, "exchange_status": "FILLED",
+                "client_order_id": "client-spot-buy", "reconciliation_required": False,
+                "spot_fill_recovery": {"signature": "a" * 64, "net_qty": "0.0999"},
+            },
+            persist_trade_allocations=persist,
+            sync_open_position_snapshot=sync,
+        )
+
+        self.assertEqual("sync", events[0])
+        self.assertEqual("persist", events[1])
+        self.assertEqual(
+            ("mark", "client-spot-buy", "a" * 64, "0.0999"),
+            events[2],
+        )
+
     def test_distinct_context_slots_without_exchange_ids_preserve_live_allocations(self):
         window = _OpenSignalWindowStub()
         base_order = {

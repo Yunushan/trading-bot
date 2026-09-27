@@ -116,6 +116,28 @@ class OrderIntentReconciliationSafetyTests(unittest.TestCase):
                         market="spot", source="offline-test",
                     )
 
+    def test_primary_spot_filled_ack_remains_unresolved_until_durable_portfolio_proof(self):
+        ledger._update_order_intent_by_id(
+            self.owner,
+            "reconcile-A",
+            state="accepted",
+            market="spot",
+            type="MARKET",
+            side="BUY",
+            exchange_status="FILLED",
+            executed_qty="1",
+            portfolio_reconciled=False,
+        )
+
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved exchange order intent"):
+            ledger._begin_order_intent(
+                self.owner,
+                {**self.params, "newClientOrderId": "reconcile-B"},
+                market="spot",
+                source="offline-test",
+            )
+
     def test_spot_market_terminal_order_with_zero_execution_resolves(self):
         ledger._update_order_intent_by_id(
             self.owner, "reconcile-A", state="unknown", market="spot", type="MARKET",

@@ -177,6 +177,16 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.close_owner(original)
 
+        # Model the explicit GUI checkpoint after its verified allocation is durable.
+        intents._update_order_intent_by_id(
+            original,
+            result["info"]["clientOrderId"],
+            state="accepted",
+            portfolio_reconciled=True,
+            portfolio_qty="0.1",
+            portfolio_recovery_signature="f" * 64,
+        )
+
         before = intents._read_ledger(self.path)
         before_intents = json.loads(json.dumps(before["intents"]))
         store_id = before["store_id"]

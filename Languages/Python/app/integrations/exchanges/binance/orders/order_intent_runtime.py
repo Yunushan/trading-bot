@@ -38,6 +38,19 @@ def _requires_execution_confirmation(record: Mapping[str, object]) -> bool:
 def _is_unresolved(record: Mapping[str, object]) -> bool:
     if record.get("state") in _UNRESOLVED_STATES:
         return True
+    if (
+        record.get("state") == "accepted"
+        and record.get("market") == "spot"
+        and record.get("type") == "MARKET"
+    ):
+        try:
+            executed = Decimal(str(record.get("executed_qty") or "0"))
+        except (InvalidOperation, ValueError):
+            return True
+        if not executed.is_finite() or executed < 0:
+            return True
+        if executed > 0 and record.get("portfolio_reconciled") is not True:
+            return True
     if record.get("state") == "accepted" and _requires_execution_confirmation(record):
         # Older ledgers accepted market ACKs without recording execution proof.
         try:
@@ -238,6 +251,31 @@ def _read_ledger(
                 or ("requires_close_confirmation" in record and type(record["requires_close_confirmation"]) is not bool)
                 or record.get("state") not in _BLOCKING_STATES | {"rejected"}):
             raise LiveTradingSafetyError("Order intent ledger contains an invalid record; reconcile it before submitting orders.")
+        if "portfolio_reconciled" in record and type(record["portfolio_reconciled"]) is not bool:
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery marker.")
+        if record.get("portfolio_reconciled") is True and (
+            record.get("market") != "spot"
+            or record.get("type") != "MARKET"
+            or record.get("side") != "BUY"
+            or record.get("exchange_status") not in _ORDER_STATUSES
+            or record.get("exchange_status") in {"NEW", "PARTIALLY_FILLED"}
+        ):
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery marker.")
+        if record.get("portfolio_reconciled") is True:
+            try:
+                portfolio_qty = Decimal(str(record.get("portfolio_qty") or "NaN"))
+                executed_qty = Decimal(str(record.get("executed_qty") or "NaN"))
+            except (InvalidOperation, ValueError):
+                portfolio_qty = Decimal("NaN")
+                executed_qty = Decimal("NaN")
+            if (
+                not portfolio_qty.is_finite() or portfolio_qty <= 0
+                or not executed_qty.is_finite() or executed_qty <= 0
+                or portfolio_qty > executed_qty
+                or not isinstance(record.get("portfolio_recovery_signature"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", record["portfolio_recovery_signature"]) is None
+            ):
+                raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery proof.")
     if payload["format_version"] == 1:
         if allow_legacy:
             return payload
@@ -311,7 +349,7 @@ def _client_order_id(params: Mapping[str, object]) -> str:
 
 
 def _intent_record(params: Mapping[str, object], *, market: str, source: str) -> dict[str, object]:
-    return {
+    record = {
         "client_order_id": _client_order_id(params),
         "market": str(market),
         "source": str(source),
@@ -327,6 +365,9 @@ def _intent_record(params: Mapping[str, object], *, market: str, source: str) ->
         "created_at": _now(),
         "updated_at": _now(),
     }
+    if market == "spot" and str(params.get("type") or "").upper() == "MARKET":
+        record["portfolio_reconciled"] = False
+    return record
 
 
 def _begin_order_intent(self, params: Mapping[str, object], *, market: str, source: str) -> dict[str, object]:
@@ -397,6 +438,24 @@ def _mark_order_intent_accepted(self, params: Mapping[str, object], *, via: str,
         if _requires_execution_confirmation(record):
             assert isinstance(result, Mapping)
             execution_updates["executed_qty"] = str(result["executedQty"])
+            if record.get("market") == "spot" and record.get("side") == "BUY" and status == "FILLED":
+                try:
+                    base_asset, quote_asset = self.get_base_quote_assets(str(record["symbol"]))
+                    from .spot_fill_recovery_runtime import summarize_primary_spot_buy
+
+                    primary_fill = summarize_primary_spot_buy(
+                        result,
+                        symbol=str(record["symbol"]),
+                        client_order_id=str(record["client_order_id"]),
+                        base_asset=base_asset,
+                        quote_asset=quote_asset,
+                    )
+                    execution_updates["portfolio_qty"] = str(primary_fill["net_qty"])
+                    execution_updates["primary_fill_signature"] = str(primary_fill["signature"])
+                except Exception:
+                    # Without a complete commission-aware fill proof, the
+                    # accepted Spot market order remains unresolved.
+                    pass
             if record.get("market") == "spot" and status in {
                 "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED",
             }:
@@ -420,6 +479,118 @@ def _mark_order_intent_accepted(self, params: Mapping[str, object], *, via: str,
 
 def _mark_order_intent_unknown(self, params: Mapping[str, object], *, error: object) -> None:
     _update_order_intent(self, params, state="unknown", last_error=str(error or ""), uncertain_at=_now())
+
+
+def _has_durable_spot_buy_allocation(
+    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object,
+) -> bool:
+    try:
+        if re.fullmatch(r"[0-9a-f]{64}", portfolio_signature) is None:
+            return False
+        from app.gui.shared.allocation_persistence import get_position_allocations_path
+
+        app_root = Path(__file__).resolve().parents[4]
+        path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+        if path.is_symlink() or not path.is_file():
+            return False
+
+        def unique_object(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate allocation field")
+                value[key] = item
+            return value
+
+        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        if (
+            not isinstance(data, dict)
+            or data.get("version") != 1
+            or data.get("mode") != "Live"
+            or not isinstance(data.get("entry_allocations"), dict)
+        ):
+            return False
+        matches = []
+        for entries in data["entry_allocations"].values():
+            if not isinstance(entries, list):
+                return False
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    return False
+                if entry.get("client_order_id") == record.get("client_order_id"):
+                    matches.append(entry)
+        if len(matches) != 1:
+            return False
+        entry = matches[0]
+        fill_evidence = entry.get("spot_fill_recovery")
+        quantity = Decimal(str(entry.get("qty") or "NaN"))
+        expected_quantity = Decimal(str(portfolio_quantity or record.get("portfolio_qty") or "NaN"))
+        return (
+            entry.get("symbol") == record.get("symbol")
+            and entry.get("side_key") == "L"
+            and str(entry.get("status") or "").lower() == "active"
+            and isinstance(fill_evidence, Mapping)
+            and fill_evidence.get("signature") == portfolio_signature
+            and quantity.is_finite()
+            and expected_quantity.is_finite()
+            and quantity == expected_quantity
+        )
+    except Exception:
+        return False
+
+
+def _mark_order_intent_portfolio_reconciled(
+    self, client_order_id: str, *, portfolio_signature: str, portfolio_quantity: object = None,
+) -> dict[str, object]:
+    client_order_id = str(client_order_id or "").strip()
+    record = _get_order_intent_record(self, client_order_id) if client_order_id else None
+    if record is None:
+        raise LiveTradingSafetyError("Spot portfolio recovery intent was not found.")
+    if (
+        record.get("market") != "spot"
+        or record.get("type") != "MARKET"
+        or record.get("side") != "BUY"
+        or record.get("exchange_status") not in _ORDER_STATUSES - {"NEW", "PARTIALLY_FILLED"}
+    ):
+        raise LiveTradingSafetyError("Only a terminal Spot market BUY can be marked portfolio-reconciled.")
+    if record.get("portfolio_reconciled") is True:
+        if (
+            record.get("portfolio_recovery_signature") != portfolio_signature
+            or str(record.get("portfolio_qty")) != str(portfolio_quantity or record.get("portfolio_qty"))
+        ):
+            raise LiveTradingSafetyError("Spot portfolio recovery proof conflicts with the stored intent.")
+        return {"client_order_id": client_order_id, "portfolio_reconciled": True, "already_reconciled": True}
+    try:
+        expected_quantity = Decimal(str(portfolio_quantity or record.get("portfolio_qty") or "NaN"))
+        executed_quantity = Decimal(str(record.get("executed_qty") or "NaN"))
+    except (InvalidOperation, ValueError):
+        expected_quantity = Decimal("NaN")
+        executed_quantity = Decimal("NaN")
+    if (
+        not expected_quantity.is_finite() or expected_quantity <= 0
+        or not executed_quantity.is_finite() or executed_quantity <= 0
+        or expected_quantity > executed_quantity
+    ):
+        raise LiveTradingSafetyError("Spot portfolio recovery quantity is invalid.")
+    if record.get("primary_fill_signature") and record["primary_fill_signature"] != portfolio_signature:
+        raise LiveTradingSafetyError("Spot portfolio recovery proof conflicts with the primary fill evidence.")
+    if not _has_durable_spot_buy_allocation(
+        record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
+    ):
+        raise LiveTradingSafetyError("A matching durable Live Spot BUY allocation was not found.")
+    updated = _update_order_intent_by_id(
+        self,
+        client_order_id,
+        state="accepted",
+        expected_record=record,
+        portfolio_reconciled=True,
+        portfolio_qty=format(expected_quantity, "f"),
+        portfolio_recovery_signature=portfolio_signature,
+        portfolio_reconciled_at=_now(),
+    )
+    if updated is None:
+        raise LiveTradingSafetyError("Spot order intent changed during portfolio recovery; reconciliation is required.")
+    return {"client_order_id": client_order_id, "portfolio_reconciled": True, "already_reconciled": False}
 
 
 def _get_order_intent_record(self, client_order_id: str) -> dict[str, object] | None:
@@ -808,6 +979,7 @@ def bind_binance_order_intent_runtime(wrapper_cls) -> None:
     wrapper_cls._mark_order_intent_submitted = _mark_order_intent_submitted
     wrapper_cls._mark_order_intent_accepted = _mark_order_intent_accepted
     wrapper_cls._mark_order_intent_unknown = _mark_order_intent_unknown
+    wrapper_cls._mark_order_intent_portfolio_reconciled = _mark_order_intent_portfolio_reconciled
     wrapper_cls._query_order_intent_exchange = _query_order_intent_exchange
     wrapper_cls.reconcile_order_intent = reconcile_order_intent
     wrapper_cls.reconcile_unresolved_order_intents = reconcile_unresolved_order_intents

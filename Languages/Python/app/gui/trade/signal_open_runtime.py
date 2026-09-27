@@ -110,6 +110,38 @@ def _has_order_identity(order_info: dict) -> bool:
     )
 
 
+def _mark_spot_buy_intent_persisted(self, order_info: dict, *, persisted: bool) -> None:
+    if (
+        not persisted
+        or str(order_info.get("side") or "").strip().upper() != "BUY"
+        or str(order_info.get("exchange_status") or "").strip().upper() != "FILLED"
+        or order_info.get("reconciliation_required") is True
+    ):
+        return
+    client_order_id = _identity_token(order_info.get("client_order_id") or order_info.get("clientOrderId"))
+    fill_recovery = order_info.get("spot_fill_recovery")
+    portfolio_signature = fill_recovery.get("signature") if isinstance(fill_recovery, dict) else None
+    if not client_order_id or not isinstance(portfolio_signature, str):
+        return
+    wrapper = getattr(self, "shared_binance", None)
+    marker = getattr(wrapper, "_mark_order_intent_portfolio_reconciled", None)
+    if not callable(marker):
+        return
+    try:
+        marker(
+            client_order_id,
+            portfolio_signature=portfolio_signature,
+            portfolio_quantity=fill_recovery.get("net_qty"),
+        )
+    except Exception as exc:
+        log = getattr(self, "log", None)
+        if callable(log):
+            try:
+                log(f"Spot BUY {client_order_id} remains blocked pending portfolio recovery: {exc}")
+            except Exception:
+                pass
+
+
 def _is_duplicate_open_event(self, order_info: dict, ctx: dict, *, normalize_interval) -> bool:
     registry = getattr(self, "_processed_open_events", None)
     if not isinstance(registry, dict):
@@ -349,6 +381,9 @@ def handle_non_close_trade_signal(
                 trade_entry["order_id"] = order_id_token
             if client_order_token:
                 trade_entry["client_order_id"] = client_order_token
+            fill_recovery = order_info.get("spot_fill_recovery")
+            if isinstance(fill_recovery, dict):
+                trade_entry["spot_fill_recovery"] = dict(fill_recovery)
 
             order_identifier = client_order_token or order_id_token or event_uid_token
             alloc_list = alloc_map.get((ctx["sym_upper"], side_key_local))
@@ -403,8 +438,6 @@ def handle_non_close_trade_signal(
             alloc_map[(ctx["sym_upper"], side_key_local)] = alloc_list
             pending_close.pop((ctx["sym_upper"], side_key_local), None)
 
-            persist_trade_allocations(self, save_position_allocations)
-
             snapshot_entry = existing_entry or trade_entry
             sync_open_position_snapshot(
                 self,
@@ -418,6 +451,8 @@ def handle_non_close_trade_signal(
                 resolve_trigger_indicators=resolve_trigger_indicators,
                 normalize_trigger_actions_map=normalize_trigger_actions_map,
             )
+            persisted = persist_trade_allocations(self, save_position_allocations)
+            _mark_spot_buy_intent_persisted(self, order_info, persisted=persisted)
         else:
             try:
                 if hasattr(self, "_track_interval_close"):
