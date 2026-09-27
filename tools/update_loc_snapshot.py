@@ -157,7 +157,7 @@ def main() -> int:
     if args.check:
         if changed:
             original = readme_path.read_text(encoding="utf-8")
-            # Ignore time-only drift; still enforce date, counts, and scope text.
+            # Ignore timestamp-only drift; still enforce counts and scope text.
             if _normalized_snapshot_datetime(original) == _normalized_snapshot_datetime(updated):
                 print("LOC snapshot is up-to-date.")
                 return 0
