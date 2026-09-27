@@ -161,7 +161,7 @@ def main() -> int:
             if _normalized_snapshot_datetime(original) == _normalized_snapshot_datetime(updated):
                 print("LOC snapshot is up-to-date.")
                 return 0
-            print("LOC snapshot is outdated.")
+            print(f"LOC snapshot is outdated. Expected snapshot:\n{snapshot}")
             return 1
         print("LOC snapshot is up-to-date.")
         return 0
