@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
 from app.integrations.exchanges.binance.orders import spot_fill_recovery_runtime as recovery
+from app.integrations.exchanges.binance.orders.spot_opo_runtime import build_spot_opo_request
 from app.settings.live_safety import LiveTradingSafetyError
 
 
@@ -56,6 +58,39 @@ PRIMARY_ORDER = {
         },
     ],
 }
+SELL_INTENT = {
+    "client_order_id": "recovered-sell-1",
+    "exchange_order_id": "76",
+    "market": "spot",
+    "type": "MARKET",
+    "side": "SELL",
+    "symbol": "BTCUSDT",
+}
+SELL_ORDER = {
+    "clientOrderId": "recovered-sell-1",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "type": "MARKET",
+    "orderId": 76,
+    "status": "FILLED",
+    "executedQty": "0.08000000",
+    "cummulativeQuoteQty": "1600.00000000",
+    "updateTime": 1780000000010,
+}
+SELL_TRADES = [
+    {
+        "symbol": "BTCUSDT", "id": 201, "orderId": 76,
+        "price": "20000.00000000", "qty": "0.03000000", "quoteQty": "600.00000000",
+        "commission": "0.00003000", "commissionAsset": "BTC", "time": 1780000000010,
+        "isBuyer": False,
+    },
+    {
+        "symbol": "BTCUSDT", "id": 202, "orderId": 76,
+        "price": "20000.00000000", "qty": "0.05000000", "quoteQty": "1000.00000000",
+        "commission": "0.20000000", "commissionAsset": "USDT", "time": 1780000000011,
+        "isBuyer": False,
+    },
+]
 
 
 class SpotFillRecoveryTests(unittest.TestCase):
@@ -63,6 +98,62 @@ class SpotFillRecoveryTests(unittest.TestCase):
         return recovery.summarize_spot_market_fill(
             INTENT, ORDER, TRADES, base_asset="BTC", quote_asset="USDT",
         )
+
+    def summarize_sell(self, *, intent=SELL_INTENT, order=SELL_ORDER, trades=SELL_TRADES):
+        return recovery.summarize_spot_market_fill(
+            intent, order, trades, base_asset="BTC", quote_asset="USDT",
+        )
+
+    def opo_buy_inputs(self):
+        request = build_spot_opo_request(
+            symbol="BTCUSDT",
+            symbol_info={
+                "symbol": "BTCUSDT", "status": "TRADING", "quoteAsset": "USDT",
+                "isSpotTradingAllowed": True, "otoAllowed": True, "opoAllowed": True,
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "1000000", "tickSize": "0.01"},
+                    {"filterType": "LOT_SIZE", "minQty": "0.0001", "maxQty": "9000", "stepSize": "0.0001"},
+                    {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+                ],
+            },
+            working_price="20000", working_quantity="0.1", pending_stop_price="19000",
+            list_client_order_id="opo-list-1", working_client_order_id="opo-buy-1",
+            pending_client_order_id="opo-stop-1",
+        )
+        intent = {
+            "market": "spot", "type": "OPO", "side": "BUY", "symbol": "BTCUSDT",
+            "client_order_id": request["listClientOrderId"], "request": request,
+            "state": "accepted", "protection_state": "active", "list_status": "EXEC_STARTED",
+            "working_status": "FILLED", "pending_status": "NEW", "exchange_order_list_id": 300,
+            "working_order_id": 75, "pending_order_id": 302,
+            "working_executed_qty": "0.1", "pending_executed_qty": "0",
+            "pending_original_qty": "0.0999",
+        }
+        order = {
+            **ORDER, "clientOrderId": request["workingClientOrderId"], "type": "LIMIT",
+            "orderListId": 300, "timeInForce": "FOK", "origQty": "0.1",
+        }
+        return intent, order, request
+
+    @staticmethod
+    def buy_fill(client_order_id, order_id, qty, quote):
+        return {
+            "symbol": "BTCUSDT",
+            "client_order_id": client_order_id,
+            "order_id": order_id,
+            "trade_ids": [order_id],
+            "trade_count": 1,
+            "gross_qty": qty,
+            "net_qty": qty,
+            "gross_quote_qty": quote,
+            "net_quote_cost": quote,
+            "average_cost": str(float(quote) / float(qty)),
+            "commissions": [],
+            "base_asset": "BTC",
+            "quote_asset": "USDT",
+            "fill_time_ms": 1780000000000 + order_id,
+            "signature": f"{order_id:064x}",
+        }
 
     def test_primary_ack_and_my_trades_produce_the_same_fee_aware_proof(self):
         recovered = self.summarize()
@@ -104,6 +195,290 @@ class SpotFillRecoveryTests(unittest.TestCase):
             recovery.summarize_spot_market_fill(
                 INTENT, ORDER, TRADES, base_asset="BTC", quote_asset="BUSD",
             )
+
+    def test_sell_summary_counts_base_fee_as_inventory_and_quote_fee_against_proceeds(self):
+        fill = self.summarize_sell()
+        self.assertEqual("SELL", fill["side"])
+        self.assertEqual("0.08003", fill["portfolio_qty"])
+        self.assertEqual("1599.8", fill["net_quote_proceeds"])
+        self.assertNotEqual(self.summarize()["signature"], fill["signature"])
+
+        wrong_side_trade = [dict(row) for row in SELL_TRADES]
+        wrong_side_trade[0]["isBuyer"] = True
+        with self.assertRaisesRegex(LiveTradingSafetyError, "does not belong"):
+            self.summarize_sell(trades=wrong_side_trade)
+
+    def test_opo_buy_recovery_binds_list_and_working_child_and_records_linked_stop_quantity(self):
+        intent, order, request = self.opo_buy_inputs()
+
+        fill = recovery.summarize_spot_opo_buy_fill(
+            intent, order, TRADES, base_asset="BTC", quote_asset="USDT",
+        )
+
+        self.assertEqual(request["listClientOrderId"], fill["client_order_id"])
+        self.assertEqual(request["workingClientOrderId"], fill["exchange_client_order_id"])
+        self.assertEqual("0.09996", fill["net_qty"])
+        self.assertEqual("0.0999", fill["pending_order_qty"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "allocations.json"
+            recovery.persist_spot_buy_allocation(path, fill)
+            entry = json.loads(path.read_text(encoding="utf-8"))["entry_allocations"]["BTCUSDT:L"][0]
+        self.assertEqual(request["listClientOrderId"], entry["client_order_id"])
+        self.assertEqual(request["workingClientOrderId"], entry["spot_fill_recovery"]["exchange_client_order_id"])
+        self.assertEqual("0.0999", entry["spot_fill_recovery"]["pending_order_qty"])
+
+    def test_opo_buy_recovery_proves_inventory_independently_of_stop_state(self):
+        intent, order, _request = self.opo_buy_inputs()
+        triggered = {
+            **intent, "state": "accepted", "protection_state": "triggered",
+            "list_status": "ALL_DONE", "pending_status": "FILLED", "pending_executed_qty": "0.0999",
+        }
+        fill = recovery.summarize_spot_opo_buy_fill(
+            triggered, order, TRADES, base_asset="BTC", quote_asset="USDT",
+        )
+        self.assertEqual("0.09996", fill["net_qty"])
+        with self.assertRaisesRegex(LiveTradingSafetyError, "exact filled working child"):
+            recovery.summarize_spot_opo_buy_fill(
+                {**intent, "working_status": "PARTIALLY_FILLED"}, order, TRADES,
+                base_asset="BTC", quote_asset="USDT",
+            )
+        with self.assertRaisesRegex(LiveTradingSafetyError, "conflicts with its reconciled list fill"):
+            recovery.summarize_spot_opo_buy_fill(
+                intent, {**order, "orderListId": 301}, TRADES,
+                base_asset="BTC", quote_asset="USDT",
+            )
+
+    def test_opo_stop_sell_recovery_requires_full_exact_linked_exit(self):
+        intent, _working_order, request = self.opo_buy_inputs()
+        intent.update({
+            "state": "accepted", "protection_state": "triggered", "list_status": "ALL_DONE",
+            "pending_status": "FILLED", "pending_executed_qty": "0.0999",
+            "entry_reconciled": True, "entry_portfolio_quantity": "0.0999",
+            "entry_recovery_signature": "a" * 64,
+        })
+        order = {
+            "symbol": "BTCUSDT", "orderId": 302, "orderListId": 300,
+            "clientOrderId": request["pendingClientOrderId"], "side": "SELL", "type": "STOP_LOSS",
+            "status": "FILLED", "origQty": "0.0999", "executedQty": "0.0999",
+            "stopPrice": "19000", "cummulativeQuoteQty": "1898.1", "updateTime": 1780000000010,
+        }
+        trades = [{
+            "symbol": "BTCUSDT", "id": 303, "orderId": 302, "price": "19000",
+            "qty": "0.0999", "quoteQty": "1898.1", "commission": "0", "commissionAsset": "BTC",
+            "time": 1780000000010, "isBuyer": False,
+        }]
+        fill = recovery.summarize_spot_opo_stop_sell_fill(
+            intent, order, trades, base_asset="BTC", quote_asset="USDT",
+        )
+        self.assertEqual(request["listClientOrderId"], fill["opo_list_client_order_id"])
+        self.assertEqual("0.0999", fill["portfolio_qty"])
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "exact linked entry proof"):
+            recovery.summarize_spot_opo_stop_sell_fill(
+                intent, {**order, "executedQty": "0.0998"}, trades,
+                base_asset="BTC", quote_asset="USDT",
+            )
+        charged_base_fee = [{**trades[0], "commission": "0.0001", "commissionAsset": "BTC"}]
+        with self.assertRaisesRegex(LiveTradingSafetyError, "consumed quantity differs"):
+            recovery.summarize_spot_opo_stop_sell_fill(
+                intent, order, charged_base_fee, base_asset="BTC", quote_asset="USDT",
+            )
+
+    def test_opo_stop_sell_closes_only_its_exact_entry_allocation_and_is_idempotent(self):
+        intent, working_order, request = self.opo_buy_inputs()
+        buy_trades = [{
+            "symbol": "BTCUSDT", "id": 301, "orderId": 75, "price": "20000",
+            "qty": "0.1", "quoteQty": "2000", "commission": "0.0001", "commissionAsset": "BTC",
+            "time": 1780000000000, "isBuyer": True,
+        }]
+        buy_fill = recovery.summarize_spot_opo_buy_fill(
+            intent, working_order, buy_trades, base_asset="BTC", quote_asset="USDT",
+        )
+        triggered = {
+            **intent, "state": "accepted", "protection_state": "triggered", "list_status": "ALL_DONE",
+            "pending_status": "FILLED", "pending_executed_qty": "0.0999",
+            "entry_reconciled": True, "entry_portfolio_quantity": "0.0999",
+            "entry_recovery_signature": buy_fill["signature"],
+        }
+        stop_order = {
+            "symbol": "BTCUSDT", "orderId": 302, "orderListId": 300,
+            "clientOrderId": request["pendingClientOrderId"], "side": "SELL", "type": "STOP_LOSS",
+            "status": "FILLED", "origQty": "0.0999", "executedQty": "0.0999",
+            "stopPrice": "19000", "cummulativeQuoteQty": "1898.1", "updateTime": 1780000000010,
+        }
+        stop_trades = [{
+            "symbol": "BTCUSDT", "id": 303, "orderId": 302, "price": "19000",
+            "qty": "0.0999", "quoteQty": "1898.1", "commission": "0", "commissionAsset": "BTC",
+            "time": 1780000000010, "isBuyer": False,
+        }]
+        stop_fill = recovery.summarize_spot_opo_stop_sell_fill(
+            triggered, stop_order, stop_trades, base_asset="BTC", quote_asset="USDT",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "allocations.json"
+            recovery.persist_spot_buy_allocation(path, buy_fill)
+            recovery.persist_spot_opo_stop_sell_allocation(path, stop_fill)
+            first = json.loads(path.read_text(encoding="utf-8"))
+            recovery.persist_spot_opo_stop_sell_allocation(path, stop_fill)
+            second = json.loads(path.read_text(encoding="utf-8"))
+        row = second["entry_allocations"]["BTCUSDT:L"][0]
+        self.assertEqual("Closed", row["status"])
+        self.assertEqual(stop_fill["signature"], row["spot_opo_stop_recovery"]["signature"])
+        self.assertNotIn("BTCUSDT:L", second["open_position_records"])
+        self.assertEqual(first["entry_allocations"], second["entry_allocations"])
+
+    def test_strategy_sell_consumes_only_the_sole_exact_opo_allocation(self):
+        intent, working_order, request = self.opo_buy_inputs()
+        buy_trades = [{
+            "symbol": "BTCUSDT", "id": 401, "orderId": 75, "price": "20000",
+            "qty": "0.1", "quoteQty": "2000", "commission": "0.0001", "commissionAsset": "BTC",
+            "time": 1780000000000, "isBuyer": True,
+        }]
+        buy_fill = recovery.summarize_spot_opo_buy_fill(
+            intent, working_order, buy_trades, base_asset="BTC", quote_asset="USDT",
+        )
+        exit_order = {
+            "symbol": "BTCUSDT", "clientOrderId": "strategy-exit-1", "orderId": 402,
+            "orderListId": -1, "side": "SELL", "type": "MARKET", "status": "FILLED",
+            "origQty": "0.0999", "executedQty": "0.0999", "cummulativeQuoteQty": "1898.1",
+            "updateTime": 1780000000010,
+        }
+        exit_trades = [{
+            "symbol": "BTCUSDT", "id": 403, "orderId": 402, "price": "19000",
+            "qty": "0.0999", "quoteQty": "1898.1", "commission": "0", "commissionAsset": "BTC",
+            "time": 1780000000010, "isBuyer": False,
+        }]
+        sell_intent = {
+            "market": "spot", "type": "MARKET", "side": "SELL", "symbol": "BTCUSDT",
+            "client_order_id": "strategy-exit-1", "exchange_client_order_id": "strategy-exit-1",
+            "exchange_order_id": 402,
+        }
+        fill = recovery.summarize_spot_market_fill(
+            sell_intent, exit_order, exit_trades, base_asset="BTC", quote_asset="USDT",
+        )
+        fill["type"] = "MARKET"
+        fill["opo_list_client_order_id"] = request["listClientOrderId"]
+        fill["opo_entry_portfolio_quantity"] = "0.0999"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "allocations.json"
+            recovery.persist_spot_buy_allocation(path, buy_fill)
+            baseline = recovery.spot_opo_allocation_baseline(
+                path,
+                symbol="BTCUSDT",
+                list_client_order_id=request["listClientOrderId"],
+                expected_quantity="0.0999",
+            )
+            fill["pre_order_portfolio_signature"] = baseline["signature"]
+            fill["pre_order_portfolio_qty"] = baseline["quantity"]
+            self.assertTrue(recovery.persist_spot_opo_strategy_sell_allocation(path, fill))
+            self.assertTrue(recovery.persist_spot_opo_strategy_sell_allocation(path, fill))
+            proof_intent = {
+                "client_order_id": request["listClientOrderId"],
+                "strategy_exit_client_order_id": "strategy-exit-1",
+                "strategy_exit_order_id": 402,
+                "strategy_exit_trade_ids": [403],
+                "strategy_exit_pre_order_signature": baseline["signature"],
+                "strategy_exit_pre_order_quantity": baseline["quantity"],
+            }
+            self.assertTrue(recovery.has_durable_spot_opo_strategy_sell(
+                path, proof_intent, signature=str(fill["signature"]), consumed_quantity="0.0999",
+            ))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        row = saved["entry_allocations"]["BTCUSDT:L"][0]
+        self.assertEqual("Closed", row["status"])
+        self.assertEqual("strategy-exit-1", row["spot_sell_recoveries"][0]["client_order_id"])
+        self.assertNotIn("BTCUSDT:L", saved["open_position_records"])
+
+    def test_strategy_sell_baseline_rejects_other_active_same_symbol_allocation(self):
+        intent, working_order, request = self.opo_buy_inputs()
+        buy_trades = [{
+            "symbol": "BTCUSDT", "id": 501, "orderId": 75, "price": "20000",
+            "qty": "0.1", "quoteQty": "2000", "commission": "0.0001", "commissionAsset": "BTC",
+            "time": 1780000000000, "isBuyer": True,
+        }]
+        buy_fill = recovery.summarize_spot_opo_buy_fill(
+            intent, working_order, buy_trades, base_asset="BTC", quote_asset="USDT",
+        )
+        other = self.buy_fill("other-spot-allocation", 502, "0.01", "200")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "allocations.json"
+            recovery.persist_spot_buy_allocation(path, buy_fill)
+            recovery.persist_spot_buy_allocation(path, other)
+            with self.assertRaisesRegex(LiveTradingSafetyError, "only active allocation"):
+                recovery.spot_opo_allocation_baseline(
+                    path,
+                    symbol="BTCUSDT",
+                    list_client_order_id=request["listClientOrderId"],
+                    expected_quantity="0.0999",
+                )
+
+    def test_sell_recovery_consumes_fifo_allocations_and_is_idempotent(self):
+        first = self.buy_fill("recovered-buy-a", 501, "0.06", "1200")
+        second = self.buy_fill("recovered-buy-b", 502, "0.04", "800")
+        fill = self.summarize_sell()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".trading_bot_allocations.json"
+            self.assertTrue(recovery.persist_spot_buy_allocation(path, first))
+            self.assertTrue(recovery.persist_spot_buy_allocation(path, second))
+            baseline = recovery.spot_live_allocation_baseline(path, symbol="BTCUSDT")
+            self.assertIsNotNone(baseline)
+            fill = {
+                **fill,
+                "pre_order_portfolio_signature": baseline["signature"],
+                "pre_order_portfolio_qty": baseline["quantity"],
+            }
+
+            self.assertTrue(recovery.persist_spot_sell_allocation(path, fill))
+            after_first = json.loads(path.read_text(encoding="utf-8"))
+            self.assertTrue(recovery.persist_spot_sell_allocation(path, fill))
+            after_retry = json.loads(path.read_text(encoding="utf-8"))
+
+        rows = after_retry["entry_allocations"]["BTCUSDT:L"]
+        self.assertEqual(["Closed", "Active"], [row["status"] for row in rows])
+        self.assertAlmostEqual(0.01997, rows[1]["qty"])
+        self.assertEqual("0.08003", sum(
+            (Decimal(proof["consumed_qty"]) for row in rows for proof in row.get("spot_sell_recoveries", [])),
+            start=Decimal(0),
+        ).__str__())
+        self.assertAlmostEqual(0.01997, after_retry["open_position_records"]["BTCUSDT:L"]["data"]["qty"])
+        self.assertEqual(after_first["entry_allocations"], after_retry["entry_allocations"])
+
+    def test_sell_recovery_rejects_inventory_exceeding_durable_owned_allocations(self):
+        fill = self.summarize_sell(
+            order={**SELL_ORDER, "executedQty": "0.10000000", "cummulativeQuoteQty": "2000.00000000"},
+            trades=[{
+                **SELL_TRADES[0], "id": 203, "qty": "0.10000000", "quoteQty": "2000.00000000",
+                "commission": "0.00010000", "time": 1780000000012,
+            }],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".trading_bot_allocations.json"
+            self.assertTrue(recovery.persist_spot_buy_allocation(
+                path, self.buy_fill("recovered-buy-a", 501, "0.1", "2000"),
+            ))
+            baseline = recovery.spot_live_allocation_baseline(path, symbol="BTCUSDT")
+            self.assertIsNotNone(baseline)
+            fill["pre_order_portfolio_signature"] = baseline["signature"]
+            fill["pre_order_portfolio_qty"] = baseline["quantity"]
+            with self.assertRaisesRegex(LiveTradingSafetyError, "exceeds durable owned allocation"):
+                recovery.persist_spot_sell_allocation(path, fill)
+
+    def test_sell_recovery_blocks_when_portfolio_changed_after_intent_baseline(self):
+        first = self.buy_fill("recovered-buy-a", 501, "0.1", "2000")
+        second = self.buy_fill("recovered-buy-b", 502, "0.01", "200")
+        fill = self.summarize_sell()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".trading_bot_allocations.json"
+            recovery.persist_spot_buy_allocation(path, first)
+            baseline = recovery.spot_live_allocation_baseline(path, symbol="BTCUSDT")
+            self.assertIsNotNone(baseline)
+            fill["pre_order_portfolio_signature"] = baseline["signature"]
+            fill["pre_order_portfolio_qty"] = baseline["quantity"]
+            recovery.persist_spot_buy_allocation(path, second)
+
+            with self.assertRaisesRegex(LiveTradingSafetyError, "changed after intent creation"):
+                recovery.persist_spot_sell_allocation(path, fill)
 
     def test_recovery_is_idempotent_and_updates_a_live_desktop_snapshot(self):
         fill = self.summarize()

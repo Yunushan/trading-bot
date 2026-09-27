@@ -9,6 +9,7 @@ _EXPORT_MODULES = {
     "bind_binance_order_intent_runtime": ".order_intent_runtime",
     "bind_binance_order_sizing_runtime": ".order_sizing_runtime",
     "bind_binance_order_submit_guard_runtime": ".order_submit_guard_runtime",
+    "bind_binance_spot_opo_execution_runtime": ".spot_opo_execution_runtime",
 }
 __all__ = list(_EXPORT_MODULES)
 
