@@ -95,14 +95,17 @@ class OrderIntentReconciliationSafetyTests(unittest.TestCase):
                 with self.assertRaisesRegex(LiveTradingSafetyError, "already has state accepted"):
                     ledger._begin_order_intent(self.owner, self.params, market="futures", source="offline-test")
 
-    def test_spot_market_partial_terminal_fill_remains_unresolved(self):
-        for status in ("CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"):
+    def test_spot_market_positive_fill_remains_unresolved_until_portfolio_recovery(self):
+        for status, executed in (
+            ("CANCELED", "0.5"), ("EXPIRED", "0.5"),
+            ("EXPIRED_IN_MATCH", "0.5"), ("FILLED", "1"),
+        ):
             with self.subTest(status=status):
                 ledger._update_order_intent_by_id(
                     self.owner, "reconcile-A", state="unknown", market="spot", type="MARKET",
                     executed_qty="0",
                 )
-                result = self.reconcile(self.response(status=status, executedQty="0.5"))
+                result = self.reconcile(self.response(status=status, executedQty=executed))
                 self.assertTrue(result["reconciled"])
                 self.assertEqual("unknown", result["state"])
                 self.assertEqual(status, result["exchange_status"])

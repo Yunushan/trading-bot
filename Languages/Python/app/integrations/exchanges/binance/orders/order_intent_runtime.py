@@ -495,7 +495,19 @@ def _exchange_order_id(result: Mapping[str, object]) -> str:
     return ""
 
 
-def _validate_reconciliation_response(record: Mapping[str, object], result: object) -> tuple[str, str, str]:
+def _finite_nonnegative_decimal(value: object) -> Decimal | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        amount = Decimal(value)
+    except (InvalidOperation, ValueError):
+        return None
+    return amount if amount.is_finite() and amount >= 0 else None
+
+
+def _validate_reconciliation_response(
+    record: Mapping[str, object], result: object, *, require_portfolio_reconciliation: bool = False,
+) -> tuple[str, str, str]:
     if (not isinstance(result, Mapping) or "code" in result or result.get("error") is not None
             or ("success" in result and result["success"] is not True)):
         raise LiveTradingSafetyError("Exchange returned an invalid order response.")
@@ -531,11 +543,11 @@ def _validate_reconciliation_response(record: Mapping[str, object], result: obje
             raise LiveTradingSafetyError("Order execution quantity regressed during reconciliation.")
         if execution.status in {"NEW", "PARTIALLY_FILLED"}:
             return "unknown", status, order_id
-        if (market == "spot" and record.get("type") == "MARKET"
-                and status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
+        if (require_portfolio_reconciliation and market == "spot" and record.get("type") == "MARKET"
                 and execution.executed_qty > 0):
-            # A terminal market order can still leave a partial Spot position.
-            # Keep new entries blocked until portfolio/fill reconciliation exists.
+            # An exact order query proves exchange execution, not that the
+            # desktop portfolio recorded the fill before a crash. Keep every
+            # positive Spot market fill unresolved until inventory recovery exists.
             return "unknown", status, order_id
     if status == "REJECTED":
         executed = result.get("executedQty")
@@ -575,7 +587,9 @@ def reconcile_order_intent(self, client_order_id: str, *, include_execution: boo
         if not callable(query):
             raise LiveTradingSafetyError("Order intent reconciliation transport is unavailable.")
         result = query(record)
-        resolved_state, exchange_status, exchange_order_id = _validate_reconciliation_response(record, result)
+        resolved_state, exchange_status, exchange_order_id = _validate_reconciliation_response(
+            record, result, require_portfolio_reconciliation=True,
+        )
     except Exception as exc:
         error = redact_text(exc) or "Exchange order reconciliation failed."
         resolved_state = "unknown" if current_state == "accepted" else current_state
@@ -591,8 +605,19 @@ def reconcile_order_intent(self, client_order_id: str, *, include_execution: boo
             if include_execution:
                 execution_response = {key: result[key] for key in (
                     "clientOrderId", "symbol", "side", "positionSide", "orderId", "status",
-                    "executedQty", "origQty", "avgPrice", "cumQuote", "updateTime",
+                    "type", "price", "origQty", "executedQty", "cummulativeQuoteQty",
+                    "avgPrice", "cumQuote", "time", "updateTime",
                 ) if key in result}
+                # Binance Spot order responses report cumulative quote under
+                # `cummulativeQuoteQty`; preserve it and derive a gross average
+                # only when both exchange quantities are finite and usable.
+                executed = _finite_nonnegative_decimal(result.get("executedQty"))
+                quote = _finite_nonnegative_decimal(result.get("cummulativeQuoteQty"))
+                if executed is not None and executed > 0 and quote is not None:
+                    gross_average = format(quote / executed, "f")
+                    if "." in gross_average:
+                        gross_average = gross_average.rstrip("0").rstrip(".")
+                    execution_response["gross_average_price"] = gross_average
     updated = _update_order_intent_by_id(
         self, client_order_id, state=resolved_state, expected_record=record, **updates,
     )
@@ -608,23 +633,39 @@ def reconcile_order_intent(self, client_order_id: str, *, include_execution: boo
         }
     if error:
         return {"client_order_id": client_order_id, "state": str(updated["state"]), "reconciled": False, "error": error}
+    response_market = str(record.get("market") or "").lower()
+    response_type = str(record.get("type") or "").upper()
+    reported_executed_qty = _finite_nonnegative_decimal(execution_response.get("executedQty"))
+    has_spot_execution = (
+        response_market == "spot"
+        and response_type == "MARKET"
+        and execution_response
+        and reported_executed_qty is not None
+        and reported_executed_qty > 0
+    )
     return {
         "client_order_id": client_order_id,
         "state": str(updated["state"]),
         "reconciled": True,
         "exchange_status": exchange_status,
         "exchange_order_id": exchange_order_id,
+        **({"portfolio_reconciliation_required": True} if has_spot_execution else {}),
         **({"order_response": execution_response} if execution_response else {}),
     }
 
 
-def reconcile_unresolved_order_intents(self, *, limit: int = 25) -> list[dict[str, object]]:
+def reconcile_unresolved_order_intents(
+    self, *, limit: int = 25, include_execution: bool = False,
+) -> list[dict[str, object]]:
     limit = max(1, min(100, int(limit)))
     status = get_order_intent_status(self)
     client_order_ids = status.get("unresolved_client_order_ids")
     if not isinstance(client_order_ids, list):
         return []
-    return [reconcile_order_intent(self, client_order_id) for client_order_id in client_order_ids[:limit]]
+    return [
+        reconcile_order_intent(self, client_order_id, include_execution=include_execution)
+        for client_order_id in client_order_ids[:limit]
+    ]
 
 
 def get_order_intent_status(self) -> dict[str, object]:

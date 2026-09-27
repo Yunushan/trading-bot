@@ -98,22 +98,26 @@ class SpotReconciliationAdminTests(unittest.TestCase):
                     code = admin_cli.main(self.args())
         return code, json.loads(output.getvalue()), request
 
-    def test_exact_order_status_reconciles_without_rearming(self):
+    def test_exact_filled_order_stays_blocked_pending_portfolio_recovery(self):
         marker_path = self.set_up_pending_after_owner_loss()
         responses = [
             SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
             SimpleNamespace(status_code=200, json=lambda: {
                 "clientOrderId": PARAMS["newClientOrderId"], "symbol": "BTCUSDT", "side": "BUY",
-                "orderId": 55, "status": "FILLED", "origQty": "0.1", "executedQty": "0.1",
+                "orderId": 55, "status": "FILLED", "type": "MARKET", "price": "0",
+                "origQty": "0.1", "executedQty": "0.1", "cummulativeQuoteQty": "2000",
             }),
         ]
         code, result, request = self.run_cli_with_responses(responses)
-        self.assertEqual(0, code)
-        self.assertTrue(result["ok"])
+        self.assertEqual(1, code)
+        self.assertFalse(result["ok"])
         self.assertEqual(1, result["unresolved_before"])
         self.assertEqual(1, result["result_count"])
-        self.assertEqual(0, result["unresolved_after"])
-        self.assertEqual("accepted", result["results"][0]["state"])
+        self.assertEqual(1, result["unresolved_after"])
+        self.assertEqual("unknown", result["results"][0]["state"])
+        self.assertTrue(result["results"][0]["portfolio_reconciliation_required"])
+        self.assertEqual("20000", result["results"][0]["order_response"]["gross_average_price"])
+        self.assertEqual("2000", result["results"][0]["order_response"]["cummulativeQuoteQty"])
         self.assertEqual(2, request.call_count)
         self.assertTrue(all(
             call.args[0].startswith("https://api.binance.com/api/v3/")
@@ -123,7 +127,34 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         self.assertEqual("BTCUSDT", order_params["symbol"])
         self.assertEqual(PARAMS["newClientOrderId"], order_params["origClientOrderId"])
         self.assertEqual("recovery_required", json.loads(marker_path.read_text(encoding="utf-8"))["state"])
-        self.assertEqual(0, intents.get_order_intent_status(self.admin_owner)["unresolved_count"])
+        self.assertEqual(1, intents.get_order_intent_status(self.admin_owner)["unresolved_count"])
+
+    def test_terminal_partial_fill_is_visible_but_stays_blocked_for_portfolio_recovery(self):
+        marker_path = self.set_up_pending_after_owner_loss()
+        responses = [
+            SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
+            SimpleNamespace(status_code=200, json=lambda: {
+                "clientOrderId": PARAMS["newClientOrderId"], "symbol": "BTCUSDT", "side": "BUY",
+                "orderId": 56, "status": "CANCELED", "type": "MARKET", "price": "0",
+                "origQty": "0.1", "executedQty": "0.04", "cummulativeQuoteQty": "800",
+                "updateTime": 1780000000000,
+            }),
+        ]
+
+        code, result, _request = self.run_cli_with_responses(responses)
+
+        self.assertEqual(1, code)
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, result["unresolved_after"])
+        observation = result["results"][0]
+        self.assertTrue(observation["reconciled"])
+        self.assertEqual("unknown", observation["state"])
+        self.assertTrue(observation["portfolio_reconciliation_required"])
+        self.assertEqual("0.04", observation["order_response"]["executedQty"])
+        self.assertEqual("800", observation["order_response"]["cummulativeQuoteQty"])
+        self.assertEqual("20000", observation["order_response"]["gross_average_price"])
+        self.assertEqual(1, intents.get_order_intent_status(self.admin_owner)["unresolved_count"])
+        self.assertEqual("recovery_required", json.loads(marker_path.read_text(encoding="utf-8"))["state"])
 
     def test_not_found_order_keeps_intent_unresolved_and_returns_failure(self):
         marker_path = self.set_up_pending_after_owner_loss()
@@ -229,6 +260,30 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         self.assertEqual(1, result["unmatched_exchange_open_order_count"])
         self.assertNotIn(external_client_order_id, json.dumps(result))
         self.assertEqual(0, intents.get_order_intent_status(self.admin_owner)["unresolved_count"])
+
+    def test_account_audit_reports_full_market_fill_recovery_without_exposing_order_details(self):
+        self.set_up_pending_after_owner_loss()
+        responses = [
+            SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
+            SimpleNamespace(status_code=200, json=lambda: {
+                "clientOrderId": PARAMS["newClientOrderId"], "symbol": "BTCUSDT", "side": "BUY",
+                "orderId": 55, "status": "FILLED", "type": "MARKET", "price": "0",
+                "origQty": "0.1", "executedQty": "0.1", "cummulativeQuoteQty": "2000",
+            }),
+            self.account_overview_response(),
+            SimpleNamespace(status_code=200, json=lambda: []),
+        ]
+
+        code, result, _request = self.run_account_cli_with_responses(responses)
+
+        self.assertEqual(1, code)
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, result["unresolved_after"])
+        self.assertEqual(1, result["positive_market_fill_needs_portfolio_reconciliation_count"])
+        self.assertFalse(result["automatic_rearm"])
+        rendered = json.dumps(result)
+        for private_order_detail in (PARAMS["newClientOrderId"], "BTCUSDT", "0.1", "2000"):
+            self.assertNotIn(private_order_detail, rendered)
 
 
 if __name__ == "__main__":

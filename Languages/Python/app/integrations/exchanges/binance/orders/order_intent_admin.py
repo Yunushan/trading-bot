@@ -91,7 +91,9 @@ def main(argv: list[str] | None = None) -> int:
             owner._query_order_intent_exchange = MethodType(_query_order_intent_exchange, owner)
             with owner_administration_lock(_intent_path(owner)):
                 before = get_order_intent_status(owner)
-                results = reconcile_unresolved_order_intents(owner, limit=args.limit)
+                results = reconcile_unresolved_order_intents(
+                    owner, limit=args.limit, include_execution=True,
+                )
                 after = get_order_intent_status(owner)
 
             def count_unresolved(status: dict[str, object]) -> int | None:
@@ -101,15 +103,20 @@ def main(argv: list[str] | None = None) -> int:
             remaining = count_unresolved(after)
             initial = count_unresolved(before)
             if args.action == "reconcile-spot":
+                portfolio_pending_fill_count = sum(
+                    item.get("portfolio_reconciliation_required") is True for item in results
+                )
                 ok = (
                     initial is not None and initial <= args.limit and remaining == 0
                     and all(item.get("reconciled") is True for item in results)
+                    and portfolio_pending_fill_count == 0
                 )
                 print(json.dumps({
                     "ok": ok,
                     "unresolved_before": initial,
                     "result_count": len(results),
                     "unresolved_after": remaining,
+                    "positive_market_fill_needs_portfolio_reconciliation_count": portfolio_pending_fill_count,
                     "results": results,
                 }, indent=2))
                 return 0 if ok else 1
@@ -123,10 +130,14 @@ def main(argv: list[str] | None = None) -> int:
                 and open_order_status["local_open_orders_missing_from_exchange_count"] == 0
                 and open_order_status["local_open_order_status_conflict_count"] == 0
             )
+            portfolio_pending_fill_count = sum(
+                item.get("portfolio_reconciliation_required") is True for item in results
+            )
             ok = (
                 account_identity_matches
                 and initial is not None and initial <= args.limit and remaining == 0
                 and all(item.get("reconciled") is True for item in results)
+                and portfolio_pending_fill_count == 0
                 and clean_local_exchange_state
             )
             print(json.dumps({
@@ -137,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
                 "unresolved_before": initial,
                 "exact_order_result_count": len(results),
                 "unresolved_after": remaining,
+                "positive_market_fill_needs_portfolio_reconciliation_count": portfolio_pending_fill_count,
                 **open_order_status,
                 "balances_reconciled_to_strategy_state": False,
                 "external_keys_users_hosts_or_executors_fenced": False,
