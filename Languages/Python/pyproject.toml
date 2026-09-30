@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
     "python-binance==1.0.36",
     "binance-connector==3.12.0",
-    "ccxt==4.5.78",
+    "ccxt==4.5.84",
     "numpy==2.2.6; python_version < '3.11'",
     "numpy==2.4.4; python_version >= '3.11' and python_version < '3.15'",
     "numpy==2.5.2; python_version >= '3.15'",
@@ -52,7 +52,7 @@ desktop = [
 service = [
     "cryptography==50.0.1",
     "fastapi==0.141.1",
-    "starlette==1.6.0",
+    "starlette==1.7.0",
     "uvicorn==0.53.0",
 ]
 security = [
@@ -66,7 +66,7 @@ citic-ctp = [
     "openctp-ctp==6.7.11.0; platform_system == 'Windows' or platform_system == 'Linux'",
 ]
 moomoo = [
-    "moomoo-api==10.9.6908",
+    "moomoo-api==10.11.7108",
 ]
 windows-arm64 = [
     "PyQt6>=6.11.0,<6.13.0",
