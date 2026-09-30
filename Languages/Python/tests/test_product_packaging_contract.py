@@ -1998,3 +1998,63 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("embedded-framework LC_RPATH", macos_release_workflow)
         self.assertIn("install_name_tool -add_rpath", macos_release_workflow)
         self.assertIn("has_embedded_rpath()", macos_release_workflow)
+        self.assertIn('awk -v expected="$2"', macos_release_workflow)
+        self.assertIn('"@rpath/QtConcurrent.framework/"', macos_release_workflow)
+        self.assertIn(
+            "git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas",
+            macos_release_workflow,
+        )
+        self.assertNotIn("mapfile -t artifacts", macos_release_workflow)
+        self.assertIn("for artifact in release/*; do", macos_release_workflow)
+        self.assertIn('artifacts+=("${artifact}")', macos_release_workflow)
+        freebsd_release_workflow = workflows["release-freebsd.yml"]
+        self.assertNotIn("mapfile -t artifacts", freebsd_release_workflow)
+        self.assertIn("for artifact in release/*; do", freebsd_release_workflow)
+        self.assertIn('artifacts+=("${artifact}")', freebsd_release_workflow)
+        self.assertLess(
+            macos_release_workflow.index("Deploy macOS Qt frameworks"),
+            macos_release_workflow.index("Smoke packaged native binaries"),
+        )
+        windows_release_workflow = workflows["release-windows.yml"]
+        self.assertIn("function Install-AqtPackage", windows_release_workflow)
+        self.assertIn("aqt install failed after 3 attempts", windows_release_workflow)
+        self.assertIn('"aqtinstall==3.3.0"', windows_release_workflow)
+        self.assertIn("win64_msvc2022_arm64", windows_release_workflow)
+        self.assertIn('"install-qt", "windows_arm64", "desktop", "6.10.3"', windows_release_workflow)
+        self.assertNotIn('"--autodesktop"', windows_release_workflow)
+        self.assertIn('$qtArm64ConfigCandidates = Get-ChildItem -Path $qtOutputDir', windows_release_workflow)
+        self.assertIn('$qtArm64Prefix = Split-Path', windows_release_workflow)
+        self.assertIn('Native ARM64 Qt CMake package was not installed', windows_release_workflow)
+        self.assertIn('Qt6WebSocketsConfig.cmake', windows_release_workflow)
+        self.assertIn("Join-Path $env:RUNNER_TEMP \"qt\"", windows_release_workflow)
+        self.assertNotIn("win64_msvc2022_arm64_cross_compiled", windows_release_workflow)
+        self.assertIn('Qt6Config\\.cmake$', windows_release_workflow)
+        self.assertNotIn('Qt6Config\\\\.cmake$', windows_release_workflow)
+        self.assertIn("git restore --source=HEAD -- experiments/rust-shells/apps/tauri-desktop/gen/schemas", windows_release_workflow)
+        native_cpp_cmake = (REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('BUILD_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
+        self.assertIn('INSTALL_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
+        self.assertIn("BUILD_WITH_INSTALL_RPATH TRUE", native_cpp_cmake)
+        self.assertIn("MACOSX_RPATH TRUE", native_cpp_cmake)
+        self.assertIn('INSTALL_RPATH "@executable_path/../Frameworks"', native_cpp_cmake)
+        self.assertIn("TB_ENABLE_QT_WEBENGINE", native_cpp_cmake)
+        self.assertIn("find_package(Qt6WebEngineWidgets", native_cpp_cmake)
+        self.assertIn('HINTS "${Qt6_DIR}/.."', native_cpp_cmake)
+        self.assertIn("--disable-webengine", ci_workflow)
+        release_platform_workflow = (
+            REPO_ROOT / ".github" / "workflows" / "release-platform-real-tests.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("qtwebengine qtwebsockets qtwebchannel qtpositioning", release_platform_workflow)
+        self.assertIn("Qt6WebEngineWidgetsConfig.cmake", release_platform_workflow)
+        self.assertIn("CMAKE_PREFIX_PATH", release_platform_workflow)
+        self.assertIn('QT_QPA_PLATFORM=offscreen "${cpp_bin}" --smoke', workflows["release-freebsd.yml"])
+        for workflow_name in ("release-linux-macos.yml", "release-freebsd.yml"):
+            workflow = workflows[workflow_name]
+            self.assertIn("bash Languages/Python/tools/build_binary.sh", workflow)
+            self.assertNotIn("chmod +x Languages/Python/tools/build_binary.sh", workflow)
+        self.assertIn("bash .github/scripts/package_linux_macos_release.sh", workflows["release-linux-macos.yml"])
+        self.assertNotIn("chmod +x .github/scripts/package_linux_macos_release.sh", workflows["release-linux-macos.yml"])
+        for workflow in workflows.values():
+            self.assertNotIn("tools/update_loc_snapshot.py", workflow)
