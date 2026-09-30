@@ -615,7 +615,8 @@ def summarize_spot_opo_residual_stop_sell_fill(
         or str(intent.get("residual_stop_executed_qty")) != str(evidence["executed_quantity"])
         or request["symbol"] != intent.get("symbol")
         or Decimal(request["quantity"]) != pre_order_quantity
-        or pre_order_quantity >= entry_quantity
+        # A rejected linked SELL leaves the full entry allocation to re-arm.
+        or pre_order_quantity > entry_quantity
         or not evidence["terminal"]
         or not isinstance(intent.get("residual_stop_pre_order_signature"), str)
         or re.fullmatch(r"[0-9a-f]{64}", str(intent.get("residual_stop_pre_order_signature"))) is None
@@ -1613,8 +1614,16 @@ def persist_spot_opo_residual_stop_allocation(path: Path, fill: Mapping[str, obj
         consumed_quantity = _stored_decimal(fill.get("portfolio_qty"), "residual stop consumed quantity", positive=True)
     except (InvalidOperation, TypeError):
         raise LiveTradingSafetyError("Recovered OPO residual stop quantities are invalid.") from None
-    if residual_quantity >= entry_quantity or consumed_quantity > residual_quantity:
+    # A zero-fill linked SELL can require protection of the entire entry.
+    if residual_quantity > entry_quantity or consumed_quantity > residual_quantity:
         raise LiveTradingSafetyError("Recovered residual stop SELL exceeds its exact OPO remainder.")
+
+    normalized = dict(fill)
+    normalized.update({
+        "client_order_id": residual_client_id,
+        "pre_order_portfolio_signature": fill.get("residual_stop_pre_order_signature"),
+        "pre_order_portfolio_qty": _canonical_amount(residual_quantity),
+    })
 
     existing = _load_live_allocation_snapshot(path)
     allocations = existing["entry_allocations"]
@@ -1623,7 +1632,7 @@ def persist_spot_opo_residual_stop_allocation(path: Path, fill: Mapping[str, obj
     if prior:
         if len(prior) != 1 or prior[0][1].get("client_order_id") != residual_client_id:
             raise LiveTradingSafetyError("Residual OPO stop proof belongs to another allocation or order.")
-        return persist_spot_sell_allocation(path, fill)
+        return persist_spot_sell_allocation(path, normalized)
 
     baseline = spot_opo_allocation_baseline(
         path,
@@ -1636,12 +1645,6 @@ def persist_spot_opo_residual_stop_allocation(path: Path, fill: Mapping[str, obj
         or baseline.get("quantity") != _canonical_amount(residual_quantity)
     ):
         raise LiveTradingSafetyError("Spot portfolio changed after residual-stop intent creation.")
-    normalized = dict(fill)
-    normalized.update({
-        "client_order_id": residual_client_id,
-        "pre_order_portfolio_signature": fill.get("residual_stop_pre_order_signature"),
-        "pre_order_portfolio_qty": _canonical_amount(residual_quantity),
-    })
     return persist_spot_sell_allocation(path, normalized)
 
 

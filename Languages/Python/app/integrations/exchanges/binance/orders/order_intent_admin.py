@@ -453,7 +453,9 @@ def main(argv: list[str] | None = None) -> int:
                                 if not residual_evidence.get("terminal"):
                                     unsupported_count += 1
                                     continue
-                                residual_order_id = int(residual_evidence["order_id"])
+                                residual_order_id = residual_evidence.get("order_id")
+                                if type(residual_order_id) is not int or residual_order_id <= 0:
+                                    raise LiveTradingSafetyError("Residual STOP_LOSS evidence requires an exact positive order ID.")
                                 residual_trades = collect_spot_order_trades(
                                     transport, symbol=symbol, order_id=residual_order_id,
                                 )
@@ -588,7 +590,9 @@ def main(argv: list[str] | None = None) -> int:
                                     if not exit_evidence.get("terminal"):
                                         unsupported_count += 1
                                         continue
-                                    exit_order_id = int(exit_evidence["order_id"])
+                                    exit_order_id = exit_evidence.get("order_id")
+                                    if type(exit_order_id) is not int or exit_order_id <= 0:
+                                        raise LiveTradingSafetyError("Linked OPO SELL evidence requires an exact positive order ID.")
                                     exit_trades = collect_spot_order_trades(
                                         transport, symbol=symbol, order_id=exit_order_id,
                                     )

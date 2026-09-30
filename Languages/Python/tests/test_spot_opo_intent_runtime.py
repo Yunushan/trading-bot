@@ -716,6 +716,219 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
                 market="spot", source="offline-residual-stop-sell-test",
             )
 
+    def _recover_partial_residual_stop(self):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+        order = {
+            **acknowledgement, "status": "CANCELED", "executedQty": "0.01",
+            "cummulativeQuoteQty": "0.95", "updateTime": 1780000000040,
+        }
+        ledger._mark_spot_opo_residual_stop_order_observed(
+            self.owner, self.request["listClientOrderId"], order_response=order, exact_query=True,
+        )
+        intent = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        trades = [{
+            "symbol": "BTCUSDT", "id": 911, "orderId": 510, "price": "95",
+            "qty": "0.01", "quoteQty": "0.95", "commission": "0", "commissionAsset": "BTC",
+            "time": 1780000000040, "isBuyer": False,
+        }]
+        fill = summarize_spot_opo_residual_stop_sell_fill(
+            intent, order, trades, base_asset="BTC", quote_asset="USDT",
+        )
+        self.assertTrue(persist_spot_opo_residual_stop_allocation(allocation_path, fill))
+        ledger._mark_spot_opo_residual_stop_reconciled(
+            self.owner, self.request["listClientOrderId"], allocation_path=allocation_path,
+            fill_signature=str(fill["signature"]), consumed_quantity=fill["portfolio_qty"],
+            remaining_quantity=Decimal("0.0299"), trade_ids=list(fill["trade_ids"]),
+            fill_time_ms=int(fill["fill_time_ms"]),
+        )
+        return allocation_path, request, fill
+
+    def test_terminal_partial_residual_stop_can_rearm_after_restart(self):
+        allocation_path, request, fill = self._recover_partial_residual_stop()
+        self.owner = SimpleNamespace(
+            _order_audit_log_path=self.owner._order_audit_log_path,
+            api_key=self.owner.api_key, mode=self.owner.mode,
+        )
+        restored = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("rearm_required", restored["residual_stop_state"])
+        self.assertEqual("0.0299", restored["residual_rearm_quantity"])
+        self.assertTrue(ledger._is_unresolved(restored))
+        next_baseline = spot_opo_allocation_baseline(
+            allocation_path, symbol="BTCUSDT", list_client_order_id=self.request["listClientOrderId"],
+            expected_quantity="0.0299",
+        )
+        next_request, _next_ack = self._begin_and_observe_residual_stop(
+            allocation_path, next_baseline, client_order_id="residual-stop-002",
+        )
+        latest = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual(next_request, latest["residual_stop_request"])
+        self.assertEqual(request, latest["residual_stop_history"][0]["request"])
+        self.assertEqual(fill["signature"], latest["residual_stop_history"][0]["recovery_signature"])
+
+    def test_partial_residual_rearm_rejects_incomplete_or_conflicting_prior_proof(self):
+        self._recover_partial_residual_stop()
+        path = ledger._intent_path(self.owner)
+        original = path.read_text(encoding="utf-8")
+        for field, value in (
+            ("residual_stop_query_verified", False),
+            ("residual_stop_request_signature", "a" * 64),
+            ("residual_stop_recovery_quantity", "0.02"),
+            ("residual_stop_status", "NEW"),
+            ("residual_stop_recovery_signature", None),
+            ("residual_stop_recovery_trade_ids", []),
+            ("residual_stop_recovery_trade_ids", [911, 911]),
+            ("residual_stop_recovery_fill_time_ms", None),
+            ("residual_stop_executed_qty", "0"),
+        ):
+            with self.subTest(field=field):
+                payload = json.loads(original)
+                payload["intents"][self.request["listClientOrderId"]][field] = value
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaises(LiveTradingSafetyError):
+                    ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        path.write_text(original, encoding="utf-8")
+
+    def test_force_reconciliation_refreshes_exact_active_residual_stop(self):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+        self._install_observation(pending_status="CANCELED", list_status="ALL_DONE")
+        original_getter = self.owner.client.get_order
+        queried = []
+
+        def get_order(**kwargs):
+            queried.append(kwargs["origClientOrderId"])
+            if kwargs["origClientOrderId"] == request["newClientOrderId"]:
+                return {**acknowledgement, "status": "CANCELED"}
+            return original_getter(**kwargs)
+
+        self.owner.client.get_order = get_order
+        result = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertIn(request["newClientOrderId"], queried)
+        self.assertFalse(result["reconciled"])
+        restored = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("triggered", restored["residual_stop_state"])
+        self.assertEqual("CANCELED", restored["residual_stop_status"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_failed_residual_stop_refresh_invalidates_old_active_proof_after_restart(self):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        _request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+
+        def failed_getter(**_kwargs):
+            raise TimeoutError("offline query timeout")
+
+        self.owner.client = SimpleNamespace(get_order=failed_getter)
+        result = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(result["reconciled"])
+        self.owner = SimpleNamespace(
+            _order_audit_log_path=self.owner._order_audit_log_path,
+            api_key=self.owner.api_key, mode=self.owner.mode,
+        )
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("acknowledged", record["residual_stop_state"])
+        self.assertFalse(record["residual_stop_query_verified"])
+        self.assertEqual(510, record["residual_stop_order_id"])
+        self.assertEqual("0", record["residual_stop_executed_qty"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved exchange order intent"):
+            ledger._begin_spot_opo_intent(
+                self.owner, {**self.request, "listClientOrderId": "op-list-002",
+                             "workingClientOrderId": "op-buy-002", "pendingClientOrderId": "op-stop-002"},
+                source="offline-test",
+            )
+        self.owner.client = SimpleNamespace(get_order=lambda **_kwargs: acknowledgement)
+        recovered = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"])
+        self.assertTrue(recovered["reconciled"])
+        self.assertEqual(0, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_residual_stop_refresh_rejects_changed_identity(self):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        _request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+        for changes in ({"clientOrderId": "unrelated-order"}, {"orderId": 999}):
+            with self.subTest(changes=changes):
+                self.owner.client = SimpleNamespace(get_order=lambda **_kwargs: {**acknowledgement, **changes})
+                result = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+                self.assertFalse(result["reconciled"])
+                record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                self.assertEqual(510, record["residual_stop_order_id"])
+                self.assertFalse(record["residual_stop_query_verified"])
+                self.assertTrue(ledger._is_unresolved(record))
+
+    def _assert_residual_stop_execution_stays_unresolved(self, *, status, executed_quantity):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        _request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+        self.owner.client = SimpleNamespace(get_order=lambda **_kwargs: {
+            **acknowledgement, "status": status, "executedQty": executed_quantity,
+        })
+        result = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(result["reconciled"])
+        self.assertEqual("triggered", result["residual_stop_state"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+        self.assertEqual(baseline, spot_opo_allocation_baseline(
+            allocation_path, symbol="BTCUSDT", list_client_order_id=self.request["listClientOrderId"],
+            expected_quantity=baseline["quantity"],
+        ))
+        return acknowledgement
+
+    def test_full_residual_stop_execution_requires_trade_and_portfolio_recovery(self):
+        self._assert_residual_stop_execution_stays_unresolved(status="FILLED", executed_quantity="0.0399")
+
+    def test_partial_residual_stop_execution_requires_trade_and_portfolio_recovery(self):
+        acknowledgement = self._assert_residual_stop_execution_stays_unresolved(
+            status="PARTIALLY_FILLED", executed_quantity="0.01",
+        )
+        self.owner.client = SimpleNamespace(get_order=lambda **_kwargs: acknowledgement)
+        result = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(result["reconciled"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("0.01", record["residual_stop_executed_qty"])
+        self.assertEqual("triggered", record["residual_stop_state"])
+
+    def test_late_residual_query_cannot_overwrite_a_newer_terminal_observation(self):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        _request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+
+        def raced_getter(**_kwargs):
+            ledger._mark_spot_opo_residual_stop_order_observed(
+                self.owner, self.request["listClientOrderId"],
+                order_response={**acknowledgement, "status": "CANCELED"}, exact_query=True,
+            )
+            return acknowledgement
+
+        self.owner.client = SimpleNamespace(get_order=raced_getter)
+        result = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(result["reconciled"])
+        self.assertIn("late result was not applied", result["error"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("CANCELED", record["residual_stop_status"])
+        self.assertEqual("triggered", record["residual_stop_state"])
+        self.assertTrue(ledger._is_unresolved(record))
+
+    def _assert_terminal_residual_stop_cannot_regress(self, status):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        _request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+        terminal = {**acknowledgement, "status": status}
+        self.owner.client = SimpleNamespace(get_order=lambda **_kwargs: terminal)
+        first = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(first["reconciled"])
+        self.owner.client.get_order = lambda **_kwargs: acknowledgement
+        stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(stale["reconciled"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual(status, record["residual_stop_status"])
+        self.assertEqual("triggered", record["residual_stop_state"])
+        self.assertTrue(ledger._is_unresolved(record))
+
+    def test_canceled_empty_residual_stop_cannot_be_reported_active_again(self):
+        self._assert_terminal_residual_stop_cannot_regress("CANCELED")
+
+    def test_expired_empty_residual_stop_cannot_be_reported_active_again(self):
+        self._assert_terminal_residual_stop_cannot_regress("EXPIRED")
+
+    def test_match_expired_empty_residual_stop_cannot_be_reported_active_again(self):
+        self._assert_terminal_residual_stop_cannot_regress("EXPIRED_IN_MATCH")
+
     def test_triggered_residual_stop_fill_closes_only_the_exact_ledgered_remainder(self):
         allocation_path, baseline = self._recover_partial_strategy_exit()
         request, _acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)

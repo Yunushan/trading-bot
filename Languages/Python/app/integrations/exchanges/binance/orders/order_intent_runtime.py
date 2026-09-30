@@ -64,6 +64,7 @@ def _is_unresolved(record: Mapping[str, object]) -> bool:
         if record.get("residual_stop_state") == "active":
             try:
                 request = validate_spot_opo_residual_stop_request(record.get("residual_stop_request"))
+                residual_order_id = record.get("residual_stop_order_id")
                 return not (
                     record.get("state") == "accepted"
                     and record.get("cancel_state") == "confirmed"
@@ -71,8 +72,8 @@ def _is_unresolved(record: Mapping[str, object]) -> bool:
                     and record.get("residual_stop_status") == "NEW"
                     and record.get("residual_stop_query_verified") is True
                     and Decimal(str(record.get("residual_stop_executed_qty"))) == 0
-                    and record.get("residual_stop_order_id") is not None
-                    and record.get("residual_stop_order_id") > 0
+                    and type(residual_order_id) is int
+                    and residual_order_id > 0
                     and record.get("residual_stop_request_signature") == _request_signature(request)
                 )
             except (LiveTradingSafetyError, InvalidOperation, TypeError):
@@ -588,15 +589,56 @@ def _read_ledger(
                         raise LiveTradingSafetyError("Order intent ledger contains invalid residual-stop history evidence.")
                     seen_residual_ids.add(prior_id)
                 current_request_value = record.get("residual_stop_request")
-                if residual_stop_state == "rearm_required" and record.get("residual_stop_request") is None:
+                if residual_stop_state == "rearm_required":
                     if current_request_value is not None:
                         try:
                             current_request = validate_spot_opo_residual_stop_request(current_request_value)
                         except LiveTradingSafetyError as exc:
                             raise LiveTradingSafetyError("Order intent ledger contains an invalid completed residual stop.") from exc
+                        prior_quantity = _finite_nonnegative_decimal(record.get("residual_stop_pre_order_quantity"))
+                        recovered_quantity = _finite_nonnegative_decimal(record.get("residual_stop_recovery_quantity"))
+                        executed_quantity = _finite_nonnegative_decimal(record.get("residual_stop_executed_qty"))
+                        recovery_trade_ids = record.get("residual_stop_recovery_trade_ids")
+                        recovery_fill_time = record.get("residual_stop_recovery_fill_time_ms")
+                        try:
+                            validate_spot_opo_residual_stop_order({
+                                "symbol": record.get("symbol"),
+                                "clientOrderId": current_request["newClientOrderId"],
+                                "side": "SELL", "type": "STOP_LOSS", "orderListId": -1,
+                                "orderId": record.get("residual_stop_order_id"),
+                                "status": record.get("residual_stop_status"),
+                                "origQty": current_request["quantity"],
+                                "executedQty": record.get("residual_stop_executed_qty"),
+                                "stopPrice": current_request["stopPrice"],
+                            }, current_request)
+                        except LiveTradingSafetyError as exc:
+                            raise LiveTradingSafetyError("Residual stop rearm contains invalid prior order evidence.") from exc
                         if (
-                            current_request["symbol"] != record.get("symbol")
+                            current_request["newClientOrderId"] in seen_residual_ids
+                            or current_request["symbol"] != record.get("symbol")
                             or current_request["stopPrice"] != normalized_request["pendingStopPrice"]
+                            or current_request["quantity"] != record.get("residual_stop_pre_order_quantity")
+                            or record.get("residual_stop_request_signature") != _request_signature(current_request)
+                            or not isinstance(record.get("residual_stop_pre_order_signature"), str)
+                            or re.fullmatch(r"[0-9a-f]{64}", str(record.get("residual_stop_pre_order_signature"))) is None
+                            or not isinstance(record.get("residual_stop_started_at"), str)
+                            or not record.get("residual_stop_started_at")
+                            or record.get("residual_stop_status") not in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
+                            or prior_quantity is None or recovered_quantity is None
+                            or prior_quantity != recovered_quantity + residual_quantity
+                            or executed_quantity is None
+                            or recovered_quantity < executed_quantity
+                            or ((recovered_quantity == 0) != (executed_quantity == 0))
+                            or not isinstance(recovery_trade_ids, list)
+                            or (recovered_quantity == 0 and (
+                                recovery_trade_ids or record.get("residual_stop_pre_order_signature") != residual_signature
+                            ))
+                            or (recovered_quantity > 0 and (
+                                not recovery_trade_ids
+                                or any(type(item) is not int or item <= 0 for item in recovery_trade_ids)
+                                or len(recovery_trade_ids) != len(set(recovery_trade_ids))
+                                or type(recovery_fill_time) is not int or recovery_fill_time <= 0
+                            ))
                             or record.get("residual_stop_terminal_state") != "recovered"
                             or type(record.get("residual_stop_order_id")) is not int
                             or not isinstance(record.get("residual_stop_observed_at"), str)
@@ -606,7 +648,6 @@ def _read_ledger(
                             or not isinstance(record.get("residual_stop_recovery_signature"), str)
                             or re.fullmatch(r"[0-9a-f]{64}", str(record.get("residual_stop_recovery_signature"))) is None
                             or _finite_nonnegative_decimal(record.get("residual_stop_recovery_quantity")) is None
-                            or not isinstance(record.get("residual_stop_recovery_trade_ids"), list)
                         ):
                             raise LiveTradingSafetyError("Residual stop rearm is missing exact prior fill recovery proof.")
                 else:
@@ -1704,9 +1745,12 @@ def _mark_spot_opo_residual_stop_unknown(
 
 def _mark_spot_opo_residual_stop_order_observed(
     self, list_client_order_id: str, *, order_response: object, exact_query: bool = False,
+    expected_record: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     list_client_order_id = str(list_client_order_id or "").strip()
     record = _get_order_intent_record(self, list_client_order_id) if list_client_order_id else None
+    if expected_record is not None and record != expected_record:
+        raise LiveTradingSafetyError("Spot OPO changed while querying its residual stop; the late result was not applied.")
     if record is None or record.get("residual_stop_state") not in {
         "submitted", "unknown", "acknowledged", "active", "triggered",
     }:
@@ -1716,13 +1760,18 @@ def _mark_spot_opo_residual_stop_order_observed(
         evidence = validate_spot_opo_residual_stop_order(order_response, request)
         previous_order_id = record.get("residual_stop_order_id")
         previous_executed = Decimal(str(record.get("residual_stop_executed_qty") or "0"))
+        previous_status = record.get("residual_stop_status")
     except (LiveTradingSafetyError, InvalidOperation, ValueError):
         raise LiveTradingSafetyError("Exact residual stop query conflicts with its durable request.") from None
     if (
         (previous_order_id is not None and previous_order_id != evidence["order_id"])
         or Decimal(str(evidence["executed_quantity"])) < previous_executed
+        or (
+            previous_status in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
+            and evidence["status"] != previous_status
+        )
     ):
-        raise LiveTradingSafetyError("Residual stop query changed order identity or regressed execution.")
+        raise LiveTradingSafetyError("Residual stop query changed identity or regressed execution or terminal status.")
     observed_at = _now()
     next_state = (
         ("active" if evidence["status"] == "NEW" else "triggered")
@@ -1773,11 +1822,12 @@ def _mark_spot_opo_residual_stop_reconciled(
         or record.get("protection_state") != "cancelled"
     ):
         raise LiveTradingSafetyError("Residual stop fill recovery requires one exact triggered OPO stop.")
+    request = validate_spot_opo_residual_stop_request(record.get("residual_stop_request"))
     try:
         consumed = Decimal(str(consumed_quantity))
         remaining = Decimal(str(remaining_quantity))
         stop_quantity = Decimal(str(record.get("residual_stop_pre_order_quantity")))
-        requested = Decimal(str(record.get("residual_stop_request", {}).get("quantity")))
+        requested = Decimal(request["quantity"])
     except (InvalidOperation, ValueError, TypeError, AttributeError):
         raise LiveTradingSafetyError("Residual stop fill quantities are invalid.") from None
     if (
@@ -2620,6 +2670,47 @@ def _query_spot_opo_observation(
     return dict(response), working, pending
 
 
+def _reconcile_spot_opo_residual_stop(self, record: Mapping[str, object]) -> dict[str, object]:
+    """Refresh the current standalone stop; exact order proof never implies portfolio recovery."""
+    list_client_order_id = str(record["client_order_id"])
+    try:
+        request = validate_spot_opo_residual_stop_request(record.get("residual_stop_request"))
+        getter = getattr(getattr(self, "client", None), "get_order", None)
+        if not callable(getter):
+            raise LiveTradingSafetyError("Residual STOP_LOSS query transport is unavailable.")
+        response = getter(symbol=request["symbol"], origClientOrderId=request["newClientOrderId"])
+        observed = _mark_spot_opo_residual_stop_order_observed(
+            self, list_client_order_id, order_response=response, exact_query=True, expected_record=record,
+        )
+    except SPOT_EXCHANGE_ERRORS as exc:
+        error = redact_text(exc)[:500] or "Residual STOP_LOSS reconciliation failed."
+        # Keep the last order ID and execution quantity for monotonic checks.
+        # An old NEW observation is no longer verified after a failed refresh.
+        updates: dict[str, object] = {
+            "residual_stop_last_error": error, "residual_stop_last_observed_at": _now(),
+        }
+        if record.get("residual_stop_state") in {"active", "acknowledged"}:
+            updates.update(residual_stop_state="acknowledged", residual_stop_query_verified=False)
+        updated = _update_order_intent_by_id(
+            self, list_client_order_id, state="accepted", expected_record=record, **updates,
+        )
+        if updated is None:
+            updated = _get_order_intent_record(self, list_client_order_id)
+            error = "Spot OPO changed during residual-stop refresh; the late result was not applied."
+        return {
+            "client_order_id": list_client_order_id, "state": "accepted", "reconciled": False,
+            "protection_state": record.get("protection_state"), "error": error,
+            "residual_stop_state": (updated or record).get("residual_stop_state"),
+        }
+    return {
+        "client_order_id": list_client_order_id, "state": "accepted",
+        "reconciled": observed["status"] == "NEW",
+        "protection_state": record.get("protection_state"),
+        "residual_stop_state": "active" if observed["status"] == "NEW" else "triggered",
+        "residual_stop_status": observed["status"],
+    }
+
+
 def reconcile_spot_opo_intent(
     self, list_client_order_id: str, *, force: bool = False,
 ) -> dict[str, object]:
@@ -2630,6 +2721,13 @@ def reconcile_spot_opo_intent(
     record = _get_order_intent_record(self, list_client_order_id)
     if record is None or record.get("type") != "OPO":
         raise LiveTradingSafetyError(f"Spot OPO intent {list_client_order_id} was not found in the local ledger.")
+    if record.get("residual_stop_state") in {"submitted", "unknown", "acknowledged", "active", "triggered"}:
+        return _reconcile_spot_opo_residual_stop(self, record)
+    if record.get("residual_stop_state") == "completed":
+        return {
+            "client_order_id": list_client_order_id, "state": "accepted", "reconciled": True,
+            "protection_state": "closed", "residual_stop_state": "completed",
+        }
     if record.get("state") == "accepted" and record.get("strategy_exit_state") == "completed":
         return {
             "client_order_id": list_client_order_id,

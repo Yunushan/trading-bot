@@ -390,6 +390,96 @@ class SpotFillRecoveryTests(unittest.TestCase):
         self.assertEqual("strategy-exit-1", row["spot_sell_recoveries"][0]["client_order_id"])
         self.assertNotIn("BTCUSDT:L", saved["open_position_records"])
 
+    def full_size_residual_stop_inputs(self, path):
+        intent, working_order, request = self.opo_buy_inputs()
+        buy_trades = [{
+            "symbol": "BTCUSDT", "id": 601, "orderId": 75, "price": "20000",
+            "qty": "0.1", "quoteQty": "2000", "commission": "0.0001", "commissionAsset": "BTC",
+            "time": 1780000000000, "isBuyer": True,
+        }]
+        buy_fill = recovery.summarize_spot_opo_buy_fill(
+            intent, working_order, buy_trades, base_asset="BTC", quote_asset="USDT",
+        )
+        recovery.persist_spot_buy_allocation(path, buy_fill)
+        baseline = recovery.spot_opo_allocation_baseline(
+            path, symbol="BTCUSDT", list_client_order_id=request["listClientOrderId"],
+            expected_quantity="0.0999",
+        )
+        residual_request = {
+            "symbol": "BTCUSDT", "side": "SELL", "type": "STOP_LOSS",
+            "quantity": baseline["quantity"], "stopPrice": "19000",
+            "newClientOrderId": "residual-full-stop-1", "newOrderRespType": "FULL",
+        }
+        intent.update({
+            "protection_state": "cancelled", "cancel_state": "confirmed",
+            "list_status": "ALL_DONE", "pending_status": "CANCELED",
+            "entry_reconciled": True, "entry_portfolio_quantity": baseline["quantity"],
+            "entry_recovery_signature": buy_fill["signature"],
+            "strategy_exit_state": "stop_cancelled",
+            "strategy_exit_outcome": "stop_canceled_exit_rejected",
+            "strategy_exit_new_order_accepted": False,
+            "residual_rearm_no_fill": True,
+            "residual_stop_state": "triggered", "residual_stop_query_verified": True,
+            "residual_stop_request": residual_request, "residual_stop_order_id": 602,
+            "residual_stop_status": "FILLED", "residual_stop_executed_qty": baseline["quantity"],
+            "residual_stop_pre_order_quantity": baseline["quantity"],
+            "residual_stop_pre_order_signature": baseline["signature"],
+        })
+        order = {
+            "symbol": "BTCUSDT", "clientOrderId": residual_request["newClientOrderId"],
+            "orderId": 602, "orderListId": -1, "side": "SELL", "type": "STOP_LOSS",
+            "status": "FILLED", "origQty": baseline["quantity"], "executedQty": baseline["quantity"],
+            "stopPrice": "19000", "cummulativeQuoteQty": "1898.1", "updateTime": 1780000000010,
+        }
+        trades = [{
+            "symbol": "BTCUSDT", "id": 603, "orderId": 602, "price": "19000",
+            "qty": baseline["quantity"], "quoteQty": "1898.1", "commission": "0", "commissionAsset": "BTC",
+            "time": 1780000000010, "isBuyer": False,
+        }]
+        return intent, order, trades
+
+    def test_full_size_rearmed_stop_after_rejected_linked_sell_closes_exact_allocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "allocations.json"
+            intent, order, trades = self.full_size_residual_stop_inputs(path)
+            fill = recovery.summarize_spot_opo_residual_stop_sell_fill(
+                intent, order, trades, base_asset="BTC", quote_asset="USDT",
+            )
+            self.assertEqual("0.0999", fill["portfolio_qty"])
+            self.assertTrue(recovery.persist_spot_opo_residual_stop_allocation(path, fill))
+            first = path.read_bytes()
+            # Reopening the durable snapshot must recognize the same stop fill.
+            self.assertTrue(recovery.persist_spot_opo_residual_stop_allocation(path, fill))
+            self.assertEqual(first, path.read_bytes())
+            self.assertTrue(recovery.has_durable_spot_opo_residual_stop_allocation(
+                path, intent, signature=str(fill["signature"]), consumed_quantity="0.0999",
+                remaining_quantity="0", trade_ids=[603],
+            ))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        row = saved["entry_allocations"]["BTCUSDT:L"][0]
+        self.assertEqual("Closed", row["status"])
+        self.assertEqual("residual-full-stop-1", row["spot_sell_recoveries"][0]["client_order_id"])
+        self.assertNotIn("BTCUSDT:L", saved["open_position_records"])
+
+    def test_rearmed_stop_baseline_above_entry_is_rejected_before_allocation_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "allocations.json"
+            intent, order, trades = self.full_size_residual_stop_inputs(path)
+            original = path.read_bytes()
+            with self.assertRaisesRegex(LiveTradingSafetyError, "exact terminal protected remainder"):
+                recovery.summarize_spot_opo_residual_stop_sell_fill(
+                    {**intent, "entry_portfolio_quantity": "0.0998"}, order, trades,
+                    base_asset="BTC", quote_asset="USDT",
+                )
+            fill = recovery.summarize_spot_opo_residual_stop_sell_fill(
+                intent, order, trades, base_asset="BTC", quote_asset="USDT",
+            )
+            with self.assertRaisesRegex(LiveTradingSafetyError, "exceeds its exact OPO remainder"):
+                recovery.persist_spot_opo_residual_stop_allocation(
+                    path, {**fill, "opo_entry_portfolio_quantity": "0.0998"},
+                )
+            self.assertEqual(original, path.read_bytes())
+
     def test_strategy_sell_baseline_rejects_other_active_same_symbol_allocation(self):
         intent, working_order, request = self.opo_buy_inputs()
         buy_trades = [{
