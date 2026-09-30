@@ -1660,6 +1660,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(ccxt_constraints))
         self.assertRegex(ccxt_constraints[0], r"^ccxt==\d+\.\d+\.\d+$")
+        # Keep the fixed transport explicit instead of trusting transitive floors.
+        self.assertIn("urllib3==2.8.0", runtime_dependencies)
         self.assertIn("aiohttp==3.14.3", runtime_dependencies)
         self.assertNotIn("numpy==2.4.4", runtime_dependencies)
         self.assertNotIn("pandas==3.0.2", runtime_dependencies)
