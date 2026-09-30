@@ -2667,6 +2667,45 @@ def _query_spot_opo_observation(
         or working_original != requested_quantity
     ):
         raise LiveTradingSafetyError("Binance Spot OPO child price or quantity differs from the request.")
+    if (
+        record.get("exchange_order_list_id") is not None
+        and record["exchange_order_list_id"] != list_id
+    ):
+        raise LiveTradingSafetyError("Binance Spot OPO list ID changed from its durable observation.")
+    if record.get("list_status") == "ALL_DONE" and response["listStatusType"] != "ALL_DONE":
+        raise LiveTradingSafetyError("Binance Spot OPO terminal list status regressed.")
+    for prefix, child, executed, original in (
+        ("working", working, working_executed, working_original),
+        ("pending", pending, pending_executed, pending_original),
+    ):
+        prior_order_id = record.get(f"{prefix}_order_id")
+        prior_status = record.get(f"{prefix}_status")
+        prior_executed = _finite_nonnegative_decimal(record.get(f"{prefix}_executed_qty"))
+        if prior_order_id is not None and child["orderId"] != prior_order_id:
+            raise LiveTradingSafetyError("Binance Spot OPO child order ID changed from its durable observation.")
+        if (
+            prior_status in _ORDER_STATUSES - {"NEW", "PARTIALLY_FILLED"}
+            and child["status"] != prior_status
+        ):
+            raise LiveTradingSafetyError("Binance Spot OPO terminal child status changed.")
+        if prior_executed is not None and executed < prior_executed:
+            raise LiveTradingSafetyError("Binance Spot OPO child executed quantity decreased.")
+        if (
+            executed > original
+            or (child["status"] in {"NEW", "PENDING_NEW"} and executed != 0)
+            or (child["status"] == "NEW" and original <= 0)
+            or (child["status"] == "FILLED" and (original <= 0 or executed != original))
+        ):
+            raise LiveTradingSafetyError("Binance Spot OPO child status conflicts with its execution quantities.")
+    prior_pending_original = _finite_nonnegative_decimal(record.get("pending_original_qty"))
+    if (
+        (prior_pending_original is not None and prior_pending_original > 0 and pending_original != prior_pending_original)
+        or (
+            record.get("entry_reconciled") is True
+            and pending_original != _finite_nonnegative_decimal(record.get("entry_portfolio_quantity"))
+        )
+    ):
+        raise LiveTradingSafetyError("Binance Spot OPO stop quantity changed from its durable entry observation.")
     return dict(response), working, pending
 
 
@@ -2837,13 +2876,15 @@ def reconcile_spot_opo_intent(
     except SPOT_EXCHANGE_ERRORS as exc:
         error = redact_text(exc) or "Spot OPO reconciliation failed."
         prior_protection_state = record.get("protection_state")
+        confirmed_cancel = prior_protection_state == "cancelled" and record.get("cancel_state") == "confirmed"
         protection_state = (
-            prior_protection_state
-            if prior_protection_state in {"lost", "triggered"}
-            else "unverified"
+            "cancelled" if confirmed_cancel else
+            prior_protection_state if prior_protection_state in {"lost", "triggered"} else "unverified"
         )
+        # A confirmed canceled stop remains an unresolved inventory obligation.
+        # Preserve its valid durable proof when a later query fails or regresses.
         updated = _update_order_intent_by_id(
-            self, list_client_order_id, state="unknown", expected_record=record,
+            self, list_client_order_id, state="accepted" if confirmed_cancel else "unknown", expected_record=record,
             protection_state=protection_state, last_reconciliation_error=error,
             last_reconciliation_at=_now(),
         )

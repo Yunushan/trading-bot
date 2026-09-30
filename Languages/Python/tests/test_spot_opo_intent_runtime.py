@@ -12,10 +12,12 @@ from app.integrations.exchanges.binance.orders import order_intent_runtime as le
 from app.integrations.exchanges.binance.orders.order_intent_provisioning import PROVISION_ACK, provision_order_intent_store
 from app.integrations.exchanges.binance.orders.spot_fill_recovery_runtime import (
     persist_spot_opo_residual_stop_allocation,
+    persist_spot_opo_stop_sell_allocation,
     persist_spot_opo_strategy_sell_allocation,
     persist_spot_buy_allocation,
     spot_opo_allocation_baseline,
     summarize_spot_opo_residual_stop_sell_fill,
+    summarize_spot_opo_stop_sell_fill,
     summarize_spot_opo_strategy_sell_fill,
 )
 from app.integrations.exchanges.binance.orders.spot_opo_runtime import build_spot_opo_request
@@ -102,7 +104,7 @@ def _observation(
         "symbol": request["symbol"], "orderId": 302, "orderListId": 300,
         "clientOrderId": request["pendingClientOrderId"], "type": "STOP_LOSS", "side": "SELL",
         "status": pending_status,
-        "origQty": "0.0999" if working_status == "FILLED" and pending_status in {"NEW", "FILLED", "CANCELED"} else "0",
+        "origQty": "0.0999" if working_status == "FILLED" and pending_status != "PENDING_NEW" else "0",
         "executedQty": pending_executed, "stopPrice": request["pendingStopPrice"],
     }
     return list_response, working, pending
@@ -392,6 +394,44 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
         self.assertEqual("none", result["protection_state"])
         self.assertEqual(0, ledger.get_order_intent_status(self.owner)["unresolved_count"])
 
+    def test_verified_no_fill_keeps_terminal_evidence_and_blocks_after_failed_refresh(self):
+        self._submit()
+        ledger._mark_spot_opo_unknown(self.owner, self.request["listClientOrderId"], error="restart recovery")
+        self._install_observation(
+            working_status="EXPIRED", working_executed="0", pending_status="PENDING_NEW", list_status="ALL_DONE",
+        )
+        verified = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"])
+        self.assertTrue(verified["reconciled"])
+        self.assertEqual("none", verified["protection_state"])
+        self.owner.client.get_order_list = lambda **_kwargs: (_ for _ in ()).throw(TimeoutError("offline timeout"))
+
+        failed = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+
+        self.assertFalse(failed["reconciled"])
+        self.assertEqual("unknown", failed["state"])
+        self.assertEqual("unverified", failed["protection_state"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("EXPIRED", record["working_status"])
+        self.assertEqual("0", record["working_executed_qty"])
+        self.assertEqual("PENDING_NEW", record["pending_status"])
+        self.assertEqual("0", record["pending_executed_qty"])
+        self.assertEqual("ALL_DONE", record["list_status"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+        self._install_observation(
+            working_status="NEW", working_executed="0", pending_status="PENDING_NEW", list_status="ALL_DONE",
+        )
+        stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(stale["reconciled"])
+        self.assertIn("terminal child status", stale["error"])
+        self.assertEqual("EXPIRED", ledger._get_order_intent_record(
+            self.owner, self.request["listClientOrderId"],
+        )["working_status"])
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved"):
+            ledger._begin_spot_opo_intent(
+                self.owner, {**self.request, "listClientOrderId": "another-op-list"}, source="strategy",
+            )
+
     def test_entry_recovery_requires_persisted_fill_and_exact_active_stop_coverage(self):
         self._submit()
         ledger._mark_spot_opo_unknown(self.owner, self.request["listClientOrderId"], error="restart recovery")
@@ -463,6 +503,258 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
         self.assertEqual("triggered", polled["protection_state"])
         self.assertEqual(1, status["unresolved_count"])
         self.assertEqual([self.request["listClientOrderId"]], status["spot_opo_client_order_ids"])
+
+    def _assert_original_stop_terminal_status_cannot_regress(self, status, executed="0"):
+        self._recover_active_entry()
+        self._install_observation(pending_status=status, pending_executed=executed, list_status="ALL_DONE")
+        first = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertEqual("triggered" if status == "FILLED" else "lost", first["protection_state"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+        # Keep ALL_DONE to exercise child continuity independently of list continuity.
+        self._install_observation(list_status="ALL_DONE")
+        stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(stale["reconciled"])
+        self.assertIn("terminal child status", stale["error"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual(status, record["pending_status"])
+        self.assertEqual(executed, record["pending_executed_qty"])
+        self.assertEqual("ALL_DONE", record["list_status"])
+        self.assertEqual("0.0999", record["pending_original_qty"])
+        self.assertTrue(record["entry_reconciled"])
+        self.assertTrue(ledger._is_unresolved(record))
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved"):
+            ledger._begin_spot_opo_intent(
+                self.owner, {**self.request, "listClientOrderId": "another-op-list"}, source="strategy",
+            )
+
+    def test_filled_original_stop_cannot_be_reported_active_again(self):
+        self._assert_original_stop_terminal_status_cannot_regress("FILLED", "0.0999")
+
+    def test_canceled_original_stop_cannot_be_reported_active_again(self):
+        self._assert_original_stop_terminal_status_cannot_regress("CANCELED")
+
+    def test_expired_original_stop_cannot_be_reported_active_again(self):
+        self._assert_original_stop_terminal_status_cannot_regress("EXPIRED")
+
+    def test_expired_in_match_original_stop_cannot_be_reported_active_again(self):
+        self._assert_original_stop_terminal_status_cannot_regress("EXPIRED_IN_MATCH")
+
+    def test_rejected_original_stop_cannot_be_reported_active_again(self):
+        self._assert_original_stop_terminal_status_cannot_regress("REJECTED")
+
+    def test_original_terminal_list_cannot_regress_with_unchanged_children(self):
+        self._recover_active_entry()
+        self._install_observation(pending_status="CANCELED", list_status="ALL_DONE")
+        ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self._install_observation(pending_status="CANCELED", list_status="EXEC_STARTED")
+
+        stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+
+        self.assertFalse(stale["reconciled"])
+        self.assertIn("terminal list status", stale["error"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("ALL_DONE", record["list_status"])
+        self.assertEqual("CANCELED", record["pending_status"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_original_stop_partial_execution_cannot_decrease_or_return_to_new(self):
+        self._recover_active_entry()
+        self._install_observation(pending_status="PARTIALLY_FILLED", pending_executed="0.05")
+        ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        for status, executed in (("PARTIALLY_FILLED", "0.04"), ("NEW", "0")):
+            with self.subTest(status=status):
+                self._install_observation(pending_status=status, pending_executed=executed)
+                stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+                self.assertFalse(stale["reconciled"])
+                self.assertIn("executed quantity decreased", stale["error"])
+                record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                self.assertEqual("PARTIALLY_FILLED", record["pending_status"])
+                self.assertEqual("0.05", record["pending_executed_qty"])
+                self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_original_buy_terminal_status_and_execution_cannot_regress(self):
+        self._recover_active_entry()
+        self._install_observation(working_status="PARTIALLY_FILLED", working_executed="0.01")
+
+        stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+
+        self.assertFalse(stale["reconciled"])
+        self.assertIn("terminal child status", stale["error"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("FILLED", record["working_status"])
+        self.assertEqual("0.1000", record["working_executed_qty"])
+        self.assertEqual("0.0999", record["pending_original_qty"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_original_buy_partial_execution_cannot_decrease(self):
+        self._submit()
+        ledger._mark_spot_opo_unknown(self.owner, self.request["listClientOrderId"], error="restart recovery")
+        self._install_observation(
+            working_status="PARTIALLY_FILLED", working_executed="0.0100", pending_status="PENDING_NEW",
+        )
+        ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"])
+        self._install_observation(
+            working_status="PARTIALLY_FILLED", working_executed="0.0090", pending_status="PENDING_NEW",
+        )
+
+        stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+
+        self.assertFalse(stale["reconciled"])
+        self.assertIn("executed quantity decreased", stale["error"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("PARTIALLY_FILLED", record["working_status"])
+        self.assertEqual("0.0100", record["working_executed_qty"])
+        self.assertEqual("lost", record["protection_state"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_original_list_and_children_must_keep_their_durable_exchange_ids(self):
+        self._recover_active_entry()
+        for field in ("list", "working", "pending"):
+            with self.subTest(field=field):
+                list_response, working, pending = _observation(self.request)
+                if field == "list":
+                    list_response["orderListId"] = 600
+                    working["orderListId"] = pending["orderListId"] = 600
+                else:
+                    child = working if field == "working" else pending
+                    child["orderId"] = 600
+                    list_response["orders"][0 if field == "working" else 1]["orderId"] = 600
+                children = {working["clientOrderId"]: working, pending["clientOrderId"]: pending}
+                self.owner.client = SimpleNamespace(
+                    get_order_list=lambda **_kwargs: list_response,
+                    get_order=lambda **kwargs: children[kwargs["origClientOrderId"]],
+                )
+                stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+                self.assertFalse(stale["reconciled"])
+                self.assertIn("ID changed", stale["error"])
+                record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                self.assertEqual(300, record["exchange_order_list_id"])
+                self.assertEqual(301, record["working_order_id"])
+                self.assertEqual(302, record["pending_order_id"])
+                self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_original_stop_quantity_cannot_change_after_entry_recovery(self):
+        self._recover_active_entry()
+        list_response, working, pending = _observation(self.request)
+        pending["origQty"] = "0.1000"
+        children = {working["clientOrderId"]: working, pending["clientOrderId"]: pending}
+        self.owner.client = SimpleNamespace(
+            get_order_list=lambda **_kwargs: list_response,
+            get_order=lambda **kwargs: children[kwargs["origClientOrderId"]],
+        )
+
+        stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+
+        self.assertFalse(stale["reconciled"])
+        self.assertIn("stop quantity changed", stale["error"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("0.0999", record["pending_original_qty"])
+        self.assertEqual("0.0999", record["entry_portfolio_quantity"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_original_stop_inconsistent_execution_cannot_become_active(self):
+        self._recover_active_entry()
+        for status, executed in (("NEW", "0.001"), ("FILLED", "0.0998"), ("PARTIALLY_FILLED", "0.1")):
+            with self.subTest(status=status):
+                self._install_observation(pending_status=status, pending_executed=executed)
+                stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+                self.assertFalse(stale["reconciled"])
+                self.assertIn("status conflicts", stale["error"])
+                record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                self.assertEqual("NEW", record["pending_status"])
+                self.assertEqual("0", record["pending_executed_qty"])
+                self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_confirmed_original_stop_cancellation_survives_stale_and_failed_refresh(self):
+        self._recover_active_entry()
+
+        def cancel_order_list(**_kwargs):
+            self._install_observation(pending_status="CANCELED", list_status="ALL_DONE")
+            return {}
+
+        self.owner.client.cancel_order_list = cancel_order_list
+        self.assertTrue(ledger.cancel_spot_opo_intent(self.owner, self.request["listClientOrderId"])["cancel_confirmed"])
+        self._install_observation()
+        stale = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(stale["reconciled"])
+        self.owner.client.get_order_list = lambda **_kwargs: (_ for _ in ()).throw(TimeoutError("offline timeout"))
+        failed = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(failed["reconciled"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("accepted", record["state"])
+        self.assertEqual("cancelled", record["protection_state"])
+        self.assertEqual("confirmed", record["cancel_state"])
+        self.assertEqual("CANCELED", record["pending_status"])
+        self.assertEqual("0", record["pending_executed_qty"])
+        self.assertEqual("ALL_DONE", record["list_status"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def _assert_late_original_query_cannot_overwrite_newer_stop_fill(self, *, fail):
+        self._recover_active_entry()
+        stale_client = self.owner.client
+        original_getter = stale_client.get_order_list
+        newer_records = []
+
+        def late_get_order_list(**kwargs):
+            self._install_observation(pending_status="FILLED", pending_executed="0.0999", list_status="ALL_DONE")
+            newer = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+            self.assertEqual("triggered", newer["protection_state"])
+            newer_records.append(ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"]))
+            self.owner.client = stale_client
+            if fail:
+                raise TimeoutError("late offline timeout")
+            return original_getter(**kwargs)
+
+        stale_client.get_order_list = late_get_order_list
+        late = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertFalse(late["reconciled"])
+        self.assertIn("late result was not applied", late["error"])
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual(newer_records[0], record)
+        self.assertEqual("FILLED", record["pending_status"])
+        self.assertEqual("0.0999", record["pending_executed_qty"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_late_original_query_success_cannot_overwrite_newer_stop_fill(self):
+        self._assert_late_original_query_cannot_overwrite_newer_stop_fill(fail=False)
+
+    def test_late_original_query_failure_cannot_overwrite_newer_stop_fill(self):
+        self._assert_late_original_query_cannot_overwrite_newer_stop_fill(fail=True)
+
+    def test_original_stop_fill_recovery_still_completes_after_stale_refresh(self):
+        allocation_path = self._recover_active_entry()
+        self._install_observation(pending_status="FILLED", pending_executed="0.0999", list_status="ALL_DONE")
+        ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self._install_observation()
+        self.assertFalse(ledger.reconcile_spot_opo_intent(
+            self.owner, self.request["listClientOrderId"], force=True,
+        )["reconciled"])
+        self._install_observation(pending_status="FILLED", pending_executed="0.0999", list_status="ALL_DONE")
+        ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        _, _, order = _observation(
+            self.request, pending_status="FILLED", pending_executed="0.0999", list_status="ALL_DONE",
+        )
+        order.update(cummulativeQuoteQty="9.4905", updateTime=1780000000010)
+        trades = [{
+            "symbol": "BTCUSDT", "id": 902, "orderId": 302, "price": "95",
+            "qty": "0.0999", "quoteQty": "9.4905", "commission": "0", "commissionAsset": "BTC",
+            "time": 1780000000010, "isBuyer": False,
+        }]
+        fill = summarize_spot_opo_stop_sell_fill(record, order, trades, base_asset="BTC", quote_asset="USDT")
+        with patch(
+            "app.gui.shared.allocation_persistence.get_position_allocations_path",
+            return_value=allocation_path,
+        ):
+            self.assertTrue(persist_spot_opo_stop_sell_allocation(allocation_path, fill))
+            marked = ledger._mark_spot_opo_exit_reconciled(
+                self.owner, self.request["listClientOrderId"],
+                portfolio_signature=fill["signature"], portfolio_quantity=fill["portfolio_qty"],
+            )
+        self.assertTrue(marked["exit_reconciled"])
+        self.assertEqual(0, ledger.get_order_intent_status(self.owner)["unresolved_count"])
 
     def test_strategy_market_sell_is_blocked_while_linked_opo_stop_is_active(self):
         self._submit()
@@ -1120,7 +1412,9 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
     def test_positive_partial_execution_and_wrong_child_identity_stay_blocked(self):
         self._submit()
         ledger._mark_spot_opo_unknown(self.owner, self.request["listClientOrderId"], error="restart recovery")
-        self._install_observation(working_status="PARTIALLY_FILLED", working_executed="0.0100")
+        self._install_observation(
+            working_status="PARTIALLY_FILLED", working_executed="0.0100", pending_status="PENDING_NEW",
+        )
         partial_result = ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"])
         self.assertFalse(partial_result["reconciled"])
         self.assertEqual("lost", partial_result["protection_state"])
