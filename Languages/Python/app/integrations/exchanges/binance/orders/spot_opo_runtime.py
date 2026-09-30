@@ -337,7 +337,12 @@ def build_spot_opo_cancel_replace_request(
         or intent.get("symbol") != request["symbol"]
         or intent.get("protection_state") != "active"
         or intent.get("entry_reconciled") is not True
-        or intent.get("cancel_state") is not None
+        or (
+            intent.get("cancel_state") is not None
+            and not (intent.get("cancel_state") == "rejected" and intent.get("strategy_exit_state") == "no_effect")
+        )
+        or intent.get("strategy_exit_state") not in (None, "no_effect")
+        or intent.get("residual_stop_state") is not None
         or intent.get("list_status") != "EXEC_STARTED"
         or intent.get("working_status") != "FILLED"
         or intent.get("pending_status") != "NEW"
@@ -351,6 +356,17 @@ def build_spot_opo_cancel_replace_request(
         }
     ):
         raise LiveTradingSafetyError("Spot OPO strategy exit requires one exact active, fully recovered stop.")
+    from .spot_opo_exit_retry_runtime import validate_spot_opo_no_effect_proof
+
+    if intent.get("strategy_exit_state") == "no_effect":
+        validate_spot_opo_no_effect_proof(intent, intent.get("strategy_exit_no_effect_proof"))
+    used_exit_ids = {intent.get("strategy_exit_client_order_id")}
+    used_exit_ids.update(
+        prior.get("strategy_exit_client_order_id") for prior in intent.get("strategy_exit_history", [])
+        if isinstance(prior, Mapping)
+    )
+    if exit_client_id in used_exit_ids:
+        raise LiveTradingSafetyError("Linked Spot SELL client order ID was already used in this ledger.")
     return validate_spot_opo_cancel_replace_request({
         "symbol": request["symbol"],
         "side": "SELL",

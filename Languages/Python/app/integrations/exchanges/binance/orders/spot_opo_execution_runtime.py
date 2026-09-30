@@ -197,6 +197,7 @@ def place_spot_opo_strategy_exit(
         return {"ok": False, "error": "Linked Spot OPO exits are supported only for Live Spot accounts"}
     client = getattr(self, "client", None)
     cancel_replace = getattr(client, "cancel_replace_order", None)
+    check_exit_id = getattr(self, "_check_spot_opo_strategy_exit_client_id", None)
     begin_exit = getattr(self, "_begin_spot_opo_strategy_exit", None)
     mark_response = getattr(self, "_mark_spot_opo_strategy_exit_response", None)
     mark_unknown = getattr(self, "_mark_spot_opo_strategy_exit_unknown", None)
@@ -206,7 +207,7 @@ def place_spot_opo_strategy_exit(
     owner_submission = getattr(self, "_spot_execution_submission", None)
     guard = getattr(self, "_guard_live_order_submit", None)
     if not list_id or not all(callable(operation) for operation in (
-        cancel_replace, begin_exit, mark_response, mark_unknown,
+        cancel_replace, check_exit_id, begin_exit, mark_response, mark_unknown,
         mark_order_observed, reconcile, get_intent, owner_submission, guard,
     )):
         return {"ok": False, "error": "Live Spot linked exit boundary is unavailable"}
@@ -214,7 +215,10 @@ def place_spot_opo_strategy_exit(
     intent_started = False
     response_received = False
     request: dict[str, object] | None = None
+    begun: Mapping[str, object] | None = None
+    request_id = new_order_client_id or _new_opo_exit_client_id()
     try:
+        check_exit_id(list_id, new_order_client_id=request_id)
         initial = reconcile(list_id, force=True)
         intent = get_intent(list_id)
         if (
@@ -234,7 +238,6 @@ def place_spot_opo_strategy_exit(
             list_client_order_id=list_id,
             expected_quantity=expected_quantity,
         )
-        request_id = new_order_client_id or _new_opo_exit_client_id()
         request = build_spot_opo_cancel_replace_request(
             intent, new_order_client_id=request_id,
         )
@@ -254,6 +257,8 @@ def place_spot_opo_strategy_exit(
             new_order_client_id=request_id,
             pre_order_portfolio_signature=baseline["signature"],
             pre_order_portfolio_quantity=baseline["quantity"],
+            allocation_path=allocation_path,
+            expected_record=intent,
         )
         intent_started = True
         request_value = begun.get("strategy_exit_request") if isinstance(begun, Mapping) else None
@@ -264,7 +269,7 @@ def place_spot_opo_strategy_exit(
         with owner_submission():
             response = cancel_replace(**request)
         response_received = True
-        evidence = mark_response(list_id, response=response)
+        evidence = mark_response(list_id, response=response, expected_record=begun)
         exact_opo = reconcile(list_id, force=True)
         if not isinstance(exact_opo, Mapping) or exact_opo.get("error"):
             raise LiveTradingSafetyError("Linked SELL outcome needs exact OPO list and child reconciliation.")
@@ -337,7 +342,7 @@ def place_spot_opo_strategy_exit(
                     and current.get("strategy_exit_state") in {"submitted", "unknown"}
                     and current.get("strategy_exit_outcome") is None
                 ):
-                    mark_unknown(list_id, error=exc)
+                    mark_unknown(list_id, error=exc, expected_record=begun)
             except SPOT_EXCHANGE_ERRORS:
                 unknown_persisted = False
             return {

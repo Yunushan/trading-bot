@@ -37,6 +37,8 @@ class _Venue:
         self.reads = []
         self.exits = []
         self.lose_ack = False
+        self.cancel_no_effect = False
+        self.lose_exit_ack = False
         self.uid = 12345678
 
     def get_symbol_info(self, symbol):
@@ -97,6 +99,12 @@ class _Venue:
         self.exits.append(deepcopy(request))
         stop = self.orders[request["cancelOrigClientOrderId"]]
         assert stop["orderId"] == request["cancelOrderId"]
+        if self.cancel_no_effect:
+            return {
+                "cancelResult": "FAILURE", "newOrderResult": "NOT_ATTEMPTED",
+                "cancelResponse": {"code": -2011, "msg": "Synthetic cancellation had no effect"},
+                "newOrderResponse": None,
+            }
         stop["status"] = "CANCELED"
         for order_list in self.lists.values():
             if order_list["orderListId"] == stop["orderListId"]:
@@ -107,6 +115,8 @@ class _Venue:
             "status": "FILLED", "origQty": request["quantity"], "executedQty": request["quantity"],
         }
         self.orders[sell["clientOrderId"]] = sell
+        if self.lose_exit_ack:
+            raise TimeoutError("Synthetic linked SELL reply lost after venue acceptance")
         return {
             "cancelResult": "SUCCESS", "newOrderResult": "SUCCESS",
             "cancelResponse": {**deepcopy(stop), "origClientOrderId": stop["clientOrderId"]},
@@ -265,6 +275,130 @@ class SpotOpoFaultIntegrationTests(unittest.TestCase):
         self.assertEqual(record["strategy_exit_request"], self.venue.exits[0])
         self.assertEqual("FILLED", record["strategy_exit_status"])
         self.assertEqual(1, wrapper.get_order_intent_status()["unresolved_count"])
+
+    def test_proven_no_effect_exit_retries_once_with_new_durable_request(self):
+        wrapper = self.wrapper()
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        allocation_before = self.allocation_path.read_bytes()
+        self.venue.cancel_no_effect = True
+        first = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-no-effect")
+        self.assertTrue(first["ok"], first)
+        self.assertFalse(first["accepted"])
+        record_before = ledger._get_order_intent_record(wrapper, "list-first")
+        self.assertEqual("no_effect", record_before["strategy_exit_state"])
+        self.assertEqual("active", record_before["protection_state"])
+        self.assertNotIn("exit-no-effect", self.venue.orders)
+        self.assertEqual(allocation_before, self.allocation_path.read_bytes())
+        self.venue.cancel_no_effect = False
+        second = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-retry")
+        self.assertTrue(second["ok"], second)
+        self.assertTrue(second["accepted"])
+        self.assertEqual(["exit-no-effect", "exit-retry"], [row["newClientOrderId"] for row in self.venue.exits])
+        current = ledger._get_order_intent_record(wrapper, "list-first")
+        self.assertEqual("exit-retry", current["strategy_exit_client_order_id"])
+        self.assertEqual(current["strategy_exit_request"], self.venue.exits[1])
+        history = current["strategy_exit_history"]
+        self.assertEqual(1, len(history))
+        self.assertEqual("exit-no-effect", history[0]["strategy_exit_client_order_id"])
+        self.assertEqual(record_before["strategy_exit_request"], history[0]["strategy_exit_request"])
+        self.assertEqual("no_effect", history[0]["strategy_exit_state"])
+        self.assertEqual("FILLED", current["strategy_exit_status"])
+        self.assertEqual(allocation_before, self.allocation_path.read_bytes())
+        self.assertEqual(1, wrapper.get_order_intent_status()["unresolved_count"])
+
+    def test_uncertain_linked_exit_cannot_submit_a_second_replacement(self):
+        wrapper = self.wrapper()
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        self.venue.lose_exit_ack = True
+        first = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-lost")
+        self.assertFalse(first["ok"], first)
+        self.assertEqual("unknown", ledger._get_order_intent_record(wrapper, "list-first")["strategy_exit_state"])
+        self.assertIn("exit-lost", self.venue.orders)
+        second = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-retry")
+        self.assertFalse(second["ok"], second)
+        self.assertEqual(["exit-lost"], [row["newClientOrderId"] for row in self.venue.exits])
+
+    def test_proven_no_effect_exit_cannot_reuse_its_old_client_id(self):
+        wrapper = self.wrapper()
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        self.venue.cancel_no_effect = True
+        first = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-no-effect")
+        self.assertTrue(first["ok"], first)
+        path = ledger._intent_path(wrapper)
+        before = path.read_bytes()
+        second = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-no-effect")
+        self.assertFalse(second["ok"], second)
+        self.assertEqual(["exit-no-effect"], [row["newClientOrderId"] for row in self.venue.exits])
+        self.assertEqual(before, path.read_bytes())
+
+    def test_triggered_stop_blocks_retry_after_prior_no_effect_cancellation(self):
+        wrapper = self.wrapper()
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        self.venue.cancel_no_effect = True
+        self.assertTrue(wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-no-effect")["ok"])
+        stop = self.venue.orders["stop-first"]
+        stop.update(status="FILLED", executedQty=stop["origQty"])
+        self.venue.lists["list-first"].update(listStatusType="ALL_DONE", listOrderStatus="ALL_DONE")
+        result = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-retry")
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(["exit-no-effect"], [row["newClientOrderId"] for row in self.venue.exits])
+        self.assertEqual(1, wrapper.get_order_intent_status()["unresolved_count"])
+
+    def test_changed_allocation_blocks_retry_after_prior_no_effect_cancellation(self):
+        wrapper = self.wrapper()
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        self.venue.cancel_no_effect = True
+        self.assertTrue(wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-no-effect")["ok"])
+        snapshot = json.loads(self.allocation_path.read_text(encoding="utf-8"))
+        snapshot["entry_allocations"]["BTCUSDT:L"][0]["entry_price"] = 101.0
+        self.allocation_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        changed_allocation = self.allocation_path.read_bytes()
+        result = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-retry")
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(["exit-no-effect"], [row["newClientOrderId"] for row in self.venue.exits])
+        self.assertEqual(changed_allocation, self.allocation_path.read_bytes())
+
+    def test_external_cancel_after_prior_no_effect_keeps_exact_state_loadable_and_blocking(self):
+        wrapper = self.wrapper()
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        self.venue.cancel_no_effect = True
+        self.assertTrue(wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-no-effect")["ok"])
+        self.venue.orders["stop-first"].update(status="CANCELED", executedQty="0")
+        self.venue.lists["list-first"].update(listStatusType="ALL_DONE", listOrderStatus="ALL_DONE")
+        result = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-retry")
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(["exit-no-effect"], [row["newClientOrderId"] for row in self.venue.exits])
+        self.assertEqual(1, wrapper.get_order_intent_status()["unresolved_count"])
+        current = ledger._get_order_intent_record(wrapper, "list-first")
+        self.assertEqual("CANCELED", current["pending_status"])
+        self.assertEqual("lost", current["protection_state"])
+        self.assertEqual("unknown", current["state"])
+        self.assertEqual("rejected", current["cancel_state"])
+        self.assertNotIn("cancel_confirmed_at", current)
+        self.assertEqual("cancel_failed", current["strategy_exit_outcome"])
+        self.assertIs(False, current["strategy_exit_new_order_accepted"])
+
+    def test_exhausted_guard_blocks_retry_after_prior_no_effect_cancellation(self):
+        wrapper = self.wrapper(cap=2)
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        self.venue.cancel_no_effect = True
+        self.assertTrue(wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-no-effect")["ok"])
+        record_before = ledger._get_order_intent_record(wrapper, "list-first")
+        result = wrapper.place_spot_opo_strategy_exit("list-first", new_order_client_id="exit-retry")
+        self.assertFalse(result["ok"], result)
+        self.assertIn("session order cap 2", result["error"])
+        self.assertEqual(2, wrapper._live_order_submit_attempt_count)
+        self.assertEqual(["exit-no-effect"], [row["newClientOrderId"] for row in self.venue.exits])
+        current = ledger._get_order_intent_record(wrapper, "list-first")
+        for field in ("strategy_exit_client_order_id", "strategy_exit_request", "strategy_exit_history"):
+            self.assertEqual(record_before.get(field), current.get(field))
 
 
 if __name__ == "__main__":

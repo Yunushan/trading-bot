@@ -165,6 +165,7 @@ class SpotReconciliationAdminTests(unittest.TestCase):
     ) -> tuple[Path, dict[str, str]]:
         wrapper = _SpotRuntime(self.audit_path)
         wrapper._ensure_spot_execution_owner()
+        self.addCleanup(wrapper._spot_execution_owner.close)
         request = build_spot_opo_request(
             symbol="BTCUSDT",
             symbol_info={
@@ -199,6 +200,27 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             pending_executed_qty="0",
             pending_original_qty="0.0999",
         )
+        list_response, working, pending = self.opo_list_observation(
+            request, pending_status="NEW", list_status="EXEC_STARTED",
+        )
+        list_response["orderListId"] = 700
+        for child in list_response["orders"]:
+            child["orderId"] += 200
+        for child in (working, pending):
+            child["orderId"] += 200
+            child["orderListId"] = 700
+        children = {child["clientOrderId"]: child for child in (working, pending)}
+
+        def get_order_list(**kwargs):
+            self.assertEqual({"origClientOrderId": request["listClientOrderId"]}, kwargs)
+            return list_response
+
+        def get_order(**kwargs):
+            self.assertEqual("BTCUSDT", kwargs["symbol"])
+            return children[kwargs["origClientOrderId"]]
+
+        wrapper.client.get_order_list = get_order_list
+        wrapper.client.get_order = get_order
         buy_fill = {
             "symbol": "BTCUSDT", "client_order_id": request["listClientOrderId"],
             "exchange_client_order_id": request["workingClientOrderId"], "order_id": 701,
@@ -228,6 +250,7 @@ class SpotReconciliationAdminTests(unittest.TestCase):
                 new_order_client_id=exit_client_id,
                 pre_order_portfolio_signature=baseline["signature"],
                 pre_order_portfolio_quantity=baseline["quantity"],
+                allocation_path=allocation_path,
             )
         marker_path = owner_marker_path(self.path)
         wrapper._spot_execution_owner.close()

@@ -279,8 +279,12 @@ class SpotOpoExecutionRuntimeTests(unittest.TestCase):
             def _get_order_intent_record(self, _list_id):
                 return dict(self.record)
 
+            def _check_spot_opo_strategy_exit_client_id(self, list_id, *, new_order_client_id):
+                build_spot_opo_cancel_replace_request(self.record, new_order_client_id=new_order_client_id)
+
             def _begin_spot_opo_strategy_exit(self, list_id, *, new_order_client_id,
-                                               pre_order_portfolio_signature, pre_order_portfolio_quantity):
+                                               pre_order_portfolio_signature, pre_order_portfolio_quantity,
+                                               allocation_path=None, expected_record=None):
                 self.events.append(("begin", pre_order_portfolio_signature, pre_order_portfolio_quantity))
                 request = build_spot_opo_cancel_replace_request(
                     self.record, new_order_client_id=new_order_client_id,
@@ -295,7 +299,7 @@ class SpotOpoExecutionRuntimeTests(unittest.TestCase):
                 })
                 return {"strategy_exit_request": request}
 
-            def _mark_spot_opo_strategy_exit_response(self, list_id, *, response):
+            def _mark_spot_opo_strategy_exit_response(self, list_id, *, response, expected_record=None):
                 evidence = validate_spot_opo_cancel_replace_response(
                     response, self.record["strategy_exit_request"],
                 )
@@ -312,7 +316,7 @@ class SpotOpoExecutionRuntimeTests(unittest.TestCase):
                 })
                 return evidence
 
-            def _mark_spot_opo_strategy_exit_unknown(self, list_id, *, error):
+            def _mark_spot_opo_strategy_exit_unknown(self, list_id, *, error, expected_record=None):
                 self.events.append(("unknown", type(error).__name__))
 
             def _mark_spot_opo_strategy_exit_order_observed(self, list_id, *, order_response):

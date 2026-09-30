@@ -18,7 +18,7 @@ from app.settings.execution_mode import execution_environment
 from app.security.redaction import redact_text
 from trading_core.orders import is_exchange_risk_reducing_order, order_execution_from_response
 
-from .order_intent_store import ledger_transaction, write_ledger
+from .order_intent_store import ledger_transaction, ledger_transactions, write_ledger
 from .spot_execution_owner import SpotExecutionOwner, claim_execution_owner
 from .spot_opo_runtime import (
     build_spot_opo_cancel_replace_request,
@@ -31,6 +31,14 @@ from .spot_opo_runtime import (
     validate_spot_opo_strategy_exit_order,
 )
 from .spot_exchange_errors import SPOT_EXCHANGE_ERRORS, SPOT_LOCAL_STATE_ERRORS
+from .spot_opo_exit_retry_runtime import (
+    EXIT_RETRY_HISTORY_LIMIT,
+    archive_spot_opo_no_effect_attempt,
+    build_spot_opo_no_effect_proof,
+    used_spot_client_order_ids,
+    validate_spot_opo_exit_retry_history,
+    validate_spot_opo_no_effect_proof,
+)
 
 
 _INTENT_FORMAT_VERSION = 2
@@ -525,6 +533,9 @@ def _read_ledger(
                     raise LiveTradingSafetyError("Spot OPO unknown SELL state lacks an uncertain cancellation marker.")
                 if strategy_exit_state == "unknown" and cancel_state == "confirmed" and protection_state != "cancelled":
                     raise LiveTradingSafetyError("Unknown linked SELL has no exact canceled-stop evidence.")
+            validate_spot_opo_exit_retry_history(record)
+            if "strategy_exit_no_effect_proof" in record:
+                validate_spot_opo_no_effect_proof(record, record["strategy_exit_no_effect_proof"])
             residual_stop_state = record.get("residual_stop_state")
             residual_fields = {
                 name for name in record
@@ -1013,6 +1024,12 @@ def _raise_for_duplicate_intent(intents: Mapping[str, object], client_order_id: 
         )
 
 
+def _assert_unused_spot_client_ids(intents: Mapping[str, object], client_order_ids: tuple[str, ...]) -> None:
+    used_ids = used_spot_client_order_ids(intents)
+    if any(client_id in used_ids for client_id in client_order_ids):
+        raise LiveTradingSafetyError("Spot client order ID was already used in this ledger.")
+
+
 def _raise_for_unresolved_intents(
     intents: Mapping[str, object], *, exclude_client_order_id: str | None = None,
 ) -> None:
@@ -1030,6 +1047,7 @@ def _raise_for_unresolved_intents(
 def _refresh_spot_active_protection(
     self, *, exclude_client_order_id: str | None = None,
     reject_existing_client_order_id: str | None = None,
+    reject_spot_client_order_ids: tuple[str, ...] = (),
 ) -> tuple[str, dict[str, dict[str, object]]]:
     """Obtain exact applied proof for every active stop before one new BUY boundary."""
     path = _intent_path(self)
@@ -1041,6 +1059,8 @@ def _refresh_spot_active_protection(
         if reject_existing_client_order_id is not None:
             _raise_for_duplicate_intent(intents, reject_existing_client_order_id)
         _raise_for_unresolved_intents(intents, exclude_client_order_id=exclude_client_order_id)
+        if reject_spot_client_order_ids:
+            _assert_unused_spot_client_ids(intents, reject_spot_client_order_ids)
         active_records = _active_spot_protection_records(intents)
         store_id = str(ledger["store_id"])
     refreshed: dict[str, dict[str, object]] = {}
@@ -1108,7 +1128,10 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
         _ensure_spot_execution_owner(self)
     record = _intent_record(params, market=market, source=source)
     protection_proof = (
-        _refresh_spot_active_protection(self, reject_existing_client_order_id=str(record["client_order_id"]))
+        _refresh_spot_active_protection(
+            self, reject_existing_client_order_id=str(record["client_order_id"]),
+            reject_spot_client_order_ids=(str(record["client_order_id"]),),
+        )
         if market == "spot" and record.get("side") == "BUY" else None
     )
     path = _intent_path(self)
@@ -1136,6 +1159,8 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
         _raise_for_duplicate_intent(intents, str(record["client_order_id"]))
+        if market == "spot":
+            _assert_unused_spot_client_ids(intents, (str(record["client_order_id"]),))
         if protection_proof is not None:
             _assert_fresh_spot_protection(ledger, protection_proof)
         if market == "spot" and record.get("type") == "MARKET" and record.get("side") == "SELL":
@@ -1197,7 +1222,10 @@ def _begin_spot_opo_intent(
         "entry_reconciled": False,
         "protection_state": "unverified",
     }
-    protection_proof = _refresh_spot_active_protection(self, reject_existing_client_order_id=request["listClientOrderId"])
+    client_ids = tuple(request[name] for name in ("listClientOrderId", "workingClientOrderId", "pendingClientOrderId"))
+    protection_proof = _refresh_spot_active_protection(
+        self, reject_existing_client_order_id=request["listClientOrderId"], reject_spot_client_order_ids=client_ids,
+    )
     path = _intent_path(self)
     with ledger_transaction(path):
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
@@ -1205,6 +1233,7 @@ def _begin_spot_opo_intent(
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
         _raise_for_duplicate_intent(intents, str(record["client_order_id"]))
+        _assert_unused_spot_client_ids(intents, client_ids)
         _assert_fresh_spot_protection(ledger, protection_proof)
         unresolved_ids = [
             str(intent.get("client_order_id") or client_order_id)
@@ -1284,28 +1313,53 @@ def _mark_spot_opo_accepted(
     return updated
 
 
+def _check_spot_opo_strategy_exit_client_id(
+    self, list_client_order_id: str, *, new_order_client_id: str,
+) -> None:
+    """Reject a previously used exit ID before any refresh rewrites the ledger."""
+    path = _intent_path(self)
+    with ledger_transaction(path):
+        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        intents = ledger["intents"]
+        if not isinstance(intents, dict):
+            raise LiveTradingSafetyError("Order intent ledger is malformed; linked SELL is blocked.")
+        record = intents.get(list_client_order_id)
+        if not isinstance(record, Mapping):
+            raise LiveTradingSafetyError("Linked Spot SELL requires one exact OPO list intent.")
+        _assert_unused_spot_client_ids(intents, (new_order_client_id,))
+        build_spot_opo_cancel_replace_request(record, new_order_client_id=new_order_client_id)
+
+
 def _begin_spot_opo_strategy_exit(
     self, list_client_order_id: str, *, new_order_client_id: str,
     pre_order_portfolio_signature: str, pre_order_portfolio_quantity: object,
+    allocation_path: Path | None = None, expected_record: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Persist the exact linked SELL and cancellation intent before exchange transport."""
+    """Persist one original-stop SELL attempt after exact protection and allocation proof."""
     list_client_order_id = str(list_client_order_id or "").strip()
     record = _get_order_intent_record(self, list_client_order_id) if list_client_order_id else None
     if record is None or record.get("type") != "OPO":
         raise LiveTradingSafetyError("Linked Spot SELL requires one exact OPO list intent.")
+    if expected_record is not None and record != expected_record:
+        raise LiveTradingSafetyError("Spot OPO changed after linked SELL preflight.")
     if is_live_trading_mode(getattr(self, "mode", None)):
         if not _spot_owner_scope(self):
             raise LiveTradingSafetyError("Live linked Spot SELL requires the single-owner execution boundary.")
         _ensure_spot_execution_owner(self)
+    retry = record.get("strategy_exit_state") == "no_effect" and record.get("cancel_state") == "rejected"
     if (
         record.get("state") != "accepted"
         or record.get("protection_state") != "active"
         or record.get("entry_reconciled") is not True
-        or record.get("cancel_state") is not None
-        or record.get("strategy_exit_state") is not None
+        or record.get("residual_stop_state") is not None
+        or (not retry and (record.get("cancel_state") is not None or record.get("strategy_exit_state") is not None))
     ):
         raise LiveTradingSafetyError("Linked Spot SELL requires one active recovered stop with no prior exit attempt.")
     request = build_spot_opo_cancel_replace_request(record, new_order_client_id=new_order_client_id)
+    _check_spot_opo_strategy_exit_client_id(self, list_client_order_id, new_order_client_id=new_order_client_id)
+    history = validate_spot_opo_exit_retry_history(record)
+    if retry and len(history) >= EXIT_RETRY_HISTORY_LIMIT:
+        raise LiveTradingSafetyError("Linked exit retry history limit reached; manual reconciliation is required.")
     try:
         baseline_quantity = Decimal(str(pre_order_portfolio_quantity))
         expected_quantity = Decimal(str(request["quantity"]))
@@ -1316,11 +1370,38 @@ def _begin_spot_opo_strategy_exit(
         or re.fullmatch(r"[0-9a-f]{64}", pre_order_portfolio_signature) is None
         or not baseline_quantity.is_finite() or baseline_quantity <= 0
         or baseline_quantity != expected_quantity
+        or (
+            retry and (
+                pre_order_portfolio_signature != record.get("strategy_exit_pre_order_signature")
+                or baseline_quantity != _finite_nonnegative_decimal(record.get("strategy_exit_pre_order_quantity"))
+            )
+        )
     ):
-        raise LiveTradingSafetyError("Linked Spot SELL requires a sole exact OPO allocation baseline.")
+        raise LiveTradingSafetyError("Linked Spot SELL requires the unchanged sole exact OPO allocation baseline.")
+    applied_records: list[dict[str, object]] = []
+    observation = _reconcile_spot_opo_intent(
+        self, list_client_order_id, force=True, applied_records=applied_records, expected_record=record,
+    )
+    if (
+        observation.get("error") or len(applied_records) != 1
+        or observation.get("protection_state") != "active"
+        or observation.get("reconciled") is not True
+        or _is_unresolved(applied_records[0])
+    ):
+        raise LiveTradingSafetyError("Linked Spot SELL requires fresh exact active-stop proof.")
+    record = applied_records[0]
+    if build_spot_opo_cancel_replace_request(record, new_order_client_id=new_order_client_id) != request:
+        raise LiveTradingSafetyError("Linked Spot SELL request changed during exact stop refresh.")
+    if allocation_path is None:
+        from app.gui.shared.allocation_persistence import get_position_allocations_path
+
+        app_root = Path(__file__).resolve().parents[4]
+        allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+    from .spot_fill_recovery_runtime import spot_opo_allocation_baseline_unlocked
+
     submitted_at = _now()
     path = _intent_path(self)
-    with ledger_transaction(path):
+    with ledger_transactions(path, allocation_path):
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         intents = ledger.get("intents")
         if not isinstance(intents, dict):
@@ -1328,8 +1409,18 @@ def _begin_spot_opo_strategy_exit(
         current = intents.get(list_client_order_id)
         if not isinstance(current, dict) or current != record:
             raise LiveTradingSafetyError("Spot OPO changed before the linked SELL intent was persisted.")
-        if request["newClientOrderId"] in intents:
-            raise LiveTradingSafetyError("Linked Spot SELL client order ID was already used in this ledger.")
+        _assert_unused_spot_client_ids(intents, (new_order_client_id,))
+        baseline = spot_opo_allocation_baseline_unlocked(
+            allocation_path, symbol=str(record["symbol"]), list_client_order_id=list_client_order_id,
+            expected_quantity=baseline_quantity,
+        )
+        if baseline["signature"] != pre_order_portfolio_signature or Decimal(baseline["quantity"]) != baseline_quantity:
+            raise LiveTradingSafetyError("Live Spot allocation changed before linked SELL submission.")
+        if retry:
+            history.append(archive_spot_opo_no_effect_attempt(current))
+        for name in list(current):
+            if name.startswith("strategy_exit_"):
+                del current[name]
         current.update({
             "updated_at": submitted_at,
             "cancel_state": "submitted",
@@ -1342,6 +1433,7 @@ def _begin_spot_opo_strategy_exit(
             "strategy_exit_pre_order_signature": pre_order_portfolio_signature,
             "strategy_exit_pre_order_quantity": format(baseline_quantity, "f"),
             "strategy_exit_started_at": submitted_at,
+            "strategy_exit_history": history,
         })
         _write_ledger(path, ledger)
         updated = dict(current)
@@ -1349,11 +1441,17 @@ def _begin_spot_opo_strategy_exit(
 
 
 def _mark_spot_opo_strategy_exit_unknown(
-    self, list_client_order_id: str, *, error: object,
+    self, list_client_order_id: str, *, error: object, expected_record: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Keep an interrupted cancel-replace attempt unresolved across restart."""
     list_client_order_id = str(list_client_order_id or "").strip()
     record = _get_order_intent_record(self, list_client_order_id) if list_client_order_id else None
+    if (
+        record is not None
+        and ((expected_record is not None and record != expected_record)
+             or (record.get("strategy_exit_history") and expected_record is None))
+    ):
+        raise LiveTradingSafetyError("Linked Spot SELL attempt changed; the late failure was not applied.")
     if (
         record is None or record.get("type") != "OPO"
         or record.get("strategy_exit_state") not in {"submitted", "unknown"}
@@ -1377,11 +1475,17 @@ def _mark_spot_opo_strategy_exit_unknown(
 
 
 def _mark_spot_opo_strategy_exit_response(
-    self, list_client_order_id: str, *, response: object,
+    self, list_client_order_id: str, *, response: object, expected_record: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Persist a validated cancel-replace outcome while keeping recovery unresolved."""
     list_client_order_id = str(list_client_order_id or "").strip()
     record = _get_order_intent_record(self, list_client_order_id) if list_client_order_id else None
+    if (
+        record is not None
+        and ((expected_record is not None and record != expected_record)
+             or (record.get("strategy_exit_history") and expected_record is None))
+    ):
+        raise LiveTradingSafetyError("Linked Spot SELL attempt changed; the late response was not applied.")
     if (
         record is None or record.get("type") != "OPO"
         or record.get("strategy_exit_state") not in {"submitted", "unknown"}
@@ -1764,25 +1868,7 @@ def _begin_spot_opo_residual_stop(
         current = intents.get(list_client_order_id)
         if not isinstance(current, dict) or current != record:
             raise LiveTradingSafetyError("Spot OPO changed before residual-stop intent persistence.")
-        used_ids: set[str] = set()
-        for value in intents.values():
-            if not isinstance(value, Mapping) or value.get("market") != "spot":
-                continue
-            used_ids.add(str(value.get("client_order_id") or ""))
-            if isinstance(value.get("request"), Mapping):
-                used_ids.update(str(value["request"].get(name) or "") for name in (
-                    "listClientOrderId", "workingClientOrderId", "pendingClientOrderId",
-                ))
-            used_ids.add(str(value.get("strategy_exit_client_order_id") or ""))
-            used_ids.add(str(value.get("residual_stop_request", {}).get("newClientOrderId") or "")
-                          if isinstance(value.get("residual_stop_request"), Mapping) else "")
-            history = value.get("residual_stop_history", [])
-            if isinstance(history, list):
-                used_ids.update(
-                    str(item.get("request", {}).get("newClientOrderId") or "")
-                    for item in history
-                    if isinstance(item, Mapping) and isinstance(item.get("request"), Mapping)
-                )
+        used_ids = used_spot_client_order_ids(intents)
         if normalized["newClientOrderId"] in used_ids:
             raise LiveTradingSafetyError("Residual stop client order ID was already used in this Spot ledger.")
         history = list(current.get("residual_stop_history", []))
@@ -2874,6 +2960,7 @@ def _reconcile_spot_opo_residual_stop(
 def _reconcile_spot_opo_intent(
     self, list_client_order_id: str, *, force: bool = False,
     applied_records: list[dict[str, object]] | None = None,
+    expected_record: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Reconcile an OPO list and both child orders without treating protection as inventory proof."""
     list_client_order_id = str(list_client_order_id or "").strip()
@@ -2882,6 +2969,8 @@ def _reconcile_spot_opo_intent(
     record = _get_order_intent_record(self, list_client_order_id)
     if record is None or record.get("type") != "OPO":
         raise LiveTradingSafetyError(f"Spot OPO intent {list_client_order_id} was not found in the local ledger.")
+    if expected_record is not None and record != expected_record:
+        raise LiveTradingSafetyError("Spot OPO changed before its exact linked-stop refresh.")
     if record.get("residual_stop_state") in {"submitted", "unknown", "acknowledged", "active", "triggered"}:
         return _reconcile_spot_opo_residual_stop(self, record, applied_records=applied_records)
     if record.get("residual_stop_state") == "completed":
@@ -2986,6 +3075,16 @@ def _reconcile_spot_opo_intent(
         ):
             updates["cancel_state"] = "rejected"
             updates["strategy_exit_state"] = "no_effect"
+        if (
+            protection_state == "active"
+            and record.get("strategy_exit_state") in {"cancel_failed", "no_effect"}
+            and record.get("strategy_exit_outcome") == "cancel_failed"
+            and record.get("strategy_exit_new_order_accepted") is False
+        ):
+            candidate = {**record, **updates, "state": state, "cancel_state": "rejected", "strategy_exit_state": "no_effect"}
+            updates["strategy_exit_no_effect_proof"] = build_spot_opo_no_effect_proof(
+                candidate, verified_at=str(updates["last_reconciliation_at"]),
+            )
         if (
             protection_state == "cancelled"
             and record.get("strategy_exit_state") == "submitted"
@@ -3516,6 +3615,7 @@ def bind_binance_order_intent_runtime(wrapper_cls) -> None:
     wrapper_cls._mark_spot_opo_submitted = _mark_spot_opo_submitted
     wrapper_cls._mark_spot_opo_accepted = _mark_spot_opo_accepted
     wrapper_cls._mark_spot_opo_unknown = _mark_spot_opo_unknown
+    wrapper_cls._check_spot_opo_strategy_exit_client_id = _check_spot_opo_strategy_exit_client_id
     wrapper_cls._begin_spot_opo_strategy_exit = _begin_spot_opo_strategy_exit
     wrapper_cls._mark_spot_opo_strategy_exit_unknown = _mark_spot_opo_strategy_exit_unknown
     wrapper_cls._mark_spot_opo_strategy_exit_response = _mark_spot_opo_strategy_exit_response

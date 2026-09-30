@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,11 @@ from app.integrations.exchanges.binance.orders.spot_fill_recovery_runtime import
     summarize_spot_opo_strategy_sell_fill,
 )
 from app.integrations.exchanges.binance.orders.spot_opo_runtime import build_spot_opo_request
+from app.integrations.exchanges.binance.orders.spot_opo_exit_retry_runtime import (
+    archive_spot_opo_no_effect_attempt,
+    used_spot_client_order_ids,
+    validate_spot_opo_exit_retry_history,
+)
 from app.integrations.exchanges.binance.orders.spot_opo_execution_runtime import place_spot_opo_entry
 from app.integrations.exchanges.binance.orders.order_sizing_runtime import place_spot_market_order, _floor_to_step
 from app.settings.live_safety import LiveTradingSafetyError
@@ -216,7 +223,18 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
             new_order_client_id=new_order_client_id,
             pre_order_portfolio_signature=baseline["signature"],
             pre_order_portfolio_quantity=baseline["quantity"],
+            allocation_path=self.allocation_path,
         )
+
+    def _prove_no_effect_exit(self, client_id="failed-exit-001"):
+        begun = self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], client_id)
+        ledger._mark_spot_opo_strategy_exit_response(
+            self.owner, self.request["listClientOrderId"],
+            response=_cancel_replace_response(new_client_order_id=client_id, cancel_result="FAILURE"),
+            expected_record=begun,
+        )
+        ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        return begun, ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
 
     def _recover_partial_strategy_exit(self):
         allocation_path = self._recover_active_entry()
@@ -1361,6 +1379,241 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
         )
         self.assertEqual("triggered", later_stop_fill["protection_state"])
         self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_linked_exit_can_retry_with_new_id_after_exact_no_effect_proof(self):
+        self._recover_active_entry()
+        self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "failed-exit-001")
+        ledger._mark_spot_opo_strategy_exit_response(
+            self.owner, self.request["listClientOrderId"],
+            response=_cancel_replace_response(new_client_order_id="failed-exit-001", cancel_result="FAILURE"),
+        )
+        ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+
+        retry = self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "retry-exit-002")
+
+        self.assertEqual("submitted", retry["strategy_exit_state"])
+        self.assertEqual("retry-exit-002", retry["strategy_exit_client_order_id"])
+        self.assertEqual("failed-exit-001", retry["strategy_exit_history"][0]["strategy_exit_client_order_id"])
+        self.assertNotIn("strategy_exit_outcome", retry)
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_repeated_no_effect_retries_archive_complete_nonrecursive_history_across_restart(self):
+        self._recover_active_entry()
+        _, first = self._prove_no_effect_exit("__history_validation__")
+        _, second = self._prove_no_effect_exit("retry-exit-002")
+        third = self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "retry-exit-003")
+        history = third["strategy_exit_history"]
+        self.assertEqual(2, len(history))
+        for previous, archived in zip((first, second), history, strict=True):
+            expected = copy.deepcopy(archive_spot_opo_no_effect_attempt(previous))
+            # Admission archives a newly applied exact proof, with the original request/outcome intact.
+            fresh_time = archived["strategy_exit_no_effect_proof"]["verified_at"]
+            self.assertGreaterEqual(fresh_time, expected["strategy_exit_no_effect_proof"]["verified_at"])
+            expected["strategy_exit_no_effect_proof"]["verified_at"] = fresh_time
+            self.assertEqual(expected, archived)
+        self.assertTrue(all("strategy_exit_history" not in prior for prior in history))
+        for stale in ("strategy_exit_outcome", "strategy_exit_response_at", "strategy_exit_no_effect_proof",
+                      "strategy_exit_order_id", "strategy_exit_executed_qty", "strategy_exit_last_error"):
+            self.assertNotIn(stale, third)
+        restarted = SimpleNamespace(
+            _order_audit_log_path=self.owner._order_audit_log_path, api_key=self.owner.api_key, mode=self.owner.mode,
+        )
+        self.assertEqual(third, ledger._get_order_intent_record(restarted, self.request["listClientOrderId"]))
+        self.assertEqual(1, ledger.get_order_intent_status(restarted)["unresolved_count"])
+
+    def test_archived_no_effect_history_rejects_tampered_or_recursive_evidence(self):
+        self._recover_active_entry()
+        self._prove_no_effect_exit()
+        self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "retry-exit-002")
+        path = ledger._intent_path(self.owner)
+        original = path.read_text(encoding="utf-8")
+        mutations = (
+            ("strategy_exit_request_signature", "a" * 64),
+            ("strategy_exit_pre_order_signature", "a" * 64),
+            ("strategy_exit_client_order_id", "op-stop-001"),
+            ("strategy_exit_quantity", "0.0998"),
+            ("strategy_exit_pre_order_quantity", "0.0998"),
+            ("strategy_exit_new_order_accepted", True),
+            ("strategy_exit_cancel_confirmed", True),
+            ("strategy_exit_response_at", "missing-timezone"),
+            ("strategy_exit_history", []),
+            ("strategy_exit_order_id", 999),
+            ("strategy_exit_no_effect_proof", {}),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                payload = json.loads(original)
+                payload["intents"][self.request["listClientOrderId"]]["strategy_exit_history"][0][field] = value
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaises(LiveTradingSafetyError):
+                    ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        payload = json.loads(original)
+        payload["intents"][self.request["listClientOrderId"]]["strategy_exit_history"][0][
+            "strategy_exit_no_effect_proof"
+        ]["pending_order_id"] = 999
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaises(LiveTradingSafetyError):
+            ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        path.write_text(original, encoding="utf-8")
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_late_or_unbound_callbacks_cannot_classify_a_new_retry(self):
+        self._recover_active_entry()
+        prior_begun, _ = self._prove_no_effect_exit()
+        begun = self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "retry-exit-002")
+        path = ledger._intent_path(self.owner)
+        original = path.read_bytes()
+        for receipt in (prior_begun, None):
+            for callback in ("response", "unknown"):
+                with self.subTest(callback=callback, receipt="old" if receipt else "missing"):
+                    with self.assertRaisesRegex(LiveTradingSafetyError, "attempt changed"):
+                        if callback == "response":
+                            ledger._mark_spot_opo_strategy_exit_response(
+                                self.owner, self.request["listClientOrderId"],
+                                response=_cancel_replace_response(new_client_order_id="failed-exit-001", cancel_result="FAILURE"),
+                                expected_record=receipt,
+                            )
+                        else:
+                            ledger._mark_spot_opo_strategy_exit_unknown(
+                                self.owner, self.request["listClientOrderId"], error="late transport failure",
+                                expected_record=receipt,
+                            )
+                    self.assertEqual(original, path.read_bytes())
+        ledger._mark_spot_opo_strategy_exit_unknown(
+            self.owner, self.request["listClientOrderId"], error="current uncertain POST", expected_record=begun,
+        )
+        current = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("unknown", current["strategy_exit_state"])
+        self.assertEqual(begun["strategy_exit_history"], current["strategy_exit_history"])
+        self.assertTrue(ledger._is_unresolved(current))
+        with self.assertRaises(LiveTradingSafetyError):
+            self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "retry-exit-003")
+
+    def test_retry_rejects_record_change_after_exact_stop_receipt_before_persistence(self):
+        self._recover_active_entry()
+        self._prove_no_effect_exit()
+        original_transactions = ledger.ledger_transactions
+
+        @contextmanager
+        def change_record_before_lock(*paths):
+            ledger._update_order_intent_by_id(
+                self.owner, self.request["listClientOrderId"], state="accepted", last_error="concurrent monitor",
+            )
+            with original_transactions(*paths):
+                yield
+
+        with patch.object(ledger, "ledger_transactions", change_record_before_lock):
+            with self.assertRaisesRegex(LiveTradingSafetyError, "changed before.*persisted"):
+                self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "retry-exit-002")
+        current = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("no_effect", current["strategy_exit_state"])
+        self.assertEqual("failed-exit-001", current["strategy_exit_client_order_id"])
+        self.assertEqual([], current["strategy_exit_history"])
+        self.assertEqual("concurrent monitor", current["last_error"])
+
+    def test_retry_rechecks_allocation_after_exact_stop_receipt_before_persistence(self):
+        self._recover_active_entry()
+        self._prove_no_effect_exit()
+        original_transactions = ledger.ledger_transactions
+        changed_allocation = []
+
+        @contextmanager
+        def change_allocation_before_lock(*paths):
+            snapshot = json.loads(self.allocation_path.read_text(encoding="utf-8"))
+            snapshot["entry_allocations"]["BTCUSDT:L"][0]["entry_price"] = 101.0
+            self.allocation_path.write_text(json.dumps(snapshot), encoding="utf-8")
+            changed_allocation.append(self.allocation_path.read_bytes())
+            with original_transactions(*paths):
+                yield
+
+        with patch.object(ledger, "ledger_transactions", change_allocation_before_lock):
+            with self.assertRaisesRegex(LiveTradingSafetyError, "allocation changed before.*submission"):
+                self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "retry-exit-002")
+        current = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        self.assertEqual("no_effect", current["strategy_exit_state"])
+        self.assertEqual("failed-exit-001", current["strategy_exit_client_order_id"])
+        self.assertEqual([], current["strategy_exit_history"])
+        self.assertEqual([self.allocation_path.read_bytes()], changed_allocation)
+
+    def test_historical_exit_id_cannot_be_reused_by_any_new_spot_entry_before_query(self):
+        self._recover_active_entry()
+        self._prove_no_effect_exit()
+        self._prove_no_effect_exit("retry-exit-002")
+        path = ledger._intent_path(self.owner)
+        original = path.read_bytes()
+        for route in ("market", "opo-list", "opo-working", "opo-pending"):
+            with self.subTest(route=route):
+                with patch.object(self.owner.client, "get_order_list", side_effect=AssertionError("no GET allowed")):
+                    with self.assertRaisesRegex(LiveTradingSafetyError, "already used"):
+                        if route == "market":
+                            ledger._begin_order_intent(
+                                self.owner,
+                                {"newClientOrderId": "failed-exit-001", "symbol": "ETHUSDT", "side": "BUY",
+                                 "type": "MARKET", "quantity": "1"},
+                                market="spot", source="offline-test",
+                            )
+                        else:
+                            request = {**self.request, "listClientOrderId": "next-list",
+                                       "workingClientOrderId": "next-buy", "pendingClientOrderId": "next-stop"}
+                            field = {"opo-list": "listClientOrderId", "opo-working": "workingClientOrderId",
+                                     "opo-pending": "pendingClientOrderId"}[route]
+                            request[field] = "failed-exit-001"
+                            ledger._begin_spot_opo_intent(self.owner, request, source="offline-test")
+                self.assertEqual(original, path.read_bytes())
+
+    def test_retry_history_limit_blocks_before_query_and_does_not_discard_prior_attempts(self):
+        self._recover_active_entry()
+        _, current = self._prove_no_effect_exit()
+        prior = archive_spot_opo_no_effect_attempt(current)
+        history = []
+        for index in range(100):
+            snapshot = copy.deepcopy(prior)
+            client_id = f"historic-exit-{index:03d}"
+            snapshot["strategy_exit_client_order_id"] = client_id
+            snapshot["strategy_exit_request"]["newClientOrderId"] = client_id
+            signature = ledger._request_signature(snapshot["strategy_exit_request"])
+            snapshot["strategy_exit_request_signature"] = signature
+            snapshot["strategy_exit_no_effect_proof"]["request_signature"] = signature
+            history.append(snapshot)
+        ledger._update_order_intent_by_id(
+            self.owner, self.request["listClientOrderId"], state="accepted", strategy_exit_history=history,
+        )
+        path = ledger._intent_path(self.owner)
+        original = path.read_bytes()
+        self.assertEqual(100, len(validate_spot_opo_exit_retry_history(
+            ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"]),
+        )))
+        with patch.object(self.owner.client, "get_order_list", side_effect=AssertionError("no GET allowed")):
+            with self.assertRaisesRegex(LiveTradingSafetyError, "history limit"):
+                self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "retry-exit-002")
+        self.assertEqual(original, path.read_bytes())
+        current["strategy_exit_history"] = history + [copy.deepcopy(prior)]
+        with self.assertRaisesRegex(LiveTradingSafetyError, "exceeds its limit"):
+            validate_spot_opo_exit_retry_history(current)
+
+    def test_used_spot_client_ids_cover_nested_generations_and_reject_malformed_history(self):
+        records = {
+            "ordinary": {"market": "spot", "client_order_id": "old-market"},
+            "opo": {"market": "spot", "client_order_id": "list", "request": {
+                "listClientOrderId": "list", "workingClientOrderId": "buy", "pendingClientOrderId": "stop",
+            }, "strategy_exit_client_order_id": "exit", "strategy_exit_history": [
+                {"strategy_exit_client_order_id": "old-exit"},
+            ], "residual_stop_request": {"newClientOrderId": "residual"}, "residual_stop_history": [
+                {"request": {"newClientOrderId": "old-residual"}},
+            ]},
+            "futures": {"market": "futures", "client_order_id": "outside-scope"},
+        }
+        self.assertEqual(
+            {"old-market", "list", "buy", "stop", "exit", "old-exit", "residual", "old-residual"},
+            used_spot_client_order_ids(records),
+        )
+        for field in ("strategy_exit_history", "residual_stop_history"):
+            for value in (None, {}, [None]):
+                with self.subTest(field=field, value=value):
+                    broken = copy.deepcopy(records)
+                    broken["opo"][field] = value
+                    with self.assertRaisesRegex(LiveTradingSafetyError, "history is malformed"):
+                        used_spot_client_order_ids(broken)
 
     def test_canceled_stop_with_rejected_sell_remains_blocked_after_exact_requery(self):
         self._recover_active_entry()

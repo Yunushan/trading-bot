@@ -1004,36 +1004,44 @@ def spot_opo_allocation_baseline(
 ) -> dict[str, str]:
     """Require one coherent Spot allocation belonging only to the exact OPO list."""
     with ledger_transaction(path):
-        baseline = spot_live_allocation_baseline(path, symbol=symbol)
-        if baseline is None:
-            raise LiveTradingSafetyError("A recovered Live Spot allocation is required before linked exit.")
-        try:
-            expected = _stored_decimal(expected_quantity, "OPO entry quantity", positive=True)
-            observed = Decimal(baseline["quantity"])
-        except (InvalidOperation, KeyError):
-            raise LiveTradingSafetyError("Recovered OPO allocation quantity is invalid.") from None
-        if observed != expected:
-            raise LiveTradingSafetyError("Linked OPO must be the only active allocation for its Spot symbol.")
-        data = _load_live_allocation_snapshot(path)
-        allocations = data["entry_allocations"]
-        assert isinstance(allocations, dict)
-        raw_entries = allocations.get(f"{symbol}:L")
-        if not isinstance(raw_entries, list):
-            raise LiveTradingSafetyError("Recovered OPO allocation is missing from the Live Spot portfolio.")
-        active = [
-            row for row in raw_entries
-            if isinstance(row, dict) and str(row.get("status") or "").lower() == "active"
-        ]
-        if (
-            len(active) != 1
-            or active[0].get("client_order_id") != list_client_order_id
-            or active[0].get("symbol") != symbol
-            or active[0].get("side_key") != "L"
-            or _stored_decimal(active[0].get("qty"), "OPO allocation quantity", positive=True) != expected
-        ):
-            raise LiveTradingSafetyError("The exact OPO allocation is not the sole active Spot inventory.")
-        return baseline
+        return spot_opo_allocation_baseline_unlocked(
+            path, symbol=symbol, list_client_order_id=list_client_order_id, expected_quantity=expected_quantity,
+        )
 
+
+def spot_opo_allocation_baseline_unlocked(
+    path: Path, *, symbol: str, list_client_order_id: str, expected_quantity: object,
+) -> dict[str, str]:
+    """Validate an OPO baseline while the caller holds this allocation's transaction."""
+    baseline = spot_live_allocation_baseline(path, symbol=symbol)
+    if baseline is None:
+        raise LiveTradingSafetyError("A recovered Live Spot allocation is required before linked exit.")
+    try:
+        expected = _stored_decimal(expected_quantity, "OPO entry quantity", positive=True)
+        observed = Decimal(baseline["quantity"])
+    except (InvalidOperation, KeyError):
+        raise LiveTradingSafetyError("Recovered OPO allocation quantity is invalid.") from None
+    if observed != expected:
+        raise LiveTradingSafetyError("Linked OPO must be the only active allocation for its Spot symbol.")
+    data = _load_live_allocation_snapshot(path)
+    allocations = data["entry_allocations"]
+    assert isinstance(allocations, dict)
+    raw_entries = allocations.get(f"{symbol}:L")
+    if not isinstance(raw_entries, list):
+        raise LiveTradingSafetyError("Recovered OPO allocation is missing from the Live Spot portfolio.")
+    active = [
+        row for row in raw_entries
+        if isinstance(row, dict) and str(row.get("status") or "").lower() == "active"
+    ]
+    if (
+        len(active) != 1
+        or active[0].get("client_order_id") != list_client_order_id
+        or active[0].get("symbol") != symbol
+        or active[0].get("side_key") != "L"
+        or _stored_decimal(active[0].get("qty"), "OPO allocation quantity", positive=True) != expected
+    ):
+        raise LiveTradingSafetyError("The exact OPO allocation is not the sole active Spot inventory.")
+    return baseline
 
 def _existing_sell_recovery_proofs(
     allocations: Mapping[str, object], *, signature: str,
