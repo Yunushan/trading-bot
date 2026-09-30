@@ -4,6 +4,12 @@ This file makes the work resumable in a new chat **without the old conversation*
 
 ## Current checkpoint
 
+- **2026-09-30 dependency/CI checkpoint:** main advanced to `e0ec5cba` after requested PRs #108–#114 were squash merged with 46/46 checks at their merge revisions and their remote branches deleted. Corrective PR #116 restores 60 packaging assertion lines omitted during #108, freezes only the synthetic provenance test clock while retaining stale-evidence rejection, updates mobile brace-expansion to 5.0.12 with existing 1.x overrides at 1.1.21, and pins urllib3 2.8.0 with compatible CCXT 4.5.64. Newer CCXT releases through 4.5.84 require vulnerable urllib3 2.7.0; this is a temporary compatibility pin and must be revisited when a compatible fixed release exists.
+- Qualified correction checks: packaging 34 tests plus two subtests; provenance 12 plus 16; dependency contracts 62 plus 163; CCXT/dependency/network/security checks 278 plus 846. Suites overlap. Actual Node 26.5.1/npm 11.6.2 mobile checks and fresh audit pass with zero vulnerabilities; the fresh Python runtime/service/security resolution audits 71 dependencies with zero known vulnerabilities. Consult PR #116 for its final remote gate. These checks do not establish live trading or release acceptance.
+- The selected first production target is Python desktop + Binance Spot on one host with LIMIT entry and a linked stop. Additional unmerged runtime work remains isolated on `codex/spot-residual-recovery`; consult that branch's handoff for its actual revision and evidence. No current numerical reassessment is claimed here. The older score and clean-source results below are historical evidence for their named commits; production remains **NO-GO**.
+
+## Historical checkpoint — 2026-09-23 and earlier
+
 - Audit date: **2026-09-17**.
 - Audited source: `e574dae633d2186b8af4af1013076ff91f778bb9` on `main`.
 - Current tested clean code commit: `3dc13908b39f6af759cd7c431e2be095366683d7` on `codex/production-readiness-20260923`, starting from `af720dfcc646b77d07cbd6d9c638dd0d07b2324c`. The source gate passed on its staged candidate and the strict evidence check ran on this clean commit. Check `git rev-parse HEAD` and `git status` for later documentation commits.
