@@ -21,6 +21,8 @@ from app.integrations.exchanges.binance.orders.spot_fill_recovery_runtime import
     summarize_spot_opo_strategy_sell_fill,
 )
 from app.integrations.exchanges.binance.orders.spot_opo_runtime import build_spot_opo_request
+from app.integrations.exchanges.binance.orders.spot_opo_execution_runtime import place_spot_opo_entry
+from app.integrations.exchanges.binance.orders.order_sizing_runtime import place_spot_market_order, _floor_to_step
 from app.settings.live_safety import LiveTradingSafetyError
 
 
@@ -141,6 +143,9 @@ def _cancel_replace_response(
 
 class SpotOpoIntentRuntimeTests(unittest.TestCase):
     def setUp(self):
+        self._reset_intent_store()
+
+    def _reset_intent_store(self):
         directory = self.enterContext(tempfile.TemporaryDirectory())
         self.owner = SimpleNamespace(
             _order_audit_log_path=Path(directory) / "audit.jsonl",
@@ -755,6 +760,512 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
             )
         self.assertTrue(marked["exit_reconciled"])
         self.assertEqual(0, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_duplicate_buy_id_is_rejected_before_any_protection_query(self):
+        self._recover_active_entry()
+        path = ledger._intent_path(self.owner)
+        before = path.read_bytes()
+        queried = []
+        self.owner.client.get_order_list = lambda **kwargs: queried.append(kwargs)
+        for route in ("opo", "market"):
+            with self.subTest(route=route):
+                with self.assertRaisesRegex(LiveTradingSafetyError, "already has state accepted"):
+                    if route == "opo":
+                        ledger._begin_spot_opo_intent(self.owner, self.request, source="duplicate")
+                    else:
+                        ledger._begin_order_intent(
+                            self.owner,
+                            {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "1",
+                             "newClientOrderId": self.request["listClientOrderId"]},
+                            market="spot", source="duplicate",
+                        )
+                self.assertEqual([], queried)
+                self.assertEqual(before, path.read_bytes())
+
+    def test_new_opo_buy_refreshes_original_stop_before_persisting_exposure(self):
+        self._recover_active_entry()
+        self.assertEqual(0, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+        self._install_observation(pending_status="CANCELED", list_status="ALL_DONE")
+
+        with self.assertRaises(LiveTradingSafetyError):
+            ledger._begin_spot_opo_intent(
+                self.owner,
+                {**self.request, "listClientOrderId": "next-list", "workingClientOrderId": "next-buy",
+                 "pendingClientOrderId": "next-stop"},
+                source="new-exposure",
+            )
+
+        self.assertIsNone(ledger._get_order_intent_record(self.owner, "next-list"))
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_new_market_buy_refreshes_residual_stop_before_persisting_exposure(self):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        _, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+        self.assertEqual(0, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+        self.owner.client.get_order = lambda **_kwargs: {**acknowledgement, "status": "CANCELED"}
+
+        with self.assertRaises(LiveTradingSafetyError):
+            ledger._begin_order_intent(
+                self.owner,
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "1",
+                 "newClientOrderId": "next-market-buy"},
+                market="spot", source="new-exposure",
+            )
+
+        self.assertIsNone(ledger._get_order_intent_record(self.owner, "next-market-buy"))
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def _begin_next_spot_buy(self, route):
+        if route == "opo":
+            request = {
+                **self.request, "listClientOrderId": "next-list", "workingClientOrderId": "next-buy",
+                "pendingClientOrderId": "next-stop",
+            }
+            return ledger._begin_spot_opo_intent(self.owner, request, source="new-exposure")
+        return ledger._begin_order_intent(
+            self.owner,
+            {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "1",
+             "newClientOrderId": "next-market-buy"},
+            market="spot", source="new-exposure",
+        )
+
+    def _submit_next_spot_buy(self, route):
+        if route == "opo":
+            ledger._mark_spot_opo_submitted(self.owner, "next-list", via="test")
+        else:
+            ledger._mark_order_intent_submitted(
+                self.owner,
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "1",
+                 "newClientOrderId": "next-market-buy"},
+                via="test",
+            )
+
+    def _assert_next_spot_buy_absent(self, route):
+        self.assertIsNone(ledger._get_order_intent_record(
+            self.owner, "next-list" if route == "opo" else "next-market-buy",
+        ))
+
+    def test_both_buy_routes_fail_closed_for_changed_original_protection(self):
+        for route in ("opo", "market"):
+            for change in ("canceled", "filled", "identity", "offline"):
+                with self.subTest(route=route, change=change):
+                    self._reset_intent_store()
+                    self._recover_active_entry()
+                    queried = []
+                    if change == "canceled":
+                        self._install_observation(pending_status="CANCELED", list_status="ALL_DONE")
+                    elif change == "filled":
+                        self._install_observation(
+                            pending_status="FILLED", pending_executed="0.0999", list_status="ALL_DONE",
+                        )
+                    elif change == "identity":
+                        self._install_observation(wrong_pending_id=True)
+                    original_getter = self.owner.client.get_order_list
+
+                    def get_order_list(**kwargs):
+                        queried.append(kwargs)
+                        if change == "offline":
+                            raise TimeoutError("offline protection refresh")
+                        return original_getter(**kwargs)
+
+                    self.owner.client.get_order_list = get_order_list
+                    with self.assertRaisesRegex(LiveTradingSafetyError, "Fresh exact Spot protection"):
+                        self._begin_next_spot_buy(route)
+                    self.assertEqual([{"origClientOrderId": self.request["listClientOrderId"]}], queried)
+                    self._assert_next_spot_buy_absent(route)
+                    self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+                    record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                    self.assertEqual(302, record["pending_order_id"])
+                    self.assertEqual("0.0999", record["pending_original_qty"])
+                    self.assertTrue(record["entry_reconciled"])
+
+    def test_both_buy_routes_fail_closed_for_changed_residual_protection(self):
+        for route in ("opo", "market"):
+            for change in ("canceled", "filled", "identity", "offline"):
+                with self.subTest(route=route, change=change):
+                    self._reset_intent_store()
+                    allocation_path, baseline = self._recover_partial_strategy_exit()
+                    request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+                    queried = []
+
+                    def get_order(**kwargs):
+                        queried.append(kwargs)
+                        if change == "offline":
+                            raise TimeoutError("offline residual refresh")
+                        changed = dict(acknowledgement)
+                        if change == "canceled":
+                            changed["status"] = "CANCELED"
+                        elif change == "filled":
+                            changed.update(status="FILLED", executedQty=baseline["quantity"])
+                        elif change == "identity":
+                            changed["orderId"] = 999
+                        return changed
+
+                    self.owner.client = SimpleNamespace(get_order=get_order)
+                    with self.assertRaisesRegex(LiveTradingSafetyError, "Fresh exact Spot protection"):
+                        self._begin_next_spot_buy(route)
+                    self.assertEqual([{
+                        "symbol": "BTCUSDT", "origClientOrderId": request["newClientOrderId"],
+                    }], queried)
+                    self._assert_next_spot_buy_absent(route)
+                    self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+                    record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                    self.assertEqual(510, record["residual_stop_order_id"])
+                    self.assertEqual(request, record["residual_stop_request"])
+                    self.assertEqual("confirmed", record["cancel_state"])
+
+    def test_both_buy_routes_refresh_original_protection_at_begin_and_submission(self):
+        for route in ("opo", "market"):
+            with self.subTest(route=route):
+                self._reset_intent_store()
+                self._recover_active_entry()
+                queried = []
+                original_list_getter = self.owner.client.get_order_list
+                original_order_getter = self.owner.client.get_order
+
+                def get_order_list(**kwargs):
+                    queried.append(("list", kwargs["origClientOrderId"]))
+                    return original_list_getter(**kwargs)
+
+                def get_order(**kwargs):
+                    queried.append(("order", kwargs["origClientOrderId"]))
+                    return original_order_getter(**kwargs)
+
+                self.owner.client.get_order_list = get_order_list
+                self.owner.client.get_order = get_order
+                self._begin_next_spot_buy(route)
+                self._submit_next_spot_buy(route)
+                expected = [
+                    ("list", self.request["listClientOrderId"]),
+                    ("order", self.request["workingClientOrderId"]),
+                    ("order", self.request["pendingClientOrderId"]),
+                ]
+                self.assertEqual(expected * 2, queried)
+                record = ledger._get_order_intent_record(
+                    self.owner, "next-list" if route == "opo" else "next-market-buy",
+                )
+                self.assertEqual("submitted", record["state"])
+
+    def test_both_buy_routes_refresh_residual_protection_at_begin_and_submission(self):
+        for route in ("opo", "market"):
+            with self.subTest(route=route):
+                self._reset_intent_store()
+                allocation_path, baseline = self._recover_partial_strategy_exit()
+                request, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+                queried = []
+
+                def get_order(**kwargs):
+                    queried.append(kwargs)
+                    return acknowledgement
+
+                self.owner.client = SimpleNamespace(get_order=get_order)
+                self._begin_next_spot_buy(route)
+                self._submit_next_spot_buy(route)
+                self.assertEqual([{
+                    "symbol": "BTCUSDT", "origClientOrderId": request["newClientOrderId"],
+                }] * 2, queried)
+
+    def test_protection_changed_after_begin_blocks_both_submitted_transitions(self):
+        for route in ("opo", "market"):
+            with self.subTest(route=route):
+                self._reset_intent_store()
+                self._recover_active_entry()
+                self._begin_next_spot_buy(route)
+                self._install_observation(pending_status="CANCELED", list_status="ALL_DONE")
+                with self.assertRaisesRegex(LiveTradingSafetyError, "Fresh exact Spot protection"):
+                    self._submit_next_spot_buy(route)
+                pending = ledger._get_order_intent_record(
+                    self.owner, "next-list" if route == "opo" else "next-market-buy",
+                )
+                self.assertEqual("pending", pending["state"])
+                self.assertEqual(2, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_protection_snapshot_changed_after_query_blocks_begin_and_submission(self):
+        for route in ("opo", "market"):
+            for boundary in ("begin", "submit"):
+                with self.subTest(route=route, boundary=boundary):
+                    self._reset_intent_store()
+                    self._recover_active_entry()
+                    if boundary == "submit":
+                        self._begin_next_spot_buy(route)
+                    refresh = ledger._refresh_spot_active_protection
+
+                    def raced_refresh(*args, **kwargs):
+                        proof = refresh(*args, **kwargs)
+                        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                        ledger._update_order_intent_by_id(
+                            self.owner, self.request["listClientOrderId"], state="accepted",
+                            expected_record=record, source="concurrent protection observation",
+                        )
+                        return proof
+
+                    with patch.object(ledger, "_refresh_spot_active_protection", side_effect=raced_refresh):
+                        with self.assertRaisesRegex(LiveTradingSafetyError, "changed after its exact refresh"):
+                            if boundary == "begin":
+                                self._begin_next_spot_buy(route)
+                            else:
+                                self._submit_next_spot_buy(route)
+                    if boundary == "begin":
+                        self._assert_next_spot_buy_absent(route)
+                    else:
+                        self.assertEqual("pending", ledger._get_order_intent_record(
+                            self.owner, "next-list" if route == "opo" else "next-market-buy",
+                        )["state"])
+
+    def test_late_original_refresh_cannot_authorize_new_exposure(self):
+        self._recover_active_entry()
+        stale_client = self.owner.client
+        original_getter = stale_client.get_order_list
+
+        def raced_get_order_list(**kwargs):
+            self._install_observation(pending_status="FILLED", pending_executed="0.0999", list_status="ALL_DONE")
+            ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+            self.owner.client = stale_client
+            return original_getter(**kwargs)
+
+        stale_client.get_order_list = raced_get_order_list
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Fresh exact Spot protection"):
+            self._begin_next_spot_buy("opo")
+        self._assert_next_spot_buy_absent("opo")
+        self.assertEqual("FILLED", ledger._get_order_intent_record(
+            self.owner, self.request["listClientOrderId"],
+        )["pending_status"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_late_residual_refresh_cannot_authorize_new_exposure(self):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        _, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+
+        def raced_get_order(**_kwargs):
+            ledger._mark_spot_opo_residual_stop_order_observed(
+                self.owner, self.request["listClientOrderId"],
+                order_response={**acknowledgement, "status": "CANCELED"}, exact_query=True,
+            )
+            return acknowledgement
+
+        self.owner.client = SimpleNamespace(get_order=raced_get_order)
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Fresh exact Spot protection"):
+            self._begin_next_spot_buy("market")
+        self._assert_next_spot_buy_absent("market")
+        self.assertEqual("CANCELED", ledger._get_order_intent_record(
+            self.owner, self.request["listClientOrderId"],
+        )["residual_stop_status"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_batch_and_individual_reconciliation_poll_resolved_original_protection(self):
+        for batch in (False, True):
+            with self.subTest(batch=batch):
+                self._reset_intent_store()
+                self._recover_active_entry()
+                self._install_observation(pending_status="FILLED", pending_executed="0.0999", list_status="ALL_DONE")
+                if batch:
+                    results = ledger.reconcile_unresolved_order_intents(self.owner, limit=1)
+                    self.assertEqual(1, len(results))
+                    result = results[0]
+                else:
+                    result = ledger.reconcile_order_intent(self.owner, self.request["listClientOrderId"])
+                self.assertFalse(result["reconciled"])
+                self.assertEqual("triggered", result["protection_state"])
+                self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_batch_reconciliation_polls_resolved_residual_protection(self):
+        allocation_path, baseline = self._recover_partial_strategy_exit()
+        _, acknowledgement = self._begin_and_observe_residual_stop(allocation_path, baseline)
+        self.owner.client = SimpleNamespace(get_order=lambda **_kwargs: {**acknowledgement, "status": "CANCELED"})
+
+        results = ledger.reconcile_unresolved_order_intents(self.owner, limit=1)
+
+        self.assertEqual(1, len(results))
+        self.assertFalse(results[0]["reconciled"])
+        self.assertEqual("triggered", results[0]["residual_stop_state"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_resolved_no_fill_records_do_not_consume_batch_monitoring_limit(self):
+        self._submit()
+        self._install_observation(
+            working_status="EXPIRED", working_executed="0", pending_status="PENDING_NEW", list_status="ALL_DONE",
+        )
+        ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"])
+        queried = []
+        self.owner.client.get_order_list = lambda **kwargs: queried.append(kwargs)
+
+        self.assertEqual([], ledger.reconcile_unresolved_order_intents(self.owner, limit=1))
+        self.assertEqual([], queried)
+
+    def test_reducing_sell_for_other_symbol_does_not_refresh_active_protection(self):
+        self._recover_active_entry()
+        queried = []
+        self.owner.client.get_order_list = lambda **kwargs: queried.append(kwargs)
+
+        record = ledger._begin_order_intent(
+            self.owner,
+            {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "1",
+             "newClientOrderId": "reducing-sell"},
+            market="spot", source="reducing-exit",
+        )
+        ledger._mark_order_intent_submitted(
+            self.owner, {"newClientOrderId": "reducing-sell"}, via="test",
+        )
+
+        self.assertEqual("SELL", record["side"])
+        self.assertEqual([], queried)
+
+    def _add_second_recovered_active_entry(self):
+        request = {
+            **self.request, "listClientOrderId": "other-list", "workingClientOrderId": "other-buy",
+            "pendingClientOrderId": "other-stop",
+        }
+        ledger._begin_spot_opo_intent(self.owner, request, source="second-protected-entry")
+        ledger._mark_spot_opo_submitted(self.owner, request["listClientOrderId"], via="test")
+        list_response, working, pending = _observation(request)
+        list_response["orderListId"] = 400
+        list_response["orders"][0]["orderId"] = working["orderId"] = 401
+        list_response["orders"][1]["orderId"] = pending["orderId"] = 402
+        working["orderListId"] = pending["orderListId"] = 400
+        original_client = self.owner.client
+        children = {working["clientOrderId"]: working, pending["clientOrderId"]: pending}
+        self.owner.client = SimpleNamespace(
+            get_order_list=lambda **kwargs: (
+                list_response if kwargs["origClientOrderId"] == request["listClientOrderId"]
+                else original_client.get_order_list(**kwargs)
+            ),
+            get_order=lambda **kwargs: (
+                children[kwargs["origClientOrderId"]] if kwargs["origClientOrderId"] in children
+                else original_client.get_order(**kwargs)
+            ),
+        )
+        ledger.reconcile_spot_opo_intent(self.owner, request["listClientOrderId"])
+        fill = {
+            "symbol": "BTCUSDT", "client_order_id": request["listClientOrderId"],
+            "exchange_client_order_id": request["workingClientOrderId"], "order_id": 401,
+            "trade_ids": [903], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
+            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "9.99",
+            "average_cost": "100", "commissions": [], "base_asset": "BTC", "quote_asset": "USDT",
+            "fill_time_ms": 1780000000001, "signature": "d" * 64,
+        }
+        with patch(
+            "app.gui.shared.allocation_persistence.get_position_allocations_path",
+            return_value=self.allocation_path,
+        ):
+            persist_spot_buy_allocation(self.allocation_path, fill)
+            ledger._mark_spot_opo_entry_reconciled(
+                self.owner, request["listClientOrderId"], portfolio_signature="d" * 64, portfolio_quantity="0.0999",
+            )
+        return request, list_response, working, pending
+
+    def test_new_exposure_refreshes_every_active_stop_across_symbols(self):
+        self._recover_active_entry()
+        other_request, _, _, _ = self._add_second_recovered_active_entry()
+        self.assertEqual(0, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+        original_getter = self.owner.client.get_order_list
+        queried = []
+
+        def get_order_list(**kwargs):
+            queried.append(kwargs["origClientOrderId"])
+            return original_getter(**kwargs)
+
+        self.owner.client.get_order_list = get_order_list
+        # The incoming MARKET BUY is ETHUSDT; both existing protections are BTCUSDT.
+        self._begin_next_spot_buy("market")
+        self._submit_next_spot_buy("market")
+        self.assertEqual([
+            self.request["listClientOrderId"], other_request["listClientOrderId"],
+        ] * 2, queried)
+
+    def test_monitoring_limit_cannot_hide_an_unqueried_stop_from_new_exposure(self):
+        self._recover_active_entry()
+        other_request, list_response, _, pending = self._add_second_recovered_active_entry()
+        result = ledger.reconcile_unresolved_order_intents(self.owner, limit=1)
+        self.assertEqual(1, len(result))
+        self.assertEqual(self.request["listClientOrderId"], result[0]["client_order_id"])
+        list_response.update(listStatusType="ALL_DONE", listOrderStatus="ALL_DONE")
+        pending["status"] = "CANCELED"
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Fresh exact Spot protection"):
+            self._begin_next_spot_buy("opo")
+
+        self._assert_next_spot_buy_absent("opo")
+        record = ledger._get_order_intent_record(self.owner, other_request["listClientOrderId"])
+        self.assertEqual("CANCELED", record["pending_status"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_real_entry_functions_do_not_post_when_protection_changes_after_begin(self):
+        for route in ("opo", "market"):
+            with self.subTest(route=route):
+                self._reset_intent_store()
+                self._recover_active_entry()
+                self.owner.account_type = "SPOT"
+                events = []
+                posts = []
+
+                def create_order(**kwargs):
+                    posts.append(kwargs)
+                    return {}
+
+                def cancel_protection():
+                    self._install_observation(pending_status="CANCELED", list_status="ALL_DONE")
+                    self.owner.client.create_order = create_order
+                    self.owner.client.create_order_list_opo = create_order
+
+                def begin_market(params, **kwargs):
+                    result = ledger._begin_order_intent(self.owner, params, **kwargs)
+                    events.append("begin")
+                    cancel_protection()
+                    return result
+
+                def begin_opo(request, **kwargs):
+                    result = ledger._begin_spot_opo_intent(self.owner, request, **kwargs)
+                    events.append("begin")
+                    cancel_protection()
+                    return result
+
+                self.owner._guard_live_order_submit = lambda **_kwargs: events.append("guard")
+                self.owner._begin_order_intent = begin_market
+                self.owner._begin_spot_opo_intent = begin_opo
+                self.owner._mark_order_intent_submitted = lambda params, **kwargs: ledger._mark_order_intent_submitted(
+                    self.owner, params, **kwargs,
+                )
+                self.owner._mark_spot_opo_submitted = lambda client_id, **kwargs: ledger._mark_spot_opo_submitted(
+                    self.owner, client_id, **kwargs,
+                )
+                self.owner._mark_order_intent_accepted = lambda params, **kwargs: ledger._mark_order_intent_accepted(
+                    self.owner, params, **kwargs,
+                )
+                self.owner._mark_spot_opo_accepted = lambda request, **kwargs: ledger._mark_spot_opo_accepted(
+                    self.owner, request, **kwargs,
+                )
+                self.owner._mark_order_intent_unknown = lambda params, **kwargs: ledger._mark_order_intent_unknown(
+                    self.owner, params, **kwargs,
+                )
+                self.owner._mark_spot_opo_unknown = lambda client_id, **kwargs: ledger._mark_spot_opo_unknown(
+                    self.owner, client_id, **kwargs,
+                )
+                self.owner.reconcile_spot_opo_intent = lambda client_id, **kwargs: ledger.reconcile_spot_opo_intent(
+                    self.owner, client_id, **kwargs,
+                )
+                self.owner.get_spot_symbol_filters = lambda _symbol: {
+                    "stepSize": 0.0001, "minQty": 0.0001, "minNotional": 5,
+                }
+                self.owner._floor_to_step = _floor_to_step
+                self.owner.get_symbol_info_spot = lambda _symbol: _symbol_info()
+                self.owner.client.create_order = create_order
+                self.owner.client.create_order_list_opo = create_order
+                if route == "opo":
+                    result = place_spot_opo_entry(
+                        self.owner, "BTCUSDT", "BUY", "100.00", "0.1000", "95.00",
+                        list_client_order_id="next-list", working_client_order_id="next-buy",
+                        pending_client_order_id="next-stop",
+                    )
+                else:
+                    result = place_spot_market_order(self.owner, "ETHUSDT", "BUY", quantity=1, price=100)
+
+                self.assertFalse(result["ok"])
+                self.assertIn("Fresh exact Spot protection", result["error"])
+                self.assertEqual(["guard", "begin"], events)
+                self.assertEqual([], posts)
+                self.assertEqual("CANCELED", ledger._get_order_intent_record(
+                    self.owner, self.request["listClientOrderId"],
+                )["pending_status"])
 
     def test_strategy_market_sell_is_blocked_while_linked_opo_stop_is_active(self):
         self._submit()

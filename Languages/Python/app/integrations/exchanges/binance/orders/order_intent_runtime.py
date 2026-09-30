@@ -983,6 +983,121 @@ def _intent_record(params: Mapping[str, object], *, market: str, source: str) ->
     return record
 
 
+def _has_active_spot_protection(record: Mapping[str, object]) -> bool:
+    return (
+        record.get("market") == "spot"
+        and record.get("type") == "OPO"
+        and record.get("strategy_exit_state") != "completed"
+        and record.get("residual_stop_state") != "completed"
+        and (
+            record.get("protection_state") == "active"
+            or record.get("residual_stop_state") == "active"
+        )
+    )
+
+
+def _active_spot_protection_records(intents: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    return {
+        client_order_id: dict(record)
+        for client_order_id, record in intents.items()
+        if isinstance(record, Mapping) and _has_active_spot_protection(record)
+    }
+
+
+def _raise_for_duplicate_intent(intents: Mapping[str, object], client_order_id: str) -> None:
+    existing = intents.get(client_order_id)
+    if isinstance(existing, Mapping) and str(existing.get("state") or "") in _BLOCKING_STATES:
+        raise LiveTradingSafetyError(
+            f"Client order ID {client_order_id} already has state "
+            f"{existing.get('state')}; reconcile it before retrying."
+        )
+
+
+def _raise_for_unresolved_intents(
+    intents: Mapping[str, object], *, exclude_client_order_id: str | None = None,
+) -> None:
+    unresolved_ids = [
+        client_order_id for client_order_id, record in intents.items()
+        if client_order_id != exclude_client_order_id and isinstance(record, Mapping) and _is_unresolved(record)
+    ]
+    if unresolved_ids:
+        raise LiveTradingSafetyError(
+            "Unresolved exchange order intent(s) block new live submissions; "
+            f"reconcile {', '.join(unresolved_ids[:3])} before continuing."
+        )
+
+
+def _refresh_spot_active_protection(
+    self, *, exclude_client_order_id: str | None = None,
+    reject_existing_client_order_id: str | None = None,
+) -> tuple[str, dict[str, dict[str, object]]]:
+    """Obtain exact applied proof for every active stop before one new BUY boundary."""
+    path = _intent_path(self)
+    with ledger_transaction(path):
+        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        intents = ledger["intents"]
+        if not isinstance(intents, dict):
+            raise LiveTradingSafetyError("Order intent ledger is malformed; new Spot exposure is blocked.")
+        if reject_existing_client_order_id is not None:
+            _raise_for_duplicate_intent(intents, reject_existing_client_order_id)
+        _raise_for_unresolved_intents(intents, exclude_client_order_id=exclude_client_order_id)
+        active_records = _active_spot_protection_records(intents)
+        store_id = str(ledger["store_id"])
+    refreshed: dict[str, dict[str, object]] = {}
+    # No monitoring limit or cached timestamp can authorize new exposure.
+    for client_order_id in active_records:
+        applied_records: list[dict[str, object]] = []
+        observation = _reconcile_spot_opo_intent(
+            self, client_order_id, force=True, applied_records=applied_records,
+        )
+        if (
+            observation.get("error")
+            or observation.get("reconciled") is not True
+            or len(applied_records) != 1
+            or not _has_active_spot_protection(applied_records[0])
+            or _is_unresolved(applied_records[0])
+        ):
+            raise LiveTradingSafetyError(
+                "Fresh exact Spot protection could not be verified; new exposure is blocked. "
+                f"Reconcile {client_order_id} before continuing."
+            )
+        refreshed[client_order_id] = applied_records[0]
+    return store_id, refreshed
+
+
+def _assert_fresh_spot_protection(
+    ledger: Mapping[str, object], proof: tuple[str, dict[str, dict[str, object]]],
+    *, exclude_client_order_id: str | None = None,
+) -> None:
+    intents = ledger.get("intents")
+    if not isinstance(intents, dict):
+        raise LiveTradingSafetyError("Order intent ledger is malformed; new Spot exposure is blocked.")
+    _raise_for_unresolved_intents(intents, exclude_client_order_id=exclude_client_order_id)
+    if str(ledger.get("store_id")) != proof[0] or _active_spot_protection_records(intents) != proof[1]:
+        raise LiveTradingSafetyError(
+            "Spot protection changed after its exact refresh; new exposure is blocked. Query it again."
+        )
+
+
+def _submit_spot_buy_intent(self, record: Mapping[str, object], *, via: str) -> None:
+    client_order_id = str(record["client_order_id"])
+    protection_proof = _refresh_spot_active_protection(self, exclude_client_order_id=client_order_id)
+    path = _intent_path(self)
+    with ledger_transaction(path):
+        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        intents = ledger["intents"]
+        if not isinstance(intents, dict):
+            raise LiveTradingSafetyError("Order intent ledger is malformed; Spot BUY submission is blocked.")
+        current = intents.get(client_order_id)
+        if not isinstance(current, dict) or current != record:
+            raise LiveTradingSafetyError("Spot BUY intent changed before submission; reconcile it first.")
+        _assert_fresh_spot_protection(
+            ledger, protection_proof, exclude_client_order_id=client_order_id,
+        )
+        current.update(state="submitted", updated_at=_now(), last_via=str(via), submitted_at=_now())
+        _write_ledger(path, ledger)
+
+
 def _begin_order_intent(self, params: Mapping[str, object], *, market: str, source: str) -> dict[str, object]:
     if market == "spot" and getattr(self, "_enforce_spot_execution_owner", False) and (
         is_live_trading_mode(getattr(self, "mode", None))
@@ -992,6 +1107,10 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
             raise LiveTradingSafetyError("Spot execution owner requires a Spot account wrapper.")
         _ensure_spot_execution_owner(self)
     record = _intent_record(params, market=market, source=source)
+    protection_proof = (
+        _refresh_spot_active_protection(self, reject_existing_client_order_id=str(record["client_order_id"]))
+        if market == "spot" and record.get("side") == "BUY" else None
+    )
     path = _intent_path(self)
     if (
         market == "spot"
@@ -1016,12 +1135,9 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
         intents = ledger["intents"]
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
-        existing = intents.get(record["client_order_id"])
-        if isinstance(existing, Mapping) and str(existing.get("state") or "") in _BLOCKING_STATES:
-            raise LiveTradingSafetyError(
-                f"Client order ID {record['client_order_id']} already has state "
-                f"{existing.get('state')}; reconcile it before retrying."
-            )
+        _raise_for_duplicate_intent(intents, str(record["client_order_id"]))
+        if protection_proof is not None:
+            _assert_fresh_spot_protection(ledger, protection_proof)
         if market == "spot" and record.get("type") == "MARKET" and record.get("side") == "SELL":
             protected_opo_exists = any(
                 isinstance(intent, Mapping)
@@ -1081,18 +1197,15 @@ def _begin_spot_opo_intent(
         "entry_reconciled": False,
         "protection_state": "unverified",
     }
+    protection_proof = _refresh_spot_active_protection(self, reject_existing_client_order_id=request["listClientOrderId"])
     path = _intent_path(self)
     with ledger_transaction(path):
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         intents = ledger["intents"]
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
-        existing = intents.get(record["client_order_id"])
-        if isinstance(existing, Mapping) and str(existing.get("state") or "") in _BLOCKING_STATES:
-            raise LiveTradingSafetyError(
-                f"Client order ID {record['client_order_id']} already has state "
-                f"{existing.get('state')}; reconcile it before retrying."
-            )
+        _raise_for_duplicate_intent(intents, str(record["client_order_id"]))
+        _assert_fresh_spot_protection(ledger, protection_proof)
         unresolved_ids = [
             str(intent.get("client_order_id") or client_order_id)
             for client_order_id, intent in intents.items()
@@ -1114,12 +1227,7 @@ def _mark_spot_opo_submitted(self, list_client_order_id: str, *, via: str) -> No
         raise LiveTradingSafetyError("Spot OPO intent is missing; submission is blocked.")
     if record.get("state") != "pending":
         raise LiveTradingSafetyError("Spot OPO intent is not in a submittable state.")
-    updated = _update_order_intent_by_id(
-        self, str(list_client_order_id), state="submitted", expected_record=record,
-        last_via=str(via), submitted_at=_now(),
-    )
-    if updated is None:
-        raise LiveTradingSafetyError("Spot OPO intent changed before submission; reconcile it first.")
+    _submit_spot_buy_intent(self, record, via=via)
 
 
 def _mark_spot_opo_unknown(self, list_client_order_id: str, *, error: object) -> None:
@@ -1746,6 +1854,7 @@ def _mark_spot_opo_residual_stop_unknown(
 def _mark_spot_opo_residual_stop_order_observed(
     self, list_client_order_id: str, *, order_response: object, exact_query: bool = False,
     expected_record: Mapping[str, object] | None = None,
+    applied_records: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     list_client_order_id = str(list_client_order_id or "").strip()
     record = _get_order_intent_record(self, list_client_order_id) if list_client_order_id else None
@@ -1791,6 +1900,8 @@ def _mark_spot_opo_residual_stop_order_observed(
     )
     if updated is None:
         raise LiveTradingSafetyError("Spot OPO changed while recording the exact residual stop query.")
+    if applied_records is not None and exact_query is True:
+        applied_records.append(updated)
     return {"client_order_id": list_client_order_id, **evidence, "observed_at": observed_at}
 
 
@@ -1990,6 +2101,13 @@ def _update_order_intent(self, params: Mapping[str, object], *, state: str, **up
 
 
 def _mark_order_intent_submitted(self, params: Mapping[str, object], *, via: str) -> None:
+    client_order_id = _client_order_id(params)
+    record = _get_order_intent_record(self, client_order_id)
+    if record is not None and record.get("market") == "spot" and record.get("side") == "BUY":
+        if record.get("state") != "pending":
+            raise LiveTradingSafetyError("Spot BUY intent is not in a submittable state.")
+        _submit_spot_buy_intent(self, record, via=via)
+        return
     _update_order_intent(self, params, state="submitted", last_via=str(via), submitted_at=_now())
 
 
@@ -2709,7 +2827,9 @@ def _query_spot_opo_observation(
     return dict(response), working, pending
 
 
-def _reconcile_spot_opo_residual_stop(self, record: Mapping[str, object]) -> dict[str, object]:
+def _reconcile_spot_opo_residual_stop(
+    self, record: Mapping[str, object], *, applied_records: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     """Refresh the current standalone stop; exact order proof never implies portfolio recovery."""
     list_client_order_id = str(record["client_order_id"])
     try:
@@ -2719,7 +2839,8 @@ def _reconcile_spot_opo_residual_stop(self, record: Mapping[str, object]) -> dic
             raise LiveTradingSafetyError("Residual STOP_LOSS query transport is unavailable.")
         response = getter(symbol=request["symbol"], origClientOrderId=request["newClientOrderId"])
         observed = _mark_spot_opo_residual_stop_order_observed(
-            self, list_client_order_id, order_response=response, exact_query=True, expected_record=record,
+            self, list_client_order_id, order_response=response, exact_query=True,
+            expected_record=record, applied_records=applied_records,
         )
     except SPOT_EXCHANGE_ERRORS as exc:
         error = redact_text(exc)[:500] or "Residual STOP_LOSS reconciliation failed."
@@ -2750,8 +2871,9 @@ def _reconcile_spot_opo_residual_stop(self, record: Mapping[str, object]) -> dic
     }
 
 
-def reconcile_spot_opo_intent(
+def _reconcile_spot_opo_intent(
     self, list_client_order_id: str, *, force: bool = False,
+    applied_records: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Reconcile an OPO list and both child orders without treating protection as inventory proof."""
     list_client_order_id = str(list_client_order_id or "").strip()
@@ -2761,7 +2883,7 @@ def reconcile_spot_opo_intent(
     if record is None or record.get("type") != "OPO":
         raise LiveTradingSafetyError(f"Spot OPO intent {list_client_order_id} was not found in the local ledger.")
     if record.get("residual_stop_state") in {"submitted", "unknown", "acknowledged", "active", "triggered"}:
-        return _reconcile_spot_opo_residual_stop(self, record)
+        return _reconcile_spot_opo_residual_stop(self, record, applied_records=applied_records)
     if record.get("residual_stop_state") == "completed":
         return {
             "client_order_id": list_client_order_id, "state": "accepted", "reconciled": True,
@@ -2912,6 +3034,8 @@ def reconcile_spot_opo_intent(
             "reconciled": False,
             "error": "Spot OPO intent changed during reconciliation; the late result was not applied.",
         }
+    if applied_records is not None:
+        applied_records.append(updated)
     return {
         "client_order_id": list_client_order_id,
         "state": str(updated["state"]),
@@ -2922,6 +3046,12 @@ def reconcile_spot_opo_intent(
         "pending_status": updated.get("pending_status"),
         "exchange_order_list_id": updated.get("exchange_order_list_id"),
     }
+
+
+def reconcile_spot_opo_intent(
+    self, list_client_order_id: str, *, force: bool = False,
+) -> dict[str, object]:
+    return _reconcile_spot_opo_intent(self, list_client_order_id, force=force)
 
 
 def cancel_spot_opo_intent(self, list_client_order_id: str) -> dict[str, object]:
@@ -3042,7 +3172,7 @@ def reconcile_order_intent(self, client_order_id: str, *, include_execution: boo
     if record is None:
         raise LiveTradingSafetyError(f"Order intent {client_order_id} was not found in the local ledger.")
     if record.get("market") == "spot" and record.get("type") == "OPO":
-        return reconcile_spot_opo_intent(self, client_order_id)
+        return reconcile_spot_opo_intent(self, client_order_id, force=_has_active_spot_protection(record))
     current_state = str(record.get("state") or "").lower()
     if not _is_unresolved(record):
         return {"client_order_id": client_order_id, "state": current_state, "reconciled": False}
@@ -3127,10 +3257,20 @@ def reconcile_unresolved_order_intents(
     self, *, limit: int = 25, include_execution: bool = False,
 ) -> list[dict[str, object]]:
     limit = max(1, min(100, int(limit)))
-    status = get_order_intent_status(self)
-    client_order_ids = status.get("unresolved_client_order_ids")
-    if not isinstance(client_order_ids, list):
-        return []
+    path = _intent_path(self)
+    with ledger_transaction(path):
+        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        intents = ledger["intents"]
+        if not isinstance(intents, dict):
+            raise LiveTradingSafetyError("Order intent ledger is malformed; reconciliation is blocked.")
+        client_order_ids = [
+            client_order_id for client_order_id, record in intents.items()
+            if isinstance(record, Mapping) and _is_unresolved(record)
+        ]
+        client_order_ids.extend(
+            client_order_id for client_order_id in _active_spot_protection_records(intents)
+            if client_order_id not in client_order_ids
+        )
     return [
         reconcile_order_intent(self, client_order_id, include_execution=include_execution)
         for client_order_id in client_order_ids[:limit]
@@ -3367,6 +3507,7 @@ def bind_binance_order_intent_runtime(wrapper_cls) -> None:
     wrapper_cls._ensure_spot_execution_owner = _ensure_spot_execution_owner
     wrapper_cls._spot_execution_submission = _spot_execution_submission
     wrapper_cls._revoke_spot_execution_owner = _revoke_spot_execution_owner
+    wrapper_cls._get_order_intent_record = _get_order_intent_record
     wrapper_cls._begin_order_intent = _begin_order_intent
     wrapper_cls._begin_spot_opo_intent = _begin_spot_opo_intent
     wrapper_cls._mark_order_intent_submitted = _mark_order_intent_submitted
