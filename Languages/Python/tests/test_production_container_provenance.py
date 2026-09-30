@@ -168,7 +168,11 @@ class ProductionContainerProvenanceTests(unittest.TestCase):
             entry_name = {verify.BUILD_TYPE: "build", verify.SBOM_TYPE: "sbom"}.get(kind, "scan")
             return subprocess.CompletedProcess(argv, 0, json.dumps(evidence[entry_name]), "")
 
-        with patch.object(verify.subprocess, "run", side_effect=fake_run):
+        with (
+            patch.object(verify.subprocess, "run", side_effect=fake_run),
+            patch.object(verify, "datetime", wraps=datetime) as clock,
+        ):
+            clock.now.return_value = NOW
             result = verify.verify_with_gh(IMAGE, REPO, COMMIT, TAG)
         self.assertTrue(result["ok"])
         self.assertEqual(3, len(calls))
@@ -178,6 +182,25 @@ class ProductionContainerProvenanceTests(unittest.TestCase):
             self.assertIn("--source-digest", argv)
             self.assertIn("--source-ref", argv)
             self.assertIn("--deny-self-hosted-runners", argv)
+
+    def test_verified_cli_rejects_stale_evidence_after_signature_verification(self) -> None:
+        evidence = _evidence()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            kind = argv[argv.index("--predicate-type") + 1]
+            entry_name = {verify.BUILD_TYPE: "build", verify.SBOM_TYPE: "sbom"}.get(kind, "scan")
+            return subprocess.CompletedProcess(argv, 0, json.dumps(evidence[entry_name]), "")
+
+        with (
+            patch.object(verify.subprocess, "run", side_effect=fake_run),
+            patch.object(verify, "datetime", wraps=datetime) as clock,
+        ):
+            clock.now.return_value = NOW + verify.MAX_AGE + timedelta(seconds=1)
+            with self.assertRaisesRegex(ValueError, "no fresh same-run"):
+                verify.verify_with_gh(IMAGE, REPO, COMMIT, TAG)
+        self.assertEqual(3, len(calls))
 
     def test_cli_verification_failure_never_accepts_json(self) -> None:
         fake = subprocess.CompletedProcess([], 1, json.dumps(_evidence()["build"]), "untrusted")
