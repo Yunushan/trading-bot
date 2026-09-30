@@ -762,7 +762,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
 
         for parent in ("react-native", "rimraf", "test-exclude"):
-            self.assertEqual("1.1.16", package["overrides"][parent]["brace-expansion"])
+            self.assertEqual("1.1.21", package["overrides"][parent]["brace-expansion"])
 
         resolved_versions = {
             metadata["version"]
@@ -770,9 +770,8 @@ class DependencyReproducibilityTests(unittest.TestCase):
             if package_path.endswith("/brace-expansion")
         }
         self.assertTrue(resolved_versions)
-        self.assertIn("5.0.9", resolved_versions)
-        self.assertNotIn("5.0.8", resolved_versions)
-        self.assertTrue(resolved_versions <= {"1.1.16", "5.0.9"})
+        self.assertIn("5.0.12", resolved_versions)
+        self.assertTrue(resolved_versions <= {"1.1.21", "5.0.12"})
 
     def test_mobile_production_lockfile_overrides_js_yaml_security_fix(self):
         mobile_root = REPO_ROOT / "apps" / "mobile-client"
