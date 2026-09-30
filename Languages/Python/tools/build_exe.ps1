@@ -181,6 +181,8 @@ else:
     "--specpath", $workRoot,
     "--paths", $repoRoot,
     "--paths", $pythonRoot,
+    # Public connector and order exports load Python-owned modules dynamically.
+    "--collect-submodules", "app.integrations.exchanges.binance",
     "--hidden-import", "binance.client",
     "--hidden-import", "binance.spot"
   )

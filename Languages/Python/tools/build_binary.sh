@@ -169,6 +169,8 @@ pyinstaller_args=(
   --paths "${REPO_ROOT}"
   --paths "${PYTHON_ROOT}"
   --runtime-hook "${PYQT6_RUNTIME_HOOK}"
+  # Public connector and order exports load Python-owned modules dynamically.
+  --collect-submodules app.integrations.exchanges.binance
   --hidden-import binance.client
   --hidden-import binance.spot
 )
