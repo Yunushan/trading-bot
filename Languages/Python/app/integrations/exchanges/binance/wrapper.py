@@ -23,6 +23,7 @@ from .orders import (
     bind_binance_order_intent_runtime,
     bind_binance_order_sizing_runtime,
     bind_binance_order_submit_guard_runtime,
+    bind_binance_spot_opo_execution_runtime,
 )
 from .runtime import (
     bind_binance_futures_mode_runtime,
@@ -337,6 +338,7 @@ bind_binance_order_submit_guard_runtime(BinanceWrapper)
 bind_binance_order_intent_runtime(BinanceWrapper)
 bind_binance_order_fallback_runtime(BinanceWrapper)
 bind_binance_order_sizing_runtime(BinanceWrapper)
+bind_binance_spot_opo_execution_runtime(BinanceWrapper)
 bind_binance_operational_runtime(BinanceWrapper)
 bind_binance_rate_limit_runtime(BinanceWrapper)
 bind_binance_ws_runtime(BinanceWrapper)

@@ -119,18 +119,28 @@ def install_main_window_module_state(
         entry_allocations: dict,
         open_position_records: dict,
         mode: str | None = None,
+        *,
+        session: allocation_persistence.AllocationSnapshotSession | None = None,
+        event_receipt: dict | None = None,
     ) -> bool:
         return allocation_persistence.save_position_allocations(
             entry_allocations,
             open_position_records,
             this_file=this_file,
             mode=mode,
+            session=session,
+            event_receipt=event_receipt,
         )
 
-    def _load_position_allocations(mode: str | None = None) -> tuple[dict, dict]:
+    def _load_position_allocations(
+        mode: str | None = None, *, session: allocation_persistence.AllocationSnapshotSession | None = None,
+        load_ticket: allocation_persistence.AllocationSnapshotLoadTicket | None = None,
+    ) -> tuple[dict, dict]:
         return allocation_persistence.load_position_allocations(
             this_file=this_file,
             mode=mode,
+            session=session,
+            load_ticket=load_ticket,
         )
 
     def _collect_dependency_versions(

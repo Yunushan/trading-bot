@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import copy
+
+from app.gui.shared.allocation_reconciliation import (
+    defer_recovery_owned_cleanup,
+    has_recovery_owned_allocations,
+)
+
 from . import history_update_context_runtime
 from .history_update_close_runtime import close_confirmed_positions
 from .history_update_lookup_runtime import (
@@ -27,6 +34,11 @@ def _mw_update_position_history(self, positions_map: dict):
         prev_records = getattr(self, "_open_position_records", {}) or {}
         pending_close_map = getattr(self, "_pending_close_times", {})
         closed_history_max = _closed_history_max(self)
+        for key, record in prev_records.items():
+            if has_recovery_owned_allocations(self, key):
+                if key not in positions_map:
+                    defer_recovery_owned_cleanup(self, key, source="history_missing")
+                positions_map[key] = copy.deepcopy(record)
         candidates = collect_missing_candidates(
             self,
             positions_map,

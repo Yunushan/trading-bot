@@ -1034,6 +1034,21 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
 
     @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for stop-context tests")
+    def test_stop_context_rejects_malformed_position_rows(self):
+        wrapper = _FakeStrategyBinance()
+        wrapper.list_open_futures_positions = lambda: [
+            {"symbol": "BTCUSDT", "positionAmt": "NaN", "entryPrice": "100"}
+        ]
+        engine = _build_engine(wrapper=wrapper)
+        frame = pd.DataFrame({"close": [100.0]})
+
+        state = build_futures_stop_state(engine, cw={"symbol": "BTCUSDT"}, df=frame)
+
+        self.assertEqual([], state["load_positions_cache"]())
+        self.assertFalse(state["positions_cache_ok"])
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+
+    @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for stop-context tests")
     def test_stop_context_pauses_when_no_price_source_is_available(self):
         wrapper = _FakeStrategyBinance()
 
@@ -1257,6 +1272,101 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
 
         self.assertFalse(triggered)
         self.assertEqual([], close_calls)
+
+    def test_cumulative_stop_fails_closed_on_malformed_position_snapshot(self):
+        wrapper = _FakeStrategyBinance()
+        close_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        wrapper.close_futures_leg_exact = lambda *args, **kwargs: close_calls.append(
+            (args, kwargs)
+        ) or {"ok": True}
+        engine = _build_engine(wrapper=wrapper)
+
+        triggered = apply_cumulative_futures_stop_management(
+            engine,
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            last_price=90.0,
+            dual_side=False,
+            apply_usdt_limit=True,
+            apply_percent_limit=False,
+            stop_usdt_limit=5.0,
+            stop_percent_limit=0.0,
+            state={
+                "load_positions_cache": lambda: [
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionAmt": "1",
+                        "entryPrice": "100",
+                        "isolatedWallet": "20",
+                    },
+                    {"symbol": "BTCUSDT", "positionAmt": "bad", "entryPrice": "100"},
+                ]
+            },
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual([], close_calls)
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+
+    def test_cumulative_percent_stop_requires_a_trustworthy_margin_denominator(self):
+        wrapper = _FakeStrategyBinance()
+        close_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        wrapper.close_futures_leg_exact = lambda *args, **kwargs: close_calls.append(
+            (args, kwargs)
+        ) or {"ok": True}
+        engine = _build_engine(wrapper=wrapper)
+
+        triggered = apply_cumulative_futures_stop_management(
+            engine,
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            last_price=90.0,
+            dual_side=False,
+            apply_usdt_limit=False,
+            apply_percent_limit=True,
+            stop_usdt_limit=0.0,
+            stop_percent_limit=20.0,
+            state={
+                "load_positions_cache": lambda: [
+                    {"symbol": "BTCUSDT", "positionAmt": "1", "entryPrice": "100"}
+                ]
+            },
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual([], close_calls)
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
+
+    def test_cumulative_hedge_stop_fails_closed_without_a_leg_side(self):
+        wrapper = _FakeStrategyBinance()
+        close_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        wrapper.close_futures_leg_exact = lambda *args, **kwargs: close_calls.append(
+            (args, kwargs)
+        ) or {"ok": True}
+        engine = _build_engine(wrapper=wrapper)
+
+        triggered = apply_cumulative_futures_stop_management(
+            engine,
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            last_price=90.0,
+            dual_side=True,
+            apply_usdt_limit=True,
+            apply_percent_limit=False,
+            stop_usdt_limit=5.0,
+            stop_percent_limit=0.0,
+            state={
+                "load_positions_cache": lambda: [
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionAmt": "1",
+                        "entryPrice": "100",
+                        "positionSide": "BOTH",
+                    }
+                ]
+            },
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual([], close_calls)
+        self.assertTrue(StrategyEngine._GLOBAL_PAUSE.is_set())
 
     def test_close_interval_side_entries_uses_bound_interval_helper(self):
         engine = _build_engine()

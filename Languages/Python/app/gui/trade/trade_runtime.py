@@ -34,14 +34,17 @@ def _save_position_allocations_safe(
     open_position_records,
     *,
     mode=None,
-) -> None:
+    session=None,
+    event_receipt=None,
+) -> bool:
     func = _SAVE_POSITION_ALLOCATIONS
     if not callable(func):
-        return
+        return False
     try:
-        func(entry_allocations, open_position_records, mode=mode)
+        return func(entry_allocations, open_position_records, mode=mode,
+                    session=session, event_receipt=event_receipt) is True
     except Exception:
-        pass
+        return False
 
 
 def bind_main_window_trade_runtime(

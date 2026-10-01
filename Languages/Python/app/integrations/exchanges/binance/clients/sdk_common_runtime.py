@@ -112,6 +112,51 @@ except Exception:
     _SpotOrderRespEnum = None
     _SpotStpEnum = None
 
+# Keep OPO support optional so an older Spot SDK does not disable otherwise
+# supported Spot operations. The OPO adapter fails closed when these request
+# enums are unavailable.
+try:
+    from binance_sdk_spot.rest_api.models.enums import (
+        OrderListOpoWorkingTypeEnum as _SpotOpoWorkingTypeEnum,
+        OrderListOpoWorkingSideEnum as _SpotOpoWorkingSideEnum,
+        OrderListOpoPendingTypeEnum as _SpotOpoPendingTypeEnum,
+        OrderListOpoPendingSideEnum as _SpotOpoPendingSideEnum,
+        OrderListOpoNewOrderRespTypeEnum as _SpotOpoOrderRespEnum,
+        OrderListOpoWorkingTimeInForceEnum as _SpotOpoWorkingTimeInForceEnum,
+    )
+except ImportError:
+    _SpotOpoWorkingTypeEnum = None
+    _SpotOpoWorkingSideEnum = None
+    _SpotOpoPendingTypeEnum = None
+    _SpotOpoPendingSideEnum = None
+    _SpotOpoOrderRespEnum = None
+    _SpotOpoWorkingTimeInForceEnum = None
+
+# Keep cancel-replace optional so older Spot SDK versions remain usable for
+# other operations; linked OPO exits fail closed when its route or enums are absent.
+_SpotCancelReplaceSideEnum = None
+_SpotCancelReplaceTypeEnum = None
+_SpotCancelReplaceModeEnum = None
+_SpotCancelReplaceCancelRestrictionsEnum = None
+_SpotCancelReplaceTimeInForceEnum = None
+_SpotCancelReplaceRespEnum = None
+try:
+    from binance_sdk_spot.rest_api.models.enums import (
+        OrderCancelReplaceSideEnum as _SpotCancelReplaceSideEnum,
+        OrderCancelReplaceTypeEnum as _SpotCancelReplaceTypeEnum,
+        OrderCancelReplaceCancelReplaceModeEnum as _SpotCancelReplaceModeEnum,
+        OrderCancelReplaceCancelRestrictionsEnum as _SpotCancelReplaceCancelRestrictionsEnum,
+        OrderCancelReplaceTimeInForceEnum as _SpotCancelReplaceTimeInForceEnum,
+        OrderCancelReplaceNewOrderRespTypeEnum as _SpotCancelReplaceRespEnum,
+    )
+except ImportError:
+    _SpotCancelReplaceSideEnum = None
+    _SpotCancelReplaceTypeEnum = None
+    _SpotCancelReplaceModeEnum = None
+    _SpotCancelReplaceCancelRestrictionsEnum = None
+    _SpotCancelReplaceTimeInForceEnum = None
+    _SpotCancelReplaceRespEnum = None
+
 
 def _is_testnet_mode(mode: str | None) -> bool:
     from app.settings.execution_mode import is_testnet_trading_mode

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import copy
 
+from app.gui.shared.allocation_persistence import is_recovery_owned_allocation
+from app.gui.positions.actions_state_runtime import _allocation_is_active
+
 from . import signal_common_runtime
 
 
@@ -55,6 +58,9 @@ def _consume_closed_entries(
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        if not _allocation_is_active(entry):
+            survivors.append(entry)
+            continue
 
         target_match = bool(matcher(entry))
         if target_match:
@@ -62,6 +68,8 @@ def _consume_closed_entries(
         if not target_match:
             survivors.append(entry)
             continue
+        if is_recovery_owned_allocation(entry):
+            raise ValueError("Recovery-owned inventory requires exact owned fill recovery")
 
         try:
             entry_qty = abs(float(entry.get("qty") or 0.0))
@@ -127,7 +135,7 @@ def _restore_survivor_snapshot(
     save_position_allocations,
     resolve_trigger_indicators,
     normalize_trigger_actions_map,
-) -> None:
+) -> bool:
     try:
         seed = copy.deepcopy(survivors[0]) if survivors else {}
     except Exception:
@@ -150,15 +158,20 @@ def _restore_survivor_snapshot(
             normalize_trigger_actions_map=normalize_trigger_actions_map,
         )
     except Exception:
-        pass
+        return False
 
+    if signal_common_runtime._persist_trade_allocations(self, save_position_allocations) is not True:
+        return False
     try:
         pending_close.pop((ctx["sym_upper"], ctx["side_key"]), None)
     except Exception:
         pass
 
-    signal_common_runtime._persist_trade_allocations(self, save_position_allocations)
-    signal_common_runtime._refresh_trade_views(self, ctx["sym"], mark_traded=False)
+    try:
+        signal_common_runtime._refresh_trade_views(self, ctx["sym"], mark_traded=False)
+    except (AttributeError, LookupError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    return True
 
 
 __all__ = [

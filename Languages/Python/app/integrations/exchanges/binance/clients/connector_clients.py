@@ -162,6 +162,51 @@ if _OfficialAPIBase is not None and _OfficialSpotClient is not None:
             self._throttle("/api/v3/order")
             return self._call(self._spot.new_order, **payload)
 
+        def create_order_list_opo(self, **params):
+            self._throttle("/api/v3/orderList/opo")
+            return self._call(
+                self._spot.sign_request,
+                "POST",
+                "/api/v3/orderList/opo",
+                dict(params or {}),
+            )
+
+        def get_order_list(self, **params):
+            self._throttle("/api/v3/orderList")
+            return self._call(
+                self._spot.sign_request,
+                "GET",
+                "/api/v3/orderList",
+                dict(params or {}),
+            )
+
+        def get_order(self, **params):
+            self._throttle("/api/v3/order")
+            return self._call(
+                self._spot.sign_request,
+                "GET",
+                "/api/v3/order",
+                dict(params or {}),
+            )
+
+        def cancel_order_list(self, **params):
+            self._throttle("/api/v3/orderList")
+            return self._call(
+                self._spot.sign_request,
+                "DELETE",
+                "/api/v3/orderList",
+                dict(params or {}),
+            )
+
+        def cancel_replace_order(self, **params):
+            self._throttle("/api/v3/order/cancelReplace")
+            return self._call(
+                self._spot.sign_request,
+                "POST",
+                "/api/v3/order/cancelReplace",
+                dict(params or {}),
+            )
+
         def futures_klines(self, **params):
             return self._call_futures("GET", "/fapi/v1/klines", params, signed=False)
 
@@ -406,6 +451,21 @@ class CcxtBinanceAdapter:
 
     def create_order(self, **params):
         return self._call_ccxt_method("privatePostOrder", params, path="/api/v3/order")
+
+    def create_order_list_opo(self, **params):
+        return self._call_ccxt_request("private", "POST", "orderList/opo", dict(params or {}))
+
+    def get_order_list(self, **params):
+        return self._call_ccxt_request("private", "GET", "orderList", dict(params or {}))
+
+    def get_order(self, **params):
+        return self._call_ccxt_request("private", "GET", "order", dict(params or {}))
+
+    def cancel_order_list(self, **params):
+        return self._call_ccxt_request("private", "DELETE", "orderList", dict(params or {}))
+
+    def cancel_replace_order(self, **params):
+        return self._call_ccxt_request("private", "POST", "order/cancelReplace", dict(params or {}))
 
     def get_my_trades(self, **params):
         return self._call_ccxt_method("privateGetMyTrades", params, path="/api/v3/myTrades")

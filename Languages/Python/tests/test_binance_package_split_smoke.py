@@ -711,6 +711,8 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             ({"code": -2010, "msg": "insufficient balance"}, "code=-2010"),
             ({"success": False, "message": "denied"}, "denied"),
             ({"status": "REJECTED", "message": "denied"}, "status=REJECTED"),
+            ({"orderId": 7, "status": "SUCCESS"}, "unsupported order status"),
+            ({"orderId": 7, "status": "DONE"}, "unsupported order status"),
             ({"status": "NEW"}, "no order identifier"),
             ({"orderId": 7}, "no explicit order status"),
             ("accepted", "malformed response"),

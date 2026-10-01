@@ -149,6 +149,18 @@ def _apply_close_summary(entries: list[dict], summary: dict) -> None:
             entry["fills_meta"] = copy.deepcopy(fills_meta)
 
 
+def _close_event_key(self, order_info: dict, ctx: dict) -> str:
+    explicit = order_info.get("event_id")
+    if explicit:
+        return str(explicit)
+    dt_obj = self._parse_any_datetime(order_info.get("time"))
+    close_time_fmt = self._format_display_time(dt_obj) if dt_obj is not None else str(order_info.get("time") or "")
+    qty_reported = signal_common_runtime._safe_float(order_info.get("qty") or order_info.get("executed_qty"))
+    qty_token = f"{abs(qty_reported):.8f}" if qty_reported is not None else "0"
+    identifier = order_info.get("ledger_id") or ctx["sym_upper"] or ""
+    return f"{identifier}|{close_time_fmt}|{qty_token}|{ctx['side_key']}"
+
+
 def _record_closed_position(
     self,
     order_info: dict,
@@ -156,6 +168,7 @@ def _record_closed_position(
     *,
     closed_snapshots: list[dict],
     max_closed_history: int,
+    notify: bool = True,
 ) -> bool:
     close_time_val = order_info.get("time")
     dt_obj = self._parse_any_datetime(close_time_val)
@@ -198,11 +211,7 @@ def _record_closed_position(
         processed = set()
         self._processed_close_events = processed
 
-    unique_key = order_info.get("event_id")
-    if not unique_key:
-        identifier = ledger_id or ctx["sym_upper"] or ""
-        qty_token = f"{qty_reported:.8f}" if qty_reported is not None else "0"
-        unique_key = f"{identifier}|{close_time_fmt}|{qty_token}|{ctx['side_key']}"
+    unique_key = _close_event_key(self, order_info, ctx)
     if unique_key in processed:
         return False
     processed.add(unique_key)
@@ -414,7 +423,8 @@ def _record_closed_position(
                     for old_key in list(registry.keys())[:excess]:
                         registry.pop(old_key, None)
         try:
-            self._update_global_pnl_display(*self._compute_global_pnl_totals())
+            if notify:
+                self._update_global_pnl_display(*self._compute_global_pnl_totals())
         except Exception:
             pass
     except Exception:

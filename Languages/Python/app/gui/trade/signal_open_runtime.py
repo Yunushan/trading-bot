@@ -4,6 +4,10 @@ import time
 from collections import deque
 from datetime import datetime
 
+from app.gui.shared.allocation_persistence import is_recovery_owned_allocation
+
+from . import signal_common_runtime
+
 
 def _identity_token(value) -> str:
     if value is None:
@@ -110,7 +114,41 @@ def _has_order_identity(order_info: dict) -> bool:
     )
 
 
-def _is_duplicate_open_event(self, order_info: dict, ctx: dict, *, normalize_interval) -> bool:
+def _mark_spot_buy_intent_persisted(self, order_info: dict, *, persisted: bool) -> bool:
+    if (
+        not persisted
+        or str(order_info.get("side") or "").strip().upper() != "BUY"
+        or str(order_info.get("exchange_status") or "").strip().upper() != "FILLED"
+        or order_info.get("reconciliation_required") is True
+    ):
+        return True
+    client_order_id = _identity_token(order_info.get("client_order_id") or order_info.get("clientOrderId"))
+    fill_recovery = order_info.get("spot_fill_recovery")
+    portfolio_signature = fill_recovery.get("signature") if isinstance(fill_recovery, dict) else None
+    if not client_order_id or not isinstance(portfolio_signature, str) or not isinstance(fill_recovery, dict):
+        return True
+    wrapper = getattr(self, "shared_binance", None)
+    marker = getattr(wrapper, "_mark_order_intent_portfolio_reconciled", None)
+    if not callable(marker):
+        return False
+    try:
+        marker(
+            client_order_id,
+            portfolio_signature=portfolio_signature,
+            portfolio_quantity=fill_recovery.get("net_qty"),
+        )
+        return True
+    except Exception as exc:
+        log = getattr(self, "log", None)
+        if callable(log):
+            try:
+                log(f"Spot BUY {client_order_id} remains blocked pending portfolio recovery: {exc}")
+            except Exception:
+                pass
+        return False
+
+
+def _is_duplicate_open_event(self, order_info: dict, ctx: dict, *, normalize_interval, remember: bool = True) -> bool:
     registry = getattr(self, "_processed_open_events", None)
     if not isinstance(registry, dict):
         registry = {"order": deque(), "set": set()}
@@ -185,13 +223,13 @@ def _is_duplicate_open_event(self, order_info: dict, ctx: dict, *, normalize_int
     unique_key = "|".join(unique_parts)
     if unique_key and unique_key in registry_set:
         return True
-    if unique_key:
+    if unique_key and remember:
         registry_set.add(unique_key)
         queue.append((unique_key, now_ts))
     return False
 
 
-def handle_non_close_trade_signal(
+def _apply_non_close_trade_signal(
     self,
     order_info: dict,
     ctx: dict,
@@ -206,9 +244,11 @@ def handle_non_close_trade_signal(
     refresh_trade_views,
     persist_trade_allocations,
     sync_open_position_snapshot,
-) -> None:
+) -> bool | None:
     status = ctx["status"]
-    is_success = (status != "error") and (ctx["ok_flag"] is None or ctx["ok_flag"] is True)
+    is_success = status not in {"error", "failed"} and (ctx["ok_flag"] is None or ctx["ok_flag"] is True)
+    if is_success and not all((ctx["sym"], ctx["interval"], ctx["side_for_key"])):
+        return False
 
     if ctx["sym"] and ctx["interval"] and ctx["side_for_key"]:
         trigger_desc_raw = str(order_info.get("trigger_desc") or "").strip()
@@ -220,7 +260,7 @@ def handle_non_close_trade_signal(
 
         if is_success and status in {"placed", "new"} and (not has_trigger_context) and (not _has_order_identity(order_info)):
             refresh_trade_views(self, ctx["sym"])
-            return
+            return None
 
         side_key_local = side_key_from_value(ctx["side_for_key"])
         dedupe_ctx = dict(ctx)
@@ -231,11 +271,12 @@ def handle_non_close_trade_signal(
                 order_info,
                 dedupe_ctx,
                 normalize_interval=normalize_interval,
+                remember=False,
             ):
-                return
+                return True
 
         if getattr(self, "_is_stopping_engines", False) and status.lower() not in {"closed", "error"}:
-            is_success = False
+            return False
 
         if is_success:
             tstr = order_info.get("time")
@@ -349,8 +390,28 @@ def handle_non_close_trade_signal(
                 trade_entry["order_id"] = order_id_token
             if client_order_token:
                 trade_entry["client_order_id"] = client_order_token
+            fill_recovery = order_info.get("spot_fill_recovery")
+            if isinstance(fill_recovery, dict):
+                trade_entry["spot_fill_recovery"] = dict(fill_recovery)
 
             order_identifier = client_order_token or order_id_token or event_uid_token
+            for owned_entries in alloc_map.values():
+                if isinstance(owned_entries, dict):
+                    owned_entries = list(owned_entries.values())
+                if not isinstance(owned_entries, list):
+                    continue
+                for owned_entry in owned_entries:
+                    if not is_recovery_owned_allocation(owned_entry):
+                        continue
+                    same_client = client_order_token and client_order_token in {
+                        _identity_token(owned_entry.get("client_order_id")),
+                        _identity_token(owned_entry.get("trade_id")),
+                    }
+                    same_order = (order_id_token
+                                  and _identity_token(owned_entry.get("symbol")).upper() == ctx["sym_upper"]
+                                  and _identity_token(owned_entry.get("order_id")) == order_id_token)
+                    if same_client or same_order:
+                        return False
             alloc_list = alloc_map.get((ctx["sym_upper"], side_key_local))
             if isinstance(alloc_list, dict):
                 alloc_list = list(alloc_list.values())
@@ -379,6 +440,8 @@ def handle_non_close_trade_signal(
                         break
 
             if existing_entry:
+                if is_recovery_owned_allocation(existing_entry):
+                    return False
                 for key, value in trade_entry.items():
                     if value is None:
                         continue
@@ -403,8 +466,6 @@ def handle_non_close_trade_signal(
             alloc_map[(ctx["sym_upper"], side_key_local)] = alloc_list
             pending_close.pop((ctx["sym_upper"], side_key_local), None)
 
-            persist_trade_allocations(self, save_position_allocations)
-
             snapshot_entry = existing_entry or trade_entry
             sync_open_position_snapshot(
                 self,
@@ -418,6 +479,12 @@ def handle_non_close_trade_signal(
                 resolve_trigger_indicators=resolve_trigger_indicators,
                 normalize_trigger_actions_map=normalize_trigger_actions_map,
             )
+            persisted = persist_trade_allocations(self, save_position_allocations)
+            if persisted is not True:
+                return False
+            _is_duplicate_open_event(self, order_info, dedupe_ctx,
+                                     normalize_interval=normalize_interval, remember=True)
+            return True
         else:
             try:
                 if hasattr(self, "_track_interval_close"):
@@ -426,3 +493,53 @@ def handle_non_close_trade_signal(
                 pass
 
     refresh_trade_views(self, ctx["sym"])
+    return None
+
+
+def handle_non_close_trade_signal(self, order_info: dict, ctx: dict, **kwargs) -> None:
+    successful = ctx["status"] not in {"error", "failed"} and (ctx["ok_flag"] is None or ctx["ok_flag"] is True)
+    if not successful:
+        _apply_non_close_trade_signal(self, order_info, ctx, **kwargs)
+        return
+    receipt = None
+    try:
+        receipt = signal_common_runtime._trade_event_receipt(order_info, ctx, "BUY")
+        if order_info.get("reconciliation_required") is True or order_info.get("execution_confirmed") is False:
+            raise ValueError("Trade event still needs exact execution reconciliation")
+        if ctx["status"] not in {"placed", "new", "filled"}:
+            raise ValueError("Trade event is not a completed open event")
+        if str(order_info.get("exchange_status") or "").upper() in {"NEW", "PARTIALLY_FILLED"}:
+            raise ValueError("Trade event still needs terminal execution reconciliation")
+        if signal_common_runtime._has_trade_event_receipt(self, receipt):
+            if _mark_spot_buy_intent_persisted(self, order_info, persisted=True):
+                signal_common_runtime._clear_pending_trade_event(self, ctx, receipt)
+            else:
+                signal_common_runtime._retain_pending_trade_event(self, order_info, ctx, receipt)
+            return
+        snapshot = signal_common_runtime._capture_trade_state(self)
+    except (ArithmeticError, AttributeError, LookupError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):
+        signal_common_runtime._retain_pending_trade_event(self, order_info, ctx, receipt)
+        return
+    self._active_trade_event_receipt = receipt
+    applied: bool | None = False
+    try:
+        allocation_event = dict(order_info, qty=float(receipt["quantity"]), executed_qty=float(receipt["quantity"]))
+        applied = _apply_non_close_trade_signal(self, allocation_event, ctx, **kwargs)
+    except (ArithmeticError, AttributeError, LookupError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):
+        applied = False
+    finally:
+        self._active_trade_event_receipt = None
+        if applied is False:
+            signal_common_runtime._restore_trade_state(self, snapshot)
+            signal_common_runtime._retain_pending_trade_event(self, order_info, ctx, receipt)
+    if applied is False:
+        return
+    if applied is True:
+        if _mark_spot_buy_intent_persisted(self, order_info, persisted=True):
+            signal_common_runtime._clear_pending_trade_event(self, ctx, receipt)
+        else:
+            signal_common_runtime._retain_pending_trade_event(self, order_info, ctx, receipt)
+        try:
+            kwargs["refresh_trade_views"](self, ctx["sym"])
+        except (AttributeError, LookupError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass

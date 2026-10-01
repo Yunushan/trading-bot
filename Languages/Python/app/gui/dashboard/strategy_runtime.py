@@ -198,7 +198,10 @@ def _create_dashboard_strategy_controls_section(self, scroll_layout):
 
     layout.addWidget(QtWidgets.QLabel("Stop Loss:"), 7, 0)
     self.stop_loss_enable_cb = QtWidgets.QCheckBox("Enable")
-    self.stop_loss_enable_cb.setToolTip("Toggle automatic stop-loss handling for live trades.")
+    self.stop_loss_enable_cb.setToolTip(
+        "Futures only. Live Binance Spot BUY signals are blocked while this is enabled because "
+        "exchange-resident Spot stop protection is not implemented."
+    )
     self.stop_loss_enable_cb.setChecked(stop_cfg.get("enabled", False))
     layout.addWidget(self.stop_loss_enable_cb, 7, 1)
 

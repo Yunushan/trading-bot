@@ -34,6 +34,24 @@ class OrderSessionBudgetTests(unittest.TestCase):
         self.addCleanup(wrapper.close)
         return wrapper
 
+    def test_gui_publication_fence_blocks_both_futures_entry_sides_before_transport(self):
+        for side in ("BUY", "SELL"):
+            with self.subTest(side=side):
+                wrapper = self.wrapper()
+                wrapper._desktop_allocation_admission_check = lambda: False
+                with self.assertRaisesRegex(LiveTradingSafetyError, "allocation publication"):
+                    wrapper._futures_create_order_with_fallback({**ENTRY, "side": side})
+                self.assertEqual([], wrapper.client.orders)
+                self.assertEqual(0, getattr(wrapper, "_live_order_submit_attempt_count", 0))
+
+    def test_gui_publication_fence_preserves_valid_reduce_only_futures_close(self):
+        wrapper = self.wrapper()
+        wrapper._desktop_allocation_admission_check = lambda: False
+        result, _ = wrapper._futures_create_order_with_fallback(CLOSE)
+        self.assertEqual("FILLED", result["status"])
+        self.assertEqual(1, len(wrapper.client.orders))
+        self.assertEqual(0, getattr(wrapper, "_live_order_submit_attempt_count", 0))
+
     def test_python_owned_budget_reference_cases(self):
         for case in ORDER_GUARD_BEHAVIOR["session_budget_exit_cases"]:
             with self.subTest(name=case["name"]):

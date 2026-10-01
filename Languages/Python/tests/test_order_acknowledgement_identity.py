@@ -36,10 +36,10 @@ class OrderAcknowledgementIdentityTests(unittest.TestCase):
         intents._mark_order_intent_submitted(owner, PARAMS, via="primary")
         return owner
 
-    def assert_blocked(self, owner):
+    def assert_blocked(self, owner, market="futures"):
         self.assertEqual(1, intents.get_order_intent_status(owner)["unresolved_count"])
         with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved exchange order intent"):
-            intents._begin_order_intent(owner, dict(PARAMS, newClientOrderId="ack-B"), market="futures", source="offline-test")
+            intents._begin_order_intent(owner, dict(PARAMS, newClientOrderId="ack-B"), market=market, source="offline-test")
 
     def test_invalid_primary_acknowledgement_cannot_clear_ambiguity(self):
         changes = [
@@ -68,15 +68,25 @@ class OrderAcknowledgementIdentityTests(unittest.TestCase):
                     executed = {"NEW": "0", "PARTIALLY_FILLED": "0.5", "FILLED": "1"}[status]
                     intents._mark_order_intent_accepted(owner, PARAMS, via="primary", result=response(status=status, executedQty=executed))
                     record = intents._get_order_intent_record(owner, "ack-A")
-                    state = "unknown" if market == "futures" and status != "FILLED" else "accepted"
+                    portfolio_pending = market == "spot" and status == "FILLED"
+                    state = "unknown" if status != "FILLED" else "accepted"
                     self.assertEqual((state, "123", status),
                                      (record["state"], record["exchange_order_id"], record["exchange_status"]))
                     with self.assertRaisesRegex(LiveTradingSafetyError, f"already has state {state}"):
                         intents._begin_order_intent(owner, PARAMS, market=market, source="offline-test")
-                    if state == "unknown":
-                        self.assert_blocked(owner)
+                    if state == "unknown" or portfolio_pending:
+                        self.assert_blocked(owner, market=market)
                     else:
                         intents._begin_order_intent(owner, dict(PARAMS, newClientOrderId="ack-B"), market=market, source="offline-test")
+
+    def test_legacy_accepted_partial_spot_market_intent_is_still_unresolved(self):
+        owner = self.owner("spot")
+        intents._update_order_intent_by_id(
+            owner, "ack-A", state="accepted", exchange_order_id="123",
+            exchange_status="PARTIALLY_FILLED", executed_qty="0.5",
+        )
+
+        self.assert_blocked(owner, market="spot")
 
     def test_late_acknowledgement_cannot_overwrite_newer_observation(self):
         for payload in (response(), response(clientOrderId="wrong")):
@@ -151,6 +161,87 @@ class OrderAcknowledgementIdentityTests(unittest.TestCase):
         self.assertEqual(1, len(wrapper.client.orders))
         self.assert_blocked(wrapper)
 
+    def test_unrecognized_spot_acknowledgement_stays_unresolved_and_blocks_retry(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        wrapper = _LedgerSpotWrapper()
+        wrapper.mode, wrapper.api_key = "Live", "unit-key"
+        wrapper._configure_order_audit(path=Path(directory) / "spot.jsonl")
+        provision_order_intent_store(wrapper, acknowledgement=PROVISION_ACK)
+        wrapper.client.create_order = Mock(side_effect=lambda **params: {
+            "orderId": 321,
+            "symbol": params["symbol"],
+            "clientOrderId": params["newClientOrderId"],
+            "status": "SUCCESS",
+        })
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("unsupported order status", result["error"])
+        self.assertEqual(1, intents.get_order_intent_status(wrapper)["unresolved_count"])
+        retry = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=1)
+        self.assertFalse(retry["ok"])
+        self.assertIn("Unresolved exchange order intent", retry["error"])
+        wrapper.client.create_order.assert_called_once()
+
+    def test_partially_filled_spot_market_acknowledgement_blocks_a_second_entry(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        wrapper = _LedgerSpotWrapper()
+        wrapper.mode, wrapper.api_key = "Live", "unit-key"
+        wrapper._configure_order_audit(path=Path(directory) / "spot.jsonl")
+        provision_order_intent_store(wrapper, acknowledgement=PROVISION_ACK)
+        wrapper.client.create_order = Mock(side_effect=lambda **params: response(
+            orderId=456,
+            clientOrderId=params["newClientOrderId"],
+            symbol=params["symbol"],
+            side=params["side"],
+            status="PARTIALLY_FILLED",
+            origQty=params["quantity"],
+            executedQty="0.5",
+        ))
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, intents.get_order_intent_status(wrapper)["unresolved_count"])
+        retry = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=1)
+        self.assertFalse(retry["ok"])
+        self.assertIn("Unresolved exchange order intent", retry["error"])
+        wrapper.client.create_order.assert_called_once()
+
+    def test_live_spot_buy_fails_closed_when_unsupported_stop_loss_is_enabled(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        wrapper = _LedgerSpotWrapper()
+        wrapper.mode, wrapper.api_key = "Live", "unit-key"
+        wrapper._live_safety_config = {"stop_loss": {"enabled": True, "mode": "usdt", "usdt": 25.0}}
+        wrapper._configure_order_audit(path=Path(directory) / "spot.jsonl")
+        provision_order_intent_store(wrapper, acknowledgement=PROVISION_ACK)
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("exchange-resident stop protection is not implemented", result["error"])
+        self.assertEqual([], wrapper.client.orders)
+        self.assertEqual(0, intents.get_order_intent_status(wrapper)["intent_count"])
+
+    def test_live_spot_sell_remains_available_when_stop_loss_is_enabled(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        wrapper = _LedgerSpotWrapper()
+        wrapper.mode, wrapper.api_key = "Live", "unit-key"
+        wrapper._live_safety_config = {"stop_loss": {"enabled": True, "mode": "usdt", "usdt": 25.0}}
+        wrapper._configure_order_audit(path=Path(directory) / "spot.jsonl")
+        provision_order_intent_store(wrapper, acknowledgement=PROVISION_ACK)
+        wrapper.client.create_order = Mock(
+            side_effect=lambda **params: response(
+                clientOrderId=params["newClientOrderId"], side=params["side"],
+            )
+        )
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "SELL", quantity=1)
+
+        self.assertTrue(result["ok"])
+        wrapper.client.create_order.assert_called_once()
+
     def test_spot_submission_does_not_undo_concurrent_reconciliation(self):
         directory = self.enterContext(tempfile.TemporaryDirectory())
         wrapper = _LedgerSpotWrapper()
@@ -197,20 +288,16 @@ class OrderAcknowledgementIdentityTests(unittest.TestCase):
                 spot = self.owner("spot")
                 with self.assertRaises(LiveTradingSafetyError):
                     intents._mark_order_intent_accepted(spot, PARAMS, via="primary", result=response(status=status, executedQty="0"))
-                self.assert_blocked(spot)
+                self.assert_blocked(spot, market="spot")
 
     def test_spot_pending_states_are_not_futures_acknowledgements(self):
         for status in ("PENDING_NEW", "PENDING_CANCEL"):
             for market in ("spot", "futures"):
                 with self.subTest(status=status, market=market):
                     owner = self.owner(market)
-                    if market == "spot":
+                    with self.assertRaises(LiveTradingSafetyError):
                         intents._mark_order_intent_accepted(owner, PARAMS, via="primary", result=response(status=status))
-                        self.assertEqual("accepted", intents._get_order_intent_record(owner, "ack-A")["state"])
-                    else:
-                        with self.assertRaises(LiveTradingSafetyError):
-                            intents._mark_order_intent_accepted(owner, PARAMS, via="primary", result=response(status=status))
-                        self.assert_blocked(owner)
+                    self.assert_blocked(owner, market=market)
 
 
 if __name__ == "__main__":

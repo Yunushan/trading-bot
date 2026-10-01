@@ -100,6 +100,54 @@ def ledger_transaction(path: Path) -> Iterator[None]:
         _THREAD_LOCK.release()
 
 
+@contextmanager
+def ledger_transactions(*paths: Path) -> Iterator[None]:
+    """Lock multiple ledgers in stable path order for atomic cross-ledger administration."""
+    normalized_paths = sorted({path.resolve() for path in paths}, key=os.fspath)
+    if not normalized_paths:
+        raise ValueError("At least one ledger path is required.")
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    if not _THREAD_LOCK.acquire(timeout=LOCK_TIMEOUT_SECONDS):
+        raise LiveTradingSafetyError("Order intent ledger is busy; submission is blocked.")
+    locked_fds: list[int] = []
+    try:
+        for path in normalized_paths:
+            _ensure_parent(path)
+            lock_path = path.with_name(f".{path.name}.lock")
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise LiveTradingSafetyError("Order intent lock must be a regular file.")
+                while True:
+                    try:
+                        _try_lock(fd)
+                        locked_fds.append(fd)
+                        break
+                    except OSError as exc:
+                        if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                            raise
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise LiveTradingSafetyError("Order intent ledger is busy; submission is blocked.") from exc
+                        time.sleep(min(0.025, remaining))
+            except BaseException:
+                if fd not in locked_fds:
+                    os.close(fd)
+                raise
+        yield
+    except (OSError, ValueError, TypeError) as exc:
+        raise LiveTradingSafetyError(f"Order intent storage failed; submission is blocked: {redact_text(exc)}") from exc
+    finally:
+        try:
+            for fd in reversed(locked_fds):
+                try:
+                    _unlock(fd)
+                finally:
+                    os.close(fd)
+        finally:
+            _THREAD_LOCK.release()
+
+
 def _publish(temp_path: Path, path: Path) -> None:
     if sys.platform == "win32":
         import ctypes

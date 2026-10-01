@@ -276,6 +276,21 @@ class FakeExchangeIntegrationTests(unittest.TestCase):
         self.assertAlmostEqual(2.5, float(order["quantity"]))
         self.assertTrue(any(event.get("status") == "placed" and event.get("side") == "BUY" for event in trades))
 
+    def test_live_spot_buy_is_blocked_when_stop_loss_is_not_supported(self):
+        logs: list = []
+        trades: list[dict[str, object]] = []
+        wrapper = _FakeExchangeWrapper(account_type="SPOT", price=100.0)
+        wrapper.mode = "Live"
+        engine = _build_engine(wrapper=wrapper, logs=logs, trades=trades)
+        engine.config["stop_loss"] = {"enabled": True, "mode": "usdt", "usdt": 25.0, "percent": 0.0}
+
+        engine._execute_signal_order(**_signal_order_kwargs(engine, side="BUY", price=100.0, marker=2002))
+
+        self.assertEqual([], wrapper.orders)
+        self.assertEqual([], trades)
+        self.assertEqual([], engine._leg_entries(("BTCUSDT", "1m", "BUY")))
+        self.assertIn("exchange-resident stop protection is not implemented", "\n".join(logs))
+
     def test_futures_signal_order_blocks_when_connector_health_is_error(self):
         logs: list = []
         trades: list[dict[str, object]] = []

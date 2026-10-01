@@ -62,6 +62,27 @@ def _int_or(value, default=0):
         return default
 
 
+def _spot_buy_fill_evidence(self, *, symbol: str, side: str, info: dict) -> dict[str, object] | None:
+    wrapper = getattr(self, "binance", None)
+    if str(getattr(wrapper, "account_type", "") or "").upper() != "SPOT" or side.upper() != "BUY":
+        return None
+    try:
+        base_asset, quote_asset = wrapper.get_base_quote_assets(symbol)
+        from app.integrations.exchanges.binance.orders.spot_fill_recovery_runtime import (
+            summarize_primary_spot_buy,
+        )
+
+        return summarize_primary_spot_buy(
+            info,
+            symbol=symbol,
+            client_order_id=str(info.get("clientOrderId") or ""),
+            base_asset=base_asset,
+            quote_asset=quote_asset,
+        )
+    except Exception:
+        return None
+
+
 def _safe_log(self, message: str, *, level: int = logging.WARNING) -> bool:
     safe_message = redact_text(message)
     callback = getattr(self, "log", None)
@@ -482,11 +503,21 @@ def _emit_signal_order_info(
         _safe_log(self, f"Invalid {cw['symbol']} {side} order info: {exc}")
     uncertain = uncertain or (execution is not None and execution.status in {"NEW", "PARTIALLY_FILLED"})
     fields = _execution_event_fields(execution, uncertain)
+    spot_fill_recovery = _spot_buy_fill_evidence(
+        self, symbol=str(cw["symbol"]).upper(), side=side, info=info_meta,
+    )
+    if spot_fill_recovery is not None:
+        net_qty = _float_or(spot_fill_recovery.get("net_qty"), 0.0)
+        fields["qty"] = net_qty
+        fields["executed_qty"] = net_qty
+        fields["fill_reconciliation_complete"] = True
     avg_price = _float_or(info_meta.get("avgPrice"))
     if fills_info:
         avg_from_fills = _float_or(fills_info.get("avg_price"))
         if avg_from_fills > 0.0:
             avg_price = avg_from_fills
+    if spot_fill_recovery is not None:
+        avg_price = _float_or(spot_fill_recovery.get("average_cost"), avg_price)
     leverage_normalized = None
     if leverage_used is not None:
         leverage_normalized = _int_or(leverage_used, leverage_used)
@@ -523,6 +554,8 @@ def _emit_signal_order_info(
         order_info["order_id"] = order_id_value
     if client_order_id_value is not None:
         order_info["client_order_id"] = client_order_id_value
+    if spot_fill_recovery is not None:
+        order_info["spot_fill_recovery"] = spot_fill_recovery
     if fills_info:
         commission_val = fills_info.get("commission_usdt")
         net_realized_val = fills_info.get("net_realized")

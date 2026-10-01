@@ -72,11 +72,11 @@ a backup alone does not prove it contains the latest submitted intent.
 
 Version two binds the ledger to the Binance environment and a fingerprint of
 the API key, not to a verified exchange-account-wide identifier. Changing the
-key or moving from testnet to live blocks the store. The command deliberately
-has no reset or rebind option. Credential rotation of an established store
-requires a reviewed, history-preserving account-identity/reconciliation
-procedure; it is not yet automated. Do not initialize a new empty path to
-silently discard history during rotation.
+key or moving from testnet to live blocks the store. The generic Futures and
+Spot-testnet administration path has no reset or rebind option. Live Spot has
+the separate offline rotation procedure below; it preserves local history but
+does not verify account identity or exchange reconciliation. Do not initialize
+a new empty path to silently discard history during rotation.
 
 ### Live Spot execution owner (single OS user and host)
 
@@ -100,8 +100,23 @@ trading-bot-order-store initialize --account-type Spot --spot-account-uid-env BO
 
 Existing history at the former audit-derived path blocks first-use
 initialization. Do not delete it or create a fresh ledger under a different
-audit path. A reviewed history-preserving migration is still required for
-existing Live Spot installations.
+audit path. To migrate a resolved version-one or version-two Live Spot ledger,
+stop every executor first. Version-two history must be opened with its currently
+bound API key; rotate credentials separately after migration if needed. The
+offline migration preserves the ledger contents in a backup, moves the legacy
+path out of service, and leaves the new owner marker in `recovery_required`:
+
+```bash
+trading-bot-order-store migrate-spot --account-type Spot --spot-account-uid-env BOT_BINANCE_SPOT_UID --audit-log-path /state/order_audit.jsonl --mode Live --api-key-env BOT_BINANCE_API_KEY --acknowledgement I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE --reconciliation-reference MIGRATION-123
+```
+
+Unresolved local intents, a conflicting target, a mismatched version-two
+credential binding, or an unrecognized owner marker blocks migration. If the
+command is interrupted after it disarms the target, rerun it with the same UID,
+environment, key and reconciliation reference to resume from the preserved
+source or backup. Review the result and backup, then explicitly rearm before
+starting the desktop. The command does not contact Binance or verify the
+operator's reconciliation attestation.
 
 The owner state changes to `active` before an order can be submitted. A crash
 leaves it active; a clean owner release marks it `recovery_required`. Either
@@ -116,8 +131,99 @@ trading-bot-order-store rearm --account-type Spot --spot-account-uid-env BOT_BIN
 The rearm command is offline. It checks for unresolved local intents and a free
 owner lock, then records the operator attestation; it does not verify exchange
 reconciliation itself. A missing marker or ledger blocks trading rather than
-being silently recreated. Key rotation remains blocked by the version-two
-credential fingerprint until a reviewed rotation procedure preserves history.
+being silently recreated.
+
+To query only the existing Live Spot client order IDs that remain unresolved in
+the UID-scoped local ledger, stop the desktop and every other executor first.
+Use an HMAC API key configured for Binance `USER_DATA` access only, and place
+its key and secret in environment variables. Binance distinguishes `USER_DATA`
+order-status access from `TRADE` order placement/cancellation; the command has
+only signed GET operations for account identity and an exact existing-order
+lookup. See Binance's [Spot REST API security types](https://developers.binance.com/en/docs/products/spot/rest-api).
+
+```bash
+trading-bot-order-store reconcile-spot --account-type Spot --mode Live --api-key-env BOT_BINANCE_READ_API_KEY --api-secret-env BOT_BINANCE_READ_API_SECRET --limit 25
+```
+
+The command gets the account UID from the signed account response, reads that
+UID's local ledger, and queries only its unresolved client order IDs (up to the
+requested limit). A failed, missing, malformed or mismatched exchange response
+keeps the intent unresolved and returns a nonzero exit status. It also returns
+nonzero if more records remain than the limit. It never places or cancels an
+order and never rearms the execution owner. Review the output and reconcile
+balances, positions, open orders, fills and other executors separately; this
+command does not establish complete account-wide reconciliation. After that
+review, use the explicit rearm procedure above with a recorded reference.
+
+For a broader read-only audit, `reconcile-spot-account` also validates the
+signed account's balance records and compares every account-wide open order
+against the UID-scoped ledger. Use the USER_DATA-only key and stop the desktop
+and every other executor first:
+
+```bash
+trading-bot-order-store reconcile-spot-account --account-type Spot --mode Live --api-key-env BOT_BINANCE_READ_API_KEY --api-secret-env BOT_BINANCE_READ_API_SECRET --limit 25
+```
+
+The JSON output contains balance asset counts and order counts only; it does not
+print asset names, balance amounts or client order IDs. A nonzero result means
+an order is unresolved, untracked, missing from the exchange open-order view, or
+conflicts with local status. The account and open-order reads are sequential,
+not an atomic exchange snapshot. This command does not compare balances or fills
+with strategy-owned portfolio history, inspect other API keys/users/hosts, fence
+external executors, change ledger status except for exact unresolved-order
+queries, or rearm the owner. Manually reconcile the full account and preserve
+the recovery block until discrepancies are resolved.
+
+To recover exact terminal positive Spot market **BUY** fills into the desktop's
+durable portfolio, stop the desktop and every other executor first. Use the
+same USER_DATA-only key and run:
+
+```bash
+trading-bot-order-store recover-spot-market-fills --account-type Spot --mode Live --api-key-env BOT_BINANCE_READ_API_KEY --api-secret-env BOT_BINANCE_READ_API_SECRET --limit 25
+```
+
+The command rechecks each exact unresolved order, loads all its `myTrades`
+records with bounded pagination, and obtains that symbol's base/quote assets
+from Binance public metadata. It supports USDT-quoted BUYs with commissions
+charged in the base asset or USDT. It subtracts base-asset commission from
+inventory and adds USDT commission to cost. After an atomic write to the
+desktop allocation snapshot, the intent is accepted only when the stored
+portfolio quantity and fill signature match the exact exchange evidence. A
+retry with the same evidence is idempotent. The command uses exchange reads and
+local portfolio/intent writes only; it never places or cancels an order, rearms
+the owner, or treats a successful response as full account reconciliation.
+
+Non-USDT quote pairs, SELL fills, third-asset commissions, unsupported intent
+types, incomplete trade history, contradictory totals or malformed state stay
+blocked. If any unresolved or unsupported positive fills remain, this command
+returns failure and the owner remains disarmed. Continue the account-wide
+balance/open-order review and independently reconcile all fills and positions;
+do not rearm while a positive fill lacks a matching durable allocation. This
+workflow does not cover other keys, users, hosts or executors.
+
+The supported first target is the Python desktop with Binance Spot on one host.
+For Live Spot credential rotation, stop every executor, reconcile exchange
+orders, fills, balances and positions, then use the new API key through an
+environment variable. This operation preserves the ledger and store ID, refuses
+unresolved intents, records old/new credential fingerprints with a reference,
+and moves the owner marker to `recovery_required` before changing the ledger
+binding:
+
+```bash
+trading-bot-order-store rotate-credentials --account-type Spot --spot-account-uid-env BOT_BINANCE_SPOT_UID --audit-log-path /state/order_audit.jsonl --mode Live --api-key-env BOT_BINANCE_API_KEY_NEXT --acknowledgement I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE --reconciliation-reference CHANGE-456
+```
+
+Rotation is an offline operator attestation. It does not contact Binance or
+verify that the supplied UID and new key identify the same account. The first
+runtime start independently verifies the UID with the signed endpoint and
+blocks on a missing ledger, mismatched binding or recovery marker. After
+reviewing the rotation result, explicitly rearm with the new API key and a
+reconciliation reference before starting the desktop:
+
+```bash
+trading-bot-order-store rearm --account-type Spot --spot-account-uid-env BOT_BINANCE_SPOT_UID --mode Live --api-key-env BOT_BINANCE_API_KEY_NEXT --acknowledgement I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE --reconciliation-reference CHANGE-456-VERIFIED
+```
+
 The fixed root is shared only by processes using the same OS profile on one
 host. Other OS users, hosts, native runtimes, external bots and still-valid
 Binance keys are outside this local lock. Do not treat it as exchange-side
