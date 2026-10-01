@@ -312,6 +312,7 @@ def build_spot_opo_cancel_replace_request(
     intent: object,
     *,
     new_order_client_id: str,
+    cancel_new_client_order_id: str | None = None,
 ) -> dict[str, object]:
     """Build a full-position strategy SELL that replaces one active OPO stop.
 
@@ -367,7 +368,7 @@ def build_spot_opo_cancel_replace_request(
     )
     if exit_client_id in used_exit_ids:
         raise LiveTradingSafetyError("Linked Spot SELL client order ID was already used in this ledger.")
-    return validate_spot_opo_cancel_replace_request({
+    payload: dict[str, object] = {
         "symbol": request["symbol"],
         "side": "SELL",
         "type": "MARKET",
@@ -378,7 +379,10 @@ def build_spot_opo_cancel_replace_request(
         "quantity": format(pending_quantity, "f"),
         "newClientOrderId": exit_client_id,
         "newOrderRespType": "FULL",
-    })
+    }
+    if cancel_new_client_order_id is not None:
+        payload["cancelNewClientOrderId"] = cancel_new_client_order_id
+    return validate_spot_opo_cancel_replace_request(payload)
 
 
 def validate_spot_opo_cancel_replace_request(request: object) -> dict[str, object]:
@@ -388,7 +392,7 @@ def validate_spot_opo_cancel_replace_request(request: object) -> dict[str, objec
         "cancelOrigClientOrderId", "cancelRestrictions", "quantity",
         "newClientOrderId", "newOrderRespType",
     }
-    if not isinstance(request, Mapping) or set(request) != required:
+    if not isinstance(request, Mapping) or set(request) not in (required, required | {"cancelNewClientOrderId"}):
         raise LiveTradingSafetyError("Spot OPO strategy-exit request does not match the supported contract.")
     symbol = request.get("symbol")
     if (
@@ -409,7 +413,7 @@ def validate_spot_opo_cancel_replace_request(request: object) -> dict[str, objec
     if cancel_client_id == exit_client_id:
         raise LiveTradingSafetyError("Spot OPO stop and strategy exit client IDs must be distinct.")
     quantity = _decimal(request.get("quantity"), "strategy exit quantity")
-    return {
+    normalized: dict[str, object] = {
         "symbol": symbol,
         "side": "SELL",
         "type": "MARKET",
@@ -421,6 +425,12 @@ def validate_spot_opo_cancel_replace_request(request: object) -> dict[str, objec
         "newClientOrderId": exit_client_id,
         "newOrderRespType": "FULL",
     }
+    if "cancelNewClientOrderId" in request:
+        alias = _client_id(request["cancelNewClientOrderId"], "canceled stop client order ID")
+        if alias in {cancel_client_id, exit_client_id}:
+            raise LiveTradingSafetyError("Canceled stop and exit client IDs must be distinct.")
+        normalized["cancelNewClientOrderId"] = alias
+    return normalized
 
 
 def validate_spot_opo_cancel_replace_response(
@@ -471,6 +481,8 @@ def validate_spot_opo_cancel_replace_response(
         or cancel_response.get("side") != "SELL"
         or cancel_response.get("status") != "CANCELED"
         or canceled_executed != 0
+        or ("clientOrderId" in cancel_response and "cancelNewClientOrderId" in normalized_request
+            and cancel_response["clientOrderId"] != normalized_request["cancelNewClientOrderId"])
     ):
         raise LiveTradingSafetyError("Binance cancel-replace canceled a different or executed stop order.")
 

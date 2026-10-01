@@ -161,7 +161,7 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         return marker_path, request
 
     def set_up_active_opo_with_linked_exit(
-        self, allocation_path: Path, *, exit_client_id: str,
+        self, allocation_path: Path, *, exit_client_id: str, retry_attempt: bool = False,
     ) -> tuple[Path, dict[str, str]]:
         wrapper = _SpotRuntime(self.audit_path)
         wrapper._ensure_spot_execution_owner()
@@ -244,6 +244,21 @@ class SpotReconciliationAdminTests(unittest.TestCase):
                 list_client_order_id=request["listClientOrderId"],
                 expected_quantity="0.0999",
             )
+            if retry_attempt:
+                first = intents._begin_spot_opo_strategy_exit(
+                    wrapper, request["listClientOrderId"], new_order_client_id="first-no-effect-exit",
+                    pre_order_portfolio_signature=baseline["signature"],
+                    pre_order_portfolio_quantity=baseline["quantity"], allocation_path=allocation_path,
+                )
+                intents._mark_spot_opo_strategy_exit_response(
+                    wrapper, request["listClientOrderId"], expected_record=first,
+                    response={
+                        "cancelResult": "FAILURE", "newOrderResult": "NOT_ATTEMPTED",
+                        "cancelResponse": {"code": -2011, "msg": "Unknown order sent."},
+                        "newOrderResponse": None,
+                    },
+                )
+                intents.reconcile_spot_opo_intent(wrapper, request["listClientOrderId"], force=True)
             intents._begin_spot_opo_strategy_exit(
                 wrapper,
                 request["listClientOrderId"],
@@ -743,6 +758,8 @@ class SpotReconciliationAdminTests(unittest.TestCase):
                     {"filterType": "MIN_NOTIONAL", "minNotional": "5", "applyToMarket": False, "avgPriceMins": 0},
                 ],
             }]}
+            current = intents._get_order_intent_record(self.admin_owner, request["listClientOrderId"])
+            pending_order["clientOrderId"] = current["strategy_exit_request"]["cancelNewClientOrderId"]
             get_responses: list[tuple[str, object]] = [
                 ("/account", {"uid": UID, "accountType": "SPOT"}),
                 ("/orderList", list_response),
@@ -851,6 +868,10 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             "status": pending_status, "origQty": "0.0999", "executedQty": "0",
             "stopPrice": "95",
         }
+        current = intents._get_order_intent_record(self.admin_owner, request["listClientOrderId"])
+        exit_request = current.get("strategy_exit_request") if isinstance(current, dict) else None
+        if pending_status == "CANCELED" and isinstance(exit_request, dict) and "cancelNewClientOrderId" in exit_request:
+            pending_order["clientOrderId"] = exit_request["cancelNewClientOrderId"]
         return [list_response, working_order, pending_order]
 
     def test_recover_opo_command_imports_entry_and_exact_triggered_stop_sell(self):
@@ -941,13 +962,19 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         self.assertEqual("recovery_required", json.loads(marker_path.read_text(encoding="utf-8"))["state"])
 
     def test_recover_opos_finishes_lost_ack_full_linked_sell_after_restart(self):
+        self._recover_lost_ack_full_linked_sell_after_restart()
+
+    def test_recover_opos_finishes_lost_retry_ack_full_linked_sell_after_restart(self):
+        self._recover_lost_ack_full_linked_sell_after_restart(retry_attempt=True)
+
+    def _recover_lost_ack_full_linked_sell_after_restart(self, *, retry_attempt=False):
         args = self.args()
         args[0] = "recover-spot-opos"
         exit_client_id = "recovery-exit-sell"
         with tempfile.TemporaryDirectory() as tmp:
             allocation_path = Path(tmp) / "allocations.json"
             marker_path, request = self.set_up_active_opo_with_linked_exit(
-                allocation_path, exit_client_id=exit_client_id,
+                allocation_path, exit_client_id=exit_client_id, retry_attempt=retry_attempt,
             )
             list_response = {
                 "symbol": "BTCUSDT", "orderListId": 700, "contingencyType": "OTO",
@@ -968,6 +995,8 @@ class SpotReconciliationAdminTests(unittest.TestCase):
                 "clientOrderId": request["pendingClientOrderId"], "side": "SELL", "type": "STOP_LOSS",
                 "status": "CANCELED", "origQty": "0.0999", "executedQty": "0", "stopPrice": "95",
             }
+            current = intents._get_order_intent_record(self.admin_owner, request["listClientOrderId"])
+            pending_order["clientOrderId"] = current["strategy_exit_request"]["cancelNewClientOrderId"]
             exit_order = {
                 "symbol": "BTCUSDT", "clientOrderId": exit_client_id, "orderId": 703,
                 "orderListId": -1, "side": "SELL", "type": "MARKET", "status": "FILLED",
@@ -981,22 +1010,20 @@ class SpotReconciliationAdminTests(unittest.TestCase):
                 "time": 1780000000010, "isBuyer": False,
             }]
             bodies = [
-                {"uid": UID, "accountType": "SPOT"},
                 list_response, working_order, pending_order,
-                exit_order, pending_order,
+                exit_order,
                 list_response, working_order, pending_order,
-                exit_order, sell_trades, symbol_info,
-                {"uid": UID, "accountType": "SPOT"},
+                exit_order, exit_order, sell_trades, symbol_info,
             ]
-            responses = [
-                SimpleNamespace(status_code=200, json=lambda body=body: body)
-                for body in bodies
-            ]
+
+            def get_response(url, **_kwargs):
+                body = {"uid": UID, "accountType": "SPOT"} if url.endswith("/account") else bodies.pop(0)
+                return SimpleNamespace(status_code=200, json=lambda body=body: body)
             with patch.dict(os.environ, {
                 "SPOT_RECONCILE_TEST_KEY": API_KEY,
                 "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
             }), patch.object(
-                spot_admin_runtime.requests, "get", side_effect=responses,
+                spot_admin_runtime.requests, "get", side_effect=get_response,
             ) as request_calls, patch(
                 "app.gui.shared.allocation_persistence.get_position_allocations_path",
                 return_value=allocation_path,

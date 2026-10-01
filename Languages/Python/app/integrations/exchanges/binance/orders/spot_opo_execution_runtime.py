@@ -13,6 +13,7 @@ from .order_audit_runtime import audit_order_method
 from .spot_fill_recovery_runtime import spot_opo_allocation_baseline
 from .spot_exchange_errors import SPOT_EXCHANGE_ERRORS
 from .spot_opo_runtime import build_spot_opo_cancel_replace_request, build_spot_opo_request
+from .spot_opo_exit_retry_runtime import spot_opo_cancel_client_id
 
 
 def _new_opo_client_ids() -> tuple[str, str, str]:
@@ -239,7 +240,7 @@ def place_spot_opo_strategy_exit(
             expected_quantity=expected_quantity,
         )
         request = build_spot_opo_cancel_replace_request(
-            intent, new_order_client_id=request_id,
+            intent, new_order_client_id=request_id, cancel_new_client_order_id=spot_opo_cancel_client_id(request_id),
         )
         guard(
             market="spot",
@@ -314,7 +315,7 @@ def place_spot_opo_strategy_exit(
             symbol=str(request["symbol"]),
             origClientOrderId=str(request["newClientOrderId"]),
         )
-        order_evidence = mark_order_observed(list_id, order_response=order)
+        order_evidence = mark_order_observed(list_id, order_response=order, expected_record=current)
         return {
             "ok": bool(order_evidence.get("terminal") and order_evidence.get("status") == "FILLED"),
             "accepted": True,

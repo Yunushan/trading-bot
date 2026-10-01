@@ -25,6 +25,7 @@ from app.integrations.exchanges.binance.orders.spot_fill_recovery_runtime import
 from app.integrations.exchanges.binance.orders.spot_opo_runtime import build_spot_opo_request
 from app.integrations.exchanges.binance.orders.spot_opo_exit_retry_runtime import (
     archive_spot_opo_no_effect_attempt,
+    spot_opo_cancel_client_id,
     used_spot_client_order_ids,
     validate_spot_opo_exit_retry_history,
 )
@@ -178,10 +179,17 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
         )
         if wrong_pending_id:
             list_response["orders"][1]["clientOrderId"] = "another-stop"
+        current = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        exit_request = current.get("strategy_exit_request") if isinstance(current, dict) else None
+        if pending_status == "CANCELED" and isinstance(exit_request, dict) and "cancelNewClientOrderId" in exit_request:
+            pending["clientOrderId"] = exit_request["cancelNewClientOrderId"]
         children = {working["clientOrderId"]: working, pending["clientOrderId"]: pending}
         self.owner.client = SimpleNamespace(
             get_order_list=lambda **_kwargs: list_response,
-            get_order=lambda **kwargs: children[kwargs["origClientOrderId"]],
+            get_order=lambda **kwargs: (
+                next(child for child in children.values() if child["orderId"] == kwargs["orderId"])
+                if "orderId" in kwargs else children[kwargs["origClientOrderId"]]
+            ),
         )
 
     def _recover_active_entry(self):
@@ -1571,6 +1579,7 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
             client_id = f"historic-exit-{index:03d}"
             snapshot["strategy_exit_client_order_id"] = client_id
             snapshot["strategy_exit_request"]["newClientOrderId"] = client_id
+            snapshot["strategy_exit_request"]["cancelNewClientOrderId"] = spot_opo_cancel_client_id(client_id)
             signature = ledger._request_signature(snapshot["strategy_exit_request"])
             snapshot["strategy_exit_request_signature"] = signature
             snapshot["strategy_exit_no_effect_proof"]["request_signature"] = signature
@@ -2172,6 +2181,196 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(LiveTradingSafetyError, "missing exact Spot OPO exchange evidence"):
             ledger.get_order_intent_status(self.owner)
+
+    def _prepare_lost_linked_reply(self, *, legacy=False, retry=False, list_alias=False,
+                                   status="FILLED", executed="0.0999"):
+        self._recover_active_entry()
+        if retry:
+            self._prove_no_effect_exit()
+        begun = self._begin_strategy_exit(self.owner, self.request["listClientOrderId"], "lost-exit-001")
+        ledger._mark_spot_opo_strategy_exit_unknown(
+            self.owner, self.request["listClientOrderId"], error="lost response", expected_record=begun,
+        )
+        record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        if legacy:
+            request = dict(record["strategy_exit_request"])
+            del request["cancelNewClientOrderId"]
+            ledger._update_order_intent_by_id(
+                self.owner, self.request["listClientOrderId"], state="accepted", expected_record=record,
+                strategy_exit_request=request, strategy_exit_request_signature=ledger._request_signature(request),
+            )
+            record = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+        alias = "legacy-auto-cancel-alias" if legacy else record["strategy_exit_request"]["cancelNewClientOrderId"]
+        rows, working, pending = _observation(self.request, pending_status="CANCELED", list_status="ALL_DONE")
+        pending["clientOrderId"] = alias
+        if list_alias:
+            rows["orders"][1]["clientOrderId"] = alias
+        replacement = {
+            "symbol": "BTCUSDT", "clientOrderId": "lost-exit-001", "orderId": 401,
+            "orderListId": -1, "side": "SELL", "type": "MARKET", "status": status,
+            "origQty": "0.0999", "executedQty": executed,
+        }
+
+        def get_order(**query):
+            if "orderId" in query:
+                self.assertEqual({"symbol": "BTCUSDT", "orderId": 302}, query)
+                return pending
+            self.assertEqual("BTCUSDT", query["symbol"])
+            return working if query["origClientOrderId"] == self.request["workingClientOrderId"] else replacement
+
+        self.owner.client = SimpleNamespace(get_order_list=lambda **_query: rows, get_order=get_order)
+        return record, rows, working, pending, replacement
+
+    def test_lost_linked_reply_exact_queries_preserve_legacy_and_retry_requests(self):
+        for legacy, retry, list_alias in ((False, False, False), (False, True, True),
+                                          (True, False, False), (True, True, True)):
+            with self.subTest(legacy=legacy, retry=retry, list_alias=list_alias):
+                self._reset_intent_store()
+                prior, _, _, pending, _ = self._prepare_lost_linked_reply(
+                    legacy=legacy, retry=retry, list_alias=list_alias,
+                )
+                allocation_before = self.allocation_path.read_bytes()
+                result = ledger.reconcile_spot_opo_strategy_exit(
+                    self.owner, self.request["listClientOrderId"], allocation_path=self.allocation_path,
+                    expected_record=prior,
+                )
+                current = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                self.assertEqual("sell_accepted", current["strategy_exit_state"])
+                self.assertEqual("exact_query", current["strategy_exit_outcome_source"])
+                self.assertEqual(prior["strategy_exit_request"], current["strategy_exit_request"])
+                self.assertEqual(prior["strategy_exit_request_signature"], current["strategy_exit_request_signature"])
+                self.assertEqual(prior["strategy_exit_history"], current["strategy_exit_history"])
+                self.assertEqual(self.request["pendingClientOrderId"], current["request"]["pendingClientOrderId"])
+                self.assertEqual(pending["clientOrderId"], current["pending_observed_client_order_id"])
+                self.assertTrue(result["portfolio_recovery_required"])
+                self.assertFalse(result["exchange_orders_placed"])
+                self.assertEqual(allocation_before, self.allocation_path.read_bytes())
+                self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_lost_linked_reply_ambiguous_exact_queries_leave_original_attempt_unchanged(self):
+        mutations = (
+            ("list", "orderListId", 400), ("pending", "orderId", 999),
+            ("list", "listOrderStatus", "EXECUTING"), ("list", "listOrderStatus", None),
+            ("pending", "clientOrderId", "wrong-alias"), ("pending", "origQty", "0.09"),
+            ("pending", "executedQty", "0.01"), ("pending", "status", "NEW"),
+            ("pending", "stopPrice", "94"), ("working", "executedQty", "0.09"),
+            ("replacement", "orderId", 302), ("replacement", "orderListId", 300),
+            ("replacement", "clientOrderId", "another-exit"), ("replacement", "origQty", "0.09"),
+            ("replacement", "code", -2013), ("replacement", "executedQty", "NaN"),
+        )
+        for target, name, value in mutations:
+            with self.subTest(target=target, name=name, value=value):
+                self._reset_intent_store()
+                prior, rows, working, pending, replacement = self._prepare_lost_linked_reply()
+                {"list": rows, "working": working, "pending": pending, "replacement": replacement}[target][name] = value
+                before = ledger._intent_path(self.owner).read_bytes()
+                allocation_before = self.allocation_path.read_bytes()
+                with self.assertRaises(LiveTradingSafetyError):
+                    ledger.reconcile_spot_opo_strategy_exit(
+                        self.owner, self.request["listClientOrderId"], allocation_path=self.allocation_path,
+                        expected_record=prior,
+                    )
+                self.assertEqual(before, ledger._intent_path(self.owner).read_bytes())
+                self.assertEqual(allocation_before, self.allocation_path.read_bytes())
+                self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
+
+    def test_lost_linked_reply_classification_rejects_late_record_and_changed_allocation(self):
+        for change in ("ledger", "allocation", "write_failure"):
+            with self.subTest(change=change):
+                self._reset_intent_store()
+                prior, *_ = self._prepare_lost_linked_reply()
+                original_getter = self.owner.client.get_order
+
+                def get_order(**query):
+                    result = original_getter(**query)
+                    if query.get("origClientOrderId") == "lost-exit-001":
+                        if change == "ledger":
+                            ledger._update_order_intent_by_id(
+                                self.owner, self.request["listClientOrderId"], state="accepted",
+                                expected_record=prior, strategy_exit_last_error="newer observation",
+                            )
+                        elif change == "allocation":
+                            data = json.loads(self.allocation_path.read_text(encoding="utf-8"))
+                            data["entry_allocations"]["BTCUSDT:L"][0]["entry_price"] = 101
+                            self.allocation_path.write_text(json.dumps(data), encoding="utf-8")
+                    return result
+
+                self.owner.client.get_order = get_order
+                context = patch.object(ledger, "_write_ledger", side_effect=OSError("disk write failed"))
+                if change == "write_failure":
+                    with context, self.assertRaisesRegex(LiveTradingSafetyError, "disk write failed"):
+                        ledger.reconcile_spot_opo_strategy_exit(
+                            self.owner, self.request["listClientOrderId"], allocation_path=self.allocation_path,
+                        )
+                else:
+                    with self.assertRaises(LiveTradingSafetyError):
+                        ledger.reconcile_spot_opo_strategy_exit(
+                            self.owner, self.request["listClientOrderId"], allocation_path=self.allocation_path,
+                        )
+                current = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                self.assertEqual("unknown", current["strategy_exit_state"])
+                self.assertNotIn("strategy_exit_outcome", current)
+
+    def test_exact_linked_sell_observation_cannot_regress_terminal_status_or_use_late_receipt(self):
+        for status, executed, next_status in (("CANCELED", "0.06", "PARTIALLY_FILLED"),
+                                             ("EXPIRED", "0", "NEW")):
+            with self.subTest(status=status):
+                self._reset_intent_store()
+                prior, _, _, _, order = self._prepare_lost_linked_reply(status=status, executed=executed)
+                ledger.reconcile_spot_opo_strategy_exit(
+                    self.owner, self.request["listClientOrderId"], allocation_path=self.allocation_path,
+                )
+                current = ledger._get_order_intent_record(self.owner, self.request["listClientOrderId"])
+                before = ledger._intent_path(self.owner).read_bytes()
+                with self.assertRaisesRegex(LiveTradingSafetyError, "late query"):
+                    ledger._mark_spot_opo_strategy_exit_order_observed(
+                        self.owner, self.request["listClientOrderId"], order_response=order, expected_record=prior,
+                    )
+                order["status"] = next_status
+                with self.assertRaisesRegex(LiveTradingSafetyError, "regressed"):
+                    ledger._mark_spot_opo_strategy_exit_order_observed(
+                        self.owner, self.request["listClientOrderId"], order_response=order, expected_record=current,
+                    )
+                self.assertEqual(before, ledger._intent_path(self.owner).read_bytes())
+
+    def test_legacy_cancel_alias_cannot_reuse_an_archived_id_on_first_query_or_reload(self):
+        prior, _, _, pending, _ = self._prepare_lost_linked_reply(legacy=True, retry=True)
+        alias = prior["strategy_exit_history"][0]["strategy_exit_client_order_id"]
+        pending["clientOrderId"] = alias
+        path = ledger._intent_path(self.owner)
+        before = path.read_bytes()
+        with self.assertRaisesRegex(LiveTradingSafetyError, "archived"):
+            ledger.reconcile_spot_opo_intent(self.owner, self.request["listClientOrderId"], force=True)
+        self.assertEqual(before, path.read_bytes())
+        payload = json.loads(before)
+        record = payload["intents"][self.request["listClientOrderId"]]
+        record.update({
+            "list_status": "ALL_DONE", "pending_status": "CANCELED", "pending_executed_qty": "0",
+            "cancel_state": "confirmed", "protection_state": "cancelled", "cancel_confirmed_at": ledger._now(),
+            "pending_observed_client_order_id": alias,
+        })
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(LiveTradingSafetyError, "archived"):
+            ledger.get_order_intent_status(self.owner)
+
+    def test_lost_linked_query_proof_is_validated_on_ledger_reload(self):
+        mutations = {"request_signature": "a" * 64, "pre_order_signature": "b" * 64,
+                     "pending_client_order_id": "another-alias", "pending_order_id": 999,
+                     "pending_executed_quantity": "0.01", "order_id": 999, "executed_quantity": "0.01",
+                     "status": "NEW", "version": True, "observed_at": "no-time"}
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                self._reset_intent_store()
+                self._prepare_lost_linked_reply()
+                ledger.reconcile_spot_opo_strategy_exit(
+                    self.owner, self.request["listClientOrderId"], allocation_path=self.allocation_path,
+                )
+                path = ledger._intent_path(self.owner)
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["intents"][self.request["listClientOrderId"]]["strategy_exit_query_proof"][field] = value
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaises(LiveTradingSafetyError):
+                    ledger.get_order_intent_status(self.owner)
 
     def test_positive_partial_execution_and_wrong_child_identity_stay_blocked(self):
         self._submit()

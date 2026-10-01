@@ -10,6 +10,7 @@ from app.integrations.exchanges.binance.orders.spot_opo_execution_runtime import
     place_spot_opo_entry,
     place_spot_opo_strategy_exit,
 )
+from app.integrations.exchanges.binance.orders.spot_opo_exit_retry_runtime import spot_opo_cancel_client_id
 from app.integrations.exchanges.binance.orders.spot_opo_runtime import (
     validate_spot_opo_acknowledgement,
     validate_spot_opo_request_payload,
@@ -288,6 +289,7 @@ class SpotOpoExecutionRuntimeTests(unittest.TestCase):
                 self.events.append(("begin", pre_order_portfolio_signature, pre_order_portfolio_quantity))
                 request = build_spot_opo_cancel_replace_request(
                     self.record, new_order_client_id=new_order_client_id,
+                    cancel_new_client_order_id=spot_opo_cancel_client_id(new_order_client_id),
                 )
                 self.record.update({
                     "strategy_exit_state": "submitted",
@@ -319,7 +321,7 @@ class SpotOpoExecutionRuntimeTests(unittest.TestCase):
             def _mark_spot_opo_strategy_exit_unknown(self, list_id, *, error, expected_record=None):
                 self.events.append(("unknown", type(error).__name__))
 
-            def _mark_spot_opo_strategy_exit_order_observed(self, list_id, *, order_response):
+            def _mark_spot_opo_strategy_exit_order_observed(self, list_id, *, order_response, expected_record=None):
                 evidence = validate_spot_opo_strategy_exit_order(
                     order_response, self.record["strategy_exit_request"],
                 )

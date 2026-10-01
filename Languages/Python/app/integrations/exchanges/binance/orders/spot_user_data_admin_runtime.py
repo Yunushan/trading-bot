@@ -43,7 +43,9 @@ class SpotUserDataTransport:
         if path not in _SIGNED_PATHS:
             raise LiveTradingSafetyError("Spot reconciliation requested an unsupported read-only endpoint.")
         if (path == "/v3/account" and params) or (
-            path == "/v3/order" and set(params or {}) != {"symbol", "origClientOrderId"}
+            path == "/v3/order" and set(params or {}) not in (
+                {"symbol", "origClientOrderId"}, {"symbol", "orderId"},
+            )
         ) or (path == "/v3/openOrders" and params):
             raise LiveTradingSafetyError("Spot reconciliation requested invalid read-only query parameters.")
         if path == "/v3/orderList":
@@ -58,6 +60,10 @@ class SpotUserDataTransport:
                 or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-" for character in client_id)
             ):
                 raise LiveTradingSafetyError("Spot reconciliation requested an invalid exact order-list query.")
+        if path == "/v3/order" and "orderId" in (params or {}):
+            order_id = (params or {}).get("orderId")
+            if type(order_id) is not int or order_id <= 0:
+                raise LiveTradingSafetyError("Spot reconciliation requested an invalid exact numeric order query.")
         if path == "/v3/myTrades":
             trade_params = dict(params or {})
             if (
@@ -178,24 +184,30 @@ class SpotUserDataTransport:
             raise LiveTradingSafetyError("Binance Spot open orders response is malformed.")
         return [dict(order) for order in response if isinstance(order, Mapping)]
 
-    def get_order(self, *, symbol: str, origClientOrderId: str) -> dict[str, object]:
+    def get_order(
+        self, *, symbol: str, origClientOrderId: str | None = None, orderId: int | None = None,
+    ) -> dict[str, object]:
         if (
             not isinstance(symbol, str)
             or not symbol
             or not symbol.isascii()
             or not symbol.isalnum()
             or symbol != symbol.upper()
-            or not isinstance(origClientOrderId, str)
-            or not origClientOrderId
-            or len(origClientOrderId) > 36
-            or not origClientOrderId.isascii()
-            or any(not (character.isalnum() or character in "._:/-") for character in origClientOrderId)
+            or (origClientOrderId is None) == (orderId is None)
+            or (origClientOrderId is not None and (
+                not isinstance(origClientOrderId, str) or not origClientOrderId
+                or len(origClientOrderId) > 36 or not origClientOrderId.isascii()
+                or any(not (character.isalnum() or character in "._:/-") for character in origClientOrderId)
+            ))
+            or (orderId is not None and (type(orderId) is not int or orderId <= 0))
         ):
             raise LiveTradingSafetyError("Spot order reconciliation requires a valid symbol and client order ID.")
-        response = self._signed_get(
-            "/v3/order",
-            {"symbol": symbol, "origClientOrderId": origClientOrderId},
-        )
+        params: dict[str, str | int] = {"symbol": symbol}
+        if origClientOrderId is not None:
+            params["origClientOrderId"] = origClientOrderId
+        elif orderId is not None:
+            params["orderId"] = orderId
+        response = self._signed_get("/v3/order", params)
         if not isinstance(response, dict):
             raise LiveTradingSafetyError("Binance Spot order response was not an object.")
         return response

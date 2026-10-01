@@ -106,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
                 _mark_spot_opo_strategy_exit_residual_required,
                 _mark_spot_opo_strategy_exit_order_observed,
                 _mark_spot_opo_strategy_exit_reconciled,
-                _mark_spot_opo_strategy_exit_response,
+                reconcile_spot_opo_strategy_exit,
                 _begin_spot_opo_residual_stop,
                 cancel_spot_opo_intent,
                 get_spot_open_order_reconciliation_status,
@@ -161,9 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             owner._mark_spot_opo_strategy_exit_reconciled = MethodType(
                 _mark_spot_opo_strategy_exit_reconciled, owner,
             )
-            owner._mark_spot_opo_strategy_exit_response = MethodType(
-                _mark_spot_opo_strategy_exit_response, owner,
-            )
+            owner.reconcile_spot_opo_strategy_exit = MethodType(reconcile_spot_opo_strategy_exit, owner)
             owner._mark_spot_opo_strategy_exit_residual_required = MethodType(
                 _mark_spot_opo_strategy_exit_residual_required, owner,
             )
@@ -528,49 +526,14 @@ def main(argv: list[str] | None = None) -> int:
                                         symbol=symbol, origClientOrderId=exit_client_id,
                                     )
                                     if strategy_exit_state in {"submitted", "unknown"} and intent.get("strategy_exit_outcome") is None:
-                                        pending_order = transport.get_order(
-                                            symbol=symbol,
-                                            origClientOrderId=str(request.get("pendingClientOrderId") or ""),
-                                        )
-                                        if (
-                                            pending_order.get("symbol") != symbol
-                                            or pending_order.get("clientOrderId") != request.get("pendingClientOrderId")
-                                            or pending_order.get("orderId") != intent.get("pending_order_id")
-                                            or pending_order.get("orderListId") != intent.get("exchange_order_list_id")
-                                            or pending_order.get("side") != "SELL"
-                                            or pending_order.get("type") != "STOP_LOSS"
-                                            or pending_order.get("status") != "CANCELED"
-                                            or Decimal(str(pending_order.get("executedQty"))) != 0
-                                        ):
-                                            raise LiveTradingSafetyError("Canceled OPO stop lacks exact child-order proof.")
-                                        _mark_spot_opo_strategy_exit_response(
-                                            owner,
-                                            str(client_order_id),
-                                            response={
-                                                "cancelResult": "SUCCESS",
-                                                "newOrderResult": "SUCCESS",
-                                                "cancelResponse": {
-                                                    "symbol": symbol,
-                                                    "orderId": intent.get("pending_order_id"),
-                                                    "origClientOrderId": request.get("pendingClientOrderId"),
-                                                    "side": "SELL",
-                                                    "status": "CANCELED",
-                                                    "executedQty": "0",
-                                                },
-                                                "newOrderResponse": exit_order,
-                                            },
-                                        )
-                                        intent = _get_order_intent_record(owner, str(client_order_id))
-                                        if not isinstance(intent, dict):
-                                            raise LiveTradingSafetyError("Linked OPO SELL intent disappeared during recovery.")
-                                        refreshed_exit = reconcile_spot_opo_intent(
-                                            owner, str(client_order_id), force=True,
+                                        reconcile_spot_opo_strategy_exit(
+                                            owner, str(client_order_id), allocation_path=allocation_path,
+                                            expected_record=intent, initial_order_response=exit_order,
                                         )
                                         intent = _get_order_intent_record(owner, str(client_order_id))
                                         if (
                                             not isinstance(intent, dict)
-                                            or refreshed_exit.get("error")
-                                            or refreshed_exit.get("protection_state") != "cancelled"
+                                            or intent.get("protection_state") != "cancelled"
                                         ):
                                             raise LiveTradingSafetyError("Canceled OPO stop changed during linked SELL recovery.")
                                         exit_order = transport.get_order(
@@ -583,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
                                         owner,
                                         str(client_order_id),
                                         order_response=exit_order,
+                                        expected_record=intent,
                                     )
                                     intent = _get_order_intent_record(owner, str(client_order_id))
                                     if not isinstance(intent, dict):

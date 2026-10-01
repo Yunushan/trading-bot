@@ -117,6 +117,9 @@ def validate_spot_opo_exit_retry_history(intent: Mapping[str, object]) -> list[d
     current_id = intent.get("strategy_exit_client_order_id")
     if isinstance(current_id, str):
         used_ids.add(current_id)
+    current_request = intent.get("strategy_exit_request")
+    if isinstance(current_request, Mapping) and isinstance(current_request.get("cancelNewClientOrderId"), str):
+        used_ids.add(str(current_request["cancelNewClientOrderId"]))
     normalized = []
     for prior in history:
         if (
@@ -128,9 +131,11 @@ def validate_spot_opo_exit_retry_history(intent: Mapping[str, object]) -> list[d
         combined = {**intent, **prior}
         request = validate_spot_opo_cancel_replace_request(prior.get("strategy_exit_request"))
         client_id = request["newClientOrderId"]
+        alias = request.get("cancelNewClientOrderId")
         baseline_signature = prior.get("strategy_exit_pre_order_signature")
         if (
             client_id in used_ids
+            or (alias is not None and (alias in used_ids or alias != spot_opo_cancel_client_id(str(client_id))))
             or prior.get("strategy_exit_client_order_id") != client_id
             or prior.get("strategy_exit_quantity") != request["quantity"]
             or _amount(prior.get("strategy_exit_pre_order_quantity")) != _amount(request["quantity"])
@@ -148,6 +153,8 @@ def validate_spot_opo_exit_retry_history(intent: Mapping[str, object]) -> list[d
             raise LiveTradingSafetyError("Linked exit retry history conflicts with its request or unchanged baseline.")
         validate_spot_opo_no_effect_proof(combined, prior.get("strategy_exit_no_effect_proof"))
         used_ids.add(client_id)
+        if isinstance(alias, str):
+            used_ids.add(alias)
         normalized.append(dict(prior))
     return normalized
 
@@ -160,7 +167,8 @@ def archive_spot_opo_no_effect_attempt(intent: Mapping[str, object]) -> dict[str
         or name in {"cancel_state", "cancel_submitted_at"}
     }
     # Validate the snapshot without inventing a current generation ID.
-    candidate = {**intent, "strategy_exit_client_order_id": None, "strategy_exit_history": [prior]}
+    candidate = {**intent, "strategy_exit_client_order_id": None, "strategy_exit_request": None,
+                 "strategy_exit_history": [prior]}
     validate_spot_opo_exit_retry_history(candidate)
     return prior
 
@@ -182,6 +190,12 @@ def used_spot_client_order_ids(intents: Mapping[str, object]) -> set[str]:
         client_id = record.get("strategy_exit_client_order_id")
         if isinstance(client_id, str):
             used.add(client_id)
+        request = record.get("strategy_exit_request")
+        if isinstance(request, Mapping) and isinstance(request.get("cancelNewClientOrderId"), str):
+            used.add(str(request["cancelNewClientOrderId"]))
+        alias = record.get("pending_observed_client_order_id")
+        if isinstance(alias, str):
+            used.add(alias)
         request = record.get("residual_stop_request")
         if isinstance(request, Mapping) and isinstance(request.get("newClientOrderId"), str):
             used.add(str(request["newClientOrderId"]))
@@ -192,9 +206,17 @@ def used_spot_client_order_ids(intents: Mapping[str, object]) -> set[str]:
             for prior in history:
                 if history_name == "strategy_exit_history":
                     client_id = prior.get("strategy_exit_client_order_id")
+                    request = prior.get("strategy_exit_request")
+                    if isinstance(request, Mapping) and isinstance(request.get("cancelNewClientOrderId"), str):
+                        used.add(str(request["cancelNewClientOrderId"]))
                 else:
                     request = prior.get("request")
                     client_id = request.get("newClientOrderId") if isinstance(request, Mapping) else None
                 if isinstance(client_id, str):
                     used.add(client_id)
     return used
+
+
+def spot_opo_cancel_client_id(exit_client_id: str) -> str:
+    """Return a stable, separately reserved cancellation alias for one new attempt."""
+    return "cx" + hashlib.sha256(exit_client_id.encode("utf-8")).hexdigest()[:32]

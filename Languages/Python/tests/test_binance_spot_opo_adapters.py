@@ -92,6 +92,7 @@ class BinanceSpotOpoAdapterTests(unittest.TestCase):
                 cancelReplaceMode="STOP_ON_FAILURE",
                 cancelRestrictions="ONLY_NEW",
                 cancelOrigClientOrderId="stop-1",
+                cancelNewClientOrderId="cancel-1",
                 quantity="0.01",
                 newClientOrderId="exit-1",
                 newOrderRespType="FULL",
@@ -123,6 +124,7 @@ class BinanceSpotOpoAdapterTests(unittest.TestCase):
         self.assertIs(_Values.STOP_ON_FAILURE, replace["cancel_replace_mode"])
         self.assertIs(_Values.ONLY_NEW, replace["cancel_restrictions"])
         self.assertEqual("stop-1", replace["cancel_orig_client_order_id"])
+        self.assertEqual("cancel-1", replace["cancel_new_client_order_id"])
         self.assertEqual(0.01, replace["quantity"])
         self.assertEqual("exit-1", replace["new_client_order_id"])
 
@@ -186,6 +188,7 @@ class BinanceSpotOpoAdapterTests(unittest.TestCase):
             "type": "MARKET",
             "cancelReplaceMode": "STOP_ON_FAILURE",
             "cancelOrigClientOrderId": "stop-2",
+            "cancelNewClientOrderId": "cancel-2",
             "quantity": "0.01",
             "newClientOrderId": "exit-2",
         }
@@ -224,6 +227,7 @@ class BinanceSpotOpoAdapterTests(unittest.TestCase):
             "type": "MARKET",
             "cancelReplaceMode": "STOP_ON_FAILURE",
             "cancelOrigClientOrderId": "stop-3",
+            "cancelNewClientOrderId": "cancel-3",
             "quantity": "0.01",
             "newClientOrderId": "exit-3",
         }

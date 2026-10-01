@@ -111,6 +111,20 @@ class SpotUserDataTransportTests(unittest.TestCase):
         )
 
     def test_order_list_query_is_exactly_scoped_to_list_client_order_id(self):
+        # Numeric IDs remain stable when Binance renames a canceled child.
+        expected = {"orderId": 55, "clientOrderId": "cancellation-alias", "symbol": "BTCUSDT", "status": "CANCELED"}
+        with patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get") as get:
+            get.return_value = self.response(expected)
+            self.assertEqual(expected, self.transport.get_order(symbol="BTCUSDT", orderId=55))
+        self.assert_signed_get(get.call_args, "/v3/order", {"symbol": "BTCUSDT", "orderId": 55})
+        with patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.requests.get") as get:
+            for params in ({"orderId": 0}, {"orderId": True}, {"orderId": "55"}, {},
+                           {"orderId": 55, "origClientOrderId": "old-child"}):
+                with self.subTest(params=params), self.assertRaises(LiveTradingSafetyError):
+                    self.transport.get_order(symbol="BTCUSDT", **params)
+            get.assert_not_called()
+
+    def test_order_list_query_keeps_its_exact_client_order_id_selector(self):
         expected_response = {
             "orderListId": 13, "contingencyType": "OTO", "listStatusType": "EXEC_STARTED",
             "listClientOrderId": "op-list-13", "symbol": "BTCUSDT", "orders": [],

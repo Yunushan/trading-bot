@@ -35,12 +35,26 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from app.integrations.exchanges.binance.orders import order_intent_runtime as runtime  # noqa: E402
 from app.integrations.exchanges.binance.orders import order_intent_store as store  # noqa: E402
+from tools import spot_intent_capacity_profiles as profiles  # noqa: E402
 
 MAX_RECORDS = 100_000
 TEMP_PREFIX = "trading-bot-spot-intent-capacity-"
 SYNTHETIC_UID = 900_000_021
 SYNTHETIC_KEY = "synthetic-capacity-key-not-a-credential"
 FIXED_TIME = "2026-01-01T00:00:00+00:00"
+
+
+def owned_temporary_root(root: Path) -> Path:
+    """Accept only an empty directory inside this tool's named system Temp tree."""
+    resolved = root.resolve(strict=True)
+    temporary = Path(tempfile.gettempdir()).resolve(strict=True)
+    components = (root, *root.parents)
+    if (not resolved.is_dir() or any(component.is_symlink() for component in components)
+            or temporary not in resolved.parents
+            or not any(part.startswith(TEMP_PREFIX) for part in resolved.relative_to(temporary).parts)
+            or any(resolved.iterdir())):
+        raise ValueError("Benchmark requires an empty owned system temporary directory.")
+    return resolved
 
 
 def confined_path(root: Path, path: Path) -> Path:
@@ -117,9 +131,11 @@ def source_identity() -> dict[str, Any]:
             ["git", *args], cwd=REPOSITORY_ROOT, capture_output=True, text=True, timeout=10, check=True,
         )
         return result.stdout.strip()
-    paths = (Path(runtime.__file__), Path(store.__file__), Path(__file__))
+    paths = [*Path(runtime.__file__).parent.glob("*.py"), Path(__file__), Path(profiles.__file__)]
     return {
         "head": git("rev-parse", "HEAD"),
+        "repository_git_tree": git("rev-parse", "HEAD^{tree}"),
+        "python_git_tree": git("rev-parse", "HEAD:Languages/Python"),
         "tracked_worktree_status": git("status", "--short", "--untracked-files=no"),
         "file_sha256": {
             path.relative_to(REPOSITORY_ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -144,9 +160,30 @@ def hardware_identity() -> dict[str, Any]:
     return result
 
 
+def resource_estimates(count: int, *, profile: str, attempt_depth: int,
+                       residual_stops: int, residual_depth: int) -> tuple[int, int]:
+    """Bound record and both nested-history allocations before generating state."""
+    history_entries = count * attempt_depth + residual_stops * residual_depth if profile == "opo-heavy" else 0
+    return count * 16_384 + history_entries * 12_288, count * 4096 + history_entries * 4096
+
+
 def benchmark_history(root: Path, count: int, *, samples: int, warmup: int,
-                      unresolved_count: int, concurrent_rounds: int) -> dict[str, Any]:
+                      unresolved_count: int, concurrent_rounds: int, profile: str = "market-baseline",
+                      original_stops: int = 4, residual_stops: int = 4,
+                      attempt_depth: int = 3, residual_depth: int = 3) -> dict[str, Any]:
     """Caller owns an empty temporary root; network and home are patched locally."""
+    if profile not in {"market-baseline", "opo-heavy"}:
+        raise ValueError("Unknown bounded history profile.")
+    if profile == "opo-heavy":
+        profiles.validate_opo_counts(count, original_stops, residual_stops, attempt_depth, residual_depth)
+        if unresolved_count != 0:
+            raise ValueError("All-active-stop refresh requires a ledger with zero unresolved records.")
+    elif type(count) is not int or type(unresolved_count) is not int or not 1 <= unresolved_count <= count <= MAX_RECORDS:
+        raise ValueError("Require 1 <= unresolved count <= record count <= 100000.")
+    if (type(samples) is not int or not 1 <= samples <= 25 or type(warmup) is not int or not 0 <= warmup <= 3
+            or type(concurrent_rounds) is not int or not 0 <= concurrent_rounds <= 10):
+        raise ValueError("Workload exceeds bounded samples, warmup or concurrency limits.")
+    root = owned_temporary_root(root)
     home = confined_path(root, root / "synthetic-home")
     home.mkdir()
     owner = synthetic_owner()
@@ -156,13 +193,32 @@ def benchmark_history(root: Path, count: int, *, samples: int, warmup: int,
             stack.enter_context(patch.object(socket.socket, method, side_effect=AssertionError("Benchmark is offline.")))
         stack.enter_context(patch.object(socket, "create_connection", side_effect=AssertionError("Benchmark is offline.")))
         path = confined_path(root, runtime._intent_path(owner))
+        workload: dict[str, Any] = {}
+        if profile == "opo-heavy":
+            records, workload = profiles.synthetic_opo_records(
+                count, original_stops=original_stops, residual_stops=residual_stops,
+                attempt_depth=attempt_depth, residual_depth=residual_depth,
+            )
+            payload = {
+                "format_version": runtime._INTENT_FORMAT_VERSION, "binding": runtime._intent_binding(owner),
+                "store_id": "00000000-0000-4000-8000-000000000021", "created_at": FIXED_TIME, "intents": records,
+            }
+            owner.client = profiles.SyntheticOpoVenue(records)
+        else:
+            payload = synthetic_payload(count, unresolved_count)
         with store.ledger_transaction(path):
-            store.write_ledger(path, synthetic_payload(count, unresolved_count))
+            store.write_ledger(path, payload)
+            initial = runtime._read_ledger(path, expected_binding=runtime._intent_binding(owner))
         binding = runtime._intent_binding(owner)
-        expected_ids = [f"synthetic-history-{index:08d}" for index in range(count - unresolved_count, count)]
-        history_ids_digest = hashlib.sha256(
-            "\n".join(f"synthetic-history-{index:08d}" for index in range(count)).encode()
-        ).hexdigest()
+        expected_ids = ([f"synthetic-history-{index:08d}" for index in range(count - unresolved_count, count)]
+                        if profile == "market-baseline" else [])
+        initial_ids = sorted(payload["intents"])
+        rewrite_id = expected_ids[-1] if expected_ids else initial_ids[-1]
+        active_ids = set(runtime._active_spot_protection_records(initial["intents"]))
+        mutable_ids = active_ids | {rewrite_id}
+        initial_digest = profiles.immutable_history_digest(initial["intents"], mutable_client_ids=mutable_ids)
+        initial_used_ids = profiles.used_spot_client_order_ids(initial["intents"])
+        del initial, payload
 
         def read_validate():
             with store.ledger_transaction(path):
@@ -181,14 +237,37 @@ def benchmark_history(root: Path, count: int, *, samples: int, warmup: int,
                 payload = runtime._read_ledger(path, expected_binding=binding)
                 intents = payload["intents"]
                 assert isinstance(intents, dict)
-                intents[expected_ids[-1]]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                intents[rewrite_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
                 store.write_ledger(path, payload)
+
+        def used_id_scan():
+            with store.ledger_transaction(path):
+                payload = runtime._read_ledger(path, expected_binding=binding)
+                if profiles.used_spot_client_order_ids(payload["intents"]) != initial_used_ids:
+                    raise AssertionError("Nested Spot client IDs changed.")
+
+        refresh_get_counts = []
+        def fresh_active_stop_refresh():
+            before_calls = dict(owner.client.calls)
+            proof = runtime._refresh_spot_active_protection(
+                owner, reject_spot_client_order_ids=("synthetic-never-used-client-id",),
+            )
+            with store.ledger_transaction(path):
+                payload = runtime._read_ledger(path, expected_binding=binding)
+                runtime._assert_fresh_spot_protection(payload, proof)
+            observed_calls = {name: value - before_calls[name] for name, value in owner.client.calls.items()}
+            if observed_calls != workload["expected_gets_per_refresh"] or set(proof[1]) != active_ids:
+                raise AssertionError("Fresh stop refresh omitted an exact GET or an active stop.")
+            refresh_get_counts.append(observed_calls)
 
         operations = {
             "locked_read_validate": read_validate,
             "unresolved_lookup_including_read_validate": unresolved_lookup,
             "locked_read_validate_fsync_atomic_rewrite": read_validate_rewrite,
         }
+        if profile == "opo-heavy":
+            operations.update(locked_read_validate_nested_client_id_scan=used_id_scan,
+                              fresh_all_active_stop_refresh_and_locked_admission_assertion=fresh_active_stop_refresh)
         timings = {}
         for name, operation in operations.items():
             for _ in range(warmup):
@@ -202,7 +281,8 @@ def benchmark_history(root: Path, count: int, *, samples: int, warmup: int,
 
         concurrent: dict[str, Any] = {"same_process_threads": 2, "rounds": concurrent_rounds,
                       "lock_timeout_seconds": store.LOCK_TIMEOUT_SECONDS,
-                      "includes_lock_wait": True, "failures": [], "operations": {}}
+                      "includes_lock_wait": True, "includes_active_stop_refresh": False,
+                      "failures": [], "operations": {}}
         concurrent_samples: dict[str, list[float]] = {"reader": [], "writer": []}
         def contender(role, barrier):
             barrier.wait(timeout=10)
@@ -228,15 +308,28 @@ def benchmark_history(root: Path, count: int, *, samples: int, warmup: int,
             final = runtime._read_ledger(path, expected_binding=binding)
             final_intents = final["intents"]
             assert isinstance(final_intents, dict)
-            final_digest = hashlib.sha256("\n".join(sorted(final_intents)).encode()).hexdigest()
-            if final_digest != history_ids_digest:
+            if sorted(final_intents) != initial_ids:
                 raise AssertionError("A benchmark rewrite changed historical client IDs.")
+            final_digest = profiles.immutable_history_digest(final_intents, mutable_client_ids=mutable_ids)
+            if final_digest != initial_digest or profiles.used_spot_client_order_ids(final_intents) != initial_used_ids:
+                raise AssertionError("A benchmark operation changed immutable history or nested client IDs.")
         result = {
-            "record_count": count, "unresolved_count": unresolved_count, "ledger_size_bytes": path.stat().st_size,
+            "profile": profile, "record_count": count, "unresolved_count": unresolved_count,
+            "ledger_size_bytes": path.stat().st_size,
             "warmup_per_operation": warmup, "latencies": timings, "concurrency": concurrent,
             "historical_ids_preserved": True, "binding_preserved": final["binding"] == binding,
             "store_id_preserved": final["store_id"] == "00000000-0000-4000-8000-000000000021",
+            "immutable_history_preserved_except_observation_clocks": True,
+            "immutable_history_sha256": final_digest, "nested_client_ids_preserved": True,
+            "mutable_observation_fields": ["updated_at", "last_reconciliation_at", "residual_stop_observed_at",
+                                            "strategy_exit_no_effect_proof.verified_at"],
         }
+        if profile == "opo-heavy":
+            result.update(opo_workload=workload, refresh_get_cardinality_per_invocation=refresh_get_counts,
+                          refresh_get_totals=dict(owner.client.calls),
+                          refresh_includes_real_cas_and_atomic_publication=True,
+                          refresh_measurement_scope="sequential; separate from reader/writer contention",
+                          venue_boundary="immutable synthetic in-memory GET replies; no POST or transport latency")
         del final
         gc.collect()
         return result
@@ -245,16 +338,33 @@ def benchmark_history(root: Path, count: int, *, samples: int, warmup: int,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--records", type=int, nargs="+", default=[10_000, 100_000])
+    parser.add_argument("--profile", choices=("market-baseline", "opo-heavy"), default="market-baseline")
     parser.add_argument("--samples", type=int, default=7)
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--unresolved-count", type=int, default=10)
+    parser.add_argument("--unresolved-count", type=int)
+    parser.add_argument("--active-original-stops", type=int, default=4)
+    parser.add_argument("--active-residual-stops", type=int, default=4)
+    parser.add_argument("--attempt-history-depth", type=int, default=3)
+    parser.add_argument("--residual-history-depth", type=int, default=3)
     parser.add_argument("--concurrent-rounds", type=int, default=3)
     parser.add_argument("--output-name", default="spot-intent-history-benchmark.json")
     args = parser.parse_args(argv)
+    if args.unresolved_count is None:
+        args.unresolved_count = 10 if args.profile == "market-baseline" else 0
     if (not 1 <= args.samples <= 25 or not 0 <= args.warmup <= 3 or not 0 <= args.concurrent_rounds <= 10
             or len(args.records) > 4 or len(set(args.records)) != len(args.records)
-            or any(not 1 <= args.unresolved_count <= count <= MAX_RECORDS for count in args.records)):
+            or any(not 1 <= count <= MAX_RECORDS for count in args.records)
+            or (args.profile == "market-baseline" and any(not 1 <= args.unresolved_count <= count for count in args.records))):
         parser.error("Workload exceeds bounded records/samples/warmup/concurrency limits.")
+    if args.profile == "opo-heavy":
+        try:
+            for count in args.records:
+                profiles.validate_opo_counts(count, args.active_original_stops, args.active_residual_stops,
+                                             args.attempt_history_depth, args.residual_history_depth)
+            if args.unresolved_count != 0:
+                raise ValueError("All-active-stop refresh requires zero unresolved records.")
+        except ValueError as exc:
+            parser.error(str(exc))
     if Path(args.output_name).name != args.output_name or not args.output_name.endswith(".json"):
         parser.error("Output must be a single .json filename inside the owned temporary directory.")
     run_root = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX)).resolve()
@@ -278,23 +388,43 @@ def main(argv: list[str] | None = None) -> int:
                         "Operator budgets and production workload remain unspecified."],
         "histories": [],
     }
+    if args.profile == "opo-heavy":
+        report["workload"] = {
+            "profile": "opo-heavy", "symbols": list(profiles.SYMBOLS),
+            "resolved_mix": "OPO full entry/stop recovery or FOK no-fill; exact active original/residual subset",
+            "unresolved_tail": "none; every active stop is forced through actual BUY admission refresh",
+            "network": "socket connections rejected; synthetic GET-only boundary",
+            "cache": "warm filesystem cache; no cache eviction", "rewrite": "update one record timestamp",
+            "concurrency": "two threads, one reader/one writer; actual store serializes them",
+        }
+        report["limitations"][1] = "No venue transport latency, urgent exit POST or multi-process contention measured."
+        report["limitations"].append("Synthetic histories have no live account, allocation-authority or rollback proof.")
+        report["limitations"].append("Active-stop refresh is measured sequentially, separately from reader/writer contention.")
     for count in args.records:
         # Conservative safety bound, not a latency or operator acceptance budget.
-        estimated_memory = count * 16_384
+        estimated_memory, estimated_disk = resource_estimates(
+            count, profile=args.profile, attempt_depth=args.attempt_history_depth,
+            residual_stops=args.active_residual_stops, residual_depth=args.residual_history_depth,
+        )
         available_memory = hardware.get("ram_available_bytes")
         free_disk = shutil.disk_usage(run_root).free
-        if (available_memory is not None and estimated_memory > available_memory // 2) or free_disk < count * 4096:
+        if (available_memory is not None and estimated_memory > available_memory // 2) or free_disk < estimated_disk:
             report["histories"].append({"record_count": count, "skipped": True,
                                         "reason": "conservative memory/free-disk resource bound",
-                                        "estimated_memory_bytes": estimated_memory, "free_disk_bytes": free_disk})
+                                        "estimated_memory_bytes": estimated_memory,
+                                        "estimated_disk_bytes": estimated_disk,
+                                        "free_disk_bytes": free_disk})
             continue
         print(f"Measuring {count} synthetic records...", flush=True)
         with tempfile.TemporaryDirectory(prefix="synthetic-state-", dir=run_root) as temporary:
             result = benchmark_history(Path(temporary), count, samples=args.samples, warmup=args.warmup,
-                                       unresolved_count=args.unresolved_count, concurrent_rounds=args.concurrent_rounds)
+                                       unresolved_count=args.unresolved_count, concurrent_rounds=args.concurrent_rounds,
+                                       profile=args.profile, original_stops=args.active_original_stops,
+                                       residual_stops=args.active_residual_stops, attempt_depth=args.attempt_history_depth,
+                                       residual_depth=args.residual_history_depth)
             report["histories"].append(result)
     report["source_after"] = source_identity()
-    report["measured_source_unchanged"] = report["source_before"]["file_sha256"] == report["source_after"]["file_sha256"]
+    report["measured_source_unchanged"] = report["source_before"] == report["source_after"]
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     report["synthetic_state_removed"] = not any(run_root.glob("synthetic-state-*"))
     report_path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")

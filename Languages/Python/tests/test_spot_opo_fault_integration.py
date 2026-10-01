@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 from copy import deepcopy
 import hashlib
 import hmac
+from io import StringIO
 import json
+import os
 from pathlib import Path
 import socket
 import tempfile
@@ -14,7 +17,9 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlencode, urlparse
 
+from app.integrations.exchanges.binance.orders import order_intent_admin as admin_cli
 from app.integrations.exchanges.binance.orders import order_intent_runtime as ledger
+from app.integrations.exchanges.binance.orders import spot_user_data_admin_runtime as admin_transport
 from app.integrations.exchanges.binance.orders.order_intent_provisioning import (
     PROVISION_ACK,
     provision_order_intent_store,
@@ -39,6 +44,7 @@ class _Venue:
         self.lose_ack = False
         self.cancel_no_effect = False
         self.lose_exit_ack = False
+        self.list_retains_original_client_id = False
         self.uid = 12345678
 
     def get_symbol_info(self, symbol):
@@ -86,11 +92,40 @@ class _Venue:
         self.reads.append(("list", origClientOrderId))
         return deepcopy(self.lists[origClientOrderId])
 
-    def get_order(self, *, symbol, origClientOrderId):
-        self.reads.append(("order", origClientOrderId))
-        result = deepcopy(self.orders[origClientOrderId])
+    def get_order(self, *, symbol, origClientOrderId=None, orderId=None):
+        assert (origClientOrderId is None) != (orderId is None)
+        if orderId is not None:
+            self.reads.append(("order_id", orderId))
+            matches = [row for row in self.orders.values() if row["orderId"] == orderId]
+            assert len(matches) == 1
+            result = deepcopy(matches[0])
+        else:
+            self.reads.append(("order", origClientOrderId))
+            result = deepcopy(self.orders[origClientOrderId])
         assert result["symbol"] == symbol
         return result
+
+    def get_account_uid(self):
+        return self.uid
+
+    def get_symbol_assets(self, symbol):
+        assert symbol == "BTCUSDT"
+        return "BTC", "USDT"
+
+    def get_my_trades(self, *, symbol, order_id, from_id=None, limit=1000):
+        assert symbol == "BTCUSDT" and limit == 1000
+        order = self.get_order(symbol=symbol, orderId=order_id)
+        if order["executedQty"] == "0":
+            return []
+        trade_id = order_id + 1000
+        if from_id is not None and from_id > trade_id:
+            return []
+        return [{
+            "symbol": symbol, "orderId": order_id, "id": trade_id, "isBuyer": False,
+            "price": "100", "qty": order["executedQty"],
+            "quoteQty": order["cummulativeQuoteQty"], "commission": "0.01",
+            "commissionAsset": "USDT", "time": 1750000001000,
+        }]
 
     def get_symbol_ticker(self, *, symbol):
         return {"symbol": symbol, "price": "100"}
@@ -105,21 +140,30 @@ class _Venue:
                 "cancelResponse": {"code": -2011, "msg": "Synthetic cancellation had no effect"},
                 "newOrderResponse": None,
             }
+        original_stop_client_id = stop["clientOrderId"]
         stop["status"] = "CANCELED"
+        stop["clientOrderId"] = request.get("cancelNewClientOrderId", "venue-cancelled-stop")
+        del self.orders[original_stop_client_id]
+        self.orders[stop["clientOrderId"]] = stop
         for order_list in self.lists.values():
             if order_list["orderListId"] == stop["orderListId"]:
                 order_list.update(listStatusType="ALL_DONE", listOrderStatus="ALL_DONE")
+                if not self.list_retains_original_client_id:
+                    for child in order_list["orders"]:
+                        if child["orderId"] == stop["orderId"]:
+                            child["clientOrderId"] = stop["clientOrderId"]
         sell = {
             "symbol": request["symbol"], "orderId": 1001, "orderListId": -1,
             "clientOrderId": request["newClientOrderId"], "side": "SELL", "type": "MARKET",
             "status": "FILLED", "origQty": request["quantity"], "executedQty": request["quantity"],
+            "cummulativeQuoteQty": "10.00", "updateTime": 1750000001000,
         }
         self.orders[sell["clientOrderId"]] = sell
         if self.lose_exit_ack:
             raise TimeoutError("Synthetic linked SELL reply lost after venue acceptance")
         return {
             "cancelResult": "SUCCESS", "newOrderResult": "SUCCESS",
-            "cancelResponse": {**deepcopy(stop), "origClientOrderId": stop["clientOrderId"]},
+            "cancelResponse": {**deepcopy(stop), "origClientOrderId": original_stop_client_id},
             "newOrderResponse": deepcopy(sell),
         }
 
@@ -200,6 +244,36 @@ class SpotOpoFaultIntegrationTests(unittest.TestCase):
             f"list-{suffix}", portfolio_signature=fill["signature"], portfolio_quantity=fill["net_qty"],
         )
         self.assertEqual(0, wrapper.get_order_intent_status()["unresolved_count"])
+
+    def recover_cli(self):
+        with patch.dict(os.environ, {
+            "OFFLINE_ADMIN_KEY": "offline-key", "OFFLINE_ADMIN_SECRET": "offline-secret",
+        }), patch.object(
+            admin_transport, "SpotUserDataTransport", return_value=self.venue,
+        ), redirect_stdout(StringIO()) as output:
+            code = admin_cli.main([
+                "recover-spot-opos", "--mode", "Live", "--account-type", "Spot",
+                "--api-key-env", "OFFLINE_ADMIN_KEY", "--api-secret-env", "OFFLINE_ADMIN_SECRET",
+            ])
+        return code, json.loads(output.getvalue())
+
+    def lost_exit(self, *, retry=False, list_retains_original=False):
+        wrapper = self.wrapper()
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        if retry:
+            self.venue.cancel_no_effect = True
+            self.assertTrue(wrapper.place_spot_opo_strategy_exit(
+                "list-first", new_order_client_id="exit-no-effect",
+            )["ok"])
+            self.venue.cancel_no_effect = False
+        self.venue.list_retains_original_client_id = list_retains_original
+        self.venue.lose_exit_ack = True
+        self.assertFalse(wrapper.place_spot_opo_strategy_exit(
+            "list-first", new_order_client_id="exit-lost",
+        )["ok"])
+        self.close_owner(wrapper)
+        return wrapper
 
     def test_lost_ack_is_exactly_queried_and_recovered_without_second_post(self):
         wrapper = self.wrapper()
@@ -399,6 +473,127 @@ class SpotOpoFaultIntegrationTests(unittest.TestCase):
         current = ledger._get_order_intent_record(wrapper, "list-first")
         for field in ("strategy_exit_client_order_id", "strategy_exit_request", "strategy_exit_history"):
             self.assertEqual(record_before.get(field), current.get(field))
+
+
+    def test_cli_lost_retry_reply_recovers_renamed_stop_and_fee_aware_fill(self):
+        self._assert_cli_lost_reply_recovered(retry=True, list_retains_original=False)
+
+    def test_cli_lost_retry_reply_accepts_list_retaining_original_stop_id(self):
+        self._assert_cli_lost_reply_recovered(retry=True, list_retains_original=True)
+
+    def test_cli_lost_first_reply_recovers_renamed_stop_without_extra_submission(self):
+        self._assert_cli_lost_reply_recovered(retry=False, list_retains_original=False)
+
+    def _assert_cli_lost_reply_recovered(self, *, retry, list_retains_original):
+        wrapper = self.lost_exit(retry=retry, list_retains_original=list_retains_original)
+        before = ledger._get_order_intent_record(wrapper, "list-first")
+        history = deepcopy(before.get("strategy_exit_history", []))
+        submitted = deepcopy(self.venue.exits)
+        code, result = self.recover_cli()
+        self.assertEqual(0, code, result)
+        self.assertEqual(1, result["recovered_strategy_exit_count"])
+        self.assertEqual(0, result["unresolved_after"])
+        self.assertFalse(result["exchange_orders_placed"])
+        self.assertFalse(result["automatic_rearm"])
+        self.assertEqual(submitted, self.venue.exits)
+        current = ledger._get_order_intent_record(wrapper, "list-first")
+        self.assertEqual("completed", current["strategy_exit_state"])
+        self.assertEqual(history, current.get("strategy_exit_history", []))
+        self.assertEqual(
+            before["strategy_exit_request"]["cancelNewClientOrderId"],
+            current["pending_observed_client_order_id"],
+        )
+        self.assertEqual("stop-first", current["request"]["pendingClientOrderId"])
+        allocation = json.loads(self.allocation_path.read_text(encoding="utf-8"))
+        row = allocation["entry_allocations"]["BTCUSDT:L"][0]
+        self.assertEqual("Closed", row["status"])
+        self.assertEqual("exit-lost", row["spot_sell_recoveries"][0]["client_order_id"])
+        self.assertEqual("0.01", str(row["spot_sell_recoveries"][0]["quote_fee_qty"]))
+        restarted = self.wrapper()
+        self.assertFalse(self.entry(restarted, "second")["ok"])
+        self.assertEqual(1, len(self.venue.posts))
+
+    def test_cli_new_replacement_is_classified_but_inventory_remains_unresolved(self):
+        self._assert_open_replacement_unresolved("NEW", "0", "0")
+
+    def test_cli_partial_replacement_is_classified_but_inventory_remains_unresolved(self):
+        self._assert_open_replacement_unresolved("PARTIALLY_FILLED", "0.04", "4")
+
+    def _assert_open_replacement_unresolved(self, status, executed, quote):
+        wrapper = self.lost_exit(retry=True)
+        self.venue.orders["exit-lost"].update(
+            status=status, executedQty=executed, cummulativeQuoteQty=quote,
+        )
+        allocation = self.allocation_path.read_bytes()
+        submitted = deepcopy(self.venue.exits)
+        code, result = self.recover_cli()
+        self.assertEqual(1, code, result)
+        self.assertEqual(0, result["failed_recovery_count"])
+        self.assertEqual(1, result["unresolved_after"])
+        self.assertEqual(0, result["recovered_strategy_exit_count"])
+        self.assertEqual(submitted, self.venue.exits)
+        self.assertEqual(allocation, self.allocation_path.read_bytes())
+        current = ledger._get_order_intent_record(wrapper, "list-first")
+        self.assertEqual("sell_accepted", current["strategy_exit_state"])
+        self.assertEqual(status, current["strategy_exit_status"])
+
+    def test_cli_changed_allocation_during_queries_rejects_exit_classification(self):
+        wrapper = self.lost_exit(retry=True)
+        original_get = self.venue.get_order
+        changed = []
+
+        def mutate_allocation(**selector):
+            order = original_get(**selector)
+            if selector.get("origClientOrderId") == "exit-lost" and not changed:
+                snapshot = json.loads(self.allocation_path.read_text(encoding="utf-8"))
+                snapshot["entry_allocations"]["BTCUSDT:L"][0]["entry_price"] = 101.0
+                self.allocation_path.write_text(json.dumps(snapshot), encoding="utf-8")
+                changed.append(self.allocation_path.read_bytes())
+            return order
+
+        with patch.object(self.venue, "get_order", side_effect=mutate_allocation):
+            code, result = self.recover_cli()
+        self.assertEqual(1, code, result)
+        self.assertEqual(1, result["failed_recovery_count"])
+        self.assertEqual(changed[0], self.allocation_path.read_bytes())
+        current = ledger._get_order_intent_record(wrapper, "list-first")
+        self.assertEqual("unknown", current["strategy_exit_state"])
+        self.assertEqual(2, len(self.venue.exits))
+
+    def test_cli_rejects_wrong_cancel_alias_without_consuming_inventory(self):
+        wrapper = self.lost_exit(retry=True, list_retains_original=True)
+        alias = self.venue.exits[-1]["cancelNewClientOrderId"]
+        self.venue.orders[alias]["clientOrderId"] = "unrelated-cancel-alias"
+        allocation = self.allocation_path.read_bytes()
+        code, result = self.recover_cli()
+        self.assertEqual(1, code, result)
+        self.assertEqual(1, result["failed_recovery_count"])
+        self.assertEqual(1, result["unresolved_after"])
+        self.assertEqual(allocation, self.allocation_path.read_bytes())
+        self.assertEqual("unknown", ledger._get_order_intent_record(wrapper, "list-first")["strategy_exit_state"])
+        self.assertEqual(2, len(self.venue.exits))
+
+    def test_cli_failed_acceptance_publication_remains_blocking_and_replays_queries(self):
+        wrapper = self.lost_exit(retry=True)
+        allocation = self.allocation_path.read_bytes()
+        publish = ledger._write_ledger
+
+        def fail_acceptance(path, payload):
+            record = payload["intents"]["list-first"]
+            if record.get("strategy_exit_state") == "sell_accepted":
+                raise OSError("Synthetic full disk at query-proof publication")
+            return publish(path, payload)
+
+        with patch.object(ledger, "_write_ledger", side_effect=fail_acceptance):
+            code, result = self.recover_cli()
+        self.assertEqual(1, code, result)
+        self.assertEqual(1, result["unresolved_after"])
+        self.assertEqual(allocation, self.allocation_path.read_bytes())
+        self.assertEqual("unknown", ledger._get_order_intent_record(wrapper, "list-first")["strategy_exit_state"])
+        code, result = self.recover_cli()
+        self.assertEqual(0, code, result)
+        self.assertEqual(1, result["recovered_strategy_exit_count"])
+        self.assertEqual(2, len(self.venue.exits))
 
 
 if __name__ == "__main__":

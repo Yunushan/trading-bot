@@ -201,6 +201,7 @@ class BinanceSDKSpotClient(_SDKBaseClient):
             quote_order_qty=_maybe_float(params.get("quoteOrderQty")),
             price=_maybe_float(params.get("price")),
             cancel_orig_client_order_id=params.get("cancelOrigClientOrderId"),
+            cancel_new_client_order_id=params.get("cancelNewClientOrderId"),
             cancel_order_id=_maybe_int(params.get("cancelOrderId")),
             cancel_restrictions=cancel_restrictions,
             new_client_order_id=params.get("newClientOrderId"),
