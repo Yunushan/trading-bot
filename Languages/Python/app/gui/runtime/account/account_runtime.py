@@ -4,6 +4,7 @@ from PyQt6 import QtCore
 
 from app.integrations.exchanges.binance import BinanceWrapper
 from app.security.redaction import redact_text
+from app.gui.shared.allocation_reconciliation import allocation_publication_pending
 
 from .balance_runtime import _invalidate_balance_observation
 
@@ -224,7 +225,7 @@ def _create_binance_wrapper(
 ) -> BinanceWrapper:
     backend = connector_backend or self._runtime_connector_backend(suppress_refresh=True)
     kwargs.setdefault("live_safety_config", dict(getattr(self, "config", {}) or {}))
-    return BinanceWrapper(
+    wrapper = BinanceWrapper(
         api_key,
         api_secret,
         mode=mode,
@@ -232,6 +233,8 @@ def _create_binance_wrapper(
         connector_backend=backend,
         **kwargs,
     )
+    wrapper._desktop_allocation_admission_check = lambda: not allocation_publication_pending(self)
+    return wrapper
 
 
 def _invalidate_shared_binance(self, reason: str | None = None):
@@ -272,11 +275,18 @@ def _on_api_credentials_changed(self):
 
 
 def _on_mode_changed(self, value: str):
+    session = getattr(self, "_allocation_snapshot_session", None)
+    if session is not None:
+        session.invalidate(reason="mode_changed")
     try:
         self.config["mode"] = str(value or self.mode_combo.currentText() or "Demo")
     except Exception as exc:
         _record_account_runtime_exception(self, "mode_changed_config_update", exc)
     self._invalidate_shared_binance("mode_changed")
+    if session is not None:
+        reload_snapshot = getattr(self, "_reload_position_allocation_snapshot", None)
+        if not callable(reload_snapshot) or reload_snapshot(self.config.get("mode")) is not True:
+            self.log("Mode changed: allocation snapshot requires reconciliation before new exposure.")
     self._reconfigure_positions_worker()
 
 

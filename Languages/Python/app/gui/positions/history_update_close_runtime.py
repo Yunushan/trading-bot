@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.gui.shared.allocation_reconciliation import defer_recovery_owned_cleanup
+
 from .history_update_registry_runtime import update_closed_trade_registry
 from .history_update_snapshot_runtime import build_closed_position_snapshot
 
@@ -21,6 +23,8 @@ def close_confirmed_positions(
 
     for key in confirmed_closed:
         try:
+            if defer_recovery_owned_cleanup(self, key, source="history_close"):
+                continue
             rec = prev_records.pop(key, None)
             if not isinstance(rec, dict):
                 continue

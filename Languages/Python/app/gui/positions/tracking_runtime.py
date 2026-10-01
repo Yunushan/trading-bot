@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.core.positions.close_results import confirmed_closed_position_keys
+from app.gui.shared.allocation_reconciliation import defer_recovery_owned_cleanup
 from app.security.redaction import redact_text
 from app.settings.live_safety import LiveTradingSafetyError
 
@@ -223,6 +224,8 @@ def _apply_close_all_to_positions_cache(self, res) -> None:
         sym_key, side_key = key
         record = open_records.get(key)
         if key not in keys_to_mark:
+            continue
+        if defer_recovery_owned_cleanup(self, key, source="close_all_flat"):
             continue
         if key not in pending_close:
             pending_close[key] = close_time_fmt

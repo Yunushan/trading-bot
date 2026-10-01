@@ -25,7 +25,7 @@ from app.settings.live_safety import (
 _LIVE_SESSION_BUDGET_LOCK = threading.Lock()
 
 
-def _int_value(value: object, default: int = 1) -> int:
+def _int_value(value: Any, default: int = 1) -> int:
     try:
         return int(float(value))
     except (OverflowError, TypeError, ValueError):
@@ -205,6 +205,17 @@ def _guard_live_order_submit(
         pct_value = cfg.get("position_pct")
 
     errors: list[str] = []
+    desktop_check = getattr(self, "_desktop_allocation_admission_check", None)
+    adds_exposure = (
+        market_text == "spot" and str(order_params.get("side") or "").upper() != "SELL"
+    ) or (market_text == "futures" and not is_exchange_risk_reducing_order(market_text, order_params))
+    if desktop_check is not None and adds_exposure:
+        try:
+            desktop_ready = callable(desktop_check) and desktop_check() is True
+        except (AttributeError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):
+            desktop_ready = False
+        if not desktop_ready:
+            errors.append("desktop allocation publication requires reconciliation")
     if live_mode:
         try:
             validate_live_trading_safety(

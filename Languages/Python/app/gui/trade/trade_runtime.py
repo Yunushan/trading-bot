@@ -34,12 +34,15 @@ def _save_position_allocations_safe(
     open_position_records,
     *,
     mode=None,
+    session=None,
+    event_receipt=None,
 ) -> bool:
     func = _SAVE_POSITION_ALLOCATIONS
     if not callable(func):
         return False
     try:
-        return func(entry_allocations, open_position_records, mode=mode) is True
+        return func(entry_allocations, open_position_records, mode=mode,
+                    session=session, event_receipt=event_receipt) is True
     except Exception:
         return False
 

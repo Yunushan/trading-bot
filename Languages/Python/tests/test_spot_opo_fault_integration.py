@@ -30,6 +30,8 @@ from app.integrations.exchanges.binance.orders.spot_fill_recovery_runtime import
 )
 from app.integrations.exchanges.binance.wrapper import BinanceWrapper
 from app.settings.live_safety import LIVE_TRADING_ACKNOWLEDGEMENT
+from app.gui.shared.allocation_reconciliation import allocation_publication_pending
+from app.gui.runtime.account import account_runtime
 
 
 class _Venue:
@@ -274,6 +276,51 @@ class SpotOpoFaultIntegrationTests(unittest.TestCase):
         )["ok"])
         self.close_owner(wrapper)
         return wrapper
+
+    def test_gui_factory_fences_pending_publication_before_opo_intent_and_post(self):
+        wrapper = self.wrapper()
+        window = SimpleNamespace(
+            config={}, _runtime_connector_backend=lambda **_kwargs: "binance-sdk-spot",
+            _allocation_snapshot_session=SimpleNamespace(ready=True),
+            _pending_allocation_reconciliations={("BTCUSDT", "L"): [{"operation": "close"}]},
+        )
+        with patch.object(account_runtime, "BinanceWrapper", return_value=wrapper):
+            created = account_runtime._create_binance_wrapper(
+                window, api_key="offline-key", api_secret="offline-secret", mode="Live", account_type="Spot",
+            )
+        self.assertIs(wrapper, created)
+        result = self.entry(wrapper)
+        self.assertFalse(result["ok"], result)
+        self.assertIn("allocation publication", result["error"])
+        self.assertEqual([], self.venue.posts)
+        self.assertEqual(0, wrapper.get_order_intent_status()["intent_count"])
+        self.assertEqual(0, getattr(wrapper, "_live_order_submit_attempt_count", 0))
+
+    def test_gui_admission_callback_error_fails_closed_without_secret_in_error(self):
+        wrapper = self.wrapper()
+        def broken_check():
+            raise RuntimeError("api_secret=private-callback-unit")
+        wrapper._desktop_allocation_admission_check = broken_check
+        result = self.entry(wrapper)
+        self.assertFalse(result["ok"], result)
+        self.assertIn("allocation publication", result["error"])
+        self.assertNotIn("private-callback-unit", str(result))
+        self.assertEqual([], self.venue.posts)
+        self.assertEqual(0, wrapper.get_order_intent_status()["intent_count"])
+
+    def test_gui_pending_publication_retains_linked_risk_reducing_exit(self):
+        wrapper = self.wrapper()
+        self.assertTrue(self.entry(wrapper)["ok"])
+        self.recover_buy(wrapper)
+        window = SimpleNamespace(_pending_allocation_reconciliations={
+            ("ETHUSDT", "L"): [{"operation": "close"}],
+        })
+        wrapper._desktop_allocation_admission_check = lambda: not allocation_publication_pending(window)
+        self.assertTrue(wrapper.place_spot_opo_strategy_exit(
+            "list-first", new_order_client_id="exit-pending-gui",
+        )["ok"])
+        self.assertEqual(1, len(self.venue.exits))
+        self.assertEqual("sell_accepted", ledger._get_order_intent_record(wrapper, "list-first")["strategy_exit_state"])
 
     def test_lost_ack_is_exactly_queried_and_recovered_without_second_post(self):
         wrapper = self.wrapper()

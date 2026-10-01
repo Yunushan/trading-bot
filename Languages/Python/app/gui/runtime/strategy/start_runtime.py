@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.gui.shared.allocation_reconciliation import allocation_publication_pending
+
 from .start_collect_runtime import _collect_strategy_start_context
 from .start_engine_runtime import (
     ServiceStartRejected,
@@ -22,6 +24,9 @@ def start_strategy(
             self.log("Strategy runtime is not available.")
         except Exception:
             pass
+        return
+    if allocation_publication_pending(self):
+        self.log("Strategy start blocked: allocation publication requires reconciliation.")
         return
     if getattr(self, "_is_stopping_engines", False):
         self.log("Stop in progress; cannot start new engines.")

@@ -2,7 +2,33 @@ from __future__ import annotations
 
 import time
 
+from app.gui.shared.allocation_persistence import AllocationSnapshotLoadTicket, AllocationSnapshotSession
+
 _LOAD_POSITION_ALLOCATIONS = None
+
+
+def _reload_position_allocation_snapshot(self, mode: str | None = None) -> bool:
+    session = getattr(self, "_allocation_snapshot_session", None)
+    if not isinstance(session, AllocationSnapshotSession):
+        session = AllocationSnapshotSession()
+        self._allocation_snapshot_session = session
+    loader = _LOAD_POSITION_ALLOCATIONS
+    if not callable(loader):
+        session.invalidate("allocation loader unavailable")
+        return False
+    # Even an unexpected loader error before storage begins must fence admission.
+    session.invalidate("allocation reload pending")
+    try:
+        ticket = AllocationSnapshotLoadTicket()
+        allocations, records = loader(mode=mode, session=session, load_ticket=ticket)
+    except (OSError, ValueError, TypeError, AttributeError):
+        session.invalidate("allocation load failed")
+        return False
+    with session.loaded_handoff(ticket) as accepted:
+        if not accepted:
+            return False
+        self._entry_allocations, self._open_position_records = allocations, records
+        return True
 
 
 def _initialize_dashboard_runtime_state(
@@ -22,15 +48,11 @@ def _initialize_dashboard_runtime_state(
     except Exception:
         pass
 
-    load_allocations = _LOAD_POSITION_ALLOCATIONS
-    if callable(load_allocations):
-        loaded_allocations, loaded_records = load_allocations(mode=persisted_mode)
-    else:
-        loaded_allocations, loaded_records = ({}, {})
-
-    self._entry_allocations = loaded_allocations or {}
+    self._allocation_snapshot_session = AllocationSnapshotSession()
+    self._entry_allocations = {}
+    self._open_position_records = {}
+    _reload_position_allocation_snapshot(self, mode=persisted_mode)
     self._pending_close_times = {}
-    self._open_position_records = loaded_records or {}
     self._closed_position_records = []
     self._engine_indicator_map = {}
     self._live_indicator_cache = {}
@@ -73,3 +95,4 @@ def bind_main_window_dashboard_state_runtime(
     _LOAD_POSITION_ALLOCATIONS = load_position_allocations
 
     MainWindow._initialize_dashboard_runtime_state = _initialize_dashboard_runtime_state
+    MainWindow._reload_position_allocation_snapshot = _reload_position_allocation_snapshot

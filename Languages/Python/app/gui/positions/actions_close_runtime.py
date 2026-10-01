@@ -5,7 +5,19 @@ from PyQt6 import QtWidgets
 from app.security.redaction import redact_text
 from trading_core.orders import confirmed_close_quantity
 
-from .actions_state_runtime import _record_positions_action_exception
+from .actions_state_runtime import (
+    _allocation_reconciliation_pending,
+    _close_target_identity,
+    _coerce_qty_value,
+    _normalize_interval_value,
+    _record_positions_action_exception,
+    _retain_pending_allocation_reconciliation,
+)
+
+
+def _manual_close_inflight(self, symbol: str, side_key: str) -> bool:
+    inflight = getattr(self, "_manual_close_inflight", None)
+    return bool(isinstance(inflight, dict) and (symbol, side_key) in inflight)
 
 
 def make_close_btn(
@@ -48,7 +60,11 @@ def make_close_btn(
                 break
     if tooltip_bits:
         btn.setToolTip(" | ".join(tooltip_bits))
-    btn.setEnabled(side_key in ("L", "S"))
+    btn.setEnabled(side_key in ("L", "S") and not _allocation_reconciliation_pending(
+        self, str(symbol or "").strip().upper(), str(side_key or "").strip().upper(),
+    ) and not _manual_close_inflight(
+        self, str(symbol or "").strip().upper(), str(side_key or "").strip().upper(),
+    ))
     interval_key = interval if interval not in ("-", "SPOT") else None
     if isinstance(target_identity, dict) and target_identity:
         btn.setProperty("close_target_identity", dict(target_identity))
@@ -79,6 +95,22 @@ def close_position_single(
 ):
     if not symbol:
         return
+    symbol_key = str(symbol).strip().upper()
+    normalized_side = str(side_key or "").strip().upper()
+    if _manual_close_inflight(self, symbol_key, normalized_side):
+        try:
+            self.log(f"Close {symbol}: an earlier close is in flight or awaiting reconciliation; another close is blocked.")
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _record_positions_action_exception(self, "manual_close_inflight_log", exc)
+        return
+    if _allocation_reconciliation_pending(
+        self, str(symbol or "").strip().upper(), str(side_key or "").strip().upper(),
+    ):
+        try:
+            self.log(f"Close {symbol}: close outcome is pending local reconciliation; another close is blocked.")
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _record_positions_action_exception(self, "manual_close_pending_log", exc)
+        return
     try:
         from app.gui.runtime.background_workers import CallWorker as _CallWorker
     except Exception as exc:
@@ -93,6 +125,16 @@ def close_position_single(
         except Exception:
             pass
         return
+    targeted = bool(target_identity) or bool(str(interval or "").strip())
+    qty_value = _coerce_qty_value(qty) if qty is not None else None
+    if (qty is not None and qty_value is None) or (qty is None and targeted):
+        try:
+            self.log(f"Close {symbol}: a targeted close requires an explicit finite positive quantity.")
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _record_positions_action_exception(self, "manual_close_quantity_rejected", exc)
+        return
+    # Only an untargeted None quantity is the explicit whole-symbol operation.
+    qty_val = qty_value if qty_value is not None else 0.0
     account_text = (self.account_combo.currentText() or "").upper()
     force_futures = side_key in ("L", "S")
     needs_wrapper = getattr(self, "shared_binance", None) is None
@@ -120,13 +162,24 @@ def close_position_single(
                 pass
             return
     account = account_text
-    try:
-        qty_val = float(qty or 0.0)
-    except Exception:
-        qty_val = 0.0
+    close_wrapper = self.shared_binance
+    submission_session = getattr(self, "_allocation_snapshot_session", None)
+    submission_generation = getattr(submission_session, "_generation", None)
+    submission_mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
+    fence_key = (symbol_key, normalized_side)
+    fence_token = object()
+    completion_received = False
+
+    def _release_completed_inflight():
+        if not completion_received or _allocation_reconciliation_pending(self, *fence_key):
+            return
+        inflight = getattr(self, "_manual_close_inflight", None)
+        if isinstance(inflight, dict) and inflight.get(fence_key) is fence_token:
+            inflight.pop(fence_key, None)
 
     def _do():
-        bw = self.shared_binance
+        # A queued close belongs to the account selected when the action began.
+        bw = close_wrapper
         symbol_upper = str(symbol or "").strip().upper()
 
         def _annotate_no_live_leg(result_payload):
@@ -190,18 +243,36 @@ def close_position_single(
         return {"ok": False, "error": "Spot manual close via UI is not available yet"}
 
     def _done(res, err):
-        succeeded = False
+        nonlocal completion_received
+        completion_received = True
         cleared_stale_state = False
         closed_qty = 0.0
+        outcome_classified = False
         try:
-            if err:
-                self.log(f"Close {symbol} error: {err}")
-            else:
-                self.log(f"Close {symbol} result: {res}")
-                closed_qty = confirmed_close_quantity(res, qty_val) if qty_val > 0.0 else 0.0
-                succeeded = bool(isinstance(res, dict) and res.get("ok") and closed_qty > 0.0)
+            closed_qty = confirmed_close_quantity(res, qty_val) if qty_val > 0.0 else 0.0
+            current_mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
+            if (getattr(self, "shared_binance", None) is not close_wrapper
+                    or getattr(self, "_allocation_snapshot_session", None) is not submission_session
+                    or getattr(submission_session, "_generation", None) != submission_generation
+                    or current_mode != submission_mode
+                    or (self.account_combo.currentText() or "").upper() != account_text):
+                _retain_pending_allocation_reconciliation(
+                    self, *fence_key, operation="uncertain_close", interval=interval,
+                    qty=closed_qty if closed_qty > 0 else None, target_identity=_close_target_identity(target_identity),
+                    reason="original close outcome belongs to a changed account or allocation snapshot", venue_result=res,
+                )
+                outcome_classified = True
+                return
+            try:
+                if err:
+                    self.log(f"Close {symbol} error: {err}")
+                else:
+                    self.log(f"Close {symbol} result: {res}")
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                _record_positions_action_exception(self, "manual_close_result_log", exc)
+            if not err:
                 if (
-                    not succeeded
+                    closed_qty <= 0.0
                     and isinstance(res, dict)
                     and bool(res.get("no_live_position"))
                     and side_key in ("L", "S")
@@ -218,11 +289,15 @@ def close_position_single(
                             )
                     except Exception:
                         cleared_stale_state = False
-                    if cleared_stale_state:
-                        succeeded = True
+                    if not cleared_stale_state:
+                        _retain_pending_allocation_reconciliation(
+                            self, str(symbol).strip().upper(), side_key, operation="clear",
+                            interval=interval, reason="exchange reports no open leg; local publication pending",
+                            venue_result=res,
+                        )
             if closed_qty > 0.0 and not cleared_stale_state and side_key in ("L", "S"):
+                local_reconciled = False
                 try:
-                    local_reconciled = False
                     if hasattr(self, "_reduce_local_position_allocation_state") and qty_val > 0.0:
                         local_reconciled = bool(
                             self._reduce_local_position_allocation_state(
@@ -231,21 +306,65 @@ def close_position_single(
                                 interval=interval,
                                 qty=closed_qty,
                                 target_identity=target_identity,
+                                close_result=res,
                             )
                         )
-                    if not local_reconciled:
-                        self.log(f"Close {symbol}: confirmed fill could not be attributed to its allocation; "
-                                 "tracking retained pending reconciliation.")
-                except Exception as exc:
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     _record_positions_action_exception(self, "manual_close_reconciliation", exc)
-        except Exception as exc:
+                if not local_reconciled:
+                    _retain_pending_allocation_reconciliation(
+                        self, str(symbol).strip().upper(), side_key, operation="reduce",
+                        interval=_normalize_interval_value(self, interval), qty=closed_qty,
+                        target_identity=_close_target_identity(target_identity),
+                        reason="confirmed venue fill requires local reconciliation", venue_result=res,
+                    )
+                    self.log(f"Close {symbol}: confirmed fill could not be attributed to its allocation; "
+                             "tracking retained pending reconciliation.")
+            if not cleared_stale_state and (
+                err or not isinstance(res, dict)
+                or (res.get("reconciliation_required") and (res.get("submission_attempted") or res.get("execution_confirmed")))
+                or (res.get("execution_confirmed") is not True and not res.get("skipped")
+                    and (res.get("submission_attempted") or res.get("ok")))
+            ):
+                _retain_pending_allocation_reconciliation(
+                    self, str(symbol).strip().upper(), str(side_key).strip().upper(), operation="uncertain_close",
+                    interval=interval, qty=closed_qty if closed_qty > 0 else None,
+                    target_identity=_close_target_identity(target_identity),
+                    reason="submitted close outcome requires exact reconciliation", venue_result=res,
+                )
+            outcome_classified = True
+        except (AttributeError, LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
             _record_positions_action_exception(self, "manual_close_result", exc)
-        try:
-            self.refresh_positions(symbols=[symbol])
-        except Exception:
-            pass
+        finally:
+            if not outcome_classified:
+                _retain_pending_allocation_reconciliation(
+                    self, str(symbol).strip().upper(), str(side_key).strip().upper(), operation="uncertain_close",
+                    interval=interval, qty=closed_qty if closed_qty > 0 else None,
+                    target_identity=_close_target_identity(target_identity),
+                    reason="close result could not be safely reconciled", venue_result=res,
+                )
+            try:
+                self.refresh_positions(symbols=[symbol])
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                _record_positions_action_exception(self, "manual_close_refresh", exc)
+            finally:
+                _release_completed_inflight()
 
-    worker = _CallWorker(_do, parent=self)
+    inflight = getattr(self, "_manual_close_inflight", None)
+    if not isinstance(inflight, dict):
+        inflight = {}
+        self._manual_close_inflight = inflight
+    inflight[fence_key] = fence_token
+    worker = None
+    try:
+        worker = _CallWorker(_do, parent=self)
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        _record_positions_action_exception(self, "manual_close_worker_setup", exc)
+        return
+    finally:
+        # Construction has not submitted the operation, including unexpected faults.
+        if worker is None and inflight.get(fence_key) is fence_token:
+            inflight.pop(fence_key, None)
     try:
         worker.progress.connect(self.log)
     except Exception:
@@ -254,6 +373,13 @@ def close_position_single(
     worker.finished.connect(worker.deleteLater)
 
     def _cleanup():
+        if not completion_received:
+            _retain_pending_allocation_reconciliation(
+                self, *fence_key, operation="uncertain_close", interval=interval,
+                target_identity=_close_target_identity(target_identity),
+                reason="close worker finished without a classified outcome",
+            )
+        _release_completed_inflight()
         try:
             self._bg_workers.remove(worker)
         except Exception:
@@ -263,4 +389,15 @@ def close_position_single(
         self._bg_workers = []
     self._bg_workers.append(worker)
     worker.finished.connect(_cleanup)
-    worker.start()
+    start_completed = False
+    try:
+        worker.start()
+        start_completed = True
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        _record_positions_action_exception(self, "manual_close_worker_start", exc)
+    finally:
+        if not start_completed and not completion_received:
+            _retain_pending_allocation_reconciliation(
+                self, *fence_key, operation="uncertain_close", interval=interval,
+                target_identity=_close_target_identity(target_identity), reason="close worker start outcome is uncertain",
+            )

@@ -134,14 +134,86 @@ def _entry_matches_target_identity(entry: dict, target_identity: dict[str, str])
 def _allocation_is_active(entry: dict) -> bool:
     if not isinstance(entry, dict):
         return False
-    status_flag = str(entry.get("status") or "").strip().lower()
-    if status_flag in {"closed", "error"}:
+    return str(entry.get("status") or "Active").strip().lower() == "active"
+
+
+def _allocation_reconciliation_pending(self, symbol: str, side_key: str) -> bool:
+    pending = getattr(self, "_pending_allocation_reconciliations", None)
+    return bool(isinstance(pending, dict) and pending.get((symbol, side_key)))
+
+
+def _retain_pending_allocation_reconciliation(
+    self,
+    symbol: str,
+    side_key: str,
+    *,
+    operation: str,
+    interval: str | None = None,
+    qty: float | None = None,
+    target_identity: dict | None = None,
+    reason: str | None = None,
+    venue_result: dict | None = None,
+) -> None:
+    """Retain a local reconciliation fence without publishing account payloads."""
+    pending = getattr(self, "_pending_allocation_reconciliations", None)
+    if not isinstance(pending, dict):
+        pending = {}
+        self._pending_allocation_reconciliations = pending
+    key = (symbol, side_key)
+    operations = pending.setdefault(key, [])
+    payload = {
+        "operation": operation,
+        "interval": interval,
+        "qty": qty,
+        "target_identity": copy.deepcopy(target_identity or {}),
+        "reason": reason,
+    }
+    # The helper and its callback describe the same failed publication. Attach
+    # the confirmed venue receipt to that item, retaining distinct later events.
+    match = next((item for item in reversed(operations) if all(
+        item.get(field) == payload[field] for field in ("operation", "interval", "qty", "target_identity")
+    ) and (venue_result is None or item.get("venue_result") is None or item.get("venue_result") == venue_result)), None)
+    if match is None:
+        match = payload
+        operations.append(match)
+    if isinstance(venue_result, dict):
+        match["venue_result"] = copy.deepcopy(venue_result)
+
+
+def _publish_position_allocation_snapshot(
+    self, allocations: dict, records: dict, *, context: str, event_receipt: dict | None = None,
+) -> bool:
+    saver = get_save_position_allocations()
+    if not callable(saver):
+        return False
+    try:
+        mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
+        options = {"mode": mode, "session": getattr(self, "_allocation_snapshot_session", None)}
+        if event_receipt is not None:
+            options["event_receipt"] = event_receipt
+        return saver(allocations, records, **options) is True
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        _record_positions_action_exception(self, context, exc)
+        return False
+
+
+def _release_closed_allocation_intervals(self, symbol: str, side_key: str, intervals: list[str]) -> None:
+    for interval in intervals:
         try:
-            qty_val = abs(float(entry.get("qty") or 0.0))
-        except Exception:
-            qty_val = 0.0
-        return qty_val > 0.0
-    return True
+            if hasattr(self, "_track_interval_close"):
+                self._track_interval_close(symbol, side_key, interval)
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _record_positions_action_exception(self, "publish_track_interval_close", exc)
+    try:
+        guard = getattr(self, "guard", None)
+        guard_side = "BUY" if side_key == "L" else "SELL"
+        if guard and hasattr(guard, "clear_symbol_side"):
+            guard.clear_symbol_side(symbol, guard_side, intervals=intervals or None)
+        elif guard and hasattr(guard, "mark_closed"):
+            for interval in intervals:
+                guard.mark_closed(symbol, interval, guard_side)
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        _record_positions_action_exception(self, "publish_guard_state", exc)
 
 
 def sync_local_position_tracking_from_allocations(
@@ -243,6 +315,7 @@ def reduce_local_position_allocation_state(
     interval: str | None = None,
     qty: float | None = None,
     target_identity: dict | None = None,
+    close_result: dict | None = None,
 ) -> bool:
     try:
         from app.gui.trade.signal_close_allocations_runtime import _consume_closed_entries
@@ -255,6 +328,44 @@ def reduce_local_position_allocation_state(
         if not sym_upper or side_norm not in ("L", "S"):
             return False
         key = (sym_upper, side_norm)
+        if _allocation_reconciliation_pending(self, sym_upper, side_norm):
+            return False
+
+        event_receipt = None
+        if close_result is not None:
+            receipt_classified = False
+            try:
+                from trading_core.orders import confirmed_close_quantity
+
+                from app.gui.trade.signal_common_runtime import _trade_event_receipt
+
+                confirmed_qty = confirmed_close_quantity(close_result, qty)
+                if confirmed_qty <= 0 or confirmed_qty != _coerce_qty_value(qty):
+                    raise ValueError("Manual close quantity does not match its confirmed receipt")
+                info = close_result.get("info")
+                if not isinstance(info, dict):
+                    raise ValueError("Manual close receipt has no exact order identity")
+                event_receipt = _trade_event_receipt(
+                    {"qty": confirmed_qty, "client_order_id": info.get("clientOrderId"),
+                     "order_id": info.get("orderId")},
+                    {"sym_upper": sym_upper, "side_key": side_norm}, "SELL",
+                )
+                session = getattr(self, "_allocation_snapshot_session", None)
+                checker = getattr(session, "has_trade_event_receipt", None)
+                if callable(checker) and checker(event_receipt) is True:
+                    receipt_classified = True
+                    return True
+                receipt_classified = True
+            except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                _record_positions_action_exception(self, "manual_close_receipt", exc)
+                return False
+            finally:
+                if not receipt_classified:
+                    _retain_pending_allocation_reconciliation(
+                        self, sym_upper, side_norm, operation="reduce", interval=_normalize_interval_value(self, interval),
+                        qty=_coerce_qty_value(qty), target_identity=_close_target_identity(target_identity),
+                        reason="confirmed close receipt requires reconciliation", venue_result=close_result,
+                    )
 
         alloc_map = getattr(self, "_entry_allocations", None)
         if not isinstance(alloc_map, dict):
@@ -273,6 +384,8 @@ def reduce_local_position_allocation_state(
         qty_tol = 1e-9
 
         def _matches_interval(entry: dict) -> bool:
+            if not _allocation_is_active(entry):
+                return False
             if not normalized_interval:
                 return True
             entry_interval = _normalize_interval_value(
@@ -301,6 +414,14 @@ def reduce_local_position_allocation_state(
             )
 
         if not target_payload:
+            if qty_value is not None:
+                interval_entries = [entry for entry in entries if isinstance(entry, dict) and _matches_interval(entry)]
+                available_values = [_coerce_qty_value(entry.get("qty")) for entry in interval_entries]
+                if any(value is None for value in available_values):
+                    return False
+                available_qty = sum(value for value in available_values if value is not None)
+                if qty_value > available_qty + qty_tol:
+                    return False
             closed_snapshots, survivors, _qty_remaining, matched = _consume_closed_entries(
                 entries,
                 qty_remaining=qty_value,
@@ -309,37 +430,72 @@ def reduce_local_position_allocation_state(
                 matcher=_matches_interval,
             )
 
-        if not matched:
+        if not matched or (qty_value is not None and _qty_remaining > qty_tol):
             return False
 
         survivor_entries = [copy.deepcopy(entry) for entry in survivors if isinstance(entry, dict)]
-        if survivor_entries:
-            alloc_map[key] = survivor_entries
-        else:
-            alloc_map.pop(key, None)
-
+        active_survivors = [entry for entry in survivor_entries if _allocation_is_active(entry)]
+        candidate_allocations = copy.deepcopy(alloc_map)
         open_records = getattr(self, "_open_position_records", None)
-        if isinstance(open_records, dict):
-            record = open_records.get(key)
-            if survivor_entries:
-                if isinstance(record, dict):
-                    record["allocations"] = copy.deepcopy(survivor_entries)
-            else:
-                open_records.pop(key, None)
+        candidate_records = copy.deepcopy(open_records) if isinstance(open_records, dict) else {}
+        if survivor_entries:
+            candidate_allocations[key] = survivor_entries
+        else:
+            candidate_allocations.pop(key, None)
 
-        sync_local_position_tracking_from_allocations(self, sym_upper, side_norm, survivor_entries)
+        record = candidate_records.get(key)
+        if active_survivors:
+            if not isinstance(record, dict):
+                seed = active_survivors[0]
+                record = {"symbol": sym_upper, "side_key": side_norm, "status": "Active",
+                          "entry_tf": seed.get("interval_display") or seed.get("interval") or "-",
+                          "open_time": seed.get("open_time") or "-", "close_time": "-", "data": {}}
+                candidate_records[key] = record
+            record["allocations"] = copy.deepcopy(active_survivors)
+            data = copy.deepcopy(record.get("data")) if isinstance(record.get("data"), dict) else {}
+            data["qty"] = sum(abs(float(entry.get("qty") or 0.0)) for entry in active_survivors)
+            if data["qty"] > 0:
+                weighted_cost = sum(abs(float(entry.get("qty") or 0.0)) * float(entry.get("entry_price") or 0.0)
+                                    for entry in active_survivors)
+                data["entry_price"] = weighted_cost / data["qty"]
+            for field_name in ("margin_usdt", "margin_balance", "notional", "size_usdt"):
+                if any(field_name in entry for entry in active_survivors):
+                    data[field_name] = sum(float(entry.get(field_name) or 0.0) for entry in active_survivors)
+            if any("notional" in entry or "size_usdt" in entry for entry in active_survivors):
+                data["size_usdt"] = sum(float(entry.get("size_usdt") or entry.get("notional") or 0.0)
+                                        for entry in active_survivors)
+            record["data"] = data
+        else:
+            candidate_records.pop(key, None)
 
-        saver = get_save_position_allocations()
-        if callable(saver):
-            try:
-                mode_value = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
-                saver(
-                    getattr(self, "_entry_allocations", {}),
-                    getattr(self, "_open_position_records", {}),
-                    mode=mode_value,
+        published = False
+        try:
+            published = _publish_position_allocation_snapshot(
+                self, candidate_allocations, candidate_records, context="reduce_allocation_save",
+                event_receipt=event_receipt,
+            )
+        finally:
+            if not published:
+                _retain_pending_allocation_reconciliation(
+                    self, sym_upper, side_norm, operation="reduce", interval=normalized_interval,
+                    qty=qty_value, target_identity=target_payload, reason="allocation publication failed",
+                    venue_result=close_result,
                 )
-            except Exception as exc:
-                _record_positions_action_exception(self, "reduce_allocation_save", exc)
+        if not published:
+            return False
+
+        self._entry_allocations = candidate_allocations
+        self._open_position_records = candidate_records
+
+        previous_intervals = {_normalize_interval_value(self, entry.get("interval_display") or entry.get("interval"))
+                              for entry in entries if isinstance(entry, dict) and _allocation_is_active(entry)}
+        survivor_intervals = {_normalize_interval_value(self, entry.get("interval_display") or entry.get("interval"))
+                              for entry in active_survivors}
+        removed_intervals = sorted(iv for iv in previous_intervals - survivor_intervals if iv)
+        if removed_intervals or not active_survivors:
+            _release_closed_allocation_intervals(self, sym_upper, side_norm, removed_intervals)
+
+        sync_local_position_tracking_from_allocations(self, sym_upper, side_norm, active_survivors)
         return bool(closed_snapshots or survivor_entries != entries)
     except Exception:
         return False
@@ -360,28 +516,39 @@ def clear_local_position_state(
         if not sym_upper or side_norm not in ("L", "S"):
             return False
         key = (sym_upper, side_norm)
-        changed = False
+        if _allocation_reconciliation_pending(self, sym_upper, side_norm):
+            return False
+        alloc_map = getattr(self, "_entry_allocations", None)
+        open_records = getattr(self, "_open_position_records", None)
+        candidate_allocations = copy.deepcopy(alloc_map) if isinstance(alloc_map, dict) else {}
+        candidate_records = copy.deepcopy(open_records) if isinstance(open_records, dict) else {}
+        changed = key in candidate_allocations or key in candidate_records
+        if not changed:
+            return False
+        candidate_allocations.pop(key, None)
+        candidate_records.pop(key, None)
 
+        published = False
         try:
-            changed = bool(self._snapshot_closed_position(sym_upper, side_norm)) or changed
+            published = _publish_position_allocation_snapshot(
+                self, candidate_allocations, candidate_records, context="clear_save_allocations",
+            )
+        finally:
+            if not published:
+                _retain_pending_allocation_reconciliation(
+                    self, sym_upper, side_norm, operation="clear", interval=interval, reason=reason,
+                )
+        if not published:
+            return False
+
+        # History/UI callbacks use the old record only after storage succeeds.
+        # The storage lock has been released before any guard or ledger callback.
+        try:
+            self._snapshot_closed_position(sym_upper, side_norm)
         except Exception as exc:
             _record_positions_action_exception(self, "clear_snapshot_closed_position", exc)
-
-        try:
-            open_records = getattr(self, "_open_position_records", None)
-            if isinstance(open_records, dict) and key in open_records:
-                open_records.pop(key, None)
-                changed = True
-        except Exception as exc:
-            _record_positions_action_exception(self, "clear_open_position_record", exc)
-
-        try:
-            alloc_map = getattr(self, "_entry_allocations", None)
-            if isinstance(alloc_map, dict) and key in alloc_map:
-                alloc_map.pop(key, None)
-                changed = True
-        except Exception as exc:
-            _record_positions_action_exception(self, "clear_entry_allocations", exc)
+        self._entry_allocations = candidate_allocations
+        self._open_position_records = candidate_records
 
         try:
             pending_close = getattr(self, "_pending_close_times", None)
@@ -419,13 +586,8 @@ def clear_local_position_state(
             iv = str(interval).strip()
             if iv and iv not in intervals_to_close:
                 intervals_to_close.append(iv)
-        if intervals_to_close and hasattr(self, "_track_interval_close"):
-            for iv in intervals_to_close:
-                try:
-                    self._track_interval_close(sym_upper, side_norm, iv)
-                except Exception as exc:
-                    _record_positions_action_exception(self, "clear_track_interval_close", exc)
-                    continue
+        _release_closed_allocation_intervals(self, sym_upper, side_norm, intervals_to_close)
+        sync_local_position_tracking_from_allocations(self, sym_upper, side_norm, [])
 
         try:
             iv_times = getattr(self, "_entry_times_by_iv", None)
@@ -440,33 +602,7 @@ def clear_local_position_state(
         except Exception as exc:
             _record_positions_action_exception(self, "clear_entry_times_by_interval", exc)
 
-        try:
-            guard_obj = getattr(self, "guard", None)
-            if guard_obj and hasattr(guard_obj, "mark_closed"):
-                guard_side = "BUY" if side_norm == "L" else "SELL"
-                if hasattr(guard_obj, "clear_symbol_side"):
-                    clear_intervals = intervals_to_close if intervals_to_close else None
-                    guard_obj.clear_symbol_side(sym_upper, guard_side, intervals=clear_intervals)
-                elif intervals_to_close:
-                    for tracked_interval in intervals_to_close:
-                        guard_obj.mark_closed(sym_upper, tracked_interval, guard_side)
-                else:
-                    guard_obj.mark_closed(sym_upper, interval, guard_side)
-        except Exception as exc:
-            _record_positions_action_exception(self, "clear_guard_state", exc)
-
         if changed:
-            saver = get_save_position_allocations()
-            if callable(saver):
-                try:
-                    mode_value = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
-                    saver(
-                        getattr(self, "_entry_allocations", {}),
-                        getattr(self, "_open_position_records", {}),
-                        mode=mode_value,
-                    )
-                except Exception as exc:
-                    _record_positions_action_exception(self, "clear_save_allocations", exc)
             try:
                 self._update_global_pnl_display(*self._compute_global_pnl_totals())
             except Exception as exc:
