@@ -20,6 +20,11 @@ from trading_core.orders import is_exchange_risk_reducing_order, order_execution
 
 from .order_intent_store import ledger_transaction, ledger_transactions, write_ledger
 from .spot_execution_owner import SpotExecutionOwner, claim_execution_owner
+from .spot_buy_publication_runtime import (
+    capture_desktop_entry, desktop_entry_for_submission, desktop_entry_transaction,
+    desktop_source_descriptor, remember_desktop_entry, validate_desktop_source_descriptor, assert_desktop_entry_ledger,
+    _capture_spot_buy_publication, _get_spot_buy_submission_origin,
+)
 from .spot_opo_runtime import (
     build_spot_opo_cancel_replace_request,
     validate_spot_opo_cancel_replace_request,
@@ -322,6 +327,23 @@ def _read_ledger(
                 or ("requires_close_confirmation" in record and type(record["requires_close_confirmation"]) is not bool)
                 or record.get("state") not in _BLOCKING_STATES | {"rejected"}):
             raise LiveTradingSafetyError("Order intent ledger contains an invalid record; reconcile it before submitting orders.")
+        validate_desktop_source_descriptor(record)
+        if "primary_fill_receipt" in record:
+            from .spot_allocation_generation_runtime import canonical_spot_buy_metadata
+            proof = record["primary_fill_receipt"]
+            if not isinstance(proof, Mapping):
+                raise LiveTradingSafetyError("Spot primary acquisition receipt is malformed.")
+            canonical = canonical_spot_buy_metadata({
+                **proof, "symbol": record.get("symbol"), "client_order_id": record.get("client_order_id"),
+            })
+            if (canonical != proof or record.get("market") != "spot" or record.get("type") != "MARKET"
+                or record.get("side") != "BUY" or record.get("exchange_status") != "FILLED"
+                or proof["exchange_client_order_id"] != record.get("client_order_id")
+                or str(proof["order_id"]) != str(record.get("exchange_order_id"))
+                or proof["signature"] != record.get("primary_fill_signature")
+                or Decimal(proof["gross_qty"]) != _finite_nonnegative_decimal(record.get("executed_qty"))
+                or Decimal(proof["net_qty"]) != _finite_nonnegative_decimal(record.get("portfolio_qty"))):
+                raise LiveTradingSafetyError("Spot primary acquisition receipt conflicts with its intent.")
         if "portfolio_reconciled" in record and type(record["portfolio_reconciled"]) is not bool:
             raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery marker.")
         if record.get("type") == "OPO":
@@ -1121,8 +1143,13 @@ def _submit_spot_buy_intent(self, record: Mapping[str, object], *, via: str) -> 
     client_order_id = str(record["client_order_id"])
     protection_proof = _refresh_spot_active_protection(self, exclude_client_order_id=client_order_id)
     path = _intent_path(self)
-    with ledger_transaction(path):
+    desktop_source = desktop_entry_for_submission(self, record)
+    desktop_params = record["request"] if record.get("type") == "OPO" else {
+        "symbol": record["symbol"], "side": "BUY", "newClientOrderId": client_order_id,
+    }
+    with desktop_entry_transaction(self, path, desktop_params, desktop_source):
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; Spot BUY submission is blocked.")
@@ -1171,8 +1198,12 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
         if baseline is not None:
             record["portfolio_pre_order_signature"] = baseline["signature"]
             record["portfolio_pre_order_qty"] = baseline["quantity"]
-    with ledger_transaction(path):
+    desktop_source = capture_desktop_entry(self, params) if market == "spot" and record.get("side") == "BUY" else None
+    if desktop_source is not None:
+        record["desktop_entry_source"] = desktop_source_descriptor(desktop_source[1])
+    with desktop_entry_transaction(self, path, params, desktop_source):
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
@@ -1211,6 +1242,7 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
             )
         intents[record["client_order_id"]] = record
         _write_ledger(path, ledger)
+        remember_desktop_entry(self, record, desktop_source, ledger)
     return record
 
 
@@ -1245,8 +1277,12 @@ def _begin_spot_opo_intent(
         self, reject_existing_client_order_id=request["listClientOrderId"], reject_spot_client_order_ids=client_ids,
     )
     path = _intent_path(self)
-    with ledger_transaction(path):
+    desktop_source = capture_desktop_entry(self, request)
+    if desktop_source is not None:
+        record["desktop_entry_source"] = desktop_source_descriptor(desktop_source[1])
+    with desktop_entry_transaction(self, path, request, desktop_source):
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
@@ -1265,6 +1301,7 @@ def _begin_spot_opo_intent(
             )
         intents[record["client_order_id"]] = record
         _write_ledger(path, ledger)
+        remember_desktop_entry(self, record, desktop_source, ledger)
     return record
 
 
@@ -2356,6 +2393,8 @@ def _mark_order_intent_accepted(self, params: Mapping[str, object], *, via: str,
                     )
                     execution_updates["portfolio_qty"] = str(primary_fill["net_qty"])
                     execution_updates["primary_fill_signature"] = str(primary_fill["signature"])
+                    from .spot_allocation_generation_runtime import canonical_spot_buy_metadata
+                    execution_updates["primary_fill_receipt"] = canonical_spot_buy_metadata(primary_fill)
                 except Exception:
                     # Without a complete commission-aware fill proof, the
                     # accepted Spot market order remains unresolved.
@@ -2427,7 +2466,17 @@ def _has_durable_spot_buy_allocation(
             return False
         entry = matches[0]
         fill_evidence = entry.get("spot_fill_recovery")
-        quantity = Decimal(str(entry.get("qty") or "NaN"))
+        if not isinstance(fill_evidence, Mapping):
+            return False
+        from .spot_allocation_generation_runtime import spot_buy_generation_receipt
+        acquisition = spot_buy_generation_receipt(entry)
+        if "primary_fill_receipt" in record:
+            from .spot_allocation_generation_runtime import canonical_spot_buy_metadata
+            original = canonical_spot_buy_metadata({
+                **fill_evidence, "symbol": entry.get("symbol"), "client_order_id": entry.get("client_order_id"),
+            })
+            if original != record["primary_fill_receipt"]:
+                return False
         expected_quantity = Decimal(str(portfolio_quantity or record.get("portfolio_qty") or "NaN"))
         if record.get("type") == "OPO":
             request = validate_spot_opo_request_payload(record.get("request"))
@@ -2441,7 +2490,7 @@ def _has_durable_spot_buy_allocation(
         return (
             entry.get("symbol") == record.get("symbol")
             and entry.get("side_key") == "L"
-            and str(entry.get("status") or "").lower() == "active"
+            and acquisition.client_order_id == record.get("client_order_id")
             and isinstance(fill_evidence, Mapping)
             and fill_evidence.get("signature") == portfolio_signature
             and fill_evidence.get("exchange_client_order_id", entry.get("client_order_id"))
@@ -2451,9 +2500,11 @@ def _has_durable_spot_buy_allocation(
                 expected_pending_quantity is None
                 or _finite_nonnegative_decimal(fill_evidence.get("pending_order_qty")) == expected_pending_quantity
             )
-            and quantity.is_finite()
+            and acquisition.signature == portfolio_signature
+            and acquisition.exchange_client_order_id == expected_exchange_client_id
+            and str(acquisition.order_id) == str(expected_order_id)
             and expected_quantity.is_finite()
-            and quantity == expected_quantity
+            and acquisition.acquisition_qty == expected_quantity
         )
     except SPOT_LOCAL_STATE_ERRORS:
         return False
@@ -2572,6 +2623,41 @@ def _has_durable_spot_sell_allocation(
         return False
 
 
+def _commit_spot_buy_acquisition_receipt(
+    self, record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: Decimal, opo: bool = False,
+) -> dict[str, object]:
+    """Confirm acquisition history under both locks; never treat it as inventory."""
+    from app.gui.shared.allocation_persistence import get_position_allocations_path
+    app_root = Path(__file__).resolve().parents[4]
+    allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+    path = _intent_path(self)
+    flag = "entry_reconciled" if opo else "portfolio_reconciled"
+    signature_field = "entry_recovery_signature" if opo else "portfolio_recovery_signature"
+    quantity_field = "entry_portfolio_quantity" if opo else "portfolio_qty"
+    with ledger_transactions(path, allocation_path):
+        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        intents = ledger["intents"]
+        current = intents.get(str(record["client_order_id"])) if isinstance(intents, dict) else None
+        if not isinstance(current, dict) or current != record:
+            raise LiveTradingSafetyError("Spot BUY intent changed during acquisition confirmation.")
+        if not _has_durable_spot_buy_allocation(
+            current, portfolio_signature=portfolio_signature, portfolio_quantity=portfolio_quantity,
+        ):
+            raise LiveTradingSafetyError("Matching durable Spot BUY acquisition history is no longer present.")
+        already = current.get(flag) is True
+        if already:
+            if current.get(signature_field) != portfolio_signature or Decimal(str(current.get(quantity_field))) != portfolio_quantity:
+                raise LiveTradingSafetyError("Spot BUY acquisition receipt conflicts with its intent.")
+        else:
+            current.update({
+                "state": "accepted", flag: True, quantity_field: format(portfolio_quantity, "f"),
+                signature_field: portfolio_signature,
+                "entry_reconciled_at" if opo else "portfolio_reconciled_at": _now(), "updated_at": _now(),
+            })
+            _write_ledger(path, ledger)
+    return {"client_order_id": str(record["client_order_id"]), flag: True, "already_reconciled": already}
+
+
 def _mark_order_intent_portfolio_reconciled(
     self, client_order_id: str, *, portfolio_signature: str, portfolio_quantity: object = None,
 ) -> dict[str, object]:
@@ -2592,6 +2678,11 @@ def _mark_order_intent_portfolio_reconciled(
             or str(record.get("portfolio_qty")) != str(portfolio_quantity or record.get("portfolio_qty"))
         ):
             raise LiveTradingSafetyError("Spot portfolio recovery proof conflicts with the stored intent.")
+        if record.get("side") == "BUY":
+            return _commit_spot_buy_acquisition_receipt(
+                self, record, portfolio_signature=portfolio_signature,
+                portfolio_quantity=Decimal(str(portfolio_quantity or record.get("portfolio_qty"))),
+            )
         return {"client_order_id": client_order_id, "portfolio_reconciled": True, "already_reconciled": True}
     try:
         expected_quantity = Decimal(str(portfolio_quantity or record.get("portfolio_qty") or "NaN"))
@@ -2612,6 +2703,10 @@ def _mark_order_intent_portfolio_reconciled(
         and record["primary_fill_signature"] != portfolio_signature
     ):
         raise LiveTradingSafetyError("Spot portfolio recovery proof conflicts with the primary fill evidence.")
+    if record.get("side") == "BUY":
+        return _commit_spot_buy_acquisition_receipt(
+            self, record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
+        )
     has_durable_proof = (
         _has_durable_spot_buy_allocation(
             record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
@@ -2649,7 +2744,8 @@ def _mark_spot_opo_entry_reconciled(
         record.get("market") != "spot"
         or record.get("side") != "BUY"
         or record.get("state") not in {"accepted", "unknown"}
-        or record.get("protection_state") not in {"active", "triggered", "lost", "unverified"}
+        or (record.get("protection_state") not in {"active", "triggered", "lost", "unverified"}
+            and not (record.get("protection_state") == "closed" and record.get("entry_reconciled") is True))
         or record.get("list_status") not in {"EXEC_STARTED", "ALL_DONE"}
         or record.get("working_status") != "FILLED"
     ):
@@ -2672,34 +2768,9 @@ def _mark_spot_opo_entry_reconciled(
         raise LiveTradingSafetyError(
             "Spot OPO stop quantity does not exactly cover the recovered BUY inventory; manual reconciliation is required."
         )
-    if record.get("entry_reconciled") is True:
-        if (
-            record.get("entry_recovery_signature") != portfolio_signature
-            or str(record.get("entry_portfolio_quantity")) != format(expected_quantity, "f")
-        ):
-            raise LiveTradingSafetyError("Spot OPO entry recovery proof conflicts with the stored intent.")
-        if not _has_durable_spot_buy_allocation(
-            record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
-        ):
-            raise LiveTradingSafetyError("Matching durable Spot OPO BUY allocation is no longer present.")
-        return {"client_order_id": list_client_order_id, "entry_reconciled": True, "already_reconciled": True}
-    if not _has_durable_spot_buy_allocation(
-        record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
-    ):
-        raise LiveTradingSafetyError("A matching durable Live Spot OPO BUY allocation was not found.")
-    updated = _update_order_intent_by_id(
-        self,
-        list_client_order_id,
-        state="accepted",
-        expected_record=record,
-        entry_reconciled=True,
-        entry_portfolio_quantity=format(expected_quantity, "f"),
-        entry_recovery_signature=portfolio_signature,
-        entry_reconciled_at=_now(),
+    return _commit_spot_buy_acquisition_receipt(
+        self, record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity, opo=True,
     )
-    if updated is None:
-        raise LiveTradingSafetyError("Spot OPO intent changed during entry recovery; reconciliation is required.")
-    return {"client_order_id": list_client_order_id, "entry_reconciled": True, "already_reconciled": False}
 
 
 def _mark_spot_opo_exit_reconciled(
@@ -3827,6 +3898,8 @@ def bind_binance_order_intent_runtime(wrapper_cls) -> None:
     wrapper_cls._spot_execution_submission = _spot_execution_submission
     wrapper_cls._revoke_spot_execution_owner = _revoke_spot_execution_owner
     wrapper_cls._get_order_intent_record = _get_order_intent_record
+    wrapper_cls._capture_spot_buy_publication = _capture_spot_buy_publication
+    wrapper_cls._get_spot_buy_submission_origin = _get_spot_buy_submission_origin
     wrapper_cls._begin_order_intent = _begin_order_intent
     wrapper_cls._begin_spot_opo_intent = _begin_spot_opo_intent
     wrapper_cls._mark_order_intent_submitted = _mark_order_intent_submitted

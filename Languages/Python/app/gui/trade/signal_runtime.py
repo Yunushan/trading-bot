@@ -29,7 +29,8 @@ def handle_trade_signal(
     save_position_allocations,
 ) -> None:
     connector_name = _connector_name(self)
-    info_with_connector = dict(order_info or {})
+    info_with_connector = {key: value for key, value in (order_info or {}).items()
+                           if key not in {"_trade_callback_origin", "_spot_buy_submission_origin", "_spot_buy_publication"}}
     info_with_connector.setdefault("connector", connector_name)
     self.log(f"TRADE UPDATE [{connector_name}]: {info_with_connector}")
 

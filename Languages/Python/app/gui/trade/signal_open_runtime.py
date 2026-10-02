@@ -4,7 +4,14 @@ import time
 from collections import deque
 from datetime import datetime
 
-from app.gui.shared.allocation_persistence import is_recovery_owned_allocation
+from app.gui.shared.allocation_persistence import (
+    SpotBuyPublicationContext, _read_receipt, build_spot_buy_allocation_row, is_recovery_owned_allocation,
+)
+from app.gui.shared.trade_callback_origin import (
+    TradeCallbackOrigin, capture_trade_callback_origin, check_trade_callback_origin, owned_live_spot_wrapper,
+)
+from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transaction
+from app.integrations.exchanges.binance.orders.spot_allocation_generation_runtime import validate_spot_buy_replay
 
 from . import signal_common_runtime
 
@@ -114,7 +121,36 @@ def _has_order_identity(order_info: dict) -> bool:
     )
 
 
-def _mark_spot_buy_intent_persisted(self, order_info: dict, *, persisted: bool) -> bool:
+def _committed_spot_buy_replay_origin(self, order_info: dict, receipt: dict) -> TradeCallbackOrigin:
+    original = order_info.get("_trade_callback_origin")
+    if not isinstance(original, TradeCallbackOrigin):
+        raise ValueError("Committed Spot BUY lacks original account identity")
+    current = capture_trade_callback_origin(self, getattr(self, "shared_binance", None))
+    if (current.uid, current.environment, current.store_id) != (original.uid, original.environment, original.store_id):
+        raise ValueError("Committed Spot BUY belongs to another account or intent store")
+    captured = current.session._capture()
+    fill = order_info.get("spot_fill_recovery")
+    if not isinstance(fill, dict):
+        raise ValueError("Committed Spot BUY lacks complete acquisition evidence")
+    if captured[0] is None or captured[4] is None:
+        raise ValueError("Committed Spot BUY has no loaded allocation proof")
+    with ledger_transaction(captured[0]):
+        with current.session._mutex:
+            if (current.session._generation != captured[5] or not current.session.ready
+                    or _read_receipt(captured[0]) != (captured[2], captured[3])
+                    or not current.session.has_trade_event_receipt(receipt)):
+                raise ValueError("Committed Spot BUY receipt changed after loading")
+            rows = captured[4]["entry_allocations"].get(f"{receipt['symbol']}:L", [])
+            matches = [row for row in rows if row.get("client_order_id") == receipt.get("client_order_id")]
+            if len(matches) != 1:
+                raise ValueError("Committed Spot BUY has no unique retained acquisition")
+            validate_spot_buy_replay(matches[0], fill)
+    return current
+
+
+def _mark_spot_buy_intent_persisted(
+    self, order_info: dict, *, persisted: bool, origin_override: TradeCallbackOrigin | None = None,
+) -> bool:
     if (
         not persisted
         or str(order_info.get("side") or "").strip().upper() != "BUY"
@@ -127,7 +163,8 @@ def _mark_spot_buy_intent_persisted(self, order_info: dict, *, persisted: bool) 
     portfolio_signature = fill_recovery.get("signature") if isinstance(fill_recovery, dict) else None
     if not client_order_id or not isinstance(portfolio_signature, str) or not isinstance(fill_recovery, dict):
         return True
-    wrapper = getattr(self, "shared_binance", None)
+    origin = origin_override if origin_override is not None else order_info.get("_trade_callback_origin")
+    wrapper = origin.wrapper if isinstance(origin, TradeCallbackOrigin) else getattr(self, "shared_binance", None)
     marker = getattr(wrapper, "_mark_order_intent_portfolio_reconciled", None)
     if not callable(marker):
         return False
@@ -137,6 +174,13 @@ def _mark_spot_buy_intent_persisted(self, order_info: dict, *, persisted: bool) 
             portfolio_signature=portfolio_signature,
             portfolio_quantity=fill_recovery.get("net_qty"),
         )
+        if isinstance(origin, TradeCallbackOrigin):
+            return (
+                origin.window is self and getattr(self, "shared_binance", None) is wrapper
+                and getattr(self, "_allocation_snapshot_session", None) is origin.session
+                and getattr(self, "_account_observation_generation", 0) == origin.account_generation
+                and self.mode_combo.currentText() == origin.mode
+            )
         return True
     except Exception as exc:
         log = getattr(self, "log", None)
@@ -393,6 +437,10 @@ def _apply_non_close_trade_signal(
             fill_recovery = order_info.get("spot_fill_recovery")
             if isinstance(fill_recovery, dict):
                 trade_entry["spot_fill_recovery"] = dict(fill_recovery)
+            if getattr(self, "_active_owned_spot_buy", None) is not None:
+                if not isinstance(fill_recovery, dict):
+                    raise ValueError("Spot BUY callback lacks complete acquisition evidence")
+                trade_entry = build_spot_buy_allocation_row(fill_recovery, trade_entry)
 
             order_identifier = client_order_token or order_id_token or event_uid_token
             for owned_entries in alloc_map.values():
@@ -502,6 +550,7 @@ def handle_non_close_trade_signal(self, order_info: dict, ctx: dict, **kwargs) -
         _apply_non_close_trade_signal(self, order_info, ctx, **kwargs)
         return
     receipt = None
+    owned_publication = None
     try:
         receipt = signal_common_runtime._trade_event_receipt(order_info, ctx, "BUY")
         if order_info.get("reconciliation_required") is True or order_info.get("execution_confirmed") is False:
@@ -510,6 +559,28 @@ def handle_non_close_trade_signal(self, order_info: dict, ctx: dict, **kwargs) -
             raise ValueError("Trade event is not a completed open event")
         if str(order_info.get("exchange_status") or "").upper() in {"NEW", "PARTIALLY_FILLED"}:
             raise ValueError("Trade event still needs terminal execution reconciliation")
+        origin = order_info.get("_trade_callback_origin")
+        submission_origin = order_info.get("_spot_buy_submission_origin")
+        origin_required = origin is not None or submission_origin is not None or owned_live_spot_wrapper(
+            getattr(self, "shared_binance", None)
+        )
+        if origin_required and signal_common_runtime._has_trade_event_receipt(self, receipt):
+            replay_origin = _committed_spot_buy_replay_origin(self, order_info, receipt)
+            if _mark_spot_buy_intent_persisted(self, order_info, persisted=True, origin_override=replay_origin):
+                signal_common_runtime._clear_pending_trade_event(self, ctx, receipt)
+            else:
+                signal_common_runtime._retain_pending_trade_event(self, order_info, ctx, receipt)
+            return
+        if origin_required:
+            if (not isinstance(origin, TradeCallbackOrigin) or not isinstance(submission_origin, TradeCallbackOrigin)
+                    or not check_trade_callback_origin(self, origin) or not check_trade_callback_origin(self, submission_origin)):
+                raise ValueError("Spot BUY callback belongs to a changed account or allocation snapshot")
+            owned_publication = order_info.get("_spot_buy_publication")
+            if (
+                not isinstance(owned_publication, SpotBuyPublicationContext)
+                or owned_publication.entry_source_receipt != submission_origin.admission_receipt
+            ):
+                raise ValueError("Spot BUY callback lacks its original durable submission context")
         if signal_common_runtime._has_trade_event_receipt(self, receipt):
             if _mark_spot_buy_intent_persisted(self, order_info, persisted=True):
                 signal_common_runtime._clear_pending_trade_event(self, ctx, receipt)
@@ -521,6 +592,7 @@ def handle_non_close_trade_signal(self, order_info: dict, ctx: dict, **kwargs) -
         signal_common_runtime._retain_pending_trade_event(self, order_info, ctx, receipt)
         return
     self._active_trade_event_receipt = receipt
+    self._active_owned_spot_buy = owned_publication
     applied: bool | None = False
     try:
         allocation_event = dict(order_info, qty=float(receipt["quantity"]), executed_qty=float(receipt["quantity"]))
@@ -529,6 +601,7 @@ def handle_non_close_trade_signal(self, order_info: dict, ctx: dict, **kwargs) -
         applied = False
     finally:
         self._active_trade_event_receipt = None
+        self._active_owned_spot_buy = None
         if applied is False:
             signal_common_runtime._restore_trade_state(self, snapshot)
             signal_common_runtime._retain_pending_trade_event(self, order_info, ctx, receipt)

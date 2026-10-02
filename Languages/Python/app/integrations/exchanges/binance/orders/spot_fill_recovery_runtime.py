@@ -18,6 +18,7 @@ from .spot_opo_runtime import validate_spot_opo_strategy_exit_order
 from .order_intent_store import ledger_transaction, write_ledger
 from .spot_opo_runtime import validate_spot_opo_request_payload
 from .spot_exchange_errors import SPOT_LOCAL_STATE_ERRORS
+from .spot_allocation_generation_runtime import build_spot_buy_allocation_row, validate_spot_buy_replay
 
 
 _TRADE_PAGE_SIZE = 1000
@@ -743,6 +744,7 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
         "spot_fill_recovery": recovery_metadata,
     }
 
+    entry = build_spot_buy_allocation_row(fill)
     if path.is_symlink():
         raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
     with ledger_transaction(path):
@@ -789,8 +791,15 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
         if matches:
             existing = matches[0][1]
             previous_recovery = existing.get("spot_fill_recovery")
-            if isinstance(previous_recovery, Mapping) and previous_recovery.get("signature") != signature:
-                raise LiveTradingSafetyError("Recovered Spot fill conflicts with its prior portfolio proof.")
+            if isinstance(previous_recovery, Mapping):
+                if previous_recovery.get("signature") != signature:
+                    raise LiveTradingSafetyError("Recovered Spot fill conflicts with its prior portfolio proof.")
+                validate_spot_buy_replay(existing, fill)
+                # The acquisition is already durable. Consumption is never undone by BUY replay.
+                return True
+            if ("spot_fill_recovery" in existing or existing.get("spot_sell_recoveries")
+                or "spot_opo_stop_recovery" in existing or str(existing.get("status") or "").lower() != "active"):
+                raise LiveTradingSafetyError("Spot acquisition replay has unprovable prior consumption.")
             for field in (
                 "qty", "entry_price", "leverage", "margin_usdt", "margin_balance", "notional",
                 "symbol", "side_key", "status", "order_id", "client_order_id", "trade_id",
@@ -821,7 +830,8 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
         ):
             raise LiveTradingSafetyError("Desktop Spot position snapshot conflicts with recovered inventory.")
         record["status"] = "Active"
-        record["allocations"] = [dict(row) for row in target_entries if isinstance(row, dict)]
+        record["allocations"] = [dict(row) for row in target_entries
+                                 if isinstance(row, dict) and str(row.get("status") or "").lower() == "active"]
         record_data = record.get("data")
         if not isinstance(record_data, dict):
             raise LiveTradingSafetyError("Desktop Spot position snapshot is malformed.")

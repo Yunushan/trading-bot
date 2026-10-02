@@ -11,6 +11,12 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from collections.abc import Mapping
+
+from app.integrations.exchanges.binance.orders.spot_allocation_generation_runtime import (
+    SpotBuyAdmissionReceipt, SpotBuyPublicationContext, build_spot_buy_allocation_row,
+    spot_buy_target, validate_spot_buy_publication, validate_spot_entry_snapshot,
+)
 
 from app.integrations.exchanges.binance.orders.order_intent_store import (
     ledger_transaction,
@@ -113,6 +119,54 @@ class AllocationSnapshotSession:
             if matches and matches != [descriptor]:
                 raise ValueError("GUI trade event conflicts with committed receipt")
             return self.state == "loaded" and matches == [descriptor]
+
+    def capture_spot_buy_admission(self, params: Mapping) -> SpotBuyAdmissionReceipt:
+        """Capture actual loaded authority; never reload to authorize old window maps."""
+        target, identities = spot_buy_target(params)
+        captured = self._capture()
+        if not captured[6] or captured[0] is None or captured[1] != "Live":
+            raise LiveTradingSafetyError("Spot entry requires a loaded Live allocation receipt.")
+        validate_spot_entry_snapshot(captured[4], target[0], identities)
+        receipt = SpotBuyAdmissionReceipt(captured[0], captured[1], captured[2], captured[3],
+                                          captured[5], target, identities)
+        if not self.check_spot_buy_admission(receipt, params):
+            raise LiveTradingSafetyError("Spot entry allocation authority changed during capture.")
+        return receipt
+
+    def matches_loaded_maps(self, allocations: dict, records: dict) -> bool:
+        """Compare complete window maps with actual loaded authority, without storage I/O."""
+        if not isinstance(allocations, dict) or not isinstance(records, dict):
+            return False
+        try:
+            with self._mutex:
+                if not self.ready:
+                    return False
+                expected = self._snapshot or {"entry_allocations": {}, "open_position_records": {}}
+                expected_allocations = expected["entry_allocations"]
+                expected_records = expected["open_position_records"]
+                if not isinstance(expected_allocations, dict) or not isinstance(expected_records, dict):
+                    return False
+                current_allocations = {
+                    _serialize_allocation_key(key): copy.deepcopy(list(rows.values()) if isinstance(rows, dict) else rows)
+                    for key, rows in allocations.items()
+                }
+                current_records = {_serialize_allocation_key(key): copy.deepcopy(record) for key, record in records.items()}
+                return current_allocations == expected_allocations and current_records == expected_records
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+            return False
+
+    def check_spot_buy_admission(self, receipt: SpotBuyAdmissionReceipt, params: Mapping) -> bool:
+        """Pure source check; caller compares real storage under its transaction."""
+        if not isinstance(receipt, SpotBuyAdmissionReceipt):
+            return False
+        target, identities = spot_buy_target(params)
+        with self._mutex:
+            return self.ready and (
+                self._path, self._mode, self._bytes, self._identity, self._generation, target, identities
+            ) == (
+                receipt.allocation_path, receipt.mode, receipt.raw, receipt.identity,
+                receipt.generation, receipt.target_key, receipt.client_order_ids,
+            )
 
 
 def _get_allocations_file_path(this_file: Path) -> Path:
@@ -288,7 +342,7 @@ def _write_snapshot(file_path: Path, payload: dict) -> None:
     write_ledger(file_path, payload)
 
 
-def _protect_owned_rows(previous: dict, candidate: dict) -> None:
+def _protect_owned_rows(previous: dict, candidate: dict, *, position_transition_key: str | None = None) -> None:
     candidate_identities: dict[tuple[str, str, str], list[tuple[str, dict]]] = {}
     for candidate_key, rows in candidate["entry_allocations"].items():
         for row in rows:
@@ -320,6 +374,9 @@ def _protect_owned_rows(previous: dict, candidate: dict) -> None:
                 if candidate_identities.get(("BUY proof", buy_proof["signature"], ""), []) != [(key, row)]:
                     raise ValueError("recovery-owned BUY proof cannot be copied to another GUI allocation")
         previous_record = previous["open_position_records"].get(key)
+        if key == position_transition_key:
+            # Only the strict canonical transition validator can authorize this position update.
+            continue
         if previous_record is not None:
             new_record = candidate["open_position_records"].get(key)
             if not isinstance(new_record, dict):
@@ -334,10 +391,77 @@ def _protect_owned_rows(previous: dict, candidate: dict) -> None:
             raise ValueError("closed recovery-owned inventory cannot be reactivated by the GUI")
 
 
+def _validate_owned_spot_buy_candidate(context, captured, file_path, previous, candidate, event_receipt) -> None:
+    if not isinstance(context, SpotBuyPublicationContext) or captured is None or previous is None and captured[2] is not None:
+        raise ValueError("owned Spot BUY publication context is invalid")
+    source = context.entry_source_receipt
+    if not isinstance(source, SpotBuyAdmissionReceipt) or (
+        context.allocation_path, source.allocation_path, source.mode, source.raw, source.identity, source.generation
+    ) != (file_path, captured[0], captured[1], captured[2], captured[3], captured[5]):
+        raise ValueError("owned Spot BUY publication source differs from the loaded receipt")
+    # Both storage paths are already held; never nest the process-global transaction.
+    from app.integrations.exchanges.binance.orders.order_intent_runtime import _read_ledger
+    ledger = _read_ledger(context.intent_path, expected_binding=context.expected_binding)
+    if ledger.get("store_id") != context.expected_store_id:
+        raise ValueError("owned Spot BUY publication intent store identity changed")
+    intents = ledger.get("intents")
+    observed_intent = intents.get(context.expected_intent.get("client_order_id")) if isinstance(intents, dict) else None
+    if not isinstance(observed_intent, Mapping):
+        raise ValueError("owned Spot BUY accepted intent is missing")
+    validate_spot_buy_publication(context, observed_intent)
+    from app.integrations.exchanges.binance.orders.spot_buy_publication_runtime import desktop_source_descriptor
+    if observed_intent.get("desktop_entry_source") != desktop_source_descriptor(source):
+        raise ValueError("owned Spot BUY accepted intent does not bind its original desktop source")
+    fill = context.fill
+    key = f"{fill['symbol']}:L"
+    if source.target_key != (fill["symbol"], "L") or fill["client_order_id"] not in source.client_order_ids:
+        raise ValueError("owned Spot BUY generation differs from pre-submit target")
+    if (
+        not isinstance(event_receipt, dict) or event_receipt.get("kind") != "BUY"
+        or event_receipt.get("symbol") != fill["symbol"] or event_receipt.get("side_key") != "L"
+        or event_receipt.get("client_order_id") != fill["client_order_id"]
+        or event_receipt.get("order_id") != str(fill["order_id"])
+        or Decimal(event_receipt["quantity"]) != Decimal(str(fill["net_qty"]))
+    ):
+        raise ValueError("owned Spot BUY publication lacks its exact GUI event receipt")
+    baseline = previous or {"entry_allocations": {}, "open_position_records": {}}
+    validate_spot_entry_snapshot(previous, fill["symbol"], source.client_order_ids)
+    old_rows = baseline["entry_allocations"].get(key, [])
+    new_rows = candidate["entry_allocations"].get(key)
+    if not isinstance(new_rows, list) or len(new_rows) != len(old_rows) + 1 or new_rows[:-1] != old_rows:
+        raise ValueError("owned Spot BUY must append one generation without changing history")
+    if new_rows[-1] != build_spot_buy_allocation_row(fill, new_rows[-1]):
+        raise ValueError("owned Spot BUY candidate differs from canonical acquisition")
+    for map_name in ("entry_allocations", "open_position_records"):
+        before_other = {stored_key: value for stored_key, value in baseline[map_name].items() if stored_key != key}
+        after_other = {stored_key: value for stored_key, value in candidate[map_name].items() if stored_key != key}
+        if before_other != after_other:
+            raise ValueError("owned Spot BUY cannot alter another allocation key")
+    active = [row for row in new_rows if str(row.get("status") or "").lower() == "active"]
+    record = candidate["open_position_records"].get(key)
+    if (
+        not isinstance(record, dict) or record.get("symbol") != fill["symbol"] or record.get("side_key") != "L"
+        or str(record.get("status") or "").lower() != "active" or record.get("allocations") != active
+    ):
+        raise ValueError("owned Spot BUY position does not contain only current active inventory")
+    amounts = record.get("data")
+    quantity = sum(float(row["qty"]) for row in active)
+    margin = sum(float(row.get("margin_usdt") or 0) for row in active)
+    notional = sum(float(row.get("notional") or 0) for row in active)
+    average = sum(float(row["qty"]) * float(row["entry_price"]) for row in active) / quantity
+    if not isinstance(amounts, dict) or any(amounts.get(name) != expected for name, expected in (
+        ("symbol", fill["symbol"]), ("side_key", "L"), ("qty", quantity),
+        ("entry_price", average), ("margin_usdt", margin), ("size_usdt", notional),
+    )):
+        raise ValueError("owned Spot BUY position financial fields are incoherent")
+    _protect_owned_rows(baseline, candidate, position_transition_key=key)
+
+
 def save_position_allocations(
     entry_allocations: dict, open_position_records: dict, *, this_file: Path,
     mode: str | None = None, session: AllocationSnapshotSession | None = None,
     event_receipt: dict | None = None,
+    owned_spot_buy: SpotBuyPublicationContext | None = None,
 ) -> bool:
     completed = False
     failure_reason = "allocation publication failed"
@@ -345,6 +469,7 @@ def save_position_allocations(
         file_path = _get_allocations_file_path(this_file)
         _check_path(file_path)
         captured = session._capture() if session is not None else None
+        owned_spot_buy = copy.deepcopy(owned_spot_buy)
         if session is not None and (
             captured is None or not captured[6] or captured[0] != file_path or captured[1] != mode
         ):
@@ -377,9 +502,11 @@ def save_position_allocations(
             if not matches:
                 receipts.append(copy.deepcopy(event_receipt))
         _validate_snapshot(data, mode)
-        if previous is not None:
+        if previous is not None and owned_spot_buy is None:
             _protect_owned_rows(previous, data)
-        with ledger_transaction(file_path):
+        transaction = (ledger_transactions(file_path, owned_spot_buy.intent_path)
+                       if isinstance(owned_spot_buy, SpotBuyPublicationContext) else ledger_transaction(file_path))
+        with transaction:
             # Lock ordering: the process/file transaction precedes the brief per-window mutex.
             # Capture never holds this mutex while acquiring a storage transaction.
             with session._mutex if session is not None else nullcontext():
@@ -393,6 +520,8 @@ def save_position_allocations(
                     or observed != (captured[2], captured[3])
                 ):
                     raise ValueError("allocation state changed after this window loaded it")
+                if owned_spot_buy is not None:
+                    _validate_owned_spot_buy_candidate(owned_spot_buy, captured, file_path, previous, data, event_receipt)
                 if not duplicate_event:
                     _write_snapshot(file_path, data)
                     committed = _read_receipt(file_path)

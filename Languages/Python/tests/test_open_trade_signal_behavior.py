@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.gui.trade.signal_open_runtime import handle_non_close_trade_signal  # noqa: E402
 from app.gui.trade import signal_common_runtime  # noqa: E402
+from app.gui.shared.trade_callback_origin import capture_trade_callback_origin, check_trade_callback_origin  # noqa: E402
 from app.gui.shared.allocation_persistence import (  # noqa: E402
     AllocationSnapshotSession, load_position_allocations, save_position_allocations,
 )
@@ -164,6 +165,16 @@ class OpenTradeSignalBehaviorTests(unittest.TestCase):
                                              "live_trading_max_position_pct": 10.0, "live_trading_max_session_orders": 10,
                                              "order_audit_enabled": True, "order_audit_log_path": str(audit_path)})
                 try:
+                    window = _OpenSignalWindowStub()
+                    window.mode_combo = SimpleNamespace(currentText=lambda: "Live")
+                    window.shared_binance = wrapper
+                    session = window._allocation_snapshot_session = AllocationSnapshotSession()
+                    load_position_allocations(this_file=this_file, mode="Live", session=session)
+                    wrapper._desktop_spot_entry_capture = lambda params: capture_trade_callback_origin(window, wrapper, params)
+                    wrapper._desktop_spot_entry_check = lambda origin, params: check_trade_callback_origin(window, origin, params)
+                    wrapper._desktop_trade_origin_capture = lambda: capture_trade_callback_origin(window, wrapper)
+                    wrapper._ensure_spot_execution_owner()
+                    callback_origin = wrapper._desktop_trade_origin_capture()
                     params = {"newClientOrderId": "primary-fee-buy", "symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
                     wrapper._begin_order_intent(params, market="spot", source="offline-gui-proof")
                     wrapper._mark_order_intent_submitted(params, via="offline-gui-proof")
@@ -179,18 +190,14 @@ class OpenTradeSignalBehaviorTests(unittest.TestCase):
                                             order_res={"ok": True, "execution_confirmed": True, "submitted_qty": "0.1", "info": response},
                                             price=20000.0, qty_display=0.1, trigger_labels=[], trigger_desc_for_order=None,
                                             trigger_signature=[], context_key=None, order_event_uid="primary-event",
-                                            trigger_actions_for_order={}, origin_timestamp=None, leverage_used=1)
+                                            trigger_actions_for_order={}, origin_timestamp=None, leverage_used=1,
+                                            callback_origin=callback_origin, callback_wrapper=wrapper)
                     self.assertEqual(1, len(events))
                     event = events[0]
                     self.assertFalse(event["reconciliation_required"])
                     self.assertTrue(event["execution_confirmed"])
                     self.assertEqual("0.09996", event["spot_fill_recovery"]["net_qty"])
                     self.assertEqual(0.09996, event["executed_qty"])
-                    window = _OpenSignalWindowStub()
-                    window.mode_combo = SimpleNamespace(currentText=lambda: "Live")
-                    window.shared_binance = wrapper
-                    session = window._allocation_snapshot_session = AllocationSnapshotSession()
-                    load_position_allocations(this_file=this_file, mode="Live", session=session)
                     def saver(allocations, records, **kwargs):
                         return save_position_allocations(allocations, records, this_file=this_file, **kwargs)
                     _dispatch(window, dict(event, reconciliation_required=True),

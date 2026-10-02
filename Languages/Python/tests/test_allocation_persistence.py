@@ -20,6 +20,24 @@ from app.gui.dashboard import state_runtime
 
 
 class AllocationPersistenceTests(unittest.TestCase):
+    def test_spot_entry_receipt_uses_loaded_source_and_is_invalidated_without_freshening(self):
+        session = AllocationSnapshotSession()
+        self.load(session)
+        params = {"symbol": "BTCUSDT", "side": "BUY", "newClientOrderId": "next-buy"}
+        receipt = session.capture_spot_buy_admission(params)
+        self.assertTrue(session.matches_loaded_maps({}, {}))
+        self.assertFalse(session.matches_loaded_maps({("BTCUSDT", "L"): []}, {}))
+        self.assertFalse(session.matches_loaded_maps({}, {("BTCUSDT", "L"): {"data": {}}}))
+        self.assertEqual(("BTCUSDT", "L"), receipt.target_key)
+        self.assertIsNone(receipt.raw)
+        self.assertTrue(session.check_spot_buy_admission(receipt, params))
+        self.assertFalse(session.check_spot_buy_admission(receipt, {**params, "newClientOrderId": "another-buy"}))
+        session.invalidate("account changed")
+        self.assertFalse(session.check_spot_buy_admission(receipt, params))
+        with self.assertRaisesRegex(persistence.LiveTradingSafetyError, "loaded Live"):
+            session.capture_spot_buy_admission(params)
+        self.assertIsNone(session._bytes)
+
     def test_stale_gui_save_cannot_erase_real_owned_sell_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             this_file = Path(tmp) / "Languages" / "Python" / "app" / "gui" / "window_shell.py"

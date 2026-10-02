@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+from typing import cast
+
 from PyQt6 import QtCore
 
 from app.integrations.exchanges.binance import BinanceWrapper
 from app.security.redaction import redact_text
 from app.gui.shared.allocation_reconciliation import allocation_publication_pending
+from app.gui.shared.trade_callback_origin import (
+    capture_trade_callback_origin, check_trade_callback_origin, owned_live_spot_wrapper,
+)
 
 from .balance_runtime import _invalidate_balance_observation
 
-_CONNECTOR_OPTIONS = ()
+_CONNECTOR_OPTIONS: tuple[tuple[str, str], ...] = ()
 _DEFAULT_CONNECTOR_BACKEND = ""
-_FUTURES_CONNECTOR_KEYS = frozenset()
-_SPOT_CONNECTOR_KEYS = frozenset()
-_SIDE_LABELS = {}
+_FUTURES_CONNECTOR_KEYS: frozenset[str] = frozenset()
+_SPOT_CONNECTOR_KEYS: frozenset[str] = frozenset()
+_SIDE_LABELS: dict[str, str] = {}
 
 
 def _record_account_runtime_exception(self, context: str, exc: BaseException) -> None:
@@ -164,7 +169,7 @@ def _rebuild_connector_combo_for_account(
         if blocker is not None:
             del blocker
     self.config["connector_backend"] = chosen
-    return chosen
+    return cast(str, chosen)
 
 
 def _ensure_runtime_connector_for_account(
@@ -183,16 +188,16 @@ def _ensure_runtime_connector_for_account(
     )
     if not suppress_refresh:
         self._update_connector_labels()
-    return self.config.get("connector_backend", chosen)
+    return cast(str, self.config.get("connector_backend", chosen))
 
 
 def _runtime_connector_backend(self, *, suppress_refresh: bool = False) -> str:
     account_type = str(self.config.get("account_type", "Futures") or "Futures")
-    return self._ensure_runtime_connector_for_account(
+    return cast(str, self._ensure_runtime_connector_for_account(
         account_type,
         force_default=False,
         suppress_refresh=suppress_refresh,
-    )
+    ))
 
 
 def _backtest_connector_backend(self) -> str:
@@ -210,7 +215,7 @@ def _backtest_connector_backend(self) -> str:
         backend = recommended
     self.backtest_config["connector_backend"] = backend
     self.config.setdefault("backtest", {})["connector_backend"] = backend
-    return backend
+    return cast(str, backend)
 
 
 def _create_binance_wrapper(
@@ -234,10 +239,17 @@ def _create_binance_wrapper(
         **kwargs,
     )
     wrapper._desktop_allocation_admission_check = lambda: not allocation_publication_pending(self)
+    if owned_live_spot_wrapper(wrapper):
+        wrapper._desktop_trade_origin_capture = lambda: capture_trade_callback_origin(self, wrapper)
+        wrapper._desktop_spot_entry_capture = lambda params: capture_trade_callback_origin(self, wrapper, params)
+        wrapper._desktop_spot_entry_check = lambda receipt, params: check_trade_callback_origin(self, receipt, params)
     return wrapper
 
 
 def _invalidate_shared_binance(self, reason: str | None = None):
+    session = getattr(self, "_allocation_snapshot_session", None)
+    if session is not None:
+        session.invalidate(reason=reason or "account_changed")
     self._account_observation_generation = getattr(self, "_account_observation_generation", 0) + 1
     try:
         existing = getattr(self, "shared_binance", None)
