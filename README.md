@@ -225,9 +225,9 @@ Contributor-facing structure and maintenance docs now live here:
 ### Current LOC snapshot
 
 <!-- LOC-SNAPSHOT:START -->
-- Snapshot date: `02.10.2026 GMT+3 Time 20:07:34`
-- Total tracked code/config/script lines: `305,761`
-- Non-empty tracked code/config/script lines (SLOC-style): `278,858`
+- Snapshot date: `02.10.2026 GMT+3 Time 22:05:45`
+- Total tracked code/config/script lines: `306,277`
+- Non-empty tracked code/config/script lines (SLOC-style): `279,318`
 - Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
 <!-- LOC-SNAPSHOT:END -->
 

@@ -7,6 +7,7 @@ import json
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -666,6 +667,15 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
     """Atomically insert or repair one recovered BUY allocation by exact order identity."""
+    return _persist_spot_buy_allocation(path, fill)
+
+
+def _persist_spot_buy_allocation_unlocked(path: Path, fill: Mapping[str, object]) -> bool:
+    """Publish only while the caller holds this allocation's storage lock."""
+    return _persist_spot_buy_allocation(path, fill, unlocked=True)
+
+
+def _persist_spot_buy_allocation(path: Path, fill: Mapping[str, object], *, unlocked: bool = False) -> bool:
     symbol = fill.get("symbol")
     client_order_id = fill.get("client_order_id")
     exchange_client_order_id = fill.get("exchange_client_order_id", client_order_id)
@@ -747,7 +757,7 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
     entry = build_spot_buy_allocation_row(fill)
     if path.is_symlink():
         raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
-    with ledger_transaction(path):
+    with nullcontext() if unlocked else ledger_transaction(path):
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)

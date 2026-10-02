@@ -2990,6 +2990,24 @@ def _validate_reconciliation_response(
     previous_id = record.get("exchange_order_id")
     if previous_id and str(previous_id) != order_id:
         raise LiveTradingSafetyError("Exchange order ID changed during reconciliation.")
+    primary_receipt = record.get("primary_fill_receipt")
+    if "primary_fill_receipt" in record:
+        # A terminal primary acquisition cannot become a different execution
+        # merely because an exact-ID GET returned contradictory order fields.
+        if (not isinstance(primary_receipt, Mapping)
+                or status != "FILLED" or result.get("side") != "BUY" or result.get("type") != "MARKET"
+                or result.get("clientOrderId") != primary_receipt.get("exchange_client_order_id")
+                or order_id != str(primary_receipt.get("order_id"))):
+            raise LiveTradingSafetyError("Exchange response conflicts with the retained terminal Spot acquisition.")
+        gross_quantity = _finite_nonnegative_decimal(result.get("executedQty"))
+        retained_quantity = _finite_nonnegative_decimal(primary_receipt.get("gross_qty"))
+        if gross_quantity is None or retained_quantity is None or gross_quantity != retained_quantity:
+            raise LiveTradingSafetyError("Exchange execution changed from the retained Spot acquisition.")
+        if ("cummulativeQuoteQty" in result
+                and _finite_nonnegative_decimal(result["cummulativeQuoteQty"])
+                != _finite_nonnegative_decimal(primary_receipt.get("gross_quote_qty"))):
+            raise LiveTradingSafetyError("Exchange quote total changed from the retained Spot acquisition.")
+        # GET creation/update timestamps do not replace the primary acquisition time.
     if _requires_execution_confirmation(record):
         expected_params = {
             "newClientOrderId": record.get("client_order_id"), "symbol": record.get("symbol"),

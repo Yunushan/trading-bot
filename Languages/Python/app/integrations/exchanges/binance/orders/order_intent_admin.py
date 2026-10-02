@@ -177,6 +177,11 @@ def main(argv: list[str] | None = None) -> int:
                 _mark_spot_opo_residual_stop_no_fill, owner,
             )
             with owner_administration_lock(_intent_path(owner)):
+                if args.action == "recover-spot-market-fills":
+                    from .spot_buy_admin_recovery_runtime import (
+                        capture_spot_buy_recovery_binding, publish_spot_buy_recovery,
+                    )
+                    buy_recovery_binding = capture_spot_buy_recovery_binding(owner)
                 before = get_order_intent_status(owner)
                 if args.action == "cancel-spot-opos":
                     target_id = str(args.order_list_client_id or "")
@@ -744,7 +749,13 @@ def main(argv: list[str] | None = None) -> int:
                                 app_root / "gui" / "window_shell.py",
                             )
                             if intent.get("side") == "BUY":
-                                persist_spot_buy_allocation(allocation_path, fill)
+                                publish_spot_buy_recovery(
+                                    owner, allocation_path, fill,
+                                    expected_record=intent,
+                                    expected_store_id=buy_recovery_binding["store_id"],
+                                    expected_binding=buy_recovery_binding["binding"],
+                                    expected_intent_path=buy_recovery_binding["intent_path"],
+                                )
                             else:
                                 persist_spot_sell_allocation(allocation_path, fill)
                             owner._mark_order_intent_portfolio_reconciled(
