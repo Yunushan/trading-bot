@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -179,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             with owner_administration_lock(_intent_path(owner)):
                 if args.action == "recover-spot-market-fills":
                     from .spot_buy_admin_recovery_runtime import (
-                        capture_spot_buy_recovery_binding, publish_spot_buy_recovery,
+                        capture_spot_buy_recovery_binding, confirm_spot_buy_recovery, publish_spot_buy_recovery,
                     )
                     buy_recovery_binding = capture_spot_buy_recovery_binding(owner)
                 before = get_order_intent_status(owner)
@@ -749,8 +750,18 @@ def main(argv: list[str] | None = None) -> int:
                                 app_root / "gui" / "window_shell.py",
                             )
                             if intent.get("side") == "BUY":
+                                # Keep one private proof across both phases. Neither
+                                # helper receives this authoritative local dictionary.
+                                buy_fill = deepcopy(fill)
                                 publish_spot_buy_recovery(
-                                    owner, allocation_path, fill,
+                                    owner, allocation_path, deepcopy(buy_fill),
+                                    expected_record=intent,
+                                    expected_store_id=buy_recovery_binding["store_id"],
+                                    expected_binding=buy_recovery_binding["binding"],
+                                    expected_intent_path=buy_recovery_binding["intent_path"],
+                                )
+                                confirm_spot_buy_recovery(
+                                    owner, allocation_path, deepcopy(buy_fill),
                                     expected_record=intent,
                                     expected_store_id=buy_recovery_binding["store_id"],
                                     expected_binding=buy_recovery_binding["binding"],
@@ -758,11 +769,11 @@ def main(argv: list[str] | None = None) -> int:
                                 )
                             else:
                                 persist_spot_sell_allocation(allocation_path, fill)
-                            owner._mark_order_intent_portfolio_reconciled(
-                                str(client_order_id),
-                                portfolio_signature=str(fill["signature"]),
-                                portfolio_quantity=str(fill["portfolio_qty"]),
-                            )
+                                owner._mark_order_intent_portfolio_reconciled(
+                                    str(client_order_id),
+                                    portfolio_signature=str(fill["signature"]),
+                                    portfolio_quantity=str(fill["portfolio_qty"]),
+                                )
                             recovered_count += 1
                             if intent.get("side") == "SELL":
                                 recovered_sell_count += 1

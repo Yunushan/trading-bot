@@ -18,7 +18,9 @@ from app.integrations.exchanges.binance.orders import order_intent_admin as admi
 from app.integrations.exchanges.binance.orders import order_intent_runtime as ledger
 from app.integrations.exchanges.binance.orders import spot_buy_admin_recovery_runtime as publication
 from app.integrations.exchanges.binance.orders import spot_fill_recovery_runtime as recovery
+from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transactions
 from app.integrations.exchanges.binance.orders.spot_execution_owner import owner_administration_lock, owner_marker_path
+from app.settings.live_safety import LiveTradingSafetyError
 
 
 class SpotBuyAdminPublicationTests(unittest.TestCase):
@@ -38,15 +40,22 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
         }
         self.actual.wrapper._spot_execution_owner.close()
 
-    def _run(self, *, order=None, trade=None, during_trades=None):
+    def _run(self, *, order=None, trade=None, during_trades=None, after_publication=None):
         order = copy.deepcopy(self.order if order is None else order)
         trade = copy.deepcopy(self.trade if trade is None else trade)
         queried = []
         capture_binding = publication.capture_spot_buy_recovery_binding
+        publish_fill = publication.publish_spot_buy_recovery
 
         def captured_owner(owner):
             self.admin_owner = owner
             return capture_binding(owner)
+
+        def published_fill(*args, **kwargs):
+            result = publish_fill(*args, **kwargs)
+            if after_publication is not None:
+                after_publication()
+            return result
 
         def get_order(**params):
             self.assertEqual({"symbol": "BTCUSDT", "origClientOrderId": self.client_id}, params)
@@ -69,6 +78,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
         with patch.dict(os.environ, {"BUY_RECOVERY_TEST_KEY": "offline-key", "BUY_RECOVERY_TEST_SECRET": "offline-secret"}), \
                 patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.SpotUserDataTransport", return_value=transport), \
                 patch.object(publication, "capture_spot_buy_recovery_binding", side_effect=captured_owner), \
+                patch.object(publication, "publish_spot_buy_recovery", side_effect=published_fill), \
                 redirect_stdout(StringIO()) as output:
             code = admin.main([
                 "recover-spot-market-fills", "--mode", "Live", "--account-type", "Spot",
@@ -156,6 +166,65 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
         self.assertEqual(changed_bytes[-1], self.intent_path.read_bytes())
         self._assert_unresolved()
 
+    def test_replaced_store_after_publication_cannot_confirm_another_store(self):
+        published_bytes, replaced_bytes = [], []
+        replacement_store_id = str(uuid4())
+
+        def replace_store():
+            self.assertTrue(self.path.exists())
+            published_bytes.append(self.path.read_bytes())
+            current = ledger._read_ledger(self.intent_path, expected_binding=ledger._intent_binding(self.actual.wrapper))
+            current["store_id"] = replacement_store_id
+            ledger._write_ledger(self.intent_path, current)
+            replaced_bytes.append(self.intent_path.read_bytes())
+
+        code, result = self._run(after_publication=replace_store)
+        self.assertEqual(1, code, result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(published_bytes[-1], self.path.read_bytes())
+        self.assertEqual(replaced_bytes[-1], self.intent_path.read_bytes())
+        self.assertEqual(replacement_store_id, ledger._read_ledger(self.intent_path)["store_id"])
+        self._assert_unresolved()
+
+    def test_full_record_change_after_publication_cannot_confirm_newer_record(self):
+        published_bytes, replaced_bytes = [], []
+
+        def replace_record():
+            published_bytes.append(self.path.read_bytes())
+            current = self.actual.wrapper._get_order_intent_record(self.client_id)
+            ledger._update_order_intent_by_id(
+                self.actual.wrapper, self.client_id, state=current["state"], expected_record=current,
+                recovery_test_observation="changed-after-publication",
+            )
+            replaced_bytes.append(self.intent_path.read_bytes())
+
+        code, result = self._run(after_publication=replace_record)
+        self.assertEqual(1, code, result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(published_bytes[-1], self.path.read_bytes())
+        self.assertEqual(replaced_bytes[-1], self.intent_path.read_bytes())
+        self._assert_unresolved()
+
+    def test_account_binding_or_path_change_after_publication_preserves_exact_old_work(self):
+        for mutation in ("credential", "uid"):
+            with self.subTest(mutation=mutation):
+                published_bytes, original_bytes = [], []
+
+                def change_account():
+                    published_bytes.append(self.path.read_bytes())
+                    original_bytes.append(self.intent_path.read_bytes())
+                    if mutation == "credential":
+                        self.admin_owner.api_key = "other-offline-account-key"
+                    else:
+                        self.admin_owner._operator_spot_account_uid += 1
+
+                code, result = self._run(after_publication=change_account)
+                self.assertEqual(1, code, result)
+                self.assertFalse(result["ok"])
+                self.assertEqual(published_bytes[-1], self.path.read_bytes())
+                self.assertEqual(original_bytes[-1], self.intent_path.read_bytes())
+                self._assert_unresolved()
+
     def test_changed_account_binding_or_uid_during_trade_query_cannot_publish(self):
         for mutation in ("credential", "uid"):
             with self.subTest(mutation=mutation):
@@ -176,15 +245,17 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                 self._assert_unresolved()
 
     def test_exact_primary_receipt_publishes_once_and_marks_after_storage_locks_release(self):
-        original_marker = ledger._mark_order_intent_portfolio_reconciled
+        original_marker = publication.confirm_spot_buy_recovery
 
         def unlocked_marker(owner, *args, **kwargs):
             # The actual marker acquires paired transactions itself. Nested locks
             # would fail the unchanged busy bound before this recovery completed.
             self.assertTrue(self.path.exists())
+            with ledger_transactions(self.intent_path, self.path):
+                pass
             return original_marker(owner, *args, **kwargs)
 
-        with patch.object(ledger, "_mark_order_intent_portfolio_reconciled", side_effect=unlocked_marker):
+        with patch.object(publication, "confirm_spot_buy_recovery", side_effect=unlocked_marker):
             code, result = self._run()
         self.assertEqual(0, code, result)
         self.assertEqual(1, result["recovered_buy_fill_count"])
@@ -194,20 +265,33 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
         self.assertTrue(self.actual.wrapper._get_order_intent_record(self.client_id)["portfolio_reconciled"])
 
     def test_actual_marker_failure_replays_acquisition_without_restoring_later_consumption(self):
-        with patch.object(ledger, "_mark_order_intent_portfolio_reconciled", side_effect=OSError("offline marker disk failure")):
-            code, result = self._run()
-        self.assertEqual(1, code)
-        self.assertEqual(1, result["failed_recovery_count"])
-        self.assertTrue(self.path.exists())
-        self._assert_unresolved()
-        self.actual._sell("0.04")
-        consumed = self.path.read_bytes()
-        code, result = self._run()
-        self.assertEqual(0, code, result)
-        self.assertEqual(consumed, self.path.read_bytes())
-        payload = json.loads(self.path.read_text())
-        self.assertEqual(0.06, payload["open_position_records"]["BTCUSDT:L"]["data"]["qty"])
-        self.assertTrue(self.actual.wrapper._get_order_intent_record(self.client_id)["portfolio_reconciled"])
+        for consumption in (None, "0.04", "0.1"):
+            with self.subTest(consumption=consumption):
+                scenario = type(self)()
+                scenario.setUp()
+                try:
+                    with patch.object(publication, "confirm_spot_buy_recovery", side_effect=OSError("offline marker disk failure")):
+                        code, result = scenario._run()
+                    self.assertEqual(1, code)
+                    self.assertEqual(1, result["failed_recovery_count"])
+                    self.assertTrue(scenario.path.exists())
+                    scenario._assert_unresolved()
+                    if consumption is not None:
+                        scenario.actual._sell(consumption)
+                    consumed = scenario.path.read_bytes()
+                    code, result = scenario._run()
+                    self.assertEqual(0, code, result)
+                    self.assertEqual(consumed, scenario.path.read_bytes())
+                    payload = json.loads(scenario.path.read_text())
+                    if consumption == "0.1":
+                        self.assertEqual("Closed", payload["entry_allocations"]["BTCUSDT:L"][0]["status"])
+                        self.assertNotIn("BTCUSDT:L", payload["open_position_records"])
+                    else:
+                        expected_qty = 0.1 - float(consumption or 0)
+                        self.assertAlmostEqual(expected_qty, payload["open_position_records"]["BTCUSDT:L"]["data"]["qty"])
+                    self.assertTrue(scenario.actual.wrapper._get_order_intent_record(scenario.client_id)["portfolio_reconciled"])
+                finally:
+                    scenario.doCleanups()
 
     def test_legacy_accepted_fill_without_primary_receipt_replays_consumed_history_read_only(self):
         self._legacy_accepted_intent()
@@ -297,6 +381,69 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                         self.assertNotIn("BTCUSDT:L", payload["open_position_records"])
                 finally:
                     scenario.doCleanups()
+
+    def test_confirm_complete_primary_conflict_after_publication_preserves_both_files(self):
+        record = self.actual.wrapper._get_order_intent_record(self.client_id)
+        fill = recovery.summarize_spot_market_fill(record, self.order, [self.trade], base_asset="BTC", quote_asset="USDT")
+        with owner_administration_lock(self.intent_path):
+            binding = publication.capture_spot_buy_recovery_binding(self.actual.wrapper)
+            options = {
+                "expected_record": record, "expected_store_id": binding["store_id"],
+                "expected_binding": binding["binding"], "expected_intent_path": binding["intent_path"],
+            }
+            self.assertTrue(publication.publish_spot_buy_recovery(self.actual.wrapper, self.path, fill, **options))
+            allocation_bytes, ledger_bytes = self.path.read_bytes(), self.intent_path.read_bytes()
+            fill.update(gross_quote_qty="3000", net_quote_cost="3000", average_cost="30000")
+            with self.assertRaisesRegex(LiveTradingSafetyError, "complete primary receipt"):
+                publication.confirm_spot_buy_recovery(self.actual.wrapper, self.path, fill, **options)
+        self.assertEqual(allocation_bytes, self.path.read_bytes())
+        self.assertEqual(ledger_bytes, self.intent_path.read_bytes())
+        self._assert_unresolved()
+
+    def test_already_confirmed_acquisition_is_read_only_after_partial_and_closed_consumption(self):
+        for consumption in ("0.04", "0.1"):
+            with self.subTest(consumption=consumption):
+                scenario = type(self)()
+                scenario.setUp()
+                try:
+                    code, result = scenario._run()
+                    self.assertEqual(0, code, result)
+                    scenario.actual._sell(consumption)
+                    allocation_bytes, ledger_bytes = scenario.path.read_bytes(), scenario.intent_path.read_bytes()
+                    record = scenario.actual.wrapper._get_order_intent_record(scenario.client_id)
+                    with owner_administration_lock(scenario.intent_path):
+                        binding = publication.capture_spot_buy_recovery_binding(scenario.actual.wrapper)
+                        confirmed = publication.confirm_spot_buy_recovery(
+                            scenario.actual.wrapper, scenario.path,
+                            {**scenario.primary, "portfolio_qty": scenario.primary["net_qty"]}, expected_record=record,
+                            expected_store_id=binding["store_id"], expected_binding=binding["binding"],
+                            expected_intent_path=binding["intent_path"],
+                        )
+                    self.assertTrue(confirmed["already_reconciled"])
+                    self.assertEqual(allocation_bytes, scenario.path.read_bytes())
+                    self.assertEqual(ledger_bytes, scenario.intent_path.read_bytes())
+                finally:
+                    scenario.doCleanups()
+
+    def test_legacy_both_phases_keep_the_original_fill_when_publisher_argument_changes(self):
+        self._legacy_accepted_intent()
+        publisher = publication.publish_spot_buy_recovery
+
+        def mutate_after_publish(owner, path, fill, **kwargs):
+            result = publisher(owner, path, fill, **kwargs)
+            fill.update(
+                net_qty="0.09", portfolio_qty="0.09", base_fee_qty="0.01",
+                commissions=[{"asset": "BTC", "amount": "0.01"}],
+                average_cost=str(Decimal("2000") / Decimal("0.09")),
+            )
+            return result
+
+        with patch.object(publication, "publish_spot_buy_recovery", side_effect=mutate_after_publish):
+            code, result = self._run()
+        self.assertEqual(0, code, result)
+        row = json.loads(self.path.read_text())["entry_allocations"]["BTCUSDT:L"][0]
+        self.assertEqual("0.1", row["spot_fill_recovery"]["net_qty"])
+        self.assertEqual("0.1", self.actual.wrapper._get_order_intent_record(self.client_id)["portfolio_qty"])
 
 
 if __name__ == "__main__":
