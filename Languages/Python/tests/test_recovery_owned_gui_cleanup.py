@@ -28,7 +28,7 @@ from app.integrations.exchanges.binance.orders.spot_fill_recovery_runtime import
 KEY = ("BTCUSDT", "L")
 FILL = {
     "symbol": "BTCUSDT", "client_order_id": "offline-owned-buy",
-    "order_id": "51", "signature": "a" * 64,
+    "order_id": 51, "signature": "a" * 64,
     "net_qty": "0.1", "net_quote_cost": "2000", "average_cost": "20000",
     "gross_qty": "0.1", "gross_quote_qty": "2000",
     "fill_time_ms": 1780000000000, "trade_ids": [61], "trade_count": 1,

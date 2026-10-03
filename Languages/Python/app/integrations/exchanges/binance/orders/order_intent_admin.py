@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -17,6 +18,7 @@ from .order_intent_provisioning import (
     rearm_spot_execution_owner,
     rotate_spot_owner_credentials,
 )
+from .spot_indexed_intent_migration import migrate_spot_indexed_intent_store
 from .order_intent_runtime import _query_order_intent_exchange, get_order_intent_status
 from .spot_exchange_errors import SPOT_EXCHANGE_ERRORS
 
@@ -25,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "action", choices=(
-            "status", "initialize", "migrate", "migrate-spot", "rearm", "rotate-credentials",
+            "status", "initialize", "migrate", "migrate-spot", "migrate-spot-indexed", "rearm", "rotate-credentials",
             "reconcile-spot", "reconcile-spot-account", "recover-spot-market-fills", "recover-spot-opos",
             "cancel-spot-opos", "rearm-spot-opos",
         ),
@@ -53,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         "reconcile-spot", "reconcile-spot-account", "recover-spot-market-fills", "recover-spot-opos",
         "cancel-spot-opos", "rearm-spot-opos",
     }
+    if args.action == "migrate-spot-indexed" and args.account_type != "Spot":
+        parser.error("Indexed Spot migration requires --account-type Spot.")
     if args.action in reconcile_actions and args.account_type != "Spot":
         parser.error("Spot reconciliation requires --account-type Spot.")
     if args.account_type == "Futures" and not (args.audit_log_path or args.default_intent_path):
@@ -177,6 +181,11 @@ def main(argv: list[str] | None = None) -> int:
                 _mark_spot_opo_residual_stop_no_fill, owner,
             )
             with owner_administration_lock(_intent_path(owner)):
+                if args.action == "recover-spot-market-fills":
+                    from .spot_buy_admin_recovery_runtime import (
+                        capture_spot_buy_recovery_binding, confirm_spot_buy_recovery, publish_spot_buy_recovery,
+                    )
+                    buy_recovery_binding = capture_spot_buy_recovery_binding(owner)
                 before = get_order_intent_status(owner)
                 if args.action == "cancel-spot-opos":
                     target_id = str(args.order_list_client_id or "")
@@ -744,14 +753,30 @@ def main(argv: list[str] | None = None) -> int:
                                 app_root / "gui" / "window_shell.py",
                             )
                             if intent.get("side") == "BUY":
-                                persist_spot_buy_allocation(allocation_path, fill)
+                                # Keep one private proof across both phases. Neither
+                                # helper receives this authoritative local dictionary.
+                                buy_fill = deepcopy(fill)
+                                publish_spot_buy_recovery(
+                                    owner, allocation_path, deepcopy(buy_fill),
+                                    expected_record=intent,
+                                    expected_store_id=buy_recovery_binding["store_id"],
+                                    expected_binding=buy_recovery_binding["binding"],
+                                    expected_intent_path=buy_recovery_binding["intent_path"],
+                                )
+                                confirm_spot_buy_recovery(
+                                    owner, allocation_path, deepcopy(buy_fill),
+                                    expected_record=intent,
+                                    expected_store_id=buy_recovery_binding["store_id"],
+                                    expected_binding=buy_recovery_binding["binding"],
+                                    expected_intent_path=buy_recovery_binding["intent_path"],
+                                )
                             else:
                                 persist_spot_sell_allocation(allocation_path, fill)
-                            owner._mark_order_intent_portfolio_reconciled(
-                                str(client_order_id),
-                                portfolio_signature=str(fill["signature"]),
-                                portfolio_quantity=str(fill["portfolio_qty"]),
-                            )
+                                owner._mark_order_intent_portfolio_reconciled(
+                                    str(client_order_id),
+                                    portfolio_signature=str(fill["signature"]),
+                                    portfolio_quantity=str(fill["portfolio_qty"]),
+                                )
                             recovered_count += 1
                             if intent.get("side") == "SELL":
                                 recovered_sell_count += 1
@@ -858,6 +883,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.action == "rotate-credentials":
             result = rotate_spot_owner_credentials(
+                owner, acknowledgement=args.acknowledgement,
+                reconciliation_reference=args.reconciliation_reference,
+            )
+        elif args.action == "migrate-spot-indexed":
+            result = migrate_spot_indexed_intent_store(
                 owner, acknowledgement=args.acknowledgement,
                 reconciliation_reference=args.reconciliation_reference,
             )

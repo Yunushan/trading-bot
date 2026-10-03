@@ -202,8 +202,9 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
             "symbol": "BTCUSDT", "client_order_id": self.request["listClientOrderId"],
             "exchange_client_order_id": self.request["workingClientOrderId"], "order_id": 301,
             "trade_ids": [901], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
-            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "9.99",
-            "average_cost": "100", "commissions": [], "base_asset": "BTC", "quote_asset": "USDT",
+            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
+            "average_cost": str(Decimal("10") / Decimal("0.0999")),
+            "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
             "fill_time_ms": 1780000000000, "signature": "c" * 64,
         }
         with patch(
@@ -473,8 +474,9 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
             "symbol": "BTCUSDT", "client_order_id": self.request["listClientOrderId"],
             "exchange_client_order_id": self.request["workingClientOrderId"], "order_id": 301,
             "trade_ids": [901], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
-            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "9.99",
-            "average_cost": "100", "commissions": [], "base_asset": "BTC", "quote_asset": "USDT",
+            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
+            "average_cost": str(Decimal("10") / Decimal("0.0999")),
+            "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
             "fill_time_ms": 1780000000000, "signature": "c" * 64,
         }
         with patch(
@@ -505,8 +507,9 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
             "symbol": "BTCUSDT", "client_order_id": self.request["listClientOrderId"],
             "exchange_client_order_id": self.request["workingClientOrderId"], "order_id": 301,
             "trade_ids": [901], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
-            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "9.99",
-            "average_cost": "100", "commissions": [], "base_asset": "BTC", "quote_asset": "USDT",
+            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
+            "average_cost": str(Decimal("10") / Decimal("0.0999")),
+            "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
             "fill_time_ms": 1780000000000, "signature": "c" * 64,
         }
         with patch(
@@ -1165,8 +1168,9 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
             "symbol": "BTCUSDT", "client_order_id": request["listClientOrderId"],
             "exchange_client_order_id": request["workingClientOrderId"], "order_id": 401,
             "trade_ids": [903], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
-            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "9.99",
-            "average_cost": "100", "commissions": [], "base_asset": "BTC", "quote_asset": "USDT",
+            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
+            "average_cost": str(Decimal("10") / Decimal("0.0999")),
+            "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
             "fill_time_ms": 1780000000001, "signature": "d" * 64,
         }
         with patch(
@@ -1303,8 +1307,9 @@ class SpotOpoIntentRuntimeTests(unittest.TestCase):
             "symbol": "BTCUSDT", "client_order_id": self.request["listClientOrderId"],
             "exchange_client_order_id": self.request["workingClientOrderId"], "order_id": 301,
             "trade_ids": [901], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
-            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "9.99",
-            "average_cost": "100", "commissions": [], "base_asset": "BTC", "quote_asset": "USDT",
+            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
+            "average_cost": str(Decimal("10") / Decimal("0.0999")),
+            "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
             "fill_time_ms": 1780000000000, "signature": "c" * 64,
         }
         with patch(

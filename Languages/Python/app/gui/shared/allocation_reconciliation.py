@@ -29,6 +29,8 @@ def defer_recovery_owned_cleanup(window, key: tuple[str, str], *, source: str) -
 
 
 def allocation_publication_pending(window) -> bool:
+    if getattr(window, "_spot_buy_recovery_fence", False):
+        return True
     if getattr(window, "_pending_allocation_reconciliations", None):
         return True
     if hasattr(window, "_allocation_snapshot_session"):

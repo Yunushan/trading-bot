@@ -36,13 +36,16 @@ def _save_position_allocations_safe(
     mode=None,
     session=None,
     event_receipt=None,
+    owned_spot_buy=None,
 ) -> bool:
     func = _SAVE_POSITION_ALLOCATIONS
     if not callable(func):
         return False
     try:
-        return func(entry_allocations, open_position_records, mode=mode,
-                    session=session, event_receipt=event_receipt) is True
+        options = {"mode": mode, "session": session, "event_receipt": event_receipt}
+        if owned_spot_buy is not None:
+            options["owned_spot_buy"] = owned_spot_buy
+        return func(entry_allocations, open_position_records, **options) is True
     except Exception:
         return False
 
