@@ -172,6 +172,20 @@ class SpotIndexedIntentStoreTests(unittest.TestCase):
         self.assertEqual(snapshot, self.read(), 'Every complete record, head and projection must remain unchanged')
         self.assertEqual(expected_cleanup, connection.cleanup_calls)
 
+    def cold_replay_history(self):
+        self.payload['intents'], _ = profiles.synthetic_opo_records(
+            6, original_stops=1, residual_stops=1, attempt_depth=2, residual_depth=2)
+        self.payload['cold_metadata_revision'] = 0
+        snapshots = [self.create()]
+        for revision in (1, 2):
+            candidate = snapshots[-1].payload
+            candidate['cold_metadata_revision'] = revision
+            snapshots.append(self.replace(candidate, snapshots[-1]))
+        candidate = snapshots[-1].payload
+        candidate['intents']['syn-list-00000001']['operator_note'] = 'a later complete record revision'
+        snapshots.append(self.replace(candidate, snapshots[-1]))
+        return snapshots
+
     def test_exact_metadata_roundtrip_and_detached_complete_payload_receipt(self):
         self.payload['preserved_metadata'] = {'reference': 'synthetic-only', 'generation': 7}
         snapshot = self.create()
@@ -482,6 +496,124 @@ class SpotIndexedIntentStoreTests(unittest.TestCase):
 
     def test_full_store_ordinary_cleanup_failures_keep_primary_and_both_cleanup_causes(self):
         self.assert_cleanup_failure()
+
+    def test_cold_replay_checks_every_complete_revision_without_discarded_output_parses(self):
+        snapshots = self.cold_replay_history()
+        expected = [snapshot.payload for snapshot in snapshots]
+        observed, retained, full_parses = [], [], []
+        parse = indexed._parse_json_dict
+        def inspected(payload, *, expected_binding=None):
+            observed.append((deepcopy(payload), deepcopy(expected_binding)))
+            retained.append(payload)
+            return runtime.validate_order_intent_ledger(payload, expected_binding=expected_binding)
+        def counted(raw):
+            # This fixture has no intents key inside an individual record.
+            if '"intents":{' in raw:
+                full_parses.append(len(raw))
+            return parse(raw)
+        rules = indexed.IndexedIntentRules(inspected, RULES.is_unresolved,
+                                          RULES.has_active_protection, RULES.used_client_ids)
+        with locks.ledger_transaction(self.logical), patch.object(indexed, '_parse_json_dict', side_effect=counted):
+            actual = indexed.read_indexed_snapshot(
+                self.path, logical_path=self.logical, rules=rules, expected_binding=self.binding,
+                deadline=locks.current_ledger_deadline())
+        self.assertEqual(snapshots[-1], actual)
+        self.assertEqual(expected + [expected[-1]], [payload for payload, _ in observed])
+        self.assertEqual([None] * len(snapshots) + [self.binding], [binding for _, binding in observed])
+        self.assertEqual(len(snapshots) + 2, len(full_parses),
+                         'One strict input parse per historical revision; final validation still detaches its output')
+        self.assertTrue(all(len(payload['intents']) == 6 for payload, _ in observed))
+        retained_before = deepcopy(retained)
+        result = actual.payload
+        result['binding'].clear()
+        result['intents'].clear()
+        self.assertEqual(retained_before, retained)
+        retained[0]['binding'].clear()
+        retained[-1]['intents']['syn-list-00000001']['strategy_exit_history'].clear()
+        self.assertEqual(expected[-1], actual.payload)
+        self.assertEqual(expected[1:], retained[1:-1])
+        self.assertEqual(actual, self.read())
+
+    def test_cold_replay_rejects_earlier_callback_mutation_with_a_valid_final_revision(self):
+        snapshots = self.cold_replay_history()
+        before = self.path.read_bytes()
+        for fault in ('changed-input-pristine-output', 'changed-output', 'callback-exception'):
+            with self.subTest(fault=fault):
+                calls = []
+                failure = RuntimeError('synthetic earlier full-validator failure')
+                def inspected(payload, *, expected_binding=None):
+                    checked = runtime.validate_order_intent_ledger(payload, expected_binding=expected_binding)
+                    calls.append(deepcopy(payload))
+                    if len(calls) != 2:
+                        return checked
+                    pristine = deepcopy(payload)
+                    if fault == 'callback-exception':
+                        raise failure
+                    if fault == 'changed-input-pristine-output':
+                        payload['intents']['syn-list-00000001']['operator_note'] = 'mutated detached history'
+                        return pristine
+                    pristine['operator_note'] = 'changed validator result'
+                    return pristine
+                rules = indexed.IndexedIntentRules(inspected, RULES.is_unresolved,
+                                                  RULES.has_active_protection, RULES.used_client_ids)
+                expected_error = RuntimeError if fault == 'callback-exception' else LiveTradingSafetyError
+                with locks.ledger_transaction(self.logical), self.assertRaises(expected_error) as caught:
+                    indexed.read_indexed_snapshot(
+                        self.path, logical_path=self.logical, rules=rules, expected_binding=self.binding,
+                        deadline=locks.current_ledger_deadline())
+                if fault == 'callback-exception':
+                    self.assertIs(failure, caught.exception)
+                else:
+                    self.assertIn('requires unchanged validated v2 data', str(caught.exception))
+                self.assertEqual(2, len(calls), 'A later valid state cannot replace earlier complete validation')
+                self.assertEqual(snapshots[1].payload, calls[1])
+                self.assertEqual(before, self.path.read_bytes())
+                self.assertEqual(snapshots[-1], self.read())
+
+    def test_cold_replay_rejects_semantically_invalid_earlier_history_with_a_valid_tail(self):
+        bad = deepcopy(self.payload)
+        key = next(iter(bad['intents']))
+        bad['intents'][key]['requires_close_confirmation'] = 1
+        def author_injected_fault(payload, *, expected_binding=None):
+            # Fault authoring only: keep every other owned rule and store commitment.
+            repaired = deepcopy(payload)
+            for record in repaired['intents'].values():
+                if type(record.get('requires_close_confirmation')) is int:
+                    record['requires_close_confirmation'] = True
+            runtime.validate_order_intent_ledger(repaired, expected_binding=expected_binding)
+            return payload
+        authoring = indexed.IndexedIntentRules(author_injected_fault, RULES.is_unresolved,
+                                              RULES.has_active_protection, RULES.used_client_ids)
+        with locks.ledger_transaction(self.logical):
+            first = indexed.create_indexed_store(
+                self.path, bad, logical_path=self.logical, rules=authoring, expected_binding=self.binding,
+                deadline=locks.current_ledger_deadline())
+            valid_tail = first.payload
+            valid_tail['intents'][key]['requires_close_confirmation'] = True
+            latest = indexed.replace_indexed_snapshot(
+                self.path, valid_tail, expected=first, rules=authoring, expected_binding=self.binding,
+                deadline=locks.current_ledger_deadline())
+        runtime.validate_order_intent_ledger(latest.payload, expected_binding=self.binding)
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(LiveTradingSafetyError, 'contains an invalid record'):
+            self.read()
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_cold_replay_keeps_strict_json_for_an_earlier_row_with_a_valid_tail(self):
+        snapshot = self.cold_replay_history()[-1]
+        key = 'syn-list-00000001'
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            raw = connection.execute('SELECT record FROM journal_records WHERE seq=1 AND client_id=?', (key,)).fetchone()[0]
+            connection.execute('DROP TRIGGER immutable_journal_records_update')
+            connection.execute('UPDATE journal_records SET record=? WHERE seq=1 AND client_id=?', (' ' + raw, key))
+            connection.execute(indexed._DDL['immutable_journal_records_update'])
+            current = connection.execute('SELECT record FROM current_records WHERE client_id=?', (key,)).fetchone()[0]
+        self.assertEqual(snapshot.record(key), indexed._decode(current))
+        runtime.validate_order_intent_ledger(snapshot.payload, expected_binding=self.binding)
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(LiveTradingSafetyError, 'contains noncanonical JSON'):
+            self.read()
+        self.assertEqual(before, self.path.read_bytes())
 
     def test_database_busy_wait_consumes_original_remaining_deadline(self):
         self.create()

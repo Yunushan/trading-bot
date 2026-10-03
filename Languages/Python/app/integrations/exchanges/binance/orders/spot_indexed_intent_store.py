@@ -159,17 +159,23 @@ def _decode(raw: str) -> dict[str, object]:
     return value
 
 
-def _validate(payload: object, rules: IndexedIntentRules,
-              expected_binding: Mapping[str, str] | None) -> dict[str, object]:
+def _validated_canonical(payload: object, rules: IndexedIntentRules,
+                         expected_binding: Mapping[str, str] | None) -> str:
+    """Retain the complete validation proof without creating an unused copy."""
     original = _canonical(payload)
     detached = _decode(original)
     checked = rules.validate_ledger(detached, expected_binding=expected_binding)
     if (_canonical(checked) != original or _canonical(detached) != original
             or checked.get("format_version") != 2):
         raise _fail("requires unchanged validated v2 data")
-    # Initial _decode proved these immutable bytes canonical. Parse again to
-    # detach the result from every container retained by the callback.
-    return _parse_json_dict(original)
+    return original
+
+
+def _validate(payload: object, rules: IndexedIntentRules,
+              expected_binding: Mapping[str, str] | None) -> dict[str, object]:
+    # The core proved immutable canonical bytes. Detach the result from every
+    # container retained by the callback whenever the caller needs a payload.
+    return _parse_json_dict(_validated_canonical(payload, rules, expected_binding))
 
 
 def _parts(payload: dict[str, object]) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
@@ -424,7 +430,7 @@ def _verified(connection: sqlite3.Connection, path: Path, logical_path: Path, de
             last_seq[cast(str, key)] = seq
             changed.append([key, row_revision, row_hash])
         metadata = next_metadata
-        _validate({**metadata, "intents": records}, rules, None)
+        _validated_canonical({**metadata, "intents": records}, rules, None)
         active, unresolved, current_reserved = _projections(records, rules)
         if expected_seq > 1:
             _reject_new_alias_owners(before_reserved, current_reserved)
