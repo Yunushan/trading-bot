@@ -50,10 +50,13 @@ class SpotTradeCallbackOriginTests(unittest.TestCase):
         stack.enter_context(patch("app.integrations.exchanges.binance.wrapper.BinanceSDKSpotClient", return_value=sdk))
         stack.enter_context(patch("app.gui.shared.allocation_persistence.get_position_allocations_path",
                                  return_value=self.allocation_path))
+        stack.enter_context(patch("app.gui.shared.allocation_persistence._get_allocations_file_path",
+                                 return_value=self.allocation_path))
         self.window = self._window()
         self.wrapper = self._wrapper(self.window, "offline-key-a", 12345678)
         self.assertIsNone(getattr(self.wrapper, "_spot_execution_owner", None))
         self.origin = self.wrapper._desktop_trade_origin_capture()
+        self.initial_bytes = self.allocation_path.read_bytes()
         self.assertIsNotNone(self.wrapper._spot_execution_owner)
         self.params = {"newClientOrderId": "callback-fee-buy", "symbol": "BTCUSDT", "side": "BUY",
                        "type": "MARKET", "quantity": "0.1"}
@@ -121,7 +124,7 @@ class SpotTradeCallbackOriginTests(unittest.TestCase):
                   saver=lambda a, r, **kw: save_position_allocations(a, r, this_file=self.this_file, **kw))
 
     def _assert_rejected(self):
-        self.assertFalse(self.allocation_path.exists())
+        self.assertEqual(self.initial_bytes, self.allocation_path.read_bytes())
         self.assertEqual({}, self.window._entry_allocations)
         self.assertEqual({}, self.window._open_position_records)
         self.assertTrue(self.window._pending_allocation_reconciliations[("BTCUSDT", "L")])

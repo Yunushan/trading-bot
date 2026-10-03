@@ -17,7 +17,7 @@ from app.settings.live_safety import LiveTradingSafetyError
 from app.settings.execution_mode import execution_environment
 
 from . import order_intent_runtime as intents
-from .order_intent_store import ledger_transaction, ledger_transactions
+from .order_intent_store import ledger_transactions
 from .spot_allocation_generation_runtime import canonical_spot_buy_metadata, validate_spot_entry_snapshot
 from .spot_buy_publication_runtime import validate_desktop_source_descriptor
 from .spot_execution_owner import (
@@ -27,6 +27,8 @@ from .spot_fill_recovery_runtime import (
     _persist_spot_buy_allocation_unlocked, _stored_decimal, _update_spot_position_snapshot,
 )
 from .spot_exchange_errors import SPOT_LOCAL_STATE_ERRORS
+from .spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY, make_namespace, require_namespace
+from .spot_inventory_namespace_runtime import assert_single_unpublished_acquisition
 
 
 @dataclass(frozen=True, repr=False)
@@ -136,7 +138,7 @@ def discover_spot_desktop_buy_recoveries(wrapper, *, allocation_path: Path) -> S
         raise LiveTradingSafetyError("Desktop BUY recovery requires the canonical allocation path.")
     uid = _signed_selected_uid(wrapper)
     path, binding = intents._intent_path(wrapper), intents._intent_binding(wrapper)
-    with owner_administration_lock(path), ledger_transaction(path):
+    with owner_administration_lock(path), ledger_transactions(path, allocation_path):
         ledger = intents._read_ledger(path, expected_binding=binding)
         _read_marker(owner_marker_path(path), uid=uid, environment=binding["environment"], store_id=str(ledger["store_id"]))
         authority = SpotDesktopBuyRecoveryAuthority(
@@ -146,6 +148,16 @@ def discover_spot_desktop_buy_recoveries(wrapper, *, allocation_path: Path) -> S
         records = ledger["intents"]
         if not isinstance(records, dict):
             raise LiveTradingSafetyError("Desktop BUY recovery intent store is malformed.")
+        raw, _identity = allocations._read_receipt(allocation_path)
+        snapshot = allocations._decode(raw, "Live") if raw is not None else None
+        namespace = make_namespace(uid, str(ledger["store_id"]))
+        if snapshot is None or ACCOUNT_NAMESPACE_KEY not in snapshot:
+            if len(records) != 1:
+                raise LiveTradingSafetyError("Unbound Spot inventory requires explicit complete history reconciliation.")
+            assert_single_unpublished_acquisition(ledger, next(iter(records.values())))
+            require_namespace(snapshot, namespace, allow_empty=True)
+        else:
+            require_namespace(snapshot, namespace)
         items = []
         unresolved = 0
         for record in records.values():
@@ -225,7 +237,7 @@ def _validate_current_snapshot(snapshot: Mapping | None, symbol: str) -> None:
             raise LiveTradingSafetyError(f"Desktop BUY recovery current position {name} is incoherent.")
 
 
-def _already_present(record: dict, source: SpotDesktopBuyRecoveryLoadedReceipt, fill: dict) -> bool:
+def _already_present(record: dict, source: SpotDesktopBuyRecoveryLoadedReceipt, fill: dict, namespace: dict) -> bool:
     _validate_current_snapshot(source.snapshot, str(record["symbol"]))
     rows = [row for group in (source.snapshot or {}).get("entry_allocations", {}).values() for row in group
             if row.get("client_order_id") == record["client_order_id"]]
@@ -238,7 +250,7 @@ def _already_present(record: dict, source: SpotDesktopBuyRecoveryLoadedReceipt, 
             raise LiveTradingSafetyError("Missing desktop BUY acquisition no longer matches its original source baseline.")
         return False
     if len(rows) != 1 or not intents._has_durable_spot_buy_allocation(
-        record, portfolio_signature=str(fill["signature"]), portfolio_quantity=Decimal(fill["net_qty"]),
+        record, portfolio_signature=str(fill["signature"]), portfolio_quantity=Decimal(fill["net_qty"]), namespace=namespace,
     ):
         raise LiveTradingSafetyError("Existing desktop BUY acquisition has conflicting or unconserved evidence.")
     return True
@@ -261,9 +273,11 @@ def _mark_exact_acquisition(wrapper, authority: SpotDesktopBuyRecoveryAuthority,
             raise LiveTradingSafetyError("Desktop BUY recovery owner state changed during acquisition confirmation.")
         raw, _identity = allocations._read_receipt(authority.allocation_path)
         snapshot = allocations._decode(raw, "Live") if raw is not None else None
+        namespace = make_namespace(authority.account_uid, authority.store_id)
+        require_namespace(snapshot, namespace)
         _validate_current_snapshot(snapshot, str(record["symbol"]))
         if not intents._has_durable_spot_buy_allocation(
-            current, portfolio_signature=signature, portfolio_quantity=quantity,
+            current, portfolio_signature=signature, portfolio_quantity=quantity, namespace=namespace,
         ):
             raise LiveTradingSafetyError("Desktop BUY recovery exact acquisition is no longer durable.")
         already = current.get("portfolio_reconciled") is True
@@ -310,17 +324,23 @@ def recover_spot_desktop_buy(
                     or records.get(item.client_order_id) != record):
                 raise LiveTradingSafetyError("Desktop BUY recovery intent or store changed before publication.")
             _assert_source(source, allocation_path)
-            already_present = _already_present(record, source, fill)
+            namespace = make_namespace(authority.account_uid, authority.store_id)
+            if source.snapshot is None or ACCOUNT_NAMESPACE_KEY not in source.snapshot:
+                assert_single_unpublished_acquisition(ledger, record)
+                require_namespace(source.snapshot, namespace, allow_empty=True)
+            else:
+                require_namespace(source.snapshot, namespace)
+            already_present = _already_present(record, source, fill, namespace)
             if marker["state"] != "recovery_required":
                 mark_owner_recovery_required_locked(
                     authority.intent_path, uid=authority.account_uid, environment=authority.environment,
                     store_id=authority.store_id, reconciliation_reference=f"desktop-buy-{item.client_order_id}",
                 )
             source.session.invalidate("desktop BUY recovery requires a fresh allocation reload")
-            if _persist_spot_buy_allocation_unlocked(allocation_path, fill) is not True:
+            if _persist_spot_buy_allocation_unlocked(allocation_path, fill, namespace=namespace) is not True:
                 raise LiveTradingSafetyError("Desktop BUY recovery allocation publication did not complete.")
             if not intents._has_durable_spot_buy_allocation(
-                record, portfolio_signature=str(fill["signature"]), portfolio_quantity=Decimal(fill["net_qty"]),
+                record, portfolio_signature=str(fill["signature"]), portfolio_quantity=Decimal(fill["net_qty"]), namespace=namespace,
             ):
                 raise LiveTradingSafetyError("Desktop BUY recovery has no exact durable acquisition after publication.")
             committed = allocations._read_receipt(allocation_path)

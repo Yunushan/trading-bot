@@ -233,11 +233,12 @@ def place_spot_opo_strategy_exit(
             raise LiveTradingSafetyError("Linked Spot SELL requires an exactly active recovered OPO stop.")
         expected_quantity = intent.get("entry_portfolio_quantity")
         allocation_path = _live_allocation_path()
+        from .spot_inventory_namespace_runtime import namespace_for_current_ledger
         baseline = spot_opo_allocation_baseline(
             allocation_path,
             symbol=str(intent.get("symbol") or ""),
             list_client_order_id=list_id,
-            expected_quantity=expected_quantity,
+            expected_quantity=expected_quantity, namespace=namespace_for_current_ledger(self),
         )
         request = build_spot_opo_cancel_replace_request(
             intent, new_order_client_id=request_id, cancel_new_client_order_id=spot_opo_cancel_client_id(request_id),

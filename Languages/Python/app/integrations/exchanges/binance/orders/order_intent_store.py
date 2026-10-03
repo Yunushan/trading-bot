@@ -27,6 +27,7 @@ class _LedgerTransactionToken:
     def __init__(self, deadline: float) -> None:
         self.deadline = deadline
         self.owner_thread = threading.current_thread()
+        self.owner_pid = os.getpid()
         self.held_paths: frozenset[Path] = frozenset()
         self.active = False
 
@@ -37,8 +38,10 @@ _ACTIVE_LEDGER_TRANSACTION: ContextVar[_LedgerTransactionToken | None] = Context
 
 
 def _logical_lock_path(path: Path) -> Path:
-    # Preserve the logical file's lock basename, including a final symlink's name.
-    return Path(os.path.abspath(path))
+    # Normalize parent aliases (including Windows short paths), preserving the
+    # logical final basename even when that file itself is a symbolic link.
+    absolute = Path(os.path.abspath(path))
+    return absolute.parent.resolve() / absolute.name
 
 
 def current_ledger_deadline(*required_paths: Path) -> float:
@@ -48,6 +51,7 @@ def current_ledger_deadline(*required_paths: Path) -> float:
         transaction is None
         or not transaction.active
         or transaction.owner_thread is not threading.current_thread()
+        or transaction.owner_pid != os.getpid()
     ):
         raise LiveTradingSafetyError("An order intent transaction is required for this storage operation.")
     if any(_logical_lock_path(path) not in transaction.held_paths for path in required_paths):
@@ -99,8 +103,20 @@ def _ensure_parent(path: Path) -> None:
         _sync_directory(directory.parent)
 
 
+def _already_held_transaction(*paths: Path) -> bool:
+    """Borrow only this thread's actual live locks, without expanding paths or deadlines."""
+    transaction = _ACTIVE_LEDGER_TRANSACTION.get()
+    return bool(transaction is not None and transaction.active
+                and transaction.owner_thread is threading.current_thread()
+                and transaction.owner_pid == os.getpid()
+                and all(_logical_lock_path(path) in transaction.held_paths for path in paths))
+
+
 @contextmanager
 def ledger_transaction(path: Path) -> Iterator[None]:
+    if _already_held_transaction(path):
+        yield
+        return
     deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
     if not _THREAD_LOCK.acquire(timeout=LOCK_TIMEOUT_SECONDS):
         raise LiveTradingSafetyError("Order intent ledger is busy; submission is blocked.")
@@ -132,7 +148,9 @@ def ledger_transaction(path: Path) -> Iterator[None]:
                 yield
             finally:
                 transaction.active = False
-                _unlock(fd)
+                # An inherited POSIX descriptor shares its parent's lock.
+                if transaction.owner_pid == os.getpid():
+                    _unlock(fd)
         finally:
             os.close(fd)
     except (OSError, ValueError, TypeError) as exc:
@@ -148,9 +166,12 @@ def ledger_transaction(path: Path) -> Iterator[None]:
 @contextmanager
 def ledger_transactions(*paths: Path) -> Iterator[None]:
     """Lock multiple ledgers in stable path order for atomic cross-ledger administration."""
-    normalized_paths = sorted({path.resolve() for path in paths}, key=os.fspath)
+    normalized_paths = sorted({_logical_lock_path(path) for path in paths}, key=os.fspath)
     if not normalized_paths:
         raise ValueError("At least one ledger path is required.")
+    if _already_held_transaction(*normalized_paths):
+        yield
+        return
     deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
     if not _THREAD_LOCK.acquire(timeout=LOCK_TIMEOUT_SECONDS):
         raise LiveTradingSafetyError("Order intent ledger is busy; submission is blocked.")
@@ -191,7 +212,8 @@ def ledger_transactions(*paths: Path) -> Iterator[None]:
         try:
             for fd in reversed(locked_fds):
                 try:
-                    _unlock(fd)
+                    if transaction.owner_pid == os.getpid():
+                        _unlock(fd)
                 finally:
                     os.close(fd)
         finally:

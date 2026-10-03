@@ -147,6 +147,30 @@ def _decimal_text(value: Decimal) -> str:
     return rendered or "0"
 
 
+def _owned_inventory_confirmation(operation):
+    """Keep namespace/proof verification and intent confirmation in one paired transaction."""
+    from functools import wraps
+
+    @wraps(operation)
+    def confirm(self, *args, **kwargs):
+        if not _spot_owner_scope(self):
+            return operation(self, *args, **kwargs)
+        from app.gui.shared.allocation_persistence import _decode, _read_receipt, get_position_allocations_path
+        from .spot_inventory_namespace import require_namespace
+        from .spot_inventory_namespace_runtime import namespace_for_ledger
+        path = _intent_path(self)
+        app_root = Path(__file__).resolve().parents[4]
+        allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+        with ledger_transactions(path, allocation_path):
+            ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+            namespace = namespace_for_ledger(self, ledger)
+            raw, _identity = _read_receipt(allocation_path)
+            require_namespace(_decode(raw, "Live") if raw is not None else None, namespace)
+            return operation(self, *args, **kwargs)
+    return confirm
+
+
+
 def _legacy_intent_path(self) -> Path:
     audit_path = getattr(self, "_order_audit_log_path", None)
     if audit_path:
@@ -1297,7 +1321,9 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
 
             app_root = Path(__file__).resolve().parents[4]
             allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
-            baseline = spot_live_allocation_baseline(allocation_path, symbol=str(record["symbol"]))
+            baseline = spot_live_allocation_baseline(
+                allocation_path, symbol=str(record["symbol"]), namespace=namespace_for_current_ledger(self),
+            )
         except (ImportError, OSError, LiveTradingSafetyError):
             baseline = None
         if baseline is not None:
@@ -1608,6 +1634,7 @@ def _begin_spot_opo_strategy_exit(
         baseline = spot_opo_allocation_baseline_unlocked(
             allocation_path, symbol=str(record["symbol"]), list_client_order_id=list_client_order_id,
             expected_quantity=baseline_quantity,
+            namespace=namespace_for_current_ledger(self),
         )
         if baseline["signature"] != pre_order_portfolio_signature or Decimal(baseline["quantity"]) != baseline_quantity:
             raise LiveTradingSafetyError("Live Spot allocation changed before linked SELL submission.")
@@ -1813,6 +1840,7 @@ def reconcile_spot_opo_strategy_exit(
         baseline = spot_opo_allocation_baseline_unlocked(
             allocation_path, symbol=str(request["symbol"]), list_client_order_id=list_id,
             expected_quantity=record["strategy_exit_pre_order_quantity"],
+            namespace=namespace_for_current_ledger(self),
         )
         if (
             baseline["signature"] != record["strategy_exit_pre_order_signature"]
@@ -1897,6 +1925,7 @@ def _mark_spot_opo_strategy_exit_order_observed(
     return {"client_order_id": list_client_order_id, **evidence, "order_observed_at": observed_at}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_strategy_exit_reconciled(
     self, list_client_order_id: str, *, allocation_path: Path,
     portfolio_signature: str, portfolio_quantity: object,
@@ -1940,6 +1969,7 @@ def _mark_spot_opo_strategy_exit_reconciled(
         candidate,
         signature=portfolio_signature,
         consumed_quantity=quantity,
+        namespace=namespace_for_current_ledger(self),
     ):
         raise LiveTradingSafetyError("Matching durable OPO strategy SELL allocation proof was not found.")
     updated = _update_order_intent_by_id(
@@ -1961,6 +1991,7 @@ def _mark_spot_opo_strategy_exit_reconciled(
     return {"client_order_id": list_client_order_id, "portfolio_reconciled": True, "already_reconciled": False}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_strategy_exit_residual_required(
     self,
     list_client_order_id: str,
@@ -2061,6 +2092,7 @@ def _mark_spot_opo_strategy_exit_residual_required(
                 consumed_quantity=consumed,
                 remaining_quantity=residual_quantity,
                 trade_ids=trade_ids,
+                namespace=namespace_for_current_ledger(self),
             )
         ):
             raise LiveTradingSafetyError("Partial linked SELL is missing exact durable trade and allocation proof.")
@@ -2069,6 +2101,7 @@ def _mark_spot_opo_strategy_exit_residual_required(
         symbol=str(record.get("symbol") or ""),
         list_client_order_id=list_client_order_id,
         expected_quantity=residual_quantity,
+        namespace=namespace_for_current_ledger(self),
     )
     if (
         baseline.get("signature") != portfolio_signature
@@ -2155,6 +2188,7 @@ def _begin_spot_opo_residual_stop(
         symbol=str(record.get("symbol") or ""),
         list_client_order_id=list_client_order_id,
         expected_quantity=quantity,
+        namespace=namespace_for_current_ledger(self),
     )
     if (
         baseline.get("signature") != pre_order_portfolio_signature
@@ -2294,6 +2328,7 @@ def _mark_spot_opo_residual_stop_order_observed(
     return {"client_order_id": list_client_order_id, **evidence, "observed_at": observed_at}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_residual_stop_reconciled(
     self,
     list_client_order_id: str,
@@ -2349,6 +2384,7 @@ def _mark_spot_opo_residual_stop_reconciled(
             consumed_quantity=consumed,
             remaining_quantity=remaining,
             trade_ids=trade_ids,
+            namespace=namespace_for_current_ledger(self),
         )
     ):
         raise LiveTradingSafetyError("Residual stop trades do not match the exact OPO inventory proof.")
@@ -2358,6 +2394,7 @@ def _mark_spot_opo_residual_stop_reconciled(
             symbol=str(record.get("symbol") or ""),
             list_client_order_id=list_client_order_id,
             expected_quantity=remaining,
+            namespace=namespace_for_current_ledger(self),
         )
         state = "rearm_required"
         protection_state = "cancelled"
@@ -2398,6 +2435,7 @@ def _mark_spot_opo_residual_stop_reconciled(
     }
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_residual_stop_no_fill(
     self,
     list_client_order_id: str,
@@ -2430,6 +2468,7 @@ def _mark_spot_opo_residual_stop_no_fill(
         symbol=str(record.get("symbol") or ""),
         list_client_order_id=list_client_order_id,
         expected_quantity=quantity,
+        namespace=namespace_for_current_ledger(self),
     )
     if (
         baseline.get("signature") != record.get("residual_stop_pre_order_signature")
@@ -2561,9 +2600,27 @@ def _mark_order_intent_unknown(self, params: Mapping[str, object], *, error: obj
     _update_order_intent(self, params, state="unknown", last_error=str(error or ""), uncertain_at=_now())
 
 
+def namespace_for_current_ledger(wrapper):
+    from .spot_inventory_namespace_runtime import namespace_for_current_ledger as resolve
+    return resolve(wrapper)
+
+
+def _require_durable_spot_namespace(namespace: object) -> dict:
+    from app.gui.shared.allocation_persistence import _decode, _read_receipt, get_position_allocations_path
+    from .spot_inventory_namespace import require_namespace
+    app_root = Path(__file__).resolve().parents[4]
+    path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+    raw, _identity = _read_receipt(path)
+    snapshot = _decode(raw, "Live") if raw is not None else None
+    require_namespace(snapshot, namespace)
+    assert isinstance(snapshot, dict)
+    return snapshot
+
+
 def _has_durable_spot_buy_allocation(
-    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object,
+    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object, namespace: object = None,
 ) -> bool:
+    scoped_snapshot = _require_durable_spot_namespace(namespace) if namespace is not None else None
     try:
         if re.fullmatch(r"[0-9a-f]{64}", portfolio_signature) is None:
             return False
@@ -2582,13 +2639,16 @@ def _has_durable_spot_buy_allocation(
                 value[key] = item
             return value
 
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        data = (scoped_snapshot if scoped_snapshot is not None else
+                json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object))
         if (
             not isinstance(data, dict)
             or data.get("version") != 1
             or data.get("mode") != "Live"
             or not isinstance(data.get("entry_allocations"), dict)
         ):
+            return False
+        if namespace is None and "spot_account_namespace" in data:
             return False
         matches = []
         for entries in data["entry_allocations"].values():
@@ -2648,8 +2708,9 @@ def _has_durable_spot_buy_allocation(
 
 
 def _has_durable_spot_sell_allocation(
-    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object,
+    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object, namespace: object = None,
 ) -> bool:
+    scoped_snapshot = _require_durable_spot_namespace(namespace) if namespace is not None else None
     try:
         if re.fullmatch(r"[0-9a-f]{64}", portfolio_signature) is None:
             return False
@@ -2668,7 +2729,10 @@ def _has_durable_spot_sell_allocation(
                 value[key] = item
             return value
 
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        data = (scoped_snapshot if scoped_snapshot is not None else
+                json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object))
+        if namespace is None and isinstance(data, dict) and "spot_account_namespace" in data:
+            return False
         allocations = data.get("entry_allocations") if isinstance(data, dict) else None
         if data.get("version") != 1 or data.get("mode") != "Live" or not isinstance(allocations, dict):
             return False
@@ -2767,6 +2831,7 @@ def _commit_spot_buy_acquisition_receipt(
     from app.gui.shared.allocation_persistence import get_position_allocations_path
     app_root = Path(__file__).resolve().parents[4]
     allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+    from .spot_inventory_namespace_runtime import namespace_for_ledger
     path = _intent_path(self)
     flag = "entry_reconciled" if opo else "portfolio_reconciled"
     signature_field = "entry_recovery_signature" if opo else "portfolio_recovery_signature"
@@ -2779,6 +2844,7 @@ def _commit_spot_buy_acquisition_receipt(
             raise LiveTradingSafetyError("Spot BUY intent changed during acquisition confirmation.")
         if not _has_durable_spot_buy_allocation(
             current, portfolio_signature=portfolio_signature, portfolio_quantity=portfolio_quantity,
+            namespace=namespace_for_ledger(self, ledger),
         ):
             raise LiveTradingSafetyError("Matching durable Spot BUY acquisition history is no longer present.")
         already = current.get(flag) is True
@@ -2795,6 +2861,7 @@ def _commit_spot_buy_acquisition_receipt(
     return {"client_order_id": str(record["client_order_id"]), flag: True, "already_reconciled": already}
 
 
+@_owned_inventory_confirmation
 def _mark_order_intent_portfolio_reconciled(
     self, client_order_id: str, *, portfolio_signature: str, portfolio_quantity: object = None,
 ) -> dict[str, object]:
@@ -2847,10 +2914,12 @@ def _mark_order_intent_portfolio_reconciled(
     has_durable_proof = (
         _has_durable_spot_buy_allocation(
             record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
+            namespace=namespace_for_current_ledger(self),
         )
         if record.get("side") == "BUY"
         else _has_durable_spot_sell_allocation(
             record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
+            namespace=namespace_for_current_ledger(self),
         )
     )
     if not has_durable_proof:
@@ -2870,6 +2939,7 @@ def _mark_order_intent_portfolio_reconciled(
     return {"client_order_id": client_order_id, "portfolio_reconciled": True, "already_reconciled": False}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_entry_reconciled(
     self, list_client_order_id: str, *, portfolio_signature: str, portfolio_quantity: object,
 ) -> dict[str, object]:
@@ -2910,6 +2980,7 @@ def _mark_spot_opo_entry_reconciled(
     )
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_exit_reconciled(
     self, list_client_order_id: str, *, portfolio_signature: str, portfolio_quantity: object,
 ) -> dict[str, object]:
@@ -2951,6 +3022,7 @@ def _mark_spot_opo_exit_reconciled(
 
     if not has_durable_spot_opo_stop_exit(
         record, signature=portfolio_signature, portfolio_quantity=expected_quantity,
+        namespace=namespace_for_current_ledger(self),
     ):
         raise LiveTradingSafetyError("A matching durable OPO stop SELL allocation proof was not found.")
     if record.get("exit_reconciled") is True:

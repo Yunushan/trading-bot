@@ -20,6 +20,8 @@ from .order_intent_runtime import (
 from .order_intent_store import ledger_transaction, ledger_transactions
 from .spot_allocation_generation_runtime import canonical_spot_buy_metadata
 from .spot_fill_recovery_runtime import _persist_spot_buy_allocation_unlocked
+from .spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY, require_namespace
+from .spot_inventory_namespace_runtime import namespace_for_ledger, assert_single_unpublished_acquisition
 
 
 _TERMINAL = {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
@@ -31,7 +33,8 @@ def capture_spot_buy_recovery_binding(owner) -> dict:
     binding = _intent_binding(owner)
     with ledger_transaction(path):
         ledger = _read_ledger(path, expected_binding=binding)
-    return {"intent_path": path, "binding": dict(binding), "store_id": ledger["store_id"]}
+    return {"intent_path": path, "binding": dict(binding), "store_id": ledger["store_id"],
+            "namespace": namespace_for_ledger(owner, ledger)}
 
 
 def _validate_terminal_fill(record: Mapping, fill: Mapping, metadata: Mapping) -> Decimal:
@@ -93,9 +96,18 @@ def publish_spot_buy_recovery(
         if ledger["store_id"] != expected_store_id or not isinstance(record, dict) or record != expected_record:
             raise LiveTradingSafetyError("Spot BUY recovery ledger changed before publication.")
         quantity = _validate_terminal_fill(record, fill, metadata)
-        result = _persist_spot_buy_allocation_unlocked(allocation_path, fill)
+        from app.gui.shared.allocation_persistence import _decode, _read_receipt
+        namespace = namespace_for_ledger(owner, ledger)
+        raw, _identity = _read_receipt(allocation_path)
+        snapshot = _decode(raw, "Live") if raw is not None else None
+        if snapshot is None or ACCOUNT_NAMESPACE_KEY not in snapshot:
+            assert_single_unpublished_acquisition(ledger, record)
+            require_namespace(snapshot, namespace, allow_empty=True)
+        else:
+            require_namespace(snapshot, namespace)
+        result = _persist_spot_buy_allocation_unlocked(allocation_path, fill, namespace=namespace)
         if not _has_durable_spot_buy_allocation(
-            record, portfolio_signature=metadata["signature"], portfolio_quantity=quantity,
+            record, portfolio_signature=metadata["signature"], portfolio_quantity=quantity, namespace=namespace,
         ):
             raise LiveTradingSafetyError("Spot BUY recovery has no matching durable acquisition.")
         return cast(bool, result)
@@ -139,7 +151,7 @@ def confirm_spot_buy_recovery(
         quantity = _validate_terminal_fill(current, fill, metadata)
         signature = str(metadata["signature"])
         if not _has_durable_spot_buy_allocation(
-            current, portfolio_signature=signature, portfolio_quantity=quantity,
+            current, portfolio_signature=signature, portfolio_quantity=quantity, namespace=namespace_for_ledger(owner, ledger),
         ):
             raise LiveTradingSafetyError("Spot BUY recovery has no matching durable acquisition for confirmation.")
         already = current.get("portfolio_reconciled") is True

@@ -16,6 +16,12 @@ from unittest.mock import patch
 
 from app.integrations.exchanges.binance.orders import order_intent_runtime as intents
 from app.integrations.exchanges.binance.orders import order_intent_admin as admin_cli
+from app.gui.shared import allocation_persistence as allocations
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import (
+    namespace_for_owner, assert_bootstrap_empty_ledger,
+)
+from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transactions
 from app.integrations.exchanges.binance.orders.order_intent_provisioning import (
     PROVISION_ACK,
     migrate_spot_order_intent_store,
@@ -94,6 +100,8 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         self.home = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.enterContext(patch.object(Path, "home", return_value=self.home))
         self.enterContext(patch.object(socket.socket, "connect", side_effect=AssertionError("No network calls")))
+        self.allocation_path = self.home / "allocations.json"
+        self.enterContext(patch.object(allocations, "get_position_allocations_path", return_value=self.allocation_path))
         self.audit_a = self.home / "first" / "audit.jsonl"
         self.audit_b = self.home / "second" / "audit.jsonl"
         self.audit_a.parent.mkdir()
@@ -105,6 +113,17 @@ class SpotExecutionOwnerTests(unittest.TestCase):
 
     def provision(self) -> None:
         provision_order_intent_store(self.admin, acknowledgement=PROVISION_ACK)
+
+    def initialize_inventory(self, wrapper) -> None:
+        owner = wrapper._ensure_spot_execution_owner()
+        namespace = namespace_for_owner(wrapper)
+        with ledger_transactions(owner.ledger_path, self.allocation_path):
+            assert_bootstrap_empty_ledger(wrapper, expected_store_id=owner.store_id)
+            self.assertFalse(self.allocation_path.exists())
+            allocations._write_snapshot(self.allocation_path, {
+                "version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {},
+                ACCOUNT_NAMESPACE_KEY: namespace,
+            })
 
     def close_owner(self, wrapper: _SpotWrapper) -> None:
         owner = getattr(wrapper, "_spot_execution_owner", None)
@@ -119,6 +138,7 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         self.addCleanup(self.close_owner, second)
         self.assertEqual(self.path, intents._intent_path(first))
         self.assertEqual(self.path, intents._intent_path(second))
+        self.initialize_inventory(first)
         result = first.place_spot_market_order("BTCUSDT", "BUY", quantity=0.1, price=100.0)
         self.assertTrue(result["ok"], result)
         blocked = second.place_spot_market_order("BTCUSDT", "BUY", quantity=0.1, price=100.0)
@@ -173,6 +193,7 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         self.provision()
         original = _SpotWrapper(self.audit_a)
         self.addCleanup(self.close_owner, original)
+        self.initialize_inventory(original)
         result = original.place_spot_market_order("BTCUSDT", "BUY", quantity=0.1, price=100.0)
         self.assertTrue(result["ok"], result)
         self.close_owner(original)
@@ -227,6 +248,7 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         self.provision()
         wrapper = _SpotWrapper(self.audit_a)
         self.addCleanup(self.close_owner, wrapper)
+        self.initialize_inventory(wrapper)
         intents._begin_order_intent(wrapper, PARAMS, market="spot", source="offline-test")
         self.close_owner(wrapper)
         ledger_before = self.path.read_bytes()
@@ -406,6 +428,7 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         self.provision()
         wrapper = _SpotWrapper(self.audit_a)
         self.addCleanup(self.close_owner, wrapper)
+        self.initialize_inventory(wrapper)
         intents._begin_order_intent(wrapper, PARAMS, market="spot", source="offline-test")
         marker_path = owner_marker_path(self.path)
         original = marker_path.read_text(encoding="utf-8")

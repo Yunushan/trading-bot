@@ -27,11 +27,13 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
         self.addCleanup(self.actual.doCleanups)
         old_window = self.actual._load_window()
         event, self.fill = self.actual._buy(base_fee="0.00004")
+        self.initial_bytes = self.actual.fixture.allocation_path.read_bytes()
+        self.namespace = deepcopy(self.actual.namespace)
         self.actual._dispatch(old_window, event, saver=lambda *_args, **_kwargs: False)
         self.client_id = self.fill["client_order_id"]
         self.path = self.actual.fixture.allocation_path
         self.intent_path = intents._intent_path(self.actual.wrapper)
-        self.assertFalse(self.path.exists())
+        self.assertEqual(self.initial_bytes, self.path.read_bytes())
         self.actual.wrapper._spot_execution_owner.close()
         self.actual.wrapper = self.actual.fixture.wrapper()
         self.wrapper = self.actual.wrapper
@@ -78,7 +80,7 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
         return session
 
     def assert_fenced_without_publication(self):
-        self.assertFalse(self.path.exists())
+        self.assertEqual(self.initial_bytes, self.path.read_bytes())
         current = self.wrapper._get_order_intent_record(self.client_id)
         self.assertEqual(self.fill["signature"], current["primary_fill_signature"])
         self.assertIsNot(current.get("portfolio_reconciled"), True)
@@ -115,7 +117,7 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
                 scenario = type(self)()
                 scenario.setUp()
                 try:
-                    fills.persist_spot_buy_allocation(scenario.path, scenario.fill)
+                    fills.persist_spot_buy_allocation(scenario.path, scenario.fill, namespace=scenario.namespace)
                     scenario.actual._sell(consumed)
                     before = scenario.path.read_bytes()
                     scenario.reload()
@@ -208,7 +210,8 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
                     item, source = scenario.prepare()
                     if change == "file":
                         write_ledger(scenario.path, {"version": 1, "mode": "Live", "entry_allocations": {},
-                                                     "open_position_records": {}, "timestamp": 1})
+                                                     "open_position_records": {}, "timestamp": 1,
+                                                     "spot_account_namespace": deepcopy(scenario.namespace)})
                     elif change == "session":
                         source.session.invalidate("Changed session")
                     elif change == "maps":
@@ -290,7 +293,7 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
                 scenario = type(self)()
                 scenario.setUp()
                 try:
-                    fills.persist_spot_buy_allocation(scenario.path, scenario.fill)
+                    fills.persist_spot_buy_allocation(scenario.path, scenario.fill, namespace=scenario.namespace)
                     scenario.reload()
                     item, source = scenario.prepare()
                     before = scenario.path.read_bytes()
@@ -329,7 +332,7 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
                         yield
                     with self.assertRaisesRegex(LiveTradingSafetyError, "context changed"):
                         scenario.recover(item, source, handoff=changed_handoff)
-                    self.assertFalse(scenario.path.exists())
+                    self.assertEqual(scenario.initial_bytes, scenario.path.read_bytes())
                     self.assertEqual(1, len(scenario.actual.market_posts))
                 finally:
                     scenario.doCleanups()
@@ -357,7 +360,7 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
                 scenario = type(self)()
                 scenario.setUp()
                 try:
-                    fills.persist_spot_buy_allocation(scenario.path, scenario.fill)
+                    fills.persist_spot_buy_allocation(scenario.path, scenario.fill, namespace=scenario.namespace)
                     if change == "consumption":
                         scenario.actual._sell("0.04")
                     payload = json.loads(scenario.path.read_text())
@@ -447,7 +450,7 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
                 scenario = type(self)()
                 scenario.setUp()
                 try:
-                    fills.persist_spot_buy_allocation(scenario.path, scenario.fill)
+                    fills.persist_spot_buy_allocation(scenario.path, scenario.fill, namespace=scenario.namespace)
                     scenario.actual._sell("0.04")
                     payload = json.loads(scenario.path.read_text())
                     record = payload["open_position_records"]["BTCUSDT:L"]
@@ -486,7 +489,7 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
         self.assertEqual(1, len(self.actual.market_posts))
 
     def test_current_projection_validation_preserves_original_strategy_annotations(self):
-        fills.persist_spot_buy_allocation(self.path, self.fill)
+        fills.persist_spot_buy_allocation(self.path, self.fill, namespace=self.namespace)
         self.actual._sell("0.04")
         payload = json.loads(self.path.read_text())
         row = payload["entry_allocations"]["BTCUSDT:L"][0]
@@ -551,6 +554,6 @@ class SpotDesktopBuyRecoveryTests(unittest.TestCase):
         self.assertEqual(1, discovery.unresolved_count)
         self.assertEqual(1, discovery.unsupported_count)
         self.assertEqual((), discovery.items)
-        self.assertFalse(self.path.exists())
+        self.assertEqual(self.initial_bytes, self.path.read_bytes())
         self.assertIsNot(self.wrapper._get_order_intent_record(self.client_id).get("portfolio_reconciled"), True)
         self.assertEqual(1, len(self.actual.market_posts))

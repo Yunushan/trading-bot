@@ -25,6 +25,8 @@ from typing import Any, cast
 from unittest.mock import patch
 
 from app.settings.live_safety import LiveTradingSafetyError
+from app.gui.shared import allocation_persistence
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import namespace_for_owner
 from app.integrations.exchanges.binance.orders import order_intent_runtime as runtime
 from app.integrations.exchanges.binance.orders import order_intent_store as locks
 from app.integrations.exchanges.binance.orders import spot_indexed_intent_store as backend
@@ -145,6 +147,11 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
                                                    "fresh complete verification within a pinned file-change receipt")}
     with ExitStack() as stack:
         stack.enter_context(patch.object(Path, "home", return_value=home))
+        allocation_path = root / "synthetic-live-allocations.json"
+        stack.enter_context(patch.object(allocation_persistence, "get_position_allocations_path",
+                                        return_value=allocation_path))
+        stack.enter_context(patch.object(allocation_persistence, "_get_allocations_file_path",
+                                        return_value=allocation_path))
         for method in ("connect", "connect_ex"):
             stack.enter_context(patch.object(socket.socket, method, side_effect=AssertionError("Offline benchmark")))
         stack.enter_context(patch.object(socket, "create_connection", side_effect=AssertionError("Offline benchmark")))
@@ -175,6 +182,13 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
         del records, payload
         gc.collect()
         try:
+            # This offline fixture authors its synthetic inventory header explicitly;
+            # product first-use bootstrap may not claim a nonempty historical ledger.
+            inventory_namespace = namespace_for_owner(owner)
+            _atomic_report(allocation_path, {"version": 1, "mode": "Live",
+                                            "spot_account_namespace": inventory_namespace,
+                                            "entry_allocations": {}, "open_position_records": {}})
+            result["synthetic_inventory_namespace"] = inventory_namespace
             result["stage"] = "warm_measurement"
             _checkpoint(result, checkpoint)
             traffic = _Traffic()
@@ -319,6 +333,7 @@ def main(argv=None):
     evidence = Path(tempfile.mkdtemp(prefix="trading-bot-indexed-capacity-evidence-")).resolve()
     source = baseline.source_identity()
     source["indexed_benchmark_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    source["allocation_reader_sha256"] = hashlib.sha256(Path(allocation_persistence.__file__).read_bytes()).hexdigest()
     report = {"source": source, "hardware": baseline.hardware_identity(), "results": [],
               "samples_are_descriptive": True, "source_unchanged": None,
               "started_at": datetime.now(timezone.utc).isoformat()}
@@ -371,6 +386,7 @@ def main(argv=None):
             checkpoint(row)
     final_source = baseline.source_identity()
     final_source["indexed_benchmark_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    final_source["allocation_reader_sha256"] = hashlib.sha256(Path(allocation_persistence.__file__).read_bytes()).hexdigest()
     report["source_unchanged"] = report["source"] == final_source
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     path = report_path

@@ -7,6 +7,7 @@ from PyQt6 import QtCore
 from app.integrations.exchanges.binance import BinanceWrapper
 from app.security.redaction import redact_text
 from app.gui.shared.allocation_reconciliation import allocation_publication_pending
+from app.gui.shared.allocation_persistence import non_spot_desktop_exposure_allowed
 from app.gui.shared.trade_callback_origin import (
     capture_trade_callback_origin, check_trade_callback_origin, owned_live_spot_wrapper,
 )
@@ -238,7 +239,9 @@ def _create_binance_wrapper(
         connector_backend=backend,
         **kwargs,
     )
-    wrapper._desktop_allocation_admission_check = lambda: not allocation_publication_pending(self)
+    wrapper._desktop_allocation_admission_check = lambda: (
+        not allocation_publication_pending(self) and non_spot_desktop_exposure_allowed(self, wrapper)
+    )
     if owned_live_spot_wrapper(wrapper):
         wrapper._desktop_trade_origin_capture = lambda: capture_trade_callback_origin(self, wrapper)
         wrapper._desktop_spot_entry_capture = lambda params: capture_trade_callback_origin(self, wrapper, params)

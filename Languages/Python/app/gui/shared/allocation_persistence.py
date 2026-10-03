@@ -11,6 +11,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any, cast
 from collections.abc import Mapping
 
 from app.integrations.exchanges.binance.orders.spot_allocation_generation_runtime import (
@@ -24,6 +25,10 @@ from app.integrations.exchanges.binance.orders.order_intent_store import (
     write_ledger,
 )
 from app.settings.live_safety import LiveTradingSafetyError
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace import (
+    ACCOUNT_NAMESPACE_KEY, is_strictly_empty_live_snapshot, make_namespace,
+    require_namespace, validate_namespace,
+)
 
 _ALLOCATIONS_FILE_NAME = ".trading_bot_allocations.json"
 _ALLOCATIONS_DIR_NAME = "data"
@@ -179,6 +184,117 @@ def get_position_allocations_path(this_file: Path) -> Path:
     return _get_allocations_file_path(this_file)
 
 
+def initialize_spot_allocation_namespace(window, wrapper) -> bool:
+    """Bind an empty source, then actually reload both maps before entry capture."""
+    from .trade_callback_origin import owned_live_spot_wrapper
+    from app.integrations.exchanges.binance.orders.order_intent_runtime import _intent_path
+    from app.integrations.exchanges.binance.orders.spot_execution_owner import SpotExecutionOwner
+    from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import assert_bootstrap_empty_ledger
+
+    session = getattr(window, "_allocation_snapshot_session", None)
+    if not isinstance(session, AllocationSnapshotSession) or not owned_live_spot_wrapper(wrapper):
+        raise LiveTradingSafetyError("Spot inventory namespace requires the current loaded account.")
+    owner = getattr(wrapper, "_spot_execution_owner", None)
+    if not isinstance(owner, SpotExecutionOwner):
+        raise LiveTradingSafetyError("Spot inventory namespace requires held execution ownership.")
+    uid = wrapper._resolve_spot_account_uid()
+    owner.assert_held(uid=uid, environment=owner.environment,
+                      credential_fingerprint=owner.credential_fingerprint, owner_wrapper=wrapper)
+    expected = make_namespace(uid, owner.store_id)
+    app_root = Path(__file__).resolve().parents[2]
+    this_file = app_root / "gui" / "window_shell.py"
+    path, intent_path = get_position_allocations_path(this_file), _intent_path(wrapper)
+    captured = session._capture()
+    maps = (getattr(window, "_entry_allocations", None), getattr(window, "_open_position_records", None))
+    if not all(isinstance(value, dict) for value in maps):
+        raise LiveTradingSafetyError("Spot inventory namespace actual maps are unavailable.")
+    original_maps = cast(tuple[dict, dict], maps)
+    context = (wrapper.api_key, wrapper.api_secret, wrapper.mode, wrapper.account_type, wrapper.client,
+               getattr(window, "_account_observation_generation", 0))
+
+    def assert_original(*, ready: bool = True) -> None:
+        bound_wrapper = cast(Any, wrapper)
+        bound_owner = cast(SpotExecutionOwner, owner)
+        bound_session = cast(AllocationSnapshotSession, session)
+        if (getattr(window, "shared_binance", None) is not wrapper
+                or getattr(window, "_allocation_snapshot_session", None) is not session
+                or getattr(wrapper, "_spot_execution_owner", None) is not owner
+                or getattr(wrapper, "_spot_execution_revoked", False)
+                or window.mode_combo.currentText() != "Live"
+                or (bound_wrapper.api_key, bound_wrapper.api_secret, bound_wrapper.mode, bound_wrapper.account_type, bound_wrapper.client,
+                    getattr(window, "_account_observation_generation", 0)) != context
+                or getattr(window, "_entry_allocations", None) is not maps[0]
+                or getattr(window, "_open_position_records", None) is not maps[1]
+                or bound_owner.ledger_path != intent_path):
+            raise LiveTradingSafetyError("Spot inventory namespace account or maps changed.")
+        bound_owner.assert_held(uid=uid, environment=bound_owner.environment,
+                                credential_fingerprint=bound_owner.credential_fingerprint, owner_wrapper=wrapper)
+        if ready and (bound_session._capture() != captured or not bound_session.matches_loaded_maps(*original_maps)):
+            raise LiveTradingSafetyError("Spot inventory namespace loaded source changed.")
+
+    if not captured[6] or captured[0] != path or captured[1] != "Live":
+        raise LiveTradingSafetyError("Spot inventory namespace has no loaded canonical Live source.")
+    with ledger_transactions(intent_path, path), session._mutex:
+        assert_original()
+        if _read_receipt(path) != (captured[2], captured[3]):
+            raise LiveTradingSafetyError("Spot inventory namespace source changed after loading.")
+        previous = captured[4]
+        if previous is not None and ACCOUNT_NAMESPACE_KEY in previous:
+            require_namespace(previous, expected)
+            return False
+        if not is_strictly_empty_live_snapshot(previous):
+            raise LiveTradingSafetyError("Unscoped Spot inventory requires explicit reconciliation.")
+        assert_bootstrap_empty_ledger(wrapper, expected_store_id=owner.store_id)
+        data = copy.deepcopy(previous) if previous is not None else {
+            "version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {},
+        }
+        data[ACCOUNT_NAMESPACE_KEY] = expected
+        session.invalidate("Spot inventory namespace initialization requires an actual reload")
+        _write_snapshot(path, data)
+        committed = _read_receipt(path)
+    # This loader obtains a new receipt and returns both actual maps. It never
+    # adopts old maps into a freshened session or calls a window/venue callback.
+    assert_original(ready=False)
+    ticket = AllocationSnapshotLoadTicket()
+    loaded_maps = load_position_allocations(this_file=this_file, mode="Live", session=session, load_ticket=ticket)
+    with ledger_transactions(intent_path, path), session._mutex:
+        assert_original(ready=False)
+        if _read_receipt(path) != committed:
+            session.invalidate("Spot inventory namespace changed during reload")
+            raise LiveTradingSafetyError("Spot inventory namespace changed during reload.")
+        current = session._capture()
+        if (current[0:4] != (path, "Live", committed[0], committed[1])
+                or current[4] != data):
+            session.invalidate("Spot inventory namespace reload did not retain its source")
+            raise LiveTradingSafetyError("Spot inventory namespace reload lost its exact source.")
+        require_namespace(current[4], expected)
+        with session.loaded_handoff(ticket) as accepted:
+            if not accepted:
+                raise LiveTradingSafetyError("Spot inventory namespace map handoff was not accepted.")
+            window._entry_allocations, window._open_position_records = loaded_maps
+    return True
+
+
+def non_spot_desktop_exposure_allowed(window, wrapper) -> bool:
+    """Inspect current storage before non-Spot exposure can reuse a Spot portfolio."""
+    from .trade_callback_origin import owned_live_spot_wrapper
+    if owned_live_spot_wrapper(wrapper):
+        return True  # Actual account namespace is checked by entry capture/handoff.
+    path = get_position_allocations_path(Path(__file__).resolve().parents[2] / "gui" / "window_shell.py")
+    try:
+        with ledger_transaction(path):
+            raw, _identity = _read_receipt(path)
+            if raw is None:
+                return True
+            snapshot = _decode(raw, None)
+            return ACCOUNT_NAMESPACE_KEY not in snapshot and not (
+                snapshot["mode"] == "Live" and any(is_recovery_owned_allocation(row)
+                    for rows in snapshot["entry_allocations"].values() for row in rows)
+            )
+    except _ALLOCATION_STATE_ERRORS:
+        return False
+
+
 def is_recovery_owned_allocation(row: object) -> bool:
     """Malformed proof fields also fence ordinary GUI mutation and cleanup."""
     return isinstance(row, dict) and (
@@ -281,6 +397,10 @@ def _validate_snapshot(data: dict, mode: str | None) -> None:
         raise ValueError("malformed allocation snapshot")
     if mode is not None and data["mode"] != mode:
         raise ValueError("allocation snapshot mode mismatch")
+    if ACCOUNT_NAMESPACE_KEY in data:
+        validate_namespace(data[ACCOUNT_NAMESPACE_KEY])
+        if data["mode"] != "Live":
+            raise ValueError("Spot inventory namespace requires Live mode")
     # Check all fields, including extensions, without silently dropping any field.
     json.dumps(data, allow_nan=False)
     _validate_json_keys(data)
@@ -394,6 +514,8 @@ def _protect_owned_rows(previous: dict, candidate: dict, *, position_transition_
 def _validate_owned_spot_buy_candidate(context, captured, file_path, previous, candidate, event_receipt) -> None:
     if not isinstance(context, SpotBuyPublicationContext) or captured is None or previous is None and captured[2] is not None:
         raise ValueError("owned Spot BUY publication context is invalid")
+    require_namespace(previous, context.namespace)
+    require_namespace(candidate, context.namespace)
     source = context.entry_source_receipt
     if not isinstance(source, SpotBuyAdmissionReceipt) or (
         context.allocation_path, source.allocation_path, source.mode, source.raw, source.identity, source.generation
@@ -486,6 +608,15 @@ def save_position_allocations(
         saved_mode = mode or (previous["mode"] if previous is not None else "unknown")
         data: dict = copy.deepcopy(previous) if previous is not None else {"version": 1}
         data.update({"mode": saved_mode, "timestamp": time.time(), "entry_allocations": allocations, "open_position_records": records})
+        if owned_spot_buy is None and (
+            ACCOUNT_NAMESPACE_KEY in data or previous is not None and ACCOUNT_NAMESPACE_KEY in previous
+        ):
+            raise ValueError("Bound Spot inventory publication requires its owned account authority")
+        if owned_spot_buy is None and saved_mode == "Live":
+            old_allocations = (previous or {}).get("entry_allocations", {})
+            if any(is_recovery_owned_allocation(row) and row not in old_allocations.get(key, [])
+                   for key, rows in allocations.items() for row in rows):
+                raise ValueError("New Spot acquisition proof requires owned publication authority")
         duplicate_event = False
         if event_receipt is not None:
             _validate_event_receipt(event_receipt)

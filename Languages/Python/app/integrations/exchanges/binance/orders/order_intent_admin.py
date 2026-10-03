@@ -137,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             api_secret = os.environ.get(args.api_secret_env)
             transport = SpotUserDataTransport(owner.api_key, api_secret)
             owner._operator_spot_account_uid = transport.get_account_uid()
+            owner.api_secret = api_secret
             owner.client = transport
             if args.action == "cancel-spot-opos":
                 from .spot_user_data_admin_runtime import SpotOrderListCancellationTransport
@@ -149,6 +150,9 @@ def main(argv: list[str] | None = None) -> int:
                     get_order=transport.get_order,
                     cancel_order_list=cancellation_transport.cancel_order_list,
                 )
+            owner._verified_spot_account_context = (owner.api_key, owner.api_secret, "live", owner.client,
+                                                    owner._operator_spot_account_uid)
+            from .spot_inventory_namespace_runtime import namespace_for_current_ledger, publish_owned_spot_fill
             owner._query_order_intent_exchange = MethodType(_query_order_intent_exchange, owner)
             owner._mark_order_intent_portfolio_reconciled = MethodType(
                 _mark_order_intent_portfolio_reconciled, owner,
@@ -181,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 _mark_spot_opo_residual_stop_no_fill, owner,
             )
             with owner_administration_lock(_intent_path(owner)):
+                owner._spot_inventory_administration_path = _intent_path(owner)
                 if args.action == "recover-spot-market-fills":
                     from .spot_buy_admin_recovery_runtime import (
                         capture_spot_buy_recovery_binding, confirm_spot_buy_recovery, publish_spot_buy_recovery,
@@ -246,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
                         symbol=str(intent.get("symbol") or ""),
                         list_client_order_id=target_id,
                         expected_quantity=intent.get("residual_rearm_quantity"),
+                        namespace=namespace_for_current_ledger(owner),
                     )
                     if (
                         baseline.get("signature") != intent.get("residual_rearm_signature")
@@ -407,7 +413,9 @@ def main(argv: list[str] | None = None) -> int:
                                     intent, working_order, buy_trades,
                                     base_asset=base_asset, quote_asset=quote_asset,
                                 )
-                                persist_spot_buy_allocation(allocation_path, buy_fill)
+                                publish_owned_spot_fill(
+                                    owner, allocation_path, buy_fill, expected_record=intent, operation=persist_spot_buy_allocation,
+                                )
                                 refreshed = reconcile_spot_opo_intent(owner, str(client_order_id), force=True)
                                 intent = _get_order_intent_record(owner, str(client_order_id))
                                 if not isinstance(intent, dict) or refreshed.get("error"):
@@ -484,7 +492,9 @@ def main(argv: list[str] | None = None) -> int:
                                     base_asset=base_asset,
                                     quote_asset=quote_asset,
                                 )
-                                persist_spot_opo_residual_stop_allocation(allocation_path, residual_fill)
+                                publish_owned_spot_fill(
+                                    owner, allocation_path, residual_fill, expected_record=intent, operation=persist_spot_opo_residual_stop_allocation,
+                                )
                                 pre_stop_quantity = Decimal(str(intent.get("residual_stop_pre_order_quantity")))
                                 remaining_quantity = pre_stop_quantity - Decimal(str(residual_fill["portfolio_qty"]))
                                 if remaining_quantity < 0:
@@ -516,6 +526,7 @@ def main(argv: list[str] | None = None) -> int:
                                         symbol=symbol,
                                         list_client_order_id=str(client_order_id),
                                         expected_quantity=intent.get("entry_portfolio_quantity"),
+                                        namespace=namespace_for_current_ledger(owner),
                                     )
                                     owner._mark_spot_opo_strategy_exit_residual_required(
                                         str(client_order_id),
@@ -577,6 +588,7 @@ def main(argv: list[str] | None = None) -> int:
                                             symbol=symbol,
                                             list_client_order_id=str(client_order_id),
                                             expected_quantity=intent.get("strategy_exit_pre_order_quantity"),
+                                            namespace=namespace_for_current_ledger(owner),
                                         )
                                         owner._mark_spot_opo_strategy_exit_residual_required(
                                             str(client_order_id),
@@ -606,7 +618,9 @@ def main(argv: list[str] | None = None) -> int:
                                         and consumed_quantity != entry_quantity
                                     ):
                                         raise LiveTradingSafetyError("Linked SELL fee-aware execution does not leave a verifiable residual.")
-                                    persist_spot_opo_strategy_sell_allocation(allocation_path, exit_fill)
+                                    publish_owned_spot_fill(
+                                        owner, allocation_path, exit_fill, expected_record=intent, operation=persist_spot_opo_strategy_sell_allocation,
+                                    )
                                     recovered_trade_count += int(exit_fill["trade_count"])
                                     if exit_evidence.get("status") == "FILLED":
                                         _mark_spot_opo_strategy_exit_reconciled(
@@ -626,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
                                             symbol=symbol,
                                             list_client_order_id=str(client_order_id),
                                             expected_quantity=remaining_quantity,
+                                            namespace=namespace_for_current_ledger(owner),
                                         )
                                         owner._mark_spot_opo_strategy_exit_residual_required(
                                             str(client_order_id),
@@ -658,7 +673,9 @@ def main(argv: list[str] | None = None) -> int:
                                     intent, stop_order, stop_trades,
                                     base_asset=base_asset, quote_asset=quote_asset,
                                 )
-                                persist_spot_opo_stop_sell_allocation(allocation_path, stop_fill)
+                                publish_owned_spot_fill(
+                                    owner, allocation_path, stop_fill, expected_record=intent, operation=persist_spot_opo_stop_sell_allocation,
+                                )
                                 refreshed = reconcile_spot_opo_intent(owner, str(client_order_id), force=True)
                                 if (
                                     refreshed.get("protection_state") != "triggered"
@@ -771,7 +788,9 @@ def main(argv: list[str] | None = None) -> int:
                                     expected_intent_path=buy_recovery_binding["intent_path"],
                                 )
                             else:
-                                persist_spot_sell_allocation(allocation_path, fill)
+                                publish_owned_spot_fill(
+                                    owner, allocation_path, fill, expected_record=intent, operation=persist_spot_sell_allocation,
+                                )
                                 owner._mark_order_intent_portfolio_reconciled(
                                     str(client_order_id),
                                     portfolio_signature=str(fill["signature"]),

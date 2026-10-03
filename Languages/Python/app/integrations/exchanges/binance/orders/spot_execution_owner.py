@@ -9,6 +9,7 @@ import threading
 import weakref
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
@@ -117,6 +118,32 @@ def _write_marker(path: Path, marker: Mapping[str, object], *, state: str, incre
         ) from exc
 
 
+class _AdministrationToken:
+    def __init__(self, path: Path, fd: int) -> None:
+        self.path, self.fd = path, fd
+        self.thread = threading.current_thread()
+        self.owner_pid = os.getpid()
+        self.active = True
+
+
+_ADMINISTRATION: ContextVar[_AdministrationToken | None] = ContextVar("spot_owner_administration", default=None)
+
+
+def assert_owner_administration_held(ledger_path: Path) -> None:
+    """Require this thread's actual administration exclusion, including unchanged OS lock."""
+    token = _ADMINISTRATION.get()
+    path = owner_lock_path(ledger_path)
+    if (token is None or not token.active or token.thread is not threading.current_thread()
+            or token.owner_pid != os.getpid() or token.path != path):
+        raise LiveTradingSafetyError("Spot inventory requires current owner administration exclusion.")
+    try:
+        held, current = os.fstat(token.fd), os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise LiveTradingSafetyError("Spot administration exclusion cannot be verified.") from exc
+    if not stat.S_ISREG(current.st_mode) or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+        raise LiveTradingSafetyError("Spot administration exclusion lock was replaced.")
+
+
 @contextmanager
 def owner_administration_lock(ledger_path: Path) -> Iterator[None]:
     """Serialize offline provisioning/rearming against an active owner."""
@@ -125,13 +152,20 @@ def owner_administration_lock(ledger_path: Path) -> Iterator[None]:
         if path in _SESSIONS:
             raise LiveTradingSafetyError("Spot execution owner is active; stop it before administration.")
         fd = _lock_file(path)
+    administration = _AdministrationToken(path, fd)
+    context_token = _ADMINISTRATION.set(administration)
     try:
         yield
     finally:
+        administration.active = False
         try:
-            _unlock(fd)
+            _ADMINISTRATION.reset(context_token)
         finally:
-            os.close(fd)
+            try:
+                if administration.owner_pid == os.getpid():
+                    _unlock(fd)
+            finally:
+                os.close(fd)
 
 
 def provision_owner_marker(ledger_path: Path, *, uid: int, environment: str, store_id: str) -> None:
@@ -292,6 +326,14 @@ class SpotExecutionOwner:
             yield
 
     def close(self) -> None:
+        if self.pid != os.getpid():
+            # A fork child closes only its descriptor copy. It must not acquire
+            # inherited mutexes, mutate shared marker bytes, or unlock the parent.
+            fd, self.fd = self.fd, None
+            self._finalizer.detach()
+            if fd is not None:
+                os.close(fd)
+            return
         with self._submission_lock, _SESSIONS_LOCK:
             if self.fd is None:
                 return
@@ -305,8 +347,10 @@ class SpotExecutionOwner:
                     _write_marker(self.marker_path, marker, state="recovery_required")
             finally:
                 _SESSIONS.pop(self.lock_path, None)
-                _unlock(fd)
-                os.close(fd)
+                try:
+                    _unlock(fd)
+                finally:
+                    os.close(fd)
 
 
 def claim_execution_owner(

@@ -71,6 +71,7 @@ class SpotBuyPublicationContext:
     fill: dict = field(repr=False)
     entry_source_receipt: SpotBuyAdmissionReceipt = field(repr=False)
     expected_store_id: str
+    namespace: dict = field(repr=False)
 
 
 def spot_buy_target(params: Mapping) -> tuple[tuple[str, str], tuple[str, ...]]:
@@ -302,6 +303,10 @@ def validate_spot_buy_replay(row: Mapping, fill: Mapping) -> SpotBuyGenerationRe
 
 
 def validate_spot_buy_publication(context: SpotBuyPublicationContext, observed_intent: Mapping) -> None:
+    from .spot_inventory_namespace import validate_namespace
+    namespace = validate_namespace(context.namespace)
+    if namespace["store_id"] != context.expected_store_id:
+        raise LiveTradingSafetyError("Spot BUY publication inventory store changed.")
     fill, intent = context.fill, context.expected_intent
     metadata = canonical_spot_buy_metadata(fill)
     if observed_intent != intent or intent.get("state") != "accepted" or intent.get("market") != "spot" or intent.get("side") != "BUY":

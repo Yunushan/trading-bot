@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import socket
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from decimal import Decimal
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import urlencode, urlparse
 
 from app.integrations.exchanges.binance.orders import order_intent_admin as admin_cli
 from app.integrations.exchanges.binance.orders import order_intent_runtime as intents
@@ -22,7 +25,12 @@ from app.integrations.exchanges.binance.orders.order_intent_provisioning import 
     PROVISION_ACK,
     provision_order_intent_store,
 )
-from app.integrations.exchanges.binance.orders.spot_execution_owner import owner_marker_path
+from app.integrations.exchanges.binance.orders.spot_execution_owner import owner_administration_lock, owner_marker_path
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import (
+    assert_bootstrap_empty_ledger, namespace_for_current_ledger, namespace_for_owner,
+)
+from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transactions, write_ledger
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY, require_namespace
 
 
 UID = 12345678
@@ -71,6 +79,62 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         )
         self.path = intents._intent_path(self.admin_owner)
         provision_order_intent_store(self.admin_owner, acknowledgement=PROVISION_ACK)
+        self.allocation_path = self.home / "allocations.json"
+        self.enterContext(patch(
+            "app.gui.shared.allocation_persistence.get_position_allocations_path", return_value=self.allocation_path,
+        ))
+
+    def prebind_inventory(self, wrapper):
+        """Prebind only the actual canonical first-use source under its fresh full ledger."""
+        app_root = Path(intents.__file__).resolve().parents[4]
+        # Resolve through the patched canonical accessor, never infer ownership from rows.
+        from app.gui.shared import allocation_persistence
+        allocation_path = allocation_persistence.get_position_allocations_path(app_root / "gui" / "window_shell.py")
+        owner = wrapper._ensure_spot_execution_owner()
+        with ledger_transactions(owner.ledger_path, allocation_path):
+            namespace = namespace_for_owner(wrapper)
+            if allocation_path.exists():
+                require_namespace(json.loads(allocation_path.read_text(encoding="utf-8")), namespace)
+                return
+            assert_bootstrap_empty_ledger(wrapper, expected_store_id=owner.store_id)
+            write_ledger(allocation_path, {
+                "version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {},
+                ACCOUNT_NAMESPACE_KEY: namespace,
+            })
+
+    @contextmanager
+    def verified_admin_scope(self):
+        """Use the CLI's actual signed UID and administration exclusion for fixture marks."""
+        def signed_account(url, *, params, headers, timeout):
+            self.assertEqual("/api/v3/account", urlparse(url).path)
+            self.assertEqual({"X-MBX-APIKEY": API_KEY}, headers)
+            unsigned = {key: value for key, value in params.items() if key != "signature"}
+            expected = hmac.new(API_SECRET.encode(), urlencode(unsigned).encode("ascii"), hashlib.sha256).hexdigest()
+            self.assertTrue(hmac.compare_digest(expected, params["signature"]))
+            self.assertEqual((3, 8), timeout)
+            return SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"})
+
+        transport = spot_admin_runtime.SpotUserDataTransport(API_KEY, API_SECRET)
+        with patch.object(spot_admin_runtime.requests, "get", side_effect=signed_account) as request:
+            signed_uid = transport.get_account_uid()
+        self.assertEqual(1, request.call_count)
+        self.assertEqual(self.admin_owner._operator_spot_account_uid, signed_uid)
+        attributes = ("api_secret", "client", "_verified_spot_account_context", "_spot_inventory_administration_path")
+        missing = object()
+        previous = {name: getattr(self.admin_owner, name, missing) for name in attributes}
+        with owner_administration_lock(self.path):
+            self.admin_owner.api_secret = API_SECRET
+            self.admin_owner.client = transport
+            self.admin_owner._verified_spot_account_context = (API_KEY, API_SECRET, "live", transport, signed_uid)
+            self.admin_owner._spot_inventory_administration_path = self.path
+            try:
+                yield namespace_for_current_ledger(self.admin_owner)
+            finally:
+                for name, value in previous.items():
+                    if value is missing:
+                        delattr(self.admin_owner, name)
+                    else:
+                        setattr(self.admin_owner, name, value)
 
     def args(self) -> list[str]:
         return [
@@ -84,6 +148,7 @@ class SpotReconciliationAdminTests(unittest.TestCase):
     ) -> Path:
         wrapper = _SpotRuntime(self.audit_path)
         wrapper._ensure_spot_execution_owner()
+        self.prebind_inventory(wrapper)
         params = {**PARAMS, "type": order_type, "side": side, "quantity": quantity}
         intents._begin_order_intent(
             wrapper, params, market="spot", source="offline-reconciliation-test",
@@ -96,6 +161,7 @@ class SpotReconciliationAdminTests(unittest.TestCase):
 
     def set_up_pending_opo_after_owner_loss(self) -> tuple[Path, dict[str, str]]:
         wrapper = _SpotRuntime(self.audit_path)
+        self.prebind_inventory(wrapper)
         request = build_spot_opo_request(
             symbol="BTCUSDT",
             symbol_info={
@@ -121,7 +187,8 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         return path, request
 
     def set_up_active_recovered_opo(self, allocation_path: Path) -> tuple[Path, dict[str, str]]:
-        marker_path, request = self.set_up_pending_opo_after_owner_loss()
+        with patch("app.gui.shared.allocation_persistence.get_position_allocations_path", return_value=allocation_path):
+            marker_path, request = self.set_up_pending_opo_after_owner_loss()
         record = intents._get_order_intent_record(self.admin_owner, request["listClientOrderId"])
         self.assertIsInstance(record, dict)
         updated = intents._update_order_intent_by_id(
@@ -150,11 +217,11 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
             "fill_time_ms": 1780000000000, "signature": "c" * 64,
         }
-        with patch(
+        with self.verified_admin_scope() as namespace, patch(
             "app.gui.shared.allocation_persistence.get_position_allocations_path",
             return_value=allocation_path,
         ):
-            spot_recovery.persist_spot_buy_allocation(allocation_path, fill)
+            spot_recovery.persist_spot_buy_allocation(allocation_path, fill, namespace=namespace)
             intents._mark_spot_opo_entry_reconciled(
                 self.admin_owner, request["listClientOrderId"],
                 portfolio_signature="c" * 64, portfolio_quantity="0.0999",
@@ -165,187 +232,192 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         self, allocation_path: Path, *, exit_client_id: str, retry_attempt: bool = False,
     ) -> tuple[Path, dict[str, str]]:
         wrapper = _SpotRuntime(self.audit_path)
-        wrapper._ensure_spot_execution_owner()
-        self.addCleanup(wrapper._spot_execution_owner.close)
-        request = build_spot_opo_request(
-            symbol="BTCUSDT",
-            symbol_info={
-                "symbol": "BTCUSDT", "status": "TRADING", "quoteAsset": "USDT",
-                "isSpotTradingAllowed": True, "otoAllowed": True, "opoAllowed": True,
-                "filters": [
-                    {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "1000000", "tickSize": "0.01"},
-                    {"filterType": "LOT_SIZE", "minQty": "0.0001", "maxQty": "9000", "stepSize": "0.0001"},
-                    {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
-                ],
-            },
-            working_price="100", working_quantity="0.1", pending_stop_price="95",
-            list_client_order_id="recovery-exit-list", working_client_order_id="recovery-exit-buy",
-            pending_client_order_id="recovery-exit-stop",
-        )
-        intents._begin_spot_opo_intent(wrapper, request, source="offline-recovery-test")
-        intents._mark_spot_opo_submitted(wrapper, request["listClientOrderId"], via="offline-test")
-        current = intents._get_order_intent_record(wrapper, request["listClientOrderId"])
-        intents._update_order_intent_by_id(
-            wrapper,
-            request["listClientOrderId"],
-            state="accepted",
-            expected_record=current,
-            protection_state="active",
-            exchange_order_list_id=700,
-            list_status="EXEC_STARTED",
-            working_order_id=701,
-            working_status="FILLED",
-            working_executed_qty="0.1",
-            pending_order_id=702,
-            pending_status="NEW",
-            pending_executed_qty="0",
-            pending_original_qty="0.0999",
-        )
-        list_response, working, pending = self.opo_list_observation(
-            request, pending_status="NEW", list_status="EXEC_STARTED",
-        )
-        list_response["orderListId"] = 700
-        for child in list_response["orders"]:
-            child["orderId"] += 200
-        for child in (working, pending):
-            child["orderId"] += 200
-            child["orderListId"] = 700
-        children = {child["clientOrderId"]: child for child in (working, pending)}
-
-        def get_order_list(**kwargs):
-            self.assertEqual({"origClientOrderId": request["listClientOrderId"]}, kwargs)
-            return list_response
-
-        def get_order(**kwargs):
-            self.assertEqual("BTCUSDT", kwargs["symbol"])
-            return children[kwargs["origClientOrderId"]]
-
-        wrapper.client.get_order_list = get_order_list
-        wrapper.client.get_order = get_order
-        buy_fill = {
-            "symbol": "BTCUSDT", "client_order_id": request["listClientOrderId"],
-            "exchange_client_order_id": request["workingClientOrderId"], "order_id": 701,
-            "trade_ids": [801], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
-            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
-            "average_cost": str(Decimal("10") / Decimal("0.0999")),
-            "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
-            "fill_time_ms": 1780000000000, "signature": "d" * 64,
-        }
-        with patch(
-            "app.gui.shared.allocation_persistence.get_position_allocations_path",
-            return_value=allocation_path,
-        ):
-            spot_recovery.persist_spot_buy_allocation(allocation_path, buy_fill)
-            intents._mark_spot_opo_entry_reconciled(
-                wrapper, request["listClientOrderId"],
-                portfolio_signature="d" * 64, portfolio_quantity="0.0999",
-            )
-            baseline = spot_opo_allocation_baseline(
-                allocation_path,
+        with patch("app.gui.shared.allocation_persistence.get_position_allocations_path", return_value=allocation_path):
+            wrapper._ensure_spot_execution_owner()
+            self.prebind_inventory(wrapper)
+            self.addCleanup(wrapper._spot_execution_owner.close)
+            request = build_spot_opo_request(
                 symbol="BTCUSDT",
-                list_client_order_id=request["listClientOrderId"],
-                expected_quantity="0.0999",
+                symbol_info={
+                    "symbol": "BTCUSDT", "status": "TRADING", "quoteAsset": "USDT",
+                    "isSpotTradingAllowed": True, "otoAllowed": True, "opoAllowed": True,
+                    "filters": [
+                        {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "1000000", "tickSize": "0.01"},
+                        {"filterType": "LOT_SIZE", "minQty": "0.0001", "maxQty": "9000", "stepSize": "0.0001"},
+                        {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+                    ],
+                },
+                working_price="100", working_quantity="0.1", pending_stop_price="95",
+                list_client_order_id="recovery-exit-list", working_client_order_id="recovery-exit-buy",
+                pending_client_order_id="recovery-exit-stop",
             )
-            if retry_attempt:
-                first = intents._begin_spot_opo_strategy_exit(
-                    wrapper, request["listClientOrderId"], new_order_client_id="first-no-effect-exit",
-                    pre_order_portfolio_signature=baseline["signature"],
-                    pre_order_portfolio_quantity=baseline["quantity"], allocation_path=allocation_path,
-                )
-                intents._mark_spot_opo_strategy_exit_response(
-                    wrapper, request["listClientOrderId"], expected_record=first,
-                    response={
-                        "cancelResult": "FAILURE", "newOrderResult": "NOT_ATTEMPTED",
-                        "cancelResponse": {"code": -2011, "msg": "Unknown order sent."},
-                        "newOrderResponse": None,
-                    },
-                )
-                intents.reconcile_spot_opo_intent(wrapper, request["listClientOrderId"], force=True)
-            intents._begin_spot_opo_strategy_exit(
+            intents._begin_spot_opo_intent(wrapper, request, source="offline-recovery-test")
+            intents._mark_spot_opo_submitted(wrapper, request["listClientOrderId"], via="offline-test")
+            current = intents._get_order_intent_record(wrapper, request["listClientOrderId"])
+            intents._update_order_intent_by_id(
                 wrapper,
                 request["listClientOrderId"],
-                new_order_client_id=exit_client_id,
-                pre_order_portfolio_signature=baseline["signature"],
-                pre_order_portfolio_quantity=baseline["quantity"],
-                allocation_path=allocation_path,
+                state="accepted",
+                expected_record=current,
+                protection_state="active",
+                exchange_order_list_id=700,
+                list_status="EXEC_STARTED",
+                working_order_id=701,
+                working_status="FILLED",
+                working_executed_qty="0.1",
+                pending_order_id=702,
+                pending_status="NEW",
+                pending_executed_qty="0",
+                pending_original_qty="0.0999",
             )
-        marker_path = owner_marker_path(self.path)
-        wrapper._spot_execution_owner.close()
-        self.assertEqual("recovery_required", json.loads(marker_path.read_text(encoding="utf-8"))["state"])
-        return marker_path, request
+            list_response, working, pending = self.opo_list_observation(
+                request, pending_status="NEW", list_status="EXEC_STARTED",
+            )
+            list_response["orderListId"] = 700
+            for child in list_response["orders"]:
+                child["orderId"] += 200
+            for child in (working, pending):
+                child["orderId"] += 200
+                child["orderListId"] = 700
+            children = {child["clientOrderId"]: child for child in (working, pending)}
+
+            def get_order_list(**kwargs):
+                self.assertEqual({"origClientOrderId": request["listClientOrderId"]}, kwargs)
+                return list_response
+
+            def get_order(**kwargs):
+                self.assertEqual("BTCUSDT", kwargs["symbol"])
+                return children[kwargs["origClientOrderId"]]
+
+            wrapper.client.get_order_list = get_order_list
+            wrapper.client.get_order = get_order
+            buy_fill = {
+                "symbol": "BTCUSDT", "client_order_id": request["listClientOrderId"],
+                "exchange_client_order_id": request["workingClientOrderId"], "order_id": 701,
+                "trade_ids": [801], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
+                "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
+                "average_cost": str(Decimal("10") / Decimal("0.0999")),
+                "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
+                "fill_time_ms": 1780000000000, "signature": "d" * 64,
+            }
+            with patch(
+                "app.gui.shared.allocation_persistence.get_position_allocations_path",
+                return_value=allocation_path,
+            ):
+                spot_recovery.persist_spot_buy_allocation(allocation_path, buy_fill, namespace=namespace_for_owner(wrapper))
+                intents._mark_spot_opo_entry_reconciled(
+                    wrapper, request["listClientOrderId"],
+                    portfolio_signature="d" * 64, portfolio_quantity="0.0999",
+                )
+                baseline = spot_opo_allocation_baseline(
+                    allocation_path,
+                    symbol="BTCUSDT",
+                    list_client_order_id=request["listClientOrderId"],
+                    expected_quantity="0.0999", namespace=namespace_for_owner(wrapper),
+                )
+                if retry_attempt:
+                    first = intents._begin_spot_opo_strategy_exit(
+                        wrapper, request["listClientOrderId"], new_order_client_id="first-no-effect-exit",
+                        pre_order_portfolio_signature=baseline["signature"],
+                        pre_order_portfolio_quantity=baseline["quantity"], allocation_path=allocation_path,
+                    )
+                    intents._mark_spot_opo_strategy_exit_response(
+                        wrapper, request["listClientOrderId"], expected_record=first,
+                        response={
+                            "cancelResult": "FAILURE", "newOrderResult": "NOT_ATTEMPTED",
+                            "cancelResponse": {"code": -2011, "msg": "Unknown order sent."},
+                            "newOrderResponse": None,
+                        },
+                    )
+                    intents.reconcile_spot_opo_intent(wrapper, request["listClientOrderId"], force=True)
+                intents._begin_spot_opo_strategy_exit(
+                    wrapper,
+                    request["listClientOrderId"],
+                    new_order_client_id=exit_client_id,
+                    pre_order_portfolio_signature=baseline["signature"],
+                    pre_order_portfolio_quantity=baseline["quantity"],
+                    allocation_path=allocation_path,
+                )
+            marker_path = owner_marker_path(self.path)
+            wrapper._spot_execution_owner.close()
+            self.assertEqual("recovery_required", json.loads(marker_path.read_text(encoding="utf-8"))["state"])
+            return marker_path, request
 
     def set_up_rearm_required_opo(self, allocation_path: Path) -> tuple[Path, dict[str, str], dict[str, str]]:
         exit_client_id = "recovery-exit-partial"
         marker_path, request = self.set_up_active_opo_with_linked_exit(
             allocation_path, exit_client_id=exit_client_id,
         )
-        response = {
-            "cancelResult": "SUCCESS", "newOrderResult": "SUCCESS",
-            "cancelResponse": {
-                "symbol": "BTCUSDT", "orderId": 702, "origClientOrderId": request["pendingClientOrderId"],
-                "side": "SELL", "status": "CANCELED", "executedQty": "0",
-            },
-            "newOrderResponse": {
+        with self.verified_admin_scope() as namespace, patch(
+            "app.gui.shared.allocation_persistence.get_position_allocations_path", return_value=allocation_path,
+        ):
+            response = {
+                "cancelResult": "SUCCESS", "newOrderResult": "SUCCESS",
+                "cancelResponse": {
+                    "symbol": "BTCUSDT", "orderId": 702, "origClientOrderId": request["pendingClientOrderId"],
+                    "side": "SELL", "status": "CANCELED", "executedQty": "0",
+                },
+                "newOrderResponse": {
+                    "symbol": "BTCUSDT", "clientOrderId": exit_client_id, "orderId": 703,
+                    "side": "SELL", "type": "MARKET", "status": "PARTIALLY_FILLED",
+                    "origQty": "0.0999", "executedQty": "0.0600",
+                },
+            }
+            intents._mark_spot_opo_strategy_exit_response(
+                self.admin_owner, request["listClientOrderId"], response=response,
+            )
+            current = intents._get_order_intent_record(self.admin_owner, request["listClientOrderId"])
+            updated = intents._update_order_intent_by_id(
+                self.admin_owner,
+                request["listClientOrderId"],
+                state="accepted",
+                expected_record=current,
+                protection_state="cancelled",
+                cancel_state="confirmed",
+                cancel_confirmed_at="2026-09-27T12:00:00+00:00",
+                list_status="ALL_DONE",
+                pending_status="CANCELED",
+                pending_executed_qty="0",
+            )
+            self.assertIsNotNone(updated)
+            exit_order = {
                 "symbol": "BTCUSDT", "clientOrderId": exit_client_id, "orderId": 703,
-                "side": "SELL", "type": "MARKET", "status": "PARTIALLY_FILLED",
-                "origQty": "0.0999", "executedQty": "0.0600",
-            },
-        }
-        intents._mark_spot_opo_strategy_exit_response(
-            self.admin_owner, request["listClientOrderId"], response=response,
-        )
-        current = intents._get_order_intent_record(self.admin_owner, request["listClientOrderId"])
-        updated = intents._update_order_intent_by_id(
-            self.admin_owner,
-            request["listClientOrderId"],
-            state="accepted",
-            expected_record=current,
-            protection_state="cancelled",
-            cancel_state="confirmed",
-            cancel_confirmed_at="2026-09-27T12:00:00+00:00",
-            list_status="ALL_DONE",
-            pending_status="CANCELED",
-            pending_executed_qty="0",
-        )
-        self.assertIsNotNone(updated)
-        exit_order = {
-            "symbol": "BTCUSDT", "clientOrderId": exit_client_id, "orderId": 703,
-            "orderListId": -1, "side": "SELL", "type": "MARKET", "status": "CANCELED",
-            "origQty": "0.0999", "executedQty": "0.0600", "cummulativeQuoteQty": "5.7",
-            "updateTime": 1780000000020,
-        }
-        intents._mark_spot_opo_strategy_exit_order_observed(
-            self.admin_owner, request["listClientOrderId"], order_response=exit_order,
-        )
-        intent = intents._get_order_intent_record(self.admin_owner, request["listClientOrderId"])
-        trades = [{
-            "symbol": "BTCUSDT", "id": 704, "orderId": 703, "price": "95",
-            "qty": "0.0600", "quoteQty": "5.7", "commission": "0", "commissionAsset": "BTC",
-            "time": 1780000000020, "isBuyer": False,
-        }]
-        fill = spot_recovery.summarize_spot_opo_strategy_sell_fill(
-            intent, exit_order, trades, base_asset="BTC", quote_asset="USDT",
-        )
-        spot_recovery.persist_spot_opo_strategy_sell_allocation(allocation_path, fill)
-        remaining = Decimal(str(intent["entry_portfolio_quantity"])) - Decimal(str(fill["portfolio_qty"]))
-        baseline = spot_opo_allocation_baseline(
-            allocation_path,
-            symbol="BTCUSDT",
-            list_client_order_id=request["listClientOrderId"],
-            expected_quantity=remaining,
-        )
-        intents._mark_spot_opo_strategy_exit_residual_required(
-            self.admin_owner,
-            request["listClientOrderId"],
-            allocation_path=allocation_path,
-            portfolio_signature=baseline["signature"],
-            portfolio_quantity=baseline["quantity"],
-            fill_signature=str(fill["signature"]),
-            consumed_quantity=fill["portfolio_qty"],
-            trade_ids=list(fill["trade_ids"]),
-            fill_time_ms=int(fill["fill_time_ms"]),
-        )
-        return marker_path, request, baseline
+                "orderListId": -1, "side": "SELL", "type": "MARKET", "status": "CANCELED",
+                "origQty": "0.0999", "executedQty": "0.0600", "cummulativeQuoteQty": "5.7",
+                "updateTime": 1780000000020,
+            }
+            intents._mark_spot_opo_strategy_exit_order_observed(
+                self.admin_owner, request["listClientOrderId"], order_response=exit_order,
+            )
+            intent = intents._get_order_intent_record(self.admin_owner, request["listClientOrderId"])
+            trades = [{
+                "symbol": "BTCUSDT", "id": 704, "orderId": 703, "price": "95",
+                "qty": "0.0600", "quoteQty": "5.7", "commission": "0", "commissionAsset": "BTC",
+                "time": 1780000000020, "isBuyer": False,
+            }]
+            fill = spot_recovery.summarize_spot_opo_strategy_sell_fill(
+                intent, exit_order, trades, base_asset="BTC", quote_asset="USDT",
+            )
+            spot_recovery.persist_spot_opo_strategy_sell_allocation(allocation_path, fill, namespace=namespace)
+            remaining = Decimal(str(intent["entry_portfolio_quantity"])) - Decimal(str(fill["portfolio_qty"]))
+            baseline = spot_opo_allocation_baseline(
+                allocation_path,
+                symbol="BTCUSDT",
+                list_client_order_id=request["listClientOrderId"],
+                expected_quantity=remaining, namespace=namespace,
+            )
+            intents._mark_spot_opo_strategy_exit_residual_required(
+                self.admin_owner,
+                request["listClientOrderId"],
+                allocation_path=allocation_path,
+                portfolio_signature=baseline["signature"],
+                portfolio_quantity=baseline["quantity"],
+                fill_signature=str(fill["signature"]),
+                consumed_quantity=fill["portfolio_qty"],
+                trade_ids=list(fill["trade_ids"]),
+                fill_time_ms=int(fill["fill_time_ms"]),
+            )
+            return marker_path, request, baseline
 
     def run_cli_with_responses(self, responses: list[object]) -> tuple[int, dict[str, object], object]:
         with patch.dict(os.environ, {
@@ -1083,7 +1155,8 @@ class SpotReconciliationAdminTests(unittest.TestCase):
                 "app.gui.shared.allocation_persistence.get_position_allocations_path",
                 return_value=allocation_path,
             ):
-                spot_recovery.persist_spot_buy_allocation(allocation_path, buy_fill)
+                with self.verified_admin_scope() as namespace:
+                    spot_recovery.persist_spot_buy_allocation(allocation_path, buy_fill, namespace=namespace)
                 self.set_up_pending_after_owner_loss(side="SELL", quantity="0.08")
                 with patch.dict(os.environ, {
                     "SPOT_RECONCILE_TEST_KEY": API_KEY,

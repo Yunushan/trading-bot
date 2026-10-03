@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from decimal import Decimal
 from io import StringIO
 import json
@@ -18,7 +18,9 @@ from app.integrations.exchanges.binance.orders import order_intent_admin as admi
 from app.integrations.exchanges.binance.orders import order_intent_runtime as ledger
 from app.integrations.exchanges.binance.orders import spot_buy_admin_recovery_runtime as publication
 from app.integrations.exchanges.binance.orders import spot_fill_recovery_runtime as recovery
-from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transactions
+from app.integrations.exchanges.binance.orders.order_intent_store import current_ledger_deadline, ledger_transactions
+from app.integrations.exchanges.binance.orders import spot_user_data_admin_runtime as admin_transport
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import namespace_for_current_ledger
 from app.integrations.exchanges.binance.orders.spot_execution_owner import owner_administration_lock, owner_marker_path
 from app.settings.live_safety import LiveTradingSafetyError
 
@@ -38,7 +40,26 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
             "isBuyer": True, "price": "20000", "qty": "0.1", "quoteQty": "2000",
             "commission": "0", "commissionAsset": "BTC", "time": self.primary["fill_time_ms"],
         }
+        self.inventory_namespace = dict(self.actual.namespace)
+        self.initial_allocation_bytes = self.path.read_bytes()
         self.actual.wrapper._spot_execution_owner.close()
+
+    @contextmanager
+    def verified_admin_scope(self):
+        """Use real signed account serialization and live administration exclusion."""
+        transport = admin_transport.SpotUserDataTransport("offline-key", "offline-secret")
+        # The actual fixture's patched GET verifies HMAC and returns only its fake UID.
+        signed_uid = transport.get_account_uid()
+        owner = SimpleNamespace(
+            _order_audit_log_path=self.actual.fixture.audit_path, mode="Live", account_type="SPOT",
+            api_key="offline-key", api_secret="offline-secret", client=transport,
+            _enforce_spot_execution_owner=True, _operator_spot_account_uid=signed_uid,
+        )
+        owner._verified_spot_account_context = (owner.api_key, owner.api_secret, "live", transport, signed_uid)
+        with owner_administration_lock(self.intent_path):
+            owner._spot_inventory_administration_path = self.intent_path
+            self.assertEqual(self.inventory_namespace, namespace_for_current_ledger(owner))
+            yield owner
 
     def _run(self, *, order=None, trade=None, during_trades=None, after_publication=None):
         order = copy.deepcopy(self.order if order is None else order)
@@ -70,11 +91,10 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                 during_trades()
             return [copy.deepcopy(trade)]
 
-        transport = SimpleNamespace(
-            get_account_uid=lambda: self.actual.fixture.venue.uid,
-            get_order=get_order, get_symbol_assets=lambda **_params: ("BTC", "USDT"),
-            get_my_trades=get_trades,
-        )
+        transport = admin_transport.SpotUserDataTransport("offline-key", "offline-secret")
+        transport.get_order = get_order
+        transport.get_symbol_assets = lambda **_params: ("BTC", "USDT")
+        transport.get_my_trades = get_trades
         with patch.dict(os.environ, {"BUY_RECOVERY_TEST_KEY": "offline-key", "BUY_RECOVERY_TEST_SECRET": "offline-secret"}), \
                 patch("app.integrations.exchanges.binance.orders.spot_user_data_admin_runtime.SpotUserDataTransport", return_value=transport), \
                 patch.object(publication, "capture_spot_buy_recovery_binding", side_effect=captured_owner), \
@@ -116,11 +136,11 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                 code, result = self._run(order={**self.order, **order_change}, trade={**self.trade, **trade_change})
                 self.assertEqual(1, code)
                 self.assertFalse(result["ok"])
-                self.assertFalse(self.path.exists(), "Conflicting BUY evidence was published before rejection")
+                self.assertEqual(self.initial_allocation_bytes, self.path.read_bytes(), "Conflicting BUY evidence changed the prebound empty source")
                 self._assert_unresolved()
 
     def test_same_signature_changed_quote_total_cannot_publish_or_restore_inventory(self):
-        recovery.persist_spot_buy_allocation(self.path, self.primary)
+        recovery.persist_spot_buy_allocation(self.path, self.primary, namespace=self.inventory_namespace)
         self.actual._sell("0.04")
         before = self.path.read_bytes()
         code, result = self._run(
@@ -146,7 +166,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
         code, result = self._run(during_trades=replace_record)
         self.assertEqual(1, code)
         self.assertFalse(result["ok"])
-        self.assertFalse(self.path.exists())
+        self.assertEqual(self.initial_allocation_bytes, self.path.read_bytes())
         self.assertEqual(changed_bytes[-1], self.intent_path.read_bytes())
         self._assert_unresolved()
 
@@ -162,7 +182,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
         code, result = self._run(during_trades=replace_store)
         self.assertEqual(1, code)
         self.assertFalse(result["ok"])
-        self.assertFalse(self.path.exists())
+        self.assertEqual(self.initial_allocation_bytes, self.path.read_bytes())
         self.assertEqual(changed_bytes[-1], self.intent_path.read_bytes())
         self._assert_unresolved()
 
@@ -240,7 +260,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                 code, result = self._run(during_trades=change_account)
                 self.assertEqual(1, code)
                 self.assertFalse(result["ok"])
-                self.assertFalse(self.path.exists())
+                self.assertEqual(self.initial_allocation_bytes, self.path.read_bytes())
                 self.assertEqual(changed_bytes[-1], self.intent_path.read_bytes())
                 self._assert_unresolved()
 
@@ -248,9 +268,10 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
         original_marker = publication.confirm_spot_buy_recovery
 
         def unlocked_marker(owner, *args, **kwargs):
-            # The actual marker acquires paired transactions itself. Nested locks
-            # would fail the unchanged busy bound before this recovery completed.
+            # Actual lock reuse must not make this release assertion vacuous.
             self.assertTrue(self.path.exists())
+            with self.assertRaisesRegex(LiveTradingSafetyError, "transaction is required"):
+                current_ledger_deadline(self.intent_path, self.path)
             with ledger_transactions(self.intent_path, self.path):
                 pass
             return original_marker(owner, *args, **kwargs)
@@ -295,7 +316,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
 
     def test_legacy_accepted_fill_without_primary_receipt_replays_consumed_history_read_only(self):
         self._legacy_accepted_intent()
-        recovery.persist_spot_buy_allocation(self.path, self.primary)
+        recovery.persist_spot_buy_allocation(self.path, self.primary, namespace=self.inventory_namespace)
         self.actual._sell("0.04")
         before = self.path.read_bytes()
         code, result = self._run()
@@ -306,7 +327,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
 
     def test_legacy_accepted_fill_late_record_change_preserves_both_committed_files(self):
         self._legacy_accepted_intent()
-        recovery.persist_spot_buy_allocation(self.path, self.primary)
+        recovery.persist_spot_buy_allocation(self.path, self.primary, namespace=self.inventory_namespace)
         self.actual._sell("0.04")
         before = self.path.read_bytes()
         changed_bytes = []
@@ -345,11 +366,11 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
             )
             return metadata
 
-        with owner_administration_lock(self.intent_path):
-            binding = publication.capture_spot_buy_recovery_binding(self.actual.wrapper)
+        with self.verified_admin_scope() as administrator:
+            binding = publication.capture_spot_buy_recovery_binding(administrator)
             with patch.object(publication, "canonical_spot_buy_metadata", side_effect=mutate_external_argument):
                 self.assertTrue(publication.publish_spot_buy_recovery(
-                    self.actual.wrapper, self.path, fill, expected_record=record,
+                    administrator, self.path, fill, expected_record=record,
                     expected_store_id=binding["store_id"], expected_binding=binding["binding"],
                     expected_intent_path=binding["intent_path"],
                 ))
@@ -367,7 +388,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                 scenario = type(self)()
                 scenario.setUp()
                 try:
-                    recovery.persist_spot_buy_allocation(scenario.path, scenario.primary)
+                    recovery.persist_spot_buy_allocation(scenario.path, scenario.primary, namespace=scenario.inventory_namespace)
                     if consumption is not None:
                         scenario.actual._sell(consumption)
                     before = scenario.path.read_bytes()
@@ -385,17 +406,17 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
     def test_confirm_complete_primary_conflict_after_publication_preserves_both_files(self):
         record = self.actual.wrapper._get_order_intent_record(self.client_id)
         fill = recovery.summarize_spot_market_fill(record, self.order, [self.trade], base_asset="BTC", quote_asset="USDT")
-        with owner_administration_lock(self.intent_path):
-            binding = publication.capture_spot_buy_recovery_binding(self.actual.wrapper)
+        with self.verified_admin_scope() as administrator:
+            binding = publication.capture_spot_buy_recovery_binding(administrator)
             options = {
                 "expected_record": record, "expected_store_id": binding["store_id"],
                 "expected_binding": binding["binding"], "expected_intent_path": binding["intent_path"],
             }
-            self.assertTrue(publication.publish_spot_buy_recovery(self.actual.wrapper, self.path, fill, **options))
+            self.assertTrue(publication.publish_spot_buy_recovery(administrator, self.path, fill, **options))
             allocation_bytes, ledger_bytes = self.path.read_bytes(), self.intent_path.read_bytes()
             fill.update(gross_quote_qty="3000", net_quote_cost="3000", average_cost="30000")
             with self.assertRaisesRegex(LiveTradingSafetyError, "complete primary receipt"):
-                publication.confirm_spot_buy_recovery(self.actual.wrapper, self.path, fill, **options)
+                publication.confirm_spot_buy_recovery(administrator, self.path, fill, **options)
         self.assertEqual(allocation_bytes, self.path.read_bytes())
         self.assertEqual(ledger_bytes, self.intent_path.read_bytes())
         self._assert_unresolved()
@@ -411,10 +432,10 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                     scenario.actual._sell(consumption)
                     allocation_bytes, ledger_bytes = scenario.path.read_bytes(), scenario.intent_path.read_bytes()
                     record = scenario.actual.wrapper._get_order_intent_record(scenario.client_id)
-                    with owner_administration_lock(scenario.intent_path):
-                        binding = publication.capture_spot_buy_recovery_binding(scenario.actual.wrapper)
+                    with scenario.verified_admin_scope() as administrator:
+                        binding = publication.capture_spot_buy_recovery_binding(administrator)
                         confirmed = publication.confirm_spot_buy_recovery(
-                            scenario.actual.wrapper, scenario.path,
+                            administrator, scenario.path,
                             {**scenario.primary, "portfolio_qty": scenario.primary["net_qty"]}, expected_record=record,
                             expected_store_id=binding["store_id"], expected_binding=binding["binding"],
                             expected_intent_path=binding["intent_path"],

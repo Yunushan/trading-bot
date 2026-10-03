@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, cast
 
 from app.settings.live_safety import LiveTradingSafetyError, is_live_trading_mode
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace import make_namespace, require_namespace
 
 
 @dataclass(frozen=True, repr=False)
@@ -36,6 +37,7 @@ class TradeCallbackOrigin:
         with self.session._mutex:
             if not _matches_original_context(self.window, self) or not _window_maps_match_snapshot(self.window, self.session):
                 raise LiveTradingSafetyError("Desktop BUY origin changed during admission.")
+            require_namespace(self.session._capture()[4], make_namespace(self.uid, self.store_id))
             if self.session.check_spot_buy_admission(self.admission_receipt, params) is not True:
                 raise LiveTradingSafetyError("Desktop BUY source changed during admission.")
             yield
@@ -85,6 +87,9 @@ def capture_trade_callback_origin(window: Any, wrapper: Any, params: dict | None
     uid = bound_wrapper._resolve_spot_account_uid()
     owner.assert_held(uid=uid, environment=owner.environment,
                       credential_fingerprint=owner.credential_fingerprint, owner_wrapper=wrapper)
+    from .allocation_persistence import initialize_spot_allocation_namespace
+    initialize_spot_allocation_namespace(window, wrapper)
+    require_namespace(bound_session._capture()[4], make_namespace(uid, owner.store_id))
     receipt = bound_session.capture_spot_buy_admission(params) if params is not None else None
     capture = bound_session._capture()
     if capture[-1] is not True or capture[1] != mode or type(owner.generation) is not int:
@@ -129,6 +134,7 @@ def check_trade_callback_origin(window, origin, params: dict | None = None) -> b
         captured = session._capture()
         if captured[-1] is not True or captured[-2] != origin.generation:
             return False
+        require_namespace(captured[4], make_namespace(origin.uid, origin.store_id))
         return params is None or session.check_spot_buy_admission(origin.admission_receipt, params) is True
     except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
         return False

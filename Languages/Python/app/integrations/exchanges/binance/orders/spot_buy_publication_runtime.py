@@ -75,8 +75,24 @@ def capture_desktop_entry(self, params):
 @contextmanager
 def desktop_entry_transaction(self, intent_path, params, source):
     if source is None:
-        with ledger_transaction(intent_path):
-            yield
+        from .order_intent_runtime import _spot_owner_scope
+        if _spot_owner_scope(self) and (params.get("side") == "BUY" or "listClientOrderId" in params):
+            from pathlib import Path
+            from app.gui.shared.allocation_persistence import _decode, _read_receipt, get_position_allocations_path
+            from .spot_inventory_namespace import require_namespace
+            from .spot_inventory_namespace_runtime import namespace_for_owner
+            namespace = namespace_for_owner(self)
+            app_root = Path(__file__).resolve().parents[4]
+            allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+            with ledger_transactions(intent_path, allocation_path):
+                require_namespace(
+                    _decode(raw, "Live") if (raw := _read_receipt(allocation_path)[0]) is not None else None,
+                    namespace,
+                )
+                yield
+        else:
+            with ledger_transaction(intent_path):
+                yield
         return
     origin, receipt = source
     check = getattr(self, "_desktop_spot_entry_check", None)
@@ -154,6 +170,11 @@ def _capture_spot_buy_publication(self, fill):
     saved = origins.get(client_id) if isinstance(origins, dict) else None
     if not isinstance(saved, dict):
         raise LiveTradingSafetyError("Desktop BUY publication lost its submission origin.")
+    from .spot_inventory_namespace_runtime import namespace_for_owner
+    namespace = namespace_for_owner(self)
+    origin = saved["origin"]
+    if namespace["account_uid"] != origin.uid or namespace["store_id"] != saved["store_id"]:
+        raise LiveTradingSafetyError("Desktop BUY publication account namespace changed.")
     path = _intent_path(self)
     receipt = saved["receipt"]
     with desktop_entry_transaction(self, path, saved["params"], (saved["origin"], receipt)):
@@ -166,7 +187,7 @@ def _capture_spot_buy_publication(self, fill):
         context = SpotBuyPublicationContext(
             allocation_path=receipt.allocation_path, intent_path=path,
             expected_binding=copy.deepcopy(saved["binding"]), expected_intent=copy.deepcopy(record),
-            expected_store_id=str(saved["store_id"]),
+            expected_store_id=str(saved["store_id"]), namespace=namespace,
             fill=copy.deepcopy(dict(fill)), entry_source_receipt=receipt,
         )
         validate_spot_buy_publication(context, record)
