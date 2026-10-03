@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from app.security.redaction import redact_text
@@ -18,6 +19,40 @@ from app.settings.live_safety import LiveTradingSafetyError
 
 _THREAD_LOCK = threading.Lock()
 LOCK_TIMEOUT_SECONDS = 5.0
+
+
+class _LedgerTransactionToken:
+    """Shared lifetime prevents copied contexts from retaining released lock authority."""
+
+    def __init__(self, deadline: float) -> None:
+        self.deadline = deadline
+        self.owner_thread = threading.current_thread()
+        self.held_paths: frozenset[Path] = frozenset()
+        self.active = False
+
+
+_ACTIVE_LEDGER_TRANSACTION: ContextVar[_LedgerTransactionToken | None] = ContextVar(
+    "order_intent_ledger_transaction", default=None
+)
+
+
+def _logical_lock_path(path: Path) -> Path:
+    # Preserve the logical file's lock basename, including a final symlink's name.
+    return Path(os.path.abspath(path))
+
+
+def current_ledger_deadline(*required_paths: Path) -> float:
+    """Return the original deadline only while this thread holds the required locks."""
+    transaction = _ACTIVE_LEDGER_TRANSACTION.get()
+    if (
+        transaction is None
+        or not transaction.active
+        or transaction.owner_thread is not threading.current_thread()
+    ):
+        raise LiveTradingSafetyError("An order intent transaction is required for this storage operation.")
+    if any(_logical_lock_path(path) not in transaction.held_paths for path in required_paths):
+        raise LiveTradingSafetyError("The required order intent ledger lock is not held for this storage operation.")
+    return transaction.deadline
 
 
 def _try_lock(fd: int) -> None:
@@ -69,7 +104,10 @@ def ledger_transaction(path: Path) -> Iterator[None]:
     deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
     if not _THREAD_LOCK.acquire(timeout=LOCK_TIMEOUT_SECONDS):
         raise LiveTradingSafetyError("Order intent ledger is busy; submission is blocked.")
+    transaction = _LedgerTransactionToken(deadline)
+    context_token = _ACTIVE_LEDGER_TRANSACTION.set(transaction)
     try:
+        path = _logical_lock_path(path)
         _ensure_parent(path)
         # Never unlink this file: replacing its inode can create independent locks.
         lock_path = path.with_name(f".{path.name}.lock")
@@ -89,15 +127,22 @@ def ledger_transaction(path: Path) -> Iterator[None]:
                         raise LiveTradingSafetyError("Order intent ledger is busy; submission is blocked.") from exc
                     time.sleep(min(0.025, remaining))
             try:
+                transaction.held_paths = frozenset((path,))
+                transaction.active = True
                 yield
             finally:
+                transaction.active = False
                 _unlock(fd)
         finally:
             os.close(fd)
     except (OSError, ValueError, TypeError) as exc:
         raise LiveTradingSafetyError(f"Order intent storage failed; submission is blocked: {redact_text(exc)}") from exc
     finally:
-        _THREAD_LOCK.release()
+        transaction.active = False
+        try:
+            _ACTIVE_LEDGER_TRANSACTION.reset(context_token)
+        finally:
+            _THREAD_LOCK.release()
 
 
 @contextmanager
@@ -109,6 +154,8 @@ def ledger_transactions(*paths: Path) -> Iterator[None]:
     deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
     if not _THREAD_LOCK.acquire(timeout=LOCK_TIMEOUT_SECONDS):
         raise LiveTradingSafetyError("Order intent ledger is busy; submission is blocked.")
+    transaction = _LedgerTransactionToken(deadline)
+    context_token = _ACTIVE_LEDGER_TRANSACTION.set(transaction)
     locked_fds: list[int] = []
     try:
         for path in normalized_paths:
@@ -134,10 +181,13 @@ def ledger_transactions(*paths: Path) -> Iterator[None]:
                 if fd not in locked_fds:
                     os.close(fd)
                 raise
+        transaction.held_paths = frozenset(normalized_paths)
+        transaction.active = True
         yield
     except (OSError, ValueError, TypeError) as exc:
         raise LiveTradingSafetyError(f"Order intent storage failed; submission is blocked: {redact_text(exc)}") from exc
     finally:
+        transaction.active = False
         try:
             for fd in reversed(locked_fds):
                 try:
@@ -145,7 +195,10 @@ def ledger_transactions(*paths: Path) -> Iterator[None]:
                 finally:
                     os.close(fd)
         finally:
-            _THREAD_LOCK.release()
+            try:
+                _ACTIVE_LEDGER_TRANSACTION.reset(context_token)
+            finally:
+                _THREAD_LOCK.release()
 
 
 def _publish(temp_path: Path, path: Path) -> None:
