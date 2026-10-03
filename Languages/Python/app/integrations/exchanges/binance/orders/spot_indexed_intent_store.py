@@ -309,6 +309,7 @@ def _connection(path: Path, logical_path: Path, deadline: float) -> Iterator[sql
         if path.with_name(path.name + "-wal").exists() or path.with_name(path.name + "-shm").exists():
             raise _fail("cannot use WAL storage")
         connection = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=0, isolation_level=None)
+        primary: BaseException | None = None
         try:
             mode = _sql(connection, deadline, "PRAGMA journal_mode").fetchone()[0]
             if mode not in ("delete",):
@@ -319,12 +320,39 @@ def _connection(path: Path, logical_path: Path, deadline: float) -> Iterator[sql
             yield connection
             if _identity(path) != identity:
                 raise _fail("database file changed")
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
+            cleanup_errors: list[BaseException] = []
             try:
                 if connection.in_transaction:
+                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
                     connection.rollback()
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
             finally:
-                connection.close()
+                try:
+                    connection.close()
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+            if cleanup_errors:
+                for earlier, later in zip(cleanup_errors, cleanup_errors[1:]):
+                    later.__cause__ = earlier
+                cleanup = cleanup_errors[-1]
+                if primary is not None and not isinstance(primary, Exception):
+                    raise primary from cleanup
+                for interruption in cleanup_errors:
+                    if not isinstance(interruption, Exception):
+                        if cleanup is not interruption:
+                            cleanup.__cause__ = primary
+                            raise interruption from cleanup
+                        raise interruption from (interruption.__cause__ or primary)
+                if (isinstance(primary, (sqlite3.Error, OSError))
+                        or any(isinstance(error, (sqlite3.Error, OSError)) for error in cleanup_errors)):
+                    raise _fail("is unavailable or busy") from cleanup
+                raise cleanup from primary
     except (sqlite3.Error, OSError) as exc:
         raise _fail("is unavailable or busy") from exc
 

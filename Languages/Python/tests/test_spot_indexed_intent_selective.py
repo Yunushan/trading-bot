@@ -33,6 +33,38 @@ class _Wrapper:
     pass
 
 
+class _CleanupFaultConnection(sqlite3.Connection):
+    """Real pager/guard; rollback/close faults occur after the real call."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cleanup_calls = []
+        self.cleanup_failures = {}
+        self.busy_timeouts = []
+
+    def execute(self, query, parameters=()):
+        if query.startswith('PRAGMA busy_timeout='):
+            self.busy_timeouts.append(int(query.split('=', 1)[1]))
+            failure = self.cleanup_failures.get('busy_timeout')
+            if failure is not None:
+                raise failure
+        return super().execute(query, parameters)
+
+    def rollback(self):
+        self.cleanup_calls.append('rollback')
+        super().rollback()
+        failure = self.cleanup_failures.get('rollback')
+        if failure is not None:
+            raise failure
+
+    def close(self):
+        self.cleanup_calls.append('close')
+        super().close()
+        failure = self.cleanup_failures.get('close')
+        if failure is not None:
+            raise failure
+
+
 class SpotIndexedIntentSelectiveTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='trading-bot-indexed-selective-'))).resolve()
@@ -83,6 +115,82 @@ class SpotIndexedIntentSelectiveTests(unittest.TestCase):
     def call(self, method, *args, **kwargs):
         with locks.ledger_transaction(self.path):
             return getattr(self.session, method)(*args, deadline=locks.current_ledger_deadline(self.path), **kwargs)
+
+    def reopen_cleanup_fault_connection(self, *, limit_pages=False):
+        self.session.close()
+        connect = sqlite3.connect
+        def guarded_connection(*args, **kwargs):
+            kwargs['factory'] = _CleanupFaultConnection
+            connection = connect(*args, **kwargs)
+            if limit_pages:
+                pages = connection.execute('PRAGMA page_count').fetchone()[0]
+                self.assertEqual(pages, connection.execute(f'PRAGMA max_page_count={pages}').fetchone()[0])
+            return connection
+        with patch.object(selective.sqlite3, 'connect', side_effect=guarded_connection):
+            self.session = self.open()
+        self.addCleanup(self.session.close)
+        self.assertIsInstance(self.session._connection, _CleanupFaultConnection)
+        self.session._connection.cleanup_calls.clear()
+        return self.session._connection
+
+    def assert_cleanup_failure(self, *, rollback=False, close=False, primary=None,
+                               expire_on_error=False, rollback_interruption=None, fail_busy_allowance=False):
+        connection = self.reopen_cleanup_fault_connection()
+        old = self.call('read_record', 'syn-list-00000001')
+        before, receipt = self.database_bytes(), self.session.receipt
+        primary = RuntimeError('synthetic primary ordinary failure') if primary is None else primary
+        failures = {}
+        if rollback:
+            failures['rollback'] = (rollback_interruption if rollback_interruption is not None
+                                    else sqlite3.OperationalError('synthetic rollback I/O failure'))
+        if close:
+            failures['close'] = OSError('synthetic close I/O failure')
+        connection.cleanup_failures = failures
+        original_sql, monotonic = full._sql, time.monotonic
+        failed, deadline_seen = [], []
+        def interrupted(actual, deadline, query, parameters=()):
+            if query.startswith('UPDATE store_state'):
+                deadline_seen.append(deadline)
+                failed.append(True)
+                if fail_busy_allowance:
+                    failures['busy_timeout'] = sqlite3.OperationalError('synthetic cleanup busy allowance failure')
+                raise primary
+            return original_sql(actual, deadline, query, parameters)
+        def cleanup_clock():
+            return deadline_seen[0] + 1 if expire_on_error and failed else monotonic()
+        interruption = primary if not isinstance(primary, Exception) else rollback_interruption
+        expected_type = type(interruption) if interruption is not None else LiveTradingSafetyError
+        with patch.object(full, '_sql', side_effect=interrupted), \
+                patch.object(selective.time, 'monotonic', side_effect=cleanup_clock):
+            with self.assertRaises(expected_type) as caught:
+                self.call('cas_record', 'syn-list-00000001',
+                          {**old, 'operator_note': 'must rollback every table'}, expected_record=old)
+        if interruption is not None:
+            self.assertIs(interruption, caught.exception)
+        else:
+            self.assertTrue(str(caught.exception).startswith('Indexed session storage is unavailable or busy;'))
+        cause = (failures.get('close') or primary) if rollback_interruption is not None else (
+            failures.get('close') or failures.get('rollback') or failures.get('busy_timeout') or primary)
+        self.assertIs(cause, caught.exception.__cause__)
+        if rollback and close:
+            self.assertIs(primary if rollback_interruption is not None else failures['rollback'], cause.__cause__)
+        expected_cleanup = ['close'] if fail_busy_allowance else ['rollback', 'close']
+        self.assertEqual(expected_cleanup, connection.cleanup_calls)
+        if fail_busy_allowance:
+            self.assertIs(primary, cause.__context__)
+        if expire_on_error:
+            self.assertEqual(0, connection.busy_timeouts[-1], 'Cleanup cannot reuse an expired busy allowance')
+        self.assertTrue(self.session._closed)
+        self.assertEqual('fenced', selective._invalidation_for(self.owner))
+        self.assertEqual(before, self.database_bytes())
+        checked = self.read_full()
+        self.assertEqual(receipt, checked.indexed_snapshot.receipt)
+        self.assertEqual(old, checked['intents']['syn-list-00000001'])
+        with self.assertRaises(LiveTradingSafetyError):
+            self.call('admission_view')
+        with self.assertRaises(LiveTradingSafetyError):
+            self.open()
+        self.assertEqual(expected_cleanup, connection.cleanup_calls)
 
     def read_full(self):
         with locks.ledger_transaction(self.path):
@@ -521,6 +629,60 @@ class SpotIndexedIntentSelectiveTests(unittest.TestCase):
         self.assertEqual(1, checked.indexed_snapshot.receipt.revision)
         self.assertEqual(old, checked['intents']['syn-list-00000001'])
         self.assertTrue(self.session._closed)
+
+    def test_real_sqlite_full_fences_without_growing_the_confined_database(self):
+        # This exercises the actual engine limit, not physical disk exhaustion.
+        connection = self.reopen_cleanup_fault_connection(limit_pages=True)
+        old = self.call('read_record', 'syn-list-00000001')
+        before, receipt = self.database_bytes(), self.session.receipt
+        free_pages = connection.execute('PRAGMA freelist_count').fetchone()[0]
+        page_size = connection.execute('PRAGMA page_size').fetchone()[0]
+        replacement = {**old, 'operator_note': 'x' * ((free_pages + 32) * page_size)}
+        with self.assertRaises(LiveTradingSafetyError) as caught:
+            self.call('cas_record', 'syn-list-00000001', replacement, expected_record=old)
+        self.assertIsInstance(caught.exception.__cause__, sqlite3.Error)
+        self.assertEqual(sqlite3.SQLITE_FULL, caught.exception.__cause__.sqlite_errorcode)
+        self.assertTrue(self.session._closed)
+        self.assertEqual(1, connection.cleanup_calls.count('close'))
+        self.assertLessEqual(connection.cleanup_calls.count('rollback'), 1)
+        self.assertEqual(before, self.database_bytes())
+        checked = self.read_full()
+        self.assertEqual(receipt, checked.indexed_snapshot.receipt)
+        self.assertEqual(old, checked['intents']['syn-list-00000001'])
+        self.assertEqual('fenced', selective._invalidation_for(self.owner))
+        with self.assertRaises(LiveTradingSafetyError):
+            self.call('admission_view')
+        with self.assertRaises(LiveTradingSafetyError):
+            self.open()
+        self.assertEqual(1, connection.cleanup_calls.count('close'))
+
+    def test_rollback_io_failure_is_normalized_and_every_table_remains_unchanged(self):
+        self.assert_cleanup_failure(rollback=True)
+
+    def test_close_io_failure_is_normalized_after_actual_guard_release(self):
+        self.assert_cleanup_failure(close=True)
+
+    def test_both_cleanup_failures_keep_their_diagnostic_causes(self):
+        self.assert_cleanup_failure(rollback=True, close=True)
+
+    def test_keyboard_interrupt_survives_both_cleanup_failures(self):
+        self.assert_cleanup_failure(rollback=True, close=True, primary=KeyboardInterrupt('synthetic cancellation'))
+
+    def test_system_exit_survives_both_cleanup_failures(self):
+        self.assert_cleanup_failure(rollback=True, close=True, primary=SystemExit(73))
+
+    def test_rollback_cancellation_survives_close_io_failure_with_all_causes(self):
+        self.assert_cleanup_failure(rollback=True, close=True,
+                                    rollback_interruption=KeyboardInterrupt('synthetic rollback cancellation'))
+
+    def test_storage_primary_and_cleanup_failure_are_owned_safety_errors(self):
+        self.assert_cleanup_failure(close=True, primary=sqlite3.OperationalError('synthetic primary SQL failure'))
+
+    def test_failed_cleanup_gets_zero_busy_wait_after_the_original_deadline(self):
+        self.assert_cleanup_failure(rollback=True, expire_on_error=True)
+
+    def test_cleanup_busy_allowance_failure_skips_explicit_rollback_and_closes_once(self):
+        self.assert_cleanup_failure(fail_busy_allowance=True)
 
     def test_commit_return_uncertainty_never_reuses_the_old_anchor(self):
         old = self.call('read_record', 'syn-list-00000001')

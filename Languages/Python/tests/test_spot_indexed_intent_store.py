@@ -48,6 +48,38 @@ def _interrupted_commit(path_text, logical_text, ready, release):
                                              expected_binding=binding, deadline=locks.current_ledger_deadline())
 
 
+class _CleanupFaultConnection(sqlite3.Connection):
+    """Real pager; rollback/close faults occur after the real cleanup call."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cleanup_calls = []
+        self.cleanup_failures = {}
+        self.busy_timeouts = []
+
+    def execute(self, query, parameters=()):
+        if query.startswith('PRAGMA busy_timeout='):
+            self.busy_timeouts.append(int(query.split('=', 1)[1]))
+            failure = self.cleanup_failures.get('busy_timeout')
+            if failure is not None:
+                raise failure
+        return super().execute(query, parameters)
+
+    def rollback(self):
+        self.cleanup_calls.append('rollback')
+        super().rollback()
+        failure = self.cleanup_failures.get('rollback')
+        if failure is not None:
+            raise failure
+
+    def close(self):
+        self.cleanup_calls.append('close')
+        super().close()
+        failure = self.cleanup_failures.get('close')
+        if failure is not None:
+            raise failure
+
+
 class SpotIndexedIntentStoreTests(unittest.TestCase):
     def setUp(self):
         self.temporary = self.enterContext(tempfile.TemporaryDirectory(prefix='trading-bot-indexed-foundation-'))
@@ -76,6 +108,69 @@ class SpotIndexedIntentStoreTests(unittest.TestCase):
             return indexed.replace_indexed_snapshot(self.path, payload, expected=expected, rules=RULES,
                                                     expected_binding=self.binding,
                                                     deadline=locks.current_ledger_deadline(), **kwargs)
+
+    def assert_cleanup_failure(self, *, primary=None, rollback=True, close=True,
+                               rollback_interruption=None, expire_on_error=False, fail_busy_allowance=False):
+        snapshot = self.create()
+        before = self.path.read_bytes()
+        candidate = snapshot.payload
+        key = next(iter(candidate['intents']))
+        candidate['intents'][key]['operator_note'] = 'must rollback complete history and projections'
+        candidate['cleanup_candidate'] = 'must not return an adopted result'
+        primary = RuntimeError('synthetic primary ordinary failure') if primary is None else primary
+        failures = {}
+        if rollback:
+            failures['rollback'] = (rollback_interruption if rollback_interruption is not None
+                                    else sqlite3.OperationalError('synthetic rollback I/O failure'))
+        if close:
+            failures['close'] = OSError('synthetic close I/O failure')
+        connect, original_sql, monotonic = sqlite3.connect, indexed._sql, time.monotonic
+        connections, failed, deadline_seen = [], [], []
+        def real_connection(*args, **kwargs):
+            kwargs['factory'] = _CleanupFaultConnection
+            connection = connect(*args, **kwargs)
+            connection.cleanup_failures = failures
+            connections.append(connection)
+            return connection
+        def interrupted(connection, deadline, query, parameters=()):
+            if query.startswith('INSERT INTO store_state'):
+                deadline_seen.append(deadline)
+                failed.append(True)
+                if fail_busy_allowance:
+                    failures['busy_timeout'] = sqlite3.OperationalError('synthetic cleanup busy allowance failure')
+                raise primary
+            return original_sql(connection, deadline, query, parameters)
+        def cleanup_clock():
+            return deadline_seen[0] + 1 if expire_on_error and failed else monotonic()
+        interruption = primary if not isinstance(primary, Exception) else rollback_interruption
+        expected_type = type(interruption) if interruption is not None else LiveTradingSafetyError
+        with patch.object(indexed.sqlite3, 'connect', side_effect=real_connection), \
+                patch.object(indexed, '_sql', side_effect=interrupted), \
+                patch.object(indexed.time, 'monotonic', side_effect=cleanup_clock):
+            with self.assertRaises(expected_type) as caught:
+                self.replace(candidate, snapshot)
+        self.assertEqual(1, len(connections))
+        connection = connections[0]
+        if interruption is not None:
+            self.assertIs(interruption, caught.exception)
+        else:
+            self.assertTrue(str(caught.exception).startswith('Indexed intent storage is unavailable or busy;'))
+        cause = (failures.get('close') or primary) if rollback_interruption is not None else (
+            failures.get('close') or failures.get('rollback') or failures.get('busy_timeout') or primary)
+        self.assertIs(cause, caught.exception.__cause__)
+        if rollback and close:
+            self.assertIs(primary if rollback_interruption is not None else failures['rollback'], cause.__cause__)
+        if fail_busy_allowance:
+            self.assertIs(primary, cause.__context__)
+        expected_cleanup = ['close'] if fail_busy_allowance else ['rollback', 'close']
+        self.assertEqual(expected_cleanup, connection.cleanup_calls)
+        if expire_on_error:
+            self.assertEqual(0, connection.busy_timeouts[-1], 'Cleanup cannot reuse an expired busy allowance')
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute('SELECT 1')
+        self.assertEqual(before, self.path.read_bytes())
+        self.assertEqual(snapshot, self.read(), 'Every complete record, head and projection must remain unchanged')
+        self.assertEqual(expected_cleanup, connection.cleanup_calls)
 
     def test_exact_metadata_roundtrip_and_detached_complete_payload_receipt(self):
         self.payload['preserved_metadata'] = {'reference': 'synthetic-only', 'generation': 7}
@@ -369,6 +464,24 @@ class SpotIndexedIntentStoreTests(unittest.TestCase):
             self.assertEqual(snapshot, indexed.read_indexed_snapshot(
                 self.path, logical_path=self.logical, rules=RULES, expected_binding=self.binding,
                 deadline=time.monotonic()-1))
+
+    def test_primary_keyboard_interrupt_survives_full_store_cleanup_failures(self):
+        self.assert_cleanup_failure(primary=KeyboardInterrupt('synthetic full-store cancellation'))
+
+    def test_primary_system_exit_survives_full_store_cleanup_failures(self):
+        self.assert_cleanup_failure(primary=SystemExit(73))
+
+    def test_rollback_cancellation_survives_full_store_close_failure_with_all_causes(self):
+        self.assert_cleanup_failure(rollback_interruption=KeyboardInterrupt('synthetic rollback cancellation'))
+
+    def test_full_store_expired_cleanup_uses_zero_remaining_busy_wait(self):
+        self.assert_cleanup_failure(close=False, expire_on_error=True)
+
+    def test_full_store_cleanup_busy_allowance_failure_skips_rollback_and_closes_once(self):
+        self.assert_cleanup_failure(rollback=False, close=False, fail_busy_allowance=True)
+
+    def test_full_store_ordinary_cleanup_failures_keep_primary_and_both_cleanup_causes(self):
+        self.assert_cleanup_failure()
 
     def test_database_busy_wait_consumes_original_remaining_deadline(self):
         self.create()

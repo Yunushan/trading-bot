@@ -222,14 +222,38 @@ class IndexedIntentSession:
                 full._sql(self._connection, deadline, "COMMIT")
                 self._files()
         except BaseException as exc:
+            cleanup_errors: list[BaseException] = []
             try:
                 if not self._closed and self._connection.in_transaction:
+                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    self._connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
                     self._connection.rollback()
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
             finally:
                 self._invalidation = "fenced"
-                self.close()
-            if isinstance(exc, (sqlite3.Error, OSError)):
-                raise _fail("storage is unavailable or busy") from exc
+                try:
+                    self.close()
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+            for earlier, later in zip(cleanup_errors, cleanup_errors[1:]):
+                later.__cause__ = earlier
+            cleanup = cleanup_errors[-1] if cleanup_errors else None
+            if not isinstance(exc, Exception):
+                if cleanup is not None:
+                    raise exc from cleanup
+                raise
+            for interruption in cleanup_errors:
+                if not isinstance(interruption, Exception):
+                    if cleanup is not None and cleanup is not interruption:
+                        cleanup.__cause__ = exc
+                        raise interruption from cleanup
+                    raise interruption from (interruption.__cause__ or exc)
+            if (isinstance(exc, (sqlite3.Error, OSError))
+                    or any(isinstance(error, (sqlite3.Error, OSError)) for error in cleanup_errors)):
+                raise _fail("storage is unavailable or busy") from (cleanup or exc)
+            if cleanup is not None:
+                raise cleanup from exc
             raise
 
     def _row(self, client_id: str, deadline: float) -> dict[str, object] | None:
