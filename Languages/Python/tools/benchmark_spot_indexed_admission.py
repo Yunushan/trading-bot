@@ -9,12 +9,14 @@ import argparse
 import gc
 import hashlib
 import json
+import os
 import socket
 import sys
 import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -97,9 +99,29 @@ class _Traffic:
         return original(*args, **kwargs)
 
 
+def _checkpoint(result: dict[str, Any], callback: Callable[[dict[str, Any]], None] | None) -> None:
+    if callback is not None:
+        callback(json.loads(json.dumps(result, allow_nan=False)))
+
+
+def _atomic_report(path: Path, report: dict[str, Any]) -> None:
+    raw = json.dumps(report, indent=2, allow_nan=False) + "\n"
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stops: int = 2,
                       residual_stops: int = 2, attempt_depth: int = 3, residual_depth: int = 3,
-                      concurrent_rounds: int = 2) -> dict[str, Any]:
+                      concurrent_rounds: int = 2,
+                      checkpoint: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     profiles.validate_opo_counts(count, original_stops, residual_stops, attempt_depth, residual_depth)
     if type(samples) is not int or not 1 <= samples <= 25 or type(concurrent_rounds) is not int or not 0 <= concurrent_rounds <= 10:
         raise ValueError("Bounded positive samples and concurrency rounds are required.")
@@ -116,6 +138,8 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
     used_ids = runtime.used_spot_client_order_ids(records)
     owner: Any = _CapacityOwner(records)  # Methods are bound by the actual product runtime.
     result: dict[str, Any] = {"record_count": count, "workload": workload,
+                              "completed": False, "stage": "synthetic_setup", "final_audit": "not_started",
+                              "history_preserved": None, "historical_ids_preserved": None, "store_id_preserved": None,
                               "post_write_proof": ("continuous native Windows SQLite share-deny guard and change receipt"
                                                    if sys.platform == "win32" else
                                                    "fresh complete verification within a pinned file-change receipt")}
@@ -132,19 +156,27 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
             locks.write_ledger(path, payload)
         source_size = path.stat().st_size
         original_store_id = payload["store_id"]
+        result.update(source_json_bytes=source_size, stage="offline_migration")
+        _checkpoint(result, checkpoint)
         started = time.perf_counter()
         cutover = migrate_spot_indexed_intent_store(
             owner, acknowledgement=PROVISION_ACK, reconciliation_reference="synthetic-indexed-capacity-cutover",
         )
         result["offline_migration_ms"] = (time.perf_counter() - started) * 1000
+        result["stage"] = "offline_rearm"
+        _checkpoint(result, checkpoint)
         rearm_spot_execution_owner(owner, acknowledgement=PROVISION_ACK,
                                   reconciliation_reference="synthetic-indexed-capacity-rearm")
+        result["stage"] = "full_startup"
+        _checkpoint(result, checkpoint)
         started = time.perf_counter()
         owner._ensure_spot_execution_owner()
         result["full_startup_ms"] = (time.perf_counter() - started) * 1000
         del records, payload
         gc.collect()
         try:
+            result["stage"] = "warm_measurement"
+            _checkpoint(result, checkpoint)
             traffic = _Traffic()
             original_read, original_verify = runtime._read_ledger, backend._verified
             stack.enter_context(patch.object(backend, "_sql", side_effect=traffic.sql))
@@ -156,6 +188,16 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
             samples_by_operation: dict[str, list[float]] = {}
             traffic_by_operation: dict[str, list[dict[str, int]]] = {}
             admission_ids: list[str] = []
+            contention: list[dict[str, Any]] = []
+            def report_measurements(stage):
+                result.update(
+                    stage=stage, warm_latencies={name: baseline.latency_summary(values)
+                                                for name, values in samples_by_operation.items()},
+                    warm_sql_traffic=dict(traffic.values), warm_sql_traffic_by_operation=traffic_by_operation,
+                    paired_contention=contention,
+                    active_stop_get_totals=dict(owner.client.calls), orders_submitted=0,
+                )
+                _checkpoint(result, checkpoint)
             def measure(name, function):
                 before = dict(traffic.values)
                 started = time.perf_counter()
@@ -199,7 +241,7 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
                     pending_executed_qty="0", pending_original_qty="0",
                 )
 
-            contention: list[dict[str, Any]] = []
+            report_measurements("paired_measurement")
             def contender(role, barrier):
                 barrier.wait(timeout=10)
                 started = time.perf_counter()
@@ -221,35 +263,38 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
                     barrier = threading.Barrier(2)
                     futures = [executor.submit(contender, role, barrier) for role in ("reader", "writer")]
                     contention.extend(future.result(timeout=1800) for future in futures)
-            result["warm_latencies"] = {name: baseline.latency_summary(values)
-                                        for name, values in samples_by_operation.items()}
-            result["warm_sql_traffic"] = dict(traffic.values)
-            result["warm_sql_traffic_by_operation"] = traffic_by_operation
-            result["paired_contention"] = contention
             result["paired_operations_all_completed"] = all(row["outcome"] == "completed" for row in contention)
+            report_measurements("warm_measurements_complete")
         finally:
             # Close the actual session before releasing the owner and checking the full backend.
             close_indexed_session(owner._spot_execution_owner)
             owner._spot_execution_owner.close()
         # Verification is intentionally outside the instrumented warm measurement.
+        result.update(stage="final_audit", final_audit="running")
+        _checkpoint(result, checkpoint)
+        started = time.perf_counter()
         with locks.ledger_transaction(path):
             final = original_read(path, expected_binding=runtime._intent_binding(owner))
             final_records = final["intents"]
             originals = {key: row for key, row in final_records.items() if key in initial_ids}
-            if (len(originals) != count or set(final_records) != initial_ids | set(admission_ids)
+            if (final["store_id"] != original_store_id or len(originals) != count
+                    or set(final_records) != initial_ids | set(admission_ids)
                     or profiles.immutable_history_digest(originals, mutable_client_ids=set(active_ids)) != immutable_digest
                     or runtime.used_spot_client_order_ids(originals) != used_ids
                     or any(final_records[key]["state"] != "rejected" for key in admission_ids)):
                 raise AssertionError("History, identifiers or synthetic terminal admissions changed.")
             result.update(history_preserved=True, historical_ids_preserved=True,
                           store_id_preserved=final["store_id"] == original_store_id)
+        _checkpoint(result, checkpoint)
         expected_gets = {name: number * samples * 3 for name, number in workload["expected_gets_per_refresh"].items()}
         if owner.client.calls != expected_gets:
             raise AssertionError("An actual admission boundary omitted an exact active-stop GET.")
         result.update(source_json_bytes=source_size, database_bytes=Path(cast(str, cutover["database_path"])).stat().st_size,
                       active_stop_get_totals=dict(owner.client.calls), orders_submitted=0,
                       scope="actual product intent methods and owner gate with synthetic account and GET replies",
-                      physical_io_measured=False, operator_budget_accepted=False, completed=True)
+                      physical_io_measured=False, operator_budget_accepted=False, completed=True,
+                      stage="completed", final_audit="completed", final_audit_ms=(time.perf_counter() - started) * 1000)
+        _checkpoint(result, checkpoint)
     return result
 
 
@@ -277,7 +322,19 @@ def main(argv=None):
     report = {"source": source, "hardware": baseline.hardware_identity(), "results": [],
               "samples_are_descriptive": True, "source_unchanged": None,
               "started_at": datetime.now(timezone.utc).isoformat()}
-    for count in args.records:
+    report_path = evidence / "report.json"
+    _atomic_report(report_path, report)
+    for index, count in enumerate(args.records):
+        checkpoint_path = evidence / f"workload-{index + 1:03d}-{count}.json"
+        report["results"].append({"record_count": count, "completed": False, "stage": "resource_check",
+                                  "final_audit": "not_started", "history_preserved": None,
+                                  "historical_ids_preserved": None, "store_id_preserved": None})
+        def checkpoint(snapshot):
+            report["results"][index] = json.loads(json.dumps(snapshot, allow_nan=False))
+            _atomic_report(checkpoint_path, {"source": source, "source_unchanged": report["source_unchanged"],
+                                             "result": report["results"][index]})
+            _atomic_report(report_path, report)
+        checkpoint(report["results"][index])
         estimated_memory, estimated_disk = baseline.resource_estimates(
             count, profile="opo-heavy", attempt_depth=args.attempt_depth,
             residual_stops=args.residual_stops, residual_depth=args.residual_depth,
@@ -288,29 +345,39 @@ def main(argv=None):
         available_memory = baseline.hardware_identity().get("ram_available_bytes")
         free_disk = shutil.disk_usage(evidence).free
         if (available_memory is not None and estimated_memory > available_memory // 2) or free_disk < estimated_disk:
-            report["results"].append({"record_count": count, "completed": False, "skipped": True,
-                                      "reason": "conservative memory/free-disk resource bound",
-                                      "estimated_memory_bytes": estimated_memory,
-                                      "estimated_disk_bytes": estimated_disk,
-                                      "ram_available_bytes": available_memory, "free_disk_bytes": free_disk})
+            row = report["results"][index]
+            row.update(skipped=True, stage="skipped", reason="conservative memory/free-disk resource bound",
+                       estimated_memory_bytes=estimated_memory, estimated_disk_bytes=estimated_disk,
+                       ram_available_bytes=available_memory, free_disk_bytes=free_disk)
+            checkpoint(row)
             continue
-        print(json.dumps({"measuring_synthetic_records": count}), flush=True)
+        print(json.dumps({"measuring_synthetic_records": count, "checkpoint": str(checkpoint_path),
+                          "report": str(report_path)}), flush=True)
         try:
             with tempfile.TemporaryDirectory(prefix=baseline.TEMP_PREFIX) as directory:
-                report["results"].append(benchmark_indexed(
+                result = benchmark_indexed(
                     Path(directory), count, samples=args.samples, original_stops=args.original_stops,
                     residual_stops=args.residual_stops, attempt_depth=args.attempt_depth,
                     residual_depth=args.residual_depth, concurrent_rounds=args.concurrent_rounds,
-                ))
+                    checkpoint=checkpoint,
+                )
+                checkpoint(result)
         except (LiveTradingSafetyError, AssertionError, OSError) as exc:
-            report["results"].append({"record_count": count, "completed": False,
-                                      "error_type": type(exc).__name__, "error": str(exc)})
+            row = report["results"][index]
+            row.update(completed=False, failed_stage=row["stage"], stage="failed",
+                       error_type=type(exc).__name__, error=str(exc))
+            if row["final_audit"] == "running":
+                row["final_audit"] = "failed"
+            checkpoint(row)
     final_source = baseline.source_identity()
     final_source["indexed_benchmark_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     report["source_unchanged"] = report["source"] == final_source
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
-    path = evidence / "report.json"
-    path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    path = report_path
+    for index, row in enumerate(report["results"]):
+        _atomic_report(evidence / f"workload-{index + 1:03d}-{row['record_count']}.json",
+                       {"source": source, "source_unchanged": report["source_unchanged"], "result": row})
+    _atomic_report(path, report)
     completed = all(row.get("completed") for row in report["results"])
     print(json.dumps({"report": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                       "source_unchanged": report["source_unchanged"], "all_workloads_completed": completed}))

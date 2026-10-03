@@ -165,6 +165,148 @@ class SpotIndexedIntentSelectiveTests(unittest.TestCase):
         self.assertIn('new-selective-buy', view.unresolved_ids)
         self.assertEqual(('new-selective-buy',), view.owners('new-selective-buy'))
 
+    def test_exact_original_and_residual_gets_reuse_complete_projection_but_change_state(self):
+        # Install the in-memory GET transport before pinning the wrapper context.
+        self.session.close()
+        self.wrapper.client = profiles.SyntheticOpoVenue(self.payload['intents'])
+        self.wrapper._spot_execution_owner = self.owner
+        self.session = self.open()
+        self.addCleanup(self.session.close)
+        complete = (self.session._active, self.session._unresolved,
+                    self.session._reserved, self.session._owners)
+        initial_receipt = self.session.receipt
+        initial_records = self.call('admission_view').active_records
+        alias_check = runtime._assert_spot_opo_cancel_alias
+        ownership_check = full._reject_new_alias_owners
+
+        def reject_new_owners(old, new):
+            # Portable complete verification builds its own full sets. Warm
+            # refresh must not scan the cached historical owners for no new ID.
+            self.assertIsNot(complete[2], old)
+            return ownership_check(old, new)
+
+        proofs = []
+        with patch.object(runtime, '_assert_spot_opo_cancel_alias', wraps=alias_check) as aliases, \
+                patch.object(full, '_reject_new_alias_owners', side_effect=reject_new_owners):
+            for observed_at in ('2026-10-03T14:40:00Z', '2026-10-03T14:41:00Z'):
+                before = self.session.receipt
+                with patch.object(runtime, '_now', return_value=observed_at):
+                    proof = runtime._refresh_spot_active_protection(self.wrapper)
+                proofs.append(proof)
+                self.assertEqual(set(initial_records), set(proof[1]))
+                self.assertNotEqual(initial_records, proof[1])
+                self.assertEqual(before.revision + 2, self.session.receipt.revision)
+                self.assertNotEqual(before.state_digest, self.session.receipt.state_digest)
+                self.assertNotEqual(before.head, self.session.receipt.head)
+                self.assertEqual(initial_receipt.projection_digest, self.session.receipt.projection_digest)
+                for expected, actual in zip(complete, (self.session._active, self.session._unresolved,
+                                                       self.session._reserved, self.session._owners)):
+                    self.assertIs(expected, actual)
+                view = self.call('admission_view')
+                view.assert_fresh(proof)
+                checked = self.read_full()
+                self.assertEqual(self.session.receipt, checked.indexed_snapshot.receipt)
+                self.assertEqual(proof[1], runtime._active_spot_protection_records(checked['intents']))
+                for key, original in initial_records.items():
+                    for history in ('strategy_exit_history', 'residual_stop_history'):
+                        if history in original:
+                            self.assertEqual(original[history], checked['intents'][key][history])
+            self.assertTrue(any(call.kwargs.get('owners') is complete[3] for call in aliases.call_args_list))
+        self.assertNotEqual(proofs[0][1], proofs[1][1])
+        self.assertEqual({'get_order_list': 2, 'get_order': 6}, self.wrapper.client.calls)
+        before = self.session.receipt
+        key = 'syn-list-00000001'
+        self.assertIsNone(self.call('cas_record', key, initial_records[key], expected_record=initial_records[key]))
+        self.assertEqual(before, self.session.receipt)
+        before_bytes = self.database_bytes()
+        with self.assertRaisesRegex(LiveTradingSafetyError, 'protection changed'):
+            self.call('insert_record', self.new_record(), protection_proof=proofs[0])
+        self.assertEqual(before, self.session.receipt)
+        self.assertTrue(self.session._closed)
+        self.assertEqual(before_bytes, self.database_bytes())
+        checked = self.read_full()
+        self.assertNotIn('new-selective-buy', checked['intents'])
+        self.assertEqual(proofs[1][1], runtime._active_spot_protection_records(checked['intents']))
+
+    def test_changed_active_and_unresolved_membership_recomputes_complete_projection(self):
+        key = 'syn-list-00000001'
+        old = self.call('read_record', key)
+        before = self.session.receipt
+        complete = (self.session._active, self.session._unresolved,
+                    self.session._reserved, self.session._owners)
+        acknowledged = {**old, 'residual_stop_state': 'acknowledged', 'residual_stop_query_verified': False}
+        self.call('cas_record', key, acknowledged, expected_record=old)
+        self.assertNotEqual(before.projection_digest, self.session.receipt.projection_digest)
+        self.assertNotIn(key, self.session._active)
+        self.assertIn(key, self.session._unresolved)
+        for expected, actual in zip(complete, (self.session._active, self.session._unresolved,
+                                               self.session._reserved, self.session._owners)):
+            self.assertIsNot(expected, actual)
+        checked = self.read_full()
+        self.assertEqual(acknowledged, checked['intents'][key])
+        self.assertEqual(self.session.receipt, checked.indexed_snapshot.receipt)
+        self.assertEqual(tuple(sorted(self.session._active)), checked.indexed_snapshot.active_ids)
+        self.assertEqual((key,), checked.indexed_snapshot.unresolved_ids)
+        self.assertEqual(tuple(sorted(complete[2])), checked.indexed_snapshot.reserved_owners)
+
+    def test_changed_only_unresolved_membership_recomputes_projection(self):
+        record = self.new_record()
+        self.call('insert_record', record, protection_proof=self.proof())
+        before = self.session.receipt
+        active, unresolved = self.session._active, self.session._unresolved
+        rejected = {**record, 'state': 'rejected'}
+        self.call('cas_record', record['client_order_id'], rejected, expected_record=record)
+        self.assertNotEqual(before.projection_digest, self.session.receipt.projection_digest)
+        self.assertEqual(active, self.session._active)
+        self.assertIsNot(active, self.session._active)
+        self.assertIsNot(unresolved, self.session._unresolved)
+        checked = self.read_full()
+        self.assertEqual(rejected, checked['intents'][record['client_order_id']])
+        self.assertEqual(self.session.receipt, checked.indexed_snapshot.receipt)
+        self.assertEqual((), checked.indexed_snapshot.unresolved_ids)
+
+    def test_new_id_recomputes_projection_then_field_removal_keeps_historical_owner(self):
+        key, identifier = 'synthetic-history-00000000', 'selective-new-historical-id'
+        old = self.call('read_record', key)
+        before = self.session.receipt
+        active, unresolved = self.session._active.copy(), self.session._unresolved.copy()
+        old_reserved, old_owners = self.session._reserved, self.session._owners
+        replacement = {**old, 'strategy_exit_client_order_id': identifier}
+        self.call('cas_record', key, replacement, expected_record=old)
+        self.assertNotEqual(before.projection_digest, self.session.receipt.projection_digest)
+        self.assertEqual(active, self.session._active)
+        self.assertEqual(unresolved, self.session._unresolved)
+        self.assertIsNot(old_reserved, self.session._reserved)
+        self.assertIsNot(old_owners, self.session._owners)
+        self.assertEqual(len(old_reserved) + 1, len(self.session._reserved))
+        checked = self.read_full()
+        self.assertEqual(replacement, checked['intents'][key])
+        self.assertEqual(self.session.receipt, checked.indexed_snapshot.receipt)
+        self.assertEqual((key,), checked.indexed_snapshot.owners(identifier))
+        complete = (self.session._active, self.session._unresolved,
+                    self.session._reserved, self.session._owners)
+        before = self.session.receipt
+        without = deepcopy(replacement)
+        del without['strategy_exit_client_order_id']
+        self.call('cas_record', key, without, expected_record=replacement)
+        self.assertEqual(before.projection_digest, self.session.receipt.projection_digest)
+        self.assertNotEqual(before.state_digest, self.session.receipt.state_digest)
+        for expected, actual in zip(complete, (self.session._active, self.session._unresolved,
+                                               self.session._reserved, self.session._owners)):
+            self.assertIs(expected, actual)
+        checked = self.read_full()
+        self.assertEqual(without, checked['intents'][key])
+        self.assertEqual(self.session.receipt, checked.indexed_snapshot.receipt)
+        self.assertEqual((key,), checked.indexed_snapshot.owners(identifier))
+        before = self.session.receipt
+        before_bytes = self.database_bytes()
+        with self.assertRaisesRegex(LiveTradingSafetyError, 'historical client'):
+            self.call('insert_record', self.new_record(identifier), protection_proof=self.proof())
+        self.assertEqual(before, self.session.receipt)
+        self.assertTrue(self.session._closed)
+        self.assertEqual(before_bytes, self.database_bytes())
+        self.assertNotIn(identifier, self.read_full()['intents'])
+
     def test_late_whole_record_result_returns_none_without_overwriting_committed_observation(self):
         key = 'syn-list-00000000'
         old = self.call('read_record', key)

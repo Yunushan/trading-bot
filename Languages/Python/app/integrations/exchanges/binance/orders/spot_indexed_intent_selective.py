@@ -313,23 +313,38 @@ class IndexedIntentSession:
         if old is not None:
             full._preserve_record(old, record)
         projected_active, projected_unresolved, additions = full._projections({key: record}, self._rules)
-        full._reject_new_alias_owners(self._reserved, additions)
-        next_owners = {identifier: owners.copy() for identifier, owners in self._owners.items()}
-        for identifier, owner in additions:
-            next_owners.setdefault(identifier, set()).add(owner)
+        new_reservations = additions - self._reserved
+        previous = self._receipt
+        unchanged_projection = (
+            old is not None and not new_reservations
+            and (key in self._active) == (key in projected_active)
+            and (key in self._unresolved) == (key in projected_unresolved)
+        )
+        if unchanged_projection:
+            # Reservations only grow, and this existing row changes neither
+            # complete membership set. Their previous commitment is identical.
+            active, unresolved, reserved, next_owners = (
+                self._active, self._unresolved, self._reserved, self._owners,
+            )
+            projection_hash = previous.projection_digest
+            active_count, unresolved_count, reserved_count = len(active), len(unresolved), len(reserved)
+        else:
+            full._reject_new_alias_owners(self._reserved, additions)
+            next_owners = {identifier: owners.copy() for identifier, owners in self._owners.items()}
+            for identifier, owner in additions:
+                next_owners.setdefault(identifier, set()).add(owner)
+            active, unresolved = self._active - {key} | projected_active, self._unresolved - {key} | projected_unresolved
+            reserved = self._reserved | additions
+            projection_hash, active_count, unresolved_count, reserved_count = full._projection_receipt(active, unresolved, reserved)
         alias = record.get("pending_observed_client_order_id")
         if isinstance(alias, str):
             # The owned per-record helper consumes COMPLETE owners. Its first
             # argument is unused when owners are supplied; no ledger is invented.
             _assert_spot_opo_cancel_alias({}, key, record, alias, owners=next_owners)
-        previous = self._receipt
         seq = previous.revision + 1
         old_item = self._record_receipts.get(key)
         item = full.IndexedRecordReceipt(key, old_item.revision + 1 if old_item is not None else 1, full._digest(record))
         receipts = {**self._record_receipts, key: item}
-        active, unresolved = self._active - {key} | projected_active, self._unresolved - {key} | projected_unresolved
-        reserved = self._reserved | additions
-        projection_hash, active_count, unresolved_count, reserved_count = full._projection_receipt(active, unresolved, reserved)
         metadata = full._decode(self._metadata)
         state_hash = full._state_digest(metadata, receipts)
         changed_hash = full._digest([[key, item.revision, item.digest]])
@@ -347,7 +362,7 @@ class IndexedIntentSession:
             sql(f"DELETE FROM {table} WHERE client_id=?", (key,))
             if key in expected:
                 sql(f"INSERT INTO {table} VALUES (?)", (key,))
-        for identifier, owner in sorted(additions - self._reserved):
+        for identifier, owner in sorted(new_reservations):
             sql("INSERT INTO reserved_ids VALUES (?,?)", (identifier, owner))
         sql("UPDATE store_state SET revision=?,head=?,state_digest=?,projection_digest=? WHERE singleton=1", (seq, head, state_hash, projection_hash))
         next_receipt = full.IndexedStoreReceipt(previous.path, previous.logical_path, previous.file_identity,

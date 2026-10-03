@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from copy import deepcopy
+import math
 import multiprocessing
 from pathlib import Path
 import socket
@@ -573,6 +574,241 @@ class SpotIndexedIntentStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(LiveTradingSafetyError, 'opaque history'):
             self.replace(candidate, current)
         self.assertEqual(current, self.read())
+
+
+class IndexedValidatorSerializationTests(unittest.TestCase):
+    def setUp(self):
+        self.payload = fixtures.synthetic_payload(6, 2)
+        self.binding = deepcopy(self.payload['binding'])
+        self.enterContext(patch.object(socket.socket, 'connect', side_effect=AssertionError('No network')))
+        self.enterContext(patch.object(socket, 'create_connection', side_effect=AssertionError('No network')))
+
+    @staticmethod
+    def original_validate(payload, rules, expected_binding):
+        # Frozen six-serialization behavior before the constant-factor change.
+        detached = indexed._decode(indexed._canonical(payload))
+        original = indexed._canonical(detached)
+        checked = rules.validate_ledger(detached, expected_binding=expected_binding)
+        if (indexed._canonical(checked) != original or indexed._canonical(detached) != original
+                or checked.get('format_version') != 2):
+            raise indexed._fail('requires unchanged validated v2 data')
+        return indexed._decode(original)
+
+    @staticmethod
+    def rules(callback):
+        return indexed.IndexedIntentRules(callback, RULES.is_unresolved,
+                                          RULES.has_active_protection, RULES.used_client_ids)
+
+    @staticmethod
+    def outcome(implementation, payload, rules, binding):
+        try:
+            value = implementation(payload, rules, binding)
+            return 'accepted', indexed._canonical(value)
+        except (ValueError, TypeError, RuntimeError, AttributeError) as exc:
+            chain = []
+            while exc is not None:
+                chain.append((type(exc).__name__, str(exc)))
+                exc = exc.__cause__
+            return 'rejected', chain
+
+    def test_owned_validator_matches_original_for_complete_input_matrix(self):
+        cases = [('ordinary', self.payload)]
+        for label, value in (
+            ('opaque', {'nested': [{'history': [None, True, 7, 2.5]}]}),
+            ('numeric-single-key', {7: 'numeric keys become strings'}),
+            ('numeric-noncanonical-order', {2: 'two', 10: 'ten'}),
+            ('float-noncanonical-order', {2.0: 'two', 10.0: 'ten'}),
+            ('unicode', {'İ': '雪\u0000', 'surrogate': '\ud800'}),
+            ('negative-zero', -0.0),
+            ('tuple', (1, {'nested': ('kept', False)})),
+            ('large-int', 1 << 200),
+            ('nan', float('nan')),
+            ('positive-infinity', float('inf')),
+            ('negative-infinity', float('-inf')),
+            ('unsupported', object()),
+        ):
+            candidate = deepcopy(self.payload)
+            candidate['opaque_extension'] = value
+            cases.append((label, candidate))
+        for label, field, value in (
+            ('legacy', 'format_version', 1),
+            ('float-format', 'format_version', 2.0),
+            ('malformed-intents', 'intents', []),
+            ('wrong-binding', 'binding', {**self.binding, 'credential_fingerprint': 'e' * 64}),
+        ):
+            candidate = deepcopy(self.payload)
+            candidate[field] = value
+            cases.append((label, candidate))
+        candidate = deepcopy(self.payload)
+        candidate['intents'][next(iter(candidate['intents']))]['state'] = 'invalid'
+        cases.extend([('bad-record', candidate), ('top-list', []), ('top-scalar', 2)])
+        for label, payload in cases:
+            with self.subTest(case=label):
+                observations = []
+                for implementation in (self.original_validate, indexed._validate):
+                    calls = []
+                    def owned(detached, *, expected_binding=None):
+                        calls.append(expected_binding is self.binding)
+                        return runtime.validate_order_intent_ledger(detached, expected_binding=expected_binding)
+                    result = self.outcome(implementation, deepcopy(payload), self.rules(owned), self.binding)
+                    observations.append((result, calls))
+                self.assertEqual(observations[0], observations[1])
+
+    def test_callback_mutations_returns_and_exceptions_match_original(self):
+        for mode in ('same', 'equal-copy', 'mutated-input-pristine-output',
+                     'changed-output', 'mutated-input-and-output', 'raises', 'wrong-format'):
+            with self.subTest(mode=mode):
+                observations = []
+                for implementation in (self.original_validate, indexed._validate):
+                    payload = deepcopy(self.payload)
+                    before = indexed._canonical(payload)
+                    calls = []
+                    def callback(detached, *, expected_binding=None):
+                        calls.append(expected_binding is self.binding)
+                        pristine = deepcopy(detached)
+                        if mode == 'raises':
+                            raise ValueError('synthetic callback failure')
+                        if mode in ('mutated-input-pristine-output', 'mutated-input-and-output'):
+                            detached['operator_annotation'] = 'callback changed its input'
+                        if mode in ('changed-output', 'mutated-input-and-output'):
+                            pristine['operator_annotation'] = 'callback changed its output'
+                        if mode == 'wrong-format':
+                            pristine['format_version'] = 1
+                        if mode == 'same':
+                            return detached
+                        return pristine
+                    result = self.outcome(implementation, payload, self.rules(callback), self.binding)
+                    self.assertEqual(before, indexed._canonical(payload))
+                    observations.append((result, calls))
+                self.assertEqual(observations[0], observations[1])
+                self.assertEqual([True], observations[1][1])
+                expected = 'accepted' if mode in ('same', 'equal-copy') else 'rejected'
+                self.assertEqual(expected, observations[1][0][0])
+
+    def test_numeric_key_order_rejects_before_a_restoring_callback(self):
+        for implementation in (self.original_validate, indexed._validate):
+            with self.subTest(implementation=implementation.__name__):
+                payload = deepcopy(self.payload)
+                payload['opaque_extension'] = {2: 'two', 10: 'ten'}
+                calls = []
+                def restore_keys(detached, *, expected_binding=None):
+                    calls.append(True)
+                    detached['opaque_extension'] = {
+                        int(key): value for key, value in detached['opaque_extension'].items()
+                    }
+                    return detached
+                with self.assertRaisesRegex(LiveTradingSafetyError, 'noncanonical JSON'):
+                    implementation(payload, self.rules(restore_keys), self.binding)
+                self.assertEqual([], calls)
+
+    def test_mapping_hooks_preserve_mutation_checks_and_error_precedence(self):
+        for mode in ('checked-mutates-input', 'same-object-nested-hook', 'checked-hook-raises'):
+            with self.subTest(mode=mode):
+                observations = []
+                for implementation in (self.original_validate, indexed._validate):
+                    payload = deepcopy(self.payload)
+                    payload['opaque_extension'] = {'value': 'original'}
+                    before = indexed._canonical(payload)
+                    events = []
+                    def callback(detached, *, expected_binding=None):
+                        events.append('callback')
+                        self.assertIs(expected_binding, self.binding)
+                        if mode == 'same-object-nested-hook':
+                            class Nested(dict):
+                                def items(self):
+                                    events.append('nested-items')
+                                    pairs = list(super().items())
+                                    detached['late_mutation'] = 'after parent items were captured'
+                                    return pairs
+                            detached['opaque_extension'] = Nested(detached['opaque_extension'])
+                            return detached
+                        class Checked(dict):
+                            def items(self):
+                                events.append('checked-items')
+                                if mode == 'checked-hook-raises':
+                                    raise ValueError('synthetic checked serialization precedence')
+                                detached['late_mutation'] = 'checked encoding changed input'
+                                return super().items()
+                            def get(self, key, default=None):
+                                events.append('checked-get')
+                                return super().get(key, default)
+                        checked = Checked(deepcopy(detached))
+                        if mode == 'checked-hook-raises':
+                            detached['late_mutation'] = 'input already differs'
+                        return checked
+                    result = self.outcome(implementation, payload, self.rules(callback), self.binding)
+                    self.assertEqual(before, indexed._canonical(payload))
+                    observations.append((result, events))
+                self.assertEqual(observations[0], observations[1])
+                self.assertEqual('rejected', observations[1][0][0])
+                if mode == 'same-object-nested-hook':
+                    self.assertEqual(['callback', 'nested-items', 'nested-items'], observations[1][1])
+                else:
+                    self.assertEqual(['callback', 'checked-items'], observations[1][1])
+                if mode == 'checked-hook-raises':
+                    self.assertIn('contains unsupported data', observations[1][0][1][0][1])
+                    self.assertEqual(('ValueError', 'synthetic checked serialization precedence'),
+                                     observations[1][0][1][1])
+
+    def test_caller_retained_callback_and_result_graphs_are_isolated(self):
+        for implementation in (self.original_validate, indexed._validate):
+            for separate in (False, True):
+                with self.subTest(implementation=implementation.__name__, separate=separate):
+                    caller = deepcopy(self.payload)
+                    caller['opaque_extension'] = {'levels': [{'leaves': ['original']}]}
+                    retained = {}
+                    def callback(detached, *, expected_binding=None):
+                        self.assertIs(expected_binding, self.binding)
+                        retained['input'] = detached
+                        retained['checked'] = deepcopy(detached) if separate else detached
+                        return retained['checked']
+                    result = implementation(caller, self.rules(callback), self.binding)
+                    def leaves(value):
+                        return value['opaque_extension']['levels'][0]['leaves']
+                    self.assertIsNot(result, caller)
+                    self.assertIsNot(result, retained['input'])
+                    self.assertIsNot(result, retained['checked'])
+                    leaves(result).append('result')
+                    self.assertEqual(['original'], leaves(caller))
+                    self.assertEqual(['original'], leaves(retained['input']))
+                    self.assertEqual(['original'], leaves(retained['checked']))
+                    leaves(retained['input']).append('input')
+                    self.assertEqual(['original', 'result'], leaves(result))
+                    self.assertEqual(['original'], leaves(caller))
+                    if separate:
+                        leaves(retained['checked']).append('checked')
+                        self.assertEqual(['original', 'input'], leaves(retained['input']))
+                    leaves(caller).append('caller')
+                    self.assertEqual(['original', 'result'], leaves(result))
+                    self.assertNotIn('caller', leaves(retained['input']))
+                    self.assertNotIn('caller', leaves(retained['checked']))
+
+    def test_owned_validation_uses_four_serializations_instead_of_six(self):
+        for implementation, count in ((self.original_validate, 6), (indexed._validate, 4)):
+            with self.subTest(implementation=implementation.__name__):
+                with patch.object(indexed, '_canonical', wraps=indexed._canonical) as encoded:
+                    result = implementation(deepcopy(self.payload), RULES, self.binding)
+                    self.assertEqual(count, encoded.call_count)
+                self.assertEqual(self.payload, result)
+
+    def test_external_decode_keeps_strict_json_contract(self):
+        for raw, reason in (
+            ('{"a":1,"a":2}', 'duplicate JSON keys'),
+            ('{"a":NaN}', 'nonfinite JSON'),
+            ('{"a":Infinity}', 'nonfinite JSON'),
+            ('{"a":-Infinity}', 'nonfinite JSON'),
+            ('{ "a":1}', 'noncanonical JSON'),
+            ('{"b":2,"a":1}', 'noncanonical JSON'),
+            ('[]', 'noncanonical JSON'),
+            ('2', 'noncanonical JSON'),
+            ('{"a":}', 'malformed JSON'),
+        ):
+            with self.subTest(raw=raw), self.assertRaisesRegex(LiveTradingSafetyError, reason):
+                indexed._decode(raw)
+        raw = r'{"a":"\ud800","b":-0.0}'
+        value = indexed._decode(raw)
+        self.assertEqual(raw, indexed._canonical(value))
+        self.assertEqual(-1.0, math.copysign(1.0, value['b']))
 
 
 if __name__ == '__main__':

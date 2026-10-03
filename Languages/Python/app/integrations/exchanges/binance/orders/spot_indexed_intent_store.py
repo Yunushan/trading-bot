@@ -130,7 +130,8 @@ def _digest(value: object) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
-def _decode(raw: str) -> dict[str, object]:
+def _parse_json_dict(raw: str) -> dict[str, object]:
+    """Parse strict JSON syntax and shape; callers establish canonical bytes."""
     def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -146,20 +147,29 @@ def _decode(raw: str) -> dict[str, object]:
         value = json.loads(raw, object_pairs_hook=unique, parse_constant=invalid_constant)
     except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
         raise _fail("contains malformed JSON") from exc
-    if not isinstance(value, dict) or _canonical(value) != raw:
+    if not isinstance(value, dict):
         raise _fail("contains noncanonical JSON")
     return cast(dict[str, object], value)
 
 
+def _decode(raw: str) -> dict[str, object]:
+    value = _parse_json_dict(raw)
+    if _canonical(value) != raw:
+        raise _fail("contains noncanonical JSON")
+    return value
+
+
 def _validate(payload: object, rules: IndexedIntentRules,
               expected_binding: Mapping[str, str] | None) -> dict[str, object]:
-    detached = _decode(_canonical(payload))
-    original = _canonical(detached)
+    original = _canonical(payload)
+    detached = _decode(original)
     checked = rules.validate_ledger(detached, expected_binding=expected_binding)
     if (_canonical(checked) != original or _canonical(detached) != original
             or checked.get("format_version") != 2):
         raise _fail("requires unchanged validated v2 data")
-    return _decode(original)
+    # Initial _decode proved these immutable bytes canonical. Parse again to
+    # detach the result from every container retained by the callback.
+    return _parse_json_dict(original)
 
 
 def _parts(payload: dict[str, object]) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
