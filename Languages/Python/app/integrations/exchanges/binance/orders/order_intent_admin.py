@@ -18,6 +18,7 @@ from .order_intent_provisioning import (
     rearm_spot_execution_owner,
     rotate_spot_owner_credentials,
 )
+from .spot_indexed_intent_migration import migrate_spot_indexed_intent_store
 from .order_intent_runtime import _query_order_intent_exchange, get_order_intent_status
 from .spot_exchange_errors import SPOT_EXCHANGE_ERRORS
 
@@ -26,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "action", choices=(
-            "status", "initialize", "migrate", "migrate-spot", "rearm", "rotate-credentials",
+            "status", "initialize", "migrate", "migrate-spot", "migrate-spot-indexed", "rearm", "rotate-credentials",
             "reconcile-spot", "reconcile-spot-account", "recover-spot-market-fills", "recover-spot-opos",
             "cancel-spot-opos", "rearm-spot-opos",
         ),
@@ -54,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         "reconcile-spot", "reconcile-spot-account", "recover-spot-market-fills", "recover-spot-opos",
         "cancel-spot-opos", "rearm-spot-opos",
     }
+    if args.action == "migrate-spot-indexed" and args.account_type != "Spot":
+        parser.error("Indexed Spot migration requires --account-type Spot.")
     if args.action in reconcile_actions and args.account_type != "Spot":
         parser.error("Spot reconciliation requires --account-type Spot.")
     if args.account_type == "Futures" and not (args.audit_log_path or args.default_intent_path):
@@ -880,6 +883,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.action == "rotate-credentials":
             result = rotate_spot_owner_credentials(
+                owner, acknowledgement=args.acknowledgement,
+                reconciliation_reference=args.reconciliation_reference,
+            )
+        elif args.action == "migrate-spot-indexed":
+            result = migrate_spot_indexed_intent_store(
                 owner, acknowledgement=args.acknowledgement,
                 reconciliation_reference=args.reconciliation_reference,
             )

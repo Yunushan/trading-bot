@@ -18,7 +18,10 @@ from app.settings.execution_mode import execution_environment
 from app.security.redaction import redact_text
 from trading_core.orders import is_exchange_risk_reducing_order, order_execution_from_response
 
-from .order_intent_store import ledger_transaction, ledger_transactions, write_ledger
+from .order_intent_store import (
+    LegacyLedgerWritePayload, current_ledger_deadline, indexed_namespace_exists, ledger_file_identity,
+    ledger_transaction, ledger_transactions, write_ledger,
+)
 from .spot_execution_owner import SpotExecutionOwner, claim_execution_owner
 from .spot_buy_publication_runtime import (
     capture_desktop_entry, desktop_entry_for_submission, desktop_entry_transaction,
@@ -260,7 +263,15 @@ def _ensure_spot_execution_owner(self) -> SpotExecutionOwner:
     uid = _spot_account_uid(self)
     path = _intent_path(self)
     binding = _intent_binding(self)
+    from .spot_indexed_intent_bridge import FullIndexedLedgerPayload
+    from .spot_indexed_intent_hot_runtime import indexed_session_for
+    from .spot_indexed_intent_selective import open_indexed_session
+    previous_owner = getattr(self, "_spot_execution_owner", None)
     with ledger_transaction(path):
+        if isinstance(previous_owner, SpotExecutionOwner):
+            session = indexed_session_for(self, path)
+            if session is not None:
+                return previous_owner
         ledger = _read_ledger(path, expected_binding=binding)
     owner = claim_execution_owner(
         path, uid=uid, environment=binding["environment"],
@@ -268,6 +279,17 @@ def _ensure_spot_execution_owner(self) -> SpotExecutionOwner:
         owner_wrapper=self,
     )
     self._spot_execution_owner = owner
+    try:
+        if isinstance(ledger, FullIndexedLedgerPayload):
+            with ledger_transaction(path):
+                open_indexed_session(owner=owner, owner_wrapper=self, expected_binding=binding,
+                                     deadline=current_ledger_deadline(path),
+                                     expected_authority=ledger.indexed_authority)
+    except BaseException:
+        # Owner close writes its marker. Release the ledger lock before closing.
+        if owner is not previous_owner:
+            owner.close()
+        raise
     return owner
 
 
@@ -292,6 +314,8 @@ def _revoke_spot_execution_owner(self) -> None:
     self._spot_execution_revoked = True
     owner = getattr(self, "_spot_execution_owner", None)
     if isinstance(owner, SpotExecutionOwner):
+        from .spot_indexed_intent_selective import close_indexed_session
+        close_indexed_session(owner)
         owner.close()
 
 
@@ -307,7 +331,10 @@ def _read_ledger(
         return result
 
     try:
+        source_identity = ledger_file_identity(path)
         payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        if ledger_file_identity(path) != source_identity:
+            raise LiveTradingSafetyError("Order intent ledger changed while its complete source was read.")
     except FileNotFoundError as exc:
         raise LiveTradingSafetyError(
             "Order intent ledger is missing; submission is blocked. Restore and reconcile existing history, "
@@ -315,7 +342,15 @@ def _read_ledger(
         ) from exc
     except Exception as exc:
         raise LiveTradingSafetyError(f"Order intent ledger cannot be read: {redact_text(exc)}") from exc
-    return validate_order_intent_ledger(payload, expected_binding=expected_binding, allow_legacy=allow_legacy)
+    if isinstance(payload, dict) and payload.get("format_version") == 3:
+        from .spot_indexed_intent_bridge import read_indexed_ledger
+        return cast(dict[str, object], read_indexed_ledger(path, expected_binding=expected_binding))
+    if indexed_namespace_exists(path):
+        raise LiveTradingSafetyError(
+            "Indexed intent migration has fenced this JSON source; resume or restore the explicit cutover."
+        )
+    checked = validate_order_intent_ledger(payload, expected_binding=expected_binding, allow_legacy=allow_legacy)
+    return LegacyLedgerWritePayload(checked, source_path=path, source_identity=source_identity)
 
 
 def validate_order_intent_ledger(
@@ -1092,7 +1127,10 @@ def _active_spot_protection_records(intents: Mapping[str, object]) -> dict[str, 
 
 
 def _raise_for_duplicate_intent(intents: Mapping[str, object], client_order_id: str) -> None:
-    existing = intents.get(client_order_id)
+    _raise_for_duplicate_record(intents.get(client_order_id), client_order_id)
+
+
+def _raise_for_duplicate_record(existing: object, client_order_id: str) -> None:
     if isinstance(existing, Mapping) and str(existing.get("state") or "") in _BLOCKING_STATES:
         raise LiveTradingSafetyError(
             f"Client order ID {client_order_id} already has state "
@@ -1128,17 +1166,31 @@ def _refresh_spot_active_protection(
     """Obtain exact applied proof for every active stop before one new BUY boundary."""
     path = _intent_path(self)
     with ledger_transaction(path):
-        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
-        intents = ledger["intents"]
-        if not isinstance(intents, dict):
-            raise LiveTradingSafetyError("Order intent ledger is malformed; new Spot exposure is blocked.")
-        if reject_existing_client_order_id is not None:
-            _raise_for_duplicate_intent(intents, reject_existing_client_order_id)
-        _raise_for_unresolved_intents(intents, exclude_client_order_id=exclude_client_order_id)
-        if reject_spot_client_order_ids:
-            _assert_unused_spot_client_ids(intents, reject_spot_client_order_ids)
-        active_records = _active_spot_protection_records(intents)
-        store_id = str(ledger["store_id"])
+        from .spot_indexed_intent_hot_runtime import (
+            assert_view_unresolved, assert_view_unused_ids, indexed_session_for,
+        )
+        session = indexed_session_for(self, path)
+        if session is not None:
+            view = session.admission_view(probe_client_ids=reject_spot_client_order_ids,
+                                          deadline=current_ledger_deadline(path))
+            if reject_existing_client_order_id is not None:
+                _raise_for_duplicate_record(session.read_record(reject_existing_client_order_id,
+                                            deadline=current_ledger_deadline(path)), reject_existing_client_order_id)
+            assert_view_unresolved(view, exclude_client_order_id=exclude_client_order_id)
+            assert_view_unused_ids(view, reject_spot_client_order_ids)
+            active_records, store_id = view.active_records, view.receipt.store_id
+        else:
+            ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+            intents = ledger["intents"]
+            if not isinstance(intents, dict):
+                raise LiveTradingSafetyError("Order intent ledger is malformed; new Spot exposure is blocked.")
+            if reject_existing_client_order_id is not None:
+                _raise_for_duplicate_intent(intents, reject_existing_client_order_id)
+            _raise_for_unresolved_intents(intents, exclude_client_order_id=exclude_client_order_id)
+            if reject_spot_client_order_ids:
+                _assert_unused_spot_client_ids(intents, reject_spot_client_order_ids)
+            active_records = _active_spot_protection_records(intents)
+            store_id = str(ledger["store_id"])
     refreshed: dict[str, dict[str, object]] = {}
     # No monitoring limit or cached timestamp can authorize new exposure.
     for client_order_id in active_records:
@@ -1184,6 +1236,23 @@ def _submit_spot_buy_intent(self, record: Mapping[str, object], *, via: str) -> 
         "symbol": record["symbol"], "side": "BUY", "newClientOrderId": client_order_id,
     }
     with desktop_entry_transaction(self, path, desktop_params, desktop_source):
+        from .spot_indexed_intent_hot_runtime import indexed_session_for
+        session = indexed_session_for(self, path)
+        if session is not None:
+            view = session.admission_view(deadline=current_ledger_deadline(path))
+            assert_desktop_entry_ledger(desktop_source, view.metadata)
+            view.assert_fresh(protection_proof, exclude_client_order_id=client_order_id)
+            current = session.read_record(client_order_id, deadline=current_ledger_deadline(path))
+            if current != record:
+                raise LiveTradingSafetyError("Spot BUY intent changed before submission; reconcile it first.")
+            assert isinstance(current, dict)
+            current.update(state="submitted", updated_at=_now(), last_via=str(via), submitted_at=_now())
+            updated = session.cas_record(client_order_id, current, expected_record=record,
+                                         deadline=current_ledger_deadline(path), protection_proof=protection_proof,
+                                         exclude_client_order_id=client_order_id)
+            if updated is None:
+                raise LiveTradingSafetyError("Spot BUY intent changed before submission; reconcile it first.")
+            return
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
@@ -1238,6 +1307,21 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
     if desktop_source is not None:
         record["desktop_entry_source"] = desktop_source_descriptor(desktop_source[1])
     with desktop_entry_transaction(self, path, params, desktop_source):
+        from .spot_indexed_intent_hot_runtime import indexed_session_for
+        session = indexed_session_for(self, path) if market == "spot" and record.get("side") == "BUY" else None
+        if session is not None:
+            view = session.admission_view(probe_client_ids=(str(record["client_order_id"]),),
+                                          deadline=current_ledger_deadline(path))
+            assert_desktop_entry_ledger(desktop_source, view.metadata)
+            _raise_for_duplicate_record(session.read_record(str(record["client_order_id"]),
+                                        deadline=current_ledger_deadline(path)), str(record["client_order_id"]))
+            from .spot_indexed_intent_hot_runtime import assert_view_unused_ids
+            assert_view_unused_ids(view, (str(record["client_order_id"]),))
+            assert protection_proof is not None
+            view.assert_fresh(protection_proof)
+            session.insert_record(record, protection_proof=protection_proof, deadline=current_ledger_deadline(path))
+            remember_desktop_entry(self, record, desktop_source, view.metadata)
+            return record
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
@@ -1317,6 +1401,18 @@ def _begin_spot_opo_intent(
     if desktop_source is not None:
         record["desktop_entry_source"] = desktop_source_descriptor(desktop_source[1])
     with desktop_entry_transaction(self, path, request, desktop_source):
+        from .spot_indexed_intent_hot_runtime import assert_view_unused_ids, indexed_session_for
+        session = indexed_session_for(self, path)
+        if session is not None:
+            view = session.admission_view(probe_client_ids=client_ids, deadline=current_ledger_deadline(path))
+            assert_desktop_entry_ledger(desktop_source, view.metadata)
+            _raise_for_duplicate_record(session.read_record(str(record["client_order_id"]),
+                                        deadline=current_ledger_deadline(path)), str(record["client_order_id"]))
+            assert_view_unused_ids(view, client_ids)
+            view.assert_fresh(protection_proof)
+            session.insert_record(record, protection_proof=protection_proof, deadline=current_ledger_deadline(path))
+            remember_desktop_entry(self, record, desktop_source, view.metadata)
+            return record
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
@@ -2380,6 +2476,11 @@ def _update_order_intent(self, params: Mapping[str, object], *, state: str, **up
     client_order_id = _client_order_id(params)
     path = _intent_path(self)
     with ledger_transaction(path):
+        from .spot_indexed_intent_hot_runtime import update_indexed_record
+        routed, _updated = update_indexed_record(self, path, client_order_id, state=state,
+                                                expected_record=None, updates=updates)
+        if routed:
+            return
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         intents = ledger["intents"]
         if not isinstance(intents, dict):
@@ -2879,6 +2980,11 @@ def _mark_spot_opo_exit_reconciled(
 def _get_order_intent_record(self, client_order_id: str) -> dict[str, object] | None:
     path = _intent_path(self)
     with ledger_transaction(path):
+        from .spot_indexed_intent_hot_runtime import indexed_session_for
+        session = indexed_session_for(self, path)
+        if session is not None:
+            return cast(dict[str, object] | None,
+                        session.read_record(client_order_id, deadline=current_ledger_deadline(path)))
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         intents = ledger.get("intents")
         record = intents.get(client_order_id) if isinstance(intents, dict) else None
@@ -2942,6 +3048,11 @@ def _update_order_intent_by_id(
 ) -> dict[str, object] | None:
     path = _intent_path(self)
     with ledger_transaction(path):
+        from .spot_indexed_intent_hot_runtime import update_indexed_record
+        routed, updated = update_indexed_record(self, path, client_order_id, state=state,
+                                               expected_record=expected_record, updates=updates)
+        if routed:
+            return cast(dict[str, object] | None, updated)
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         intents = ledger.get("intents")
         if not isinstance(intents, dict):

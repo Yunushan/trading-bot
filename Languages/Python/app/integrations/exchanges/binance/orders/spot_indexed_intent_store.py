@@ -524,19 +524,60 @@ def create_indexed_store(path: Path, payload: object, *, logical_path: Path, rul
             path.unlink()
 
 
+def _read_indexed_snapshot_in_transaction(
+    connection: sqlite3.Connection, path: Path, *, logical_path: Path,
+    rules: IndexedIntentRules, expected_binding: Mapping[str, str] | None, deadline: float,
+    expected_store_id: str | None = None, expected_backend_id: str | None = None,
+) -> IndexedIntentSnapshot:
+    """Complete read core for an already guarded connection and transaction."""
+    _deadline(deadline, logical_path)
+    if not connection.in_transaction:
+        raise _fail("complete read requires its guarded transaction")
+    snapshot = _verified(connection, path, logical_path, deadline, rules, expected_binding)
+    if ((expected_store_id is not None and snapshot.receipt.store_id != expected_store_id)
+            or (expected_backend_id is not None and snapshot.receipt.database_id != expected_backend_id)):
+        raise _fail("store identity changed")
+    return snapshot
+
+
 def read_indexed_snapshot(path: Path, *, logical_path: Path, rules: IndexedIntentRules,
-                          expected_binding: Mapping[str, str], deadline: float,
+                          expected_binding: Mapping[str, str] | None, deadline: float,
                           expected_store_id: str | None = None, expected_backend_id: str | None = None
                           ) -> IndexedIntentSnapshot:
     path, logical_path = _path(path), _path(logical_path)
     with _connection(path, logical_path, deadline) as connection:
         _sql(connection, deadline, "BEGIN")
-        snapshot = _verified(connection, path, logical_path, deadline, rules, expected_binding)
-        if ((expected_store_id is not None and snapshot.receipt.store_id != expected_store_id)
-                or (expected_backend_id is not None and snapshot.receipt.database_id != expected_backend_id)):
-            raise _fail("store identity changed")
+        snapshot = _read_indexed_snapshot_in_transaction(
+            connection, path, logical_path=logical_path, rules=rules,
+            expected_binding=expected_binding, deadline=deadline,
+            expected_store_id=expected_store_id, expected_backend_id=expected_backend_id,
+        )
         _sql(connection, deadline, "COMMIT")
     return snapshot
+
+
+def _replace_indexed_snapshot_in_transaction(
+    connection: sqlite3.Connection, path: Path, detached: dict[str, object], *,
+    expected: IndexedIntentSnapshot, rules: IndexedIntentRules,
+    expected_binding: Mapping[str, str], deadline: float,
+    expected_new_binding: Mapping[str, str] | None = None,
+) -> IndexedIntentSnapshot:
+    """Whole-snapshot CAS core; caller validates payload before its transaction."""
+    _deadline(deadline, expected.receipt.logical_path)
+    if not connection.in_transaction:
+        raise _fail("complete write requires its guarded transaction")
+    if path != expected.receipt.path:
+        raise _fail("source path changed")
+    observed = _verified(connection, path, expected.receipt.logical_path, deadline, rules, expected_binding)
+    if observed.receipt != expected.receipt or observed._payload_json != expected._payload_json:
+        raise _fail("compare-and-swap source changed")
+    if detached.get("binding") != observed.payload.get("binding") and expected_new_binding is None:
+        raise _fail("binding transition requires explicit new binding authority")
+    if _canonical(detached) == observed._payload_json:
+        return observed
+    _append(connection, deadline, observed.receipt.database_id, observed.receipt.logical_path, detached, rules, observed)
+    return _verified(connection, path, observed.receipt.logical_path, deadline, rules,
+                     expected_new_binding or expected_binding)
 
 
 def replace_indexed_snapshot(path: Path, payload: object, *, expected: IndexedIntentSnapshot,
@@ -549,17 +590,11 @@ def replace_indexed_snapshot(path: Path, payload: object, *, expected: IndexedIn
     detached = _validate(payload, rules, expected_new_binding or expected_binding)
     with _connection(path, expected.receipt.logical_path, deadline) as connection:
         _sql(connection, deadline, "BEGIN IMMEDIATE")
-        observed = _verified(connection, path, expected.receipt.logical_path, deadline, rules, expected_binding)
-        if observed.receipt != expected.receipt or observed._payload_json != expected._payload_json:
-            raise _fail("compare-and-swap source changed")
-        if detached.get("binding") != observed.payload.get("binding") and expected_new_binding is None:
-            raise _fail("binding transition requires explicit new binding authority")
-        if _canonical(detached) == observed._payload_json:
-            _sql(connection, deadline, "COMMIT")
-            return observed
-        _append(connection, deadline, observed.receipt.database_id, observed.receipt.logical_path, detached, rules, observed)
-        result = _verified(connection, path, observed.receipt.logical_path, deadline, rules,
-                           expected_new_binding or expected_binding)
+        result = _replace_indexed_snapshot_in_transaction(
+            connection, path, detached, expected=expected, rules=rules,
+            expected_binding=expected_binding, deadline=deadline,
+            expected_new_binding=expected_new_binding,
+        )
         _sql(connection, deadline, "COMMIT")
     return result
 
