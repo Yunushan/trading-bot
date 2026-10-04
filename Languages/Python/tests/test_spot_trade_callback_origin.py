@@ -26,10 +26,12 @@ from app.gui.trade import signal_common_runtime  # noqa: E402
 from app.integrations.exchanges.binance.orders.order_intent_provisioning import PROVISION_ACK, provision_order_intent_store  # noqa: E402
 from app.settings.live_safety import LIVE_TRADING_ACKNOWLEDGEMENT, LiveTradingSafetyError  # noqa: E402
 from test_open_trade_signal_behavior import _OpenSignalWindowStub, _dispatch  # noqa: E402
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case  # noqa: E402
 
 
 class SpotTradeCallbackOriginTests(unittest.TestCase):
     def setUp(self):
+        checkpoint_backend_for_case(self)
         tmp = tempfile.TemporaryDirectory(prefix="spot-callback-origin-")
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()

@@ -32,6 +32,7 @@ from app.integrations.exchanges.binance.orders.order_intent_provisioning import 
 from app.integrations.exchanges.binance.wrapper import BinanceWrapper  # noqa: E402
 from app.settings.live_safety import LIVE_TRADING_ACKNOWLEDGEMENT, LiveTradingSafetyError  # noqa: E402
 from app.core.strategy.orders.strategy_signal_order_result_runtime import _emit_signal_order_info  # noqa: E402
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case  # noqa: E402
 
 
 class _OpenSignalWindowStub:
@@ -132,6 +133,7 @@ class OpenTradeSignalBehaviorTests(unittest.TestCase):
         self.assertIsNone(window._active_trade_event_receipt)
 
     def test_real_primary_buy_event_publishes_fee_aware_quantity_then_actual_intent_marker(self):
+        checkpoint_backend_for_case(self)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             this_file = root / "Languages" / "Python" / "app" / "gui" / "window_shell.py"

@@ -9,10 +9,11 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+from typing import TextIO
 
 from app.security.redaction import redact_text
 from app.settings.live_safety import LiveTradingSafetyError
@@ -342,6 +343,38 @@ def _assert_json_source(path: Path, identity: tuple[int, int, int, int, int] | N
         raise LiveTradingSafetyError("Order intent JSON source changed before publication; replacement is blocked.")
 
 
+def _cleanup_writer(action: Callable[[], object], primary: BaseException | None) -> None:
+    """Attempt cleanup once without replacing primary cancellation or its causes."""
+    try:
+        action()
+    except BaseException as cleanup:
+        if primary is None or cleanup is primary:
+            raise
+        if isinstance(cleanup, (KeyboardInterrupt, SystemExit)) and not isinstance(primary, (KeyboardInterrupt, SystemExit)):
+            raise cleanup from primary
+        cleanup.__context__ = None
+        if primary.__cause__ is not None and primary.__cause__ is not cleanup:
+            cleanup.__cause__ = primary.__cause__
+        raise primary from cleanup
+
+
+@contextmanager
+def _writer_text_handle(fd: int) -> Iterator[TextIO]:
+    try:
+        handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+    except BaseException as exc:
+        _cleanup_writer(lambda: os.close(fd), exc)
+        raise
+    primary: BaseException | None = None
+    try:
+        yield handle
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        _cleanup_writer(handle.close, primary)
+
+
 def write_ledger(path: Path, payload: Mapping[str, object], *,
                  expected_new_binding: Mapping[str, str] | None = None) -> None:
     """Publish JSON or CAS indexed data using the original complete-read authority."""
@@ -364,12 +397,16 @@ def write_ledger(path: Path, payload: Mapping[str, object], *,
     serialized = json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n"
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temp_path = Path(name)
+    primary: BaseException | None = None
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        with _writer_text_handle(fd) as handle:
             handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
         _assert_json_source(path, identity)
         _publish(temp_path, path)
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        temp_path.unlink(missing_ok=True)
+        _cleanup_writer(lambda: temp_path.unlink(missing_ok=True), primary)

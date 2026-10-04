@@ -499,6 +499,105 @@ class SpotInventoryCheckpointTests(unittest.TestCase):
                     with self.assertRaises(OSError):
                         os.fstat(captured[0])
 
+    def test_handled_caller_exception_is_not_a_successful_verifier_primary(self):
+        self.bootstrap()
+        before, protected = self.raw(), dict(self.values)
+        for phase in ("reader", "metadata"):
+            for kind in (OSError, KeyboardInterrupt, SystemExit):
+                with self.subTest(phase=phase, kind=kind):
+                    self.assertTrue(self.verify(self.namespace))
+                    prior, cleanup = kind("already handled caller exception"), OSError("after real reader close")
+                    actual_fdopen, actual_close, actual_change = core.os.fdopen, core.os.close, core._change_time
+                    captured, close_calls, change_calls = [], [], 0
+                    class ClosingReader:
+                        def __init__(reader, handle):
+                            reader.handle = handle
+                            captured.append(handle.fileno())
+                        def __getattr__(reader, name):
+                            return getattr(reader.handle, name)
+                        def close(reader):
+                            reader.handle.close()
+                            close_calls.append(reader.handle.closed)
+                            raise cleanup
+                    def metadata(fd):
+                        nonlocal change_calls
+                        change_calls += 1
+                        result = actual_change(fd)
+                        if change_calls == 3:
+                            captured.append(fd)
+                        return result
+                    def close(fd):
+                        actual_close(fd)
+                        if fd in captured:
+                            close_calls.append(True)
+                            raise cleanup
+                    if phase == "reader":
+                        fault = patch.object(core.os, "fdopen", side_effect=lambda fd, mode: ClosingReader(actual_fdopen(fd, mode)))
+                        closing = patch.object(core.os, "close", wraps=actual_close)
+                    else:
+                        fault = patch.object(core, "_change_time", side_effect=metadata)
+                        closing = patch.object(core.os, "close", side_effect=close)
+                    try:
+                        raise prior
+                    except BaseException:
+                        try:
+                            with fault, closing:
+                                self.verify(self.namespace)
+                        except BaseException as exc:
+                            outcome = exc
+                        else:
+                            self.fail("Injected reader cleanup failure disappeared")
+                    self.assertEqual(before, self.raw())
+                    self.assertEqual(protected, self.values)
+                    self.assertEqual([True], close_calls)
+                    self.assertEqual(1, len(captured))
+                    with self.assertRaises(OSError):
+                        os.fstat(captured[0])
+                    self.assertIsInstance(outcome, LiveTradingSafetyError)
+                    self.assertIs(cleanup, outcome.__cause__)
+                    self.assertTrue(self.verify(self.namespace))
+
+    def test_handled_caller_exception_is_not_successful_journal_cleanup_primary(self):
+        for kind in (OSError, KeyboardInterrupt, SystemExit):
+            with self.subTest(kind=kind):
+                case = type(self)("test_missing_unbound_verification_never_mints")
+                case.setUp()
+                try:
+                    case.bootstrap()
+                    before, protected, candidate = case.raw(), dict(case.values), case.candidate()
+                    prior, cleanup = kind("already handled caller exception"), OSError("after native journal temp unlink")
+                    actual_unlink, calls = Path.unlink, []
+                    def unlink(path, *args, **kwargs):
+                        result = actual_unlink(path, *args, **kwargs)
+                        if path.name.startswith(".inventory-candidate-") and kwargs.get("missing_ok") is True:
+                            calls.append(not path.exists())
+                            raise cleanup
+                        return result
+                    try:
+                        raise prior
+                    except BaseException:
+                        try:
+                            with patch.object(Path, "unlink", new=unlink):
+                                case.publish(candidate)
+                        except BaseException as exc:
+                            outcome = exc
+                        else:
+                            self.fail("Injected journal cleanup failure disappeared")
+                    self.assertEqual(before, case.raw())
+                    self.assertEqual(protected, case.values)
+                    self.assertEqual([True], calls)
+                    journals = list(case.path.parent.glob(".spot-inventory-*.json"))
+                    self.assertEqual(1, len(journals))
+                    self.assertEqual(core._encode(candidate), journals[0].read_bytes())
+                    self.assertFalse(list(case.path.parent.glob(".inventory-candidate-*.tmp")))
+                    self.assertIsInstance(outcome, LiveTradingSafetyError)
+                    self.assertIs(cleanup, outcome.__cause__)
+                    self.assertTrue(case.verify(case.namespace))
+                    self.assertFalse(case.recover())
+                    self.assertEqual(protected, case.values)
+                finally:
+                    case.doCleanups()
+
     def test_journal_primary_cancellation_survives_actual_writer_close_failure(self):
         self.bootstrap()
         before, protected = self.raw(), dict(self.values)

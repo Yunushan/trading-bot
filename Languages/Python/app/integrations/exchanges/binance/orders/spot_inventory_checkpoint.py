@@ -141,18 +141,17 @@ def _errors():
         raise LiveTradingSafetyError("Protected inventory publication failed; reconciliation is required.") from exc
 
 
-def _cleanup(action: Callable[[], object]) -> None:
-    """Attempt cleanup once while retaining primary cancellation and both causes."""
-    primary = sys.exc_info()[1]
+def _cleanup(action: Callable[[], object], primary: BaseException | None) -> None:
+    """Attempt cleanup once while retaining this scope's cancellation and causes."""
     try:
         action()
     except BaseException as cleanup:
-        if primary is None:
+        if primary is None or cleanup is primary:
             raise
         if isinstance(cleanup, (KeyboardInterrupt, SystemExit)) and not isinstance(primary, (KeyboardInterrupt, SystemExit)):
             raise cleanup from primary
         cleanup.__context__ = None
-        if primary.__cause__ is not None:
+        if primary.__cause__ is not None and primary.__cause__ is not cleanup:
             cleanup.__cause__ = primary.__cause__
         raise primary from cleanup
 
@@ -161,13 +160,17 @@ def _cleanup(action: Callable[[], object]) -> None:
 def _binary_handle(fd: int, mode: Literal["rb", "wb"]) -> Iterator[BinaryIO]:
     try:
         handle = os.fdopen(fd, mode)
-    except BaseException:
-        _cleanup(lambda: os.close(fd))
+    except BaseException as exc:
+        _cleanup(lambda: os.close(fd), exc)
         raise
+    primary: BaseException | None = None
     try:
         yield handle
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        _cleanup(handle.close)
+        _cleanup(handle.close, primary)
 
 
 def _unique(pairs):
@@ -251,11 +254,15 @@ def _read(path: Path, deadline: float, *, missing: bool = False) -> bytes | None
         after = _identity(after_stat)
         after_change = _change_time(handle.fileno())
     check_fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+    primary: BaseException | None = None
     try:
         current_stat = os.fstat(check_fd)
         current_change = _change_time(check_fd)
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        _cleanup(lambda: os.close(check_fd))
+        _cleanup(lambda: os.close(check_fd), primary)
     if (before != opened or opened != after or after != _identity(current_stat)
             or after != _identity(path.lstat())
             or opened_change != after_change or after_change != current_change):
@@ -395,6 +402,7 @@ def _write_journal(path: Path, deadline: float, journal: Path, raw: bytes) -> No
         return
     fd, name = tempfile.mkstemp(prefix=".inventory-candidate-", suffix=".tmp", dir=path.parent)
     temp = Path(name)
+    primary: BaseException | None = None
     try:
         with _binary_handle(fd, "wb") as handle:
             handle.write(raw)
@@ -416,8 +424,11 @@ def _write_journal(path: Path, deadline: float, journal: Path, raw: bytes) -> No
         _guard(path, deadline)
         if _read(journal, deadline) != raw:
             raise ValueError("Inventory candidate journal changed after publication")
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        _cleanup(lambda: temp.unlink(missing_ok=True))
+        _cleanup(lambda: temp.unlink(missing_ok=True), primary)
 
 
 def _finish(path: Path, deadline: float, pending: dict[str, Any], protected: str, target: bytes) -> bool:
