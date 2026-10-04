@@ -17,8 +17,16 @@ from pathlib import Path
 from app.security.redaction import redact_text
 from app.settings.live_safety import LiveTradingSafetyError
 
+_STORAGE_PROCESS_ID = os.getpid()
 _THREAD_LOCK = threading.Lock()
 LOCK_TIMEOUT_SECONDS = 5.0
+
+
+def _assert_storage_process() -> None:
+    if _STORAGE_PROCESS_ID != os.getpid():
+        raise LiveTradingSafetyError(
+            "Inherited order intent storage is unavailable; start a fresh execution process."
+        )
 
 
 class _LedgerTransactionToken:
@@ -114,6 +122,7 @@ def _already_held_transaction(*paths: Path) -> bool:
 
 @contextmanager
 def ledger_transaction(path: Path) -> Iterator[None]:
+    _assert_storage_process()
     if _already_held_transaction(path):
         yield
         return
@@ -166,6 +175,7 @@ def ledger_transaction(path: Path) -> Iterator[None]:
 @contextmanager
 def ledger_transactions(*paths: Path) -> Iterator[None]:
     """Lock multiple ledgers in stable path order for atomic cross-ledger administration."""
+    _assert_storage_process()
     normalized_paths = sorted({_logical_lock_path(path) for path in paths}, key=os.fspath)
     if not normalized_paths:
         raise ValueError("At least one ledger path is required.")

@@ -300,8 +300,18 @@ def _deadline(value: float, logical_path: Path) -> float:
     return float(value)
 
 
+_INDEXED_STORAGE_PROCESS_ID = os.getpid()
+_INHERITED_CONNECTIONS: list[sqlite3.Connection] = []
+
+
+def _assert_storage_process() -> None:
+    if _INDEXED_STORAGE_PROCESS_ID != os.getpid():
+        raise _fail("was inherited by another process; start a fresh execution process")
+
+
 def _sql(connection: sqlite3.Connection, deadline: float, query: str,
          parameters: tuple[object, ...] = ()) -> sqlite3.Cursor:
+    _assert_storage_process()
     remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
     connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
     return connection.execute(query, parameters)
@@ -309,6 +319,8 @@ def _sql(connection: sqlite3.Connection, deadline: float, query: str,
 
 @contextmanager
 def _connection(path: Path, logical_path: Path, deadline: float) -> Iterator[sqlite3.Connection]:
+    _assert_storage_process()
+    origin_pid = os.getpid()
     deadline = _deadline(deadline, logical_path)
     try:
         identity = _identity(path)
@@ -324,41 +336,48 @@ def _connection(path: Path, logical_path: Path, deadline: float) -> Iterator[sql
             _sql(connection, deadline, "PRAGMA foreign_keys=ON")
             _sql(connection, deadline, "PRAGMA trusted_schema=OFF")
             yield connection
+            _assert_storage_process()
             if _identity(path) != identity:
                 raise _fail("database file changed")
         except BaseException as exc:
             primary = exc
             raise
         finally:
-            cleanup_errors: list[BaseException] = []
-            try:
-                if connection.in_transaction:
-                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
-                    connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
-                    connection.rollback()
-            except BaseException as cleanup_error:
-                cleanup_errors.append(cleanup_error)
-            finally:
+            # A fork child must neither rollback nor close the inherited driver.
+            # Its OS exit releases descriptor copies; parent cleanup stays intact.
+            if origin_pid != os.getpid():
+                # Retain the driver so ordinary child GC cannot implicitly close it.
+                _INHERITED_CONNECTIONS.append(connection)
+            else:
+                cleanup_errors: list[BaseException] = []
                 try:
-                    connection.close()
+                    if connection.in_transaction:
+                        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                        connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
+                        connection.rollback()
                 except BaseException as cleanup_error:
                     cleanup_errors.append(cleanup_error)
-            if cleanup_errors:
-                for earlier, later in zip(cleanup_errors, cleanup_errors[1:]):
-                    later.__cause__ = earlier
-                cleanup = cleanup_errors[-1]
-                if primary is not None and not isinstance(primary, Exception):
-                    raise primary from cleanup
-                for interruption in cleanup_errors:
-                    if not isinstance(interruption, Exception):
-                        if cleanup is not interruption:
-                            cleanup.__cause__ = primary
-                            raise interruption from cleanup
-                        raise interruption from (interruption.__cause__ or primary)
-                if (isinstance(primary, (sqlite3.Error, OSError))
-                        or any(isinstance(error, (sqlite3.Error, OSError)) for error in cleanup_errors)):
-                    raise _fail("is unavailable or busy") from cleanup
-                raise cleanup from primary
+                finally:
+                    try:
+                        connection.close()
+                    except BaseException as cleanup_error:
+                        cleanup_errors.append(cleanup_error)
+                if cleanup_errors:
+                    for earlier, later in zip(cleanup_errors, cleanup_errors[1:]):
+                        later.__cause__ = earlier
+                    cleanup = cleanup_errors[-1]
+                    if primary is not None and not isinstance(primary, Exception):
+                        raise primary from cleanup
+                    for interruption in cleanup_errors:
+                        if not isinstance(interruption, Exception):
+                            if cleanup is not interruption:
+                                cleanup.__cause__ = primary
+                                raise interruption from cleanup
+                            raise interruption from (interruption.__cause__ or primary)
+                    if (isinstance(primary, (sqlite3.Error, OSError))
+                            or any(isinstance(error, (sqlite3.Error, OSError)) for error in cleanup_errors)):
+                        raise _fail("is unavailable or busy") from cleanup
+                    raise cleanup from primary
     except (sqlite3.Error, OSError) as exc:
         raise _fail("is unavailable or busy") from exc
 
@@ -575,6 +594,7 @@ def _read_indexed_snapshot_in_transaction(
 ) -> IndexedIntentSnapshot:
     """Complete read core for an already guarded connection and transaction."""
     _deadline(deadline, logical_path)
+    _assert_storage_process()
     if not connection.in_transaction:
         raise _fail("complete read requires its guarded transaction")
     snapshot = _verified(connection, path, logical_path, deadline, rules, expected_binding)
@@ -608,6 +628,7 @@ def _replace_indexed_snapshot_in_transaction(
 ) -> IndexedIntentSnapshot:
     """Whole-snapshot CAS core; caller validates payload before its transaction."""
     _deadline(deadline, expected.receipt.logical_path)
+    _assert_storage_process()
     if not connection.in_transaction:
         raise _fail("complete write requires its guarded transaction")
     if path != expected.receipt.path:

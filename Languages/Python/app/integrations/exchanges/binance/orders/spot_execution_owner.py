@@ -20,11 +20,23 @@ from app.settings.live_safety import LiveTradingSafetyError
 from .order_intent_store import _ensure_parent, _try_lock, _unlock, write_ledger
 
 
+_OWNER_PROCESS_ID = os.getpid()
 _SESSIONS_LOCK = threading.RLock()
 _SESSIONS: dict[Path, SpotExecutionOwner] = {}
 _MARKER_VERSION = 1
 _OWNER_STATES = {"armed", "active", "recovery_required"}
 RECONCILIATION_ACK = "I_HAVE_STOPPED_EXECUTORS_AND_RECONCILED_EXCHANGE_STATE"
+
+
+@contextmanager
+def _session_registry() -> Iterator[None]:
+    # A worker's inherited RLock may never become available in a fork child.
+    if _OWNER_PROCESS_ID != os.getpid():
+        raise LiveTradingSafetyError(
+            "Inherited Spot execution registry is unavailable; start a fresh execution process."
+        )
+    with _SESSIONS_LOCK:
+        yield
 
 
 def owner_lock_path(ledger_path: Path) -> Path:
@@ -148,7 +160,7 @@ def assert_owner_administration_held(ledger_path: Path) -> None:
 def owner_administration_lock(ledger_path: Path) -> Iterator[None]:
     """Serialize offline provisioning/rearming against an active owner."""
     path = owner_lock_path(ledger_path)
-    with _SESSIONS_LOCK:
+    with _session_registry():
         if path in _SESSIONS:
             raise LiveTradingSafetyError("Spot execution owner is active; stop it before administration.")
         fd = _lock_file(path)
@@ -318,6 +330,10 @@ class SpotExecutionOwner:
     def submission(
         self, *, uid: int, environment: str, credential_fingerprint: str, owner_wrapper: object,
     ) -> Iterator[None]:
+        if self.pid != os.getpid():
+            raise LiveTradingSafetyError(
+                "Inherited Spot execution owner cannot submit; start a fresh execution process."
+            )
         with self._submission_lock:
             self.assert_held(
                 uid=uid, environment=environment, credential_fingerprint=credential_fingerprint,
@@ -334,7 +350,7 @@ class SpotExecutionOwner:
             if fd is not None:
                 os.close(fd)
             return
-        with self._submission_lock, _SESSIONS_LOCK:
+        with self._submission_lock, _session_registry():
             if self.fd is None:
                 return
             fd, self.fd = self.fd, None
@@ -358,7 +374,7 @@ def claim_execution_owner(
     credential_fingerprint: str, owner_wrapper: object,
 ) -> SpotExecutionOwner:
     path = owner_lock_path(ledger_path)
-    with _SESSIONS_LOCK:
+    with _session_registry():
         existing = _SESSIONS.get(path)
         if existing is not None:
             existing.assert_held(

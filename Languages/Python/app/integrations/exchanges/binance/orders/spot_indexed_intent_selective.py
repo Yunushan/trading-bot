@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from .spot_indexed_intent_bridge import IndexedReadAuthority, IndexedSourceBackupReceipt
     from .spot_indexed_intent_migration import IndexedMigrationReceipt
 
+_INDEXED_PROCESS_ID = os.getpid()
 _SESSIONS_LOCK = threading.RLock()
 _SESSIONS: dict[Path, IndexedIntentSession] = {}
 _INVALIDATIONS: dict[Path, tuple[weakref.ReferenceType[SpotExecutionOwner], int | None, str, weakref.ReferenceType[object]]] = {}
@@ -41,6 +42,14 @@ ProtectionProof = tuple[str, dict[str, dict[str, object]]]
 
 def _fail(reason: str = "changed") -> LiveTradingSafetyError:
     return LiveTradingSafetyError(f"Indexed session {reason}; full verification and reconciliation are required.")
+
+
+@contextmanager
+def _session_registry() -> Iterator[None]:
+    if _INDEXED_PROCESS_ID != os.getpid():
+        raise _fail("was inherited by another process; start a fresh execution process")
+    with _SESSIONS_LOCK:
+        yield
 
 
 @dataclass(frozen=True)
@@ -148,7 +157,13 @@ class IndexedIntentSession:
             assert_indexed_native_guard(self._receipt.path)
 
     def close(self) -> None:
-        with _SESSIONS_LOCK:
+        if self._pid != os.getpid():
+            # Do not enter inherited Python or SQLite mutexes, rollback, or
+            # change the registry. Keep the connection untouched until OS exit.
+            self._closed = True
+            self._finalizer.detach()
+            return
+        with _session_registry():
             if self._closed:
                 return
             self._closed = True
@@ -159,9 +174,14 @@ class IndexedIntentSession:
             self._finalizer.detach()
             self._connection.close()
 
+    def _assert_process(self) -> None:
+        if self._pid != os.getpid():
+            raise _fail("was inherited by another process; start a fresh execution process")
+
     def _authority(self, deadline: float, *, allow_pending: bool = False) -> float:
+        self._assert_process()
         full._deadline(deadline, self._receipt.logical_path)
-        with _SESSIONS_LOCK:
+        with _session_registry():
             if self._closed or _SESSIONS.get(self._receipt.logical_path) is not self:
                 raise _fail("is unavailable")
         if self._pending is not None and not allow_pending:
@@ -204,6 +224,8 @@ class IndexedIntentSession:
 
     @contextmanager
     def _transaction(self, deadline: float, *, write: bool = False) -> Iterator[None]:
+        # Reject before the try/cleanup path can touch an inherited connection.
+        self._assert_process()
         # Invalid thread/context callers cannot rollback another held transaction.
         full._deadline(deadline, self._receipt.logical_path)
         try:
@@ -217,11 +239,15 @@ class IndexedIntentSession:
             self._header(deadline)
             self._projections(deadline)
             yield
+            self._assert_process()
             if not write:
                 self._files()
                 full._sql(self._connection, deadline, "COMMIT")
                 self._files()
         except BaseException as exc:
+            if self._pid != os.getpid():
+                self.close()
+                raise
             cleanup_errors: list[BaseException] = []
             try:
                 if not self._closed and self._connection.in_transaction:
@@ -457,7 +483,7 @@ def open_indexed_session(*, owner: SpotExecutionOwner, owner_wrapper: object,
         raise _fail("was fenced for this execution owner")
     owner.assert_held(uid=owner.uid, environment=expected_binding["environment"],
                       credential_fingerprint=expected_binding["credential_fingerprint"], owner_wrapper=owner_wrapper)
-    with _SESSIONS_LOCK:
+    with _session_registry():
         previous_session = _SESSIONS.get(logical)
         if previous_session is not None and previous_session._owner.fd is None:
             previous_session.close()
@@ -479,7 +505,7 @@ def open_indexed_session(*, owner: SpotExecutionOwner, owner_wrapper: object,
                       credential_fingerprint=expected_binding["credential_fingerprint"], owner_wrapper=owner_wrapper)
     if owner.ledger_path != logical:
         raise _fail("owner logical path differs")
-    with _SESSIONS_LOCK:
+    with _session_registry():
         existing = _SESSIONS.get(logical)
         if existing is not None and existing._owner.fd is None:
             existing.close()
@@ -531,7 +557,7 @@ def open_indexed_session(*, owner: SpotExecutionOwner, owner_wrapper: object,
         session = IndexedIntentSession(owner=owner, owner_wrapper=owner_wrapper, manifest=manifest_receipt,
                                        backup=backup, migration=authority.migration, connection=connection, snapshot=snapshot, change=change,
                                        data_version=version, commit_sequences=sequences, rules=checked_rules, native_guard=native_guard)
-        with _SESSIONS_LOCK:
+        with _session_registry():
             if logical in _SESSIONS:
                 session.close()
                 raise _fail("session registration changed")
@@ -546,7 +572,7 @@ def open_indexed_session(*, owner: SpotExecutionOwner, owner_wrapper: object,
 
 
 def _invalidation_for(owner: SpotExecutionOwner) -> str | None:
-    with _SESSIONS_LOCK:
+    with _session_registry():
         state = _INVALIDATIONS.get(owner.ledger_path)
         if state is None:
             return None
@@ -559,7 +585,7 @@ def _invalidation_for(owner: SpotExecutionOwner) -> str | None:
 def indexed_namespace_known(path: Path) -> bool:
     """Classify an original indexed namespace without granting read authority."""
     logical = Path(os.path.abspath(path))
-    with _SESSIONS_LOCK:
+    with _session_registry():
         if logical in _SESSIONS:
             return True
         state = _INVALIDATIONS.get(logical)
@@ -573,7 +599,7 @@ def indexed_namespace_attribution(
 ) -> tuple[SpotExecutionOwner, Path] | None:
     """Classify the actual held original owner/path without granting authority."""
     logical = None if path is None else Path(os.path.abspath(path))
-    with _SESSIONS_LOCK:
+    with _session_registry():
         candidates: list[tuple[SpotExecutionOwner, Path]] = []
         for original_path, session in _SESSIONS.items():
             if (session._owner.fd is not None
@@ -605,7 +631,7 @@ def get_indexed_session(*, owner: SpotExecutionOwner, owner_wrapper: object,
     full._deadline(deadline, owner.ledger_path)
     if _invalidation_for(owner) == "fenced":
         raise _fail("was fenced for this execution owner")
-    with _SESSIONS_LOCK:
+    with _session_registry():
         session = _SESSIONS.get(owner.ledger_path)
     if session is None:
         return None
@@ -620,7 +646,7 @@ def _borrow_session(path: Path, expected_binding: Mapping[str, str] | None, dead
                     write: bool = False) -> IndexedIntentSession | None:
     logical = Path(os.path.abspath(path))
     full._deadline(deadline, logical)
-    with _SESSIONS_LOCK:
+    with _session_registry():
         session = _SESSIONS.get(logical)
         invalidation = _INVALIDATIONS.get(logical)
     if session is None:
@@ -643,7 +669,7 @@ def read_owned_indexed_source_backup(path: Path, *, deadline: float) -> IndexedS
     full._deadline(deadline, logical)
     # Reuse registry invalidation handling, including the portable healthy case.
     _borrow_session(logical, None, deadline)
-    with _SESSIONS_LOCK:
+    with _session_registry():
         session = _SESSIONS.get(logical)
     if session is None:
         return None
@@ -749,7 +775,7 @@ def notify_indexed_full_commit(path: Path, snapshot: full.IndexedIntentSnapshot,
     logical = authority.manifest.logical_path
     if Path(os.path.abspath(path)) != logical:
         raise _fail("full writer logical source differs")
-    with _SESSIONS_LOCK:
+    with _session_registry():
         session = _SESSIONS.get(logical)
     if session is None:
         return
@@ -784,7 +810,7 @@ def reject_indexed_full_commit(path: Path) -> None:
     """Fence a borrowed committed result whose bridge publication failed."""
     current_ledger_deadline(path)
     logical = Path(os.path.abspath(path))
-    with _SESSIONS_LOCK:
+    with _session_registry():
         session = _SESSIONS.get(logical)
     if session is not None and session._pending is not None:
         session._invalidation = "fenced"
@@ -793,7 +819,7 @@ def reject_indexed_full_commit(path: Path) -> None:
 
 def close_indexed_session(owner: SpotExecutionOwner) -> None:
     """Release this actual owner's persistent connection when it is revoked."""
-    with _SESSIONS_LOCK:
+    with _session_registry():
         session = _SESSIONS.get(owner.ledger_path)
     if session is not None and session._owner is owner:
         session.close()
