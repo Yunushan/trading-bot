@@ -125,7 +125,10 @@ class SpotBuyRecoveryGuiTests(unittest.TestCase):
         self.recover_core = self.enterContext(patch.object(recovery, "_recover", side_effect=self._publish))
 
     def _publish(self, wrapper, item, *, allocation_path, receipt, handoff):
-        with handoff():
+        from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transaction
+        # The mocked publisher retains the real source exclusion required by the
+        # protocol; actual owned recovery is covered by separate integration tests.
+        with ledger_transaction(allocation_path), handoff():
             receipt.session.invalidate("synthetic core publication")
             payload = {"version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {}}
             allocation_path.parent.mkdir(parents=True, exist_ok=True)
@@ -337,7 +340,9 @@ class SpotBuyRecoveryGuiTests(unittest.TestCase):
         def changed_storage(*args, **kwargs):
             result = self._publish(*args, **kwargs)
             payload = {"version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {}, "changed": True}
-            allocations._write_snapshot(self.path, payload)
+            from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transaction
+            with ledger_transaction(self.path):
+                allocations._write_snapshot(self.path, payload)
             return result
 
         self.recover_core.side_effect = changed_storage

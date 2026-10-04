@@ -155,18 +155,30 @@ def _owned_inventory_confirmation(operation):
     def confirm(self, *args, **kwargs):
         if not _spot_owner_scope(self):
             return operation(self, *args, **kwargs)
-        from app.gui.shared.allocation_persistence import _decode, _read_receipt, get_position_allocations_path
-        from .spot_inventory_namespace import require_namespace
+        from app.gui.shared.allocation_persistence import (
+            _read_receipt, get_position_allocations_path, guard_position_allocation_snapshot,
+        )
         from .spot_inventory_namespace_runtime import namespace_for_ledger
+        from .spot_inventory_checkpoint_runtime import _owned_lifetime, _pin_authority, _assert_pin
+        from .spot_inventory_checkpoint import _checkpoint_authority
         path = _intent_path(self)
         app_root = Path(__file__).resolve().parents[4]
         allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
-        with ledger_transactions(path, allocation_path):
+        with _owned_lifetime(self, path), ledger_transactions(path, allocation_path):
             ledger = _read_ledger(path, expected_binding=_intent_binding(self))
             namespace = namespace_for_ledger(self, ledger)
-            raw, _identity = _read_receipt(allocation_path)
-            require_namespace(_decode(raw, "Live") if raw is not None else None, namespace)
-            return operation(self, *args, **kwargs)
+            pin = _pin_authority(self, path, namespace)
+            with _checkpoint_authority(lambda: _assert_pin(self, path, namespace, pin)):
+                guard_position_allocation_snapshot(
+                    allocation_path, _read_receipt(allocation_path), expected_namespace=namespace,
+                )
+                _assert_pin(self, path, namespace, pin)
+                result = operation(self, *args, **kwargs)
+                _assert_pin(self, path, namespace, pin)
+                guard_position_allocation_snapshot(
+                    allocation_path, _read_receipt(allocation_path), expected_namespace=namespace,
+                )
+                return result
     return confirm
 
 
@@ -1096,8 +1108,22 @@ def validate_order_intent_metadata(
     return payload
 
 
+def _assert_inventory_checkpoint_authority() -> None:
+    """Check only an already scoped pin, including a lost required ContextVar.
+
+    Ordinary callers with neither token retain their original write behavior.
+    This optional check acquires no storage lock and calls no protected backend.
+    """
+    from . import spot_inventory_checkpoint as checkpoint
+    if (checkpoint._AUTHORITY.get() is not None
+            or getattr(checkpoint._EXPECTED_AUTHORITY, "token", None) is not None):
+        checkpoint._assert_authority()
+
+
 def _write_ledger(path: Path, payload: Mapping[str, object]) -> None:
+    _assert_inventory_checkpoint_authority()
     write_ledger(path, payload)
+    _assert_inventory_checkpoint_authority()
 
 
 def _client_order_id(params: Mapping[str, object]) -> str:
@@ -2515,6 +2541,7 @@ def _update_order_intent(self, params: Mapping[str, object], *, state: str, **up
     client_order_id = _client_order_id(params)
     path = _intent_path(self)
     with ledger_transaction(path):
+        _assert_inventory_checkpoint_authority()
         from .spot_indexed_intent_hot_runtime import update_indexed_record
         routed, _updated = update_indexed_record(self, path, client_order_id, state=state,
                                                 expected_record=None, updates=updates)
@@ -2605,22 +2632,20 @@ def namespace_for_current_ledger(wrapper):
     return resolve(wrapper)
 
 
-def _require_durable_spot_namespace(namespace: object) -> dict:
-    from app.gui.shared.allocation_persistence import _decode, _read_receipt, get_position_allocations_path
-    from .spot_inventory_namespace import require_namespace
+def _require_durable_spot_namespace(namespace: object) -> dict | None:
+    from app.gui.shared.allocation_persistence import (
+        _read_receipt, get_position_allocations_path, guard_position_allocation_snapshot,
+    )
     app_root = Path(__file__).resolve().parents[4]
     path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
-    raw, _identity = _read_receipt(path)
-    snapshot = _decode(raw, "Live") if raw is not None else None
-    require_namespace(snapshot, namespace)
-    assert isinstance(snapshot, dict)
-    return snapshot
+    with ledger_transaction(path):
+        return cast(dict | None, guard_position_allocation_snapshot(path, _read_receipt(path), expected_namespace=namespace))
 
 
 def _has_durable_spot_buy_allocation(
     record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object, namespace: object = None,
 ) -> bool:
-    scoped_snapshot = _require_durable_spot_namespace(namespace) if namespace is not None else None
+    scoped_snapshot = _require_durable_spot_namespace(namespace)
     try:
         if re.fullmatch(r"[0-9a-f]{64}", portfolio_signature) is None:
             return False
@@ -2631,16 +2656,7 @@ def _has_durable_spot_buy_allocation(
         if path.is_symlink() or not path.is_file():
             return False
 
-        def unique_object(pairs):
-            value = {}
-            for key, item in pairs:
-                if key in value:
-                    raise ValueError("duplicate allocation field")
-                value[key] = item
-            return value
-
-        data = (scoped_snapshot if scoped_snapshot is not None else
-                json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object))
+        data = scoped_snapshot
         if (
             not isinstance(data, dict)
             or data.get("version") != 1
@@ -2710,7 +2726,7 @@ def _has_durable_spot_buy_allocation(
 def _has_durable_spot_sell_allocation(
     record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object, namespace: object = None,
 ) -> bool:
-    scoped_snapshot = _require_durable_spot_namespace(namespace) if namespace is not None else None
+    scoped_snapshot = _require_durable_spot_namespace(namespace)
     try:
         if re.fullmatch(r"[0-9a-f]{64}", portfolio_signature) is None:
             return False
@@ -2721,19 +2737,12 @@ def _has_durable_spot_sell_allocation(
         if path.is_symlink() or not path.is_file():
             return False
 
-        def unique_object(pairs):
-            value = {}
-            for key, item in pairs:
-                if key in value:
-                    raise ValueError("duplicate allocation field")
-                value[key] = item
-            return value
-
-        data = (scoped_snapshot if scoped_snapshot is not None else
-                json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object))
-        if namespace is None and isinstance(data, dict) and "spot_account_namespace" in data:
+        data = scoped_snapshot
+        if not isinstance(data, dict):
             return False
-        allocations = data.get("entry_allocations") if isinstance(data, dict) else None
+        if namespace is None and "spot_account_namespace" in data:
+            return False
+        allocations = data.get("entry_allocations")
         if data.get("version") != 1 or data.get("mode") != "Live" or not isinstance(allocations, dict):
             return False
         expected_quantity = Decimal(str(portfolio_quantity or record.get("portfolio_qty") or "NaN"))
@@ -3120,6 +3129,7 @@ def _update_order_intent_by_id(
 ) -> dict[str, object] | None:
     path = _intent_path(self)
     with ledger_transaction(path):
+        _assert_inventory_checkpoint_authority()
         from .spot_indexed_intent_hot_runtime import update_indexed_record
         routed, updated = update_indexed_record(self, path, client_order_id, state=state,
                                                expected_record=expected_record, updates=updates)

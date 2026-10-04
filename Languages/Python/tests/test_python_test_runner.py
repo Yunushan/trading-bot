@@ -100,6 +100,32 @@ class PythonTestRunnerTests(unittest.TestCase):
         self.assertIn("coverage.json", gitignore.splitlines())
         self.assertTrue(is_noisy_ignored_path("Languages/Python/coverage.json"))
 
+    def test_unittest_resets_protected_store_per_case_without_native_credentials(self):
+        from app.integrations.exchanges.binance.orders import spot_inventory_checkpoint as core
+        from app.security import credential_store
+        observed = []
+        original_native_get = credential_store.get_secret
+
+        class IsolatedCase(unittest.TestCase):
+            def runTest(case):
+                backend = core.credential_store._checkpoint_fixture_backend
+                case.assertEqual({}, backend.store)
+                case.assertEqual([], backend.read_calls)
+                case.assertEqual([], backend.put_calls)
+                case.assertEqual([], backend.authored_snapshots)
+                case.assertIs(original_native_get, credential_store.get_secret)
+                core.credential_store.put_secret(scope=core._SCOPE, account="same-synthetic-path", value="synthetic")
+                case.assertEqual("synthetic", core.credential_store.get_secret(
+                    scope=core._SCOPE, account="same-synthetic-path"))
+                observed.append(backend)
+
+        suite = unittest.TestSuite([IsolatedCase(), IsolatedCase()])
+        with mock.patch.object(run_python_tests, "build_unittest_suite", return_value=suite):
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(0, run_python_tests.run_unittest_suite(failfast=True, verbose=False))
+        self.assertEqual(2, len(observed))
+        self.assertIsNot(observed[0], observed[1])
+
     def test_python_test_runner_unittest_discovery_is_not_package_bound(self):
         suite = run_python_tests.build_unittest_suite()
         self.assertGreater(suite.countTestCases(), 0)

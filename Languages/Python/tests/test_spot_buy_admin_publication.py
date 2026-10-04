@@ -7,7 +7,7 @@ from decimal import Decimal
 from io import StringIO
 import json
 import os
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -60,6 +60,29 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
             owner._spot_inventory_administration_path = self.intent_path
             self.assertEqual(self.inventory_namespace, namespace_for_current_ledger(owner))
             yield owner
+
+    def _publish_acquisition(self):
+        """Prepare prior durable publication through genuine admin authority."""
+        record = self.actual.wrapper._get_order_intent_record(self.client_id)
+        fill = recovery.summarize_spot_market_fill(
+            record, self.order, [self.trade], base_asset="BTC", quote_asset="USDT",
+        )
+        with self.verified_admin_scope() as administrator:
+            binding = publication.capture_spot_buy_recovery_binding(administrator)
+            self.assertTrue(publication.publish_spot_buy_recovery(
+                administrator, self.path, fill, expected_record=record,
+                expected_store_id=binding["store_id"], expected_binding=binding["binding"],
+                expected_intent_path=binding["intent_path"],
+            ))
+
+    def _consume_acquisition(self, quantity):
+        """Publish synthetic terminal SELL evidence under real admin exclusion."""
+        with self.verified_admin_scope() as administrator:
+            administrator._mark_order_intent_portfolio_reconciled = MethodType(
+                ledger._mark_order_intent_portfolio_reconciled, administrator,
+            )
+            with patch.object(self.actual, "wrapper", administrator):
+                self.actual._sell_under_authority(quantity)
 
     def _run(self, *, order=None, trade=None, during_trades=None, after_publication=None):
         order = copy.deepcopy(self.order if order is None else order)
@@ -140,8 +163,8 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                 self._assert_unresolved()
 
     def test_same_signature_changed_quote_total_cannot_publish_or_restore_inventory(self):
-        recovery.persist_spot_buy_allocation(self.path, self.primary, namespace=self.inventory_namespace)
-        self.actual._sell("0.04")
+        self._publish_acquisition()
+        self._consume_acquisition("0.04")
         before = self.path.read_bytes()
         code, result = self._run(
             order={**self.order, "cummulativeQuoteQty": "3000"},
@@ -298,7 +321,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                     self.assertTrue(scenario.path.exists())
                     scenario._assert_unresolved()
                     if consumption is not None:
-                        scenario.actual._sell(consumption)
+                        scenario._consume_acquisition(consumption)
                     consumed = scenario.path.read_bytes()
                     code, result = scenario._run()
                     self.assertEqual(0, code, result)
@@ -316,8 +339,8 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
 
     def test_legacy_accepted_fill_without_primary_receipt_replays_consumed_history_read_only(self):
         self._legacy_accepted_intent()
-        recovery.persist_spot_buy_allocation(self.path, self.primary, namespace=self.inventory_namespace)
-        self.actual._sell("0.04")
+        self._publish_acquisition()
+        self._consume_acquisition("0.04")
         before = self.path.read_bytes()
         code, result = self._run()
         self.assertEqual(0, code, result)
@@ -327,8 +350,8 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
 
     def test_legacy_accepted_fill_late_record_change_preserves_both_committed_files(self):
         self._legacy_accepted_intent()
-        recovery.persist_spot_buy_allocation(self.path, self.primary, namespace=self.inventory_namespace)
-        self.actual._sell("0.04")
+        self._publish_acquisition()
+        self._consume_acquisition("0.04")
         before = self.path.read_bytes()
         changed_bytes = []
 
@@ -388,9 +411,9 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                 scenario = type(self)()
                 scenario.setUp()
                 try:
-                    recovery.persist_spot_buy_allocation(scenario.path, scenario.primary, namespace=scenario.inventory_namespace)
+                    scenario._publish_acquisition()
                     if consumption is not None:
-                        scenario.actual._sell(consumption)
+                        scenario._consume_acquisition(consumption)
                     before = scenario.path.read_bytes()
                     code, result = scenario._run()
                     self.assertEqual(0, code, result)
@@ -429,7 +452,7 @@ class SpotBuyAdminPublicationTests(unittest.TestCase):
                 try:
                     code, result = scenario._run()
                     self.assertEqual(0, code, result)
-                    scenario.actual._sell(consumption)
+                    scenario._consume_acquisition(consumption)
                     allocation_bytes, ledger_bytes = scenario.path.read_bytes(), scenario.intent_path.read_bytes()
                     record = scenario.actual.wrapper._get_order_intent_record(scenario.client_id)
                     with scenario.verified_admin_scope() as administrator:

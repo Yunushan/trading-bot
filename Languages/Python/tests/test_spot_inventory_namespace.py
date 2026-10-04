@@ -10,6 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_spot_fill_recovery_runtime as fixtures
+import test_spot_inventory_namespace_integration as owner_fixtures
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case
+from app.gui.shared import allocation_persistence
+from app.integrations.exchanges.binance.orders import order_intent_runtime as intents
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import publish_owned_spot_fill
+from uuid import uuid4
 from app.integrations.exchanges.binance.orders import order_intent_store as storage
 from app.integrations.exchanges.binance.orders import spot_fill_recovery_runtime as recovery
 from app.integrations.exchanges.binance.orders.spot_inventory_namespace import (
@@ -41,7 +47,7 @@ def buy_fill(*, client="recovered-buy-1", order_id=75, trade_offset=0):
 
 class _OfflineNamespaceCase(unittest.TestCase):
     def setUp(self):
-        # These are pure file/proof tests. No SDK client or account transport is used.
+        # Tests use only local files and synthetic signed-account transports.
         self.socket_guard = patch.object(socket, "socket", side_effect=AssertionError("offline namespace test"))
         self.socket_guard.start()
         self.addCleanup(self.socket_guard.stop)
@@ -137,12 +143,92 @@ class OfflineNamespaceTests(_OfflineNamespaceCase):
 
 
 class OfflineFillNamespaceTests(_OfflineNamespaceCase):
-    @staticmethod
-    def bind_test_fixture(path, namespace):
+    def setUp(self):
+        super().setUp()
+        self.f = owner_fixtures.SpotInventoryNamespaceIntegrationTests("runTest")
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.accounts_by_path = {}
+
+    def prepare_owned(self, path):
+        """Explicit real-owner bootstrap for this target before any financial record."""
+        checkpoint_backend_for_case(self)
+        self.f.path = path
+        self.enterContext(patch.object(allocation_persistence, "get_position_allocations_path", return_value=path))
+        self.enterContext(patch.object(allocation_persistence, "_get_allocations_file_path", return_value=path))
+        account = self.f.account("pure-owned-" + str(uuid4()), UID_A, separate_home=True, accepted=False)
+        self.f.bootstrap(account)
+        self.accounts_by_path[path] = account
+        self.namespace = account.namespace
+        return account
+
+    def author_record(self, path, record):
+        account = self.accounts_by_path[path]
+        record = copy.deepcopy(record)
+        now = intents._now()
+        record.setdefault("created_at", now)
+        record.setdefault("updated_at", now)
+        record.setdefault("source", "offline-namespace-owned-fixture")
+        record.setdefault("quantity", record["request"]["workingQuantity"])
+        record.setdefault("entry_reconciled", False)
+        if record.get("cancel_state") == "confirmed":
+            record.update(cancel_submitted_at=now, cancel_confirmed_at=now)
+        if record.get("strategy_exit_state") is not None:
+            request = record.get("strategy_exit_request") or {
+                "symbol": record["symbol"], "side": "SELL", "type": "MARKET", "cancelReplaceMode": "STOP_ON_FAILURE",
+                "cancelOrderId": record["pending_order_id"], "cancelOrigClientOrderId": record["request"]["pendingClientOrderId"],
+                "cancelRestrictions": "ONLY_NEW", "quantity": record["entry_portfolio_quantity"],
+                "newClientOrderId": "rejected-linked-sell", "newOrderRespType": "FULL",
+            }
+            record.update(strategy_exit_request=request, strategy_exit_client_order_id=request["newClientOrderId"],
+                          strategy_exit_quantity=request["quantity"], strategy_exit_request_signature=intents._request_signature(request),
+                          strategy_exit_started_at=now, strategy_exit_response_at=now,
+                          strategy_exit_pre_order_quantity=request["quantity"],
+                          strategy_exit_requires_exact_reconciliation=True,
+                          strategy_exit_requires_stop_rearm=record["strategy_exit_state"] == "stop_cancelled")
+            record.setdefault("strategy_exit_pre_order_signature", record.get("residual_stop_pre_order_signature"))
+            record.setdefault("strategy_exit_cancel_confirmed", True)
+            record.setdefault("strategy_exit_outcome", "exit_sell_accepted")
+            if record["strategy_exit_state"] == "sell_accepted":
+                record.update(strategy_exit_order_observed_at=now)
+        if record.get("residual_stop_state") is not None:
+            record.update(residual_rearm_quantity=record["residual_stop_pre_order_quantity"],
+                          residual_rearm_signature=record["residual_stop_pre_order_signature"],
+                          residual_stop_request_signature=intents._request_signature(record["residual_stop_request"]),
+                          residual_stop_started_at=now, residual_stop_observed_at=now,
+                          strategy_exit_fill_signature="d" * 64, strategy_exit_fill_quantity="0",
+                          strategy_exit_fill_trade_ids=[], strategy_exit_fill_time_ms=1780000000000)
+        intents.validate_order_intent_record(record["client_order_id"], record)
+        with self.f.account_home(account), storage.ledger_transaction(account.path):
+            ledger = intents._read_ledger(account.path, expected_binding=intents._intent_binding(account.wrapper))
+            ledger["intents"][record["client_order_id"]] = record
+            intents.validate_order_intent_ledger(ledger, expected_binding=intents._intent_binding(account.wrapper))
+            storage.write_ledger(account.path, ledger)
+        return self.f.ledger(account)["intents"][record["client_order_id"]]
+
+    def publish(self, path, fill, *, record=None, operation=recovery.persist_spot_buy_allocation):
+        account = self.accounts_by_path[path]
+        if record is not None:
+            current = self.f.ledger(account)["intents"].get(record["client_order_id"])
+            if current != record:
+                current = self.author_record(path, record)
+        else:
+            current = self.f.ledger(account)["intents"].get(fill["client_order_id"])
+            if current is None:
+                if fill.get("side", "BUY") == "BUY":
+                    current = self.f.author_accepted(account, fill)
+                else:
+                    self.f.publish_sell(account, fill)
+                    return True
+        with self.f.account_home(account):
+            return publish_owned_spot_fill(account.wrapper, path, fill, expected_record=current, operation=operation)
+
+    def bind_test_fixture(self, path, namespace):
         # Author fixture metadata explicitly; this is not a product migration/bootstrap.
         snapshot = json.loads(path.read_text(encoding="utf-8"))
         snapshot[ACCOUNT_NAMESPACE_KEY] = namespace
         storage.write_ledger(path, snapshot)
+        checkpoint_backend_for_case(self).author_snapshot(storage._logical_lock_path(path), namespace=namespace)
         return snapshot
 
     def test_bound_buy_replay_without_namespace_is_rejected_before_return(self):
@@ -177,6 +263,8 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
                 path = Path(temp) / "allocations.json"
                 if preexisting:
                     storage.write_ledger(path, {**empty_snapshot(), "gui_trade_event_receipts": []})
+                account = self.prepare_owned(path)
+                self.f.author_accepted(account, buy_fill())
                 original_publish = storage._publish
                 published = []
 
@@ -189,11 +277,11 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
                     return original_publish(temp_path, target)
 
                 with patch.object(storage, "_publish", side_effect=capture):
-                    self.assertTrue(recovery.persist_spot_buy_allocation(path, buy_fill(), namespace=self.namespace))
+                    self.assertTrue(self.publish(path, buy_fill()))
                 self.assertEqual(1, len(published))
                 self.assertEqual(published[0], json.loads(path.read_text(encoding="utf-8")))
                 before = path.read_bytes()
-                self.assertTrue(recovery.persist_spot_buy_allocation(path, buy_fill(), namespace=dict(self.namespace)))
+                self.assertTrue(self.publish(path, buy_fill()))
                 self.assertEqual(before, path.read_bytes())
 
     def test_failed_first_publication_leaves_no_partial_namespace_or_acquisition(self):
@@ -202,7 +290,9 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
                 path = Path(temp) / "allocations.json"
                 if preexisting:
                     storage.write_ledger(path, empty_snapshot())
-                before = path.read_bytes() if preexisting else None
+                account = self.prepare_owned(path)
+                self.f.author_accepted(account, buy_fill())
+                before = path.read_bytes()
                 calls = []
 
                 def fail(temp_path, target):
@@ -213,7 +303,7 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
                     raise OSError("controlled pre-rename failure")
 
                 with patch.object(storage, "_publish", side_effect=fail), self.assertRaises(LiveTradingSafetyError):
-                    recovery.persist_spot_buy_allocation(path, buy_fill(), namespace=self.namespace)
+                    self.publish(path, buy_fill())
                 self.assertEqual(1, len(calls))
                 self.assertEqual(before, path.read_bytes() if path.exists() else None)
                 self.assertFalse(list(path.parent.glob(".allocations.json.*.tmp")))
@@ -240,7 +330,8 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
     def test_foreign_uid_store_or_malformed_header_blocks_append_and_replay(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "allocations.json"
-            recovery.persist_spot_buy_allocation(path, buy_fill(), namespace=self.namespace)
+            self.prepare_owned(path)
+            self.publish(path, buy_fill())
             before = path.read_bytes()
             for namespace in [make_namespace(UID_B, STORE_A), make_namespace(UID_A, STORE_B), {},
                               {**self.namespace, "account_uid": True}]:
@@ -271,7 +362,8 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "allocations.json"
             buy = buy_fill()
-            recovery.persist_spot_buy_allocation(path, buy, namespace=self.namespace)
+            self.prepare_owned(path)
+            self.publish(path, buy)
             before_buy = json.loads(path.read_text(encoding="utf-8"))
             acquisition = before_buy["entry_allocations"]["BTCUSDT:L"][0]["spot_fill_recovery"]
             baseline = recovery.spot_live_allocation_baseline(path, symbol="BTCUSDT", namespace=self.namespace)
@@ -282,7 +374,7 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
                 with self.subTest(namespace=namespace), self.assertRaises(LiveTradingSafetyError):
                     recovery.persist_spot_sell_allocation(path, fill, namespace=namespace)
                 self.assertEqual(original, path.read_bytes())
-            recovery.persist_spot_sell_allocation(path, fill, namespace=self.namespace)
+            self.publish(path, fill, operation=recovery.persist_spot_sell_allocation)
             sold_bytes = path.read_bytes()
             sold = json.loads(sold_bytes)
             row = sold["entry_allocations"]["BTCUSDT:L"][0]
@@ -290,8 +382,8 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
             self.assertEqual(Decimal("0.01993"), Decimal(str(row["qty"])))
             self.assertEqual("0.08003", row["spot_sell_recoveries"][0]["consumed_qty"])
             self.assertEqual(self.namespace, sold[ACCOUNT_NAMESPACE_KEY])
-            recovery.persist_spot_sell_allocation(path, fill, namespace=self.namespace)
-            recovery.persist_spot_buy_allocation(path, buy, namespace=self.namespace)
+            self.publish(path, fill, operation=recovery.persist_spot_sell_allocation)
+            self.publish(path, buy)
             self.assertEqual(sold_bytes, path.read_bytes())
             with self.assertRaises(LiveTradingSafetyError):
                 recovery.persist_spot_sell_allocation(path, fill)
@@ -312,48 +404,53 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
                      "cummulativeQuoteQty": "1898.1", "updateTime": 1780000000010}
             trades = [{"symbol": "BTCUSDT", "id": 403, "orderId": order_id, "price": "19000", "qty": "0.0999",
                        "quoteQty": "1898.1", "commission": "0", "commissionAsset": "BTC", "time": 1780000000010, "isBuyer": False}]
-            if strategy:
-                sell_intent = {"market": "spot", "type": "MARKET", "side": "SELL", "symbol": "BTCUSDT", "client_order_id": client,
-                               "exchange_client_order_id": client, "exchange_order_id": order_id}
-                fill = recovery.summarize_spot_market_fill(sell_intent, order, trades, base_asset="BTC", quote_asset="USDT")
-                fill.update(type="MARKET", opo_list_client_order_id=request["listClientOrderId"], opo_entry_portfolio_quantity="0.0999")
-                writer = recovery.persist_spot_opo_strategy_sell_allocation
-            else:
-                triggered = {**intent, "state": "accepted", "protection_state": "triggered", "list_status": "ALL_DONE", "pending_status": "FILLED",
-                             "pending_executed_qty": "0.0999", "entry_reconciled": True, "entry_portfolio_quantity": "0.0999", "entry_recovery_signature": buy["signature"]}
-                fill = recovery.summarize_spot_opo_stop_sell_fill(triggered, order, trades, base_asset="BTC", quote_asset="USDT")
-                writer = recovery.persist_spot_opo_stop_sell_allocation
             with self.subTest(strategy=strategy), tempfile.TemporaryDirectory() as temp:
                 path = Path(temp) / "allocations.json"
-                recovery.persist_spot_buy_allocation(path, buy, namespace=self.namespace)
+                self.prepare_owned(path)
+                self.assertTrue(self.publish(path, buy, record=intent))
+                baseline = recovery.spot_opo_allocation_baseline(path, symbol="BTCUSDT",
+                    list_client_order_id=request["listClientOrderId"], expected_quantity="0.0999", namespace=self.namespace)
+                linked = {**intent, "entry_reconciled": True, "entry_portfolio_quantity": "0.0999",
+                          "entry_recovery_signature": buy["signature"], "list_status": "ALL_DONE"}
                 if strategy:
-                    baseline = recovery.spot_opo_allocation_baseline(path, symbol="BTCUSDT", list_client_order_id=request["listClientOrderId"], expected_quantity="0.0999", namespace=self.namespace)
-                    fill.update(pre_order_portfolio_signature=baseline["signature"], pre_order_portfolio_qty=baseline["quantity"])
+                    exit_request = {"symbol": "BTCUSDT", "side": "SELL", "type": "MARKET", "cancelReplaceMode": "STOP_ON_FAILURE",
+                                    "cancelOrderId": 302, "cancelOrigClientOrderId": request["pendingClientOrderId"],
+                                    "cancelRestrictions": "ONLY_NEW", "quantity": "0.0999", "newClientOrderId": client, "newOrderRespType": "FULL"}
+                    linked.update(protection_state="cancelled", cancel_state="confirmed", pending_status="CANCELED",
+                                  strategy_exit_state="sell_accepted", strategy_exit_request=exit_request,
+                                  strategy_exit_new_order_accepted=True, strategy_exit_order_id=order_id,
+                                  strategy_exit_status="FILLED", strategy_exit_executed_qty="0.0999",
+                                  strategy_exit_pre_order_signature=baseline["signature"])
+                    writer = recovery.persist_spot_opo_strategy_sell_allocation
+                    current = self.author_record(path, linked)
+                    fill = recovery.summarize_spot_opo_strategy_sell_fill(current, order, trades, base_asset="BTC", quote_asset="USDT")
+                else:
+                    linked.update(protection_state="triggered", pending_status="FILLED", pending_executed_qty="0.0999")
+                    writer = recovery.persist_spot_opo_stop_sell_allocation
+                    current = self.author_record(path, linked)
+                    fill = recovery.summarize_spot_opo_stop_sell_fill(current, order, trades, base_asset="BTC", quote_asset="USDT")
                 before = path.read_bytes()
-                for namespace in [None, make_namespace(UID_B, STORE_A)]:
+                for namespace in [None, make_namespace(UID_B, self.namespace["store_id"])]:
                     with self.subTest(namespace=namespace), self.assertRaises(LiveTradingSafetyError):
                         writer(path, fill, namespace=namespace)
                     self.assertEqual(before, path.read_bytes())
-                writer(path, fill, namespace=self.namespace)
+                self.assertTrue(self.publish(path, fill, record=current, operation=writer))
                 after = path.read_bytes()
-                writer(path, fill, namespace=self.namespace)
+                full_after = self.f.ledger(self.accounts_by_path[path])
+                self.assertTrue(self.publish(path, fill, record=current, operation=writer))
                 self.assertEqual(after, path.read_bytes())
+                self.assertEqual(full_after, self.f.ledger(self.accounts_by_path[path]))
                 saved = json.loads(after)
                 row = saved["entry_allocations"]["BTCUSDT:L"][0]
                 self.assertEqual("Closed", row["status"])
                 self.assertEqual(buy["signature"], row["spot_fill_recovery"]["signature"])
                 self.assertEqual(self.namespace, saved[ACCOUNT_NAMESPACE_KEY])
                 self.assertNotIn("BTCUSDT:L", saved["open_position_records"])
-
                 if strategy:
-                    proof_intent = {"client_order_id": request["listClientOrderId"], "strategy_exit_client_order_id": client,
-                                    "strategy_exit_order_id": order_id, "strategy_exit_trade_ids": [403],
-                                    "strategy_exit_pre_order_signature": baseline["signature"], "strategy_exit_pre_order_quantity": baseline["quantity"]}
+                    proof_intent = {**current, "strategy_exit_trade_ids": [403]}
                     self.assertTrue(recovery.has_durable_spot_opo_strategy_sell(path, proof_intent, signature=str(fill["signature"]), consumed_quantity="0.0999", namespace=self.namespace))
                 else:
-                    from app.gui.shared import allocation_persistence
-                    with patch.object(allocation_persistence, "get_position_allocations_path", return_value=path):
-                        self.assertTrue(recovery.has_durable_spot_opo_stop_exit(triggered, signature=str(fill["signature"]), portfolio_quantity="0.0999", namespace=self.namespace))
+                    self.assertTrue(recovery.has_durable_spot_opo_stop_exit(current, signature=str(fill["signature"]), portfolio_quantity="0.0999", namespace=self.namespace))
 
     def test_readers_and_baselines_never_convert_namespace_failure_to_false(self):
         from app.gui.shared import allocation_persistence
@@ -410,10 +507,11 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
     def test_caller_locked_buy_writer_keeps_same_namespace_contract(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "allocations.json"
-            with storage.ledger_transaction(path):
-                recovery._persist_spot_buy_allocation_unlocked(path, buy_fill(), namespace=self.namespace)
+            account = self.prepare_owned(path)
+            with storage.ledger_transactions(account.path, path):
+                self.publish(path, buy_fill(), operation=recovery._persist_spot_buy_allocation_unlocked)
                 before = path.read_bytes()
-                recovery._persist_spot_buy_allocation_unlocked(path, buy_fill(), namespace=self.namespace)
+                self.publish(path, buy_fill(), operation=recovery._persist_spot_buy_allocation_unlocked)
                 with self.assertRaises(LiveTradingSafetyError):
                     recovery._persist_spot_buy_allocation_unlocked(path, buy_fill())
                 self.assertEqual(before, path.read_bytes())
@@ -421,20 +519,50 @@ class OfflineFillNamespaceTests(_OfflineNamespaceCase):
     def test_bound_full_size_residual_stop_forwards_namespace_without_restoring_inventory(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "allocations.json"
-            # Committed pure fixture authors exact original BUY and linked stop evidence.
-            intent, order, trades = fixtures.SpotFillRecoveryTests().full_size_residual_stop_inputs(path)
-            self.bind_test_fixture(path, self.namespace)
-            fill = recovery.summarize_spot_opo_residual_stop_sell_fill(intent, order, trades, base_asset="BTC", quote_asset="USDT")
+            facts = Path(temp) / "unbound-original-facts.json"
+            helper = fixtures.SpotFillRecoveryTests()
+            intent, order, trades = helper.full_size_residual_stop_inputs(facts)
+            initial, working, _request = helper.opo_buy_inputs()
+            buy_trades = [{"symbol": "BTCUSDT", "id": 601, "orderId": 75, "price": "20000", "qty": "0.1",
+                           "quoteQty": "2000", "commission": "0.0001", "commissionAsset": "BTC", "time": 1780000000000, "isBuyer": True}]
+            buy = recovery.summarize_spot_opo_buy_fill(initial, working, buy_trades, base_asset="BTC", quote_asset="USDT")
+            self.prepare_owned(path)
+            self.assertTrue(self.publish(path, buy, record=initial))
+            baseline = recovery.spot_opo_allocation_baseline(path, symbol="BTCUSDT", list_client_order_id=initial["client_order_id"], expected_quantity="0.0999", namespace=self.namespace)
+            intent["residual_stop_pre_order_signature"] = baseline["signature"]
+            current = self.author_record(path, intent)
+            fill = recovery.summarize_spot_opo_residual_stop_sell_fill(current, order, trades, base_asset="BTC", quote_asset="USDT")
             before = path.read_bytes()
             for namespace in [None, make_namespace(UID_A, STORE_B)]:
                 with self.subTest(namespace=namespace), self.assertRaises(LiveTradingSafetyError):
                     recovery.persist_spot_opo_residual_stop_allocation(path, fill, namespace=namespace)
                 self.assertEqual(before, path.read_bytes())
-            recovery.persist_spot_opo_residual_stop_allocation(path, fill, namespace=self.namespace)
+            writer = recovery.persist_spot_opo_residual_stop_allocation
+            account = self.accounts_by_path[path]
+            ledger_before = self.f.ledger(account)
+            backend = checkpoint_backend_for_case(self)
+            protected_before = dict(backend.store)
+            normalized = {**fill, "pre_order_portfolio_signature": fill["residual_stop_pre_order_signature"],
+                          "pre_order_portfolio_qty": fill["residual_stop_pre_order_quantity"]}
+            invalid = [{key: value for key, value in normalized.items() if key != missing}
+                       for missing in ("pre_order_portfolio_signature", "pre_order_portfolio_qty")]
+            invalid += [{**normalized, **change} for change in (
+                {"pre_order_portfolio_signature": "f" * 64}, {"pre_order_portfolio_qty": "0.2"},
+                {"pre_order_extra": "foreign"},
+            )]
+            for changed in invalid:
+                with self.subTest(changed=changed), self.assertRaises(LiveTradingSafetyError):
+                    self.publish(path, changed, record=current, operation=writer)
+                self.assertEqual(before, path.read_bytes())
+                self.assertEqual(ledger_before, self.f.ledger(account))
+                self.assertEqual(protected_before, backend.store)
+            self.assertTrue(self.publish(path, fill, record=current, operation=writer))
             after = path.read_bytes()
-            recovery.persist_spot_opo_residual_stop_allocation(path, fill, namespace=self.namespace)
+            full_after = self.f.ledger(self.accounts_by_path[path])
+            self.assertTrue(self.publish(path, fill, record=current, operation=writer))
             self.assertEqual(after, path.read_bytes())
-            self.assertTrue(recovery.has_durable_spot_opo_residual_stop_allocation(path, intent, signature=str(fill["signature"]), consumed_quantity="0.0999", remaining_quantity="0", trade_ids=[603], namespace=self.namespace))
+            self.assertEqual(full_after, self.f.ledger(self.accounts_by_path[path]))
+            self.assertTrue(recovery.has_durable_spot_opo_residual_stop_allocation(path, current, signature=str(fill["signature"]), consumed_quantity="0.0999", remaining_quantity="0", trade_ids=[603], namespace=self.namespace))
             saved = json.loads(after)
             self.assertEqual("Closed", saved["entry_allocations"]["BTCUSDT:L"][0]["status"])
             self.assertEqual(self.namespace, saved[ACCOUNT_NAMESPACE_KEY])

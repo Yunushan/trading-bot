@@ -381,3 +381,52 @@ class SpotInventoryCheckpointRuntimeTests(unittest.TestCase):
             runtime.recover_owned_inventory_bootstrap(account.wrapper, allocation_path=self.f.path)
         self.assertEqual(before, self.before(account))
         self.assertFalse(self.f.path.exists())
+
+    def test_pending_inspection_is_read_only_and_explicit_exact_recovery_precedes_reload(self):
+        account, record, candidate = self.prepared()
+        ledger_marker = self.f.durable_bytes(account)[1:]
+        with self.f.account_home(account), self.assertRaises(LiveTradingSafetyError):
+            with self.publication(account, record), patch.object(core, "_finish", side_effect=OSError("prepared crash")):
+                runtime.write_owned_inventory_checkpoint(self.f.path, candidate)
+        before = self.before(account)
+        with self.f.account_home(account):
+            operation = runtime.inspect_owned_pending_inventory_operation(account.wrapper, self.f.path)
+            self.assertEqual(runtime.inventory_publication_operation_hash(account.namespace, record, self.f.fill), operation)
+            self.assertEqual(before, self.before(account))
+            with ledger_transaction(self.f.path), self.assertRaises(LiveTradingSafetyError):
+                raw = self.f.path.read_bytes()
+                core.verify_inventory_checkpoint(self.f.path, raw, json.loads(raw), expected_namespace=account.namespace)
+            runtime.recover_owned_inventory_publication(account.wrapper, self.f.path, expected_record=record, fill=self.f.fill)
+            self.assertIsNone(runtime.inspect_owned_pending_inventory_operation(account.wrapper, self.f.path))
+        self.assertEqual(candidate, json.loads(self.f.path.read_text(encoding="utf-8")))
+        self.assertEqual(ledger_marker, self.f.durable_bytes(account)[1:])
+        self.assertEqual([], self.f.order_calls)
+
+    def test_pending_wrong_event_or_missing_exact_journal_never_adopts_or_resets(self):
+        account, record, candidate = self.prepared()
+        with self.f.account_home(account), self.assertRaises(LiveTradingSafetyError):
+            with self.publication(account, record), patch.object(core, "_finish", side_effect=OSError("prepared crash")):
+                runtime.write_owned_inventory_checkpoint(self.f.path, candidate)
+        before = self.before(account)
+        with self.f.account_home(account), self.assertRaises(LiveTradingSafetyError):
+            runtime.recover_owned_inventory_publication(account.wrapper, self.f.path, expected_record=record,
+                                                         fill={**self.f.fill, "signature": "f" * 64})
+        self.assertEqual(before, self.before(account))
+        protected = core._record(self.f.path, next(iter(self.store.values())))
+        journal = core._journal(self.f.path, protected)
+        journal.unlink()
+        before = self.before(account)
+        with self.f.account_home(account), self.assertRaises(LiveTradingSafetyError):
+            runtime.inspect_owned_pending_inventory_operation(account.wrapper, self.f.path)
+        self.assertEqual(before, self.before(account))
+
+    def test_producer_assertion_requires_original_active_event_before_replay(self):
+        account, record, _candidate = self.prepared()
+        before = self.before(account)
+        with self.assertRaises(LiveTradingSafetyError):
+            runtime.assert_owned_inventory_publication(self.f.path, fill=self.f.fill)
+        with self.f.account_home(account), self.publication(account, record):
+            runtime.assert_owned_inventory_publication(self.f.path, fill=self.f.fill)
+            with self.assertRaises(LiveTradingSafetyError):
+                runtime.assert_owned_inventory_publication(self.f.path, fill={**self.f.fill, "client_order_id": "other-event"})
+        self.assertEqual(before, self.before(account))

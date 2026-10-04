@@ -7,7 +7,7 @@ import os
 import stat
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -25,6 +25,7 @@ from app.integrations.exchanges.binance.orders.order_intent_store import (
     write_ledger,
 )
 from app.settings.live_safety import LiveTradingSafetyError
+from .trade_callback_origin import TradeCallbackOrigin, _matches_original_context
 from app.integrations.exchanges.binance.orders.spot_inventory_namespace import (
     ACCOUNT_NAMESPACE_KEY, is_strictly_empty_live_snapshot, make_namespace,
     require_namespace, validate_namespace,
@@ -118,7 +119,11 @@ class AllocationSnapshotSession:
     def has_trade_event_receipt(self, descriptor: dict) -> bool:
         """Inspect committed evidence only; a conflicting replay is an error."""
         _validate_event_receipt(descriptor)
-        with self._mutex:
+        captured = self._capture()
+        if self.state != "loaded" or captured[0] is None:
+            return False
+        with ledger_transaction(captured[0]), self._mutex:
+            assert_loaded_allocation_checkpoint(self)
             receipts = (self._snapshot or {}).get("gui_trade_event_receipts", [])
             matches = [receipt for receipt in receipts if receipt["event_id"] == descriptor["event_id"]]
             if matches and matches != [descriptor]:
@@ -189,7 +194,7 @@ def initialize_spot_allocation_namespace(window, wrapper) -> bool:
     from .trade_callback_origin import owned_live_spot_wrapper
     from app.integrations.exchanges.binance.orders.order_intent_runtime import _intent_path
     from app.integrations.exchanges.binance.orders.spot_execution_owner import SpotExecutionOwner
-    from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import assert_bootstrap_empty_ledger
+    from app.integrations.exchanges.binance.orders.spot_inventory_checkpoint_runtime import bootstrap_owned_inventory_checkpoint
 
     session = getattr(window, "_allocation_snapshot_session", None)
     if not isinstance(session, AllocationSnapshotSession) or not owned_live_spot_wrapper(wrapper):
@@ -236,7 +241,9 @@ def initialize_spot_allocation_namespace(window, wrapper) -> bool:
         raise LiveTradingSafetyError("Spot inventory namespace has no loaded canonical Live source.")
     with ledger_transactions(intent_path, path), session._mutex:
         assert_original()
-        if _read_receipt(path) != (captured[2], captured[3]):
+        observed = _read_receipt(path)
+        guard_position_allocation_snapshot(path, observed)
+        if observed != (captured[2], captured[3]):
             raise LiveTradingSafetyError("Spot inventory namespace source changed after loading.")
         previous = captured[4]
         if previous is not None and ACCOUNT_NAMESPACE_KEY in previous:
@@ -244,14 +251,15 @@ def initialize_spot_allocation_namespace(window, wrapper) -> bool:
             return False
         if not is_strictly_empty_live_snapshot(previous):
             raise LiveTradingSafetyError("Unscoped Spot inventory requires explicit reconciliation.")
-        assert_bootstrap_empty_ledger(wrapper, expected_store_id=owner.store_id)
         data = copy.deepcopy(previous) if previous is not None else {
             "version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {},
         }
         data[ACCOUNT_NAMESPACE_KEY] = expected
         session.invalidate("Spot inventory namespace initialization requires an actual reload")
-        _write_snapshot(path, data)
+        if bootstrap_owned_inventory_checkpoint(wrapper, allocation_path=path) is not True:
+            raise LiveTradingSafetyError("Spot inventory protected bootstrap was not committed.")
         committed = _read_receipt(path)
+        guard_position_allocation_snapshot(path, committed, expected_namespace=expected)
     # This loader obtains a new receipt and returns both actual maps. It never
     # adopts old maps into a freshened session or calls a window/venue callback.
     assert_original(ready=False)
@@ -259,7 +267,9 @@ def initialize_spot_allocation_namespace(window, wrapper) -> bool:
     loaded_maps = load_position_allocations(this_file=this_file, mode="Live", session=session, load_ticket=ticket)
     with ledger_transactions(intent_path, path), session._mutex:
         assert_original(ready=False)
-        if _read_receipt(path) != committed:
+        reloaded = _read_receipt(path)
+        guard_position_allocation_snapshot(path, reloaded, expected_namespace=expected)
+        if reloaded != committed:
             session.invalidate("Spot inventory namespace changed during reload")
             raise LiveTradingSafetyError("Spot inventory namespace changed during reload.")
         current = session._capture()
@@ -283,10 +293,10 @@ def non_spot_desktop_exposure_allowed(window, wrapper) -> bool:
     path = get_position_allocations_path(Path(__file__).resolve().parents[2] / "gui" / "window_shell.py")
     try:
         with ledger_transaction(path):
-            raw, _identity = _read_receipt(path)
-            if raw is None:
+            observed = _read_receipt(path)
+            snapshot = guard_position_allocation_snapshot(path, observed)
+            if snapshot is None:
                 return True
-            snapshot = _decode(raw, None)
             return ACCOUNT_NAMESPACE_KEY not in snapshot and not (
                 snapshot["mode"] == "Live" and any(is_recovery_owned_allocation(row)
                     for rows in snapshot["entry_allocations"].values() for row in rows)
@@ -457,9 +467,47 @@ def _decode(raw: bytes, mode: str | None) -> dict:
     return data
 
 
+def guard_position_allocation_snapshot(path: Path, observed, *, expected_namespace=None) -> dict | None:
+    """Verify the actual locked path slot before any missing or mode decision."""
+    from app.integrations.exchanges.binance.orders.spot_inventory_checkpoint import verify_inventory_checkpoint
+    raw = observed[0]
+    snapshot = None
+    if raw is not None:
+        try:
+            snapshot = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        except (ValueError, UnicodeError):
+            # The checkpoint verifier inspects the Windows slot first and then
+            # rejects these malformed original bytes; never substitute a receipt.
+            pass
+    verified = verify_inventory_checkpoint(path, raw, snapshot, expected_namespace)
+    if expected_namespace is not None and verified is not True:
+        raise LiveTradingSafetyError("Scoped Spot inventory requires its stable protected checkpoint.")
+    if snapshot is not None:
+        _validate_snapshot(snapshot, None)
+    return snapshot
+
+
+def assert_loaded_allocation_checkpoint(session: AllocationSnapshotSession, *, expected_namespace=None):
+    """Compare storage to the original receipt without adopting fresh window maps."""
+    captured = session._capture()
+    if not captured[6] or captured[0] is None:
+        raise LiveTradingSafetyError("Desktop inventory has no current loaded receipt.")
+    observed = _read_receipt(captured[0])
+    actual_snapshot = guard_position_allocation_snapshot(captured[0], observed, expected_namespace=expected_namespace)
+    if (observed != (captured[2], captured[3]) or actual_snapshot != captured[4]
+            or session._capture() != captured):
+        raise LiveTradingSafetyError("Desktop inventory changed after its original load.")
+    return captured
+
+
 def _write_snapshot(file_path: Path, payload: dict) -> None:
     _check_path(file_path)
-    write_ledger(file_path, payload)
+    if ACCOUNT_NAMESPACE_KEY in payload:
+        from app.integrations.exchanges.binance.orders.spot_inventory_checkpoint_runtime import write_owned_inventory_checkpoint
+        write_owned_inventory_checkpoint(file_path, payload)
+    else:
+        guard_position_allocation_snapshot(file_path, _read_receipt(file_path))
+        write_ledger(file_path, payload)
 
 
 def _protect_owned_rows(previous: dict, candidate: dict, *, position_transition_key: str | None = None) -> None:
@@ -511,7 +559,7 @@ def _protect_owned_rows(previous: dict, candidate: dict, *, position_transition_
             raise ValueError("closed recovery-owned inventory cannot be reactivated by the GUI")
 
 
-def _validate_owned_spot_buy_candidate(context, captured, file_path, previous, candidate, event_receipt) -> None:
+def _validate_owned_spot_buy_candidate(context, captured, file_path, previous, candidate, event_receipt) -> Mapping:
     if not isinstance(context, SpotBuyPublicationContext) or captured is None or previous is None and captured[2] is not None:
         raise ValueError("owned Spot BUY publication context is invalid")
     require_namespace(previous, context.namespace)
@@ -577,6 +625,16 @@ def _validate_owned_spot_buy_candidate(context, captured, file_path, previous, c
     )):
         raise ValueError("owned Spot BUY position financial fields are incoherent")
     _protect_owned_rows(baseline, candidate, position_transition_key=key)
+    return observed_intent
+
+
+def _assert_gui_publication_origin(context: SpotBuyPublicationContext, session) -> TradeCallbackOrigin:
+    origin = context.origin
+    if (not isinstance(origin, TradeCallbackOrigin) or origin.session is not session
+            or origin.admission_receipt != context.entry_source_receipt
+            or not _matches_original_context(origin.window, origin)):
+        raise LiveTradingSafetyError("Desktop BUY publication lost its original account and window.")
+    return origin
 
 
 def save_position_allocations(
@@ -642,6 +700,8 @@ def save_position_allocations(
             # Capture never holds this mutex while acquiring a storage transaction.
             with session._mutex if session is not None else nullcontext():
                 observed = _read_receipt(file_path)
+                guard_position_allocation_snapshot(file_path, observed,
+                    expected_namespace=owned_spot_buy.namespace if owned_spot_buy is not None else None)
                 if session is None:
                     # Independent bootstrap compatibility; existing state needs an actual receipt.
                     if observed != (None, None) or (file_path.parent.parent / _ALLOCATIONS_FILE_NAME).exists():
@@ -651,16 +711,32 @@ def save_position_allocations(
                     or observed != (captured[2], captured[3])
                 ):
                     raise ValueError("allocation state changed after this window loaded it")
+                publication: AbstractContextManager = nullcontext()
                 if owned_spot_buy is not None:
-                    _validate_owned_spot_buy_candidate(owned_spot_buy, captured, file_path, previous, data, event_receipt)
-                if not duplicate_event:
-                    _write_snapshot(file_path, data)
-                    committed = _read_receipt(file_path)
-                    if committed[0] is None:
-                        raise ValueError("published allocation state is missing")
-                    committed_data = _decode(committed[0], mode)
-                    if session is not None:
-                        session._accept(file_path, mode, committed, committed_data)
+                    actual_record = _validate_owned_spot_buy_candidate(owned_spot_buy, captured, file_path, previous, data, event_receipt)
+                    origin = _assert_gui_publication_origin(owned_spot_buy, session)
+                    from app.integrations.exchanges.binance.orders.spot_inventory_checkpoint_runtime import owned_inventory_publication
+                    publication = owned_inventory_publication(origin.wrapper,
+                        allocation_path=file_path, expected_record=actual_record, fill=owned_spot_buy.fill)
+                committed = committed_data = None
+                with publication:
+                    if owned_spot_buy is not None:
+                        _assert_gui_publication_origin(owned_spot_buy, session)
+                        if _read_receipt(file_path) != observed:
+                            raise ValueError("owned allocation source changed during publication admission")
+                    if not duplicate_event:
+                        _write_snapshot(file_path, data)
+                        committed = _read_receipt(file_path)
+                        if committed[0] is None:
+                            raise ValueError("published allocation state is missing")
+                        committed_data = guard_position_allocation_snapshot(file_path, committed)
+                        if committed_data is None:
+                            raise ValueError("published allocation snapshot is missing")
+                        _validate_snapshot(committed_data, mode)
+                    if owned_spot_buy is not None:
+                        _assert_gui_publication_origin(owned_spot_buy, session)
+                if session is not None and committed is not None:
+                    session._accept(file_path, mode, committed, committed_data)
         completed = True
         return True
     except _ALLOCATION_STATE_ERRORS as exc:
@@ -690,13 +766,19 @@ def load_position_allocations(
         # Lock both paths throughout migration and load; path lookup never moves files.
         with ledger_transactions(path, legacy):
             observed = _read_receipt(path)
+            data = guard_position_allocation_snapshot(path, observed)
             if observed == (None, None):
                 legacy_observed = _read_receipt(legacy)
-                if legacy_observed[0] is not None:
-                    data = _decode(legacy_observed[0], mode)
-                    _write_snapshot(path, data)
+                legacy_data = guard_position_allocation_snapshot(legacy, legacy_observed)
+                if legacy_data is not None:
+                    _validate_snapshot(legacy_data, mode)
+                    _write_snapshot(path, legacy_data)
+                    if _read_receipt(legacy) != legacy_observed:
+                        raise ValueError("legacy allocation source changed during migration")
+                    guard_position_allocation_snapshot(legacy, legacy_observed)
                     legacy.unlink()
                     observed = _read_receipt(path)
+                    data = guard_position_allocation_snapshot(path, observed)
             if observed[0] is None:
                 if session is not None:
                     with session._mutex:
@@ -707,7 +789,9 @@ def load_position_allocations(
                             load_ticket._completion = (path, mode, session._generation)
                 completed = True
                 return {}, {}
-            data = _decode(observed[0], mode)
+            if data is None:
+                raise ValueError("loaded allocation snapshot is missing")
+            _validate_snapshot(data, mode)
             allocations = {_deserialize_allocation_key(key): copy.deepcopy(rows) for key, rows in data["entry_allocations"].items()}
             records = {_deserialize_allocation_key(key): copy.deepcopy(record) for key, record in data["open_position_records"].items()}
             if session is not None:

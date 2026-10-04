@@ -53,6 +53,30 @@ def _recover(wrapper: Any, item: Any, *, allocation_path: Path, receipt: Any, ha
     ))
 
 
+def _recover_prepared(wrapper: Any, item: Any, *, allocation_path: Path, session: Any, handoff: Any) -> dict:
+    from app.integrations.exchanges.binance.orders.spot_desktop_buy_recovery_runtime import (
+        recover_spot_desktop_prepared_buy,
+    )
+    return cast(dict, recover_spot_desktop_prepared_buy(
+        wrapper, item, allocation_path=allocation_path, session=session, publication_handoff=handoff,
+    ))
+
+
+def _is_prepared_item(item: Any, discovery: Any) -> bool:
+    from app.integrations.exchanges.binance.orders.spot_desktop_buy_recovery_runtime import (
+        SpotDesktopBuyRecoveryDiscovery, SpotDesktopBuyRecoveryWorkItem,
+    )
+    return (
+        isinstance(discovery, SpotDesktopBuyRecoveryDiscovery)
+        and isinstance(item, SpotDesktopBuyRecoveryWorkItem) and item.checkpoint_pending is True
+        and item.authority is discovery.authority and any(value is item for value in discovery.items)
+    )
+
+
+def _has_prepared_items(discovery: Any) -> bool:
+    return any(_is_prepared_item(item, discovery) for item in getattr(discovery, "items", ()))
+
+
 def _selected_scope(window: Any) -> tuple:
     """UI-thread capture only; credentials never appear in recovery messages."""
     auth = window._snapshot_auth_state()
@@ -86,6 +110,14 @@ class _RecoveryToken:
             self.matches_selection() and getattr(self.window, "_entry_allocations", None) is self.allocations
             and getattr(self.window, "_open_position_records", None) is self.records
         )
+
+    @contextmanager
+    def prepared_handoff(self):
+        """Retain selection and blocked-session identity without accepting its maps."""
+        with self.session._mutex:
+            if not self.matches_context() or self.session._capture()[5] != self.session_generation:
+                raise LiveTradingSafetyError("Prepared BUY selection or session changed before recovery.")
+            yield
 
     @contextmanager
     def publication_handoff(self):
@@ -220,7 +252,8 @@ class SpotBuyRecoveryDialog(QtWidgets.QDialog):
         self.discover_btn.setEnabled(True)
         self.recover_btn.setEnabled(
             self._discovery is not None and bool(self._discovery.items)
-            and self._token is not None and self._current(self._token) and self._token.session.ready
+            and self._token is not None and self._current(self._token)
+            and (self._token.session.ready or _has_prepared_items(self._discovery))
         )
         after, self._after_worker = self._after_worker, None
         if after is not None:
@@ -239,7 +272,8 @@ class SpotBuyRecoveryDialog(QtWidgets.QDialog):
             if getattr(self._window, "strategy_engines", None):
                 raise LiveTradingSafetyError("Stop the strategy before recovery; restart if execution ownership remains held.")
             wrapper = getattr(self._window, "shared_binance", None)
-            if wrapper is None:
+            old_owner = getattr(wrapper, "_spot_execution_owner", None)
+            if wrapper is None or old_owner is not None and getattr(old_owner, "fd", None) is None:
                 auth = self._window._snapshot_auth_state()
                 wrapper = self._window._create_binance_wrapper(
                     api_key=auth["api_key"], api_secret=auth["api_secret"], mode=auth["mode"],
@@ -261,6 +295,19 @@ class SpotBuyRecoveryDialog(QtWidgets.QDialog):
                 return
             if not self._current(token) or result.authority.wrapper is not wrapper:
                 self._fail("Selected account or allocation source changed during discovery. Discover again.")
+                return
+            prepared = _has_prepared_items(result)
+            if prepared:
+                with token.session._mutex:
+                    if not token.matches_context() or _selected_scope(self._window) != scope:
+                        self._fail("Selected account changed during prepared inventory discovery.")
+                        return
+                    token.session.invalidate("prepared inventory requires explicit completion before loading maps")
+                    self._token = self._capture_token(wrapper, scope)
+                self._discovery = result
+                self._render_items()
+                self._window._spot_buy_recovery_fence = True
+                self.status_label.setText("An inventory publication is prepared. Recover Selected completes its exact saved target.")
                 return
             if self._window._reload_position_allocation_snapshot("Live") is not True:
                 self._fail("Verified account allocation reload failed. New exposure remains blocked.")
@@ -317,7 +364,10 @@ class SpotBuyRecoveryDialog(QtWidgets.QDialog):
             if not self._current(token):
                 raise LiveTradingSafetyError("Selected account or loaded allocation source changed. Discover again.")
             path = _allocation_path()
-            receipt = _capture_loaded(self._window, path)
+            prepared = _is_prepared_item(item, self._discovery)
+            if getattr(item, "checkpoint_pending", False) is True and not prepared:
+                raise LiveTradingSafetyError("Prepared inventory work item is unsupported; discover again.")
+            receipt = None if prepared else _capture_loaded(self._window, path)
         except _RECOVERY_UI_ERRORS as exc:
             self._fail(exc, client_order_id=item.client_order_id)
             return
@@ -360,8 +410,18 @@ class SpotBuyRecoveryDialog(QtWidgets.QDialog):
             self.status_label.setText("Portfolio recovered and reloaded. Rechecking durable unresolved work...")
             self._after_worker = self.discover
 
-        self._run(lambda: _recover(token.wrapper, item, allocation_path=path, receipt=receipt,
-                                   handoff=token.publication_handoff), done)
+        if prepared:
+            def run_prepared():
+                # Worker preflight reads owned plain state only; Qt stays on the UI thread.
+                with token.session._mutex:
+                    if not token.matches_context() or token.session._capture()[5] != token.session_generation:
+                        raise LiveTradingSafetyError("Prepared BUY selection or session changed before recovery.")
+                return _recover_prepared(token.wrapper, item, allocation_path=path, session=token.session,
+                                         handoff=token.prepared_handoff)
+            self._run(run_prepared, done)
+        else:
+            self._run(lambda: _recover(token.wrapper, item, allocation_path=path, receipt=receipt,
+                                       handoff=token.publication_handoff), done)
 
     def closeEvent(self, event):
         if self._worker is not None:

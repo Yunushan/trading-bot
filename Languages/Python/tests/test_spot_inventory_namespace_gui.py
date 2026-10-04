@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import test_spot_opo_fault_integration as fixture_module
+from spot_inventory_checkpoint_fixtures import CheckpointFixtureBackend
 
 from app.gui.runtime.account import account_runtime
 from app.gui.shared import allocation_persistence as allocations
@@ -22,6 +23,7 @@ from app.settings.live_safety import LiveTradingSafetyError
 
 class SpotInventoryNamespaceGuiTests(unittest.TestCase):
     def setUp(self):
+        self.checkpoint_backend = self.enterContext(CheckpointFixtureBackend(simulate_windows=True))
         self.fixture = fixture_module.SpotOpoFaultIntegrationTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
@@ -198,7 +200,8 @@ class SpotInventoryNamespaceGuiTests(unittest.TestCase):
         foreign._guard_live_order_submit(market="futures", params={**params, "reduceOnly": True})
         self.assertTrue(foreign._desktop_allocation_admission_check() is False)
         self.path.unlink()
-        self.assertTrue(foreign._desktop_allocation_admission_check())
+        self.assertFalse(foreign._desktop_allocation_admission_check())
+        transport.futures_create_order.assert_not_called()
 
 
 if __name__ == "__main__":

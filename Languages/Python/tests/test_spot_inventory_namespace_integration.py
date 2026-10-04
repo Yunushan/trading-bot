@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from test_open_trade_signal_behavior import _OpenSignalWindowStub
 from test_spot_opo_fault_integration import _Venue
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case
 
 from app.gui.runtime.account import account_runtime
 from app.gui.shared import allocation_persistence as allocations
@@ -28,11 +29,12 @@ from app.integrations.exchanges.binance.orders import spot_fill_recovery_runtime
 from app.integrations.exchanges.binance.orders import spot_indexed_intent_migration as migration
 from app.integrations.exchanges.binance.orders import spot_inventory_namespace as namespaces
 from app.integrations.exchanges.binance.orders import spot_inventory_namespace_runtime as namespace_runtime
+from app.integrations.exchanges.binance.orders import spot_inventory_checkpoint_runtime as checkpoints
 from app.integrations.exchanges.binance.orders.order_intent_provisioning import (
     PROVISION_ACK, provision_order_intent_store, rotate_spot_owner_credentials,
 )
 from app.integrations.exchanges.binance.orders.order_intent_store import (
-    ledger_transaction, ledger_transactions, write_ledger,
+    ledger_transaction, ledger_transactions, current_ledger_deadline, write_ledger,
 )
 from app.integrations.exchanges.binance.orders.spot_execution_owner import owner_administration_lock, owner_marker_path
 from app.integrations.exchanges.binance.orders.spot_opo_runtime import build_spot_opo_request
@@ -135,6 +137,69 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
             account.namespace = namespaces.make_namespace(uid, self.ledger(account)["store_id"])
             return account
 
+    def bootstrap(self, account):
+        """Explicit product bootstrap while this same complete ledger is genuinely empty."""
+        with self.account_home(account):
+            self.assertTrue(checkpoints.bootstrap_owned_inventory_checkpoint(account.wrapper, allocation_path=self.path))
+
+    def prepared_account(self, label, uid, *, separate_home=False):
+        """Create owned protected empty state before authoring any financial history."""
+        checkpoint_backend_for_case(self)
+        account = self.account(label, uid, separate_home=separate_home, accepted=False)
+        self.bootstrap(account)
+        self.author_accepted(account, self.fill)
+        return account
+
+    def publish_buy(self, account, fill=None):
+        fill = self.fill if fill is None else fill
+        record = self.ledger(account)["intents"][fill["client_order_id"]]
+        with self.account_home(account), checkpoints.owned_inventory_publication(
+            account.wrapper, allocation_path=self.path, expected_record=record, fill=fill,
+        ):
+            self.assertTrue(fills.persist_spot_buy_allocation(self.path, fill, namespace=account.namespace))
+
+    def publish_sell(self, account, fill):
+        """Retain a complete exact SELL record before publishing its canonical effect."""
+        params = {"symbol": fill["symbol"], "side": "SELL", "type": "MARKET",
+                  "quantity": fill["gross_qty"], "newClientOrderId": fill["client_order_id"]}
+        record = intents._intent_record(params, market="spot", source="offline-provenance-sell-fixture")
+        record.update(state="accepted", exchange_status="FILLED", exchange_order_id=str(fill["order_id"]),
+                      executed_qty=fill["gross_qty"], accepted_at=intents._now(),
+                      portfolio_pre_order_signature=fill["pre_order_portfolio_signature"],
+                      portfolio_pre_order_qty=fill["pre_order_portfolio_qty"])
+        intents.validate_order_intent_record(fill["client_order_id"], record)
+        with self.account_home(account), ledger_transaction(account.path):
+            ledger = intents._read_ledger(account.path, expected_binding=intents._intent_binding(account.wrapper))
+            ledger["intents"][fill["client_order_id"]] = record
+            intents.validate_order_intent_ledger(ledger, expected_binding=intents._intent_binding(account.wrapper))
+            write_ledger(account.path, ledger)
+        record = self.ledger(account)["intents"][fill["client_order_id"]]
+        with self.account_home(account), checkpoints.owned_inventory_publication(
+            account.wrapper, allocation_path=self.path, expected_record=record, fill=fill,
+        ):
+            self.assertTrue(fills.persist_spot_sell_allocation(self.path, fill, namespace=account.namespace))
+
+    def author_historical_inventory(self, namespace=None, *, extension=None):
+        """Author one synthetic pre-existing whole source before its first fake checkpoint.
+
+        This explicit fixture action is not product bootstrap or checkpoint resealing.
+        Unbound low-level facts remain unowned for deliberate legacy rejection cases.
+        """
+        backend = checkpoint_backend_for_case(self)
+        facts = self.home / ("historical-facts-" + str(uuid4()) + ".json")
+        self.assertTrue(fills.persist_spot_buy_allocation(facts, self.fill))
+        payload = json.loads(facts.read_bytes())
+        if namespace is not None:
+            payload[namespaces.ACCOUNT_NAMESPACE_KEY] = deepcopy(namespace)
+        if extension is not None:
+            payload["preserved_extension"] = deepcopy(extension)
+        self.assertFalse(self.path.exists())
+        with ledger_transaction(self.path):
+            write_ledger(self.path, payload)
+        if namespace is not None:
+            backend.author_snapshot(self.path, namespace=namespace)
+        return payload
+
     def ledger(self, account):
         with self.account_home(account), ledger_transaction(account.path):
             payload = intents._read_ledger(account.path, expected_binding=intents._intent_binding(account.wrapper))
@@ -176,6 +241,8 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
         return window
 
     def recover(self, account):
+        self.assertIsNone(account.owner.fd)
+        account.wrapper = self.new_wrapper(account.wrapper.api_key, account.wrapper.api_secret, account.home, account.venue)
         with self.account_home(account):
             discovery = recovery.discover_spot_desktop_buy_recoveries(account.wrapper, allocation_path=self.path)
             item = next(item for item in discovery.items if item.client_order_id == CLIENT)
@@ -211,8 +278,8 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
         self.assertEqual([], self.order_calls)
 
     def test_foreign_uid_matching_fill_cannot_mark_selected_store(self):
-        a = self.account("A", 810001)
-        self.assertTrue(fills.persist_spot_buy_allocation(self.path, self.fill, namespace=a.namespace))
+        a = self.prepared_account("A", 810001)
+        self.publish_buy(a)
         a.owner.close()
         a_bytes = self.durable_bytes(a)
         b = self.account("B", 810002)
@@ -224,8 +291,8 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
         self.assertEqual(a_bytes, self.durable_bytes(a))
 
     def test_same_uid_restored_inventory_new_store_cannot_mark_selected_store(self):
-        a = self.account("old-home", 810003, separate_home=True)
-        self.assertTrue(fills.persist_spot_buy_allocation(self.path, self.fill, namespace=a.namespace))
+        a = self.prepared_account("old-home", 810003, separate_home=True)
+        self.publish_buy(a)
         a.owner.close()
         b = self.account("new-home", 810003, separate_home=True)
         self.assertEqual(a.uid, b.uid)
@@ -234,8 +301,8 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
         self.assert_recovery_rejected_without_writes(b)
 
     def test_nonempty_legacy_acquisition_is_not_implicitly_adopted(self):
-        account = self.account("legacy", 810004)
-        self.assertTrue(fills.persist_spot_buy_allocation(self.path, self.fill, namespace=account.namespace))
+        account = self.prepared_account("legacy", 810004)
+        self.publish_buy(account)
         raw = json.loads(self.path.read_bytes())
         raw.pop(namespaces.ACCOUNT_NAMESPACE_KEY)
         self.path.write_text(json.dumps(raw), encoding="utf-8")
@@ -243,8 +310,8 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
         self.assert_recovery_rejected_without_writes(account)
 
     def test_malformed_namespace_fences_without_losing_complete_history(self):
-        account = self.account("malformed", 810005)
-        self.assertTrue(fills.persist_spot_buy_allocation(self.path, self.fill, namespace=account.namespace))
+        account = self.prepared_account("malformed", 810005)
+        self.publish_buy(account)
         payload = json.loads(self.path.read_bytes())
         payload["preserved_extension"] = {"history": ["original", {"count": 3}]}
         for malformed in (None, {}, {**account.namespace, "account_uid": True},
@@ -259,17 +326,16 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
 
     def test_owned_recovery_keeps_full_history_and_marker_callback_lock_order(self):
         account = self.account("positive", 810006)
-        self.assertTrue(fills.persist_spot_buy_allocation(self.path, self.fill, namespace=account.namespace))
-        payload = json.loads(self.path.read_bytes())
-        payload["preserved_extension"] = {"history": ["original", {"count": 3}]}
-        self.path.write_text(json.dumps(payload), encoding="utf-8")
+        payload = self.author_historical_inventory(account.namespace, extension={"history": ["original", {"count": 3}]})
         account.owner.close()
         before = self.path.read_bytes()
         original = recovery._mark_exact_acquisition
         calls = []
 
         def marker(*args, **kwargs):
-            # This fails if publication invokes the marker while retaining storage locks.
+            # Actual deadline authority must be gone before the marker acquires fresh locks.
+            with self.assertRaises(LiveTradingSafetyError):
+                current_ledger_deadline(account.path, self.path)
             with ledger_transactions(account.path, self.path):
                 calls.append("unlocked")
             return original(*args, **kwargs)
@@ -289,10 +355,8 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
                 scenario = type(self)()
                 scenario.setUp()
                 try:
-                    account = scenario.account("consumed", 810011)
-                    self.assertTrue(fills.persist_spot_buy_allocation(
-                        scenario.path, scenario.fill, namespace=account.namespace,
-                    ))
+                    account = scenario.prepared_account("consumed", 810011)
+                    scenario.publish_buy(account)
                     baseline = fills.spot_live_allocation_baseline(
                         scenario.path, symbol="BTCUSDT", namespace=account.namespace,
                     )
@@ -311,9 +375,7 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
                     )
                     sold.update(pre_order_portfolio_signature=baseline["signature"],
                                 pre_order_portfolio_qty=baseline["quantity"])
-                    self.assertTrue(fills.persist_spot_sell_allocation(
-                        scenario.path, sold, namespace=account.namespace,
-                    ))
+                    scenario.publish_sell(account, sold)
                     account.owner.close()
                     before = scenario.path.read_bytes()
                     result = scenario.recover(account)
@@ -330,6 +392,7 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
                     scenario.doCleanups()
 
     def gui_window(self, account):
+        checkpoint_backend_for_case(self)
         window = _OpenSignalWindowStub()
         window.mode_combo = SimpleNamespace(currentText=lambda: "Live")
         window.shared_binance = account.wrapper
@@ -416,8 +479,9 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
             this_file=self.home / "unused.py", mode="Live", session=session, load_ticket=ticket,
         )
         with session.loaded_handoff(ticket) as accepted:
-            self.assertTrue(accepted)
-            window._entry_allocations, window._open_position_records = entries, records
+            self.assertFalse(accepted)
+        self.assertFalse(session.ready)
+        self.assertEqual(({}, {}), (entries, records))
         before = self.durable_bytes(account)
         ledger_before = self.ledger(account)
         with self.assertRaises(LiveTradingSafetyError):
@@ -440,10 +504,7 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
                             namespace["account_uid"] += 1
                         elif source == "foreign-store":
                             namespace["store_id"] = str(uuid4())
-                        self.assertTrue(fills.persist_spot_buy_allocation(
-                            scenario.path, scenario.fill,
-                            namespace=None if source == "legacy-unscoped" else namespace,
-                        ))
+                        scenario.author_historical_inventory(None if source == "legacy-unscoped" else namespace)
                     before = scenario.durable_bytes(account)
                     ledger_before = scenario.ledger(account)
                     with self.assertRaises(LiveTradingSafetyError):
@@ -493,10 +554,7 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
                             namespace["account_uid"] += 1
                         elif source == "foreign-store":
                             namespace["store_id"] = str(uuid4())
-                        self.assertTrue(fills.persist_spot_buy_allocation(
-                            scenario.path, scenario.fill,
-                            namespace=None if source == "legacy-unscoped" else namespace,
-                        ))
+                        scenario.author_historical_inventory(None if source == "legacy-unscoped" else namespace)
                     before, ledger_before = scenario.durable_bytes(account), scenario.ledger(account)
                     with self.assertRaises(LiveTradingSafetyError):
                         account.wrapper._begin_spot_opo_intent(request, source="offline-direct-opo")
@@ -541,8 +599,8 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
         self.assertEqual([], self.order_calls)
 
     def test_owned_market_confirmation_and_replay_require_same_inventory_namespace(self):
-        account = self.account("confirmation", 810017)
-        self.assertTrue(fills.persist_spot_buy_allocation(self.path, self.fill, namespace=account.namespace))
+        account = self.prepared_account("confirmation", 810017)
+        self.publish_buy(account)
         before = self.durable_bytes(account)
         full_before = self.ledger(account)
         result = account.wrapper._mark_order_intent_portfolio_reconciled(
@@ -599,8 +657,8 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
         self.assertEqual([], self.order_calls)
 
     def test_non_spot_exposure_is_fenced_by_bound_or_legacy_protected_inventory(self):
-        account = self.account("non-spot", 810013)
-        self.assertTrue(fills.persist_spot_buy_allocation(self.path, self.fill, namespace=account.namespace))
+        account = self.prepared_account("non-spot", 810013)
+        self.publish_buy(account)
         original = json.loads(self.path.read_bytes())
         for scope in ("bound", "legacy-unscoped"):
             with self.subTest(scope=scope):
@@ -628,11 +686,12 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
         self.assertEqual([], self.order_calls)
 
     def test_credential_rotation_and_indexed_migration_preserve_inventory_identity(self):
-        account = self.account("rotation", 810010)
-        self.assertTrue(fills.persist_spot_buy_allocation(self.path, self.fill, namespace=account.namespace))
+        account = self.prepared_account("rotation", 810010)
+        self.publish_buy(account)
         account.owner.close()
         self.assertTrue(self.recover(account)["portfolio_reconciled"])
         inventory_before = self.path.read_bytes()
+        protected_before = deepcopy(checkpoint_backend_for_case(self).store)
         original = self.ledger(account)
         next_key, next_secret = "offline-rotation-key", "offline-rotation-secret"
         self.accounts[next_key] = account.uid, next_secret
@@ -652,6 +711,7 @@ class SpotInventoryNamespaceIntegrationTests(unittest.TestCase):
             migrated = self.ledger(account)
         self.assertEqual(rotated, migrated)
         self.assertEqual(inventory_before, self.path.read_bytes())
+        self.assertEqual(protected_before, checkpoint_backend_for_case(self).store)
         self.assertEqual(account.namespace, json.loads(inventory_before)[namespaces.ACCOUNT_NAMESPACE_KEY])
         self.assertEqual(3, result["format_version"])
         self.assertEqual([], self.order_calls)

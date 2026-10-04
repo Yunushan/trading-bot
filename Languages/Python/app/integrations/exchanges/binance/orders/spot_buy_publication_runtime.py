@@ -78,18 +78,25 @@ def desktop_entry_transaction(self, intent_path, params, source):
         from .order_intent_runtime import _spot_owner_scope
         if _spot_owner_scope(self) and (params.get("side") == "BUY" or "listClientOrderId" in params):
             from pathlib import Path
-            from app.gui.shared.allocation_persistence import _decode, _read_receipt, get_position_allocations_path
-            from .spot_inventory_namespace import require_namespace
+            from app.gui.shared.allocation_persistence import (
+                _read_receipt, get_position_allocations_path, guard_position_allocation_snapshot,
+            )
+            from .spot_inventory_checkpoint_runtime import _owned_lifetime, _pin_authority, _assert_pin
+            from .spot_inventory_checkpoint import _checkpoint_authority
             from .spot_inventory_namespace_runtime import namespace_for_owner
             namespace = namespace_for_owner(self)
             app_root = Path(__file__).resolve().parents[4]
             allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
-            with ledger_transactions(intent_path, allocation_path):
-                require_namespace(
-                    _decode(raw, "Live") if (raw := _read_receipt(allocation_path)[0]) is not None else None,
-                    namespace,
-                )
-                yield
+            with _owned_lifetime(self, intent_path), ledger_transactions(intent_path, allocation_path):
+                pin = _pin_authority(self, intent_path, namespace)
+                with _checkpoint_authority(lambda: _assert_pin(self, intent_path, namespace, pin)):
+                    guard_position_allocation_snapshot(
+                        allocation_path, _read_receipt(allocation_path), expected_namespace=namespace,
+                    )
+                    yield
+                    guard_position_allocation_snapshot(
+                        allocation_path, _read_receipt(allocation_path), expected_namespace=namespace,
+                    )
         else:
             with ledger_transaction(intent_path):
                 yield
@@ -98,17 +105,38 @@ def desktop_entry_transaction(self, intent_path, params, source):
     check = getattr(self, "_desktop_spot_entry_check", None)
     if not callable(check) or check(origin, params) is not True:
         raise LiveTradingSafetyError("Desktop BUY source changed before submission.")
-    from app.gui.shared.allocation_persistence import _read_receipt
-    with ledger_transactions(intent_path, receipt.allocation_path):
-        if _read_receipt(receipt.allocation_path) != (receipt.raw, receipt.identity):
-            raise LiveTradingSafetyError("Desktop allocation changed before BUY submission.")
-        handoff = getattr(origin, "admission_handoff", None)
-        if not callable(handoff):
-            raise LiveTradingSafetyError("Desktop BUY lacks its original window handoff.")
-        # Only the owned pure authority check runs under these locks. No callback,
-        # account GET, refresh or portfolio marker may run in this handoff.
-        with handoff(params):
-            yield
+    from app.gui.shared.allocation_persistence import _read_receipt, guard_position_allocation_snapshot
+    from .spot_inventory_namespace_runtime import namespace_for_owner
+    from .spot_inventory_checkpoint_runtime import _owned_lifetime, _pin_authority, _assert_pin
+    from .spot_inventory_checkpoint import _checkpoint_authority
+    from app.gui.shared.trade_callback_origin import TradeCallbackOrigin, _matches_original_context, _window_maps_match_snapshot
+    namespace = namespace_for_owner(self)
+    with _owned_lifetime(self, intent_path), ledger_transactions(intent_path, receipt.allocation_path):
+        pin = _pin_authority(self, intent_path, namespace)
+
+        def assert_origin():
+            _assert_pin(self, intent_path, namespace, pin)
+            if not isinstance(origin, TradeCallbackOrigin) or origin.wrapper is not self or origin.admission_receipt != receipt:
+                raise LiveTradingSafetyError("Desktop BUY lacks its original account receipt.")
+            with origin.session._mutex:
+                if (not _matches_original_context(origin.window, origin)
+                        or not _window_maps_match_snapshot(origin.window, origin.session)
+                        or origin.session.check_spot_buy_admission(receipt, params) is not True):
+                    raise LiveTradingSafetyError("Desktop BUY original window changed during admission.")
+
+        with _checkpoint_authority(assert_origin):
+            observed = _read_receipt(receipt.allocation_path)
+            guard_position_allocation_snapshot(receipt.allocation_path, observed, expected_namespace=namespace)
+            if observed != (receipt.raw, receipt.identity):
+                raise LiveTradingSafetyError("Desktop allocation changed before BUY submission.")
+            handoff = origin.admission_handoff
+            # Only the owned pure authority check runs under these locks. No callback,
+            # account GET, refresh or portfolio marker may run in this handoff.
+            with handoff(params):
+                yield
+                guard_position_allocation_snapshot(
+                    receipt.allocation_path, _read_receipt(receipt.allocation_path), expected_namespace=namespace,
+                )
 
 
 def assert_desktop_entry_ledger(source, ledger):
@@ -188,7 +216,7 @@ def _capture_spot_buy_publication(self, fill):
             allocation_path=receipt.allocation_path, intent_path=path,
             expected_binding=copy.deepcopy(saved["binding"]), expected_intent=copy.deepcopy(record),
             expected_store_id=str(saved["store_id"]), namespace=namespace,
-            fill=copy.deepcopy(dict(fill)), entry_source_receipt=receipt,
+            fill=copy.deepcopy(dict(fill)), entry_source_receipt=receipt, origin=origin,
         )
         validate_spot_buy_publication(context, record)
     return context

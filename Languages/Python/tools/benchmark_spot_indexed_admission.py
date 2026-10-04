@@ -30,6 +30,8 @@ from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime 
 from app.integrations.exchanges.binance.orders import order_intent_runtime as runtime
 from app.integrations.exchanges.binance.orders import order_intent_store as locks
 from app.integrations.exchanges.binance.orders import spot_indexed_intent_store as backend
+from app.integrations.exchanges.binance.orders import spot_inventory_checkpoint as inventory_checkpoints
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace import require_namespace
 from app.integrations.exchanges.binance.orders.spot_indexed_intent_hot_runtime import indexed_admission_view
 from app.integrations.exchanges.binance.orders.spot_indexed_intent_selective import close_indexed_session
 from app.integrations.exchanges.binance.orders.order_intent_provisioning import (
@@ -62,6 +64,47 @@ runtime.bind_binance_order_intent_runtime(_CapacityOwner)
 def _bytes(values) -> int:
     return sum(len(value.encode("utf-8")) if isinstance(value, str) else len(value)
                if isinstance(value, bytes) else 0 for value in values)
+
+
+class _SyntheticInventoryCheckpointStore:
+    """Confined lab evidence only; never reads or writes OS protected credentials."""
+    def __init__(self, root: Path):
+        self.root = baseline.owned_temporary_root(root)
+        self.values: dict[str, str] = {}
+
+    @staticmethod
+    def credential_store_backend() -> str:
+        return "windows-credential-manager"
+
+    def get_secret(self, *, scope: str, account: str) -> str:
+        if scope != inventory_checkpoints._SCOPE:
+            raise AssertionError("Offline capacity checkpoint scope changed.")
+        return self.values.get(account, "")
+
+    @staticmethod
+    def put_secret(**_kwargs) -> None:
+        raise AssertionError("Offline capacity cannot replace synthetic protected authority.")
+
+    @staticmethod
+    def delete_secret(**_kwargs) -> None:
+        raise AssertionError("Offline capacity cannot reset synthetic protected authority.")
+
+    def author_snapshot(self, path: Path, *, namespace: dict[str, Any]) -> None:
+        """Author exactly one initial historical fixture, with no production adoption."""
+        path = locks._logical_lock_path(baseline.confined_path(self.root, path))
+        with locks.ledger_transaction(path):
+            raw = path.read_bytes()
+            snapshot = inventory_checkpoints._snapshot(raw, inventory_checkpoints._decode(raw))
+            require_namespace(snapshot, namespace)
+            source = inventory_checkpoints._source(path)
+            account = inventory_checkpoints._hash(source.encode("utf-8"))
+            if account in self.values:
+                raise ValueError("Offline capacity cannot re-seal synthetic protected authority.")
+            record = {"version": 1, "state": "stable", "namespace": dict(namespace), "source": source,
+                      "head": {"revision": 1, "digest": hashlib.sha256(raw).hexdigest()}}
+            value = inventory_checkpoints._compact(record)
+            inventory_checkpoints._record(path, value)
+            self.values[account] = value
 
 
 class _Traffic:
@@ -128,6 +171,7 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
     if type(samples) is not int or not 1 <= samples <= 25 or type(concurrent_rounds) is not int or not 0 <= concurrent_rounds <= 10:
         raise ValueError("Bounded positive samples and concurrency rounds are required.")
     root = baseline.owned_temporary_root(root)
+    synthetic_checkpoints = _SyntheticInventoryCheckpointStore(root)
     home = root / "synthetic-home"
     home.mkdir()
     records, workload = profiles.synthetic_opo_records(
@@ -146,6 +190,8 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
                                                    if sys.platform == "win32" else
                                                    "fresh complete verification within a pinned file-change receipt")}
     with ExitStack() as stack:
+        stack.enter_context(patch.object(inventory_checkpoints, "credential_store", synthetic_checkpoints))
+        stack.enter_context(patch.object(inventory_checkpoints, "_windows_read_adapter", return_value=True))
         stack.enter_context(patch.object(Path, "home", return_value=home))
         allocation_path = root / "synthetic-live-allocations.json"
         stack.enter_context(patch.object(allocation_persistence, "get_position_allocations_path",
@@ -188,7 +234,13 @@ def benchmark_indexed(root: Path, count: int, *, samples: int = 3, original_stop
             _atomic_report(allocation_path, {"version": 1, "mode": "Live",
                                             "spot_account_namespace": inventory_namespace,
                                             "entry_allocations": {}, "open_position_records": {}})
+            synthetic_checkpoints.author_snapshot(allocation_path, namespace=inventory_namespace)
             result["synthetic_inventory_namespace"] = inventory_namespace
+            result["inventory_checkpoint"] = {
+                "backend": "isolated in-memory synthetic fixture",
+                "initial_authority": "one-shot authored historical synthetic header",
+                "os_credential_store_measured": False,
+            }
             result["stage"] = "warm_measurement"
             _checkpoint(result, checkpoint)
             traffic = _Traffic()

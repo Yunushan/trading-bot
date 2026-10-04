@@ -113,27 +113,13 @@ def assert_single_unpublished_acquisition(ledger: Mapping, record: Mapping) -> N
 
 
 def publish_owned_spot_fill(wrapper, allocation_path, fill, *, expected_record: Mapping, operation: Callable[..., bool]) -> bool:
-    """Publish recovery using the complete current account history under paired locks."""
-    from app.gui.shared.allocation_persistence import _decode, _read_receipt, get_position_allocations_path
-    from .order_intent_runtime import _intent_binding, _intent_path, _read_ledger
-    from .order_intent_store import ledger_transactions
-    from .spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY, require_namespace
-    _verified_uid(wrapper)
-    app_root = Path(__file__).resolve().parents[4]
-    if allocation_path != get_position_allocations_path(app_root / "gui" / "window_shell.py"):
-        raise LiveTradingSafetyError("Spot fill publication requires the canonical allocation source.")
-    path = _intent_path(wrapper)
-    with ledger_transactions(path, allocation_path):
-        ledger = _read_ledger(path, expected_binding=_intent_binding(wrapper))
-        namespace = namespace_for_ledger(wrapper, ledger)
-        records = ledger["intents"]
-        if not isinstance(records, dict) or records.get(expected_record.get("client_order_id")) != expected_record:
-            raise LiveTradingSafetyError("Spot fill recovery record changed before owned publication.")
-        raw, _identity = _read_receipt(allocation_path)
-        snapshot = _decode(raw, "Live") if raw is not None else None
-        if snapshot is None or ACCOUNT_NAMESPACE_KEY not in snapshot:
-            assert_single_unpublished_acquisition(ledger, expected_record)
-            require_namespace(snapshot, namespace, allow_empty=True)
-        else:
-            require_namespace(snapshot, namespace)
-        return operation(allocation_path, fill, namespace=namespace)
+    """Keep the original complete record alive through canonical protected publication."""
+    from copy import deepcopy
+    from .spot_inventory_checkpoint_runtime import owned_inventory_publication
+    record, original_fill = deepcopy(dict(expected_record)), deepcopy(dict(fill))
+    with owned_inventory_publication(wrapper, allocation_path=allocation_path,
+                                     expected_record=record, fill=original_fill):
+        namespace = namespace_for_current_ledger(wrapper)
+        if namespace is None:
+            raise LiveTradingSafetyError("Spot fill publication requires actual owned account authority.")
+        return operation(allocation_path, original_fill, namespace=namespace)

@@ -17,11 +17,8 @@ from unittest.mock import patch
 from app.integrations.exchanges.binance.orders import order_intent_runtime as intents
 from app.integrations.exchanges.binance.orders import order_intent_admin as admin_cli
 from app.gui.shared import allocation_persistence as allocations
-from app.integrations.exchanges.binance.orders.spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY
-from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import (
-    namespace_for_owner, assert_bootstrap_empty_ledger,
-)
-from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transactions
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case
+from app.integrations.exchanges.binance.orders.spot_inventory_checkpoint_runtime import bootstrap_owned_inventory_checkpoint
 from app.integrations.exchanges.binance.orders.order_intent_provisioning import (
     PROVISION_ACK,
     migrate_spot_order_intent_store,
@@ -115,15 +112,10 @@ class SpotExecutionOwnerTests(unittest.TestCase):
         provision_order_intent_store(self.admin, acknowledgement=PROVISION_ACK)
 
     def initialize_inventory(self, wrapper) -> None:
-        owner = wrapper._ensure_spot_execution_owner()
-        namespace = namespace_for_owner(wrapper)
-        with ledger_transactions(owner.ledger_path, self.allocation_path):
-            assert_bootstrap_empty_ledger(wrapper, expected_store_id=owner.store_id)
-            self.assertFalse(self.allocation_path.exists())
-            allocations._write_snapshot(self.allocation_path, {
-                "version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {},
-                ACCOUNT_NAMESPACE_KEY: namespace,
-            })
+        checkpoint_backend_for_case(self)
+        wrapper._ensure_spot_execution_owner()
+        self.assertFalse(self.allocation_path.exists())
+        self.assertTrue(bootstrap_owned_inventory_checkpoint(wrapper, allocation_path=self.allocation_path))
 
     def close_owner(self, wrapper: _SpotWrapper) -> None:
         owner = getattr(wrapper, "_spot_execution_owner", None)

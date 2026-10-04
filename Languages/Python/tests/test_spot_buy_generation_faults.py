@@ -9,6 +9,7 @@ import os
 from decimal import Decimal
 from types import SimpleNamespace
 import unittest
+from spot_inventory_checkpoint_fixtures import CheckpointFixtureBackend
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -24,7 +25,7 @@ from app.integrations.exchanges.binance.orders import order_intent_runtime as le
 from app.integrations.exchanges.binance.orders import spot_fill_recovery_runtime as recovery
 from app.integrations.exchanges.binance.orders import spot_buy_publication_runtime as buy_publication
 from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transaction, write_ledger
-from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import namespace_for_owner
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import namespace_for_owner, publish_owned_spot_fill
 from app.settings.live_safety import LiveTradingSafetyError
 
 
@@ -87,21 +88,62 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
         self.assertEqual(fill["signature"], event["spot_fill_recovery"]["signature"])
         return event, fill
 
+    def _publish_buy(self, fill):
+        record = ledger._get_order_intent_record(self.wrapper, fill["client_order_id"])
+        return publish_owned_spot_fill(
+            self.wrapper, self.fixture.allocation_path, fill, expected_record=record,
+            operation=recovery.persist_spot_buy_allocation,
+        )
+
     def _persist_buy(self, fill):
-        self.assertTrue(recovery.persist_spot_buy_allocation(self.fixture.allocation_path, fill, namespace=self.namespace))
+        record = ledger._get_order_intent_record(self.wrapper, fill["client_order_id"])
+        self.assertTrue(publish_owned_spot_fill(
+            self.wrapper, self.fixture.allocation_path, fill, expected_record=record,
+            operation=recovery.persist_spot_buy_allocation,
+        ))
         marker = self.wrapper._mark_order_intent_portfolio_reconciled(
             fill["client_order_id"], portfolio_signature=fill["signature"], portfolio_quantity=fill["net_qty"],
         )
         self.assertTrue(marker["portfolio_reconciled"])
 
+    @contextmanager
+    def _publication_authority(self):
+        owner = getattr(self.wrapper, "_spot_execution_owner", None)
+        if owner is not None:
+            yield
+            return
+        from app.integrations.exchanges.binance.orders.spot_execution_owner import owner_administration_lock
+        from app.integrations.exchanges.binance.orders.spot_desktop_buy_recovery_runtime import _desktop_inventory_administration
+        self.wrapper._resolve_spot_account_uid()
+        path = ledger._intent_path(self.wrapper)
+        with owner_administration_lock(path), _desktop_inventory_administration(self.wrapper, path):
+            yield
+
     def _sell(self, consumed, *, base_fee="0"):
+        with self._publication_authority():
+            return self._sell_under_authority(consumed, base_fee=base_fee)
+
+    def _sell_under_authority(self, consumed, *, base_fee="0"):
         consumed = Decimal(consumed)
         base_fee = Decimal(base_fee)
         gross = consumed - base_fee
         baseline = recovery.spot_live_allocation_baseline(self.fixture.allocation_path, symbol="BTCUSDT", namespace=self.namespace)
         self.assertIsNotNone(baseline)
-        intent = {"market": "spot", "type": "MARKET", "side": "SELL", "symbol": "BTCUSDT",
-                  "client_order_id": "sell-generation-one", "exchange_order_id": "11000"}
+        self._fixture_sell_count = getattr(self, "_fixture_sell_count", 0) + 1
+        client_id = f"sell-generation-{self._fixture_sell_count}"
+        params = {"symbol": "BTCUSDT", "side": "SELL", "type": "MARKET", "quantity": str(gross),
+                  "newClientOrderId": client_id}
+        intent = ledger._intent_record(params, market="spot", source="offline-generation-fixture")
+        intent.update(state="accepted", exchange_status="FILLED", exchange_order_id="11000",
+                      executed_qty=str(gross), portfolio_qty=str(consumed), portfolio_reconciled=False,
+                      portfolio_pre_order_qty=baseline["quantity"], portfolio_pre_order_signature=baseline["signature"])
+        path = ledger._intent_path(self.wrapper)
+        with ledger_transaction(path):
+            payload = ledger._read_ledger(path, expected_binding=ledger._intent_binding(self.wrapper))
+            self.assertNotIn(client_id, payload["intents"])
+            payload["intents"][client_id] = copy.deepcopy(intent)
+            ledger.validate_order_intent_ledger(payload, expected_binding=ledger._intent_binding(self.wrapper))
+            write_ledger(path, payload)
         order = {"clientOrderId": intent["client_order_id"], "symbol": "BTCUSDT", "side": "SELL",
                  "type": "MARKET", "orderId": 11000, "status": "FILLED", "origQty": str(gross),
                  "executedQty": str(gross), "cummulativeQuoteQty": str(gross * Decimal("20000")),
@@ -112,7 +154,13 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
         fill = recovery.summarize_spot_market_fill(intent, order, trades, base_asset="BTC", quote_asset="USDT")
         self.assertEqual(consumed, Decimal(fill["portfolio_qty"]))
         fill.update(pre_order_portfolio_signature=baseline["signature"], pre_order_portfolio_qty=baseline["quantity"])
-        self.assertTrue(recovery.persist_spot_sell_allocation(self.fixture.allocation_path, fill, namespace=self.namespace))
+        self.assertTrue(publish_owned_spot_fill(
+            self.wrapper, self.fixture.allocation_path, fill, expected_record=intent,
+            operation=recovery.persist_spot_sell_allocation,
+        ))
+        self.assertTrue(self.wrapper._mark_order_intent_portfolio_reconciled(
+            client_id, portfolio_signature=fill["signature"], portfolio_quantity=fill["portfolio_qty"],
+        )["portfolio_reconciled"])
         return fill
 
     def _load_window(self):
@@ -160,7 +208,7 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
                     fixture._sell(consumed)
                     committed = fixture.fixture.allocation_path.read_bytes()
                     payload = fixture._payload()
-                    self.assertTrue(recovery.persist_spot_buy_allocation(fixture.fixture.allocation_path, buy, namespace=fixture.namespace))
+                    self.assertTrue(fixture._publish_buy(buy))
                     self.assertEqual(committed, fixture.fixture.allocation_path.read_bytes())
                     current = fixture.wrapper._get_order_intent_record(buy["client_order_id"])
                     self.assertTrue(ledger._has_durable_spot_buy_allocation(
@@ -196,7 +244,7 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
         self.assertEqual(30000.0, record["data"]["entry_price"])
         reloaded = self._load_window()
         loaded = copy.deepcopy((reloaded._entry_allocations, reloaded._open_position_records))
-        self.assertTrue(recovery.persist_spot_buy_allocation(self.fixture.allocation_path, first, namespace=self.namespace))
+        self.assertTrue(self._publish_buy(first))
         self.assertEqual(committed, self.fixture.allocation_path.read_bytes())
         self.assertEqual(loaded, (reloaded._entry_allocations, reloaded._open_position_records))
         self.assertEqual(2, len(self.market_posts))
@@ -232,7 +280,7 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
         self.assertEqual(maps, (reloaded._entry_allocations, reloaded._open_position_records))
         # A CLI event has no committed GUI receipt to authorize a read-only replay.
         self.assertTrue(reloaded._pending_trade_reconciliation)
-        self.assertTrue(recovery.persist_spot_buy_allocation(self.fixture.allocation_path, first, namespace=self.namespace))
+        self.assertTrue(self._publish_buy(first))
         self.assertEqual(committed, self.fixture.allocation_path.read_bytes())
         self.assertEqual(2, len(self.market_posts))
 
@@ -527,6 +575,10 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
                             )
                             with ledger_transaction(fixture.fixture.allocation_path):
                                 write_ledger(fixture.fixture.allocation_path, payload)
+                            # Explicit authored historical protected evidence for this legacy-map fixture.
+                            # This is a new isolated store, not a runtime reset/re-seal operation.
+                            historical_backend = fixture.enterContext(CheckpointFixtureBackend(simulate_windows=True))
+                            historical_backend.author_snapshot(fixture.fixture.allocation_path, namespace=fixture.namespace)
                             window = fixture._load_window()
                         source = fixture.fixture.allocation_path.read_bytes() if fixture.fixture.allocation_path.exists() else None
                         captured_intents = []
@@ -601,7 +653,7 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
                 fixture.setUp()
                 try:
                     _event, fill = fixture._buy()
-                    self.assertTrue(recovery.persist_spot_buy_allocation(fixture.fixture.allocation_path, fill, namespace=fixture.namespace))
+                    self.assertTrue(fixture._publish_buy(fill))
                     if previously_marked:
                         fixture.wrapper._mark_order_intent_portfolio_reconciled(
                             fill["client_order_id"], portfolio_signature=fill["signature"], portfolio_quantity=fill["net_qty"],
@@ -647,7 +699,10 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
         stop_fill = recovery.summarize_spot_opo_stop_sell_fill(
             observed, copy.deepcopy(stop), stop_trades, base_asset="BTC", quote_asset="USDT",
         )
-        self.assertTrue(recovery.persist_spot_opo_stop_sell_allocation(self.fixture.allocation_path, stop_fill, namespace=self.namespace))
+        self.assertTrue(publish_owned_spot_fill(
+            self.wrapper, self.fixture.allocation_path, stop_fill, expected_record=observed,
+            operation=recovery.persist_spot_opo_stop_sell_allocation,
+        ))
         self.wrapper._mark_spot_opo_exit_reconciled(
             "list-first", portfolio_signature=stop_fill["signature"], portfolio_quantity=stop_fill["portfolio_qty"],
         )
@@ -655,7 +710,7 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
         old_row = copy.deepcopy(self._payload()["entry_allocations"]["BTCUSDT:L"][0])
         self.assertEqual("Closed", old_row["status"])
         self.assertNotIn("BTCUSDT:L", self._payload()["open_position_records"])
-        self.assertTrue(recovery.persist_spot_buy_allocation(self.fixture.allocation_path, first_fill, namespace=self.namespace))
+        self.assertTrue(self._publish_buy(first_fill))
         self.assertEqual(closed_bytes, self.fixture.allocation_path.read_bytes())
         marker = self.wrapper._mark_spot_opo_entry_reconciled(
             "list-first", portfolio_signature=first_fill["signature"], portfolio_quantity=first_fill["net_qty"],
@@ -674,7 +729,7 @@ class SpotBuyGenerationFaultsTests(unittest.TestCase):
         self.assertEqual(old_row, rows[0])
         self.assertEqual(["Closed", "Active"], [row["status"] for row in rows])
         self.assertEqual([rows[1]], self._payload()["open_position_records"]["BTCUSDT:L"]["allocations"])
-        self.assertTrue(recovery.persist_spot_buy_allocation(self.fixture.allocation_path, first_fill, namespace=self.namespace))
+        self.assertTrue(self._publish_buy(first_fill))
         self.assertTrue(self.wrapper._mark_spot_opo_entry_reconciled(
             "list-first", portfolio_signature=first_fill["signature"], portfolio_quantity=first_fill["net_qty"],
         )["already_reconciled"])

@@ -72,6 +72,20 @@ class SpotBuyPublicationContext:
     entry_source_receipt: SpotBuyAdmissionReceipt = field(repr=False)
     expected_store_id: str
     namespace: dict = field(repr=False)
+    origin: object = field(default=None, repr=False, compare=False)
+
+    def __deepcopy__(self, memo):
+        # Keep the actual account/window authority; clone only detached data.
+        value = type(self)(
+            allocation_path=self.allocation_path, intent_path=self.intent_path,
+            expected_binding=deepcopy(self.expected_binding, memo),
+            expected_intent=deepcopy(self.expected_intent, memo),
+            fill=deepcopy(self.fill, memo), entry_source_receipt=deepcopy(self.entry_source_receipt, memo),
+            expected_store_id=self.expected_store_id, namespace=deepcopy(self.namespace, memo),
+            origin=self.origin,
+        )
+        memo[id(self)] = value
+        return value
 
 
 def spot_buy_target(params: Mapping) -> tuple[tuple[str, str], tuple[str, ...]]:

@@ -8,6 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.security import credential_store
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace import make_namespace
+
 from tools import benchmark_spot_indexed_admission as benchmark
 from tools.benchmark_spot_intent_history import TEMP_PREFIX
 
@@ -20,12 +23,27 @@ class IndexedCapacityBenchmarkTests(unittest.TestCase):
             snapshot["completed"] = False
             snapshot["workload"]["expected_gets_per_refresh"].clear()
             snapshot.get("warm_sql_traffic", {}).clear()
-        with tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as directory:
+        with (tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as directory,
+              patch.object(benchmark.inventory_checkpoints, "credential_store", credential_store),
+              patch.object(credential_store, "credential_store_backend", side_effect=AssertionError("No OS backend")) as native_backend,
+              patch.object(credential_store, "get_secret", side_effect=AssertionError("No OS read")) as native_get,
+              patch.object(credential_store, "put_secret", side_effect=AssertionError("No OS write")) as native_put,
+              patch.object(credential_store, "delete_secret", side_effect=AssertionError("No OS reset")) as native_delete,
+              patch.object(benchmark.inventory_checkpoints, "_windows_read_adapter", return_value=False)):
             result = benchmark.benchmark_indexed(
                 Path(directory), 8, samples=1, original_stops=1, residual_stops=1,
                 attempt_depth=1, residual_depth=1, concurrent_rounds=1,
                 checkpoint=mutate_detached_checkpoint,
             )
+            for native in (native_backend, native_get, native_put, native_delete):
+                native.assert_not_called()
+            self.assertIs(credential_store, benchmark.inventory_checkpoints.credential_store)
+            self.assertFalse(benchmark.inventory_checkpoints._windows_read_adapter())
+        self.assertEqual(result["inventory_checkpoint"], {
+            "backend": "isolated in-memory synthetic fixture",
+            "initial_authority": "one-shot authored historical synthetic header",
+            "os_credential_store_measured": False,
+        })
         pending = next(row for row in checkpoints if row["final_audit"] == "running")
         self.assertFalse(pending["completed"])
         self.assertIsNone(pending["history_preserved"])
@@ -52,6 +70,41 @@ class IndexedCapacityBenchmarkTests(unittest.TestCase):
         else:
             self.assertGreater(result["warm_sql_traffic"]["full_verifications"], 0)
             self.assertGreater(result["warm_sql_traffic_by_operation"]["warm_record_cas"][0]["full_verifications"], 0)
+
+    def test_synthetic_checkpoint_is_confined_canonical_and_never_resealed(self):
+        namespace = make_namespace(900000021, "00000000-0000-4000-8000-000000000021")
+        with tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as directory:
+            root = Path(directory)
+            synthetic = benchmark._SyntheticInventoryCheckpointStore(root)
+            path = root / "inventory.json"
+            snapshot = {"version": 1, "mode": "Live", "spot_account_namespace": namespace,
+                        "entry_allocations": {}, "open_position_records": {}}
+            benchmark._atomic_report(path, snapshot)
+            alias = root / "unused" / ".." / path.name
+            synthetic.author_snapshot(alias, namespace=namespace)
+            canonical = benchmark.locks._logical_lock_path(path)
+            account = benchmark.inventory_checkpoints._hash(benchmark.inventory_checkpoints._source(canonical).encode("utf-8"))
+            value = synthetic.get_secret(scope=benchmark.inventory_checkpoints._SCOPE, account=account)
+            record = benchmark.inventory_checkpoints._record(canonical, value)
+            self.assertEqual(namespace, record["namespace"])
+            self.assertEqual(benchmark.inventory_checkpoints._hash(path.read_bytes()), record["head"]["digest"])
+            before, protected = path.read_bytes(), dict(synthetic.values)
+            with self.assertRaises(benchmark.LiveTradingSafetyError):
+                synthetic.author_snapshot(path, namespace=namespace)
+            self.assertEqual(protected, synthetic.values)
+            self.assertEqual(before, path.read_bytes())
+            with self.assertRaises(AssertionError):
+                synthetic.put_secret(scope=benchmark.inventory_checkpoints._SCOPE, account=account, value=value)
+            with self.assertRaises(AssertionError):
+                synthetic.delete_secret(scope=benchmark.inventory_checkpoints._SCOPE, account=account)
+            with tempfile.TemporaryDirectory() as foreign_directory:
+                foreign = Path(foreign_directory) / "inventory.json"
+                benchmark._atomic_report(foreign, snapshot)
+                foreign_before = foreign.read_bytes()
+                with self.assertRaises(ValueError):
+                    synthetic.author_snapshot(foreign, namespace=namespace)
+                self.assertEqual(foreign_before, foreign.read_bytes())
+            self.assertEqual(protected, synthetic.values)
 
     def test_invalid_or_unowned_target_is_rejected_before_synthetic_state(self):
         with tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as directory:

@@ -1,4 +1,4 @@
-"""Inert protected publication protocol; callers separately prove account/ledger authority.
+"""Protected publication protocol; callers separately prove account/ledger authority.
 
 Private writers require genuine held owner or signed administration, the complete
 same-store ledger and both inventory/intent locks. Namespace metadata alone grants

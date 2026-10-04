@@ -26,6 +26,7 @@ from app.settings.live_safety import LiveTradingSafetyError
 from app.gui.shared import allocation_persistence as allocations
 from app.integrations.exchanges.binance.orders.spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY
 from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import namespace_for_owner
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case
 from tools import benchmark_spot_intent_history as fixtures
 from tools import spot_intent_capacity_profiles as profiles
 
@@ -82,13 +83,18 @@ class SpotIndexedIntentHotRuntimeTests(unittest.TestCase):
             self.wrapper, acknowledgement=provision.PROVISION_ACK, reconciliation_reference='synthetic hot rearm')
         self.owner = self.wrapper._ensure_spot_execution_owner()
         self.addCleanup(self.close_owner)
-        self.allocation_path = self.root / "allocations.json"
+        self.allocation_path = locks._logical_lock_path(self.root / "allocations.json")
         self.enterContext(patch.object(allocations, "get_position_allocations_path", return_value=self.allocation_path))
+        # This nonempty synthetic historical ledger cannot claim a fresh bootstrap.
+        # Author its entire initial fixture source before the one fake protected slot.
+        backend = checkpoint_backend_for_case(self)
+        namespace = namespace_for_owner(self.wrapper)
         with locks.ledger_transactions(self.path, self.allocation_path):
-            allocations._write_snapshot(self.allocation_path, {
+            locks.write_ledger(self.allocation_path, {
                 "version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {},
-                ACCOUNT_NAMESPACE_KEY: namespace_for_owner(self.wrapper),
+                ACCOUNT_NAMESPACE_KEY: namespace,
             })
+        backend.author_snapshot(self.allocation_path, namespace=namespace)
         self.manifest = self.path.read_bytes()
         self.request = profiles.request_for(700)
 

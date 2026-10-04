@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import cast
 
 from app.settings.live_safety import LiveTradingSafetyError
 
@@ -666,21 +667,60 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return value
 
 
-def _require_fill_namespace(
-    snapshot: dict[str, object], namespace: dict[str, object] | None, *, allow_empty: bool = False,
-) -> None:
-    """Legacy unscoped fixtures cannot relabel or touch account-bound inventory.
+def _read_verified_live_snapshot(
+    path: Path, *, namespace: dict[str, object] | None = None, allow_missing: bool = False,
+) -> dict[str, object] | None:
+    """Verify the path's protected authority before any missing/mode/replay shortcut."""
+    from app.gui.shared.allocation_persistence import _read_receipt
+    from .spot_inventory_checkpoint import verify_inventory_checkpoint
+    with ledger_transaction(path):
+        try:
+            raw, _identity = _read_receipt(path)
+            snapshot = (json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+                        if raw is not None else None)
+        except SPOT_LOCAL_STATE_ERRORS as exc:
+            raise LiveTradingSafetyError("Desktop allocation state is unreadable; Spot recovery is blocked.") from exc
+        verified = verify_inventory_checkpoint(path, raw, snapshot, expected_namespace=namespace)
+        if namespace is not None and not verified:
+            raise LiveTradingSafetyError("Owned Spot inventory requires an existing stable protected checkpoint.")
+        if snapshot is None:
+            if allow_missing:
+                return None
+            raise LiveTradingSafetyError("A durable Live allocation snapshot is required for Spot recovery.")
+        if (not isinstance(snapshot, dict) or type(snapshot.get("version")) is not int
+                or snapshot.get("version") != 1 or snapshot.get("mode") != "Live"
+                or not isinstance(snapshot.get("entry_allocations"), dict)
+                or not isinstance(snapshot.get("open_position_records"), dict)):
+            raise LiveTradingSafetyError("Desktop allocation state is not a valid Live portfolio snapshot.")
+        return snapshot
 
-    Supplied metadata must come from the caller's verified account/store.
-    Matching metadata alone is not authenticated ownership or antirollback.
-    """
+
+def _require_fill_namespace(
+    snapshot: dict[str, object], namespace: dict[str, object] | None,
+) -> None:
+    """Matching metadata cannot establish missing protected inventory authority."""
     if namespace is None:
         if ACCOUNT_NAMESPACE_KEY in snapshot:
             raise LiveTradingSafetyError("Account-bound Spot inventory requires its exact namespace for fill publication or replay.")
         return
-    checked = require_namespace(snapshot, namespace, allow_empty=allow_empty)
-    if ACCOUNT_NAMESPACE_KEY not in snapshot:
-        snapshot[ACCOUNT_NAMESPACE_KEY] = checked
+    require_namespace(snapshot, namespace)
+
+
+def _require_owned_fill_publication(
+    path: Path, snapshot: dict[str, object], *, fill: Mapping[str, object],
+) -> None:
+    if ACCOUNT_NAMESPACE_KEY in snapshot:
+        from .spot_inventory_checkpoint_runtime import assert_owned_inventory_publication
+        assert_owned_inventory_publication(path, fill=fill)
+
+
+def _write_inventory_candidate(path: Path, candidate: dict[str, object]) -> None:
+    """Bound candidates require the original active owned publication context."""
+    if ACCOUNT_NAMESPACE_KEY in candidate:
+        from .spot_inventory_checkpoint_runtime import write_owned_inventory_checkpoint
+        write_owned_inventory_checkpoint(path, candidate)
+    else:
+        write_ledger(path, candidate)
 
 
 def persist_spot_buy_allocation(
@@ -782,21 +822,8 @@ def _persist_spot_buy_allocation(
     if path.is_symlink():
         raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
     with nullcontext() if unlocked else ledger_transaction(path):
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
-            except SPOT_LOCAL_STATE_ERRORS as exc:
-                raise LiveTradingSafetyError("Desktop allocation state is unreadable; Spot recovery is blocked.") from exc
-            if (
-                not isinstance(data, dict)
-                or type(data.get("version")) is not int
-                or data.get("version") != 1
-                or data.get("mode") != "Live"
-                or not isinstance(data.get("entry_allocations"), dict)
-                or not isinstance(data.get("open_position_records"), dict)
-            ):
-                raise LiveTradingSafetyError("Desktop allocation state is not a valid Live portfolio snapshot.")
-        else:
+        data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+        if data is None:
             data = {
                 "version": 1,
                 "mode": "Live",
@@ -804,10 +831,11 @@ def _persist_spot_buy_allocation(
                 "entry_allocations": {},
                 "open_position_records": {},
             }
-
-        _require_fill_namespace(data, namespace, allow_empty=True)
-        allocations = data["entry_allocations"]
-        records = data["open_position_records"]
+        _require_fill_namespace(data, namespace)
+        _require_owned_fill_publication(path, data, fill=fill)
+        # The guarded reader validated these two values as dictionaries.
+        allocations = cast(dict, data["entry_allocations"])
+        records = cast(dict, data["open_position_records"])
         matches: list[tuple[str, dict[str, object]]] = []
         for stored_key, stored_entries in allocations.items():
             if not isinstance(stored_key, str) or not isinstance(stored_entries, list):
@@ -901,7 +929,7 @@ def _persist_spot_buy_allocation(
             "size_usdt": float(total_cost),
         })
         data["timestamp"] = time.time()
-        write_ledger(path, data)
+        _write_inventory_candidate(path, data)
     return True
 
 
@@ -915,22 +943,11 @@ def _stored_decimal(value: object, field: str, *, positive: bool = False) -> Dec
     return parsed
 
 
-def _load_live_allocation_snapshot(path: Path) -> dict[str, object]:
-    if path.is_symlink() or not path.is_file():
-        raise LiveTradingSafetyError("A durable Live allocation snapshot is required for Spot SELL recovery.")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
-    except SPOT_LOCAL_STATE_ERRORS as exc:
-        raise LiveTradingSafetyError("Desktop allocation state is unreadable; Spot recovery is blocked.") from exc
-    if (
-        not isinstance(data, dict)
-        or type(data.get("version")) is not int
-        or data.get("version") != 1
-        or data.get("mode") != "Live"
-        or not isinstance(data.get("entry_allocations"), dict)
-        or not isinstance(data.get("open_position_records"), dict)
-    ):
-        raise LiveTradingSafetyError("Desktop allocation state is not a valid Live portfolio snapshot.")
+def _load_live_allocation_snapshot(
+    path: Path, *, namespace: dict[str, object] | None = None,
+) -> dict[str, object]:
+    data = _read_verified_live_snapshot(path, namespace=namespace)
+    assert data is not None
     return data
 
 
@@ -940,11 +957,9 @@ def spot_live_allocation_baseline(
     """Fingerprint a coherent local Live position before a Spot market SELL."""
     if not isinstance(symbol, str) or not symbol.isascii() or not symbol.isalnum() or symbol != symbol.upper():
         raise LiveTradingSafetyError("Spot SELL baseline symbol is invalid.")
-    if path.is_symlink():
-        raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
-    if not path.exists():
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
         return None
-    data = _load_live_allocation_snapshot(path)
     _require_fill_namespace(data, namespace)
     allocations = data["entry_allocations"]
     records = data["open_position_records"]
@@ -1074,7 +1089,7 @@ def spot_opo_allocation_baseline_unlocked(
         raise LiveTradingSafetyError("Recovered OPO allocation quantity is invalid.") from None
     if observed != expected:
         raise LiveTradingSafetyError("Linked OPO must be the only active allocation for its Spot symbol.")
-    data = _load_live_allocation_snapshot(path)
+    data = _load_live_allocation_snapshot(path, namespace=namespace)
     _require_fill_namespace(data, namespace)
     allocations = data["entry_allocations"]
     assert isinstance(allocations, dict)
@@ -1272,8 +1287,9 @@ def persist_spot_sell_allocation(
     if path.is_symlink():
         raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
     with ledger_transaction(path):
-        data = _load_live_allocation_snapshot(path)
+        data = _load_live_allocation_snapshot(path, namespace=namespace)
         _require_fill_namespace(data, namespace)
+        _require_owned_fill_publication(path, data, fill=fill)
         allocations = data["entry_allocations"]
         records = data["open_position_records"]
         assert isinstance(allocations, dict) and isinstance(records, dict)
@@ -1470,7 +1486,7 @@ def persist_spot_sell_allocation(
         else:
             records.pop(key, None)
         data["timestamp"] = time.time()
-        write_ledger(path, data)
+        _write_inventory_candidate(path, data)
     return True
 
 
@@ -1479,10 +1495,8 @@ def has_durable_spot_opo_strategy_sell(
     namespace: dict[str, object] | None = None,
 ) -> bool:
     """Find the exact linked SELL proof on its OPO allocation after restart."""
-    try:
-        with ledger_transaction(path):
-            data = _load_live_allocation_snapshot(path)
-    except LiveTradingSafetyError:
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
         return False
     _require_fill_namespace(data, namespace)
     list_client_id = intent.get("client_order_id")
@@ -1561,7 +1575,7 @@ def persist_spot_opo_strategy_sell_allocation(
     if consumed > expected or baseline_quantity != expected:
         raise LiveTradingSafetyError("Linked OPO strategy SELL exceeds its exact recovered allocation.")
 
-    existing = _load_live_allocation_snapshot(path)
+    existing = _load_live_allocation_snapshot(path, namespace=namespace)
     _require_fill_namespace(existing, namespace)
     allocations = existing["entry_allocations"]
     assert isinstance(allocations, dict)
@@ -1598,10 +1612,8 @@ def has_durable_spot_opo_strategy_sell_recovery(
     namespace: dict[str, object] | None = None,
 ) -> bool:
     """Prove the exact terminal linked SELL left one known OPO remainder."""
-    try:
-        with ledger_transaction(path):
-            data = _load_live_allocation_snapshot(path)
-    except LiveTradingSafetyError:
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
         return False
     _require_fill_namespace(data, namespace)
     list_client_id = intent.get("client_order_id")
@@ -1704,7 +1716,7 @@ def persist_spot_opo_residual_stop_allocation(
         "pre_order_portfolio_qty": _canonical_amount(residual_quantity),
     })
 
-    existing = _load_live_allocation_snapshot(path)
+    existing = _load_live_allocation_snapshot(path, namespace=namespace)
     _require_fill_namespace(existing, namespace)
     allocations = existing["entry_allocations"]
     assert isinstance(allocations, dict)
@@ -1739,10 +1751,8 @@ def has_durable_spot_opo_residual_stop_allocation(
     namespace: dict[str, object] | None = None,
 ) -> bool:
     """Prove a residual-stop fill affected only its exact OPO allocation."""
-    try:
-        with ledger_transaction(path):
-            data = _load_live_allocation_snapshot(path)
-    except LiveTradingSafetyError:
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
         return False
     _require_fill_namespace(data, namespace)
     list_client_id = intent.get("client_order_id")
@@ -1890,8 +1900,9 @@ def persist_spot_opo_stop_sell_allocation(
     if path.is_symlink():
         raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
     with ledger_transaction(path):
-        data = _load_live_allocation_snapshot(path)
+        data = _load_live_allocation_snapshot(path, namespace=namespace)
         _require_fill_namespace(data, namespace)
+        _require_owned_fill_publication(path, data, fill=fill)
         allocations = data["entry_allocations"]
         records = data["open_position_records"]
         assert isinstance(allocations, dict) and isinstance(records, dict)
@@ -2039,7 +2050,7 @@ def persist_spot_opo_stop_sell_allocation(
         else:
             records.pop(key, None)
         data["timestamp"] = time.time()
-        write_ledger(path, data)
+        _write_inventory_candidate(path, data)
     return True
 
 
@@ -2048,19 +2059,14 @@ def has_durable_spot_opo_stop_exit(
     namespace: dict[str, object] | None = None,
 ) -> bool:
     """Check that one OPO allocation durably records the exact linked stop exit."""
-    try:
-        from app.gui.shared.allocation_persistence import get_position_allocations_path
+    from app.gui.shared.allocation_persistence import get_position_allocations_path
 
-        app_root = Path(__file__).resolve().parents[4]
-        path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
-        if path.is_symlink() or not path.is_file():
-            return False
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
-        allocations = data.get("entry_allocations") if isinstance(data, dict) else None
-        if data.get("version") != 1 or data.get("mode") != "Live" or not isinstance(allocations, dict):
-            return False
-    except Exception:
+    app_root = Path(__file__).resolve().parents[4]
+    path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
         return False
+    allocations = cast(dict, data["entry_allocations"])
     _require_fill_namespace(data, namespace)
     try:
         if re.fullmatch(r"[0-9a-f]{64}", signature) is None:

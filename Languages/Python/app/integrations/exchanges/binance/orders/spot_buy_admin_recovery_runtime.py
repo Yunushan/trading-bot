@@ -11,6 +11,7 @@ from app.settings.live_safety import LiveTradingSafetyError
 
 from .order_intent_runtime import (
     _has_durable_spot_buy_allocation,
+    _owned_inventory_confirmation,
     _intent_binding,
     _intent_path,
     _now,
@@ -20,8 +21,8 @@ from .order_intent_runtime import (
 from .order_intent_store import ledger_transaction, ledger_transactions
 from .spot_allocation_generation_runtime import canonical_spot_buy_metadata
 from .spot_fill_recovery_runtime import _persist_spot_buy_allocation_unlocked
-from .spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY, require_namespace
-from .spot_inventory_namespace_runtime import namespace_for_ledger, assert_single_unpublished_acquisition
+from .spot_inventory_namespace_runtime import namespace_for_ledger
+from .spot_inventory_checkpoint_runtime import owned_inventory_publication
 
 
 _TERMINAL = {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
@@ -96,16 +97,9 @@ def publish_spot_buy_recovery(
         if ledger["store_id"] != expected_store_id or not isinstance(record, dict) or record != expected_record:
             raise LiveTradingSafetyError("Spot BUY recovery ledger changed before publication.")
         quantity = _validate_terminal_fill(record, fill, metadata)
-        from app.gui.shared.allocation_persistence import _decode, _read_receipt
         namespace = namespace_for_ledger(owner, ledger)
-        raw, _identity = _read_receipt(allocation_path)
-        snapshot = _decode(raw, "Live") if raw is not None else None
-        if snapshot is None or ACCOUNT_NAMESPACE_KEY not in snapshot:
-            assert_single_unpublished_acquisition(ledger, record)
-            require_namespace(snapshot, namespace, allow_empty=True)
-        else:
-            require_namespace(snapshot, namespace)
-        result = _persist_spot_buy_allocation_unlocked(allocation_path, fill, namespace=namespace)
+        with owned_inventory_publication(owner, allocation_path=allocation_path, expected_record=record, fill=fill):
+            result = _persist_spot_buy_allocation_unlocked(allocation_path, fill, namespace=namespace)
         if not _has_durable_spot_buy_allocation(
             record, portfolio_signature=metadata["signature"], portfolio_quantity=quantity, namespace=namespace,
         ):
@@ -113,6 +107,7 @@ def publish_spot_buy_recovery(
         return cast(bool, result)
 
 
+@_owned_inventory_confirmation
 def confirm_spot_buy_recovery(
     owner,
     allocation_path: Path,

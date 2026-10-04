@@ -27,10 +27,12 @@ from app.integrations.exchanges.binance.orders.order_intent_provisioning import 
 )
 from app.integrations.exchanges.binance.orders.spot_execution_owner import owner_administration_lock, owner_marker_path
 from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import (
-    assert_bootstrap_empty_ledger, namespace_for_current_ledger, namespace_for_owner,
+    namespace_for_current_ledger, namespace_for_owner, publish_owned_spot_fill,
 )
 from app.integrations.exchanges.binance.orders.order_intent_store import ledger_transactions, write_ledger
-from app.integrations.exchanges.binance.orders.spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY, require_namespace
+from app.integrations.exchanges.binance.orders.spot_inventory_checkpoint_runtime import bootstrap_owned_inventory_checkpoint
+from app.integrations.exchanges.binance.orders.spot_allocation_generation_runtime import canonical_spot_buy_metadata
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case
 
 
 UID = 12345678
@@ -85,22 +87,49 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         ))
 
     def prebind_inventory(self, wrapper):
-        """Prebind only the actual canonical first-use source under its fresh full ledger."""
-        app_root = Path(intents.__file__).resolve().parents[4]
-        # Resolve through the patched canonical accessor, never infer ownership from rows.
+        """Bootstrap the actual empty canonical source before financial history."""
         from app.gui.shared import allocation_persistence
+        checkpoint_backend_for_case(self)
+        app_root = Path(intents.__file__).resolve().parents[4]
         allocation_path = allocation_persistence.get_position_allocations_path(app_root / "gui" / "window_shell.py")
         owner = wrapper._ensure_spot_execution_owner()
-        with ledger_transactions(owner.ledger_path, allocation_path):
-            namespace = namespace_for_owner(wrapper)
-            if allocation_path.exists():
-                require_namespace(json.loads(allocation_path.read_text(encoding="utf-8")), namespace)
-                return
-            assert_bootstrap_empty_ledger(wrapper, expected_store_id=owner.store_id)
-            write_ledger(allocation_path, {
-                "version": 1, "mode": "Live", "entry_allocations": {}, "open_position_records": {},
-                ACCOUNT_NAMESPACE_KEY: namespace,
-            })
+        self.addCleanup(owner.close)
+        if allocation_path.exists():
+            with ledger_transactions(owner.ledger_path, allocation_path):
+                allocation_persistence.guard_position_allocation_snapshot(
+                    allocation_path, allocation_persistence._read_receipt(allocation_path),
+                    expected_namespace=namespace_for_owner(wrapper),
+                )
+            return
+        self.assertTrue(bootstrap_owned_inventory_checkpoint(wrapper, allocation_path=allocation_path))
+
+    def publish_fill(self, wrapper, allocation_path, fill, *, record, operation=spot_recovery.persist_spot_buy_allocation):
+        self.assertTrue(publish_owned_spot_fill(wrapper, allocation_path, fill, expected_record=record, operation=operation))
+
+    def canonical_opo_buy(self, record, working, *, trade_id):
+        working = {**working, "cummulativeQuoteQty": "10", "updateTime": 1780000000000}
+        trades = [{"symbol": "BTCUSDT", "id": trade_id, "orderId": working["orderId"],
+                   "price": "100", "qty": "0.1", "quoteQty": "10", "commission": "0.0001",
+                   "commissionAsset": "BTC", "time": 1780000000000, "isBuyer": True}]
+        return spot_recovery.summarize_spot_opo_buy_fill(record, working, trades, base_asset="BTC", quote_asset="USDT")
+
+    def author_tracked_buy(self, wrapper, allocation_path, fill):
+        """Publish an explicit synthetic terminal BUY in the original same ledger."""
+        params = {**PARAMS, "newClientOrderId": fill["client_order_id"]}
+        record = intents._intent_record(params, market="spot", source="offline-tracked-acquisition-fixture")
+        metadata = canonical_spot_buy_metadata(fill)
+        record.update(state="accepted", exchange_status="FILLED", exchange_order_id=str(fill["order_id"]),
+                      executed_qty=metadata["gross_qty"], portfolio_qty=metadata["net_qty"], portfolio_reconciled=False,
+                      primary_fill_receipt=metadata, primary_fill_signature=metadata["signature"], accepted_at=intents._now())
+        intents.validate_order_intent_record(fill["client_order_id"], record)
+        with ledger_transactions(self.path, allocation_path):
+            ledger = intents._read_ledger(self.path, expected_binding=intents._intent_binding(wrapper))
+            ledger["intents"][fill["client_order_id"]] = record
+            intents.validate_order_intent_ledger(ledger, expected_binding=intents._intent_binding(wrapper))
+            write_ledger(self.path, ledger)
+        self.publish_fill(wrapper, allocation_path, fill, record=record)
+        intents._mark_order_intent_portfolio_reconciled(wrapper, fill["client_order_id"],
+            portfolio_signature=fill["signature"], portfolio_quantity=fill["net_qty"])
 
     @contextmanager
     def verified_admin_scope(self):
@@ -144,9 +173,9 @@ class SpotReconciliationAdminTests(unittest.TestCase):
         ]
 
     def set_up_pending_after_owner_loss(
-        self, *, order_type: str = "MARKET", side: str = "BUY", quantity: str = "0.1",
+        self, *, order_type: str = "MARKET", side: str = "BUY", quantity: str = "0.1", wrapper=None,
     ) -> Path:
-        wrapper = _SpotRuntime(self.audit_path)
+        wrapper = wrapper if wrapper is not None else _SpotRuntime(self.audit_path)
         wrapper._ensure_spot_execution_owner()
         self.prebind_inventory(wrapper)
         params = {**PARAMS, "type": order_type, "side": side, "quantity": quantity}
@@ -208,23 +237,16 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             pending_original_qty="0.0999",
         )
         self.assertIsNotNone(updated)
-        fill = {
-            "symbol": "BTCUSDT", "client_order_id": request["listClientOrderId"],
-            "exchange_client_order_id": request["workingClientOrderId"], "order_id": 501,
-            "trade_ids": [601], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
-            "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
-            "average_cost": str(Decimal("10") / Decimal("0.0999")),
-            "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
-            "fill_time_ms": 1780000000000, "signature": "c" * 64,
-        }
-        with self.verified_admin_scope() as namespace, patch(
+        working = self.opo_list_observation(request, pending_status="NEW", list_status="EXEC_STARTED")[1]
+        fill = self.canonical_opo_buy(updated, working, trade_id=601)
+        with self.verified_admin_scope(), patch(
             "app.gui.shared.allocation_persistence.get_position_allocations_path",
             return_value=allocation_path,
         ):
-            spot_recovery.persist_spot_buy_allocation(allocation_path, fill, namespace=namespace)
+            self.publish_fill(self.admin_owner, allocation_path, fill, record=updated)
             intents._mark_spot_opo_entry_reconciled(
                 self.admin_owner, request["listClientOrderId"],
-                portfolio_signature="c" * 64, portfolio_quantity="0.0999",
+                portfolio_signature=fill["signature"], portfolio_quantity="0.0999",
             )
         return marker_path, request
 
@@ -291,23 +313,16 @@ class SpotReconciliationAdminTests(unittest.TestCase):
 
             wrapper.client.get_order_list = get_order_list
             wrapper.client.get_order = get_order
-            buy_fill = {
-                "symbol": "BTCUSDT", "client_order_id": request["listClientOrderId"],
-                "exchange_client_order_id": request["workingClientOrderId"], "order_id": 701,
-                "trade_ids": [801], "trade_count": 1, "gross_qty": "0.1", "net_qty": "0.0999",
-                "pending_order_qty": "0.0999", "gross_quote_qty": "10", "net_quote_cost": "10",
-                "average_cost": str(Decimal("10") / Decimal("0.0999")),
-                "commissions": [{"asset": "BTC", "amount": "0.0001"}], "base_asset": "BTC", "quote_asset": "USDT",
-                "fill_time_ms": 1780000000000, "signature": "d" * 64,
-            }
+            current = intents._get_order_intent_record(wrapper, request["listClientOrderId"])
+            buy_fill = self.canonical_opo_buy(current, working, trade_id=801)
             with patch(
                 "app.gui.shared.allocation_persistence.get_position_allocations_path",
                 return_value=allocation_path,
             ):
-                spot_recovery.persist_spot_buy_allocation(allocation_path, buy_fill, namespace=namespace_for_owner(wrapper))
+                self.publish_fill(wrapper, allocation_path, buy_fill, record=current)
                 intents._mark_spot_opo_entry_reconciled(
                     wrapper, request["listClientOrderId"],
-                    portfolio_signature="d" * 64, portfolio_quantity="0.0999",
+                    portfolio_signature=buy_fill["signature"], portfolio_quantity="0.0999",
                 )
                 baseline = spot_opo_allocation_baseline(
                     allocation_path,
@@ -398,7 +413,8 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             fill = spot_recovery.summarize_spot_opo_strategy_sell_fill(
                 intent, exit_order, trades, base_asset="BTC", quote_asset="USDT",
             )
-            spot_recovery.persist_spot_opo_strategy_sell_allocation(allocation_path, fill, namespace=namespace)
+            self.publish_fill(self.admin_owner, allocation_path, fill, record=intent,
+                              operation=spot_recovery.persist_spot_opo_strategy_sell_allocation)
             remaining = Decimal(str(intent["entry_portfolio_quantity"])) - Decimal(str(fill["portfolio_qty"]))
             baseline = spot_opo_allocation_baseline(
                 allocation_path,
@@ -639,20 +655,20 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             }]),
             SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
         ]
-        with tempfile.TemporaryDirectory() as tmp:
-            allocation_path = Path(tmp) / ".trading_bot_allocations.json"
-            with patch.dict(os.environ, {
-                "SPOT_RECONCILE_TEST_KEY": API_KEY,
-                "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
-            }), patch.object(
-                spot_admin_runtime.requests, "get", side_effect=responses,
-            ) as request, patch(
-                "app.gui.shared.allocation_persistence.get_position_allocations_path",
-                return_value=allocation_path,
-            ), redirect_stdout(StringIO()) as output:
-                code = admin_cli.main(args)
-            saved = json.loads(allocation_path.read_text(encoding="utf-8"))
-            recovered = saved["entry_allocations"]["BTCUSDT:L"][0]
+        # Use the protected source prepared before this pending financial intent.
+        allocation_path = self.allocation_path
+        with patch.dict(os.environ, {
+            "SPOT_RECONCILE_TEST_KEY": API_KEY,
+            "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
+        }), patch.object(
+            spot_admin_runtime.requests, "get", side_effect=responses,
+        ) as request, patch(
+            "app.gui.shared.allocation_persistence.get_position_allocations_path",
+            return_value=allocation_path,
+        ), redirect_stdout(StringIO()) as output:
+            code = admin_cli.main(args)
+        saved = json.loads(allocation_path.read_text(encoding="utf-8"))
+        recovered = saved["entry_allocations"]["BTCUSDT:L"][0]
 
         result = json.loads(output.getvalue())
         self.assertEqual(0, code)
@@ -713,20 +729,20 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             SimpleNamespace(status_code=200, json=lambda: pending_order),
             SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
         ]
-        with tempfile.TemporaryDirectory() as tmp:
-            allocation_path = Path(tmp) / "allocations.json"
-            with patch.dict(os.environ, {
-                "SPOT_RECONCILE_TEST_KEY": API_KEY,
-                "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
-            }), patch.object(
-                spot_admin_runtime.requests, "get", side_effect=responses,
-            ) as request_calls, patch(
-                "app.gui.shared.allocation_persistence.get_position_allocations_path",
-                return_value=allocation_path,
-            ), redirect_stdout(StringIO()) as output:
-                code = admin_cli.main(args)
-            saved = json.loads(allocation_path.read_text(encoding="utf-8"))
-            recovered = saved["entry_allocations"]["BTCUSDT:L"][0]
+        # Use the protected source prepared before this pending financial intent.
+        allocation_path = self.allocation_path
+        with patch.dict(os.environ, {
+            "SPOT_RECONCILE_TEST_KEY": API_KEY,
+            "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
+        }), patch.object(
+            spot_admin_runtime.requests, "get", side_effect=responses,
+        ) as request_calls, patch(
+            "app.gui.shared.allocation_persistence.get_position_allocations_path",
+            return_value=allocation_path,
+        ), redirect_stdout(StringIO()) as output:
+            code = admin_cli.main(args)
+        saved = json.loads(allocation_path.read_text(encoding="utf-8"))
+        recovered = saved["entry_allocations"]["BTCUSDT:L"][0]
 
         result = json.loads(output.getvalue())
         self.assertEqual(0, code)
@@ -1005,20 +1021,20 @@ class SpotReconciliationAdminTests(unittest.TestCase):
             SimpleNamespace(status_code=200, json=lambda: pending_order),
             SimpleNamespace(status_code=200, json=lambda: {"uid": UID, "accountType": "SPOT"}),
         ]
-        with tempfile.TemporaryDirectory() as tmp:
-            allocation_path = Path(tmp) / "allocations.json"
-            with patch.dict(os.environ, {
-                "SPOT_RECONCILE_TEST_KEY": API_KEY,
-                "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
-            }), patch.object(
-                spot_admin_runtime.requests, "get", side_effect=responses,
-            ) as request_calls, patch(
-                "app.gui.shared.allocation_persistence.get_position_allocations_path",
-                return_value=allocation_path,
-            ), redirect_stdout(StringIO()) as output:
-                code = admin_cli.main(args)
-            saved = json.loads(allocation_path.read_text(encoding="utf-8"))
-            recovered = saved["entry_allocations"]["BTCUSDT:L"][0]
+        # Use the protected source prepared before this pending financial intent.
+        allocation_path = self.allocation_path
+        with patch.dict(os.environ, {
+            "SPOT_RECONCILE_TEST_KEY": API_KEY,
+            "SPOT_RECONCILE_TEST_SECRET": API_SECRET,
+        }), patch.object(
+            spot_admin_runtime.requests, "get", side_effect=responses,
+        ) as request_calls, patch(
+            "app.gui.shared.allocation_persistence.get_position_allocations_path",
+            return_value=allocation_path,
+        ), redirect_stdout(StringIO()) as output:
+            code = admin_cli.main(args)
+        saved = json.loads(allocation_path.read_text(encoding="utf-8"))
+        recovered = saved["entry_allocations"]["BTCUSDT:L"][0]
 
         result = json.loads(output.getvalue())
         self.assertEqual(0, code, output.getvalue())
@@ -1155,9 +1171,10 @@ class SpotReconciliationAdminTests(unittest.TestCase):
                 "app.gui.shared.allocation_persistence.get_position_allocations_path",
                 return_value=allocation_path,
             ):
-                with self.verified_admin_scope() as namespace:
-                    spot_recovery.persist_spot_buy_allocation(allocation_path, buy_fill, namespace=namespace)
-                self.set_up_pending_after_owner_loss(side="SELL", quantity="0.08")
+                wrapper = _SpotRuntime(self.audit_path)
+                self.prebind_inventory(wrapper)
+                self.author_tracked_buy(wrapper, allocation_path, buy_fill)
+                self.set_up_pending_after_owner_loss(side="SELL", quantity="0.08", wrapper=wrapper)
                 with patch.dict(os.environ, {
                     "SPOT_RECONCILE_TEST_KEY": API_KEY,
                     "SPOT_RECONCILE_TEST_SECRET": API_SECRET,

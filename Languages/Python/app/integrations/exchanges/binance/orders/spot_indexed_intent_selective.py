@@ -178,7 +178,7 @@ class IndexedIntentSession:
         if self._pid != os.getpid():
             raise _fail("was inherited by another process; start a fresh execution process")
 
-    def _authority(self, deadline: float, *, allow_pending: bool = False) -> float:
+    def _owner_authority(self, deadline: float, *, allow_pending: bool = False) -> float:
         self._assert_process()
         full._deadline(deadline, self._receipt.logical_path)
         with _session_registry():
@@ -193,10 +193,23 @@ class IndexedIntentSession:
         binding = cast(dict[str, str], full._decode(self._metadata)["binding"])
         self._owner.assert_held(uid=self._owner.uid, environment=binding["environment"],
                                 credential_fingerprint=binding["credential_fingerprint"], owner_wrapper=wrapper)
+        return deadline
+
+    def _authority(self, deadline: float, *, allow_pending: bool = False) -> float:
+        self._owner_authority(deadline, allow_pending=allow_pending)
         self._manifest.assert_current(self._receipt.logical_path)
         self._backup.assert_current(self._manifest, self._receipt.logical_path)
         self._migration.assert_current(self._receipt.logical_path)
         return deadline
+
+    def _commit_authority(self, deadline: float) -> None:
+        # Native guard probes can reenter caller code. Check the original scoped
+        # pin and actual session owner after the last probe, before publication.
+        self._assert_process()
+        full._deadline(deadline, self._receipt.logical_path)
+        from .order_intent_runtime import _assert_inventory_checkpoint_authority
+        _assert_inventory_checkpoint_authority()
+        self._owner_authority(deadline)
 
     def _files(self) -> None:
         self._guard()
@@ -422,6 +435,7 @@ class IndexedIntentSession:
         # No persisted transition may outlive its actual owner or namespace.
         self._authority(deadline)
         self._guard()
+        self._commit_authority(deadline)
         sql("COMMIT")
         # Pin a fresh read snapshot before adopting the post-COMMIT file token.
         # A foreign commit in this gap changes persistent data_version and fences.
@@ -722,6 +736,7 @@ def replace_owned_indexed_snapshot(path: Path, payload: object, *, expected: ful
         sequences = dict(full._sql(session._connection, deadline, "SELECT client_id,commit_seq FROM current_records").fetchall())
         session._authority(deadline)
         session._guard()
+        session._commit_authority(deadline)
         full._sql(session._connection, deadline, "COMMIT")
         if result.receipt == previous:
             session._files()
