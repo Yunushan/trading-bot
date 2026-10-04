@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError, replace
 from fractions import Fraction
 import json
 import unittest
+from unittest.mock import patch
 
 from app.integrations.exchanges.binance.orders import spot_account_risk_contract as risk
 from app.integrations.exchanges.binance.orders import spot_account_risk_store as store
@@ -317,7 +318,12 @@ class BatchTests(unittest.TestCase):
         self.assertGreater(len(deep_payload.encode("utf-8")), 40_000)
         with self.assertRaises(risk.ContractError) as raised:
             risk.replay_events(basis, (first, nested))
-        self.assertIs(type(raised.exception.__cause__), RecursionError)
+        if str(raised.exception) == "Invalid immutable batch event framing":
+            self.assertIs(type(raised.exception.__cause__), RecursionError)
+        else:
+            # A codec accepting this depth still changes the original unsorted keys.
+            self.assertEqual(str(raised.exception), "Noncanonical exact immutable batch Event")
+            self.assertIsNone(raised.exception.__cause__)
         original_decode = risk.decode_contract
         try:
             for interruption in (KeyboardInterrupt, SystemExit):
@@ -328,3 +334,87 @@ class BatchTests(unittest.TestCase):
                     risk._detached_batch_event(first)
         finally:
             risk.decode_contract = original_decode
+    def test_batch_decoder_faults_preserve_exact_recursion_cause_and_interruptions(self):
+        basis = fixture.opening()
+        helper = fixture.ContractTests(methodName="runTest")
+        helper.setUp()
+        first = helper.kill(risk.opening_state(basis)).history[0]
+        original_decode = risk.decode_contract
+        payload = first.payload.encode("utf-8")
+        for primary in (RecursionError("synthetic-decoder-depth"), KeyboardInterrupt("synthetic-decoder-interrupt"),
+                        SystemExit("synthetic-decoder-exit")):
+            with self.subTest(primary=type(primary).__name__):
+                def decode(raw, fault=primary):
+                    if raw == payload:
+                        raise fault
+                    return original_decode(raw)
+
+                with patch.object(risk, "decode_contract", side_effect=decode):
+                    if isinstance(primary, RecursionError):
+                        with self.assertRaisesRegex(risk.ContractError, "^Invalid immutable batch event framing$") as raised:
+                            risk.replay_events(basis, (first,))
+                        self.assertIs(raised.exception.__cause__, primary)
+                    else:
+                        with self.assertRaises(type(primary)) as raised:
+                            risk.replay_events(basis, (first,))
+                        self.assertIs(raised.exception, primary)
+        self.assert_exact(risk.replay_events(basis, (first,)).state, risk.apply_event(risk.opening_state(basis), first))
+
+    def test_batch_encoder_faults_preserve_exact_recursion_cause_and_interruptions(self):
+        basis = fixture.opening()
+        helper = fixture.ContractTests(methodName="runTest")
+        helper.setUp()
+        first = helper.kill(risk.opening_state(basis)).history[0]
+        data = json.loads(first.payload)
+        original_dumps = risk.json.dumps
+        for primary in (RecursionError("synthetic-encoder-depth"), KeyboardInterrupt("synthetic-encoder-interrupt"),
+                        SystemExit("synthetic-encoder-exit")):
+            with self.subTest(primary=type(primary).__name__):
+                def encode(value, *args, fault=primary, **kwargs):
+                    if type(value) is dict and set(value) == set(data) and value == data:
+                        raise fault
+                    return original_dumps(value, *args, **kwargs)
+
+                with patch.object(risk.json, "dumps", side_effect=encode):
+                    if isinstance(primary, RecursionError):
+                        with self.assertRaisesRegex(risk.ContractError, "^Invalid immutable batch event framing$") as raised:
+                            risk.replay_events(basis, (first,))
+                        self.assertIs(raised.exception.__cause__, primary)
+                    else:
+                        with self.assertRaises(type(primary)) as raised:
+                            risk.replay_events(basis, (first,))
+                        self.assertIs(raised.exception, primary)
+        self.assert_exact(risk.replay_events(basis, (first,)).state, risk.apply_event(risk.opening_state(basis), first))
+
+    def test_iteratively_decoded_canonical_nested_reason_retains_semantic_reference_error(self):
+        basis = fixture.opening()
+        helper = fixture.ContractTests(methodName="runTest")
+        helper.setUp()
+        killed = helper.kill(risk.opening_state(basis))
+        first = killed.history[0]
+        reason = 0
+        for _ in range(20_000):
+            reason = [reason]
+        data = {"reason": reason, "evidence_ref": "synthetic-deep-history"}
+        payload = '{"evidence_ref":"synthetic-deep-history","reason":' + '[' * 20_000 + '0' + ']' * 20_000 + '}'
+        nested = risk.Event("canonical-deep-history", killed.head, killed.at + 1, "KILL", payload)
+        self.assertGreater(len(payload.encode("utf-8")), 40_000)
+        original_decode, original_dumps = risk.decode_contract, risk.json.dumps
+
+        def decode(raw):
+            # Model an iterative JSON decoder only for these exact original bytes.
+            if raw == payload.encode("utf-8"):
+                return data
+            return original_decode(raw)
+
+        def encode(value, *args, **kwargs):
+            # Match that decoder's canonical encoder, leaving the validator real.
+            if value is data:
+                return payload
+            return original_dumps(value, *args, **kwargs)
+
+        with patch.object(risk, "decode_contract", side_effect=decode), patch.object(risk.json, "dumps", side_effect=encode):
+            with self.assertRaisesRegex(risk.ContractError, "^Invalid contract reference$") as raised:
+                risk.replay_events(basis, (first, nested))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assert_exact(risk.replay_events(basis, (first,)).state, killed)

@@ -620,8 +620,11 @@ def _detached_batch_event(event: Event) -> Event:
         at_token = datetime.fromtimestamp(captured.at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     except (UnicodeError, OverflowError, OSError, ValueError, RecursionError) as exc:
         raise ContractError("Invalid immutable batch event framing") from exc
-    parsed = parse_event({"event_id": captured.event_id, "expected_head": captured.expected_head,
-                          "at": at_token, "kind": captured.kind, "data": data})
+    try:
+        parsed = parse_event({"event_id": captured.event_id, "expected_head": captured.expected_head,
+                              "at": at_token, "kind": captured.kind, "data": data})
+    except RecursionError as exc:
+        raise ContractError("Invalid immutable batch event framing") from exc
     if not _same_contract_value(captured, parsed):
         _fail("Noncanonical exact immutable batch Event")
     return parsed
