@@ -431,7 +431,7 @@ def _verified(connection: sqlite3.Connection, path: Path, logical_path: Path, de
         if seq != expected_seq or predecessor != previous:
             raise _fail("journal sequence changed")
         next_metadata = _decode(raw)
-        if "intents" in next_metadata or metadata_hash != _digest(next_metadata):
+        if "intents" in next_metadata or metadata_hash != hashlib.sha256(raw.encode("utf-8")).hexdigest():
             raise _fail()
         if expected_seq > 1:
             _preserve_metadata(metadata, next_metadata)
@@ -440,7 +440,7 @@ def _verified(connection: sqlite3.Connection, path: Path, logical_path: Path, de
         for _, key, row_revision, row_raw, row_hash in versions.get(seq, []):
             record = _decode(cast(str, row_raw))
             expected_revision = receipts[cast(str, key)].revision + 1 if key in receipts else 1
-            if row_revision != expected_revision or row_hash != _digest(record):
+            if row_revision != expected_revision or row_hash != hashlib.sha256(cast(str, row_raw).encode("utf-8")).hexdigest():
                 raise _fail("record history changed")
             if key in records:
                 _preserve_record(records[cast(str, key)], record)

@@ -615,6 +615,92 @@ class SpotIndexedIntentStoreTests(unittest.TestCase):
             self.read()
         self.assertEqual(before, self.path.read_bytes())
 
+
+    def test_cold_replay_preserves_canonical_stored_metadata_and_record_extensions(self):
+        extension = {'unicode': {'İ': '雪\u0000', 'surrogate': '\ud800'},
+                     'negative_zero': -0.0, 'typed_scalars': [1, True, None, 0.25]}
+        self.payload['canonical_extension'] = deepcopy(extension)
+        key = next(iter(self.payload['intents']))
+        self.payload['intents'][key]['canonical_extension'] = deepcopy(extension)
+        first = self.create()
+        candidate = first.payload
+        candidate['canonical_step'] = 1
+        candidate['intents'][key]['operator_note'] = 'a complete later record revision'
+        latest = self.replace(candidate, first)
+        observed = []
+        def complete_validation(payload, *, expected_binding=None):
+            observed.append((deepcopy(payload), deepcopy(expected_binding)))
+            return runtime.validate_order_intent_ledger(payload, expected_binding=expected_binding)
+        rules = indexed.IndexedIntentRules(complete_validation, RULES.is_unresolved,
+                                          RULES.has_active_protection, RULES.used_client_ids)
+        before = self.path.read_bytes()
+        with locks.ledger_transaction(self.logical):
+            actual = indexed.read_indexed_snapshot(
+                self.path, logical_path=self.logical, rules=rules, expected_binding=self.binding,
+                deadline=locks.current_ledger_deadline())
+        self.assertEqual(latest, actual)
+        self.assertEqual([first.payload, latest.payload, latest.payload], [value for value, _ in observed])
+        self.assertEqual([None, None, self.binding], [binding for _, binding in observed])
+        self.assertTrue(all(len(value['intents']) == 6 for value, _ in observed))
+        self.assertEqual(before, self.path.read_bytes())
+        with closing(sqlite3.connect(self.path)) as connection:
+            metadata_rows = connection.execute('SELECT metadata,metadata_digest FROM journal_commits ORDER BY seq').fetchall()
+            record_rows = connection.execute('SELECT record,digest FROM journal_records WHERE client_id=? ORDER BY seq', (key,)).fetchall()
+        self.assertEqual(2, len(metadata_rows))
+        self.assertEqual(2, len(record_rows))
+        for label, rows in (('metadata', metadata_rows), ('record', record_rows)):
+            for revision, (raw, commitment) in enumerate(rows, 1):
+                with self.subTest(stored=label, revision=revision):
+                    decoded = indexed._decode(raw)
+                    self.assertEqual(indexed._digest(decoded), commitment)
+                    self.assertEqual(indexed._canonical(extension), indexed._canonical(decoded['canonical_extension']))
+                    self.assertEqual(-1.0, math.copysign(1.0, decoded['canonical_extension']['negative_zero']))
+                    self.assertIn(r'\u96ea', raw)
+                    self.assertIn(r'\ud800', raw)
+                    self.assertEqual(int, type(decoded['canonical_extension']['typed_scalars'][0]))
+                    self.assertEqual(bool, type(decoded['canonical_extension']['typed_scalars'][1]))
+
+    def test_cold_replay_rejects_strict_earlier_metadata_with_a_valid_final_tail(self):
+        latest = self.cold_replay_history()[-1]
+        runtime.validate_order_intent_ledger(latest.payload, expected_binding=self.binding)
+        saved = self.path.read_bytes()
+        with closing(sqlite3.connect(self.path)) as connection:
+            original = connection.execute('SELECT metadata FROM journal_commits WHERE seq=1').fetchone()[0]
+        unicode_raw = indexed._canonical({**indexed._decode(original), 'unicode_extension': '雪'})
+        faults = (
+            ('duplicate', original.replace('"format_version":2', '"format_version":2,"format_version":2', 1), 'duplicate JSON keys'),
+            ('nonfinite', original[:-1] + ',"fault":NaN}', 'nonfinite JSON'),
+            ('overflow', original[:-1] + ',"fault":1e400}', 'unsupported data'),
+            ('whitespace', ' ' + original, 'noncanonical JSON'),
+            ('escaped-key', original.replace('"binding"', r'"\u0062inding"', 1), 'noncanonical JSON'),
+            ('literal-unicode', unicode_raw.replace(r'\u96ea', '雪'), 'noncanonical JSON'),
+        )
+        for fault, raw, reason in faults:
+            with self.subTest(fault=fault):
+                self.path.write_bytes(saved)
+                with closing(sqlite3.connect(self.path)) as connection, connection:
+                    connection.execute('DROP TRIGGER immutable_journal_commits_update')
+                    connection.execute('UPDATE journal_commits SET metadata=? WHERE seq=1', (raw,))
+                    connection.execute(indexed._DDL['immutable_journal_commits_update'])
+                    current = connection.execute('SELECT metadata FROM store_state').fetchone()[0]
+                expected_metadata = {name: value for name, value in latest.payload.items() if name != 'intents'}
+                self.assertEqual(indexed._canonical(expected_metadata), current)
+                before = self.path.read_bytes()
+                calls = []
+                def must_not_validate(payload, *, expected_binding=None):
+                    calls.append(payload)
+                    return runtime.validate_order_intent_ledger(payload, expected_binding=expected_binding)
+                rules = indexed.IndexedIntentRules(must_not_validate, RULES.is_unresolved,
+                                                  RULES.has_active_protection, RULES.used_client_ids)
+                with locks.ledger_transaction(self.logical), self.assertRaisesRegex(LiveTradingSafetyError, reason):
+                    indexed.read_indexed_snapshot(
+                        self.path, logical_path=self.logical, rules=rules, expected_binding=self.binding,
+                        deadline=locks.current_ledger_deadline())
+                self.assertEqual([], calls, 'Strict first-revision metadata must reject before any full callback')
+                self.assertEqual(before, self.path.read_bytes())
+        self.path.write_bytes(saved)
+        self.assertEqual(latest.payload, self.read().payload)
+
     def test_database_busy_wait_consumes_original_remaining_deadline(self):
         self.create()
         blocker = sqlite3.connect(self.path, isolation_level=None)
