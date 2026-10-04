@@ -364,19 +364,27 @@ def _replay(raw: bytes, identity: dict) -> tuple[dict, risk.State]:
     if type(value["entries"]) is not list:
         _fail("Complete ordered event history required")
     seen = set()
+    events: list[risk.Event] = []
+    state_heads: list[str] = []
     for revision, row in enumerate(value["entries"], 2):
         row = _fields(row, {"event", "provenance", "previous_chain_head", "chain_head", "state_head"})
         event = risk.parse_event(row["event"])
         if event.event_id in seen or row["previous_chain_head"] != chain:
             _fail("Historical event identity/chain changed")
         proof = _provenance(row["provenance"], identity)
-        state = risk.apply_event(state, event)
+        state_head = _hash(row["state_head"])
         candidate = {"revision": revision, "previous_chain_head": chain, "event": row["event"],
-                     "provenance": proof, "state_head": state.head}
+                     "provenance": proof, "state_head": state_head}
         chain = _sha(_encode(candidate))
-        if _hash(row["chain_head"]) != chain or _hash(row["state_head"]) != state.head:
+        if _hash(row["chain_head"]) != chain:
             _fail("Historical revision commitment changed")
         seen.add(event.event_id)
+        events.append(event)
+        state_heads.append(state_head)
+    replayed = risk.replay_events(opening, tuple(events))
+    if replayed.opening_head != state.head or replayed.revision_state_heads != tuple(state_heads):
+        _fail("Historical revision commitment changed")
+    state = replayed.state
     expected_head = {"revision": len(value["entries"]) + 1, "chain_head": chain, "state_head": state.head}
     if _encode(value["head"]) != _encode(expected_head) or _encode(value["projection"]) != _encode(_projection(state)):
         _fail("Head/projection differs from complete history replay")

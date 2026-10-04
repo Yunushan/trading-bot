@@ -596,3 +596,60 @@ def apply_event(state: State, event: Event) -> State:
 def metrics(state: State) -> dict[str, Any]:
     """Validate complete history before exposing accounting projections."""
     return _metrics(_validate_state(state))
+
+
+@dataclass(frozen=True)
+class BatchReplayResult:
+    """Final accounting and scalar revision heads, never authority or permission."""
+
+    state: State
+    opening_head: str
+    revision_state_heads: tuple[str, ...]
+
+
+def _detached_batch_event(event: Event) -> Event:
+    """Capture strict immutable fields before any internal history retains them."""
+    if type(event) is not Event:
+        _fail("Exact immutable batch Event required")
+    captured = Event(event.event_id, event.expected_head, event.at, event.kind, event.payload)
+    _int(captured.at, minimum=0)
+    if type(captured.payload) is not str:
+        _fail("Exact immutable batch payload required")
+    try:
+        data = decode_contract(captured.payload.encode("utf-8"))
+        at_token = datetime.fromtimestamp(captured.at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (UnicodeError, OverflowError, OSError, ValueError, RecursionError) as exc:
+        raise ContractError("Invalid immutable batch event framing") from exc
+    parsed = parse_event({"event_id": captured.event_id, "expected_head": captured.expected_head,
+                          "at": at_token, "kind": captured.kind, "data": data})
+    if not _same_contract_value(captured, parsed):
+        _fail("Noncanonical exact immutable batch Event")
+    return parsed
+
+
+def replay_events(opening: object, events: tuple[Event, ...]) -> BatchReplayResult:
+    """Validate an entire original ledger privately; expose no intermediate State.
+
+    Caller-supplied State objects are not an opening or a trust token. Original
+    policy, identity, financial observations and references remain unauthenticated
+    inputs. Public apply_event and metrics retain their full validation semantics.
+    A complete final replay is retained; full-history commitments still cost work
+    quadratic in a fixed-size event sequence. No store, native or order calls occur.
+    """
+    if type(events) is not tuple:
+        _fail("Exact complete batch Event tuple required")
+    state = _validate_state(opening_state(opening))
+    opening_head = state.head
+    detached = tuple(_detached_batch_event(event) for event in events)
+    seen: set[str] = set()
+    heads: list[str] = []
+    for event in detached:
+        if event.event_id in seen:
+            _fail("Duplicate batch ledger Event ID")
+        state = _reduce_event(state, event)
+        heads.append(state.head)
+        seen.add(event.event_id)
+    validated = _validate_state(state)
+    if validated.head != (heads[-1] if heads else opening_head):
+        _fail("Batch final state head mismatch")
+    return BatchReplayResult(validated, opening_head, tuple(heads))
