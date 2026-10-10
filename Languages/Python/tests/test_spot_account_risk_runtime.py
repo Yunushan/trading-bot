@@ -1041,7 +1041,7 @@ class OwnedSpotRiskReadTests(unittest.TestCase):
                     primary = failure_type("synthetic owned directory metadata failure")
                     armed = [phase == "baseline"]
                     failures = []
-                    real_stat, real_lstat = owned.os.stat, owned.os.lstat
+                    real_lstat = Path.lstat
                     def fail_metadata(path):
                         if armed[0] and isinstance(path, (str, Path)) and Path(path) == target:
                             failures.append(primary)
@@ -1049,18 +1049,14 @@ class OwnedSpotRiskReadTests(unittest.TestCase):
                     def native_lstat(path, *args, **kwargs):
                         fail_metadata(path)
                         return real_lstat(path, *args, **kwargs)
-                    def native_stat(path, *args, **kwargs):
-                        if kwargs.get("follow_symlinks", True) is False:
-                            fail_metadata(path)
-                        return real_stat(path, *args, **kwargs)
                     real_replay = risk.replay_events
                     def replay(*args):
                         result = real_replay(*args)
                         armed[0] = True
                         return result
                     expected_type = LiveTradingSafetyError if issubclass(failure_type, OSError) else failure_type
-                    with self.locked(case), patch.object(owned.os, "lstat", native_lstat), patch.object(
-                            owned.os, "stat", native_stat), patch.object(risk, "replay_events", side_effect=replay) as replay_call:
+                    with self.locked(case), patch.object(Path, "lstat", native_lstat), patch.object(
+                            risk, "replay_events", side_effect=replay) as replay_call:
                         with self.assertRaises(expected_type) as raised:
                             owned.read_owned_spot_risk_store(case.account.wrapper)
                         if issubclass(failure_type, OSError):
