@@ -25,8 +25,8 @@ rustls-native-certs = "0.8"
 rustls-pki-types = { version = "1", features = ["std"] }
 sha2 = "0.11"
 tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
-tauri = { version = "2" }
-tauri-build = { version = "2" }
+tauri = { version = "2.12.1" }
+tauri-build = { version = "2.7.1" }
 
 # plist 1.8.0 pins vulnerable quick-xml 0.38.x on the macOS Tauri path. The
 # upstream project has the compatible quick-xml 0.41.0 remediation on this

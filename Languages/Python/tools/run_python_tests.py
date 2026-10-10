@@ -87,12 +87,36 @@ def build_unittest_suite() -> unittest.TestSuite:
 
 
 def run_unittest_suite(*, failfast: bool, verbose: bool) -> int:
+    tests_root = str(PYTHON_ROOT / "tests")
+    if tests_root not in sys.path:
+        sys.path.insert(0, tests_root)
+    from spot_inventory_checkpoint_fixtures import CheckpointFixtureBackend
+    class IsolatedCheckpointResult(unittest.TextTestResult):
+        def startTest(self, test):
+            self._checkpoint_backend = CheckpointFixtureBackend()
+            self._checkpoint_backend.__enter__()
+            try:
+                super().startTest(test)
+            except BaseException:
+                self._checkpoint_backend.__exit__(*sys.exc_info())
+                raise
+
+        def stopTest(self, test):
+            try:
+                super().stopTest(test)
+            finally:
+                self._checkpoint_backend.__exit__(None, None, None)
+
     runner = unittest.TextTestRunner(
         stream=sys.stdout,
         verbosity=2 if verbose else 1,
         failfast=failfast,
+        resultclass=IsolatedCheckpointResult,
     )
-    result = runner.run(build_unittest_suite())
+    # The outer empty store isolates discovery/class fixtures. Each TestCase
+    # receives a separate empty store, matching pytest without implicit sealing.
+    with CheckpointFixtureBackend():
+        result = runner.run(build_unittest_suite())
     return 0 if result.wasSuccessful() else 1
 
 

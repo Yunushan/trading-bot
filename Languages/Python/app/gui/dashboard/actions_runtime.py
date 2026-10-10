@@ -22,6 +22,9 @@ def _create_dashboard_action_section(self, scroll_layout):
     self.load_btn = QtWidgets.QPushButton("Load Config")
     self.load_btn.clicked.connect(self.load_config)
     btn_layout.addWidget(self.load_btn)
+    self.spot_buy_recovery_btn = QtWidgets.QPushButton("Spot BUY Recovery")
+    self.spot_buy_recovery_btn.clicked.connect(lambda checked=False: _open_spot_buy_recovery(self))
+    btn_layout.addWidget(self.spot_buy_recovery_btn)
     scroll_layout.addLayout(btn_layout)
 
     service_box = QtWidgets.QGroupBox("Desktop Service API")
@@ -140,6 +143,12 @@ def _create_dashboard_action_section(self, scroll_layout):
         self.load_btn,
     ] + llm_runtime_lock_widgets + list(self._indicator_runtime_controls)
     self._set_runtime_controls_enabled(True)
+
+
+def _open_spot_buy_recovery(window):
+    from app.gui.runtime.account.spot_buy_recovery_runtime import open_spot_buy_recovery
+
+    open_spot_buy_recovery(window)
 
 
 def bind_main_window_dashboard_actions_runtime(MainWindow):

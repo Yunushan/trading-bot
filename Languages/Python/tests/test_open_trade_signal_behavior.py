@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.gui.trade.signal_open_runtime import handle_non_close_trade_signal  # noqa: E402
 from app.gui.trade import signal_common_runtime  # noqa: E402
+from app.gui.shared.trade_callback_origin import capture_trade_callback_origin, check_trade_callback_origin  # noqa: E402
 from app.gui.shared.allocation_persistence import (  # noqa: E402
     AllocationSnapshotSession, load_position_allocations, save_position_allocations,
 )
@@ -29,8 +30,9 @@ from app.integrations.exchanges.binance.orders.order_intent_provisioning import 
     PROVISION_ACK, provision_order_intent_store,
 )
 from app.integrations.exchanges.binance.wrapper import BinanceWrapper  # noqa: E402
-from app.settings.live_safety import LIVE_TRADING_ACKNOWLEDGEMENT  # noqa: E402
+from app.settings.live_safety import LIVE_TRADING_ACKNOWLEDGEMENT, LiveTradingSafetyError  # noqa: E402
 from app.core.strategy.orders.strategy_signal_order_result_runtime import _emit_signal_order_info  # noqa: E402
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case  # noqa: E402
 
 
 class _OpenSignalWindowStub:
@@ -131,6 +133,7 @@ class OpenTradeSignalBehaviorTests(unittest.TestCase):
         self.assertIsNone(window._active_trade_event_receipt)
 
     def test_real_primary_buy_event_publishes_fee_aware_quantity_then_actual_intent_marker(self):
+        checkpoint_backend_for_case(self)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             this_file = root / "Languages" / "Python" / "app" / "gui" / "window_shell.py"
@@ -153,7 +156,8 @@ class OpenTradeSignalBehaviorTests(unittest.TestCase):
                     patch.object(socket.socket, "connect_ex", side_effect=AssertionError("Network forbidden")), \
                     patch("app.integrations.exchanges.binance.wrapper.BinanceSDKSpotClient", return_value=sdk), \
                     patch("app.integrations.exchanges.binance.transport.http_request_runtime.requests.get", side_effect=account_get), \
-                    patch("app.gui.shared.allocation_persistence.get_position_allocations_path", return_value=allocation_path):
+                    patch("app.gui.shared.allocation_persistence.get_position_allocations_path", return_value=allocation_path), \
+                    patch("app.gui.shared.allocation_persistence._get_allocations_file_path", return_value=allocation_path):
                 admin = SimpleNamespace(_order_audit_log_path=audit_path, api_key="offline-key", mode="Live",
                                         account_type="SPOT", _enforce_spot_execution_owner=True, _operator_spot_account_uid=uid)
                 provision_order_intent_store(admin, acknowledgement=PROVISION_ACK)
@@ -164,6 +168,17 @@ class OpenTradeSignalBehaviorTests(unittest.TestCase):
                                              "live_trading_max_position_pct": 10.0, "live_trading_max_session_orders": 10,
                                              "order_audit_enabled": True, "order_audit_log_path": str(audit_path)})
                 try:
+                    window = _OpenSignalWindowStub()
+                    window.mode_combo = SimpleNamespace(currentText=lambda: "Live")
+                    window.shared_binance = wrapper
+                    session = window._allocation_snapshot_session = AllocationSnapshotSession()
+                    load_position_allocations(this_file=this_file, mode="Live", session=session)
+                    wrapper._desktop_spot_entry_capture = lambda params: capture_trade_callback_origin(window, wrapper, params)
+                    wrapper._desktop_spot_entry_check = lambda origin, params: check_trade_callback_origin(window, origin, params)
+                    wrapper._desktop_trade_origin_capture = lambda: capture_trade_callback_origin(window, wrapper)
+                    wrapper._ensure_spot_execution_owner()
+                    callback_origin = wrapper._desktop_trade_origin_capture()
+                    initial_bytes = allocation_path.read_bytes()
                     params = {"newClientOrderId": "primary-fee-buy", "symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
                     wrapper._begin_order_intent(params, market="spot", source="offline-gui-proof")
                     wrapper._mark_order_intent_submitted(params, via="offline-gui-proof")
@@ -179,25 +194,21 @@ class OpenTradeSignalBehaviorTests(unittest.TestCase):
                                             order_res={"ok": True, "execution_confirmed": True, "submitted_qty": "0.1", "info": response},
                                             price=20000.0, qty_display=0.1, trigger_labels=[], trigger_desc_for_order=None,
                                             trigger_signature=[], context_key=None, order_event_uid="primary-event",
-                                            trigger_actions_for_order={}, origin_timestamp=None, leverage_used=1)
+                                            trigger_actions_for_order={}, origin_timestamp=None, leverage_used=1,
+                                            callback_origin=callback_origin, callback_wrapper=wrapper)
                     self.assertEqual(1, len(events))
                     event = events[0]
                     self.assertFalse(event["reconciliation_required"])
                     self.assertTrue(event["execution_confirmed"])
                     self.assertEqual("0.09996", event["spot_fill_recovery"]["net_qty"])
                     self.assertEqual(0.09996, event["executed_qty"])
-                    window = _OpenSignalWindowStub()
-                    window.mode_combo = SimpleNamespace(currentText=lambda: "Live")
-                    window.shared_binance = wrapper
-                    session = window._allocation_snapshot_session = AllocationSnapshotSession()
-                    load_position_allocations(this_file=this_file, mode="Live", session=session)
                     def saver(allocations, records, **kwargs):
                         return save_position_allocations(allocations, records, this_file=this_file, **kwargs)
                     _dispatch(window, dict(event, reconciliation_required=True),
                               persist_trade_allocations=signal_common_runtime._persist_trade_allocations,
                               sync_open_position_snapshot=signal_common_runtime._sync_open_position_snapshot, saver=saver)
                     self.assertEqual({}, window._entry_allocations)
-                    self.assertFalse(allocation_path.exists())
+                    self.assertEqual(initial_bytes, allocation_path.read_bytes())
                     self.assertTrue(window._pending_allocation_reconciliations[("BTCUSDT", "L")])
                     self.assertIsNot(wrapper._get_order_intent_record("primary-fee-buy").get("portfolio_reconciled"), True)
                     _dispatch(window, event, persist_trade_allocations=signal_common_runtime._persist_trade_allocations,
@@ -259,49 +270,45 @@ class OpenTradeSignalBehaviorTests(unittest.TestCase):
                 self.assertTrue(window._pending_allocation_reconciliations[("BTCUSDT", "L")])
 
     def test_real_publisher_commits_before_ledger_callback_and_restart_buy_replay(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            this_file = Path(tmp) / "Languages" / "Python" / "app" / "gui" / "window_shell.py"
-            this_file.parent.mkdir(parents=True)
-            allocation_path = this_file.parents[2] / "data" / ".trading_bot_allocations.json"
-            window = _OpenSignalWindowStub()
-            window.mode_combo = SimpleNamespace(currentText=lambda: "Live")
-            window._allocation_snapshot_session = AllocationSnapshotSession()
-            window._entry_allocations, window._open_position_records = load_position_allocations(
-                this_file=this_file, mode="Live", session=window._allocation_snapshot_session)
+        import test_spot_buy_generation_faults as actual_buy
+        from app.integrations.exchanges.binance.orders.order_intent_store import current_ledger_deadline
+
+        fixture = actual_buy.SpotBuyGenerationFaultsTests()
+        fixture.setUp()
+        try:
+            window = fixture._load_window()
+            order, _fill = fixture._buy()
+            allocation_path = fixture.fixture.allocation_path
             markers = []
-            def mark(*_args, **_kwargs):
+            original_marker = fixture.wrapper._mark_order_intent_portfolio_reconciled
+
+            def mark(*args, **kwargs):
+                with self.assertRaisesRegex(LiveTradingSafetyError, "transaction is required"):
+                    current_ledger_deadline(allocation_path)
                 with ledger_transaction(allocation_path):
                     self.assertTrue(allocation_path.is_file())
-                    markers.append("marked")
-            window.shared_binance = SimpleNamespace(_mark_order_intent_portfolio_reconciled=mark)
-            def saver(allocations, records, **kwargs):
-                return save_position_allocations(allocations, records, this_file=this_file, **kwargs)
-            order = {"side": "BUY", "client_order_id": "real-buy", "order_id": "71",
-                     "qty": 0.25, "avg_price": 100.0, "status": "placed", "ok": True,
-                     "exchange_status": "FILLED", "spot_fill_recovery": {"signature": "a" * 64, "net_qty": "0.25"}}
-            _dispatch(window, order, persist_trade_allocations=signal_common_runtime._persist_trade_allocations,
-                      sync_open_position_snapshot=signal_common_runtime._sync_open_position_snapshot, saver=saver)
-            self.assertEqual(["marked"], markers)
-            committed = allocation_path.read_bytes()
-            restarted = _OpenSignalWindowStub()
-            restarted.mode_combo = window.mode_combo
-            restarted.shared_binance = window.shared_binance
-            restarted._allocation_snapshot_session = AllocationSnapshotSession()
-            restarted._entry_allocations, restarted._open_position_records = load_position_allocations(
-                this_file=this_file, mode="Live", session=restarted._allocation_snapshot_session)
-            _dispatch(restarted, order, persist_trade_allocations=signal_common_runtime._persist_trade_allocations,
-                      sync_open_position_snapshot=signal_common_runtime._sync_open_position_snapshot, saver=saver)
-            self.assertEqual(committed, allocation_path.read_bytes())
-            self.assertEqual(1, len(restarted._entry_allocations[("BTCUSDT", "L")]))
-            self.assertEqual(["marked", "marked"], markers)
-            _dispatch(restarted, dict(order, qty=0.5), persist_trade_allocations=signal_common_runtime._persist_trade_allocations,
-                      sync_open_position_snapshot=signal_common_runtime._sync_open_position_snapshot, saver=saver)
-            self.assertEqual(committed, allocation_path.read_bytes())
-            self.assertEqual(1, len(restarted._pending_trade_reconciliation))
-            _dispatch(restarted, order, persist_trade_allocations=signal_common_runtime._persist_trade_allocations,
-                      sync_open_position_snapshot=signal_common_runtime._sync_open_position_snapshot, saver=saver)
-            self.assertEqual(1, len(restarted._pending_trade_reconciliation))
-            self.assertEqual(1, len(restarted._pending_allocation_reconciliations[("BTCUSDT", "L")]))
+                result = original_marker(*args, **kwargs)
+                self.assertTrue(result["portfolio_reconciled"])
+                markers.append("marked")
+                return result
+
+            with patch.object(fixture.wrapper, "_mark_order_intent_portfolio_reconciled", side_effect=mark):
+                fixture._dispatch(window, order)
+                self.assertEqual(["marked"], markers)
+                committed = allocation_path.read_bytes()
+                restarted = fixture._load_window()
+                fixture._dispatch(restarted, order)
+                self.assertEqual(committed, allocation_path.read_bytes())
+                self.assertEqual(1, len(restarted._entry_allocations[("BTCUSDT", "L")]))
+                self.assertEqual(["marked", "marked"], markers)
+                fixture._dispatch(restarted, dict(order, qty=0.5, executed_qty=0.5))
+                self.assertEqual(committed, allocation_path.read_bytes())
+                self.assertEqual(1, len(restarted._pending_trade_reconciliation))
+                fixture._dispatch(restarted, order)
+                self.assertEqual(1, len(restarted._pending_trade_reconciliation))
+                self.assertEqual(1, len(restarted._pending_allocation_reconciliations[("BTCUSDT", "L")]))
+        finally:
+            fixture.doCleanups()
 
     def test_distinct_unidentifiable_confirmed_events_are_retained_in_memory(self):
         window = _OpenSignalWindowStub()

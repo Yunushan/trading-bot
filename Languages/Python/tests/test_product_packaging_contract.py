@@ -797,11 +797,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest-dev@sha256:eb0d45dfc69fecb471d2eaee7a8eea281bf860578ef44cb85db1bfa8165c47fe AS builder",
+            "FROM cgr.dev/chainguard/python:latest-dev@sha256:85c70fe9ec4313b5c8b1adcb4f0e7fa45d171ae203d2c64c69c4ea3eb96fb7dc AS builder",
             dockerfile,
         )
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest@sha256:565af762d7f3efedc4e60d7ac7815e41588211d3f5757be33d8303e915ee6c72",
+            "FROM cgr.dev/chainguard/python:latest@sha256:1e64347fb2a3f1a57a8839fa05df8f0cb8c2c050ac85f3ee6b24d442ae282fd9",
             dockerfile,
         )
         self.assertIn("COPY --chown=65532:65532 apps/service-api /app/apps/service-api", dockerfile)

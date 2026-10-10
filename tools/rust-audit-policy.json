@@ -12,56 +12,6 @@
       "expires": "2026-10-10",
       "scope": "linux-tauri-webkitgtk-transitive",
       "reason": "Tauri's Linux GTK3/WebKitGTK path pins this transitive macro helper; remove the exception on the upstream migration."
-    },
-    {
-      "kind": "unmaintained",
-      "id": "RUSTSEC-2025-0075",
-      "package": "unic-char-range",
-      "version": "0.9.0",
-      "reviewed": "2026-08-26",
-      "expires": "2026-10-10",
-      "scope": "tauri-utils-urlpattern-transitive",
-      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
-    },
-    {
-      "kind": "unmaintained",
-      "id": "RUSTSEC-2025-0080",
-      "package": "unic-common",
-      "version": "0.9.0",
-      "reviewed": "2026-08-26",
-      "expires": "2026-10-10",
-      "scope": "tauri-utils-urlpattern-transitive",
-      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
-    },
-    {
-      "kind": "unmaintained",
-      "id": "RUSTSEC-2025-0081",
-      "package": "unic-char-property",
-      "version": "0.9.0",
-      "reviewed": "2026-08-26",
-      "expires": "2026-10-10",
-      "scope": "tauri-utils-urlpattern-transitive",
-      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
-    },
-    {
-      "kind": "unmaintained",
-      "id": "RUSTSEC-2025-0098",
-      "package": "unic-ucd-version",
-      "version": "0.9.0",
-      "reviewed": "2026-08-26",
-      "expires": "2026-10-10",
-      "scope": "tauri-utils-urlpattern-transitive",
-      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
-    },
-    {
-      "kind": "unmaintained",
-      "id": "RUSTSEC-2025-0100",
-      "package": "unic-ucd-ident",
-      "version": "0.9.0",
-      "reviewed": "2026-08-26",
-      "expires": "2026-10-10",
-      "scope": "tauri-utils-urlpattern-transitive",
-      "reason": "tauri-utils 2.9.3 resolves urlpattern 0.3.0 and this unmaintained Unicode crate; remove when released Tauri adopts the remediated path."
     }
   ]
 }

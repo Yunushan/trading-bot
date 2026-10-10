@@ -8,7 +8,7 @@
   },
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "test": "node tests/service-contract.test.cjs && node tests/app-logic.test.cjs && node ../../tools/check_mobile_image_size_exposure.cjs --project-root . && node ../../tools/check_node_audit_policy.cjs --self-test",
+    "test": "node ../../tools/check_mobile_node_forge_backport.cjs --project-root . && node --test tests/node-forge-backport.test.cjs && node tests/service-contract.test.cjs && node tests/app-logic.test.cjs && node ../../tools/check_mobile_image_size_exposure.cjs --project-root . && node ../../tools/check_node_audit_policy.cjs --self-test",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "expo": "~57.0.25",
+    "node-forge": "file:vendor/node-forge/node-forge-1.4.0-backport.tgz",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-native": "0.87.1",
@@ -38,6 +39,7 @@
       "brace-expansion": "1.1.21"
     },
     "nanoid": "3.3.18",
-    "image-size": "npm:image-size-next@1.2.2"
+    "image-size": "npm:image-size-next@1.2.2",
+    "node-forge": "$node-forge"
   }
 }
