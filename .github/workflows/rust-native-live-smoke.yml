@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload native source sync audit
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: native-source-sync-audit
           path: artifacts/native-source-sync/native-source-sync-audit.json
@@ -155,7 +155,7 @@ jobs:
             --write-evidence-plan "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/rust-native-runtime-evidence-plan.md"
 
       - name: Upload signed account-read smoke evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rust-native-live-smoke-evidence
           path: |
@@ -165,7 +165,7 @@ jobs:
 
       - name: Upload post-smoke Rust native runtime evidence plan
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rust-native-live-smoke-evidence-plan
           path: ${{ inputs.evidence_dir }}/rust-native-runtime-evidence-plan.md
@@ -263,7 +263,7 @@ jobs:
 
       - name: Upload public market-data smoke evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rust-native-public-market-smoke-evidence
           path: ${{ inputs.evidence_dir }}/market/rust-native-live-market-data-smoke.json
