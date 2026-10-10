@@ -72,7 +72,7 @@ def provision_order_intent_store(self, *, acknowledgement: str, migrate: bool = 
                 if payload["format_version"] != 1:
                     raise LiveTradingSafetyError("Only a legacy version-one ledger can be migrated; existing stores are not reset.")
                 backup = path.with_name(f"{path.name}.v1-{uuid4().hex}.backup")
-                write_ledger(backup, payload)
+                write_ledger(backup, dict(payload))
             else:
                 if path.exists() or path.is_symlink():
                     raise LiveTradingSafetyError("Order intent storage already exists; it will not be overwritten.")
@@ -299,7 +299,7 @@ def rotate_spot_owner_credentials(
                 },
             ]
             ledger["binding"] = binding
-            write_ledger(path, ledger)
+            write_ledger(path, ledger, expected_new_binding=binding)
 
     return {
         "path": str(path),

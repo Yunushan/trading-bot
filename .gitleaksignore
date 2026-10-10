@@ -16,3 +16,8 @@ cf3a7a714231cc30d90da7ab5af119fc56dba8cd:Languages/Python/app/core/strategy/posi
 # Generated Rust/JavaScript mirrors of a public Python backtest template key.
 00b2371fb9f705d9132bbefc5d4c30e20b93827b:experiments/rust-shells/apps/tauri-desktop/ui/generated-python-parity.js:generic-api-key:129
 00b2371fb9f705d9132bbefc5d4c30e20b93827b:experiments/rust-shells/crates/core/src/generated_python_parity.rs:generic-api-key:1162
+
+# Reviewed 2026-10-02: ordinary duplicate-field/nonfinite validation prose,
+# introduced by the Oct 1 handoff and repeated in its squash merge.
+9ff999800578d5f3861dedcf179b1c250302fe58:docs/PRODUCTION_IMPLEMENTATION_PLAN.md:generic-api-key:716
+335616dd1dc124f73bfc54361fa8fce359d75494:docs/PRODUCTION_IMPLEMENTATION_PLAN.md:generic-api-key:716

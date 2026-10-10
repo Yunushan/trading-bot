@@ -534,6 +534,51 @@ class SpotFillRecoveryTests(unittest.TestCase):
         self.assertAlmostEqual(0.01997, after_retry["open_position_records"]["BTCUSDT:L"]["data"]["qty"])
         self.assertEqual(after_first["entry_allocations"], after_retry["entry_allocations"])
 
+    def test_original_buy_replays_do_not_restore_consumed_or_closed_generations(self):
+        first = self.buy_fill("recovered-buy-a", 501, "0.06", "1200")
+        second = self.buy_fill("recovered-buy-b", 502, "0.04", "800")
+        first["fill_time_ms"] = second["fill_time_ms"] = 1780000000000
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "allocations.json"
+            recovery.persist_spot_buy_allocation(path, first)
+            recovery.persist_spot_buy_allocation(path, second)
+            baseline = recovery.spot_live_allocation_baseline(path, symbol="BTCUSDT")
+            sell = {**self.summarize_sell(), "pre_order_portfolio_signature": baseline["signature"],
+                    "pre_order_portfolio_qty": baseline["quantity"]}
+            recovery.persist_spot_sell_allocation(path, sell)
+            consumed = path.read_bytes()
+            for original in (first, second):
+                self.assertTrue(recovery.persist_spot_buy_allocation(path, original))
+                self.assertEqual(consumed, path.read_bytes())
+            next_fill = self.buy_fill("recovered-buy-c", 503, "0.01", "200")
+            recovery.persist_spot_buy_allocation(path, next_fill)
+            generation_two = path.read_bytes()
+            for original in (first, second):
+                self.assertTrue(recovery.persist_spot_buy_allocation(path, original))
+                self.assertEqual(generation_two, path.read_bytes())
+            data = json.loads(generation_two)
+            self.assertEqual(["Closed", "Active", "Active"], [row["status"] for row in data["entry_allocations"]["BTCUSDT:L"]])
+            self.assertEqual(["recovered-buy-b", "recovered-buy-c"],
+                             [row["client_order_id"] for row in data["open_position_records"]["BTCUSDT:L"]["allocations"]])
+
+    def test_buy_replay_rejects_corrupted_consumption_without_rewriting(self):
+        first = self.buy_fill("recovered-buy-a", 501, "0.1", "2000")
+        first["fill_time_ms"] = 1780000000000
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "allocations.json"
+            recovery.persist_spot_buy_allocation(path, first)
+            baseline = recovery.spot_live_allocation_baseline(path, symbol="BTCUSDT")
+            sell = {**self.summarize_sell(), "pre_order_portfolio_signature": baseline["signature"],
+                    "pre_order_portfolio_qty": baseline["quantity"]}
+            recovery.persist_spot_sell_allocation(path, sell)
+            data = json.loads(path.read_text())
+            data["entry_allocations"]["BTCUSDT:L"][0]["qty"] = 0.1
+            path.write_text(json.dumps(data))
+            corrupt = path.read_bytes()
+            with self.assertRaisesRegex(LiveTradingSafetyError, "does not conserve"):
+                recovery.persist_spot_buy_allocation(path, first)
+            self.assertEqual(corrupt, path.read_bytes())
+
     def test_sell_recovery_rejects_inventory_exceeding_durable_owned_allocations(self):
         fill = self.summarize_sell(
             order={**SELL_ORDER, "executedQty": "0.10000000", "cummulativeQuoteQty": "2000.00000000"},

@@ -20,6 +20,24 @@ from app.gui.dashboard import state_runtime
 
 
 class AllocationPersistenceTests(unittest.TestCase):
+    def test_spot_entry_receipt_uses_loaded_source_and_is_invalidated_without_freshening(self):
+        session = AllocationSnapshotSession()
+        self.load(session)
+        params = {"symbol": "BTCUSDT", "side": "BUY", "newClientOrderId": "next-buy"}
+        receipt = session.capture_spot_buy_admission(params)
+        self.assertTrue(session.matches_loaded_maps({}, {}))
+        self.assertFalse(session.matches_loaded_maps({("BTCUSDT", "L"): []}, {}))
+        self.assertFalse(session.matches_loaded_maps({}, {("BTCUSDT", "L"): {"data": {}}}))
+        self.assertEqual(("BTCUSDT", "L"), receipt.target_key)
+        self.assertIsNone(receipt.raw)
+        self.assertTrue(session.check_spot_buy_admission(receipt, params))
+        self.assertFalse(session.check_spot_buy_admission(receipt, {**params, "newClientOrderId": "another-buy"}))
+        session.invalidate("account changed")
+        self.assertFalse(session.check_spot_buy_admission(receipt, params))
+        with self.assertRaisesRegex(persistence.LiveTradingSafetyError, "loaded Live"):
+            session.capture_spot_buy_admission(params)
+        self.assertIsNone(session._bytes)
+
     def test_stale_gui_save_cannot_erase_real_owned_sell_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             this_file = Path(tmp) / "Languages" / "Python" / "app" / "gui" / "window_shell.py"
@@ -198,7 +216,8 @@ class AllocationPersistenceTests(unittest.TestCase):
         self.assertTrue(reopened.has_trade_event_receipt(receipt))
         raw = self.path.read_bytes()
         conflict = {**receipt, "quantity": "0.2"}
-        with self.assertRaisesRegex(ValueError, "conflicts"):
+        from app.settings.live_safety import LiveTradingSafetyError
+        with self.assertRaisesRegex(LiveTradingSafetyError, "conflicts"):
             reopened.has_trade_event_receipt(conflict)
         self.assertFalse(self.save({}, {}, reopened, event_receipt=conflict))
         self.assertEqual(raw, self.path.read_bytes())
@@ -275,16 +294,16 @@ class AllocationPersistenceTests(unittest.TestCase):
         session = AllocationSnapshotSession()
         decoding, resume = threading.Event(), threading.Event()
         results = []
-        decode = persistence._decode
+        guard = persistence.guard_position_allocation_snapshot
 
-        def paused_decode(raw, mode):
+        def paused_guard(path, observed, *, expected_namespace=None):
             decoding.set()
             if not resume.wait(10):
                 raise RuntimeError("load barrier not released")
-            return decode(raw, mode)
+            return guard(path, observed, expected_namespace=expected_namespace)
 
         worker = threading.Thread(target=lambda: results.append(self.load(session)))
-        with patch.object(persistence, "_decode", paused_decode):
+        with patch.object(persistence, "guard_position_allocation_snapshot", paused_guard):
             worker.start()
             try:
                 self.assertTrue(decoding.wait(5))
@@ -301,7 +320,7 @@ class AllocationPersistenceTests(unittest.TestCase):
 
     def test_parallel_new_load_supersedes_older_result_or_error(self):
         self.assertTrue(self.save(*self.maps()))
-        decode = persistence._decode
+        guard = persistence.guard_position_allocation_snapshot
         for older_error in (False, True):
             with self.subTest(older_error=older_error):
                 session = AllocationSnapshotSession()
@@ -316,14 +335,14 @@ class AllocationPersistenceTests(unittest.TestCase):
                         newer_started.set()
                     return token
 
-                def paused_decode(raw, mode):
+                def paused_guard(path, observed, *, expected_namespace=None):
                     if threading.get_ident() == older_identity[0]:
                         decoding.set()
                         if not resume.wait(10):
                             raise RuntimeError("load barrier not released")
                         if older_error:
                             raise ValueError("older load failed")
-                    return decode(raw, mode)
+                    return guard(path, observed, expected_namespace=expected_namespace)
 
                 def older_load():
                     older_identity.append(threading.get_ident())
@@ -331,7 +350,7 @@ class AllocationPersistenceTests(unittest.TestCase):
 
                 older = threading.Thread(target=older_load)
                 newer = threading.Thread(target=lambda: results.update(newer=self.load(session)))
-                with patch.object(session, "_begin_load", observed_begin), patch.object(persistence, "_decode", paused_decode):
+                with patch.object(session, "_begin_load", observed_begin), patch.object(persistence, "guard_position_allocation_snapshot", paused_guard):
                     older.start()
                     try:
                         self.assertTrue(decoding.wait(5))
@@ -449,7 +468,7 @@ class AllocationPersistenceTests(unittest.TestCase):
         self.assertFalse(session.ready)
         self.assertIs(maps[0], window._entry_allocations)
         self.assertIs(maps[1], window._open_position_records)
-        with patch.object(persistence, "_decode", side_effect=RuntimeError("unexpected decode failure")):
+        with patch.object(persistence, "guard_position_allocation_snapshot", side_effect=RuntimeError("unexpected decode failure")):
             with self.assertRaisesRegex(RuntimeError, "unexpected decode failure"):
                 self.load(session)
         self.assertFalse(session.ready)

@@ -64,11 +64,30 @@ class SecretScanGateTests(unittest.TestCase):
     def test_historical_exceptions_are_exact_fingerprints(self) -> None:
         lines = (ROOT / ".gitleaksignore").read_text(encoding="utf-8").splitlines()
         fingerprints = [line for line in lines if line and not line.startswith("#")]
-        self.assertEqual(11, len(fingerprints))
+        historical = {
+            "5b2c066ea8a1ea140c00bb30081e7889745db5e1:Languages/Python/Crypto-Exchanges/Binance/tools/scan_backtest_2025.py:generic-api-key:42",
+            "8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/Bitget/tools/scan_backtest_2025.py:generic-api-key:42",
+            "8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/Bybit/tools/scan_backtest_2025.py:generic-api-key:42",
+            "8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/Gate/tools/scan_backtest_2025.py:generic-api-key:42",
+            "8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/KuCoin/tools/scan_backtest_2025.py:generic-api-key:42",
+            "8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/MEXC/tools/scan_backtest_2025.py:generic-api-key:42",
+            "8f65e72777c547e4402c7a9f3142ac7949d6882e:Languages/Python/Crypto-Exchanges/OKX/tools/scan_backtest_2025.py:generic-api-key:42",
+            "cf3a7a714231cc30d90da7ab5af119fc56dba8cd:Languages/Python/app/core/strategy/positions/strategy_trade_book.py:generic-api-key:128",
+            "0e7cc787f70d730866a84cd84cd7ca7a4d057e4b:docs/PRODUCTION_IMPLEMENTATION_PLAN.md:generic-api-key:152",
+            "00b2371fb9f705d9132bbefc5d4c30e20b93827b:experiments/rust-shells/apps/tauri-desktop/ui/generated-python-parity.js:generic-api-key:129",
+            "00b2371fb9f705d9132bbefc5d4c30e20b93827b:experiments/rust-shells/crates/core/src/generated_python_parity.rs:generic-api-key:1162",
+        }
+        # Reviewed duplicate-field/nonfinite validation prose in the original
+        # Oct 1 commit and its squash merge; no other plan lines are exempted.
+        reviewed_plan_prose = {
+            "9ff999800578d5f3861dedcf179b1c250302fe58:docs/PRODUCTION_IMPLEMENTATION_PLAN.md:generic-api-key:716",
+            "335616dd1dc124f73bfc54361fa8fce359d75494:docs/PRODUCTION_IMPLEMENTATION_PLAN.md:generic-api-key:716",
+        }
+        self.assertEqual(historical | reviewed_plan_prose, set(fingerprints))
         self.assertEqual(len(fingerprints), len(set(fingerprints)))
         for fingerprint in fingerprints:
             commit, path, rule, line = fingerprint.rsplit(":", 3)
-            self.assertEqual(40, len(commit))
+            self.assertRegex(commit, r"^[0-9a-f]{40}$")
             self.assertTrue(path)
             self.assertEqual("generic-api-key", rule)
             self.assertTrue(line.isdecimal())

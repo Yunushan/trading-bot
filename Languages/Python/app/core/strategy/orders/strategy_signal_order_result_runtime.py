@@ -4,6 +4,7 @@ from datetime import datetime
 import logging
 import math
 import time
+from typing import cast
 
 from app.security.redaction import redact_text, redact_value
 from trading_core.orders import OrderExecution, order_execution_from_response
@@ -11,14 +12,19 @@ from trading_core.orders import OrderExecution, order_execution_from_response
 try:
     from .strategy_signal_order_guard_runtime import _finish_bar_reservation
 except ImportError:  # pragma: no cover - standalone execution fallback
-    from strategy_signal_order_guard_runtime import _finish_bar_reservation
+    from strategy_signal_order_guard_runtime import _finish_bar_reservation  # type: ignore[no-redef]
 
 
 _LOGGER = logging.getLogger(__name__)
 
 
+def _result_mapping(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def _signal_order_execution(order_res: dict) -> OrderExecution | None:
-    info = order_res.get("info") if isinstance(order_res.get("info"), dict) else order_res
+    raw_info = order_res.get("info")
+    info = raw_info if isinstance(raw_info, dict) else order_res
     if order_res.get("ok") is not True and order_res.get("execution_confirmed") is not True:
         if order_res.get("ok") is False:
             return None
@@ -27,7 +33,7 @@ def _signal_order_execution(order_res: dict) -> OrderExecution | None:
     if ("code" in info or info.get("error") is not None
             or ("success" in info and info["success"] is not True)):
         raise ValueError("Order result contains an exchange error")
-    computed = order_res.get("computed") if isinstance(order_res.get("computed"), dict) else {}
+    computed = _result_mapping(order_res.get("computed"))
     submitted_qty = order_res.get("submitted_qty", computed.get("qty", info.get("origQty")))
     return order_execution_from_response(info, submitted_qty)
 
@@ -62,8 +68,9 @@ def _int_or(value, default=0):
         return default
 
 
-def _spot_buy_fill_evidence(self, *, symbol: str, side: str, info: dict) -> dict[str, object] | None:
-    wrapper = getattr(self, "binance", None)
+def _spot_buy_fill_evidence(self, *, symbol: str, side: str, info: dict, wrapper=None) -> dict[str, object] | None:
+    if wrapper is None:
+        wrapper = getattr(self, "binance", None)
     if str(getattr(wrapper, "account_type", "") or "").upper() != "SPOT" or side.upper() != "BUY":
         return None
     try:
@@ -72,13 +79,13 @@ def _spot_buy_fill_evidence(self, *, symbol: str, side: str, info: dict) -> dict
             summarize_primary_spot_buy,
         )
 
-        return summarize_primary_spot_buy(
+        return cast(dict[str, object], summarize_primary_spot_buy(
             info,
             symbol=symbol,
             client_order_id=str(info.get("clientOrderId") or ""),
             base_asset=base_asset,
             quote_asset=quote_asset,
-        )
+        ))
     except Exception:
         return None
 
@@ -275,9 +282,9 @@ def _handle_futures_signal_order_result(
     fields = _execution_event_fields(execution, uncertain)
     qty_display = fields["executed_qty"]
     order_ok = bool(fields["ok"])
-    info_meta = order_res.get("info") if isinstance(order_res.get("info"), dict) else {}
-    computed_meta = order_res.get("computed") if isinstance(order_res.get("computed"), dict) else {}
-    fills_meta = order_res.get("fills") if isinstance(order_res.get("fills"), dict) else {}
+    info_meta = _result_mapping(order_res.get("info"))
+    computed_meta = _result_mapping(order_res.get("computed"))
+    fills_meta = _result_mapping(order_res.get("fills"))
 
     order_id = info_meta.get("orderId") or info_meta.get("order_id") or info_meta.get("orderID")
     client_order_id = (
@@ -487,13 +494,15 @@ def _emit_signal_order_info(
     origin_timestamp: float | None,
     slot_key_tuple=None,
     leverage_used=None,
+    callback_origin=None,
+    callback_wrapper=None,
 ) -> None:
     if not isinstance(order_res, dict):
         _safe_log(self, f"Cannot emit {cw.get('symbol')} {side} order info from malformed result.")
         return
-    info_meta = order_res.get("info") if isinstance(order_res.get("info"), dict) else {}
-    computed_meta = order_res.get("computed") if isinstance(order_res.get("computed"), dict) else {}
-    fills_info = order_res.get("fills") if isinstance(order_res.get("fills"), dict) else {}
+    info_meta = _result_mapping(order_res.get("info"))
+    computed_meta = _result_mapping(order_res.get("computed"))
+    fills_info = _result_mapping(order_res.get("fills"))
     uncertain = order_res.get("reconciliation_required") is True
     try:
         execution = _signal_order_execution(order_res)
@@ -504,7 +513,7 @@ def _emit_signal_order_info(
     uncertain = uncertain or (execution is not None and execution.status in {"NEW", "PARTIALLY_FILLED"})
     fields = _execution_event_fields(execution, uncertain)
     spot_fill_recovery = _spot_buy_fill_evidence(
-        self, symbol=str(cw["symbol"]).upper(), side=side, info=info_meta,
+        self, symbol=str(cw["symbol"]).upper(), side=side, info=info_meta, wrapper=callback_wrapper,
     )
     if spot_fill_recovery is not None:
         net_qty = _float_or(spot_fill_recovery.get("net_qty"), 0.0)
@@ -554,8 +563,20 @@ def _emit_signal_order_info(
         order_info["order_id"] = order_id_value
     if client_order_id_value is not None:
         order_info["client_order_id"] = client_order_id_value
+    if callback_origin is not None:
+        order_info["_trade_callback_origin"] = callback_origin
     if spot_fill_recovery is not None:
         order_info["spot_fill_recovery"] = spot_fill_recovery
+        original_wrapper = callback_wrapper if callback_wrapper is not None else getattr(self, "binance", None)
+        order_info["_trade_callback_origin"] = callback_origin
+        get_origin = getattr(original_wrapper, "_get_spot_buy_submission_origin", None)
+        capture_publication = getattr(original_wrapper, "_capture_spot_buy_publication", None)
+        if callable(get_origin) and callable(capture_publication):
+            try:
+                order_info["_spot_buy_submission_origin"] = get_origin(str(client_order_id_value or ""))
+                order_info["_spot_buy_publication"] = capture_publication(spot_fill_recovery)
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                order_info["reconciliation_required"] = True
     if fills_info:
         commission_val = fills_info.get("commission_usdt")
         net_realized_val = fills_info.get("net_realized")

@@ -11,6 +11,11 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib  # type: ignore[import-not-found]
+
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parents[1]
@@ -622,7 +627,24 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(6, len(exceptions))
+        self.assertEqual(
+            [
+                {
+                    "kind": "unmaintained",
+                    "id": "RUSTSEC-2024-0370",
+                    "package": "proc-macro-error",
+                    "version": "1.0.4",
+                    "reviewed": "2026-08-26",
+                    "expires": "2026-10-10",
+                    "scope": "linux-tauri-webkitgtk-transitive",
+                    "reason": (
+                        "Tauri's Linux GTK3/WebKitGTK path pins this transitive macro helper; "
+                        "remove the exception on the upstream migration."
+                    ),
+                }
+            ],
+            exceptions,
+        )
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
@@ -655,6 +677,20 @@ class DependencyReproducibilityTests(unittest.TestCase):
         cargo_lock = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.lock").read_text(
             encoding="utf-8"
         )
+        locked_packages = {package["name"] for package in tomllib.loads(cargo_lock)["package"]}
+        policy_packages = {exception["package"] for exception in exceptions}
+        retired_unic_advisories = {
+            "unic-char-range": "RUSTSEC-2025-0075",
+            "unic-common": "RUSTSEC-2025-0080",
+            "unic-char-property": "RUSTSEC-2025-0081",
+            "unic-ucd-version": "RUSTSEC-2025-0098",
+            "unic-ucd-ident": "RUSTSEC-2025-0100",
+        }
+        for package, advisory_id in retired_unic_advisories.items():
+            with self.subTest(retired_package=package, advisory=advisory_id):
+                self.assertNotIn(package, locked_packages)
+                self.assertNotIn(package, policy_packages)
+                self.assertNotIn(advisory_id, advisory_ids)
         self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
         self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
         self.assertIn('name = "chacha20"\nversion = "0.10.2"', cargo_lock)
