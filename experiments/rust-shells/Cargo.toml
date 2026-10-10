@@ -40,6 +40,8 @@ plist = { git = "https://github.com/ebarnard/rust-plist", rev = "2881e175b61f159
 # upstream fix in the tracked backport under vendor/ until the dependency
 # graph moves to glib >=0.20 or Tauri adopts its GTK4 path.
 glib = { path = "../../vendor/glib-0.18.5" }
+glib-macros = { path = "../../vendor/glib-macros-0.18.5" }
+gtk3-macros = { path = "../../vendor/gtk3-macros-0.18.2" }
 
 [dependencies]
 serde_json = { workspace = true }
