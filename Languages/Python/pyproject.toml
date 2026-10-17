@@ -59,7 +59,7 @@ service = [
 ]
 security = [
     "pip-audit==2.10.1",
-    "truststore==0.10.4",
+    "truststore==0.10.5",
 ]
 metatrader5 = [
     "MetaTrader5==5.0.6180; platform_system == 'Windows' and platform_machine == 'AMD64'",
