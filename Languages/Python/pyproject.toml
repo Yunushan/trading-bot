@@ -25,8 +25,8 @@ classifiers = [
 dependencies = [
     "python-binance==1.0.36",
     "binance-connector==3.12.0",
-    # Newer CCXT releases through 4.5.84 require vulnerable urllib3==2.7.0.
-    "ccxt==4.5.64",
+    # CCXT 4.5.65-4.5.84 required vulnerable urllib3==2.7.0; 4.5.87 requires the reviewed urllib3==2.8.0.
+    "ccxt==4.5.87",
     "numpy==2.2.6; python_version < '3.11'",
     "numpy==2.4.4; python_version >= '3.11' and python_version < '3.15'",
     "numpy==2.5.2; python_version >= '3.15'",
