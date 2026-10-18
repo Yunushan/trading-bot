@@ -11,11 +11,6 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
-    import tomli as tomllib  # type: ignore[import-not-found]
-
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parents[1]
@@ -572,7 +567,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
                 action in workflow
                 for action in (
                     "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
-                    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
                 )
             )
         )
@@ -583,7 +578,12 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
         self.assertIn("npm audit --omit=dev --audit-level=high", workflow)
         self.assertIn("check_mobile_image_size_exposure.cjs", workflow)
+        self.assertIn("check_mobile_build_tooling_exposure.cjs", workflow)
+        self.assertIn('--package braces', workflow)
+        self.assertIn('--package node-forge', workflow)
         self.assertIn('--mitigation-report "$mitigation_file"', workflow)
+        self.assertIn('--mitigation-report "$braces_mitigation_file"', workflow)
+        self.assertIn('--mitigation-report "$forge_mitigation_file"', workflow)
         self.assertIn("apps/web-dashboard", workflow)
         self.assertIn("apps/mobile-client", workflow)
         self.assertIn("cargo install cargo-audit --version 0.22.2 --locked", workflow)
@@ -599,7 +599,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("--policy ../../tools/rust-audit-policy.json", workflow)
         self.assertIn('if [[ "$audit_status" -gt 1 ]]', workflow)
         self.assertIn("rust-dependency-audit-report", workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", workflow)
         self.assertIn("container-vulnerability-audit", workflow)
         self.assertIn("docker build --pull \\", workflow)
         self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', workflow)
@@ -627,24 +627,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(
-            [
-                {
-                    "kind": "unmaintained",
-                    "id": "RUSTSEC-2024-0370",
-                    "package": "proc-macro-error",
-                    "version": "1.0.4",
-                    "reviewed": "2026-08-26",
-                    "expires": "2026-10-10",
-                    "scope": "linux-tauri-webkitgtk-transitive",
-                    "reason": (
-                        "Tauri's Linux GTK3/WebKitGTK path pins this transitive macro helper; "
-                        "remove the exception on the upstream migration."
-                    ),
-                }
-            ],
-            exceptions,
-        )
+        self.assertEqual(0, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
@@ -669,35 +652,26 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertNotIn(("yanked", "YANKED", "chacha20", "0.10.1"), identities)
         for exception in exceptions:
             with self.subTest(advisory=exception["id"], package=exception["package"]):
-                self.assertEqual("2026-08-26", exception["reviewed"])
-                self.assertEqual("2026-10-10", exception["expires"])
+                self.assertEqual("2026-10-18", exception["reviewed"])
+                self.assertEqual("2026-11-30", exception["expires"])
                 self.assertTrue(exception["scope"])
                 self.assertTrue(exception["reason"])
 
         cargo_lock = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.lock").read_text(
             encoding="utf-8"
         )
-        locked_packages = {package["name"] for package in tomllib.loads(cargo_lock)["package"]}
-        policy_packages = {exception["package"] for exception in exceptions}
-        retired_unic_advisories = {
-            "unic-char-range": "RUSTSEC-2025-0075",
-            "unic-common": "RUSTSEC-2025-0080",
-            "unic-char-property": "RUSTSEC-2025-0081",
-            "unic-ucd-version": "RUSTSEC-2025-0098",
-            "unic-ucd-ident": "RUSTSEC-2025-0100",
-        }
-        for package, advisory_id in retired_unic_advisories.items():
-            with self.subTest(retired_package=package, advisory=advisory_id):
-                self.assertNotIn(package, locked_packages)
-                self.assertNotIn(package, policy_packages)
-                self.assertNotIn(advisory_id, advisory_ids)
-        self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
+        self.assertIn('name = "rand"\nversion = "0.10.2"', cargo_lock)
         self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
         self.assertIn('name = "chacha20"\nversion = "0.10.2"', cargo_lock)
         self.assertNotIn('name = "chacha20"\nversion = "0.10.1"', cargo_lock)
-        self.assertIn('name = "rustls"\nversion = "0.23.45"', cargo_lock)
+        self.assertIn('name = "rustls"\nversion = "0.23.46"', cargo_lock)
         self.assertNotIn('name = "rustls"\nversion = "0.23.43"', cargo_lock)
         self.assertNotIn('name = "rustls"\nversion = "0.23.44"', cargo_lock)
+        self.assertNotIn('name = "rustls"\nversion = "0.23.45"', cargo_lock)
+        self.assertIn('name = "quinn-proto"\nversion = "0.11.18"', cargo_lock)
+        self.assertNotIn('name = "quinn-proto"\nversion = "0.11.15"', cargo_lock)
+        for retired in ("unic-common", "unic-char-range", "unic-char-property", "unic-ucd-version", "unic-ucd-ident"):
+            self.assertNotIn(f'name = "{retired}"', cargo_lock)
 
         rust_manifest = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.toml").read_text(
             encoding="utf-8"
@@ -760,13 +734,31 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("cargo audit warning in yanked is malformed", result["errors"])
 
-    def test_mobile_production_lockfile_uses_patched_image_size_fork(self):
+    def test_mobile_build_tooling_exceptions_are_reviewed_and_time_bounded(self):
         policy = json.loads((REPO_ROOT / "tools" / "node-audit-policy.json").read_text(encoding="utf-8"))
+        exceptions = policy["projects"]["apps/mobile-client"]["exceptions"]
+        self.assertEqual(
+            ["braces", "node-forge"],
+            sorted(item["package"] for item in exceptions),
+        )
+        for exception in exceptions:
+            with self.subTest(package=exception["package"]):
+                self.assertEqual("2026-10-18", exception["reviewed"])
+                self.assertEqual("2026-11-30", exception["expires"])
+                self.assertEqual("high", exception["max_severity"])
+                self.assertEqual(
+                    "none-published-or-reviewed-breaking-graph",
+                    exception["fix_availability"],
+                )
+                self.assertTrue(exception["mitigation_control"])
+                self.assertTrue(exception["verified_consumers"])
+                self.assertTrue(exception["reason"])
+
+    def test_mobile_production_lockfile_uses_patched_image_size_fork(self):
         mobile_root = REPO_ROOT / "apps" / "mobile-client"
         mobile_package = json.loads((mobile_root / "package.json").read_text(encoding="utf-8"))
         lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
 
-        self.assertEqual([], policy["projects"]["apps/mobile-client"]["exceptions"])
         self.assertEqual("npm:image-size-next@1.2.2", mobile_package["overrides"]["image-size"])
         resolved = [
             (package_path, metadata)
@@ -791,6 +783,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
             metadata["integrity"],
         )
         self.assertIn("check_mobile_image_size_exposure.cjs", mobile_package["scripts"]["test"])
+        self.assertIn("check_mobile_build_tooling_exposure.cjs", mobile_package["scripts"]["test"])
 
     def test_mobile_production_lockfile_overrides_brace_expansion_security_fix(self):
         mobile_root = REPO_ROOT / "apps" / "mobile-client"

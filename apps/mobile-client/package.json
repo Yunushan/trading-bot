@@ -8,19 +8,19 @@
   },
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "test": "node ../../tools/check_mobile_node_forge_backport.cjs --project-root . && node --test tests/node-forge-backport.test.cjs && node tests/service-contract.test.cjs && node tests/app-logic.test.cjs && node ../../tools/check_mobile_image_size_exposure.cjs --project-root . && node --test tests/dependency-security.test.cjs && node ../../tools/check_node_audit_policy.cjs --self-test",
+    "test": "node ../../tools/check_mobile_node_forge_backport.cjs --project-root . && node --test tests/node-forge-backport.test.cjs && node tests/service-contract.test.cjs && node tests/app-logic.test.cjs && node ../../tools/check_mobile_image_size_exposure.cjs --project-root . && node ../../tools/check_mobile_build_tooling_exposure.cjs --project-root . --package braces && node ../../tools/check_mobile_build_tooling_exposure.cjs --project-root . --package node-forge && node --test tests/dependency-security.test.cjs && node ../../tools/check_node_audit_policy.cjs --self-test",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"
   },
   "dependencies": {
-    "expo": "~57.0.25",
+    "expo": "~58.0.10",
     "node-forge": "file:vendor/node-forge/node-forge-1.4.0-backport.tgz",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "react-native": "0.87.1",
-    "react-native-web": "^0.21.0"
+    "react-native-web": "^0.21.4"
   },
   "overrides": {
     "@expo/xcpretty": {

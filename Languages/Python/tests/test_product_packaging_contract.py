@@ -797,11 +797,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         dockerfile = (REPO_ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest-dev@sha256:85c70fe9ec4313b5c8b1adcb4f0e7fa45d171ae203d2c64c69c4ea3eb96fb7dc AS builder",
+            "FROM cgr.dev/chainguard/python:latest-dev@sha256:905b31747ebcae4242e0b71fcd2640c712b79a96f929811d3202b9716b66592a AS builder",
             dockerfile,
         )
         self.assertIn(
-            "FROM cgr.dev/chainguard/python:latest@sha256:1e64347fb2a3f1a57a8839fa05df8f0cb8c2c050ac85f3ee6b24d442ae282fd9",
+            "FROM cgr.dev/chainguard/python:latest@sha256:26a608c1549ee52eeb717bf66bce5e60cebaa4a0cd2a57774dfd49484bd38c9a",
             dockerfile,
         )
         self.assertIn("COPY --chown=65532:65532 apps/service-api /app/apps/service-api", dockerfile)
@@ -1519,7 +1519,7 @@ class ProductPackagingContractTests(unittest.TestCase):
                 action in workflow
                 for action in (
                     "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
-                    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
                 )
             )
         )
@@ -1662,7 +1662,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertRegex(ccxt_constraints[0], r"^ccxt==\d+\.\d+\.\d+$")
         # Keep the fixed transport explicit instead of trusting transitive floors.
         self.assertIn("urllib3==2.8.0", runtime_dependencies)
-        self.assertIn("aiohttp==3.14.3", runtime_dependencies)
+        self.assertIn("aiohttp==3.14.5", runtime_dependencies)
         self.assertNotIn("numpy==2.4.4", runtime_dependencies)
         self.assertNotIn("pandas==3.0.2", runtime_dependencies)
 
@@ -1685,10 +1685,10 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertNotIn("aiohttp==0.13.1", windows_arm64_dependencies)
         self.assertIn("aiohttp>=3.14.3,<4", windows_arm64_dependencies)
 
-        self.assertIn("cryptography==50.0.1", optional_dependencies["service"])
+        self.assertIn("cryptography==50.0.2", optional_dependencies["service"])
 
         self.assertEqual(
-            ["pip-audit==2.10.1", "truststore==0.10.4"],
+            ["pip-audit==2.10.1", "truststore==0.10.5"],
             optional_dependencies["security"],
         )
 
@@ -1801,11 +1801,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("TB_RELEASE_DESKTOP_SMOKE_COMMAND", real_test_workflow)
         self.assertIn("browser_test_command", real_test_workflow)
         self.assertIn("TB_BROWSER_TEST_COMMAND", real_test_workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", real_test_workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", real_test_workflow)
         self.assertIn("gh run download", rust_release_evidence_workflow)
         self.assertIn("tools/write_rust_native_release_evidence.py", rust_release_evidence_workflow)
         self.assertIn("--only rust-native-release-platform-evidence", rust_release_evidence_workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", rust_release_evidence_workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", rust_release_evidence_workflow)
 
     def test_python_version_support_matrix_declares_and_checks_310_to_315(self):
         checker = REPO_ROOT / "tools" / "check_python_version_support.py"
@@ -1876,7 +1876,7 @@ class ProductPackagingContractTests(unittest.TestCase):
                     action in workflows[workflow_name]
                     for action in (
                         "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131",
-                        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                        "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
                     )
                 )
             )
@@ -1885,7 +1885,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "efb35369e0ad2afab669f228072c1b0d510eae64",
         }
         for workflow in workflows.values():
-            self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
+            self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", workflow)
             release_action_refs = set(
                 re.findall(r"softprops/action-gh-release@([0-9a-f]{40})", workflow)
             )

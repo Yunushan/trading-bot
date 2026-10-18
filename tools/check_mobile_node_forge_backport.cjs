@@ -250,8 +250,8 @@ function verifyProject(projectRoot) {
     verifyInstalled(path.join(projectRoot, key), bundle.members);
   }
   const consumers = Object.entries(lock.packages).filter(([, entry]) => entry.dependencies?.["node-forge"]);
-  assert(consumers.some(([key]) => key === "node_modules/@expo/cli"), "actual Expo CLI consumer missing");
-  assert(consumers.some(([key]) => key === "node_modules/@expo/code-signing-certificates"), "actual Expo certificate consumer missing");
+  assert(consumers.some(([key]) => key.endsWith("node_modules/@expo/cli")), "actual Expo CLI consumer missing");
+  assert(consumers.some(([key]) => key.endsWith("node_modules/@expo/code-signing-certificates")), "actual Expo certificate consumer missing");
   const resolutions = consumers.map(([key]) => {
     const consumerRequire = createRequire(path.join(projectRoot, key, "package.json"));
     const resolved = consumerRequire.resolve("node-forge");

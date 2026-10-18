@@ -416,11 +416,14 @@ function runSelfTest() {
 }
 
 function parseArguments(argv) {
-  const args = {};
+  const args = { mitigationReports: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === "--self-test") {
       args.selfTest = true;
+    } else if (value === "--mitigation-report" && argv[index + 1]) {
+      args.mitigationReports.push(argv[index + 1]);
+      index += 1;
     } else if (value.startsWith("--") && argv[index + 1]) {
       args[value.slice(2)] = argv[index + 1];
       index += 1;
@@ -440,7 +443,7 @@ if (require.main === module) {
     process.exit(2);
   }
 
-  const mitigationReports = args["mitigation-report"] ? [readJson(args["mitigation-report"])] : [];
+  const mitigationReports = (args.mitigationReports || []).map((filePath) => readJson(filePath));
   const result = evaluateAuditReport(readJson(args.report), readJson(args.policy), {
     project: args.project,
     mitigationReports,
