@@ -622,7 +622,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(6, len(exceptions))
+        self.assertEqual(1, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
@@ -647,21 +647,26 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertNotIn(("yanked", "YANKED", "chacha20", "0.10.1"), identities)
         for exception in exceptions:
             with self.subTest(advisory=exception["id"], package=exception["package"]):
-                self.assertEqual("2026-08-26", exception["reviewed"])
-                self.assertEqual("2026-10-10", exception["expires"])
+                self.assertEqual("2026-10-18", exception["reviewed"])
+                self.assertEqual("2026-11-30", exception["expires"])
                 self.assertTrue(exception["scope"])
                 self.assertTrue(exception["reason"])
 
         cargo_lock = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.lock").read_text(
             encoding="utf-8"
         )
-        self.assertIn('name = "rand"\nversion = "0.9.3"', cargo_lock)
+        self.assertIn('name = "rand"\nversion = "0.10.2"', cargo_lock)
         self.assertNotIn('name = "rand"\nversion = "0.9.2"', cargo_lock)
         self.assertIn('name = "chacha20"\nversion = "0.10.2"', cargo_lock)
         self.assertNotIn('name = "chacha20"\nversion = "0.10.1"', cargo_lock)
-        self.assertIn('name = "rustls"\nversion = "0.23.45"', cargo_lock)
+        self.assertIn('name = "rustls"\nversion = "0.23.46"', cargo_lock)
         self.assertNotIn('name = "rustls"\nversion = "0.23.43"', cargo_lock)
         self.assertNotIn('name = "rustls"\nversion = "0.23.44"', cargo_lock)
+        self.assertNotIn('name = "rustls"\nversion = "0.23.45"', cargo_lock)
+        self.assertIn('name = "quinn-proto"\nversion = "0.11.18"', cargo_lock)
+        self.assertNotIn('name = "quinn-proto"\nversion = "0.11.15"', cargo_lock)
+        for retired in ("unic-common", "unic-char-range", "unic-char-property", "unic-ucd-version", "unic-ucd-ident"):
+            self.assertNotIn(f'name = "{retired}"', cargo_lock)
 
         rust_manifest = (REPO_ROOT / "experiments" / "rust-shells" / "Cargo.toml").read_text(
             encoding="utf-8"
