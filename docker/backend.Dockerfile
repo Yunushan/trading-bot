@@ -22,7 +22,7 @@ COPY Languages/Python/trading_core /build/Languages/Python/trading_core
 # It is available only during this layer and never copied into the image.
 RUN --mount=type=secret,id=pip_ca,required=false,target=/run/secrets/pip_ca \
     if [ -s /run/secrets/pip_ca ]; then export PIP_CERT=/run/secrets/pip_ca; fi; \
-    apk add --no-cache build-base linux-headers \
+    apk add --no-cache build-base linux-headers libffi-dev \
     && python -m venv "$VIRTUAL_ENV" \
     && python -m pip install --upgrade "pip==26.2.1" \
     && pip install /build/Languages/Python[service] \
