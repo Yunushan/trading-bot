@@ -64,7 +64,7 @@ class SecretScanGateTests(unittest.TestCase):
     def test_historical_exceptions_are_exact_fingerprints(self) -> None:
         lines = (ROOT / ".gitleaksignore").read_text(encoding="utf-8").splitlines()
         fingerprints = [line for line in lines if line and not line.startswith("#")]
-        self.assertEqual(11, len(fingerprints))
+        self.assertEqual(13, len(fingerprints))
         self.assertEqual(len(fingerprints), len(set(fingerprints)))
         for fingerprint in fingerprints:
             commit, path, rule, line = fingerprint.rsplit(":", 3)
