@@ -32,14 +32,21 @@ const CONTROLS = {
       + "it evaluates is a repository-controlled build pattern.",
   },
   "node-forge": {
-    control_id: "mobile-node-forge-build-signing-v1",
+    control_id: "mobile-node-forge-vendored-backport-v1",
     reviewed_version: "1.4.0",
-    expected_consumers: ["@expo/cli@58.1.11", "@expo/code-signing-certificates@0.0.7"],
+    import_check: false,
+    expected_consumers: [
+      "@expo/cli@58.1.11",
+      "@expo/code-signing-certificates@0.0.7",
+      "trading-bot-mobile-client@0.1.0",
+    ],
     reviewed_consumer_chain: {},
     reason:
       "node-forge PKCS#1 v1.5 verification is reachable only from the Expo CLI build-time code "
-      + "signing toolchain; the application ships no expo-updates configuration, performs no "
-      + "runtime signature verification, and never imports node-forge.",
+      + "signing toolchain. The package identity stays node-forge@1.4.0 so GHSA-86W9-CPQP-85RV "
+      + "remains reported, but every consumer resolves the reviewed vendored backport whose "
+      + "lib/rsa.js rejects nested DigestAlgorithm elements; the application ships no expo-updates "
+      + "configuration and performs no runtime signature verification.",
   },
 };
 
@@ -85,17 +92,25 @@ function lockConsumers(packages, findingPackage) {
     if (!Object.prototype.hasOwnProperty.call(declaredDependencies(metadata), findingPackage)) {
       continue;
     }
-    const name = packageName(lockPath);
+    const name = entryName(lockPath, metadata);
     consumers.set(`${name}@${metadata.version}`, name);
   }
   return consumers;
 }
 
+function entryName(lockPath, metadata) {
+  return metadata?.name || packageName(lockPath);
+}
+
+function resolvedEntries(packages, findingPackage) {
+  return Object.entries(packages).filter(
+    ([lockPath, metadata]) => entryName(lockPath, metadata) === findingPackage,
+  );
+}
+
 function resolvedVersions(packages, findingPackage) {
   return [...new Set(
-    Object.entries(packages)
-      .filter(([lockPath]) => packageName(lockPath) === findingPackage)
-      .map(([, metadata]) => String(metadata.version || "")),
+    resolvedEntries(packages, findingPackage).map(([, metadata]) => String(metadata.version || "")),
   )].sort();
 }
 
@@ -147,6 +162,30 @@ function evaluateNodeForge(projectRoot, packages, issues) {
   const expoDependency = declaredDependencies(packages["node_modules/expo"]);
   if (!Object.prototype.hasOwnProperty.call(expoDependency, "@expo/cli")) {
     issues.push("expo no longer declares the @expo/cli build toolchain dependency");
+  }
+
+  const provenancePath = path.join(projectRoot, "vendor", "node-forge", "provenance.json");
+  if (!fs.existsSync(provenancePath)) {
+    issues.push("the reviewed node-forge backport provenance file is missing");
+    return;
+  }
+  const provenance = readJson(provenancePath);
+  if (provenance?.package?.version !== CONTROLS["node-forge"].reviewed_version) {
+    issues.push("the node-forge backport provenance version no longer matches the reviewed version");
+  }
+  const expectedIntegrity = provenance?.patched?.integrity;
+  if (!expectedIntegrity) {
+    issues.push("the node-forge backport provenance has no patched integrity");
+    return;
+  }
+  for (const [lockPath, metadata] of resolvedEntries(packages, "node-forge")) {
+    const resolved = String(metadata.resolved || "");
+    if (!resolved.startsWith("file:")) {
+      issues.push(`${lockPath} resolves node-forge from ${resolved || "<unrecorded>"} instead of the reviewed backport`);
+    }
+    if (metadata.integrity !== expectedIntegrity) {
+      issues.push(`${lockPath} node-forge integrity does not match the reviewed backport provenance`);
+    }
   }
 }
 
@@ -201,12 +240,14 @@ function evaluate(projectRoot, findingPackage) {
     );
   }
 
-  const importedNames = findingPackage === "braces"
-    ? [findingPackage, "micromatch"]
-    : [findingPackage];
-  const imports = sourceImports(projectRoot, importedNames);
-  if (imports.length > 0) {
-    issues.push(`application source imports the build-only package: ${imports.join(", ")}`);
+  if (control.import_check !== false) {
+    const importedNames = findingPackage === "braces"
+      ? [findingPackage, "micromatch"]
+      : [findingPackage];
+    const imports = sourceImports(projectRoot, importedNames);
+    if (imports.length > 0) {
+      issues.push(`application source imports the build-only package: ${imports.join(", ")}`);
+    }
   }
 
   if (findingPackage === "braces") {

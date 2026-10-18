@@ -1,36 +1,39 @@
 "use strict";
 
+// Retirement guard for the mobile-client image-size exposure. The Expo/Metro
+// production graph no longer depends on the unmaintained image-size package, so
+// this control now asserts that the finding stays absent. Any reappearance in the
+// production lock graph or in application source fails the guard and forces a
+// fresh review instead of silently reinstating the vulnerable parser.
+
 const fs = require("node:fs");
 const path = require("node:path");
 
-const CONTROL_ID = "mobile-image-size-build-only-v1";
+const CONTROL_ID = "mobile-image-size-retired-v1";
 const PROJECT_ID = "apps/mobile-client";
 const FINDING_PACKAGE = "image-size";
 const PATCHED_PACKAGE_NAME = "image-size-next";
-const PATCHED_PACKAGE_VERSION = "1.2.2";
-const PATCHED_PACKAGE_RESOLVED = "https://registry.npmjs.org/image-size-next/-/image-size-next-1.2.2.tgz";
-const PATCHED_PACKAGE_INTEGRITY = "sha512-Pd3CJ2+Ifk2H2jWikkoz2BSZgnuF3Qsea4gQmj2gtiOtYpGWBl7elj8EXnFMiY5PaYNruTTLD0hQ0UWK7pz9xA==";
-const VULNERABLE_FORMATS = ["avif", "heic", "heif", "icns", "jxl"];
-const METRO_IMAGE_FORMATS = ["bmp", "gif", "jpeg", "jpg", "ktx", "png", "psd", "svg", "tiff", "webp"];
-const SOURCE_IMPORT_PATTERN = /(?:require\s*\(\s*["']image-size["']|from\s*["']image-size["']|import\s*["']image-size["'])/;
+const PACKAGE_OVERRIDE = "npm:image-size-next@1.2.2";
+const SOURCE_EXTENSIONS = new Set([".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"]);
+const EXCLUDED_DIRECTORIES = new Set([".expo", "coverage", "dist", "node_modules"]);
+const SOURCE_IMPORT_PATTERN =
+  /(?:require\s*\(\s*["']image-size["']|from\s*["']image-size["']|import\s*["']image-size["'])/;
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
-function walkFiles(root, options = {}) {
-  const excluded = new Set(options.excludedDirectories || []);
-  const extensions = new Set(options.extensions || []);
+function walkFiles(root, extensions) {
   const files = [];
   const pending = [root];
   while (pending.length > 0) {
     const current = pending.pop();
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        if (!excluded.has(entry.name)) {
+        if (!EXCLUDED_DIRECTORIES.has(entry.name)) {
           pending.push(path.join(current, entry.name));
         }
-      } else if (entry.isFile() && (extensions.size === 0 || extensions.has(path.extname(entry.name)))) {
+      } else if (entry.isFile() && extensions.has(path.extname(entry.name))) {
         files.push(path.join(current, entry.name));
       }
     }
@@ -38,189 +41,63 @@ function walkFiles(root, options = {}) {
   return files.sort();
 }
 
-function lockPathToFilesystem(projectRoot, lockPath) {
-  return path.join(projectRoot, ...lockPath.split("/"));
-}
-
-function lockPackageParent(lockPath, packageName) {
-  const topLevelPath = `node_modules/${packageName}`;
-  const nestedSuffix = `/node_modules/${packageName}`;
-  if (lockPath === topLevelPath) {
-    return "";
-  }
-  if (lockPath.endsWith(nestedSuffix)) {
-    return lockPath.slice(0, -nestedSuffix.length);
-  }
-  return null;
-}
-
-function resolveDependencyPackage(packages, consumer, dependencyName) {
-  const consumerPath = consumer.lock_path;
-  return Object.entries(packages)
-    .map(([lockPath, metadata]) => ({
-      lock_path: lockPath,
-      metadata,
-      parent: lockPackageParent(lockPath, dependencyName),
-    }))
-    .filter(({ parent }) => (
-      parent !== null
-      && (!parent || consumerPath === parent || consumerPath.startsWith(`${parent}/`))
-    ))
-    .sort((left, right) => right.parent.length - left.parent.length)[0] || null;
-}
-
-function dependencyConsumers(packages) {
-  return Object.entries(packages)
-    .filter(([, metadata]) => {
-      const dependencySets = [metadata?.dependencies, metadata?.optionalDependencies];
-      return dependencySets.some((dependencies) => dependencies?.[FINDING_PACKAGE]);
-    })
-    .map(([lockPath, metadata]) => ({
-      lock_path: lockPath,
-      name: lockPath.split("/").at(-1),
-      version: String(metadata.version || ""),
-    }))
-    .sort((left, right) => left.lock_path.localeCompare(right.lock_path));
-}
-
-function inspectMetroConsumer(projectRoot, consumer, packages, issues) {
-  if (consumer.name !== "metro") {
-    issues.push(`${FINDING_PACKAGE} has a non-Metro consumer: ${consumer.lock_path}`);
-    return null;
-  }
-
-  const resolvedDependency = resolveDependencyPackage(packages, consumer, FINDING_PACKAGE);
-  if (!resolvedDependency) {
-    issues.push(`${FINDING_PACKAGE} has no lockfile resolution for ${consumer.lock_path}`);
-    return null;
-  }
-  const resolvedPackageName = String(resolvedDependency.metadata?.name || FINDING_PACKAGE);
-  const resolvedPackageVersion = String(resolvedDependency.metadata?.version || "");
-  if (resolvedPackageName !== PATCHED_PACKAGE_NAME || resolvedPackageVersion !== PATCHED_PACKAGE_VERSION) {
-    issues.push(
-      `${FINDING_PACKAGE} must resolve to ${PATCHED_PACKAGE_NAME}@${PATCHED_PACKAGE_VERSION}; `
-      + `found ${resolvedPackageName}@${resolvedPackageVersion || "<missing>"}`,
-    );
-  }
-  if (resolvedDependency.metadata?.resolved !== PATCHED_PACKAGE_RESOLVED) {
-    issues.push(`${FINDING_PACKAGE} has an unexpected patched-fork tarball resolution`);
-  }
-  if (resolvedDependency.metadata?.integrity !== PATCHED_PACKAGE_INTEGRITY) {
-    issues.push(`${FINDING_PACKAGE} has an unexpected patched-fork integrity`);
-  }
-
-  const metroRoot = lockPathToFilesystem(projectRoot, consumer.lock_path);
-  const installedPackagePath = path.join(
-    lockPathToFilesystem(projectRoot, resolvedDependency.lock_path),
-    "package.json",
-  );
-  if (!fs.existsSync(installedPackagePath)) {
-    issues.push(`patched ${FINDING_PACKAGE} package metadata is missing: ${resolvedDependency.lock_path}`);
-  } else {
-    try {
-      const installedPackage = readJson(installedPackagePath);
-      if (installedPackage.name !== PATCHED_PACKAGE_NAME || installedPackage.version !== PATCHED_PACKAGE_VERSION) {
-        issues.push(`installed patched ${FINDING_PACKAGE} metadata does not match the reviewed fork`);
-      }
-    } catch (error) {
-      issues.push(`patched ${FINDING_PACKAGE} package metadata could not be loaded: ${error.message}`);
-    }
-  }
-  const sourceRoot = path.join(metroRoot, "src");
-  const assetsPath = path.join(sourceRoot, "Assets.js");
-  if (!fs.existsSync(assetsPath)) {
-    issues.push(`Metro consumer is missing its auditable Assets.js boundary: ${consumer.lock_path}`);
-    return null;
-  }
-
-  const importFiles = walkFiles(sourceRoot, { extensions: [".cjs", ".js", ".mjs"] })
-    .filter((filePath) => SOURCE_IMPORT_PATTERN.test(fs.readFileSync(filePath, "utf8")));
-  if (importFiles.length !== 1 || path.resolve(importFiles[0]) !== path.resolve(assetsPath)) {
-    issues.push(`Metro's ${FINDING_PACKAGE} import surface changed: ${importFiles.join(", ") || "none"}`);
-    return null;
-  }
-
-  let assets;
-  try {
-    assets = require(assetsPath);
-  } catch (error) {
-    issues.push(`Metro Assets.js could not be loaded: ${error.message}`);
-    return null;
-  }
-  if (typeof assets.isAssetTypeAnImage !== "function" || typeof assets.getAssetSize !== "function") {
-    issues.push("Metro's image-size guard functions are unavailable");
-    return null;
-  }
-
-  const acceptedVulnerableFormats = VULNERABLE_FORMATS.filter((format) => assets.isAssetTypeAnImage(format));
-  if (acceptedVulnerableFormats.length > 0) {
-    issues.push(`Metro now accepts vulnerable parser formats: ${acceptedVulnerableFormats.join(", ")}`);
-  }
-  const rejectedExpectedFormats = METRO_IMAGE_FORMATS.filter((format) => !assets.isAssetTypeAnImage(format));
-  if (rejectedExpectedFormats.length > 0) {
-    issues.push(`Metro's reviewed image allowlist changed: ${rejectedExpectedFormats.join(", ")}`);
-  }
-  for (const format of VULNERABLE_FORMATS) {
-    if (assets.getAssetSize(format, Buffer.from("untrusted"), `probe.${format}`) !== null) {
-      issues.push(`Metro did not reject ${format} before invoking ${FINDING_PACKAGE}`);
-    }
-  }
-
+function declaredDependencies(metadata) {
   return {
-    assets_path: path.relative(projectRoot, assetsPath).replaceAll("\\", "/"),
-    import_files: importFiles.map((filePath) => path.relative(projectRoot, filePath).replaceAll("\\", "/")),
-    accepted_image_formats: METRO_IMAGE_FORMATS,
-    rejected_vulnerable_formats: VULNERABLE_FORMATS,
-    resolved_package_name: resolvedPackageName,
-    resolved_package_version: resolvedPackageVersion,
-    resolved_package_path: resolvedDependency.lock_path,
-    resolved_package_integrity: resolvedDependency.metadata?.integrity || "",
+    ...(metadata?.dependencies || {}),
+    ...(metadata?.optionalDependencies || {}),
+    ...(metadata?.peerDependencies || {}),
   };
 }
 
-function inspectAppImports(projectRoot) {
-  return walkFiles(projectRoot, {
-    excludedDirectories: [".expo", "coverage", "dist", "node_modules"],
-    extensions: [".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"],
-  })
-    .filter((filePath) => SOURCE_IMPORT_PATTERN.test(fs.readFileSync(filePath, "utf8")))
-    .map((filePath) => path.relative(projectRoot, filePath).replaceAll("\\", "/"));
+function lockOccurrences(packages) {
+  const occurrences = [];
+  for (const [lockPath, metadata] of Object.entries(packages)) {
+    const segments = lockPath.split("/");
+    const named = String(metadata?.name || "") === FINDING_PACKAGE;
+    const pathed = segments.some((segment, index) => (
+      segment === "node_modules" && segments[index + 1] === FINDING_PACKAGE
+    ));
+    const declared = Object.prototype.hasOwnProperty.call(
+      declaredDependencies(metadata),
+      FINDING_PACKAGE,
+    );
+    if (named || pathed || declared) {
+      occurrences.push(lockPath || "<workspace root>");
+    }
+  }
+  return occurrences.sort();
 }
 
 function evaluate(projectRoot) {
   const issues = [];
   const lockPath = path.join(projectRoot, "package-lock.json");
   if (!fs.existsSync(lockPath)) {
-    return { issues: ["package-lock.json is missing"] };
+    return { control_id: CONTROL_ID, ok: false, project: PROJECT_ID, issues: ["package-lock.json is missing"] };
   }
-  const lockfile = readJson(lockPath);
-  const packages = lockfile?.packages;
+
+  const packages = readJson(lockPath).packages;
   if (!packages || typeof packages !== "object" || Array.isArray(packages)) {
-    return { issues: ["package-lock.json has no packages map"] };
+    return { control_id: CONTROL_ID, ok: false, project: PROJECT_ID, issues: ["package-lock.json has no packages map"] };
   }
 
-  const consumers = dependencyConsumers(packages);
-  if (consumers.length === 0) {
-    issues.push(`${FINDING_PACKAGE} has no declared lockfile consumer`);
-  }
-  const consumerEvidence = consumers
-    .map((consumer) => inspectMetroConsumer(projectRoot, consumer, packages, issues))
-    .filter(Boolean);
-
-  const resolvedPackages = consumerEvidence.map((evidence) => ({
-    name: evidence.resolved_package_name,
-    version: evidence.resolved_package_version,
-    path: evidence.resolved_package_path,
-  }));
-  const packageVersions = [...new Set(resolvedPackages.map((item) => item.version).filter(Boolean))];
-  const packageVersion = packageVersions.length === 1 ? packageVersions[0] : "";
-  if (resolvedPackages.length === 0 && consumers.length > 0) {
-    issues.push(`${FINDING_PACKAGE} is missing from the installed production lock graph`);
+  const occurrences = lockOccurrences(packages);
+  if (occurrences.length > 0) {
+    issues.push(`${FINDING_PACKAGE} is still present in the production lock graph: ${occurrences.join(", ")}`);
   }
 
-  const appSourceImports = inspectAppImports(projectRoot);
-  if (appSourceImports.length > 0) {
-    issues.push(`application source imports ${FINDING_PACKAGE}: ${appSourceImports.join(", ")}`);
+  const sourceImports = walkFiles(projectRoot, SOURCE_EXTENSIONS)
+    .filter((filePath) => SOURCE_IMPORT_PATTERN.test(fs.readFileSync(filePath, "utf8")))
+    .map((filePath) => path.relative(projectRoot, filePath).replaceAll("\\", "/"));
+  if (sourceImports.length > 0) {
+    issues.push(`application source imports ${FINDING_PACKAGE}: ${sourceImports.join(", ")}`);
+  }
+
+  const override = readJson(path.join(projectRoot, "package.json"))?.overrides?.[FINDING_PACKAGE];
+  if (override !== PACKAGE_OVERRIDE) {
+    issues.push(
+      `the reviewed fallback override for ${FINDING_PACKAGE} must stay ${PACKAGE_OVERRIDE}; `
+      + `found ${override || "<missing>"}`,
+    );
   }
 
   return {
@@ -228,13 +105,13 @@ function evaluate(projectRoot) {
     ok: issues.length === 0,
     project: PROJECT_ID,
     finding_package: FINDING_PACKAGE,
-    package_version: packageVersion,
-    resolved_packages: resolvedPackages,
-    consumers: consumers.map((consumer) => `${consumer.name}@${consumer.version}`),
-    consumer_evidence: consumerEvidence,
-    app_source_imports: appSourceImports,
-    exposure: "repository-controlled-build-assets-only",
-    production_runtime_imports: false,
+    package_version: "",
+    consumers: [],
+    retired: occurrences.length === 0,
+    fallback_override: override || "",
+    reviewed_patched_fork: `${PATCHED_PACKAGE_NAME}@${PACKAGE_OVERRIDE.split("@").at(-1)}`,
+    exposure: "absent-from-production-dependency-graph",
+    production_runtime_imports: sourceImports.length > 0,
     issues,
   };
 }
@@ -270,9 +147,9 @@ if (require.main === module) {
   if (args.json) {
     console.log(JSON.stringify(result, null, 2));
   } else if (result.ok) {
-    console.log("Mobile image-size exposure check passed");
+    console.log("Mobile image-size retirement check passed");
   } else {
-    console.error("Mobile image-size exposure check failed");
+    console.error("Mobile image-size retirement check failed");
     for (const issue of result.issues || []) {
       console.error(`- ${issue}`);
     }

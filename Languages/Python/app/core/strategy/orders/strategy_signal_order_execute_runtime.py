@@ -342,6 +342,8 @@ def _execute_signal_order(
         try:
             slot_key_tuple = None
             lev = None
+            callback_origin = None
+            callback_wrapper = None
             account_state = self._resolve_signal_order_account_state(cw=cw, last_price=last_price)
             if account_state.get("aborted"):
                 _guard_abort()
@@ -444,6 +446,7 @@ def _execute_signal_order(
                     reservation_token=reservation_token,
                 )
             else:
+                callback_wrapper = self.binance
                 protection_block = live_spot_stop_loss_block_reason(
                     mode=getattr(self.binance, "mode", None),
                     account_type=account_type,
@@ -462,8 +465,11 @@ def _execute_signal_order(
                     use_usdt = total_usdt * pct
                     if min_notional > 0 and use_usdt < min_notional and total_usdt >= min_notional:
                         use_usdt = min_notional
+                    capture_origin = getattr(callback_wrapper, "_desktop_trade_origin_capture", None)
+                    if callable(capture_origin):
+                        callback_origin = capture_origin()
                     _mark_submission()
-                    order_res = self.binance.place_spot_market_order(
+                    order_res = callback_wrapper.place_spot_market_order(
                         cw["symbol"], "BUY", quantity=0.0, price=price, use_quote=True, quote_amount=use_usdt
                     )
                     qty_display = order_res.get("executedQty") or order_res.get("origQty")
@@ -509,6 +515,8 @@ def _execute_signal_order(
                 origin_timestamp=origin_timestamp,
                 slot_key_tuple=slot_key_tuple,
                 leverage_used=leverage_used,
+                callback_origin=callback_origin,
+                callback_wrapper=callback_wrapper,
             )
         except Exception as e:
             strategy_order_error_logging.log_order_error(

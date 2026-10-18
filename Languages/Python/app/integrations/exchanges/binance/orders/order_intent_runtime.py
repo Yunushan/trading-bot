@@ -18,8 +18,16 @@ from app.settings.execution_mode import execution_environment
 from app.security.redaction import redact_text
 from trading_core.orders import is_exchange_risk_reducing_order, order_execution_from_response
 
-from .order_intent_store import ledger_transaction, ledger_transactions, write_ledger
+from .order_intent_store import (
+    LegacyLedgerWritePayload, current_ledger_deadline, indexed_namespace_exists, ledger_file_identity,
+    ledger_transaction, ledger_transactions, write_ledger,
+)
 from .spot_execution_owner import SpotExecutionOwner, claim_execution_owner
+from .spot_buy_publication_runtime import (
+    capture_desktop_entry, desktop_entry_for_submission, desktop_entry_transaction,
+    desktop_source_descriptor, remember_desktop_entry, validate_desktop_source_descriptor, assert_desktop_entry_ledger,
+    _capture_spot_buy_publication, _get_spot_buy_submission_origin,
+)
 from .spot_opo_runtime import (
     build_spot_opo_cancel_replace_request,
     validate_spot_opo_cancel_replace_request,
@@ -139,6 +147,42 @@ def _decimal_text(value: Decimal) -> str:
     return rendered or "0"
 
 
+def _owned_inventory_confirmation(operation):
+    """Keep namespace/proof verification and intent confirmation in one paired transaction."""
+    from functools import wraps
+
+    @wraps(operation)
+    def confirm(self, *args, **kwargs):
+        if not _spot_owner_scope(self):
+            return operation(self, *args, **kwargs)
+        from app.gui.shared.allocation_persistence import (
+            _read_receipt, get_position_allocations_path, guard_position_allocation_snapshot,
+        )
+        from .spot_inventory_namespace_runtime import namespace_for_ledger
+        from .spot_inventory_checkpoint_runtime import _owned_lifetime, _pin_authority, _assert_pin
+        from .spot_inventory_checkpoint import _checkpoint_authority
+        path = _intent_path(self)
+        app_root = Path(__file__).resolve().parents[4]
+        allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+        with _owned_lifetime(self, path), ledger_transactions(path, allocation_path):
+            ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+            namespace = namespace_for_ledger(self, ledger)
+            pin = _pin_authority(self, path, namespace)
+            with _checkpoint_authority(lambda: _assert_pin(self, path, namespace, pin)):
+                guard_position_allocation_snapshot(
+                    allocation_path, _read_receipt(allocation_path), expected_namespace=namespace,
+                )
+                _assert_pin(self, path, namespace, pin)
+                result = operation(self, *args, **kwargs)
+                _assert_pin(self, path, namespace, pin)
+                guard_position_allocation_snapshot(
+                    allocation_path, _read_receipt(allocation_path), expected_namespace=namespace,
+                )
+                return result
+    return confirm
+
+
+
 def _legacy_intent_path(self) -> Path:
     audit_path = getattr(self, "_order_audit_log_path", None)
     if audit_path:
@@ -255,7 +299,15 @@ def _ensure_spot_execution_owner(self) -> SpotExecutionOwner:
     uid = _spot_account_uid(self)
     path = _intent_path(self)
     binding = _intent_binding(self)
+    from .spot_indexed_intent_bridge import FullIndexedLedgerPayload
+    from .spot_indexed_intent_hot_runtime import indexed_session_for
+    from .spot_indexed_intent_selective import open_indexed_session
+    previous_owner = getattr(self, "_spot_execution_owner", None)
     with ledger_transaction(path):
+        if isinstance(previous_owner, SpotExecutionOwner):
+            session = indexed_session_for(self, path)
+            if session is not None:
+                return previous_owner
         ledger = _read_ledger(path, expected_binding=binding)
     owner = claim_execution_owner(
         path, uid=uid, environment=binding["environment"],
@@ -263,6 +315,17 @@ def _ensure_spot_execution_owner(self) -> SpotExecutionOwner:
         owner_wrapper=self,
     )
     self._spot_execution_owner = owner
+    try:
+        if isinstance(ledger, FullIndexedLedgerPayload):
+            with ledger_transaction(path):
+                open_indexed_session(owner=owner, owner_wrapper=self, expected_binding=binding,
+                                     deadline=current_ledger_deadline(path),
+                                     expected_authority=ledger.indexed_authority)
+    except BaseException:
+        # Owner close writes its marker. Release the ledger lock before closing.
+        if owner is not previous_owner:
+            owner.close()
+        raise
     return owner
 
 
@@ -287,6 +350,8 @@ def _revoke_spot_execution_owner(self) -> None:
     self._spot_execution_revoked = True
     owner = getattr(self, "_spot_execution_owner", None)
     if isinstance(owner, SpotExecutionOwner):
+        from .spot_indexed_intent_selective import close_indexed_session
+        close_indexed_session(owner)
         owner.close()
 
 
@@ -302,7 +367,10 @@ def _read_ledger(
         return result
 
     try:
+        source_identity = ledger_file_identity(path)
         payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        if ledger_file_identity(path) != source_identity:
+            raise LiveTradingSafetyError("Order intent ledger changed while its complete source was read.")
     except FileNotFoundError as exc:
         raise LiveTradingSafetyError(
             "Order intent ledger is missing; submission is blocked. Restore and reconcile existing history, "
@@ -310,614 +378,675 @@ def _read_ledger(
         ) from exc
     except Exception as exc:
         raise LiveTradingSafetyError(f"Order intent ledger cannot be read: {redact_text(exc)}") from exc
+    if isinstance(payload, dict) and payload.get("format_version") == 3:
+        from .spot_indexed_intent_bridge import read_indexed_ledger
+        return cast(dict[str, object], read_indexed_ledger(path, expected_binding=expected_binding))
+    if indexed_namespace_exists(path):
+        raise LiveTradingSafetyError(
+            "Indexed intent migration has fenced this JSON source; resume or restore the explicit cutover."
+        )
+    checked = validate_order_intent_ledger(payload, expected_binding=expected_binding, allow_legacy=allow_legacy)
+    return LegacyLedgerWritePayload(checked, source_path=path, source_identity=source_identity)
+
+
+def validate_order_intent_ledger(
+    payload: object, *, expected_binding: Mapping[str, str] | None = None, allow_legacy: bool = False,
+) -> dict[str, object]:
+    """Validate a complete decoded ledger without filesystem or venue access.
+
+    Supply every record: current and archived cancellation-ID ownership is a
+    cross-record invariant and cannot be established from an isolated row.
+    """
     if (not isinstance(payload, dict)
             or type(payload.get("format_version")) is not int
             or payload["format_version"] not in (1, _INTENT_FORMAT_VERSION)
             or not isinstance(payload.get("intents"), dict)):
         raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
     for key, record in payload["intents"].items():
-        if (not isinstance(key, str) or not key.strip()
-                or not isinstance(record, dict) or record.get("client_order_id") != key
-                or not isinstance(record.get("state"), str)
-                or ("requires_close_confirmation" in record and type(record["requires_close_confirmation"]) is not bool)
-                or record.get("state") not in _BLOCKING_STATES | {"rejected"}):
-            raise LiveTradingSafetyError("Order intent ledger contains an invalid record; reconcile it before submitting orders.")
-        if "portfolio_reconciled" in record and type(record["portfolio_reconciled"]) is not bool:
-            raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery marker.")
-        if record.get("type") == "OPO":
-            request = record.get("request")
+        validate_order_intent_record(key, record)
+    _validate_spot_opo_cancel_alias_ownership(payload["intents"])
+    return validate_order_intent_metadata(
+        payload, expected_binding=expected_binding, allow_legacy=allow_legacy,
+    )
+
+
+def validate_order_intent_record(key: object, record: object) -> None:
+    """Validate one complete record using the authoritative local rules.
+
+    This does not prove cross-record alias or historical client-ID ownership.
+    """
+    if (not isinstance(key, str) or not key.strip()
+            or not isinstance(record, dict) or record.get("client_order_id") != key
+            or not isinstance(record.get("state"), str)
+            or ("requires_close_confirmation" in record and type(record["requires_close_confirmation"]) is not bool)
+            or record.get("state") not in _BLOCKING_STATES | {"rejected"}):
+        raise LiveTradingSafetyError("Order intent ledger contains an invalid record; reconcile it before submitting orders.")
+    validate_desktop_source_descriptor(record)
+    if "primary_fill_receipt" in record:
+        from .spot_allocation_generation_runtime import canonical_spot_buy_metadata
+        proof = record["primary_fill_receipt"]
+        if not isinstance(proof, Mapping):
+            raise LiveTradingSafetyError("Spot primary acquisition receipt is malformed.")
+        canonical = canonical_spot_buy_metadata({
+            **proof, "symbol": record.get("symbol"), "client_order_id": record.get("client_order_id"),
+        })
+        if (canonical != proof or record.get("market") != "spot" or record.get("type") != "MARKET"
+            or record.get("side") != "BUY" or record.get("exchange_status") != "FILLED"
+            or proof["exchange_client_order_id"] != record.get("client_order_id")
+            or str(proof["order_id"]) != str(record.get("exchange_order_id"))
+            or proof["signature"] != record.get("primary_fill_signature")
+            or Decimal(proof["gross_qty"]) != _finite_nonnegative_decimal(record.get("executed_qty"))
+            or Decimal(proof["net_qty"]) != _finite_nonnegative_decimal(record.get("portfolio_qty"))):
+            raise LiveTradingSafetyError("Spot primary acquisition receipt conflicts with its intent.")
+    if "portfolio_reconciled" in record and type(record["portfolio_reconciled"]) is not bool:
+        raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery marker.")
+    if record.get("type") == "OPO":
+        request = record.get("request")
+        try:
+            normalized_request = validate_spot_opo_request_payload(request)
+        except LiveTradingSafetyError as exc:
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO request.") from exc
+        list_status = record.get("list_status")
+        working_status = record.get("working_status")
+        pending_status = record.get("pending_status")
+        list_id = record.get("exchange_order_list_id")
+        working_id = record.get("working_order_id")
+        pending_id = record.get("pending_order_id")
+        working_executed_raw = record.get("working_executed_qty")
+        pending_executed_raw = record.get("pending_executed_qty")
+        pending_original_raw = record.get("pending_original_qty")
+        snapshot_fields = (
+            list_status, working_status, pending_status, list_id, working_id, pending_id,
+            working_executed_raw, pending_executed_raw,
+        )
+        has_snapshot = any(value is not None for value in snapshot_fields)
+        if (
+            record.get("market") != "spot"
+            or record.get("side") != "BUY"
+            or normalized_request["symbol"] != record.get("symbol")
+            or normalized_request["listClientOrderId"] != key
+            or record.get("client_order_id") != key
+            or type(record.get("entry_reconciled")) is not bool
+            or record.get("protection_state") not in {"unverified", "active", "triggered", "cancelled", "closed", "lost", "none"}
+            or (list_status is not None and list_status not in {"EXEC_STARTED", "ALL_DONE"})
+            or (working_status is not None and working_status not in _ORDER_STATUSES)
+            or (pending_status is not None and pending_status not in _ORDER_STATUSES | _SPOT_PENDING_STATUSES)
+            or (list_id is not None and (type(list_id) is not int or list_id < 0))
+            or (working_id is not None and (type(working_id) is not int or working_id <= 0))
+            or (pending_id is not None and (type(pending_id) is not int or pending_id <= 0))
+        ):
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO state.")
+        protection_state = record.get("protection_state")
+        intent_state = record.get("state")
+        cancel_state = record.get("cancel_state")
+        if cancel_state is not None and cancel_state not in _OPO_CANCEL_STATES:
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO cancellation state.")
+        if cancel_state is not None and (
+            record.get("entry_reconciled") is not True
+            or not isinstance(record.get("cancel_submitted_at"), str)
+            or not record.get("cancel_submitted_at")
+        ):
+            raise LiveTradingSafetyError("Spot OPO cancellation is missing its durable recovered-entry intent.")
+        if ("cancel_submitted_at" in record) != (cancel_state is not None):
+            raise LiveTradingSafetyError("Spot OPO cancellation ledger fields are incomplete.")
+        if cancel_state == "confirmed" and (
+            not isinstance(record.get("cancel_confirmed_at"), str)
+            or not record.get("cancel_confirmed_at")
+        ):
+            raise LiveTradingSafetyError("Confirmed Spot OPO cancellation is missing its verification time.")
+        if cancel_state != "confirmed" and "cancel_confirmed_at" in record:
+            raise LiveTradingSafetyError("Unconfirmed Spot OPO cancellation has a false confirmation time.")
+        if cancel_state == "confirmed" and protection_state not in {"cancelled", "closed"}:
+            raise LiveTradingSafetyError("Confirmed Spot OPO cancellation lacks exact canceled-order evidence.")
+        if protection_state == "cancelled" and cancel_state != "confirmed":
+            raise LiveTradingSafetyError("Canceled Spot OPO protection lacks a confirmed cancellation intent.")
+        strategy_exit_state = record.get("strategy_exit_state")
+        has_strategy_exit_fields = any(
+            isinstance(name, str) and name.startswith("strategy_exit_") for name in record
+        )
+        if strategy_exit_state is None:
+            if has_strategy_exit_fields or "pending_observed_client_order_id" in record:
+                raise LiveTradingSafetyError("Spot OPO strategy exit is missing its durable state.")
+        else:
             try:
-                normalized_request = validate_spot_opo_request_payload(request)
+                strategy_request = validate_spot_opo_cancel_replace_request(
+                    record.get("strategy_exit_request"),
+                )
             except LiveTradingSafetyError as exc:
-                raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO request.") from exc
-            list_status = record.get("list_status")
-            working_status = record.get("working_status")
-            pending_status = record.get("pending_status")
-            list_id = record.get("exchange_order_list_id")
-            working_id = record.get("working_order_id")
-            pending_id = record.get("pending_order_id")
-            working_executed_raw = record.get("working_executed_qty")
-            pending_executed_raw = record.get("pending_executed_qty")
-            pending_original_raw = record.get("pending_original_qty")
-            snapshot_fields = (
-                list_status, working_status, pending_status, list_id, working_id, pending_id,
-                working_executed_raw, pending_executed_raw,
+                raise LiveTradingSafetyError("Order intent ledger contains an invalid linked Spot SELL request.") from exc
+            strategy_quantity = _finite_nonnegative_decimal(record.get("strategy_exit_quantity"))
+            strategy_baseline_quantity = _finite_nonnegative_decimal(
+                record.get("strategy_exit_pre_order_quantity"),
             )
-            has_snapshot = any(value is not None for value in snapshot_fields)
             if (
-                record.get("market") != "spot"
-                or record.get("side") != "BUY"
-                or normalized_request["symbol"] != record.get("symbol")
-                or normalized_request["listClientOrderId"] != key
-                or record.get("client_order_id") != key
-                or type(record.get("entry_reconciled")) is not bool
-                or record.get("protection_state") not in {"unverified", "active", "triggered", "cancelled", "closed", "lost", "none"}
-                or (list_status is not None and list_status not in {"EXEC_STARTED", "ALL_DONE"})
-                or (working_status is not None and working_status not in _ORDER_STATUSES)
-                or (pending_status is not None and pending_status not in _ORDER_STATUSES | _SPOT_PENDING_STATUSES)
-                or (list_id is not None and (type(list_id) is not int or list_id < 0))
-                or (working_id is not None and (type(working_id) is not int or working_id <= 0))
-                or (pending_id is not None and (type(pending_id) is not int or pending_id <= 0))
-            ):
-                raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO state.")
-            protection_state = record.get("protection_state")
-            intent_state = record.get("state")
-            cancel_state = record.get("cancel_state")
-            if cancel_state is not None and cancel_state not in _OPO_CANCEL_STATES:
-                raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO cancellation state.")
-            if cancel_state is not None and (
-                record.get("entry_reconciled") is not True
+                strategy_exit_state not in _OPO_STRATEGY_EXIT_STATES
+                or not has_strategy_exit_fields
+                or record.get("entry_reconciled") is not True
+                or intent_state not in {"accepted", "unknown"}
+                or not isinstance(record.get("strategy_exit_client_order_id"), str)
+                or record.get("strategy_exit_client_order_id") != strategy_request["newClientOrderId"]
+                or record.get("strategy_exit_quantity") != strategy_request["quantity"]
+                or strategy_quantity is None or strategy_quantity <= 0
+                or not isinstance(record.get("strategy_exit_started_at"), str)
+                or not record.get("strategy_exit_started_at")
+                or not isinstance(record.get("strategy_exit_request_signature"), str)
+                or record.get("strategy_exit_request_signature") != _request_signature(strategy_request)
+                or not isinstance(record.get("strategy_exit_pre_order_signature"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", record.get("strategy_exit_pre_order_signature", "")) is None
+                or strategy_baseline_quantity is None
+                or strategy_baseline_quantity != strategy_quantity
+                or strategy_quantity != _finite_nonnegative_decimal(record.get("entry_portfolio_quantity"))
+                or strategy_request["symbol"] != record.get("symbol")
+                or strategy_request["cancelOrderId"] != pending_id
+                or strategy_request["cancelOrigClientOrderId"] != normalized_request["pendingClientOrderId"]
+                or strategy_quantity != _finite_nonnegative_decimal(pending_original_raw)
+                or cancel_state not in {"submitted", "unknown", "confirmed", "rejected"}
                 or not isinstance(record.get("cancel_submitted_at"), str)
                 or not record.get("cancel_submitted_at")
             ):
-                raise LiveTradingSafetyError("Spot OPO cancellation is missing its durable recovered-entry intent.")
-            if ("cancel_submitted_at" in record) != (cancel_state is not None):
-                raise LiveTradingSafetyError("Spot OPO cancellation ledger fields are incomplete.")
-            if cancel_state == "confirmed" and (
-                not isinstance(record.get("cancel_confirmed_at"), str)
-                or not record.get("cancel_confirmed_at")
-            ):
-                raise LiveTradingSafetyError("Confirmed Spot OPO cancellation is missing its verification time.")
-            if cancel_state != "confirmed" and "cancel_confirmed_at" in record:
-                raise LiveTradingSafetyError("Unconfirmed Spot OPO cancellation has a false confirmation time.")
-            if cancel_state == "confirmed" and protection_state not in {"cancelled", "closed"}:
-                raise LiveTradingSafetyError("Confirmed Spot OPO cancellation lacks exact canceled-order evidence.")
-            if protection_state == "cancelled" and cancel_state != "confirmed":
-                raise LiveTradingSafetyError("Canceled Spot OPO protection lacks a confirmed cancellation intent.")
-            strategy_exit_state = record.get("strategy_exit_state")
-            has_strategy_exit_fields = any(
-                isinstance(name, str) and name.startswith("strategy_exit_") for name in record
-            )
-            if strategy_exit_state is None:
-                if has_strategy_exit_fields or "pending_observed_client_order_id" in record:
-                    raise LiveTradingSafetyError("Spot OPO strategy exit is missing its durable state.")
-            else:
-                try:
-                    strategy_request = validate_spot_opo_cancel_replace_request(
-                        record.get("strategy_exit_request"),
-                    )
-                except LiveTradingSafetyError as exc:
-                    raise LiveTradingSafetyError("Order intent ledger contains an invalid linked Spot SELL request.") from exc
-                strategy_quantity = _finite_nonnegative_decimal(record.get("strategy_exit_quantity"))
-                strategy_baseline_quantity = _finite_nonnegative_decimal(
-                    record.get("strategy_exit_pre_order_quantity"),
-                )
+                raise LiveTradingSafetyError("Order intent ledger contains an invalid linked Spot SELL intent.")
+            outcome = record.get("strategy_exit_outcome")
+            alias = strategy_request.get("cancelNewClientOrderId")
+            if alias is not None and alias != spot_opo_cancel_client_id(str(strategy_request["newClientOrderId"])):
+                raise LiveTradingSafetyError("Linked Spot SELL cancellation alias conflicts with its durable attempt.")
+            if "pending_observed_client_order_id" in record:
+                observed_alias = record["pending_observed_client_order_id"]
                 if (
-                    strategy_exit_state not in _OPO_STRATEGY_EXIT_STATES
-                    or not has_strategy_exit_fields
-                    or record.get("entry_reconciled") is not True
-                    or intent_state not in {"accepted", "unknown"}
-                    or not isinstance(record.get("strategy_exit_client_order_id"), str)
-                    or record.get("strategy_exit_client_order_id") != strategy_request["newClientOrderId"]
-                    or record.get("strategy_exit_quantity") != strategy_request["quantity"]
-                    or strategy_quantity is None or strategy_quantity <= 0
-                    or not isinstance(record.get("strategy_exit_started_at"), str)
-                    or not record.get("strategy_exit_started_at")
-                    or not isinstance(record.get("strategy_exit_request_signature"), str)
-                    or record.get("strategy_exit_request_signature") != _request_signature(strategy_request)
-                    or not isinstance(record.get("strategy_exit_pre_order_signature"), str)
-                    or re.fullmatch(r"[0-9a-f]{64}", record.get("strategy_exit_pre_order_signature", "")) is None
-                    or strategy_baseline_quantity is None
-                    or strategy_baseline_quantity != strategy_quantity
-                    or strategy_quantity != _finite_nonnegative_decimal(record.get("entry_portfolio_quantity"))
-                    or strategy_request["symbol"] != record.get("symbol")
-                    or strategy_request["cancelOrderId"] != pending_id
-                    or strategy_request["cancelOrigClientOrderId"] != normalized_request["pendingClientOrderId"]
-                    or strategy_quantity != _finite_nonnegative_decimal(pending_original_raw)
-                    or cancel_state not in {"submitted", "unknown", "confirmed", "rejected"}
-                    or not isinstance(record.get("cancel_submitted_at"), str)
-                    or not record.get("cancel_submitted_at")
+                    not isinstance(observed_alias, str)
+                    or re.fullmatch(r"[A-Za-z0-9._:/-]{1,36}", observed_alias) is None
+                    or pending_status != "CANCELED" or _finite_nonnegative_decimal(pending_executed_raw) != 0
+                    or cancel_state != "confirmed" or protection_state not in {"cancelled", "closed"}
+                    or (alias is not None and observed_alias != alias)
+                    or observed_alias in {key, normalized_request["workingClientOrderId"], strategy_request["newClientOrderId"]}
                 ):
-                    raise LiveTradingSafetyError("Order intent ledger contains an invalid linked Spot SELL intent.")
-                outcome = record.get("strategy_exit_outcome")
-                alias = strategy_request.get("cancelNewClientOrderId")
-                if alias is not None and alias != spot_opo_cancel_client_id(str(strategy_request["newClientOrderId"])):
-                    raise LiveTradingSafetyError("Linked Spot SELL cancellation alias conflicts with its durable attempt.")
-                if "pending_observed_client_order_id" in record:
-                    observed_alias = record["pending_observed_client_order_id"]
-                    if (
-                        not isinstance(observed_alias, str)
-                        or re.fullmatch(r"[A-Za-z0-9._:/-]{1,36}", observed_alias) is None
-                        or pending_status != "CANCELED" or _finite_nonnegative_decimal(pending_executed_raw) != 0
-                        or cancel_state != "confirmed" or protection_state not in {"cancelled", "closed"}
-                        or (alias is not None and observed_alias != alias)
-                        or observed_alias in {key, normalized_request["workingClientOrderId"], strategy_request["newClientOrderId"]}
-                    ):
-                        raise LiveTradingSafetyError("Canceled OPO child alias lacks exact terminal cancellation evidence.")
-                response_fields = {
-                    "strategy_exit_cancel_confirmed", "strategy_exit_new_order_accepted",
-                    "strategy_exit_requires_exact_reconciliation", "strategy_exit_requires_stop_rearm",
-                    "strategy_exit_response_at", "strategy_exit_order_id", "strategy_exit_status",
-                    "strategy_exit_executed_qty", "strategy_exit_order_observed_at",
-                }
-                has_response_fields = any(name in record for name in response_fields)
-                if outcome is not None:
-                    if (
-                        not isinstance(record.get("strategy_exit_response_at"), str)
-                        or not record.get("strategy_exit_response_at")
-                    ):
-                        raise LiveTradingSafetyError("Spot OPO linked SELL response is missing its durable time.")
-                    expected_outcomes = {
-                        "cancel_failed": (False, False, False),
-                        "stop_canceled_exit_rejected": (True, False, True),
-                    }
-                    if outcome == "exit_sell_accepted":
-                        order_id = record.get("strategy_exit_order_id")
-                        exit_status = record.get("strategy_exit_status")
-                        try:
-                            exit_executed = _finite_nonnegative_decimal(record.get("strategy_exit_executed_qty"))
-                        except (InvalidOperation, ValueError):
-                            exit_executed = None
-                        if (
-                            record.get("strategy_exit_cancel_confirmed") is not True
-                            or record.get("strategy_exit_new_order_accepted") is not True
-                            or record.get("strategy_exit_requires_exact_reconciliation") is not True
-                            or type(order_id) is not int or order_id <= 0
-                            or exit_status not in {"NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
-                            or exit_executed is None or exit_executed > strategy_quantity
-                            or record.get("strategy_exit_requires_stop_rearm") is not (exit_status != "FILLED")
-                            or (exit_status == "FILLED" and exit_executed != strategy_quantity)
-                            or (exit_status == "NEW" and exit_executed != 0)
-                            or (exit_status == "PARTIALLY_FILLED" and not 0 < exit_executed < strategy_quantity)
-                            or (exit_status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"} and exit_executed >= strategy_quantity)
-                        ):
-                            raise LiveTradingSafetyError("Order intent ledger contains invalid linked Spot SELL evidence.")
-                    else:
-                        flags = expected_outcomes.get(outcome)
-                        if (
-                            flags is None
-                            or record.get("strategy_exit_cancel_confirmed") is not flags[0]
-                            or record.get("strategy_exit_new_order_accepted") is not flags[1]
-                            or record.get("strategy_exit_requires_exact_reconciliation") is not True
-                            or record.get("strategy_exit_requires_stop_rearm") is not flags[2]
-                        ):
-                            raise LiveTradingSafetyError("Order intent ledger contains invalid linked Spot SELL outcome.")
-                elif has_response_fields:
-                    raise LiveTradingSafetyError("Spot OPO linked SELL response fields have no classified outcome.")
-                if strategy_exit_state == "no_effect" and not (
-                    outcome == "cancel_failed"
-                    and cancel_state == "rejected"
-                ):
-                    raise LiveTradingSafetyError("Spot OPO strategy exit was cleared without proof the stop remained active.")
-                if strategy_exit_state == "cancel_failed" and outcome != "cancel_failed":
-                    raise LiveTradingSafetyError("Spot OPO cancel failure state lacks exact response evidence.")
-                if strategy_exit_state == "stop_cancelled" and outcome != "stop_canceled_exit_rejected":
-                    raise LiveTradingSafetyError("Spot OPO lost-stop state lacks exact cancel-replace evidence.")
-                if strategy_exit_state == "sell_accepted" and outcome != "exit_sell_accepted":
-                    raise LiveTradingSafetyError("Spot OPO strategy SELL state lacks exact response evidence.")
-                completion_fields = {
-                    "strategy_exit_portfolio_reconciled", "strategy_exit_portfolio_signature",
-                    "strategy_exit_portfolio_quantity", "strategy_exit_trade_ids", "strategy_exit_fill_time_ms",
-                }
-                if strategy_exit_state == "completed":
-                    exit_trade_ids = record.get("strategy_exit_trade_ids")
-                    completion_quantity = _finite_nonnegative_decimal(record.get("strategy_exit_portfolio_quantity"))
-                    if (
-                        outcome != "exit_sell_accepted"
-                        or record.get("protection_state") != "closed"
-                        or cancel_state != "confirmed"
-                        or record.get("strategy_exit_cancel_confirmed") is not True
-                        or record.get("strategy_exit_new_order_accepted") is not True
-                        or record.get("strategy_exit_requires_stop_rearm") is not False
-                        or record.get("strategy_exit_status") != "FILLED"
-                        or record.get("strategy_exit_executed_qty") != record.get("strategy_exit_quantity")
-                        or not isinstance(record.get("strategy_exit_order_observed_at"), str)
-                        or not record.get("strategy_exit_order_observed_at")
-                        or record.get("strategy_exit_portfolio_reconciled") is not True
-                        or not isinstance(record.get("strategy_exit_portfolio_signature"), str)
-                        or re.fullmatch(r"[0-9a-f]{64}", record.get("strategy_exit_portfolio_signature", "")) is None
-                        or completion_quantity is None
-                        or completion_quantity != strategy_quantity
-                        or type(record.get("strategy_exit_fill_time_ms")) is not int
-                        or record["strategy_exit_fill_time_ms"] <= 0
-                        or not isinstance(exit_trade_ids, list)
-                        or not exit_trade_ids
-                        or any(type(item) is not int or item <= 0 for item in exit_trade_ids)
-                        or len(exit_trade_ids) != len(set(exit_trade_ids))
-                    ):
-                        raise LiveTradingSafetyError("Completed Spot OPO strategy SELL is missing exact portfolio proof.")
-                elif any(field in record for field in completion_fields - {"strategy_exit_fill_time_ms"}) or (
-                    "strategy_exit_fill_time_ms" in record
-                    and record.get("residual_stop_state") not in _OPO_RESIDUAL_STOP_STATES
-                ):
-                    raise LiveTradingSafetyError("Spot OPO SELL portfolio proof has no completed state.")
-                if strategy_exit_state in {"submitted", "unknown"} and outcome is not None:
-                    raise LiveTradingSafetyError("Spot OPO uncertain SELL state contains a classified outcome.")
-                if strategy_exit_state == "submitted" and cancel_state != "submitted":
-                    raise LiveTradingSafetyError("Spot OPO submitted SELL state contains a conflicting cancel marker.")
-                if strategy_exit_state == "unknown" and cancel_state not in {"unknown", "confirmed"}:
-                    raise LiveTradingSafetyError("Spot OPO unknown SELL state lacks an uncertain cancellation marker.")
-                if strategy_exit_state == "unknown" and cancel_state == "confirmed" and protection_state != "cancelled":
-                    raise LiveTradingSafetyError("Unknown linked SELL has no exact canceled-stop evidence.")
-            validate_spot_opo_exit_retry_history(record)
-            validate_spot_opo_exit_query_proof(record)
-            if "strategy_exit_no_effect_proof" in record:
-                validate_spot_opo_no_effect_proof(record, record["strategy_exit_no_effect_proof"])
-            residual_stop_state = record.get("residual_stop_state")
-            residual_fields = {
-                name for name in record
-                if isinstance(name, str) and name.startswith("residual_stop_")
+                    raise LiveTradingSafetyError("Canceled OPO child alias lacks exact terminal cancellation evidence.")
+            response_fields = {
+                "strategy_exit_cancel_confirmed", "strategy_exit_new_order_accepted",
+                "strategy_exit_requires_exact_reconciliation", "strategy_exit_requires_stop_rearm",
+                "strategy_exit_response_at", "strategy_exit_order_id", "strategy_exit_status",
+                "strategy_exit_executed_qty", "strategy_exit_order_observed_at",
             }
-            if residual_stop_state is None:
-                if residual_fields:
-                    raise LiveTradingSafetyError("Spot OPO residual protection is missing its durable state.")
-            else:
-                try:
-                    residual_quantity = _finite_nonnegative_decimal(record.get("residual_rearm_quantity"))
-                except (InvalidOperation, ValueError):
-                    residual_quantity = None
-                residual_signature = record.get("residual_rearm_signature")
+            has_response_fields = any(name in record for name in response_fields)
+            if outcome is not None:
                 if (
-                    residual_stop_state not in _OPO_RESIDUAL_STOP_STATES
-                    or not residual_fields
-                    or intent_state != "accepted"
-                    or record.get("entry_reconciled") is not True
-                    or cancel_state != "confirmed"
-                    or protection_state not in {"cancelled", "closed"}
-                    or strategy_exit_state not in {"sell_accepted", "stop_cancelled"}
-                    or residual_quantity is None
-                    or not residual_quantity.is_finite()
-                    or residual_quantity <= 0
-                    or not isinstance(residual_signature, str)
-                    or re.fullmatch(r"[0-9a-f]{64}", residual_signature) is None
+                    not isinstance(record.get("strategy_exit_response_at"), str)
+                    or not record.get("strategy_exit_response_at")
                 ):
-                    raise LiveTradingSafetyError("Order intent ledger contains an invalid OPO residual-stop state.")
-                history = record.get("residual_stop_history", [])
-                if not isinstance(history, list) or len(history) > 100:
-                    raise LiveTradingSafetyError("Order intent ledger contains invalid residual-stop history.")
-                seen_residual_ids: set[str] = set()
-                for prior in history:
-                    if not isinstance(prior, Mapping) or prior.get("state") not in {"recovered", "completed"}:
-                        raise LiveTradingSafetyError("Order intent ledger contains an unfinished prior residual stop.")
+                    raise LiveTradingSafetyError("Spot OPO linked SELL response is missing its durable time.")
+                expected_outcomes = {
+                    "cancel_failed": (False, False, False),
+                    "stop_canceled_exit_rejected": (True, False, True),
+                }
+                if outcome == "exit_sell_accepted":
+                    order_id = record.get("strategy_exit_order_id")
+                    exit_status = record.get("strategy_exit_status")
                     try:
-                        prior_request = validate_spot_opo_residual_stop_request(prior.get("request"))
-                    except LiveTradingSafetyError as exc:
-                        raise LiveTradingSafetyError("Order intent ledger contains an invalid prior residual stop.") from exc
-                    prior_id = prior_request["newClientOrderId"]
-                    prior_order_id = prior.get("order_id")
-                    prior_status = prior.get("status")
-                    prior_executed = _finite_nonnegative_decimal(prior.get("executed_qty"))
+                        exit_executed = _finite_nonnegative_decimal(record.get("strategy_exit_executed_qty"))
+                    except (InvalidOperation, ValueError):
+                        exit_executed = None
                     if (
-                        prior_id in seen_residual_ids
-                        or prior_request["symbol"] != record.get("symbol")
-                        or prior_request["stopPrice"] != normalized_request["pendingStopPrice"]
-                        or prior_request["quantity"] != prior.get("pre_order_quantity")
-                        or not isinstance(prior.get("pre_order_signature"), str)
-                        or re.fullmatch(r"[0-9a-f]{64}", str(prior.get("pre_order_signature"))) is None
-                        or not isinstance(prior.get("request_signature"), str)
-                        or prior.get("request_signature") != _request_signature(prior_request)
-                        or type(prior_order_id) is not int or prior_order_id <= 0
-                        or prior_status not in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
-                        or prior_executed is None
-                        or not isinstance(prior.get("observed_at"), str) or not prior.get("observed_at")
-                        or not isinstance(prior.get("recovery_signature"), str)
-                        or re.fullmatch(r"[0-9a-f]{64}", str(prior.get("recovery_signature"))) is None
-                        or type(prior.get("trade_ids")) is not list
+                        record.get("strategy_exit_cancel_confirmed") is not True
+                        or record.get("strategy_exit_new_order_accepted") is not True
+                        or record.get("strategy_exit_requires_exact_reconciliation") is not True
+                        or type(order_id) is not int or order_id <= 0
+                        or exit_status not in {"NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
+                        or exit_executed is None or exit_executed > strategy_quantity
+                        or record.get("strategy_exit_requires_stop_rearm") is not (exit_status != "FILLED")
+                        or (exit_status == "FILLED" and exit_executed != strategy_quantity)
+                        or (exit_status == "NEW" and exit_executed != 0)
+                        or (exit_status == "PARTIALLY_FILLED" and not 0 < exit_executed < strategy_quantity)
+                        or (exit_status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"} and exit_executed >= strategy_quantity)
                     ):
-                        raise LiveTradingSafetyError("Order intent ledger contains invalid residual-stop history evidence.")
-                    seen_residual_ids.add(prior_id)
-                current_request_value = record.get("residual_stop_request")
-                if residual_stop_state == "rearm_required":
-                    if current_request_value is not None:
-                        try:
-                            current_request = validate_spot_opo_residual_stop_request(current_request_value)
-                        except LiveTradingSafetyError as exc:
-                            raise LiveTradingSafetyError("Order intent ledger contains an invalid completed residual stop.") from exc
-                        prior_quantity = _finite_nonnegative_decimal(record.get("residual_stop_pre_order_quantity"))
-                        recovered_quantity = _finite_nonnegative_decimal(record.get("residual_stop_recovery_quantity"))
-                        executed_quantity = _finite_nonnegative_decimal(record.get("residual_stop_executed_qty"))
-                        recovery_trade_ids = record.get("residual_stop_recovery_trade_ids")
-                        recovery_fill_time = record.get("residual_stop_recovery_fill_time_ms")
-                        try:
-                            validate_spot_opo_residual_stop_order({
-                                "symbol": record.get("symbol"),
-                                "clientOrderId": current_request["newClientOrderId"],
-                                "side": "SELL", "type": "STOP_LOSS", "orderListId": -1,
-                                "orderId": record.get("residual_stop_order_id"),
-                                "status": record.get("residual_stop_status"),
-                                "origQty": current_request["quantity"],
-                                "executedQty": record.get("residual_stop_executed_qty"),
-                                "stopPrice": current_request["stopPrice"],
-                            }, current_request)
-                        except LiveTradingSafetyError as exc:
-                            raise LiveTradingSafetyError("Residual stop rearm contains invalid prior order evidence.") from exc
-                        if (
-                            current_request["newClientOrderId"] in seen_residual_ids
-                            or current_request["symbol"] != record.get("symbol")
-                            or current_request["stopPrice"] != normalized_request["pendingStopPrice"]
-                            or current_request["quantity"] != record.get("residual_stop_pre_order_quantity")
-                            or record.get("residual_stop_request_signature") != _request_signature(current_request)
-                            or not isinstance(record.get("residual_stop_pre_order_signature"), str)
-                            or re.fullmatch(r"[0-9a-f]{64}", str(record.get("residual_stop_pre_order_signature"))) is None
-                            or not isinstance(record.get("residual_stop_started_at"), str)
-                            or not record.get("residual_stop_started_at")
-                            or record.get("residual_stop_status") not in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
-                            or prior_quantity is None or recovered_quantity is None
-                            or prior_quantity != recovered_quantity + residual_quantity
-                            or executed_quantity is None
-                            or recovered_quantity < executed_quantity
-                            or ((recovered_quantity == 0) != (executed_quantity == 0))
-                            or not isinstance(recovery_trade_ids, list)
-                            or (recovered_quantity == 0 and (
-                                recovery_trade_ids or record.get("residual_stop_pre_order_signature") != residual_signature
-                            ))
-                            or (recovered_quantity > 0 and (
-                                not recovery_trade_ids
-                                or any(type(item) is not int or item <= 0 for item in recovery_trade_ids)
-                                or len(recovery_trade_ids) != len(set(recovery_trade_ids))
-                                or type(recovery_fill_time) is not int or recovery_fill_time <= 0
-                            ))
-                            or record.get("residual_stop_terminal_state") != "recovered"
-                            or type(record.get("residual_stop_order_id")) is not int
-                            or not isinstance(record.get("residual_stop_observed_at"), str)
-                            or not record.get("residual_stop_observed_at")
-                            or record.get("residual_stop_query_verified") is not True
-                            or record.get("residual_stop_recovered") is not True
-                            or not isinstance(record.get("residual_stop_recovery_signature"), str)
-                            or re.fullmatch(r"[0-9a-f]{64}", str(record.get("residual_stop_recovery_signature"))) is None
-                            or _finite_nonnegative_decimal(record.get("residual_stop_recovery_quantity")) is None
-                        ):
-                            raise LiveTradingSafetyError("Residual stop rearm is missing exact prior fill recovery proof.")
+                        raise LiveTradingSafetyError("Order intent ledger contains invalid linked Spot SELL evidence.")
                 else:
+                    flags = expected_outcomes.get(outcome)
+                    if (
+                        flags is None
+                        or record.get("strategy_exit_cancel_confirmed") is not flags[0]
+                        or record.get("strategy_exit_new_order_accepted") is not flags[1]
+                        or record.get("strategy_exit_requires_exact_reconciliation") is not True
+                        or record.get("strategy_exit_requires_stop_rearm") is not flags[2]
+                    ):
+                        raise LiveTradingSafetyError("Order intent ledger contains invalid linked Spot SELL outcome.")
+            elif has_response_fields:
+                raise LiveTradingSafetyError("Spot OPO linked SELL response fields have no classified outcome.")
+            if strategy_exit_state == "no_effect" and not (
+                outcome == "cancel_failed"
+                and cancel_state == "rejected"
+            ):
+                raise LiveTradingSafetyError("Spot OPO strategy exit was cleared without proof the stop remained active.")
+            if strategy_exit_state == "cancel_failed" and outcome != "cancel_failed":
+                raise LiveTradingSafetyError("Spot OPO cancel failure state lacks exact response evidence.")
+            if strategy_exit_state == "stop_cancelled" and outcome != "stop_canceled_exit_rejected":
+                raise LiveTradingSafetyError("Spot OPO lost-stop state lacks exact cancel-replace evidence.")
+            if strategy_exit_state == "sell_accepted" and outcome != "exit_sell_accepted":
+                raise LiveTradingSafetyError("Spot OPO strategy SELL state lacks exact response evidence.")
+            completion_fields = {
+                "strategy_exit_portfolio_reconciled", "strategy_exit_portfolio_signature",
+                "strategy_exit_portfolio_quantity", "strategy_exit_trade_ids", "strategy_exit_fill_time_ms",
+            }
+            if strategy_exit_state == "completed":
+                exit_trade_ids = record.get("strategy_exit_trade_ids")
+                completion_quantity = _finite_nonnegative_decimal(record.get("strategy_exit_portfolio_quantity"))
+                if (
+                    outcome != "exit_sell_accepted"
+                    or record.get("protection_state") != "closed"
+                    or cancel_state != "confirmed"
+                    or record.get("strategy_exit_cancel_confirmed") is not True
+                    or record.get("strategy_exit_new_order_accepted") is not True
+                    or record.get("strategy_exit_requires_stop_rearm") is not False
+                    or record.get("strategy_exit_status") != "FILLED"
+                    or record.get("strategy_exit_executed_qty") != record.get("strategy_exit_quantity")
+                    or not isinstance(record.get("strategy_exit_order_observed_at"), str)
+                    or not record.get("strategy_exit_order_observed_at")
+                    or record.get("strategy_exit_portfolio_reconciled") is not True
+                    or not isinstance(record.get("strategy_exit_portfolio_signature"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", record.get("strategy_exit_portfolio_signature", "")) is None
+                    or completion_quantity is None
+                    or completion_quantity != strategy_quantity
+                    or type(record.get("strategy_exit_fill_time_ms")) is not int
+                    or record["strategy_exit_fill_time_ms"] <= 0
+                    or not isinstance(exit_trade_ids, list)
+                    or not exit_trade_ids
+                    or any(type(item) is not int or item <= 0 for item in exit_trade_ids)
+                    or len(exit_trade_ids) != len(set(exit_trade_ids))
+                ):
+                    raise LiveTradingSafetyError("Completed Spot OPO strategy SELL is missing exact portfolio proof.")
+            elif any(field in record for field in completion_fields - {"strategy_exit_fill_time_ms"}) or (
+                "strategy_exit_fill_time_ms" in record
+                and record.get("residual_stop_state") not in _OPO_RESIDUAL_STOP_STATES
+            ):
+                raise LiveTradingSafetyError("Spot OPO SELL portfolio proof has no completed state.")
+            if strategy_exit_state in {"submitted", "unknown"} and outcome is not None:
+                raise LiveTradingSafetyError("Spot OPO uncertain SELL state contains a classified outcome.")
+            if strategy_exit_state == "submitted" and cancel_state != "submitted":
+                raise LiveTradingSafetyError("Spot OPO submitted SELL state contains a conflicting cancel marker.")
+            if strategy_exit_state == "unknown" and cancel_state not in {"unknown", "confirmed"}:
+                raise LiveTradingSafetyError("Spot OPO unknown SELL state lacks an uncertain cancellation marker.")
+            if strategy_exit_state == "unknown" and cancel_state == "confirmed" and protection_state != "cancelled":
+                raise LiveTradingSafetyError("Unknown linked SELL has no exact canceled-stop evidence.")
+        validate_spot_opo_exit_retry_history(record)
+        validate_spot_opo_exit_query_proof(record)
+        if "strategy_exit_no_effect_proof" in record:
+            validate_spot_opo_no_effect_proof(record, record["strategy_exit_no_effect_proof"])
+        residual_stop_state = record.get("residual_stop_state")
+        residual_fields = {
+            name for name in record
+            if isinstance(name, str) and name.startswith("residual_stop_")
+        }
+        if residual_stop_state is None:
+            if residual_fields:
+                raise LiveTradingSafetyError("Spot OPO residual protection is missing its durable state.")
+        else:
+            try:
+                residual_quantity = _finite_nonnegative_decimal(record.get("residual_rearm_quantity"))
+            except (InvalidOperation, ValueError):
+                residual_quantity = None
+            residual_signature = record.get("residual_rearm_signature")
+            if (
+                residual_stop_state not in _OPO_RESIDUAL_STOP_STATES
+                or not residual_fields
+                or intent_state != "accepted"
+                or record.get("entry_reconciled") is not True
+                or cancel_state != "confirmed"
+                or protection_state not in {"cancelled", "closed"}
+                or strategy_exit_state not in {"sell_accepted", "stop_cancelled"}
+                or residual_quantity is None
+                or not residual_quantity.is_finite()
+                or residual_quantity <= 0
+                or not isinstance(residual_signature, str)
+                or re.fullmatch(r"[0-9a-f]{64}", residual_signature) is None
+            ):
+                raise LiveTradingSafetyError("Order intent ledger contains an invalid OPO residual-stop state.")
+            history = record.get("residual_stop_history", [])
+            if not isinstance(history, list) or len(history) > 100:
+                raise LiveTradingSafetyError("Order intent ledger contains invalid residual-stop history.")
+            seen_residual_ids: set[str] = set()
+            for prior in history:
+                if not isinstance(prior, Mapping) or prior.get("state") not in {"recovered", "completed"}:
+                    raise LiveTradingSafetyError("Order intent ledger contains an unfinished prior residual stop.")
+                try:
+                    prior_request = validate_spot_opo_residual_stop_request(prior.get("request"))
+                except LiveTradingSafetyError as exc:
+                    raise LiveTradingSafetyError("Order intent ledger contains an invalid prior residual stop.") from exc
+                prior_id = prior_request["newClientOrderId"]
+                prior_order_id = prior.get("order_id")
+                prior_status = prior.get("status")
+                prior_executed = _finite_nonnegative_decimal(prior.get("executed_qty"))
+                if (
+                    prior_id in seen_residual_ids
+                    or prior_request["symbol"] != record.get("symbol")
+                    or prior_request["stopPrice"] != normalized_request["pendingStopPrice"]
+                    or prior_request["quantity"] != prior.get("pre_order_quantity")
+                    or not isinstance(prior.get("pre_order_signature"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", str(prior.get("pre_order_signature"))) is None
+                    or not isinstance(prior.get("request_signature"), str)
+                    or prior.get("request_signature") != _request_signature(prior_request)
+                    or type(prior_order_id) is not int or prior_order_id <= 0
+                    or prior_status not in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
+                    or prior_executed is None
+                    or not isinstance(prior.get("observed_at"), str) or not prior.get("observed_at")
+                    or not isinstance(prior.get("recovery_signature"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", str(prior.get("recovery_signature"))) is None
+                    or type(prior.get("trade_ids")) is not list
+                ):
+                    raise LiveTradingSafetyError("Order intent ledger contains invalid residual-stop history evidence.")
+                seen_residual_ids.add(prior_id)
+            current_request_value = record.get("residual_stop_request")
+            if residual_stop_state == "rearm_required":
+                if current_request_value is not None:
                     try:
                         current_request = validate_spot_opo_residual_stop_request(current_request_value)
                     except LiveTradingSafetyError as exc:
-                        raise LiveTradingSafetyError("Order intent ledger contains an invalid residual-stop request.") from exc
-                    current_id = current_request["newClientOrderId"]
-                    current_order_id = record.get("residual_stop_order_id")
-                    current_status = record.get("residual_stop_status")
+                        raise LiveTradingSafetyError("Order intent ledger contains an invalid completed residual stop.") from exc
+                    prior_quantity = _finite_nonnegative_decimal(record.get("residual_stop_pre_order_quantity"))
+                    recovered_quantity = _finite_nonnegative_decimal(record.get("residual_stop_recovery_quantity"))
+                    executed_quantity = _finite_nonnegative_decimal(record.get("residual_stop_executed_qty"))
+                    recovery_trade_ids = record.get("residual_stop_recovery_trade_ids")
+                    recovery_fill_time = record.get("residual_stop_recovery_fill_time_ms")
+                    try:
+                        validate_spot_opo_residual_stop_order({
+                            "symbol": record.get("symbol"),
+                            "clientOrderId": current_request["newClientOrderId"],
+                            "side": "SELL", "type": "STOP_LOSS", "orderListId": -1,
+                            "orderId": record.get("residual_stop_order_id"),
+                            "status": record.get("residual_stop_status"),
+                            "origQty": current_request["quantity"],
+                            "executedQty": record.get("residual_stop_executed_qty"),
+                            "stopPrice": current_request["stopPrice"],
+                        }, current_request)
+                    except LiveTradingSafetyError as exc:
+                        raise LiveTradingSafetyError("Residual stop rearm contains invalid prior order evidence.") from exc
                     if (
-                        current_id in seen_residual_ids
+                        current_request["newClientOrderId"] in seen_residual_ids
                         or current_request["symbol"] != record.get("symbol")
                         or current_request["stopPrice"] != normalized_request["pendingStopPrice"]
                         or current_request["quantity"] != record.get("residual_stop_pre_order_quantity")
-                        or record.get("residual_stop_pre_order_quantity") != format(residual_quantity, "f")
-                        or record.get("residual_stop_pre_order_signature") != residual_signature
-                        or not isinstance(record.get("residual_stop_request_signature"), str)
                         or record.get("residual_stop_request_signature") != _request_signature(current_request)
+                        or not isinstance(record.get("residual_stop_pre_order_signature"), str)
+                        or re.fullmatch(r"[0-9a-f]{64}", str(record.get("residual_stop_pre_order_signature"))) is None
                         or not isinstance(record.get("residual_stop_started_at"), str)
                         or not record.get("residual_stop_started_at")
+                        or record.get("residual_stop_status") not in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}
+                        or prior_quantity is None or recovered_quantity is None
+                        or prior_quantity != recovered_quantity + residual_quantity
+                        or executed_quantity is None
+                        or recovered_quantity < executed_quantity
+                        or ((recovered_quantity == 0) != (executed_quantity == 0))
+                        or not isinstance(recovery_trade_ids, list)
+                        or (recovered_quantity == 0 and (
+                            recovery_trade_ids or record.get("residual_stop_pre_order_signature") != residual_signature
+                        ))
+                        or (recovered_quantity > 0 and (
+                            not recovery_trade_ids
+                            or any(type(item) is not int or item <= 0 for item in recovery_trade_ids)
+                            or len(recovery_trade_ids) != len(set(recovery_trade_ids))
+                            or type(recovery_fill_time) is not int or recovery_fill_time <= 0
+                        ))
+                        or record.get("residual_stop_terminal_state") != "recovered"
+                        or type(record.get("residual_stop_order_id")) is not int
+                        or not isinstance(record.get("residual_stop_observed_at"), str)
+                        or not record.get("residual_stop_observed_at")
+                        or record.get("residual_stop_query_verified") is not True
+                        or record.get("residual_stop_recovered") is not True
+                        or not isinstance(record.get("residual_stop_recovery_signature"), str)
+                        or re.fullmatch(r"[0-9a-f]{64}", str(record.get("residual_stop_recovery_signature"))) is None
+                        or _finite_nonnegative_decimal(record.get("residual_stop_recovery_quantity")) is None
                     ):
-                        raise LiveTradingSafetyError("Order intent ledger residual-stop request conflicts with its allocation baseline.")
-                    if residual_stop_state in {"submitted", "unknown"}:
-                        if any(key in record for key in (
-                            "residual_stop_order_id", "residual_stop_status", "residual_stop_executed_qty",
-                            "residual_stop_observed_at", "residual_stop_query_verified",
-                        )):
-                            raise LiveTradingSafetyError("Unconfirmed residual stop contains false exchange response evidence.")
-                    else:
-                        try:
-                            current_evidence = validate_spot_opo_residual_stop_order({
-                                "symbol": record.get("symbol"),
-                                "clientOrderId": current_id,
-                                "side": "SELL",
-                                "type": "STOP_LOSS",
-                                "orderListId": -1,
-                                "orderId": current_order_id,
-                                "status": current_status,
-                                "origQty": current_request["quantity"],
-                                "executedQty": record.get("residual_stop_executed_qty"),
-                                "stopPrice": current_request["stopPrice"],
-                            }, current_request)
-                        except LiveTradingSafetyError as exc:
-                            raise LiveTradingSafetyError("Order intent ledger contains invalid residual-stop order evidence.") from exc
-                        if (
-                            type(current_order_id) is not int or current_order_id <= 0
-                            or not isinstance(record.get("residual_stop_observed_at"), str)
-                            or not record.get("residual_stop_observed_at")
-                            or type(record.get("residual_stop_query_verified")) is not bool
-                            or (
-                                residual_stop_state == "acknowledged"
-                                and record.get("residual_stop_query_verified") is not False
-                            )
-                            or (
-                                residual_stop_state in {"active", "triggered", "completed"}
-                                and record.get("residual_stop_query_verified") is not True
-                            )
-                            or (residual_stop_state == "active" and (
-                                current_evidence["status"] != "NEW" or current_evidence["executed_quantity"] != "0"
-                            ))
-                            or (residual_stop_state == "triggered" and current_evidence["status"] == "NEW")
-                            or (residual_stop_state == "completed" and (
-                                current_evidence["status"] != "FILLED"
-                                or record.get("residual_stop_recovered") is not True
-                                or not isinstance(record.get("residual_stop_recovery_signature"), str)
-                                or re.fullmatch(r"[0-9a-f]{64}", str(record.get("residual_stop_recovery_signature"))) is None
-                            ))
-                        ):
-                            raise LiveTradingSafetyError("Order intent ledger residual stop does not match its durable state.")
-                if residual_stop_state == "completed" and protection_state != "closed":
-                    raise LiveTradingSafetyError("Completed residual stop has not closed the OPO protection record.")
-                if residual_stop_state in _OPO_RESIDUAL_STOP_STATES:
-                    no_fill_required = record.get("residual_rearm_no_fill")
-                    if type(no_fill_required) is not bool:
-                        raise LiveTradingSafetyError("Residual re-arm requirement is missing its recovery classification.")
-                    fill_signature = record.get("strategy_exit_fill_signature")
-                    fill_quantity = _finite_nonnegative_decimal(record.get("strategy_exit_fill_quantity"))
-                    fill_trade_ids = record.get("strategy_exit_fill_trade_ids")
-                    fill_time = record.get("strategy_exit_fill_time_ms")
+                        raise LiveTradingSafetyError("Residual stop rearm is missing exact prior fill recovery proof.")
+            else:
+                try:
+                    current_request = validate_spot_opo_residual_stop_request(current_request_value)
+                except LiveTradingSafetyError as exc:
+                    raise LiveTradingSafetyError("Order intent ledger contains an invalid residual-stop request.") from exc
+                current_id = current_request["newClientOrderId"]
+                current_order_id = record.get("residual_stop_order_id")
+                current_status = record.get("residual_stop_status")
+                if (
+                    current_id in seen_residual_ids
+                    or current_request["symbol"] != record.get("symbol")
+                    or current_request["stopPrice"] != normalized_request["pendingStopPrice"]
+                    or current_request["quantity"] != record.get("residual_stop_pre_order_quantity")
+                    or record.get("residual_stop_pre_order_quantity") != format(residual_quantity, "f")
+                    or record.get("residual_stop_pre_order_signature") != residual_signature
+                    or not isinstance(record.get("residual_stop_request_signature"), str)
+                    or record.get("residual_stop_request_signature") != _request_signature(current_request)
+                    or not isinstance(record.get("residual_stop_started_at"), str)
+                    or not record.get("residual_stop_started_at")
+                ):
+                    raise LiveTradingSafetyError("Order intent ledger residual-stop request conflicts with its allocation baseline.")
+                if residual_stop_state in {"submitted", "unknown"}:
+                    if any(key in record for key in (
+                        "residual_stop_order_id", "residual_stop_status", "residual_stop_executed_qty",
+                        "residual_stop_observed_at", "residual_stop_query_verified",
+                    )):
+                        raise LiveTradingSafetyError("Unconfirmed residual stop contains false exchange response evidence.")
+                else:
+                    try:
+                        current_evidence = validate_spot_opo_residual_stop_order({
+                            "symbol": record.get("symbol"),
+                            "clientOrderId": current_id,
+                            "side": "SELL",
+                            "type": "STOP_LOSS",
+                            "orderListId": -1,
+                            "orderId": current_order_id,
+                            "status": current_status,
+                            "origQty": current_request["quantity"],
+                            "executedQty": record.get("residual_stop_executed_qty"),
+                            "stopPrice": current_request["stopPrice"],
+                        }, current_request)
+                    except LiveTradingSafetyError as exc:
+                        raise LiveTradingSafetyError("Order intent ledger contains invalid residual-stop order evidence.") from exc
                     if (
-                        not isinstance(fill_signature, str)
-                        or re.fullmatch(r"[0-9a-f]{64}", fill_signature) is None
-                        or fill_quantity is None
-                        or not isinstance(fill_trade_ids, list)
-                        or type(fill_time) is not int or fill_time <= 0
-                        or (no_fill_required and (fill_quantity != 0 or fill_trade_ids))
-                        or (not no_fill_required and (
-                            fill_quantity <= 0 or not fill_trade_ids
-                            or any(type(item) is not int or item <= 0 for item in fill_trade_ids)
-                            or len(fill_trade_ids) != len(set(fill_trade_ids))
+                        type(current_order_id) is not int or current_order_id <= 0
+                        or not isinstance(record.get("residual_stop_observed_at"), str)
+                        or not record.get("residual_stop_observed_at")
+                        or type(record.get("residual_stop_query_verified")) is not bool
+                        or (
+                            residual_stop_state == "acknowledged"
+                            and record.get("residual_stop_query_verified") is not False
+                        )
+                        or (
+                            residual_stop_state in {"active", "triggered", "completed"}
+                            and record.get("residual_stop_query_verified") is not True
+                        )
+                        or (residual_stop_state == "active" and (
+                            current_evidence["status"] != "NEW" or current_evidence["executed_quantity"] != "0"
+                        ))
+                        or (residual_stop_state == "triggered" and current_evidence["status"] == "NEW")
+                        or (residual_stop_state == "completed" and (
+                            current_evidence["status"] != "FILLED"
+                            or record.get("residual_stop_recovered") is not True
+                            or not isinstance(record.get("residual_stop_recovery_signature"), str)
+                            or re.fullmatch(r"[0-9a-f]{64}", str(record.get("residual_stop_recovery_signature"))) is None
                         ))
                     ):
-                        raise LiveTradingSafetyError("Residual re-arm requirement lacks terminal SELL recovery proof.")
+                        raise LiveTradingSafetyError("Order intent ledger residual stop does not match its durable state.")
+            if residual_stop_state == "completed" and protection_state != "closed":
+                raise LiveTradingSafetyError("Completed residual stop has not closed the OPO protection record.")
+            if residual_stop_state in _OPO_RESIDUAL_STOP_STATES:
+                no_fill_required = record.get("residual_rearm_no_fill")
+                if type(no_fill_required) is not bool:
+                    raise LiveTradingSafetyError("Residual re-arm requirement is missing its recovery classification.")
+                fill_signature = record.get("strategy_exit_fill_signature")
+                fill_quantity = _finite_nonnegative_decimal(record.get("strategy_exit_fill_quantity"))
+                fill_trade_ids = record.get("strategy_exit_fill_trade_ids")
+                fill_time = record.get("strategy_exit_fill_time_ms")
+                if (
+                    not isinstance(fill_signature, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", fill_signature) is None
+                    or fill_quantity is None
+                    or not isinstance(fill_trade_ids, list)
+                    or type(fill_time) is not int or fill_time <= 0
+                    or (no_fill_required and (fill_quantity != 0 or fill_trade_ids))
+                    or (not no_fill_required and (
+                        fill_quantity <= 0 or not fill_trade_ids
+                        or any(type(item) is not int or item <= 0 for item in fill_trade_ids)
+                        or len(fill_trade_ids) != len(set(fill_trade_ids))
+                    ))
+                ):
+                    raise LiveTradingSafetyError("Residual re-arm requirement lacks terminal SELL recovery proof.")
+        if (
+            (intent_state == "rejected" and protection_state != "none")
+            or (intent_state == "accepted" and protection_state == "none")
+            or (intent_state in {"pending", "submitted"} and protection_state != "unverified")
+            or (intent_state == "unknown" and protection_state == "none")
+        ):
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO state transition.")
+        if record.get("state") in {"accepted", "rejected"} and (
+            list_status is None or working_status is None or pending_status is None
+            or list_id is None or working_id is None or pending_id is None
+            or working_executed_raw is None or pending_executed_raw is None
+        ):
+            raise LiveTradingSafetyError("Order intent ledger is missing exact Spot OPO exchange evidence.")
+        if has_snapshot and any(value is None for value in snapshot_fields):
+            raise LiveTradingSafetyError("Order intent ledger contains incomplete Spot OPO exchange evidence.")
+        if has_snapshot:
+            working_executed = _finite_nonnegative_decimal(working_executed_raw)
+            pending_executed = _finite_nonnegative_decimal(pending_executed_raw)
+            pending_original = (
+                _finite_nonnegative_decimal(pending_original_raw)
+                if pending_original_raw is not None else None
+            )
             if (
-                (intent_state == "rejected" and protection_state != "none")
-                or (intent_state == "accepted" and protection_state == "none")
-                or (intent_state in {"pending", "submitted"} and protection_state != "unverified")
-                or (intent_state == "unknown" and protection_state == "none")
+                working_executed is None or pending_executed is None
+                or (pending_original_raw is not None and pending_original is None)
             ):
-                raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO state transition.")
-            if record.get("state") in {"accepted", "rejected"} and (
-                list_status is None or working_status is None or pending_status is None
-                or list_id is None or working_id is None or pending_id is None
-                or working_executed_raw is None or pending_executed_raw is None
+                raise LiveTradingSafetyError("Order intent ledger contains invalid Spot OPO execution quantities.")
+            requested_quantity = Decimal(normalized_request["workingQuantity"])
+            if protection_state == "active" and not (
+                record.get("state") == "accepted"
+                and list_status == "EXEC_STARTED"
+                and working_status == "FILLED"
+                and working_executed == requested_quantity
+                and pending_status == "NEW"
+                and pending_executed == 0
+                and pending_original is not None and pending_original > 0
             ):
-                raise LiveTradingSafetyError("Order intent ledger is missing exact Spot OPO exchange evidence.")
-            if has_snapshot and any(value is None for value in snapshot_fields):
-                raise LiveTradingSafetyError("Order intent ledger contains incomplete Spot OPO exchange evidence.")
-            if has_snapshot:
-                working_executed = _finite_nonnegative_decimal(working_executed_raw)
-                pending_executed = _finite_nonnegative_decimal(pending_executed_raw)
-                pending_original = (
-                    _finite_nonnegative_decimal(pending_original_raw)
-                    if pending_original_raw is not None else None
-                )
-                if (
-                    working_executed is None or pending_executed is None
-                    or (pending_original_raw is not None and pending_original is None)
-                ):
-                    raise LiveTradingSafetyError("Order intent ledger contains invalid Spot OPO execution quantities.")
-                requested_quantity = Decimal(normalized_request["workingQuantity"])
-                if protection_state == "active" and not (
-                    record.get("state") == "accepted"
-                    and list_status == "EXEC_STARTED"
-                    and working_status == "FILLED"
-                    and working_executed == requested_quantity
-                    and pending_status == "NEW"
-                    and pending_executed == 0
-                    and pending_original is not None and pending_original > 0
-                ):
-                    raise LiveTradingSafetyError("Order intent ledger has an unproven active Spot OPO stop.")
-                if protection_state == "triggered" and not (
-                    record.get("state") in {"accepted", "unknown"}
-                    and list_status == "ALL_DONE"
-                    and working_status == "FILLED"
-                    and working_executed == requested_quantity
-                    and pending_status == "FILLED"
-                    and pending_original is not None and pending_original > 0
-                    and pending_executed == pending_original
-                ):
-                    raise LiveTradingSafetyError("Order intent ledger has an unproven triggered Spot OPO stop.")
-                if protection_state == "cancelled" and not (
-                    record.get("state") == "accepted"
-                    and record.get("entry_reconciled") is True
-                    and cancel_state == "confirmed"
-                    and list_status == "ALL_DONE"
-                    and working_status == "FILLED"
-                    and working_executed == requested_quantity
-                    and pending_status == "CANCELED"
-                    and pending_executed == 0
-                    and pending_original is not None and pending_original > 0
-                ):
-                    raise LiveTradingSafetyError("Order intent ledger has an unproven canceled Spot OPO stop.")
-                if protection_state == "none" and not (
-                    record.get("state") == "rejected"
-                    and list_status == "ALL_DONE"
-                    and working_status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
-                    and working_executed == 0
-                    and pending_status in {"PENDING_NEW", "CANCELED", "EXPIRED", "REJECTED"}
-                    and pending_executed == 0
-                ):
-                    raise LiveTradingSafetyError("Order intent ledger has an unproven no-fill Spot OPO result.")
-                if protection_state == "lost" and not (
-                    record.get("state") in {"accepted", "unknown"}
-                    and (working_executed > 0 or pending_executed > 0)
-                ):
-                    raise LiveTradingSafetyError("Order intent ledger has an unproven lost Spot OPO protection state.")
-                if protection_state == "unverified" and record.get("state") == "rejected":
-                    raise LiveTradingSafetyError("Rejected Spot OPO intent must have verified no-fill evidence.")
-            if record.get("entry_reconciled") is True:
-                try:
-                    entry_quantity = Decimal(str(record.get("entry_portfolio_quantity") or "NaN"))
-                except (InvalidOperation, ValueError):
-                    entry_quantity = Decimal("NaN")
-                if (
-                    not entry_quantity.is_finite() or entry_quantity <= 0
-                    or entry_quantity > Decimal(normalized_request["workingQuantity"])
-                    or record.get("pending_original_qty") is None
-                    or Decimal(str(record.get("pending_original_qty"))) != entry_quantity
-                    or not isinstance(record.get("entry_recovery_signature"), str)
-                    or re.fullmatch(r"[0-9a-f]{64}", record["entry_recovery_signature"]) is None
-                    or record.get("protection_state") not in {"active", "triggered", "cancelled", "closed", "lost", "unverified"}
-                ):
-                    raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO entry proof.")
-            if "exit_reconciled" in record and type(record["exit_reconciled"]) is not bool:
-                raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO exit marker.")
-            if record.get("exit_reconciled") is True:
-                try:
-                    exit_quantity = Decimal(str(record.get("exit_portfolio_quantity") or "NaN"))
-                except (InvalidOperation, ValueError):
-                    exit_quantity = Decimal("NaN")
-                if (
-                    intent_state != "accepted"
-                    or protection_state != "triggered"
-                    or record.get("entry_reconciled") is not True
-                    or not exit_quantity.is_finite() or exit_quantity <= 0
-                    or exit_quantity != Decimal(str(record.get("entry_portfolio_quantity")))
-                    or not isinstance(record.get("exit_recovery_signature"), str)
-                    or re.fullmatch(r"[0-9a-f]{64}", record["exit_recovery_signature"]) is None
-                    or record.get("exit_order_id") != pending_id
-                ):
-                    raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO exit proof.")
-        if "portfolio_pre_order_signature" in record or "portfolio_pre_order_qty" in record:
+                raise LiveTradingSafetyError("Order intent ledger has an unproven active Spot OPO stop.")
+            if protection_state == "triggered" and not (
+                record.get("state") in {"accepted", "unknown"}
+                and list_status == "ALL_DONE"
+                and working_status == "FILLED"
+                and working_executed == requested_quantity
+                and pending_status == "FILLED"
+                and pending_original is not None and pending_original > 0
+                and pending_executed == pending_original
+            ):
+                raise LiveTradingSafetyError("Order intent ledger has an unproven triggered Spot OPO stop.")
+            if protection_state == "cancelled" and not (
+                record.get("state") == "accepted"
+                and record.get("entry_reconciled") is True
+                and cancel_state == "confirmed"
+                and list_status == "ALL_DONE"
+                and working_status == "FILLED"
+                and working_executed == requested_quantity
+                and pending_status == "CANCELED"
+                and pending_executed == 0
+                and pending_original is not None and pending_original > 0
+            ):
+                raise LiveTradingSafetyError("Order intent ledger has an unproven canceled Spot OPO stop.")
+            if protection_state == "none" and not (
+                record.get("state") == "rejected"
+                and list_status == "ALL_DONE"
+                and working_status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
+                and working_executed == 0
+                and pending_status in {"PENDING_NEW", "CANCELED", "EXPIRED", "REJECTED"}
+                and pending_executed == 0
+            ):
+                raise LiveTradingSafetyError("Order intent ledger has an unproven no-fill Spot OPO result.")
+            if protection_state == "lost" and not (
+                record.get("state") in {"accepted", "unknown"}
+                and (working_executed > 0 or pending_executed > 0)
+            ):
+                raise LiveTradingSafetyError("Order intent ledger has an unproven lost Spot OPO protection state.")
+            if protection_state == "unverified" and record.get("state") == "rejected":
+                raise LiveTradingSafetyError("Rejected Spot OPO intent must have verified no-fill evidence.")
+        if record.get("entry_reconciled") is True:
             try:
-                baseline_qty = Decimal(str(record.get("portfolio_pre_order_qty") or "NaN"))
+                entry_quantity = Decimal(str(record.get("entry_portfolio_quantity") or "NaN"))
             except (InvalidOperation, ValueError):
-                baseline_qty = Decimal("NaN")
+                entry_quantity = Decimal("NaN")
             if (
-                record.get("market") != "spot"
-                or record.get("type") != "MARKET"
-                or record.get("side") != "SELL"
-                or not baseline_qty.is_finite() or baseline_qty <= 0
-                or not isinstance(record.get("portfolio_pre_order_signature"), str)
-                or re.fullmatch(r"[0-9a-f]{64}", record["portfolio_pre_order_signature"]) is None
+                not entry_quantity.is_finite() or entry_quantity <= 0
+                or entry_quantity > Decimal(normalized_request["workingQuantity"])
+                or record.get("pending_original_qty") is None
+                or Decimal(str(record.get("pending_original_qty"))) != entry_quantity
+                or not isinstance(record.get("entry_recovery_signature"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", record["entry_recovery_signature"]) is None
+                or record.get("protection_state") not in {"active", "triggered", "cancelled", "closed", "lost", "unverified"}
             ):
-                raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot SELL baseline.")
-        if record.get("portfolio_reconciled") is True and (
+                raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO entry proof.")
+        if "exit_reconciled" in record and type(record["exit_reconciled"]) is not bool:
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO exit marker.")
+        if record.get("exit_reconciled") is True:
+            try:
+                exit_quantity = Decimal(str(record.get("exit_portfolio_quantity") or "NaN"))
+            except (InvalidOperation, ValueError):
+                exit_quantity = Decimal("NaN")
+            if (
+                intent_state != "accepted"
+                or protection_state != "triggered"
+                or record.get("entry_reconciled") is not True
+                or not exit_quantity.is_finite() or exit_quantity <= 0
+                or exit_quantity != Decimal(str(record.get("entry_portfolio_quantity")))
+                or not isinstance(record.get("exit_recovery_signature"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", record["exit_recovery_signature"]) is None
+                or record.get("exit_order_id") != pending_id
+            ):
+                raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot OPO exit proof.")
+    if "portfolio_pre_order_signature" in record or "portfolio_pre_order_qty" in record:
+        try:
+            baseline_qty = Decimal(str(record.get("portfolio_pre_order_qty") or "NaN"))
+        except (InvalidOperation, ValueError):
+            baseline_qty = Decimal("NaN")
+        if (
             record.get("market") != "spot"
             or record.get("type") != "MARKET"
-            or record.get("side") not in {"BUY", "SELL"}
-            or record.get("exchange_status") not in _ORDER_STATUSES
-            or record.get("exchange_status") in {"NEW", "PARTIALLY_FILLED"}
+            or record.get("side") != "SELL"
+            or not baseline_qty.is_finite() or baseline_qty <= 0
+            or not isinstance(record.get("portfolio_pre_order_signature"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", record["portfolio_pre_order_signature"]) is None
         ):
-            raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery marker.")
-        if record.get("portfolio_reconciled") is True:
-            try:
-                portfolio_qty = Decimal(str(record.get("portfolio_qty") or "NaN"))
-                executed_qty = Decimal(str(record.get("executed_qty") or "NaN"))
-            except (InvalidOperation, ValueError):
-                portfolio_qty = Decimal("NaN")
-                executed_qty = Decimal("NaN")
-            if (
-                not portfolio_qty.is_finite() or portfolio_qty <= 0
-                or not executed_qty.is_finite() or executed_qty <= 0
-                or (record.get("side") == "BUY" and portfolio_qty > executed_qty)
-                or (record.get("side") == "SELL" and portfolio_qty < executed_qty)
-                or not isinstance(record.get("portfolio_recovery_signature"), str)
-                or re.fullmatch(r"[0-9a-f]{64}", record["portfolio_recovery_signature"]) is None
-            ):
-                raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery proof.")
-    _validate_spot_opo_cancel_alias_ownership(payload["intents"])
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid Spot SELL baseline.")
+    if record.get("portfolio_reconciled") is True and (
+        record.get("market") != "spot"
+        or record.get("type") != "MARKET"
+        or record.get("side") not in {"BUY", "SELL"}
+        or record.get("exchange_status") not in _ORDER_STATUSES
+        or record.get("exchange_status") in {"NEW", "PARTIALLY_FILLED"}
+    ):
+        raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery marker.")
+    if record.get("portfolio_reconciled") is True:
+        try:
+            portfolio_qty = Decimal(str(record.get("portfolio_qty") or "NaN"))
+            executed_qty = Decimal(str(record.get("executed_qty") or "NaN"))
+        except (InvalidOperation, ValueError):
+            portfolio_qty = Decimal("NaN")
+            executed_qty = Decimal("NaN")
+        if (
+            not portfolio_qty.is_finite() or portfolio_qty <= 0
+            or not executed_qty.is_finite() or executed_qty <= 0
+            or (record.get("side") == "BUY" and portfolio_qty > executed_qty)
+            or (record.get("side") == "SELL" and portfolio_qty < executed_qty)
+            or not isinstance(record.get("portfolio_recovery_signature"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", record["portfolio_recovery_signature"]) is None
+        ):
+            raise LiveTradingSafetyError("Order intent ledger contains an invalid portfolio recovery proof.")
+
+
+def validate_order_intent_metadata(
+    payload: object, *, expected_binding: Mapping[str, str] | None = None, allow_legacy: bool = False,
+) -> dict[str, object]:
+    """Validate actual ledger header fields without an intents placeholder.
+
+    Local records and global ownership must be validated separately. Unknown
+    header fields retain the complete JSON validator's existing behavior.
+    """
+    if (not isinstance(payload, dict)
+            or type(payload.get("format_version")) is not int
+            or payload["format_version"] not in (1, _INTENT_FORMAT_VERSION)):
+        raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
     if payload["format_version"] == 1:
         if allow_legacy:
             return payload
@@ -979,8 +1108,22 @@ def _read_ledger(
     return payload
 
 
+def _assert_inventory_checkpoint_authority() -> None:
+    """Check only an already scoped pin, including a lost required ContextVar.
+
+    Ordinary callers with neither token retain their original write behavior.
+    This optional check acquires no storage lock and calls no protected backend.
+    """
+    from . import spot_inventory_checkpoint as checkpoint
+    if (checkpoint._AUTHORITY.get() is not None
+            or getattr(checkpoint._EXPECTED_AUTHORITY, "token", None) is not None):
+        checkpoint._assert_authority()
+
+
 def _write_ledger(path: Path, payload: Mapping[str, object]) -> None:
+    _assert_inventory_checkpoint_authority()
     write_ledger(path, payload)
+    _assert_inventory_checkpoint_authority()
 
 
 def _client_order_id(params: Mapping[str, object]) -> str:
@@ -1034,7 +1177,10 @@ def _active_spot_protection_records(intents: Mapping[str, object]) -> dict[str, 
 
 
 def _raise_for_duplicate_intent(intents: Mapping[str, object], client_order_id: str) -> None:
-    existing = intents.get(client_order_id)
+    _raise_for_duplicate_record(intents.get(client_order_id), client_order_id)
+
+
+def _raise_for_duplicate_record(existing: object, client_order_id: str) -> None:
     if isinstance(existing, Mapping) and str(existing.get("state") or "") in _BLOCKING_STATES:
         raise LiveTradingSafetyError(
             f"Client order ID {client_order_id} already has state "
@@ -1070,17 +1216,31 @@ def _refresh_spot_active_protection(
     """Obtain exact applied proof for every active stop before one new BUY boundary."""
     path = _intent_path(self)
     with ledger_transaction(path):
-        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
-        intents = ledger["intents"]
-        if not isinstance(intents, dict):
-            raise LiveTradingSafetyError("Order intent ledger is malformed; new Spot exposure is blocked.")
-        if reject_existing_client_order_id is not None:
-            _raise_for_duplicate_intent(intents, reject_existing_client_order_id)
-        _raise_for_unresolved_intents(intents, exclude_client_order_id=exclude_client_order_id)
-        if reject_spot_client_order_ids:
-            _assert_unused_spot_client_ids(intents, reject_spot_client_order_ids)
-        active_records = _active_spot_protection_records(intents)
-        store_id = str(ledger["store_id"])
+        from .spot_indexed_intent_hot_runtime import (
+            assert_view_unresolved, assert_view_unused_ids, indexed_session_for,
+        )
+        session = indexed_session_for(self, path)
+        if session is not None:
+            view = session.admission_view(probe_client_ids=reject_spot_client_order_ids,
+                                          deadline=current_ledger_deadline(path))
+            if reject_existing_client_order_id is not None:
+                _raise_for_duplicate_record(session.read_record(reject_existing_client_order_id,
+                                            deadline=current_ledger_deadline(path)), reject_existing_client_order_id)
+            assert_view_unresolved(view, exclude_client_order_id=exclude_client_order_id)
+            assert_view_unused_ids(view, reject_spot_client_order_ids)
+            active_records, store_id = view.active_records, view.receipt.store_id
+        else:
+            ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+            intents = ledger["intents"]
+            if not isinstance(intents, dict):
+                raise LiveTradingSafetyError("Order intent ledger is malformed; new Spot exposure is blocked.")
+            if reject_existing_client_order_id is not None:
+                _raise_for_duplicate_intent(intents, reject_existing_client_order_id)
+            _raise_for_unresolved_intents(intents, exclude_client_order_id=exclude_client_order_id)
+            if reject_spot_client_order_ids:
+                _assert_unused_spot_client_ids(intents, reject_spot_client_order_ids)
+            active_records = _active_spot_protection_records(intents)
+            store_id = str(ledger["store_id"])
     refreshed: dict[str, dict[str, object]] = {}
     # No monitoring limit or cached timestamp can authorize new exposure.
     for client_order_id in active_records:
@@ -1121,8 +1281,30 @@ def _submit_spot_buy_intent(self, record: Mapping[str, object], *, via: str) -> 
     client_order_id = str(record["client_order_id"])
     protection_proof = _refresh_spot_active_protection(self, exclude_client_order_id=client_order_id)
     path = _intent_path(self)
-    with ledger_transaction(path):
+    desktop_source = desktop_entry_for_submission(self, record)
+    desktop_params = record["request"] if record.get("type") == "OPO" else {
+        "symbol": record["symbol"], "side": "BUY", "newClientOrderId": client_order_id,
+    }
+    with desktop_entry_transaction(self, path, desktop_params, desktop_source):
+        from .spot_indexed_intent_hot_runtime import indexed_session_for
+        session = indexed_session_for(self, path)
+        if session is not None:
+            view = session.admission_view(deadline=current_ledger_deadline(path))
+            assert_desktop_entry_ledger(desktop_source, view.metadata)
+            view.assert_fresh(protection_proof, exclude_client_order_id=client_order_id)
+            current = session.read_record(client_order_id, deadline=current_ledger_deadline(path))
+            if current != record:
+                raise LiveTradingSafetyError("Spot BUY intent changed before submission; reconcile it first.")
+            assert isinstance(current, dict)
+            current.update(state="submitted", updated_at=_now(), last_via=str(via), submitted_at=_now())
+            updated = session.cas_record(client_order_id, current, expected_record=record,
+                                         deadline=current_ledger_deadline(path), protection_proof=protection_proof,
+                                         exclude_client_order_id=client_order_id)
+            if updated is None:
+                raise LiveTradingSafetyError("Spot BUY intent changed before submission; reconcile it first.")
+            return
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; Spot BUY submission is blocked.")
@@ -1165,14 +1347,35 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
 
             app_root = Path(__file__).resolve().parents[4]
             allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
-            baseline = spot_live_allocation_baseline(allocation_path, symbol=str(record["symbol"]))
+            baseline = spot_live_allocation_baseline(
+                allocation_path, symbol=str(record["symbol"]), namespace=namespace_for_current_ledger(self),
+            )
         except (ImportError, OSError, LiveTradingSafetyError):
             baseline = None
         if baseline is not None:
             record["portfolio_pre_order_signature"] = baseline["signature"]
             record["portfolio_pre_order_qty"] = baseline["quantity"]
-    with ledger_transaction(path):
+    desktop_source = capture_desktop_entry(self, params) if market == "spot" and record.get("side") == "BUY" else None
+    if desktop_source is not None:
+        record["desktop_entry_source"] = desktop_source_descriptor(desktop_source[1])
+    with desktop_entry_transaction(self, path, params, desktop_source):
+        from .spot_indexed_intent_hot_runtime import indexed_session_for
+        session = indexed_session_for(self, path) if market == "spot" and record.get("side") == "BUY" else None
+        if session is not None:
+            view = session.admission_view(probe_client_ids=(str(record["client_order_id"]),),
+                                          deadline=current_ledger_deadline(path))
+            assert_desktop_entry_ledger(desktop_source, view.metadata)
+            _raise_for_duplicate_record(session.read_record(str(record["client_order_id"]),
+                                        deadline=current_ledger_deadline(path)), str(record["client_order_id"]))
+            from .spot_indexed_intent_hot_runtime import assert_view_unused_ids
+            assert_view_unused_ids(view, (str(record["client_order_id"]),))
+            assert protection_proof is not None
+            view.assert_fresh(protection_proof)
+            session.insert_record(record, protection_proof=protection_proof, deadline=current_ledger_deadline(path))
+            remember_desktop_entry(self, record, desktop_source, view.metadata)
+            return record
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
@@ -1211,6 +1414,7 @@ def _begin_order_intent(self, params: Mapping[str, object], *, market: str, sour
             )
         intents[record["client_order_id"]] = record
         _write_ledger(path, ledger)
+        remember_desktop_entry(self, record, desktop_source, ledger)
     return record
 
 
@@ -1245,8 +1449,24 @@ def _begin_spot_opo_intent(
         self, reject_existing_client_order_id=request["listClientOrderId"], reject_spot_client_order_ids=client_ids,
     )
     path = _intent_path(self)
-    with ledger_transaction(path):
+    desktop_source = capture_desktop_entry(self, request)
+    if desktop_source is not None:
+        record["desktop_entry_source"] = desktop_source_descriptor(desktop_source[1])
+    with desktop_entry_transaction(self, path, request, desktop_source):
+        from .spot_indexed_intent_hot_runtime import assert_view_unused_ids, indexed_session_for
+        session = indexed_session_for(self, path)
+        if session is not None:
+            view = session.admission_view(probe_client_ids=client_ids, deadline=current_ledger_deadline(path))
+            assert_desktop_entry_ledger(desktop_source, view.metadata)
+            _raise_for_duplicate_record(session.read_record(str(record["client_order_id"]),
+                                        deadline=current_ledger_deadline(path)), str(record["client_order_id"]))
+            assert_view_unused_ids(view, client_ids)
+            view.assert_fresh(protection_proof)
+            session.insert_record(record, protection_proof=protection_proof, deadline=current_ledger_deadline(path))
+            remember_desktop_entry(self, record, desktop_source, view.metadata)
+            return record
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        assert_desktop_entry_ledger(desktop_source, ledger)
         intents = ledger["intents"]
         if not isinstance(intents, dict):
             raise LiveTradingSafetyError("Order intent ledger is malformed; reconcile it before submitting orders.")
@@ -1265,6 +1485,7 @@ def _begin_spot_opo_intent(
             )
         intents[record["client_order_id"]] = record
         _write_ledger(path, ledger)
+        remember_desktop_entry(self, record, desktop_source, ledger)
     return record
 
 
@@ -1439,6 +1660,7 @@ def _begin_spot_opo_strategy_exit(
         baseline = spot_opo_allocation_baseline_unlocked(
             allocation_path, symbol=str(record["symbol"]), list_client_order_id=list_client_order_id,
             expected_quantity=baseline_quantity,
+            namespace=namespace_for_current_ledger(self),
         )
         if baseline["signature"] != pre_order_portfolio_signature or Decimal(baseline["quantity"]) != baseline_quantity:
             raise LiveTradingSafetyError("Live Spot allocation changed before linked SELL submission.")
@@ -1644,6 +1866,7 @@ def reconcile_spot_opo_strategy_exit(
         baseline = spot_opo_allocation_baseline_unlocked(
             allocation_path, symbol=str(request["symbol"]), list_client_order_id=list_id,
             expected_quantity=record["strategy_exit_pre_order_quantity"],
+            namespace=namespace_for_current_ledger(self),
         )
         if (
             baseline["signature"] != record["strategy_exit_pre_order_signature"]
@@ -1728,6 +1951,7 @@ def _mark_spot_opo_strategy_exit_order_observed(
     return {"client_order_id": list_client_order_id, **evidence, "order_observed_at": observed_at}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_strategy_exit_reconciled(
     self, list_client_order_id: str, *, allocation_path: Path,
     portfolio_signature: str, portfolio_quantity: object,
@@ -1771,6 +1995,7 @@ def _mark_spot_opo_strategy_exit_reconciled(
         candidate,
         signature=portfolio_signature,
         consumed_quantity=quantity,
+        namespace=namespace_for_current_ledger(self),
     ):
         raise LiveTradingSafetyError("Matching durable OPO strategy SELL allocation proof was not found.")
     updated = _update_order_intent_by_id(
@@ -1792,6 +2017,7 @@ def _mark_spot_opo_strategy_exit_reconciled(
     return {"client_order_id": list_client_order_id, "portfolio_reconciled": True, "already_reconciled": False}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_strategy_exit_residual_required(
     self,
     list_client_order_id: str,
@@ -1892,6 +2118,7 @@ def _mark_spot_opo_strategy_exit_residual_required(
                 consumed_quantity=consumed,
                 remaining_quantity=residual_quantity,
                 trade_ids=trade_ids,
+                namespace=namespace_for_current_ledger(self),
             )
         ):
             raise LiveTradingSafetyError("Partial linked SELL is missing exact durable trade and allocation proof.")
@@ -1900,6 +2127,7 @@ def _mark_spot_opo_strategy_exit_residual_required(
         symbol=str(record.get("symbol") or ""),
         list_client_order_id=list_client_order_id,
         expected_quantity=residual_quantity,
+        namespace=namespace_for_current_ledger(self),
     )
     if (
         baseline.get("signature") != portfolio_signature
@@ -1986,6 +2214,7 @@ def _begin_spot_opo_residual_stop(
         symbol=str(record.get("symbol") or ""),
         list_client_order_id=list_client_order_id,
         expected_quantity=quantity,
+        namespace=namespace_for_current_ledger(self),
     )
     if (
         baseline.get("signature") != pre_order_portfolio_signature
@@ -2125,6 +2354,7 @@ def _mark_spot_opo_residual_stop_order_observed(
     return {"client_order_id": list_client_order_id, **evidence, "observed_at": observed_at}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_residual_stop_reconciled(
     self,
     list_client_order_id: str,
@@ -2180,6 +2410,7 @@ def _mark_spot_opo_residual_stop_reconciled(
             consumed_quantity=consumed,
             remaining_quantity=remaining,
             trade_ids=trade_ids,
+            namespace=namespace_for_current_ledger(self),
         )
     ):
         raise LiveTradingSafetyError("Residual stop trades do not match the exact OPO inventory proof.")
@@ -2189,6 +2420,7 @@ def _mark_spot_opo_residual_stop_reconciled(
             symbol=str(record.get("symbol") or ""),
             list_client_order_id=list_client_order_id,
             expected_quantity=remaining,
+            namespace=namespace_for_current_ledger(self),
         )
         state = "rearm_required"
         protection_state = "cancelled"
@@ -2229,6 +2461,7 @@ def _mark_spot_opo_residual_stop_reconciled(
     }
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_residual_stop_no_fill(
     self,
     list_client_order_id: str,
@@ -2261,6 +2494,7 @@ def _mark_spot_opo_residual_stop_no_fill(
         symbol=str(record.get("symbol") or ""),
         list_client_order_id=list_client_order_id,
         expected_quantity=quantity,
+        namespace=namespace_for_current_ledger(self),
     )
     if (
         baseline.get("signature") != record.get("residual_stop_pre_order_signature")
@@ -2307,6 +2541,12 @@ def _update_order_intent(self, params: Mapping[str, object], *, state: str, **up
     client_order_id = _client_order_id(params)
     path = _intent_path(self)
     with ledger_transaction(path):
+        _assert_inventory_checkpoint_authority()
+        from .spot_indexed_intent_hot_runtime import update_indexed_record
+        routed, _updated = update_indexed_record(self, path, client_order_id, state=state,
+                                                expected_record=None, updates=updates)
+        if routed:
+            return
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         intents = ledger["intents"]
         if not isinstance(intents, dict):
@@ -2356,6 +2596,8 @@ def _mark_order_intent_accepted(self, params: Mapping[str, object], *, via: str,
                     )
                     execution_updates["portfolio_qty"] = str(primary_fill["net_qty"])
                     execution_updates["primary_fill_signature"] = str(primary_fill["signature"])
+                    from .spot_allocation_generation_runtime import canonical_spot_buy_metadata
+                    execution_updates["primary_fill_receipt"] = canonical_spot_buy_metadata(primary_fill)
                 except Exception:
                     # Without a complete commission-aware fill proof, the
                     # accepted Spot market order remains unresolved.
@@ -2385,9 +2627,25 @@ def _mark_order_intent_unknown(self, params: Mapping[str, object], *, error: obj
     _update_order_intent(self, params, state="unknown", last_error=str(error or ""), uncertain_at=_now())
 
 
+def namespace_for_current_ledger(wrapper):
+    from .spot_inventory_namespace_runtime import namespace_for_current_ledger as resolve
+    return resolve(wrapper)
+
+
+def _require_durable_spot_namespace(namespace: object) -> dict | None:
+    from app.gui.shared.allocation_persistence import (
+        _read_receipt, get_position_allocations_path, guard_position_allocation_snapshot,
+    )
+    app_root = Path(__file__).resolve().parents[4]
+    path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+    with ledger_transaction(path):
+        return cast(dict | None, guard_position_allocation_snapshot(path, _read_receipt(path), expected_namespace=namespace))
+
+
 def _has_durable_spot_buy_allocation(
-    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object,
+    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object, namespace: object = None,
 ) -> bool:
+    scoped_snapshot = _require_durable_spot_namespace(namespace)
     try:
         if re.fullmatch(r"[0-9a-f]{64}", portfolio_signature) is None:
             return False
@@ -2398,21 +2656,15 @@ def _has_durable_spot_buy_allocation(
         if path.is_symlink() or not path.is_file():
             return False
 
-        def unique_object(pairs):
-            value = {}
-            for key, item in pairs:
-                if key in value:
-                    raise ValueError("duplicate allocation field")
-                value[key] = item
-            return value
-
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        data = scoped_snapshot
         if (
             not isinstance(data, dict)
             or data.get("version") != 1
             or data.get("mode") != "Live"
             or not isinstance(data.get("entry_allocations"), dict)
         ):
+            return False
+        if namespace is None and "spot_account_namespace" in data:
             return False
         matches = []
         for entries in data["entry_allocations"].values():
@@ -2427,7 +2679,17 @@ def _has_durable_spot_buy_allocation(
             return False
         entry = matches[0]
         fill_evidence = entry.get("spot_fill_recovery")
-        quantity = Decimal(str(entry.get("qty") or "NaN"))
+        if not isinstance(fill_evidence, Mapping):
+            return False
+        from .spot_allocation_generation_runtime import spot_buy_generation_receipt
+        acquisition = spot_buy_generation_receipt(entry)
+        if "primary_fill_receipt" in record:
+            from .spot_allocation_generation_runtime import canonical_spot_buy_metadata
+            original = canonical_spot_buy_metadata({
+                **fill_evidence, "symbol": entry.get("symbol"), "client_order_id": entry.get("client_order_id"),
+            })
+            if original != record["primary_fill_receipt"]:
+                return False
         expected_quantity = Decimal(str(portfolio_quantity or record.get("portfolio_qty") or "NaN"))
         if record.get("type") == "OPO":
             request = validate_spot_opo_request_payload(record.get("request"))
@@ -2441,7 +2703,7 @@ def _has_durable_spot_buy_allocation(
         return (
             entry.get("symbol") == record.get("symbol")
             and entry.get("side_key") == "L"
-            and str(entry.get("status") or "").lower() == "active"
+            and acquisition.client_order_id == record.get("client_order_id")
             and isinstance(fill_evidence, Mapping)
             and fill_evidence.get("signature") == portfolio_signature
             and fill_evidence.get("exchange_client_order_id", entry.get("client_order_id"))
@@ -2451,17 +2713,20 @@ def _has_durable_spot_buy_allocation(
                 expected_pending_quantity is None
                 or _finite_nonnegative_decimal(fill_evidence.get("pending_order_qty")) == expected_pending_quantity
             )
-            and quantity.is_finite()
+            and acquisition.signature == portfolio_signature
+            and acquisition.exchange_client_order_id == expected_exchange_client_id
+            and str(acquisition.order_id) == str(expected_order_id)
             and expected_quantity.is_finite()
-            and quantity == expected_quantity
+            and acquisition.acquisition_qty == expected_quantity
         )
     except SPOT_LOCAL_STATE_ERRORS:
         return False
 
 
 def _has_durable_spot_sell_allocation(
-    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object,
+    record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: object, namespace: object = None,
 ) -> bool:
+    scoped_snapshot = _require_durable_spot_namespace(namespace)
     try:
         if re.fullmatch(r"[0-9a-f]{64}", portfolio_signature) is None:
             return False
@@ -2472,16 +2737,12 @@ def _has_durable_spot_sell_allocation(
         if path.is_symlink() or not path.is_file():
             return False
 
-        def unique_object(pairs):
-            value = {}
-            for key, item in pairs:
-                if key in value:
-                    raise ValueError("duplicate allocation field")
-                value[key] = item
-            return value
-
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
-        allocations = data.get("entry_allocations") if isinstance(data, dict) else None
+        data = scoped_snapshot
+        if not isinstance(data, dict):
+            return False
+        if namespace is None and "spot_account_namespace" in data:
+            return False
+        allocations = data.get("entry_allocations")
         if data.get("version") != 1 or data.get("mode") != "Live" or not isinstance(allocations, dict):
             return False
         expected_quantity = Decimal(str(portfolio_quantity or record.get("portfolio_qty") or "NaN"))
@@ -2572,6 +2833,44 @@ def _has_durable_spot_sell_allocation(
         return False
 
 
+def _commit_spot_buy_acquisition_receipt(
+    self, record: Mapping[str, object], *, portfolio_signature: str, portfolio_quantity: Decimal, opo: bool = False,
+) -> dict[str, object]:
+    """Confirm acquisition history under both locks; never treat it as inventory."""
+    from app.gui.shared.allocation_persistence import get_position_allocations_path
+    app_root = Path(__file__).resolve().parents[4]
+    allocation_path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+    from .spot_inventory_namespace_runtime import namespace_for_ledger
+    path = _intent_path(self)
+    flag = "entry_reconciled" if opo else "portfolio_reconciled"
+    signature_field = "entry_recovery_signature" if opo else "portfolio_recovery_signature"
+    quantity_field = "entry_portfolio_quantity" if opo else "portfolio_qty"
+    with ledger_transactions(path, allocation_path):
+        ledger = _read_ledger(path, expected_binding=_intent_binding(self))
+        intents = ledger["intents"]
+        current = intents.get(str(record["client_order_id"])) if isinstance(intents, dict) else None
+        if not isinstance(current, dict) or current != record:
+            raise LiveTradingSafetyError("Spot BUY intent changed during acquisition confirmation.")
+        if not _has_durable_spot_buy_allocation(
+            current, portfolio_signature=portfolio_signature, portfolio_quantity=portfolio_quantity,
+            namespace=namespace_for_ledger(self, ledger),
+        ):
+            raise LiveTradingSafetyError("Matching durable Spot BUY acquisition history is no longer present.")
+        already = current.get(flag) is True
+        if already:
+            if current.get(signature_field) != portfolio_signature or Decimal(str(current.get(quantity_field))) != portfolio_quantity:
+                raise LiveTradingSafetyError("Spot BUY acquisition receipt conflicts with its intent.")
+        else:
+            current.update({
+                "state": "accepted", flag: True, quantity_field: format(portfolio_quantity, "f"),
+                signature_field: portfolio_signature,
+                "entry_reconciled_at" if opo else "portfolio_reconciled_at": _now(), "updated_at": _now(),
+            })
+            _write_ledger(path, ledger)
+    return {"client_order_id": str(record["client_order_id"]), flag: True, "already_reconciled": already}
+
+
+@_owned_inventory_confirmation
 def _mark_order_intent_portfolio_reconciled(
     self, client_order_id: str, *, portfolio_signature: str, portfolio_quantity: object = None,
 ) -> dict[str, object]:
@@ -2592,6 +2891,11 @@ def _mark_order_intent_portfolio_reconciled(
             or str(record.get("portfolio_qty")) != str(portfolio_quantity or record.get("portfolio_qty"))
         ):
             raise LiveTradingSafetyError("Spot portfolio recovery proof conflicts with the stored intent.")
+        if record.get("side") == "BUY":
+            return _commit_spot_buy_acquisition_receipt(
+                self, record, portfolio_signature=portfolio_signature,
+                portfolio_quantity=Decimal(str(portfolio_quantity or record.get("portfolio_qty"))),
+            )
         return {"client_order_id": client_order_id, "portfolio_reconciled": True, "already_reconciled": True}
     try:
         expected_quantity = Decimal(str(portfolio_quantity or record.get("portfolio_qty") or "NaN"))
@@ -2612,13 +2916,19 @@ def _mark_order_intent_portfolio_reconciled(
         and record["primary_fill_signature"] != portfolio_signature
     ):
         raise LiveTradingSafetyError("Spot portfolio recovery proof conflicts with the primary fill evidence.")
+    if record.get("side") == "BUY":
+        return _commit_spot_buy_acquisition_receipt(
+            self, record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
+        )
     has_durable_proof = (
         _has_durable_spot_buy_allocation(
             record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
+            namespace=namespace_for_current_ledger(self),
         )
         if record.get("side") == "BUY"
         else _has_durable_spot_sell_allocation(
             record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
+            namespace=namespace_for_current_ledger(self),
         )
     )
     if not has_durable_proof:
@@ -2638,6 +2948,7 @@ def _mark_order_intent_portfolio_reconciled(
     return {"client_order_id": client_order_id, "portfolio_reconciled": True, "already_reconciled": False}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_entry_reconciled(
     self, list_client_order_id: str, *, portfolio_signature: str, portfolio_quantity: object,
 ) -> dict[str, object]:
@@ -2649,7 +2960,8 @@ def _mark_spot_opo_entry_reconciled(
         record.get("market") != "spot"
         or record.get("side") != "BUY"
         or record.get("state") not in {"accepted", "unknown"}
-        or record.get("protection_state") not in {"active", "triggered", "lost", "unverified"}
+        or (record.get("protection_state") not in {"active", "triggered", "lost", "unverified"}
+            and not (record.get("protection_state") == "closed" and record.get("entry_reconciled") is True))
         or record.get("list_status") not in {"EXEC_STARTED", "ALL_DONE"}
         or record.get("working_status") != "FILLED"
     ):
@@ -2672,36 +2984,12 @@ def _mark_spot_opo_entry_reconciled(
         raise LiveTradingSafetyError(
             "Spot OPO stop quantity does not exactly cover the recovered BUY inventory; manual reconciliation is required."
         )
-    if record.get("entry_reconciled") is True:
-        if (
-            record.get("entry_recovery_signature") != portfolio_signature
-            or str(record.get("entry_portfolio_quantity")) != format(expected_quantity, "f")
-        ):
-            raise LiveTradingSafetyError("Spot OPO entry recovery proof conflicts with the stored intent.")
-        if not _has_durable_spot_buy_allocation(
-            record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
-        ):
-            raise LiveTradingSafetyError("Matching durable Spot OPO BUY allocation is no longer present.")
-        return {"client_order_id": list_client_order_id, "entry_reconciled": True, "already_reconciled": True}
-    if not _has_durable_spot_buy_allocation(
-        record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity,
-    ):
-        raise LiveTradingSafetyError("A matching durable Live Spot OPO BUY allocation was not found.")
-    updated = _update_order_intent_by_id(
-        self,
-        list_client_order_id,
-        state="accepted",
-        expected_record=record,
-        entry_reconciled=True,
-        entry_portfolio_quantity=format(expected_quantity, "f"),
-        entry_recovery_signature=portfolio_signature,
-        entry_reconciled_at=_now(),
+    return _commit_spot_buy_acquisition_receipt(
+        self, record, portfolio_signature=portfolio_signature, portfolio_quantity=expected_quantity, opo=True,
     )
-    if updated is None:
-        raise LiveTradingSafetyError("Spot OPO intent changed during entry recovery; reconciliation is required.")
-    return {"client_order_id": list_client_order_id, "entry_reconciled": True, "already_reconciled": False}
 
 
+@_owned_inventory_confirmation
 def _mark_spot_opo_exit_reconciled(
     self, list_client_order_id: str, *, portfolio_signature: str, portfolio_quantity: object,
 ) -> dict[str, object]:
@@ -2743,6 +3031,7 @@ def _mark_spot_opo_exit_reconciled(
 
     if not has_durable_spot_opo_stop_exit(
         record, signature=portfolio_signature, portfolio_quantity=expected_quantity,
+        namespace=namespace_for_current_ledger(self),
     ):
         raise LiveTradingSafetyError("A matching durable OPO stop SELL allocation proof was not found.")
     if record.get("exit_reconciled") is True:
@@ -2772,6 +3061,11 @@ def _mark_spot_opo_exit_reconciled(
 def _get_order_intent_record(self, client_order_id: str) -> dict[str, object] | None:
     path = _intent_path(self)
     with ledger_transaction(path):
+        from .spot_indexed_intent_hot_runtime import indexed_session_for
+        session = indexed_session_for(self, path)
+        if session is not None:
+            return cast(dict[str, object] | None,
+                        session.read_record(client_order_id, deadline=current_ledger_deadline(path)))
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         intents = ledger.get("intents")
         record = intents.get(client_order_id) if isinstance(intents, dict) else None
@@ -2811,9 +3105,21 @@ def _validate_spot_opo_cancel_alias_ownership(intents: Mapping[str, object]) -> 
     for key, record in intents.items():
         for client_id in used_spot_client_order_ids({key: record}):
             owners.setdefault(client_id, set()).add(key)
-    for key, record in records.items():
+    validate_order_intent_global_ownership(records, owners=owners)
+
+
+def validate_order_intent_global_ownership(
+    alias_records: Mapping[str, Mapping[str, object]], *, owners: Mapping[str, set[str]],
+) -> None:
+    """Validate aliases against a caller-proved complete ownership projection.
+
+    The caller must supply every alias-bearing record and every owner of every
+    current or historical client ID, with local records already validated. This
+    helper does not establish projection completeness or snapshot consistency.
+    """
+    for key, record in alias_records.items():
         _assert_spot_opo_cancel_alias(
-            intents, key, record, str(record["pending_observed_client_order_id"]), owners=owners,
+            alias_records, key, record, str(record["pending_observed_client_order_id"]), owners=owners,
         )
 
 
@@ -2823,6 +3129,12 @@ def _update_order_intent_by_id(
 ) -> dict[str, object] | None:
     path = _intent_path(self)
     with ledger_transaction(path):
+        _assert_inventory_checkpoint_authority()
+        from .spot_indexed_intent_hot_runtime import update_indexed_record
+        routed, updated = update_indexed_record(self, path, client_order_id, state=state,
+                                               expected_record=expected_record, updates=updates)
+        if routed:
+            return cast(dict[str, object] | None, updated)
         ledger = _read_ledger(path, expected_binding=_intent_binding(self))
         intents = ledger.get("intents")
         if not isinstance(intents, dict):
@@ -2919,6 +3231,24 @@ def _validate_reconciliation_response(
     previous_id = record.get("exchange_order_id")
     if previous_id and str(previous_id) != order_id:
         raise LiveTradingSafetyError("Exchange order ID changed during reconciliation.")
+    primary_receipt = record.get("primary_fill_receipt")
+    if "primary_fill_receipt" in record:
+        # A terminal primary acquisition cannot become a different execution
+        # merely because an exact-ID GET returned contradictory order fields.
+        if (not isinstance(primary_receipt, Mapping)
+                or status != "FILLED" or result.get("side") != "BUY" or result.get("type") != "MARKET"
+                or result.get("clientOrderId") != primary_receipt.get("exchange_client_order_id")
+                or order_id != str(primary_receipt.get("order_id"))):
+            raise LiveTradingSafetyError("Exchange response conflicts with the retained terminal Spot acquisition.")
+        gross_quantity = _finite_nonnegative_decimal(result.get("executedQty"))
+        retained_quantity = _finite_nonnegative_decimal(primary_receipt.get("gross_qty"))
+        if gross_quantity is None or retained_quantity is None or gross_quantity != retained_quantity:
+            raise LiveTradingSafetyError("Exchange execution changed from the retained Spot acquisition.")
+        if ("cummulativeQuoteQty" in result
+                and _finite_nonnegative_decimal(result["cummulativeQuoteQty"])
+                != _finite_nonnegative_decimal(primary_receipt.get("gross_quote_qty"))):
+            raise LiveTradingSafetyError("Exchange quote total changed from the retained Spot acquisition.")
+        # GET creation/update timestamps do not replace the primary acquisition time.
     if _requires_execution_confirmation(record):
         expected_params = {
             "newClientOrderId": record.get("client_order_id"), "symbol": record.get("symbol"),
@@ -3827,6 +4157,8 @@ def bind_binance_order_intent_runtime(wrapper_cls) -> None:
     wrapper_cls._spot_execution_submission = _spot_execution_submission
     wrapper_cls._revoke_spot_execution_owner = _revoke_spot_execution_owner
     wrapper_cls._get_order_intent_record = _get_order_intent_record
+    wrapper_cls._capture_spot_buy_publication = _capture_spot_buy_publication
+    wrapper_cls._get_spot_buy_submission_origin = _get_spot_buy_submission_origin
     wrapper_cls._begin_order_intent = _begin_order_intent
     wrapper_cls._begin_spot_opo_intent = _begin_spot_opo_intent
     wrapper_cls._mark_order_intent_submitted = _mark_order_intent_submitted

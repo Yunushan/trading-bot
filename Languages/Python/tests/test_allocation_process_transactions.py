@@ -28,14 +28,17 @@ def _hold_transaction(path, ready, release):
 
 
 def _racing_window(this_file, token, ready, publish, results):
-    session = AllocationSnapshotSession()
-    allocations, records = load_position_allocations(this_file=Path(this_file), mode="Live", session=session)
-    ready.set()
-    if not publish.wait(30):
-        raise RuntimeError("parent failed to release publisher barrier")
-    allocations[("BTCUSDT", "L")] = [{"qty": 0.1, "data": {"window": token}}]
-    result = save_position_allocations(allocations, records, this_file=Path(this_file), mode="Live", session=session)
-    results.put((token, result))
+    # Spawned children do not inherit pytest/unittest's isolated credential proxy.
+    from spot_inventory_checkpoint_fixtures import CheckpointFixtureBackend
+    with CheckpointFixtureBackend():
+        session = AllocationSnapshotSession()
+        allocations, records = load_position_allocations(this_file=Path(this_file), mode="Live", session=session)
+        ready.set()
+        if not publish.wait(30):
+            raise RuntimeError("parent failed to release publisher barrier")
+        allocations[("BTCUSDT", "L")] = [{"qty": 0.1, "data": {"window": token}}]
+        result = save_position_allocations(allocations, records, this_file=Path(this_file), mode="Live", session=session)
+        results.put((token, result))
 
 
 class AllocationProcessTransactionsTests(unittest.TestCase):

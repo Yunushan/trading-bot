@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.integrations.exchanges.binance.orders import order_intent_runtime as ledger
 from app.integrations.exchanges.binance.orders import spot_fill_recovery_runtime as spot_recovery
@@ -220,6 +221,86 @@ class OrderIntentReconciliationSafetyTests(unittest.TestCase):
             0.01997,
             saved_allocations["open_position_records"]["BTCUSDT:L"]["data"]["qty"],
         )
+
+    def primary_spot_buy(self):
+        ledger._update_order_intent_by_id(
+            self.owner, "reconcile-A", state="unknown", market="spot", type="MARKET",
+        )
+        self.owner.get_base_quote_assets = lambda _symbol: ("BTC", "USDT")
+        response = self.response(
+            type="MARKET", cummulativeQuoteQty="20000", transactTime=1780000000000,
+            fills=[{"tradeId": 901, "price": "20000", "qty": "1",
+                    "commission": "0.0004", "commissionAsset": "BTC"}],
+        )
+        ledger._mark_order_intent_accepted(self.owner, self.params, via="primary", result=response)
+        record = ledger._get_order_intent_record(self.owner, "reconcile-A")
+        self.assertIn("primary_fill_receipt", record)
+        self.assertEqual("0.9996", record["primary_fill_receipt"]["net_qty"])
+        return copy.deepcopy(record)
+
+    def reconcile_primary_get(self, **changes):
+        response = self.response(
+            type="MARKET", cummulativeQuoteQty="20000", time=1779999999990,
+            updateTime=1780000000020,
+        )
+        response.update(changes)
+        getter = Mock(return_value=response)
+        submitter = Mock(side_effect=AssertionError("Offline reconciliation must not submit orders"))
+        self.owner.client = SimpleNamespace(get_order=getter, create_order=submitter)
+        self.owner._query_order_intent_exchange = lambda record: ledger._query_order_intent_exchange(self.owner, record)
+        with patch("socket.socket.connect", side_effect=AssertionError("Offline sockets forbidden")), patch(
+            "socket.socket.connect_ex", side_effect=AssertionError("Offline sockets forbidden"),
+        ):
+            result = ledger.reconcile_order_intent(self.owner, "reconcile-A", include_execution=True)
+        getter.assert_called_once_with(symbol="BTCUSDT", origClientOrderId="reconcile-A")
+        submitter.assert_not_called()
+        return result
+
+    def test_primary_fill_rejects_contradictory_terminal_get_and_preserves_readable_ledger(self):
+        for changes in (
+            {"status": "CANCELED"}, {"status": "EXPIRED"}, {"status": "EXPIRED_IN_MATCH"},
+            {"status": "PARTIALLY_FILLED"}, {"status": "NEW", "executedQty": "0"},
+            {"status": "REJECTED", "executedQty": "0"},
+            {"executedQty": "0.9996"}, {"executedQty": "1.0001"},
+            {"orderId": 124}, {"clientOrderId": "reconcile-B"}, {"symbol": "ETHUSDT"},
+            {"side": "SELL"}, {"type": "LIMIT"},
+            {"cummulativeQuoteQty": "20001"}, {"cummulativeQuoteQty": "NaN"},
+        ):
+            with self.subTest(changes=changes):
+                fixture = type(self)()
+                fixture.setUp()
+                try:
+                    original = fixture.primary_spot_buy()
+                    result = fixture.reconcile_primary_get(**changes)
+                    self.assertFalse(result["reconciled"], result)
+                    self.assertTrue(result["error"])
+                    current = ledger._get_order_intent_record(fixture.owner, "reconcile-A")
+                    for field in (
+                        "primary_fill_receipt", "primary_fill_signature", "portfolio_qty",
+                        "executed_qty", "exchange_status", "exchange_order_id",
+                    ):
+                        self.assertEqual(original[field], current[field], field)
+                    self.assertIsNot(current.get("portfolio_reconciled"), True)
+                    self.assertEqual(1, ledger.get_order_intent_status(fixture.owner)["unresolved_count"])
+                    with self.assertRaisesRegex(LiveTradingSafetyError, "Unresolved exchange order intent"):
+                        ledger._begin_order_intent(
+                            fixture.owner, {**fixture.params, "newClientOrderId": "reconcile-B"},
+                            market="spot", source="offline-test",
+                        )
+                finally:
+                    fixture.doCleanups()
+
+    def test_primary_fill_allows_compatible_get_without_replacing_acquisition_time(self):
+        original = self.primary_spot_buy()
+        result = self.reconcile_primary_get(executedQty="1.00000000", cummulativeQuoteQty="20000.00000000")
+        self.assertTrue(result["reconciled"], result)
+        self.assertEqual("unknown", result["state"])
+        self.assertTrue(result["portfolio_reconciliation_required"])
+        self.assertEqual(1780000000020, result["order_response"]["updateTime"])
+        current = ledger._get_order_intent_record(self.owner, "reconcile-A")
+        self.assertEqual(original["primary_fill_receipt"], current["primary_fill_receipt"])
+        self.assertEqual(1780000000000, current["primary_fill_receipt"]["fill_time_ms"])
+        self.assertEqual(1, ledger.get_order_intent_status(self.owner)["unresolved_count"])
 
     def test_rejected_response_requires_explicit_zero_execution(self):
         for executed in (None, "", "nan", "inf", "-1", "0.1", False, 0, 0.0, {}, []):

@@ -259,6 +259,42 @@ class FakeExchangeIntegrationTests(unittest.TestCase):
         self.assertIn("rsi", leg_entries[0]["trigger_signature"])
         self.assertTrue(any(event.get("status") == "placed" and event.get("side") == "BUY" for event in trades))
 
+    def test_spot_callback_origin_is_captured_before_submit_and_original_wrapper_is_retained(self):
+        logs, trades, phases = [], [], []
+        wrapper = _FakeExchangeWrapper(account_type="SPOT", price=100.0)
+        replacement = _FakeExchangeWrapper(account_type="SPOT", price=100.0)
+        engine = _build_engine(wrapper=wrapper, logs=logs, trades=trades)
+        token = object()
+        def capture():
+            self.assertEqual([], wrapper.orders)
+            phases.append("capture")
+            return token
+        original_place = wrapper.place_spot_market_order
+        def place(*args, **kwargs):
+            self.assertEqual(["capture"], phases)
+            phases.append("submit")
+            result = original_place(*args, **kwargs)
+            engine.binance = replacement
+            return result
+        wrapper._desktop_trade_origin_capture = capture
+        wrapper.place_spot_market_order = place
+        engine._execute_signal_order(**_signal_order_kwargs(engine, side="BUY", price=100.0, marker=2091))
+        self.assertEqual(["capture", "submit"], phases, logs)
+        self.assertEqual(1, len(wrapper.orders), logs)
+        self.assertEqual([], replacement.orders)
+        self.assertIs(token, trades[-1]["_trade_callback_origin"])
+
+    def test_spot_origin_capture_failure_prevents_order_submission(self):
+        logs, trades = [], []
+        wrapper = _FakeExchangeWrapper(account_type="SPOT", price=100.0)
+        engine = _build_engine(wrapper=wrapper, logs=logs, trades=trades)
+        def changed_origin():
+            raise RuntimeError("original desktop allocation session changed")
+        wrapper._desktop_trade_origin_capture = changed_origin
+        engine._execute_signal_order(**_signal_order_kwargs(engine, side="BUY", price=100.0, marker=2092))
+        self.assertEqual([], wrapper.orders)
+        self.assertEqual([], trades)
+
     def test_spot_buy_signal_order_uses_quote_amount_from_position_percent(self):
         logs: list = []
         trades: list[dict[str, object]] = []

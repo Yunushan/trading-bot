@@ -195,12 +195,17 @@ def _safe_float(value):
 def _persist_trade_allocations(self, save_position_allocations) -> bool:
     try:
         mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
+        options = {}
+        owned_spot_buy = getattr(self, "_active_owned_spot_buy", None)
+        if owned_spot_buy is not None:
+            options["owned_spot_buy"] = owned_spot_buy
         result = save_position_allocations(
             getattr(self, "_entry_allocations", {}),
             getattr(self, "_open_position_records", {}),
             mode=mode,
             session=getattr(self, "_allocation_snapshot_session", None),
             event_receipt=getattr(self, "_active_trade_event_receipt", None),
+            **options,
         )
         return result is True
     except Exception:

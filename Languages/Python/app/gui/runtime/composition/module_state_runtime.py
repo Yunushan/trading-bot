@@ -122,6 +122,7 @@ def install_main_window_module_state(
         *,
         session: allocation_persistence.AllocationSnapshotSession | None = None,
         event_receipt: dict | None = None,
+        owned_spot_buy=None,
     ) -> bool:
         return allocation_persistence.save_position_allocations(
             entry_allocations,
@@ -130,6 +131,7 @@ def install_main_window_module_state(
             mode=mode,
             session=session,
             event_receipt=event_receipt,
+            owned_spot_buy=owned_spot_buy,
         )
 
     def _load_position_allocations(

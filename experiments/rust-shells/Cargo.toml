@@ -25,8 +25,8 @@ rustls-native-certs = "0.8"
 rustls-pki-types = { version = "1", features = ["std"] }
 sha2 = "0.11"
 tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
-tauri = { version = "2" }
-tauri-build = { version = "2" }
+tauri = { version = "2.12.1" }
+tauri-build = { version = "2.7.1" }
 
 # plist 1.8.0 pins vulnerable quick-xml 0.38.x on the macOS Tauri path. The
 # upstream project has the compatible quick-xml 0.41.0 remediation on this
@@ -40,6 +40,8 @@ plist = { git = "https://github.com/ebarnard/rust-plist", rev = "2881e175b61f159
 # upstream fix in the tracked backport under vendor/ until the dependency
 # graph moves to glib >=0.20 or Tauri adopts its GTK4 path.
 glib = { path = "../../vendor/glib-0.18.5" }
+glib-macros = { path = "../../vendor/glib-macros-0.18.5" }
+gtk3-macros = { path = "../../vendor/gtk3-macros-0.18.2" }
 
 [dependencies]
 serde_json = { workspace = true }

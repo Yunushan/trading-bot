@@ -28,6 +28,11 @@ from app.integrations.exchanges.binance.orders.spot_fill_recovery_runtime import
     persist_spot_buy_allocation,
     summarize_spot_opo_buy_fill,
 )
+from spot_inventory_checkpoint_fixtures import checkpoint_backend_for_case
+from app.integrations.exchanges.binance.orders.spot_inventory_checkpoint_runtime import bootstrap_owned_inventory_checkpoint
+from app.integrations.exchanges.binance.orders.spot_inventory_namespace_runtime import (
+    publish_owned_spot_fill,
+)
 from app.integrations.exchanges.binance.wrapper import BinanceWrapper
 from app.settings.live_safety import LIVE_TRADING_ACKNOWLEDGEMENT
 from app.gui.shared.allocation_reconciliation import allocation_publication_pending
@@ -181,6 +186,7 @@ class _Venue:
 
 class SpotOpoFaultIntegrationTests(unittest.TestCase):
     def setUp(self):
+        self.checkpoint_backend = checkpoint_backend_for_case(self)
         self.home = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.audit_path = self.home / "audit.jsonl"
         self.allocation_path = self.home / "allocations.json"
@@ -205,7 +211,7 @@ class SpotOpoFaultIntegrationTests(unittest.TestCase):
         )
         provision_order_intent_store(admin, acknowledgement=PROVISION_ACK)
 
-    def wrapper(self, *, cap=10):
+    def wrapper(self, *, cap=10, bootstrap=True):
         wrapper = BinanceWrapper(
             "offline-key", "offline-secret", mode="Live", account_type="Spot", connector_backend="binance-sdk-spot",
             live_safety_config={
@@ -216,6 +222,10 @@ class SpotOpoFaultIntegrationTests(unittest.TestCase):
             },
         )
         self.addCleanup(self.close_owner, wrapper)
+        if bootstrap and not self.allocation_path.exists():
+            wrapper._ensure_spot_execution_owner()
+            # Explicit bootstrap parameter invokes actual owned empty-history protocol.
+            self.assertTrue(bootstrap_owned_inventory_checkpoint(wrapper, allocation_path=self.allocation_path))
         return wrapper
 
     @staticmethod
@@ -241,7 +251,9 @@ class SpotOpoFaultIntegrationTests(unittest.TestCase):
             "commission": "0", "commissionAsset": "BTC", "time": 1750000000000,
         }]
         fill = summarize_spot_opo_buy_fill(record, order, trades, base_asset="BTC", quote_asset="USDT")
-        persist_spot_buy_allocation(self.allocation_path, fill)
+        self.assertTrue(publish_owned_spot_fill(
+            wrapper, self.allocation_path, fill, expected_record=record, operation=persist_spot_buy_allocation,
+        ))
         wrapper._mark_spot_opo_entry_reconciled(
             f"list-{suffix}", portfolio_signature=fill["signature"], portfolio_quantity=fill["net_qty"],
         )
@@ -379,7 +391,7 @@ class SpotOpoFaultIntegrationTests(unittest.TestCase):
         self.assertIn("live_order_blocked", events)
 
     def test_signed_account_identity_mismatch_blocks_before_post(self):
-        wrapper = self.wrapper()
+        wrapper = self.wrapper(bootstrap=False)
         self.venue.uid += 1
         result = self.entry(wrapper)
         self.assertFalse(result["ok"], result)

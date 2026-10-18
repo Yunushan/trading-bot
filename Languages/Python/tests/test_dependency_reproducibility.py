@@ -627,7 +627,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(1, len(exceptions))
+        self.assertEqual(0, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions
@@ -754,34 +754,18 @@ class DependencyReproducibilityTests(unittest.TestCase):
                 self.assertTrue(exception["verified_consumers"])
                 self.assertTrue(exception["reason"])
 
-    def test_mobile_production_lockfile_uses_patched_image_size_fork(self):
+    def test_mobile_production_lockfile_retires_the_image_size_finding(self):
         mobile_root = REPO_ROOT / "apps" / "mobile-client"
         mobile_package = json.loads((mobile_root / "package.json").read_text(encoding="utf-8"))
         lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
 
         self.assertEqual("npm:image-size-next@1.2.2", mobile_package["overrides"]["image-size"])
-        resolved = [
-            (package_path, metadata)
+        image_size_packages = [
+            package_path
             for package_path, metadata in lockfile["packages"].items()
-            if package_path == "node_modules/image-size"
-            or package_path.endswith("/node_modules/image-size")
+            if "image-size" in package_path or "image-size" in str(metadata.get("name", ""))
         ]
-        self.assertEqual(1, len(resolved))
-        package_path, metadata = resolved[0]
-        self.assertTrue(
-            package_path == "node_modules/image-size"
-            or package_path.endswith("/node_modules/image-size")
-        )
-        self.assertEqual("image-size-next", metadata["name"])
-        self.assertEqual("1.2.2", metadata["version"])
-        self.assertEqual(
-            "https://registry.npmjs.org/image-size-next/-/image-size-next-1.2.2.tgz",
-            metadata["resolved"],
-        )
-        self.assertEqual(
-            "sha512-Pd3CJ2+Ifk2H2jWikkoz2BSZgnuF3Qsea4gQmj2gtiOtYpGWBl7elj8EXnFMiY5PaYNruTTLD0hQ0UWK7pz9xA==",
-            metadata["integrity"],
-        )
+        self.assertEqual([], image_size_packages)
         self.assertIn("check_mobile_image_size_exposure.cjs", mobile_package["scripts"]["test"])
         self.assertIn("check_mobile_build_tooling_exposure.cjs", mobile_package["scripts"]["test"])
 
