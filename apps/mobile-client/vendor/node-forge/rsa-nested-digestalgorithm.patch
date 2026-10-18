@@ -1,0 +1,19 @@
+--- a/lib/rsa.js
++++ b/lib/rsa.js
+@@ -1171,5 +1171,11 @@
+-          // validate DigestInfo structure and element count
+-          var capture = {};
+-          var errors = [];
+-          if(!asn1.validate(obj, digestInfoValidator, capture, errors) ||
+-            obj.value.length !== 2) {
++          // validate DigestInfo structure and element counts (outer DigestInfo
++          // and nested DigestAlgorithm). asn1.validate ignores extra children,
++          // so length must be checked explicitly at each nesting level to
++          // prevent low-exponent PKCS#1 v1.5 signature forgery (CVE-2026-85393).
++          var capture = {};
++          var errors = [];
++          if(!asn1.validate(obj, digestInfoValidator, capture, errors) ||
++            obj.value.length !== 2 ||
++            obj.value[0].value.length !==
++              (('parameters' in capture) ? 2 : 1) ||
++            (('parameters' in capture) && capture.parameters !== '')) {

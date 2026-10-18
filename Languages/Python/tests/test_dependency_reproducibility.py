@@ -627,7 +627,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertEqual(1, policy["version"])
         self.assertEqual(7, policy["max_database_age_days"])
         self.assertEqual(45, policy["max_exception_days"])
-        self.assertEqual(1, len(exceptions))
+        self.assertEqual(0, len(exceptions))
         identities = {
             (item["kind"], item["id"], item["package"], item["version"])
             for item in exceptions

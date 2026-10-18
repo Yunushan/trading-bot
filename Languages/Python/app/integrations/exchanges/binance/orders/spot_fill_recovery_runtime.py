@@ -7,9 +7,11 @@ import json
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import cast
 
 from app.settings.live_safety import LiveTradingSafetyError
 
@@ -18,6 +20,8 @@ from .spot_opo_runtime import validate_spot_opo_strategy_exit_order
 from .order_intent_store import ledger_transaction, write_ledger
 from .spot_opo_runtime import validate_spot_opo_request_payload
 from .spot_exchange_errors import SPOT_LOCAL_STATE_ERRORS
+from .spot_allocation_generation_runtime import build_spot_buy_allocation_row, validate_spot_buy_replay
+from .spot_inventory_namespace import ACCOUNT_NAMESPACE_KEY, require_namespace
 
 
 _TRADE_PAGE_SIZE = 1000
@@ -663,8 +667,79 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return value
 
 
-def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
-    """Atomically insert or repair one recovered BUY allocation by exact order identity."""
+def _read_verified_live_snapshot(
+    path: Path, *, namespace: dict[str, object] | None = None, allow_missing: bool = False,
+) -> dict[str, object] | None:
+    """Verify the path's protected authority before any missing/mode/replay shortcut."""
+    from app.gui.shared.allocation_persistence import _read_receipt
+    from .spot_inventory_checkpoint import verify_inventory_checkpoint
+    with ledger_transaction(path):
+        try:
+            raw, _identity = _read_receipt(path)
+            snapshot = (json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+                        if raw is not None else None)
+        except SPOT_LOCAL_STATE_ERRORS as exc:
+            raise LiveTradingSafetyError("Desktop allocation state is unreadable; Spot recovery is blocked.") from exc
+        verified = verify_inventory_checkpoint(path, raw, snapshot, expected_namespace=namespace)
+        if namespace is not None and not verified:
+            raise LiveTradingSafetyError("Owned Spot inventory requires an existing stable protected checkpoint.")
+        if snapshot is None:
+            if allow_missing:
+                return None
+            raise LiveTradingSafetyError("A durable Live allocation snapshot is required for Spot recovery.")
+        if (not isinstance(snapshot, dict) or type(snapshot.get("version")) is not int
+                or snapshot.get("version") != 1 or snapshot.get("mode") != "Live"
+                or not isinstance(snapshot.get("entry_allocations"), dict)
+                or not isinstance(snapshot.get("open_position_records"), dict)):
+            raise LiveTradingSafetyError("Desktop allocation state is not a valid Live portfolio snapshot.")
+        return snapshot
+
+
+def _require_fill_namespace(
+    snapshot: dict[str, object], namespace: dict[str, object] | None,
+) -> None:
+    """Matching metadata cannot establish missing protected inventory authority."""
+    if namespace is None:
+        if ACCOUNT_NAMESPACE_KEY in snapshot:
+            raise LiveTradingSafetyError("Account-bound Spot inventory requires its exact namespace for fill publication or replay.")
+        return
+    require_namespace(snapshot, namespace)
+
+
+def _require_owned_fill_publication(
+    path: Path, snapshot: dict[str, object], *, fill: Mapping[str, object],
+) -> None:
+    if ACCOUNT_NAMESPACE_KEY in snapshot:
+        from .spot_inventory_checkpoint_runtime import assert_owned_inventory_publication
+        assert_owned_inventory_publication(path, fill=fill)
+
+
+def _write_inventory_candidate(path: Path, candidate: dict[str, object]) -> None:
+    """Bound candidates require the original active owned publication context."""
+    if ACCOUNT_NAMESPACE_KEY in candidate:
+        from .spot_inventory_checkpoint_runtime import write_owned_inventory_checkpoint
+        write_owned_inventory_checkpoint(path, candidate)
+    else:
+        write_ledger(path, candidate)
+
+
+def persist_spot_buy_allocation(
+    path: Path, fill: Mapping[str, object], *, namespace: dict[str, object] | None = None,
+) -> bool:
+    """Atomically append an exact BUY; legacy unscoped mode cannot own bound inventory."""
+    return _persist_spot_buy_allocation(path, fill, namespace=namespace)
+
+
+def _persist_spot_buy_allocation_unlocked(
+    path: Path, fill: Mapping[str, object], *, namespace: dict[str, object] | None = None,
+) -> bool:
+    """Publish only while the caller holds this allocation's storage lock."""
+    return _persist_spot_buy_allocation(path, fill, unlocked=True, namespace=namespace)
+
+
+def _persist_spot_buy_allocation(
+    path: Path, fill: Mapping[str, object], *, unlocked: bool = False, namespace: dict[str, object] | None = None,
+) -> bool:
     symbol = fill.get("symbol")
     client_order_id = fill.get("client_order_id")
     exchange_client_order_id = fill.get("exchange_client_order_id", client_order_id)
@@ -743,24 +818,12 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
         "spot_fill_recovery": recovery_metadata,
     }
 
+    entry = build_spot_buy_allocation_row(fill)
     if path.is_symlink():
         raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
-    with ledger_transaction(path):
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
-            except SPOT_LOCAL_STATE_ERRORS as exc:
-                raise LiveTradingSafetyError("Desktop allocation state is unreadable; Spot recovery is blocked.") from exc
-            if (
-                not isinstance(data, dict)
-                or type(data.get("version")) is not int
-                or data.get("version") != 1
-                or data.get("mode") != "Live"
-                or not isinstance(data.get("entry_allocations"), dict)
-                or not isinstance(data.get("open_position_records"), dict)
-            ):
-                raise LiveTradingSafetyError("Desktop allocation state is not a valid Live portfolio snapshot.")
-        else:
+    with nullcontext() if unlocked else ledger_transaction(path):
+        data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+        if data is None:
             data = {
                 "version": 1,
                 "mode": "Live",
@@ -768,9 +831,11 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
                 "entry_allocations": {},
                 "open_position_records": {},
             }
-
-        allocations = data["entry_allocations"]
-        records = data["open_position_records"]
+        _require_fill_namespace(data, namespace)
+        _require_owned_fill_publication(path, data, fill=fill)
+        # The guarded reader validated these two values as dictionaries.
+        allocations = cast(dict, data["entry_allocations"])
+        records = cast(dict, data["open_position_records"])
         matches: list[tuple[str, dict[str, object]]] = []
         for stored_key, stored_entries in allocations.items():
             if not isinstance(stored_key, str) or not isinstance(stored_entries, list):
@@ -789,8 +854,15 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
         if matches:
             existing = matches[0][1]
             previous_recovery = existing.get("spot_fill_recovery")
-            if isinstance(previous_recovery, Mapping) and previous_recovery.get("signature") != signature:
-                raise LiveTradingSafetyError("Recovered Spot fill conflicts with its prior portfolio proof.")
+            if isinstance(previous_recovery, Mapping):
+                if previous_recovery.get("signature") != signature:
+                    raise LiveTradingSafetyError("Recovered Spot fill conflicts with its prior portfolio proof.")
+                validate_spot_buy_replay(existing, fill)
+                # The acquisition is already durable. Consumption is never undone by BUY replay.
+                return True
+            if ("spot_fill_recovery" in existing or existing.get("spot_sell_recoveries")
+                or "spot_opo_stop_recovery" in existing or str(existing.get("status") or "").lower() != "active"):
+                raise LiveTradingSafetyError("Spot acquisition replay has unprovable prior consumption.")
             for field in (
                 "qty", "entry_price", "leverage", "margin_usdt", "margin_balance", "notional",
                 "symbol", "side_key", "status", "order_id", "client_order_id", "trade_id",
@@ -821,7 +893,8 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
         ):
             raise LiveTradingSafetyError("Desktop Spot position snapshot conflicts with recovered inventory.")
         record["status"] = "Active"
-        record["allocations"] = [dict(row) for row in target_entries if isinstance(row, dict)]
+        record["allocations"] = [dict(row) for row in target_entries
+                                 if isinstance(row, dict) and str(row.get("status") or "").lower() == "active"]
         record_data = record.get("data")
         if not isinstance(record_data, dict):
             raise LiveTradingSafetyError("Desktop Spot position snapshot is malformed.")
@@ -856,7 +929,7 @@ def persist_spot_buy_allocation(path: Path, fill: Mapping[str, object]) -> bool:
             "size_usdt": float(total_cost),
         })
         data["timestamp"] = time.time()
-        write_ledger(path, data)
+        _write_inventory_candidate(path, data)
     return True
 
 
@@ -870,34 +943,24 @@ def _stored_decimal(value: object, field: str, *, positive: bool = False) -> Dec
     return parsed
 
 
-def _load_live_allocation_snapshot(path: Path) -> dict[str, object]:
-    if path.is_symlink() or not path.is_file():
-        raise LiveTradingSafetyError("A durable Live allocation snapshot is required for Spot SELL recovery.")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
-    except SPOT_LOCAL_STATE_ERRORS as exc:
-        raise LiveTradingSafetyError("Desktop allocation state is unreadable; Spot recovery is blocked.") from exc
-    if (
-        not isinstance(data, dict)
-        or type(data.get("version")) is not int
-        or data.get("version") != 1
-        or data.get("mode") != "Live"
-        or not isinstance(data.get("entry_allocations"), dict)
-        or not isinstance(data.get("open_position_records"), dict)
-    ):
-        raise LiveTradingSafetyError("Desktop allocation state is not a valid Live portfolio snapshot.")
+def _load_live_allocation_snapshot(
+    path: Path, *, namespace: dict[str, object] | None = None,
+) -> dict[str, object]:
+    data = _read_verified_live_snapshot(path, namespace=namespace)
+    assert data is not None
     return data
 
 
-def spot_live_allocation_baseline(path: Path, *, symbol: str) -> dict[str, str] | None:
+def spot_live_allocation_baseline(
+    path: Path, *, symbol: str, namespace: dict[str, object] | None = None,
+) -> dict[str, str] | None:
     """Fingerprint a coherent local Live position before a Spot market SELL."""
     if not isinstance(symbol, str) or not symbol.isascii() or not symbol.isalnum() or symbol != symbol.upper():
         raise LiveTradingSafetyError("Spot SELL baseline symbol is invalid.")
-    if path.is_symlink():
-        raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
-    if not path.exists():
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
         return None
-    data = _load_live_allocation_snapshot(path)
+    _require_fill_namespace(data, namespace)
     allocations = data["entry_allocations"]
     records = data["open_position_records"]
     assert isinstance(allocations, dict) and isinstance(records, dict)
@@ -1001,19 +1064,22 @@ def spot_live_allocation_baseline(path: Path, *, symbol: str) -> dict[str, str] 
 
 def spot_opo_allocation_baseline(
     path: Path, *, symbol: str, list_client_order_id: str, expected_quantity: object,
+    namespace: dict[str, object] | None = None,
 ) -> dict[str, str]:
     """Require one coherent Spot allocation belonging only to the exact OPO list."""
     with ledger_transaction(path):
         return spot_opo_allocation_baseline_unlocked(
             path, symbol=symbol, list_client_order_id=list_client_order_id, expected_quantity=expected_quantity,
+            namespace=namespace,
         )
 
 
 def spot_opo_allocation_baseline_unlocked(
     path: Path, *, symbol: str, list_client_order_id: str, expected_quantity: object,
+    namespace: dict[str, object] | None = None,
 ) -> dict[str, str]:
     """Validate an OPO baseline while the caller holds this allocation's transaction."""
-    baseline = spot_live_allocation_baseline(path, symbol=symbol)
+    baseline = spot_live_allocation_baseline(path, symbol=symbol, namespace=namespace)
     if baseline is None:
         raise LiveTradingSafetyError("A recovered Live Spot allocation is required before linked exit.")
     try:
@@ -1023,7 +1089,8 @@ def spot_opo_allocation_baseline_unlocked(
         raise LiveTradingSafetyError("Recovered OPO allocation quantity is invalid.") from None
     if observed != expected:
         raise LiveTradingSafetyError("Linked OPO must be the only active allocation for its Spot symbol.")
-    data = _load_live_allocation_snapshot(path)
+    data = _load_live_allocation_snapshot(path, namespace=namespace)
+    _require_fill_namespace(data, namespace)
     allocations = data["entry_allocations"]
     assert isinstance(allocations, dict)
     raw_entries = allocations.get(f"{symbol}:L")
@@ -1140,7 +1207,9 @@ def _update_spot_position_snapshot(
     })
 
 
-def persist_spot_sell_allocation(path: Path, fill: Mapping[str, object]) -> bool:
+def persist_spot_sell_allocation(
+    path: Path, fill: Mapping[str, object], *, namespace: dict[str, object] | None = None,
+) -> bool:
     """Atomically consume owned Live Spot allocations using exact SELL fill evidence."""
     symbol = fill.get("symbol")
     client_order_id = fill.get("client_order_id")
@@ -1218,7 +1287,9 @@ def persist_spot_sell_allocation(path: Path, fill: Mapping[str, object]) -> bool
     if path.is_symlink():
         raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
     with ledger_transaction(path):
-        data = _load_live_allocation_snapshot(path)
+        data = _load_live_allocation_snapshot(path, namespace=namespace)
+        _require_fill_namespace(data, namespace)
+        _require_owned_fill_publication(path, data, fill=fill)
         allocations = data["entry_allocations"]
         records = data["open_position_records"]
         assert isinstance(allocations, dict) and isinstance(records, dict)
@@ -1252,7 +1323,7 @@ def persist_spot_sell_allocation(path: Path, fill: Mapping[str, object]) -> bool
                 raise LiveTradingSafetyError("Recovered Spot SELL fill conflicts with its prior portfolio proof.")
             return True
 
-        baseline = spot_live_allocation_baseline(path, symbol=symbol)
+        baseline = spot_live_allocation_baseline(path, symbol=symbol, namespace=namespace)
         if (
             baseline is None
             or baseline.get("signature") != pre_order_signature
@@ -1415,14 +1486,19 @@ def persist_spot_sell_allocation(path: Path, fill: Mapping[str, object]) -> bool
         else:
             records.pop(key, None)
         data["timestamp"] = time.time()
-        write_ledger(path, data)
+        _write_inventory_candidate(path, data)
     return True
 
 
 def has_durable_spot_opo_strategy_sell(
     path: Path, intent: Mapping[str, object], *, signature: str, consumed_quantity: object,
+    namespace: dict[str, object] | None = None,
 ) -> bool:
     """Find the exact linked SELL proof on its OPO allocation after restart."""
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
+        return False
+    _require_fill_namespace(data, namespace)
     list_client_id = intent.get("client_order_id")
     exit_client_id = intent.get("strategy_exit_client_order_id")
     if (
@@ -1433,8 +1509,6 @@ def has_durable_spot_opo_strategy_sell(
         return False
     try:
         expected = _stored_decimal(consumed_quantity, "linked SELL quantity", positive=True)
-        with ledger_transaction(path):
-            data = _load_live_allocation_snapshot(path)
     except (LiveTradingSafetyError, InvalidOperation):
         return False
     allocations = data["entry_allocations"]
@@ -1476,7 +1550,9 @@ def has_durable_spot_opo_strategy_sell(
         return False
 
 
-def persist_spot_opo_strategy_sell_allocation(path: Path, fill: Mapping[str, object]) -> bool:
+def persist_spot_opo_strategy_sell_allocation(
+    path: Path, fill: Mapping[str, object], *, namespace: dict[str, object] | None = None,
+) -> bool:
     """Apply linked SELL trades only to the sole allocation owned by that OPO."""
     list_client_id = fill.get("opo_list_client_order_id")
     entry_quantity = fill.get("opo_entry_portfolio_quantity")
@@ -1499,7 +1575,8 @@ def persist_spot_opo_strategy_sell_allocation(path: Path, fill: Mapping[str, obj
     if consumed > expected or baseline_quantity != expected:
         raise LiveTradingSafetyError("Linked OPO strategy SELL exceeds its exact recovered allocation.")
 
-    existing = _load_live_allocation_snapshot(path)
+    existing = _load_live_allocation_snapshot(path, namespace=namespace)
+    _require_fill_namespace(existing, namespace)
     allocations = existing["entry_allocations"]
     assert isinstance(allocations, dict)
     existing_proofs = _existing_sell_recovery_proofs(allocations, signature=signature)
@@ -1508,20 +1585,20 @@ def persist_spot_opo_strategy_sell_allocation(path: Path, fill: Mapping[str, obj
             raise LiveTradingSafetyError("Linked OPO strategy SELL proof belongs to another allocation.")
         # The generic persister validates all execution fields and makes this
         # path idempotent before checking a now-consumed portfolio baseline.
-        return persist_spot_sell_allocation(path, fill)
+        return persist_spot_sell_allocation(path, fill, namespace=namespace)
 
     baseline = spot_opo_allocation_baseline(
         path,
         symbol=str(fill.get("symbol") or ""),
         list_client_order_id=list_client_id,
-        expected_quantity=expected,
+        expected_quantity=expected, namespace=namespace,
     )
     if (
         baseline.get("signature") != fill.get("pre_order_portfolio_signature")
         or baseline.get("quantity") != _canonical_amount(baseline_quantity)
     ):
         raise LiveTradingSafetyError("Spot portfolio changed after the linked SELL intent was recorded.")
-    return persist_spot_sell_allocation(path, fill)
+    return persist_spot_sell_allocation(path, fill, namespace=namespace)
 
 
 def has_durable_spot_opo_strategy_sell_recovery(
@@ -1532,8 +1609,13 @@ def has_durable_spot_opo_strategy_sell_recovery(
     consumed_quantity: object,
     remaining_quantity: object,
     trade_ids: list[int],
+    namespace: dict[str, object] | None = None,
 ) -> bool:
     """Prove the exact terminal linked SELL left one known OPO remainder."""
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
+        return False
+    _require_fill_namespace(data, namespace)
     list_client_id = intent.get("client_order_id")
     exit_client_id = intent.get("strategy_exit_client_order_id")
     if (
@@ -1546,8 +1628,6 @@ def has_durable_spot_opo_strategy_sell_recovery(
     try:
         consumed = _stored_decimal(consumed_quantity, "linked SELL quantity", positive=True)
         remaining = _stored_decimal(remaining_quantity, "remaining OPO quantity", positive=True)
-        with ledger_transaction(path):
-            data = _load_live_allocation_snapshot(path)
     except (LiveTradingSafetyError, InvalidOperation):
         return False
     allocations = data["entry_allocations"]
@@ -1595,13 +1675,16 @@ def has_durable_spot_opo_strategy_sell_recovery(
         ]
         if len(active) != 1 or active[0].get("client_order_id") != list_client_id:
             return False
-        baseline = spot_live_allocation_baseline(path, symbol=str(intent.get("symbol") or ""))
-        return baseline is not None and baseline.get("quantity") == _canonical_amount(remaining)
     except (LiveTradingSafetyError, InvalidOperation, TypeError):
         return False
 
+    baseline = spot_live_allocation_baseline(path, symbol=str(intent.get("symbol") or ""), namespace=namespace)
+    return baseline is not None and baseline.get("quantity") == _canonical_amount(remaining)
 
-def persist_spot_opo_residual_stop_allocation(path: Path, fill: Mapping[str, object]) -> bool:
+
+def persist_spot_opo_residual_stop_allocation(
+    path: Path, fill: Mapping[str, object], *, namespace: dict[str, object] | None = None,
+) -> bool:
     """Apply a re-armed STOP_LOSS SELL only to the sole exact OPO residual."""
     list_client_id = fill.get("opo_list_client_order_id")
     residual_client_id = fill.get("residual_stop_client_order_id")
@@ -1633,27 +1716,28 @@ def persist_spot_opo_residual_stop_allocation(path: Path, fill: Mapping[str, obj
         "pre_order_portfolio_qty": _canonical_amount(residual_quantity),
     })
 
-    existing = _load_live_allocation_snapshot(path)
+    existing = _load_live_allocation_snapshot(path, namespace=namespace)
+    _require_fill_namespace(existing, namespace)
     allocations = existing["entry_allocations"]
     assert isinstance(allocations, dict)
     prior = _existing_sell_recovery_proofs(allocations, signature=signature)
     if prior:
         if len(prior) != 1 or prior[0][1].get("client_order_id") != residual_client_id:
             raise LiveTradingSafetyError("Residual OPO stop proof belongs to another allocation or order.")
-        return persist_spot_sell_allocation(path, normalized)
+        return persist_spot_sell_allocation(path, normalized, namespace=namespace)
 
     baseline = spot_opo_allocation_baseline(
         path,
         symbol=str(fill.get("symbol") or ""),
         list_client_order_id=list_client_id,
-        expected_quantity=residual_quantity,
+        expected_quantity=residual_quantity, namespace=namespace,
     )
     if (
         baseline.get("signature") != fill.get("residual_stop_pre_order_signature")
         or baseline.get("quantity") != _canonical_amount(residual_quantity)
     ):
         raise LiveTradingSafetyError("Spot portfolio changed after residual-stop intent creation.")
-    return persist_spot_sell_allocation(path, normalized)
+    return persist_spot_sell_allocation(path, normalized, namespace=namespace)
 
 
 def has_durable_spot_opo_residual_stop_allocation(
@@ -1664,8 +1748,13 @@ def has_durable_spot_opo_residual_stop_allocation(
     consumed_quantity: object,
     remaining_quantity: object,
     trade_ids: list[int],
+    namespace: dict[str, object] | None = None,
 ) -> bool:
     """Prove a residual-stop fill affected only its exact OPO allocation."""
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
+        return False
+    _require_fill_namespace(data, namespace)
     list_client_id = intent.get("client_order_id")
     stop_request = intent.get("residual_stop_request")
     if (
@@ -1679,8 +1768,6 @@ def has_durable_spot_opo_residual_stop_allocation(
         residual_id = str(stop_request.get("newClientOrderId") or "")
         consumed = _stored_decimal(consumed_quantity, "residual stop consumed quantity", positive=True)
         remaining = _stored_decimal(remaining_quantity, "remaining OPO quantity")
-        with ledger_transaction(path):
-            data = _load_live_allocation_snapshot(path)
     except (LiveTradingSafetyError, InvalidOperation):
         return False
     allocations = data["entry_allocations"]
@@ -1731,13 +1818,16 @@ def has_durable_spot_opo_residual_stop_allocation(
         ]
         if len(active) != 1 or active[0].get("client_order_id") != list_client_id:
             return False
-        baseline = spot_live_allocation_baseline(path, symbol=str(intent.get("symbol") or ""))
-        return baseline is not None and Decimal(baseline["quantity"]) == remaining
     except (LiveTradingSafetyError, InvalidOperation, TypeError):
         return False
 
+    baseline = spot_live_allocation_baseline(path, symbol=str(intent.get("symbol") or ""), namespace=namespace)
+    return baseline is not None and Decimal(baseline["quantity"]) == remaining
 
-def persist_spot_opo_stop_sell_allocation(path: Path, fill: Mapping[str, object]) -> bool:
+
+def persist_spot_opo_stop_sell_allocation(
+    path: Path, fill: Mapping[str, object], *, namespace: dict[str, object] | None = None,
+) -> bool:
     """Close only the BUY allocation proved by one fully filled linked OPO stop."""
     symbol = fill.get("symbol")
     list_client_order_id = fill.get("opo_list_client_order_id")
@@ -1810,7 +1900,9 @@ def persist_spot_opo_stop_sell_allocation(path: Path, fill: Mapping[str, object]
     if path.is_symlink():
         raise LiveTradingSafetyError("Desktop allocation state must not be a symbolic link.")
     with ledger_transaction(path):
-        data = _load_live_allocation_snapshot(path)
+        data = _load_live_allocation_snapshot(path, namespace=namespace)
+        _require_fill_namespace(data, namespace)
+        _require_owned_fill_publication(path, data, fill=fill)
         allocations = data["entry_allocations"]
         records = data["open_position_records"]
         assert isinstance(allocations, dict) and isinstance(records, dict)
@@ -1958,26 +2050,26 @@ def persist_spot_opo_stop_sell_allocation(path: Path, fill: Mapping[str, object]
         else:
             records.pop(key, None)
         data["timestamp"] = time.time()
-        write_ledger(path, data)
+        _write_inventory_candidate(path, data)
     return True
 
 
 def has_durable_spot_opo_stop_exit(
     record: Mapping[str, object], *, signature: str, portfolio_quantity: object,
+    namespace: dict[str, object] | None = None,
 ) -> bool:
     """Check that one OPO allocation durably records the exact linked stop exit."""
+    from app.gui.shared.allocation_persistence import get_position_allocations_path
+
+    app_root = Path(__file__).resolve().parents[4]
+    path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
+    data = _read_verified_live_snapshot(path, namespace=namespace, allow_missing=True)
+    if data is None:
+        return False
+    allocations = cast(dict, data["entry_allocations"])
+    _require_fill_namespace(data, namespace)
     try:
         if re.fullmatch(r"[0-9a-f]{64}", signature) is None:
-            return False
-        from app.gui.shared.allocation_persistence import get_position_allocations_path
-
-        app_root = Path(__file__).resolve().parents[4]
-        path = get_position_allocations_path(app_root / "gui" / "window_shell.py")
-        if path.is_symlink() or not path.is_file():
-            return False
-        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
-        allocations = data.get("entry_allocations") if isinstance(data, dict) else None
-        if data.get("version") != 1 or data.get("mode") != "Live" or not isinstance(allocations, dict):
             return False
         request = validate_spot_opo_request_payload(record.get("request"))
         expected_qty = Decimal(str(portfolio_quantity))

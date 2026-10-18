@@ -28,10 +28,14 @@
           "fix_availability": "none-published-or-reviewed-breaking-graph",
           "verified_fix_target": "expo",
           "verified_fix_version": "44.0.6",
-          "mitigation_control": "mobile-node-forge-build-signing-v1",
+          "mitigation_control": "mobile-node-forge-vendored-backport-v1",
           "verified_package_version": "1.4.0",
-          "verified_consumers": ["@expo/cli@58.1.11", "@expo/code-signing-certificates@0.0.7"],
-          "reason": "No published node-forge release (max 1.4.0) is outside GHSA-86W9-CPQP-85RV; npm only offers an Expo major downgrade. The package is reachable only from the Expo CLI build-time code-signing toolchain, the application ships no expo-updates configuration, performs no runtime signature verification, and never imports node-forge."
+          "verified_consumers": [
+            "@expo/cli@58.1.11",
+            "@expo/code-signing-certificates@0.0.7",
+            "trading-bot-mobile-client@0.1.0"
+          ],
+          "reason": "No published node-forge release (max 1.4.0) is outside GHSA-86W9-CPQP-85RV and the package identity stays 1.4.0, so npm audit keeps reporting it. Every consumer resolves the reviewed vendored backport whose lib/rsa.js rejects nested DigestAlgorithm elements, the lock integrity must match the tracked provenance, and the application ships no expo-updates configuration or runtime signature verification."
         }
       ]
     }

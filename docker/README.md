@@ -80,9 +80,10 @@ host-path mounts or remove these restrictions unless the deployment has a review
 operational reason.
 
 The final virtual environment does not include pip. Dependencies are checked and
-pip is removed before the environment is copied from the builder, so its vendored
-build/install dependencies are not shipped with the service. Rebuild the image to
-change dependencies; do not install packages into a running container. Container
+pip is removed from that environment before it is copied from the builder. The
+base image can retain OS installer wheels, which remain part of the container
+vulnerability inventory and must also be fixed. Rebuild the image to change
+dependencies; do not install packages into a running container. Container
 audit findings are not waived because a newer top-level Python package exists:
 vendored copies can have different versions.
 

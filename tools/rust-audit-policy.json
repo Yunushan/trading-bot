@@ -2,16 +2,5 @@
   "version": 1,
   "max_database_age_days": 7,
   "max_exception_days": 45,
-  "exceptions": [
-    {
-      "kind": "unmaintained",
-      "id": "RUSTSEC-2024-0370",
-      "package": "proc-macro-error",
-      "version": "1.0.4",
-      "reviewed": "2026-10-18",
-      "expires": "2026-11-30",
-      "scope": "linux-tauri-webkitgtk-transitive",
-      "reason": "Tauri's Linux GTK3/WebKitGTK path still pins this transitive macro helper through glib 0.18.5; remove the exception once the Tauri dependency graph moves to glib >=0.20 or Tauri adopts its GTK4 path."
-    }
-  ]
+  "exceptions": []
 }

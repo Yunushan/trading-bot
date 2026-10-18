@@ -432,6 +432,13 @@ jobs:
           cache-dependency-path: |
             Languages/Python/pyproject.toml
 
+      - name: Qualify bounded synthetic scrypt backend
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -I -B -S tools/check_credential_binding_kdf.py
+
       - name: Install Python compatibility dependencies
         shell: bash
         run: |
