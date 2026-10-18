@@ -86,13 +86,27 @@ jobs:
           set -euo pipefail
           audit_file="$(mktemp)"
           mitigation_file="$(mktemp)"
-          trap 'rm -f "$audit_file" "$mitigation_file"' EXIT
+          braces_mitigation_file="$(mktemp)"
+          forge_mitigation_file="$(mktemp)"
+          trap 'rm -f "$audit_file" "$mitigation_file" "$braces_mitigation_file" "$forge_mitigation_file"' EXIT
           mitigation_args=()
           if [[ "${{ matrix.client }}" == "apps/mobile-client" ]]; then
             node ../../tools/check_mobile_image_size_exposure.cjs \
               --project-root . \
               --json > "$mitigation_file"
-            mitigation_args=(--mitigation-report "$mitigation_file")
+            node ../../tools/check_mobile_build_tooling_exposure.cjs \
+              --project-root . \
+              --package braces \
+              --json > "$braces_mitigation_file"
+            node ../../tools/check_mobile_build_tooling_exposure.cjs \
+              --project-root . \
+              --package node-forge \
+              --json > "$forge_mitigation_file"
+            mitigation_args=(
+              --mitigation-report "$mitigation_file"
+              --mitigation-report "$braces_mitigation_file"
+              --mitigation-report "$forge_mitigation_file"
+            )
           fi
           audit_status=0
           npm audit --omit=dev --audit-level=high --json > "$audit_file" || audit_status=$?
