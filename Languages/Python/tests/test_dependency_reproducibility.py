@@ -578,7 +578,12 @@ class DependencyReproducibilityTests(unittest.TestCase):
         )
         self.assertIn("npm audit --omit=dev --audit-level=high", workflow)
         self.assertIn("check_mobile_image_size_exposure.cjs", workflow)
+        self.assertIn("check_mobile_build_tooling_exposure.cjs", workflow)
+        self.assertIn('--package braces', workflow)
+        self.assertIn('--package node-forge', workflow)
         self.assertIn('--mitigation-report "$mitigation_file"', workflow)
+        self.assertIn('--mitigation-report "$braces_mitigation_file"', workflow)
+        self.assertIn('--mitigation-report "$forge_mitigation_file"', workflow)
         self.assertIn("apps/web-dashboard", workflow)
         self.assertIn("apps/mobile-client", workflow)
         self.assertIn("cargo install cargo-audit --version 0.22.2 --locked", workflow)
@@ -729,13 +734,31 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("cargo audit warning in yanked is malformed", result["errors"])
 
-    def test_mobile_production_lockfile_uses_patched_image_size_fork(self):
+    def test_mobile_build_tooling_exceptions_are_reviewed_and_time_bounded(self):
         policy = json.loads((REPO_ROOT / "tools" / "node-audit-policy.json").read_text(encoding="utf-8"))
+        exceptions = policy["projects"]["apps/mobile-client"]["exceptions"]
+        self.assertEqual(
+            ["braces", "node-forge"],
+            sorted(item["package"] for item in exceptions),
+        )
+        for exception in exceptions:
+            with self.subTest(package=exception["package"]):
+                self.assertEqual("2026-10-18", exception["reviewed"])
+                self.assertEqual("2026-11-30", exception["expires"])
+                self.assertEqual("high", exception["max_severity"])
+                self.assertEqual(
+                    "none-published-or-reviewed-breaking-graph",
+                    exception["fix_availability"],
+                )
+                self.assertTrue(exception["mitigation_control"])
+                self.assertTrue(exception["verified_consumers"])
+                self.assertTrue(exception["reason"])
+
+    def test_mobile_production_lockfile_uses_patched_image_size_fork(self):
         mobile_root = REPO_ROOT / "apps" / "mobile-client"
         mobile_package = json.loads((mobile_root / "package.json").read_text(encoding="utf-8"))
         lockfile = json.loads((mobile_root / "package-lock.json").read_text(encoding="utf-8"))
 
-        self.assertEqual([], policy["projects"]["apps/mobile-client"]["exceptions"])
         self.assertEqual("npm:image-size-next@1.2.2", mobile_package["overrides"]["image-size"])
         resolved = [
             (package_path, metadata)
@@ -760,6 +783,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
             metadata["integrity"],
         )
         self.assertIn("check_mobile_image_size_exposure.cjs", mobile_package["scripts"]["test"])
+        self.assertIn("check_mobile_build_tooling_exposure.cjs", mobile_package["scripts"]["test"])
 
     def test_mobile_production_lockfile_overrides_brace_expansion_security_fix(self):
         mobile_root = REPO_ROOT / "apps" / "mobile-client"

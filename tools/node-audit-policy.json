@@ -2,7 +2,38 @@
   "version": 1,
   "projects": {
     "apps/mobile-client": {
-      "exceptions": []
+      "exceptions": [
+        {
+          "package": "braces",
+          "advisories": ["GHSA-VFJ7-8CJW-P6XM"],
+          "reviewed": "2026-10-18",
+          "expires": "2026-11-30",
+          "max_severity": "high",
+          "required_effects": ["micromatch"],
+          "fix_availability": "none-published-or-reviewed-breaking-graph",
+          "verified_fix_target": "expo",
+          "verified_fix_version": "44.0.6",
+          "mitigation_control": "mobile-braces-build-glob-v1",
+          "verified_package_version": "3.0.3",
+          "verified_consumers": ["micromatch@4.0.8"],
+          "reason": "No published braces release (max 3.0.3) is outside GHSA-VFJ7-8CJW-P6XM; npm only offers an Expo major downgrade. braces is reachable only through micromatch inside the Expo/Metro bundling toolchain, the application never imports braces or micromatch, and every glob it evaluates is a repository-controlled build pattern."
+        },
+        {
+          "package": "node-forge",
+          "advisories": ["GHSA-86W9-CPQP-85RV"],
+          "reviewed": "2026-10-18",
+          "expires": "2026-11-30",
+          "max_severity": "high",
+          "required_effects": ["@expo/cli", "@expo/code-signing-certificates"],
+          "fix_availability": "none-published-or-reviewed-breaking-graph",
+          "verified_fix_target": "expo",
+          "verified_fix_version": "44.0.6",
+          "mitigation_control": "mobile-node-forge-build-signing-v1",
+          "verified_package_version": "1.4.0",
+          "verified_consumers": ["@expo/cli@57.0.27", "@expo/code-signing-certificates@0.0.6"],
+          "reason": "No published node-forge release (max 1.4.0) is outside GHSA-86W9-CPQP-85RV; npm only offers an Expo major downgrade. The package is reachable only from the Expo CLI build-time code-signing toolchain, the application ships no expo-updates configuration, performs no runtime signature verification, and never imports node-forge."
+        }
+      ]
     }
   }
 }
