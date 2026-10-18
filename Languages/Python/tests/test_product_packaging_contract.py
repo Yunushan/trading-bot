@@ -1519,7 +1519,7 @@ class ProductPackagingContractTests(unittest.TestCase):
                 action in workflow
                 for action in (
                     "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
-                    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
                 )
             )
         )
@@ -1801,11 +1801,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("TB_RELEASE_DESKTOP_SMOKE_COMMAND", real_test_workflow)
         self.assertIn("browser_test_command", real_test_workflow)
         self.assertIn("TB_BROWSER_TEST_COMMAND", real_test_workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", real_test_workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", real_test_workflow)
         self.assertIn("gh run download", rust_release_evidence_workflow)
         self.assertIn("tools/write_rust_native_release_evidence.py", rust_release_evidence_workflow)
         self.assertIn("--only rust-native-release-platform-evidence", rust_release_evidence_workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", rust_release_evidence_workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", rust_release_evidence_workflow)
 
     def test_python_version_support_matrix_declares_and_checks_310_to_315(self):
         checker = REPO_ROOT / "tools" / "check_python_version_support.py"
@@ -1876,7 +1876,7 @@ class ProductPackagingContractTests(unittest.TestCase):
                     action in workflows[workflow_name]
                     for action in (
                         "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131",
-                        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                        "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
                     )
                 )
             )
@@ -1885,7 +1885,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "efb35369e0ad2afab669f228072c1b0d510eae64",
         }
         for workflow in workflows.values():
-            self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
+            self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", workflow)
             release_action_refs = set(
                 re.findall(r"softprops/action-gh-release@([0-9a-f]{40})", workflow)
             )

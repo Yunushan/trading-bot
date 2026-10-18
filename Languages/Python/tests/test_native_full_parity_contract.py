@@ -1314,7 +1314,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("--write-evidence-plan", rust_live_smoke_workflow)
         self.assertIn("rust-native-live-smoke-evidence-plan", rust_live_smoke_workflow)
         self.assertIn("if-no-files-found: warn", rust_live_smoke_workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", rust_live_smoke_workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", rust_live_smoke_workflow)
         self.assertIn("workflow_dispatch", rust_release_evidence_workflow)
         self.assertTrue(
             any(
@@ -1344,7 +1344,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("--write-evidence-plan", rust_release_evidence_workflow)
         self.assertIn("rust-native-release-platform-evidence-plan", rust_release_evidence_workflow)
         self.assertIn("if-no-files-found: warn", rust_release_evidence_workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", rust_release_evidence_workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", rust_release_evidence_workflow)
         self.assertIn("GITHUB_TOKEN", rust_release_evidence_workflow)
         self.assertIn("workflow_dispatch", rust_promotion_audit_workflow)
         self.assertIn("live_smoke_run_id", rust_promotion_audit_workflow)

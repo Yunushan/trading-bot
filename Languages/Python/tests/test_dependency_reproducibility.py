@@ -567,7 +567,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
                 action in workflow
                 for action in (
                     "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
-                    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
                 )
             )
         )
@@ -599,7 +599,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("--policy ../../tools/rust-audit-policy.json", workflow)
         self.assertIn('if [[ "$audit_status" -gt 1 ]]', workflow)
         self.assertIn("rust-dependency-audit-report", workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", workflow)
         self.assertIn("container-vulnerability-audit", workflow)
         self.assertIn("docker build --pull \\", workflow)
         self.assertIn('--build-arg BUILD_COMMIT="$GITHUB_SHA"', workflow)
