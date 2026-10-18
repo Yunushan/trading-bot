@@ -54,7 +54,7 @@ DEV_DEPENDENCY_NAMES = {
 
 SECURITY_DEPENDENCIES = {
     "pip-audit": "pip-audit==2.10.1",
-    "truststore": "truststore==0.10.4",
+    "truststore": "truststore==0.10.5",
 }
 
 PYTHON_VERSION_RUNTIME_PINS = {

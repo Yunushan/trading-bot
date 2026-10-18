@@ -1688,7 +1688,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("cryptography==50.0.1", optional_dependencies["service"])
 
         self.assertEqual(
-            ["pip-audit==2.10.1", "truststore==0.10.4"],
+            ["pip-audit==2.10.1", "truststore==0.10.5"],
             optional_dependencies["security"],
         )
 
