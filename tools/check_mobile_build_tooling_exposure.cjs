@@ -100,13 +100,22 @@ function resolvedVersions(packages, findingPackage) {
 }
 
 function sourceImports(projectRoot, packageNames) {
-  const pattern = new RegExp(
-    `(?:require\\s*\\(\\s*["'](?:${packageNames.join("|")})["']`
-    + `|from\\s+["'](?:${packageNames.join("|")})["']`
-    + `|import\\s+["'](?:${packageNames.join("|")})["'])`,
-  );
+  const needles = [];
+  for (const name of packageNames) {
+    needles.push(
+      `require("${name}")`,
+      `require('${name}')`,
+      `from "${name}"`,
+      `from '${name}'`,
+      `import "${name}"`,
+      `import '${name}'`,
+    );
+  }
   return walkFiles(projectRoot, SOURCE_EXTENSIONS)
-    .filter((filePath) => pattern.test(fs.readFileSync(filePath, "utf8")))
+    .filter((filePath) => {
+      const source = fs.readFileSync(filePath, "utf8");
+      return needles.some((needle) => source.includes(needle));
+    })
     .map((filePath) => path.relative(projectRoot, filePath).replaceAll("\\", "/"));
 }
 
