@@ -34,7 +34,7 @@ const CONTROLS = {
   "node-forge": {
     control_id: "mobile-node-forge-build-signing-v1",
     reviewed_version: "1.4.0",
-    expected_consumers: ["@expo/cli@57.0.27", "@expo/code-signing-certificates@0.0.6"],
+    expected_consumers: ["@expo/cli@58.1.11", "@expo/code-signing-certificates@0.0.7"],
     reviewed_consumer_chain: {},
     reason:
       "node-forge PKCS#1 v1.5 verification is reachable only from the Expo CLI build-time code "

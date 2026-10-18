@@ -30,7 +30,7 @@
           "verified_fix_version": "44.0.6",
           "mitigation_control": "mobile-node-forge-build-signing-v1",
           "verified_package_version": "1.4.0",
-          "verified_consumers": ["@expo/cli@57.0.27", "@expo/code-signing-certificates@0.0.6"],
+          "verified_consumers": ["@expo/cli@58.1.11", "@expo/code-signing-certificates@0.0.7"],
           "reason": "No published node-forge release (max 1.4.0) is outside GHSA-86W9-CPQP-85RV; npm only offers an Expo major downgrade. The package is reachable only from the Expo CLI build-time code-signing toolchain, the application ships no expo-updates configuration, performs no runtime signature verification, and never imports node-forge."
         }
       ]
