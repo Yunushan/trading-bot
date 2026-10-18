@@ -575,7 +575,7 @@ class ReleaseQaTests(unittest.TestCase):
         self.assertIn("permissions:\n  actions: read\n  contents: read", workflow)
         self.assertIn("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", workflow)
         self.assertIn("actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97", workflow)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", workflow)
         self.assertIn("--require-evidence", workflow)
         self.assertIn("--require-current-commit", workflow)
         self.assertIn("--require-clean-source", workflow)
