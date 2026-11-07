@@ -48,7 +48,7 @@ desktop = [
     # an unreviewed Qt 6.13 API change into a production install.
     "PyQt6>=6.11.0,<6.13.0",
     "PyQt6-Qt6>=6.11.0,<6.13.0",
-    "PyQt6-WebEngine>=6.11.0,<6.13.0",
+    "PyQt6-WebEngine>=6.11.0,<6.141.0",
     "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0",
 ]
 service = [
@@ -73,7 +73,7 @@ moomoo = [
 windows-arm64 = [
     "PyQt6>=6.11.0,<6.13.0",
     "PyQt6-Qt6>=6.11.0,<6.13.0",
-    "PyQt6-WebEngine>=6.11.0,<6.13.0",
+    "PyQt6-WebEngine>=6.11.0,<6.141.0",
     "PyQt6-WebEngine-Qt6>=6.11.0,<6.13.0",
     "aiohttp>=3.14.3,<4",
 ]
