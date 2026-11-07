@@ -68,7 +68,7 @@ citic-ctp = [
     "openctp-ctp==6.7.11.0; platform_system == 'Windows' or platform_system == 'Linux'",
 ]
 moomoo = [
-    "moomoo-api==10.11.7108",
+    "moomoo-api==10.12.7208",
 ]
 windows-arm64 = [
     "PyQt6>=6.11.0,<6.13.0",
